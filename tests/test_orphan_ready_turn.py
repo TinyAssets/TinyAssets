@@ -104,10 +104,15 @@ def test_failed_activity_reason_reaches_chat_and_next_agent_turn(tmp_path, monke
     assert any(reason in e["line"] for e in activities.undelivered_lines(root))
 
 
-def test_native_only_start_refuses_before_creating_activity(tmp_path, monkeypatch):
+def test_native_only_start_queues_the_activity(tmp_path, monkeypatch):
+    """A native-only connection runs activities like any other: every tool it
+    sees crosses the engine route's activity fence, and its call is cancelled
+    once the activity stops (tests/test_activity_fence.py,
+    tests/test_activity_http_yield.py). The 2026-10-06 admission refusal is
+    retired with that boundary in place."""
     from types import SimpleNamespace
 
-    from tinyassets import provider_assignment
+    from tinyassets import api, provider_assignment
     from tinyassets.agent_activities import list_page
     from tinyassets.api.activities import write
     from tinyassets.providers import call
@@ -117,8 +122,9 @@ def test_native_only_start_refuses_before_creating_activity(tmp_path, monkeypatc
                         SimpleNamespace(provider="subscription", candidates=()))
     monkeypatch.setattr(call, "get_provider_router", lambda: SimpleNamespace(
         selected_agent_execution_kind=lambda _: "native_agent"))
+    monkeypatch.setattr(api.activities, "_wake", lambda *a: None)
     result = write(tmp_path, universe_id="home", actor_id="owner", operation="start",
                    payload={"title": "job", "brief": "work"})
-    assert result["error"] == "activity_executor_unsupported"
-    assert "No background job was started" in result["message"]
-    assert list_page(tmp_path / "home")["activities"] == []
+    assert "error" not in result, result
+    assert [a["activity_id"] for a in list_page(tmp_path / "home")["activities"]] == [
+        result["activity_id"]]

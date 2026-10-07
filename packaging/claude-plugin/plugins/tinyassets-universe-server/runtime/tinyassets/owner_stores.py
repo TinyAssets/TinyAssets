@@ -107,6 +107,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/runs.py",
     "tinyassets/scheduler.py",
     "tinyassets/scoped_reset.py",
+    "tinyassets/starter_seeds.py",
     "tinyassets/storage/account_timezone.py",
     "tinyassets/storage/accounts.py",
     "tinyassets/storage/action_result_outbox.py",

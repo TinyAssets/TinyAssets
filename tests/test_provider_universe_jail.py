@@ -156,6 +156,48 @@ case "$(pwd)" in '{world.universe_a}'*) r="$r cwd=own";; *) r="$r cwd=elsewhere"
 """
 
 
+@pytest.mark.parametrize("stop", ["normal", "cancel"])
+def test_native_writer_excludes_seed_migration_until_sandbox_ends(world, stop):
+    from tinyassets.providers.owned_process import aspawn_owned, kill_owned_tree
+    from tinyassets.providers.provider_jail import provider_launch_scope
+    from tinyassets.starter_seeds import seed_boundary
+
+    async def drive():
+        with provider_launch_scope(world.universe_a):
+            proc = await aspawn_owned(
+                ["/bin/sh", "-c", "printf ready; read line; printf native > AGENTS.md"],
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+            )
+        try:
+            assert await asyncio.wait_for(proc.stdout.readexactly(5), 10) == b"ready"
+            # This runs after aspawn_owned closed EVERY parent launch fd. The
+            # uncooperative shell never imports/calls the seed implementation.
+            with pytest.raises(TimeoutError, match="busy"):
+                with seed_boundary(world.universe_a, exclusive=True, timeout=0):
+                    pytest.fail("migration entered while native writer was running")
+            with seed_boundary(world.universe_b, exclusive=True, timeout=0):
+                assert not (world.universe_b / "AGENTS.md").exists()
+            with seed_boundary(world.universe_a, timeout=0):
+                assert proc.returncode is None  # engine tools can still enter
+            if stop == "normal":
+                await asyncio.wait_for(proc.communicate(b"go\n"), 10)
+                assert proc.returncode == 0
+                assert (world.universe_a / "AGENTS.md").read_text() == "native"
+                kill_owned_tree(proc)  # the provider always ends its owned family
+            else:
+                kill_owned_tree(proc)
+                await asyncio.wait_for(proc.wait(), 10)
+            with seed_boundary(world.universe_a, exclusive=True, timeout=1):
+                assert proc.returncode is not None
+        finally:
+            kill_owned_tree(proc)
+            await proc.wait()
+
+    asyncio.run(drive())
+
+
 def _install_cli(world: _World, name: str, emit: str) -> Path:
     script = world.bin_dir / name
     script.write_text("#!/bin/sh\n" + _probe_body(world) + emit, encoding="utf-8")

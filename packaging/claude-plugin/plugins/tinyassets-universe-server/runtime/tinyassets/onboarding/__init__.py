@@ -1275,8 +1275,17 @@ async def _handle_memory(request: Any) -> Any:
 
     def _listing():
         root = _universe_dir(home)
+        from tinyassets.starter_release import owner_seed_view
+        from tinyassets.universe_owner import owner_of
+
+        # Starter updates belong to the center's recorded owner. An unattributed
+        # home has none to show; that must not take the memory listing down.
+        user = current_identity().user_id
+        owned = owner_of(root.parent, home) == user
+        updates = owner_seed_view(root, owner_id=user) if owned else []
         return {"universe_id": home, "items": memory_items.list_items(root),
-                "history": harness_history.list_history(root)}
+                "history": harness_history.list_history(root),
+                "starter_updates": updates}
 
     try:
         if request.method == "GET":
@@ -1298,7 +1307,25 @@ async def _handle_memory(request: Any) -> Any:
 
         def _save():
             root = _universe_dir(home)
-            if "undo" in data:
+            if "starter_undo" in data or "starter_adopt" in data:
+                from tinyassets.starter_release import deliver_notices
+                from tinyassets.starter_seeds import seed_store
+                from tinyassets.universe_owner import owner_of
+
+                owner = current_identity().user_id
+                if owner_of(root.parent, home) != owner:
+                    raise PermissionError("starter owner binding changed")
+                key = data.get("request_key")
+                if not isinstance(key, str) or not 1 <= len(key) <= 128:
+                    raise ValueError("starter choice requires a request key")
+                with seed_store(root, owner_id=owner, center_id=home) as seeds:
+                    if "starter_undo" in data:
+                        seeds.undo(data["starter_undo"], request_key=key)
+                    else:
+                        seeds.adopt(data["starter_adopt"], data.get("path"),
+                                    expected_hash=data.get("expected_hash"), request_key=key)
+                    deliver_notices(root, seeds)
+            elif "undo" in data:
                 change_id = data["undo"]
                 if type(change_id) is not int or not 0 < change_id <= 9_223_372_036_854_775_807:
                     raise ValueError("undo must be a history id")
@@ -1313,7 +1340,7 @@ async def _handle_memory(request: Any) -> Any:
     except harness_history.HistoryConflict as exc:
         return JSONResponse({"error": "history_conflict", "detail": str(exc)},
                             status_code=409, headers=_NO_STORE)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, KeyError) as exc:
         return JSONResponse({"error": "invalid_memory", "detail": str(exc)},
                             status_code=400, headers=_NO_STORE)
     except OSError:

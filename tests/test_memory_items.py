@@ -79,6 +79,8 @@ def test_owner_door_and_cross_user_refusal(monkeypatch, universe):
     monkeypatch.setattr(owner_sessions, "lookup", lambda cookie: {
         "identity_json": json.dumps({"user_id": "owner"})})
 
+    from tinyassets.daemon_server import grant_universe_ownership
+    grant_universe_ownership(universe.parent, universe_id=universe.name, owner_id="owner")
     monkeypatch.setattr(helpers, "_base_path", lambda: universe.parent)
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)

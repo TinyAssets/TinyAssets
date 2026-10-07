@@ -25,7 +25,11 @@ def test_seeded_universe_gets_one_short_instruction(tmp_path):
                  "how often I report", "identity.md", "## Responsibility", "ask_first",
                  "automation", "only my owner"):
         assert text in note
-    assert harness_prompt(tmp_path).count(note) == 1
+    assert note not in harness_prompt(tmp_path)
+    from tinyassets.starter_skills import starter_agent_files
+    files = starter_agent_files()
+    assert "starter-onboarding" in files["starter/hooks.md"]
+    assert "## Responsibility" in files["skills/starter-onboarding/SKILL.md"]
 
 
 def test_note_disappears_after_files_are_written(tmp_path):
@@ -79,7 +83,8 @@ def test_skill_listing_keeps_the_onboarding_note(tmp_path):
         "---\nname: report\ndescription: Write reports\n---\n", encoding="utf-8",
     )
     assert "Write reports" in harness_prompt(tmp_path)
-    assert onboarding_note(tmp_path) in harness_prompt(tmp_path)
+    assert onboarding_note(tmp_path) not in harness_prompt(tmp_path)
+    assert "Read matching skills" in harness_prompt(tmp_path)
     _onboard(tmp_path)
     assert "Write reports" in harness_prompt(tmp_path)
     assert "## Onboarding" not in harness_prompt(tmp_path)
@@ -104,7 +109,8 @@ def test_onboarding_and_current_folder_evidence_survive_together(tmp_path, has_s
             "---\nname: report\ndescription: Write reports\n---\n", encoding="utf-8",
         )
     prompt = harness_prompt(tmp_path)
-    assert prompt.count(onboarding_note(tmp_path)) == 1
+    assert onboarding_note(tmp_path) not in prompt
+    assert "Read matching skills" in prompt
     assert "notes/current.md" in prompt
     assert "## What is in my folder now" in prompt
     assert ("Write reports" if has_skill else "(none yet)") in prompt

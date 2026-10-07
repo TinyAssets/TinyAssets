@@ -41,6 +41,15 @@ def _path(path: str) -> str:
 @contextmanager
 def transaction(universe_dir: Path):
     """Serialize the owner door's read/modify/write operations per universe."""
+    from tinyassets.starter_seeds import seed_boundary
+
+    with seed_boundary(universe_dir):
+        with _history_transaction(universe_dir) as conn:
+            yield conn
+
+
+@contextmanager
+def _history_transaction(universe_dir: Path):
     path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
     with closing(sqlite3.connect(path, timeout=10)) as conn:
         conn.row_factory = sqlite3.Row

@@ -13,7 +13,6 @@ from tests import test_workflow_http_agent as workflow_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets import activity_runner, agent_activities, engine_mcp_server, shared_self
-from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -73,15 +72,20 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
             body = json.loads(result["body"])
             message = body["choices"][0]["message"]
             if "tool_calls" in message:
+                # The model sees the four tools; platform calls go through
+                # ``ta`` in bash.
+                ask = json.dumps({"target": "pending_request", "operation": "ask",
+                                  "payload_json": "{}"})
                 message["tool_calls"][0]["function"] = {
-                    "name": "write_graph", "arguments": json.dumps({
-                        "target": "pending_request", "operation": "ask", "payload_json": "{}",
-                    }),
+                    "name": "bash",
+                    "arguments": json.dumps({"command": f"ta call write_graph --json '{ask}'"}),
                 }
                 if batched_tool:
                     message["tool_calls"].append({
                         "id": "must-not-run", "type": "function", "function": {
-                            "name": "write_graph", "arguments": '{"target":"branch"}',
+                            "name": "bash", "arguments": json.dumps({
+                                "command": "ta call write_graph --json '{\"target\":\"branch\"}'",
+                            }),
                         },
                     })
             return {**result, "body": json.dumps(body)}
@@ -90,7 +94,7 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
                         lambda *a, **k: AskThenAct(resolve_proxy(*a, **k)))
 
     def yield_after_ask():
-        assert work_agent.tools[-1][1]["target"] == "pending_request"
+        assert '"target": "pending_request"' in work_agent.tools[-1][1]["command"]
         result = engine_mcp_server._yield_activity({"request_id": "req-http-yield"})
         assert result["activity_waiting"]
         if immediate_answer:
@@ -167,9 +171,7 @@ def test_owner_pause_or_stop_is_not_reclassified_as_a_yield(tmp_path, status):
 class _LaunchRecorder:
     """Stands in for the router at the ONE place a launch happens.
 
-    The refusal under test must never get here, so recording the call is the
-    whole point: the controls below prove the same doubles DO reach it, which is
-    what keeps the refusal assertions from passing for the wrong reason.
+    Records each launch and the execution kind it ran on.
     """
 
     def __init__(self):
@@ -188,8 +190,8 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     """A real adapter over a real live binding; only the session/launch are doubles.
 
     The doubles are deliberately PERMISSIVE: identity, authority, candidate
-    staging and re-authorization all succeed, so the only thing that can stop a
-    round reaching ``_LaunchRecorder`` is the refusal under test.
+    staging and re-authorization all succeed, so a round reaches
+    ``_LaunchRecorder`` unless the adapter itself refuses it.
     """
     universe = tmp_path / name
     universe.mkdir(exist_ok=True)
@@ -244,37 +246,38 @@ def _stage_native_switch(adapter, context):
     return replace(context, model_selection=_NATIVE_NEXT)
 
 
-def test_activity_run_refuses_a_native_first_selection_before_any_launch(tmp_path):
+def test_activity_run_launches_a_native_first_selection(tmp_path):
+    # One agent definition: an activity runs on any executor. The yield fence
+    # is the engine route's (test_activity_fence.py), not an executor refusal.
     adapter, config, context, authorized = _live_activity_adapter(
         tmp_path, name="u-native-first",
     )
     router = _LaunchRecorder()
-    with pytest.raises(ProviderAuthorityHeldError, match="need an engine-inference executor"):
-        asyncio.run(adapter.infer(
-            router=router, prompt="p", system="", config=config, context=context,
-            observer=None, kind="native_agent",
-        ))
-    assert router.launches == [] and authorized == []
-    # Still pending, so the caller's finally settles CANCELLED_BEFORE_LAUNCH.
-    assert adapter.initial_pending
+    response = asyncio.run(adapter.infer(
+        router=router, prompt="p", system="", config=config, context=context,
+        observer=None, kind="native_agent",
+    ))
+    assert response.text == "launched"
+    assert router.launches == [("writer", "native_agent")]
+    assert not adapter.initial_pending
 
 
-def test_activity_run_refuses_a_native_mid_turn_switch_before_any_launch(tmp_path):
+def test_activity_run_launches_a_native_mid_turn_switch(tmp_path):
     adapter, config, context, authorized = _live_activity_adapter(
         tmp_path, name="u-native-switch",
     )
     router = _LaunchRecorder()
-    # ``infer`` runs every round, so a turn that started on engine inference
-    # cannot walk onto a native candidate either -- and the refusal is the
-    # activity's own, not a candidate-staging error.
+    # ``infer`` runs every round: a turn that started on engine inference may
+    # move onto a native candidate, through the normal staged-candidate gate.
     switched = _stage_native_switch(adapter, context)
-    with pytest.raises(ProviderAuthorityHeldError, match="need an engine-inference executor"):
-        asyncio.run(adapter.infer(
-            router=router, prompt="p", system="", config=config, context=switched,
-            observer=None, kind="native_agent",
-        ))
-    assert router.launches == [] and authorized == []
-    assert adapter.selection != _NATIVE_NEXT, "the refused candidate is never adopted"
+    asyncio.run(adapter.infer(
+        router=router, prompt="p", system="", config=config, context=switched,
+        observer=None, kind="native_agent",
+    ))
+    assert router.launches == [("writer", "native_agent")]
+    assert authorized == [{"provider": _NATIVE_NEXT.connection_id,
+                           "model_id": _NATIVE_NEXT.model_id}]
+    assert adapter.selection == _NATIVE_NEXT
 
 
 def test_activity_run_still_launches_engine_inference(tmp_path):
@@ -290,7 +293,7 @@ def test_activity_run_still_launches_engine_inference(tmp_path):
 
 @pytest.mark.parametrize("mid_turn", [False, True])
 def test_a_non_activity_run_still_launches_native(tmp_path, mid_turn):
-    """The control that keeps the two refusals from passing for the wrong reason."""
+    """Activity or not, a native round launches the same way."""
     adapter, config, context, _ = _live_activity_adapter(
         tmp_path, name=f"u-native-chat-{int(mid_turn)}", with_binding=False,
     )
@@ -303,3 +306,60 @@ def test_a_non_activity_run_still_launches_native(tmp_path, mid_turn):
     ))
     assert response.text == "launched"
     assert router.launches == [("writer", "native_agent")]
+
+
+@pytest.mark.parametrize("stop", ["yield", "pause", "stop"])
+def test_a_native_activity_call_ends_when_its_activity_stops(tmp_path, stop):
+    """A native agent's tool loop is one provider call: once the activity
+    yields, pauses or stops, that call is cancelled -- its process family
+    ended and its seat released by the provider and router -- where an HTTP
+    turn would not start another round."""
+    adapter, config, context, _ = _live_activity_adapter(tmp_path, name=f"u-native-{stop}")
+    binding = adapter.activity_binding
+    cancelled = []
+
+    class NativeRouter:
+        async def call(self, role, prompt, system, config, **kwargs):
+            assert kwargs["_agent_execution_kind"] == "native_agent"
+            try:
+                await asyncio.Event().wait()      # a tool loop that does not end itself
+            except asyncio.CancelledError:
+                cancelled.append(role)
+                raise
+
+    async def go():
+        task = asyncio.ensure_future(adapter.infer(
+            router=NativeRouter(), prompt="p", system="", config=config, context=context,
+            observer=None, kind="native_agent",
+        ))
+        await asyncio.sleep(0.3)
+        assert not task.done(), "a running activity keeps its native call"
+        if stop == "yield":
+            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
+        else:
+            agent_activities.transition(
+                binding.universe_dir, binding.activity_id,
+                agent_activities.PAUSED if stop == "pause" else agent_activities.COMPLETED,
+                generation=binding.generation)
+        await asyncio.wait_for(task, timeout=5)      # bounded: cancelled, not waited out
+
+    expected = activity_runner.ActivityYielded if stop == "yield" else PermissionError
+    with pytest.raises(expected):
+        asyncio.run(go())
+    assert cancelled == ["writer"]
+
+
+def test_a_native_call_that_finished_as_its_activity_stopped_keeps_its_answer(tmp_path):
+    adapter, config, context, _ = _live_activity_adapter(tmp_path, name="u-native-same")
+    binding = adapter.activity_binding
+
+    class AnswersThenYields:
+        async def call(self, role, prompt, system, config, **kwargs):
+            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
+            return SimpleNamespace(text="final words", provider="owned-http")
+
+    response = asyncio.run(adapter.infer(
+        router=AnswersThenYields(), prompt="p", system="", config=config, context=context,
+        observer=None, kind="native_agent",
+    ))
+    assert response.text == "final words"

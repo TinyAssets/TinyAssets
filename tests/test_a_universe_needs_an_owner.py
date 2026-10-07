@@ -822,12 +822,17 @@ class TestTheOwnerIsClaimedFirst:
         have been refused."""
         from tinyassets.daemon_server import owned_universe_ids
 
-        seen: list[bool] = []
+        # (name, owned-at-mkdir) for every directory made directly under the
+        # data root. Creation also makes daemon-owned platform roots there
+        # (``.universe-sidecars``, ``.agent-sessions``), which no ownership row
+        # names by design; the property is about the universe's own directory,
+        # so the check below keys on the id creation returned.
+        seen: list[tuple[str, bool]] = []
         real_mkdir = Path.mkdir
 
         def _spy(self, *a, **k):
             if self.parent == base:
-                seen.append(self.name in owned_universe_ids(base))
+                seen.append((self.name, self.name in owned_universe_ids(base)))
             return real_mkdir(self, *a, **k)
 
         owner = signed_in("workos|founder")
@@ -837,7 +842,8 @@ class TestTheOwnerIsClaimedFirst:
 
         uid = out.get("universe_id")
         assert uid, out
-        assert seen and all(seen), (
+        mine = [owned for name, owned in seen if name == uid]
+        assert mine and all(mine), (
             "the universe directory was created before any ownership row named it"
         )
         assert owned_universe_id(base, uid) == uid

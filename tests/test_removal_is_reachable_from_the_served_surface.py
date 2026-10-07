@@ -254,7 +254,7 @@ def test_every_connection_verb_the_served_docs_name_is_reachable_from_there():
     # agent is told what to do -- the Control Station prompt is the other, and
     # round 2 was exactly a divergence between the two.
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
     # REACHABLE, not resident (2026-09-26): the connection verbs live in the
     # `connections` chapter, so the two instruction surfaces are compared over
@@ -265,7 +265,7 @@ def test_every_connection_verb_the_served_docs_name_is_reachable_from_there():
     assert verbs, "neither instruction surface names a connection verb at all"
 
     for verb in verbs:
-        if verb in SERVED_ENGINE_MCP_TOOLS:
+        if verb in BACKEND_ENGINE_CAPABILITIES:
             continue                      # its own served handle
         try:
             _validated_action({"type": verb, "destination": "github",

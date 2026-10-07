@@ -108,10 +108,13 @@ async def open_loop_tools(
     session_key: str = "",
     turn: str = "",
     ta_turn: str = "",
+    capability_grant: Sequence[str] | None = None,
 ) -> AsyncIterator[LoopToolSession]:
     """Open the turn's tools. ``bind_box`` binds the handle once, here.
 
-    ``granted`` is the turn's served-tool grant in canonical order;
+    ``granted`` is the turn's model-visible tools in canonical order, and
+    ``capability_grant`` the backend authority signed onto the engine session
+    (what ``ta`` may reach; default ``granted``);
     ``loop_reads`` the owner reads it may use. A granted box tool with no box
     to bind is refused loudly rather than silently dropped from the turn.
     """
@@ -133,7 +136,8 @@ async def open_loop_tools(
             actor_id, graph_id = engine_identity()
             engine = await stack.enter_async_context(open_engine_tools(
                 actor_id=actor_id, graph_id=graph_id, enabled_tools=transport_names,
-                timeout=timeout, session_key=session_key, turn=turn,
+                capability_grant=capability_grant, timeout=timeout,
+                session_key=session_key, turn=turn,
             ))
             engine_tools = {tool.name: tool for tool in engine.tools}
         if ta_turn and "bash" in box_names:

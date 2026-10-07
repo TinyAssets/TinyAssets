@@ -1,341 +1,292 @@
-"""The codex reader streams under the idle-watchdog profile - parity with claude.
+"""The served codex turn runs under the idle-watchdog profile - parity with claude.
 
 Founder rule 2026-08-29: *"a turn should continue till finished unless
 interrupted by the user or should stop for some other reason."*
 
 What happened: the universe was three clean GitHub round-trips into a five-step
-job - main ref, create branch, read ``README.md`` for its blob sha - when the
-served turn hit ``timeout=300`` in ``asyncio.wait_for(proc.communicate(...))``.
-The generic ``ProviderTimeoutError`` put the provider on a 120s cooldown and the
-user read *"Served provider 'codex' exhausted"* - a timer reported as a quota.
+job when the served turn hit ``timeout=300``. The generic
+``ProviderTimeoutError`` put the provider on a 120s cooldown and the user read
+*"Served provider 'codex' exhausted"* - a timer reported as a quota.
 
-Claude's reader had already moved past this (``claude_provider._read_stream``):
-an idle watchdog is the hang control, the absolute cap is a backstop, and
-neither cools the provider. These tests hold codex to the same profile, plus the
-one thing claude's reader does NOT yet do: a turn waiting on its own tool is not
-idle (``run_graph`` took 42s live; a 30s idle budget would have killed it).
+The served turn is now ``codex app-server`` (``codex_app_server.AppServerTurn``)
+rather than ``codex exec --json``, and these are the exec reader's guarantees
+carried over to it: an idle watchdog is the hang control, the absolute cap is a
+backstop, neither cools the provider, and a turn waiting on its OWN tool is not
+idle (``run_graph`` took 42s live; a 30s idle budget would have killed it). The
+scripted server (tests/support/fake_codex_app_server.py) stands in for the CLI.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import contextlib
+import sys
 import time
 import types
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 
+from tests.support.fake_codex_app_server import EOF, ScriptedAppServer, finished
+from tests.test_codex_app_server import served  # noqa: F401 - the shared fixture
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
+    ProviderError,
     ProviderIdleTimeoutError,
     ProviderTimeoutError,
 )
-from tinyassets.providers.base import ModelConfig
-from tinyassets.providers.codex_provider import _stream_codex_exec
-
-
-class FakeProc:
-    """Replays NDJSON stdout; ``(delay_s, bytes)`` items sleep before arriving."""
-
-    def __init__(self, items, *, stderr: bytes = b"", returncode: int = 0):
-        self._items = list(items)
-        self._idx = 0
-        # A RUNNING process has returncode None; ``_terminate`` only kills in
-        # that state (a finished one raises ProcessLookupError). The exit code
-        # is what ``wait()`` reveals, exactly like a real subprocess.
-        self._exit = returncode
-        self.returncode = None
-        self.killed = False
-        self.stdout = self._Stdout(self)
-        self.stderr = self._Stderr(stderr)
-        self.stdin = self._Stdin()
-
-    class _Stdout:
-        def __init__(self, p):
-            self._p = p
-
-        async def readline(self):
-            p = self._p
-            if p._idx >= len(p._items):
-                return b""
-            item = p._items[p._idx]
-            p._idx += 1
-            if isinstance(item, tuple):
-                delay, data = item
-                if delay:
-                    await asyncio.sleep(delay)
-                return data
-            return item
-
-    class _Stderr:
-        def __init__(self, data):
-            self._data, self._sent = data, False
-
-        async def read(self, _n):
-            if self._sent:
-                return b""
-            self._sent = True
-            return self._data
-
-    class _Stdin:
-        def write(self, _b): ...
-        async def drain(self): ...
-        def close(self): ...
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-
-    async def wait(self):
-        # Like a real process: once stdout is exhausted the child has exited,
-        # and wait() reveals its exit code. Without this the reader's
-        # "closed stdout but did not exit" grace saw None and terminated a
-        # child that had in fact finished.
-        if self.returncode is None:
-            self.returncode = self._exit
-        return self.returncode
-
-
-def _ev(etype: str, **fields) -> bytes:
-    return (json.dumps({"type": etype, **fields}) + "\n").encode()
-
-
-def _tool(etype: str, item_id: str = "call_1", kind: str = "mcp_tool_call") -> bytes:
-    return _ev(etype, item={"id": item_id, "type": kind})
-
 
 _PROFILE = dict(init_timeout_s=1.0, first_progress_s=1.0, idle_timeout_s=0.25,
                 soft_slo_s=60.0, absolute_cap_s=5.0)
 
+_STARTED = (0, {"method": "turn/started", "params": {"threadId": "thr-1"}})
 
-def _run(proc, **overrides):
-    config = ModelConfig(timeout=300, **{**_PROFILE, **overrides})
-    return asyncio.run(
-        _stream_codex_exec(proc, b"prompt", config, start=time.monotonic())
-    )
+
+class SlowTools:
+    """Engine tools that take ``delays[name]`` seconds; ``None`` never returns."""
+
+    def __init__(self, delays=None):
+        from tests.test_codex_app_server import _engine_tools
+
+        self.tools = _engine_tools()
+        self.delays = delays or {}
+        self.calls = []
+        self.cancelled = []
+        self.running = 0
+        self.most_at_once = 0
+
+    async def call(self, name, arguments):
+        self.calls.append(name)
+        self.running += 1
+        self.most_at_once = max(self.most_at_once, self.running)
+        try:
+            delay = self.delays.get(name, 0)
+            if delay is None:
+                await asyncio.Event().wait()
+            elif delay:
+                await asyncio.sleep(delay)
+            return CallToolResult(content=[TextContent(type="text", text=f"{name} ok")])
+        except asyncio.CancelledError:
+            self.cancelled.append(name)
+            raise
+        finally:
+            self.running -= 1
+
+
+def _waits(monkeypatch, *, turn=None, tool=None):
+    from tinyassets.providers import codex_provider
+
+    if turn is not None:
+        monkeypatch.setattr(codex_provider, "_TURN_WAIT_S", turn)
+    if tool is not None:
+        monkeypatch.setattr(codex_provider, "_TOOL_WAIT_S", tool)
+
+
+async def _play(fixture, script, *, tools=None, launch_delay=0.0, exit_code=None, **profile):
+    run, _launch, state, config, _root = fixture
+    if tools is not None:
+        state["tools"] = tools
+    server = ScriptedAppServer(script, launch_delay=launch_delay, exit_code=exit_code)
+    t0 = time.monotonic()
+    try:
+        response, _ = await run(server=server, cfg=config(**{**_PROFILE, **profile}))
+    finally:
+        server.elapsed = time.monotonic() - t0
+    return response, server
+
+
+async def _stop(fixture, script, error, **kwargs):
+    server_box = {}
+
+    async def go():
+        try:
+            return await _play(fixture, script, **kwargs)
+        finally:
+            server_box["server"] = fixture[2]["server"]
+
+    with pytest.raises(error) as info:
+        await go()
+    return info, server_box["server"]
 
 
 # --- a turn waiting on its own tool is not idle -------------------------------
 
 
-def test_a_tool_call_longer_than_the_idle_budget_does_not_kill_the_turn():
+@pytest.mark.asyncio
+async def test_a_tool_call_longer_than_the_idle_budget_does_not_kill_the_turn(
+        served, monkeypatch):  # noqa: F811
     """The case that would have made the new reader WORSE than the 300s cap."""
-    proc = FakeProc([
-        _ev("thread.started"),
-        _tool("item.started"),                 # run_graph begins...
-        (0.7, _tool("item.completed")),        # ...answers after 0.7s > idle 0.25
-        _ev("item.completed", item={"type": "agent_message", "text": "done"}),
-        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
-    ])
-    out, _err = _run(proc)
-    assert b"turn.completed" in out
-    assert proc.killed is False
+    _waits(monkeypatch, turn=0.25)
+    response, server = await _play(served, [
+        _STARTED, (0, ("call", "bash", {"command": "run_graph"})), *finished(),
+    ], tools=SlowTools({"bash": 0.7}))                  # 0.7s > the 0.25s turn wait
+    assert response.text == "done"
+    assert server.tool_results[0]["success"] is True
 
 
-def test_silence_after_the_first_event_is_generation_not_idle():
-    """Inverted 2026-08-29 (Codex round 1, P1). This case used to assert an idle
-    kill; but ``thread.started`` is the model starting to generate, and codex
-    emits nothing until it has something to say. ``turn.started`` cannot be
-    the trigger either - 0.146 delivers it best-effort."""
-    proc = FakeProc([
-        _ev("thread.started"),
-        (0.7, _ev("turn.completed")),          # 0.7s > idle 0.25: generating
-    ])
-    out, _ = _run(proc, init_timeout_s=0.3)   # and > init: only the turn rule saves it
-    assert b"turn.completed" in out
-    assert proc.killed is False
+@pytest.mark.asyncio
+async def test_silence_after_the_first_event_is_generation_not_idle(served):  # noqa: F811
+    """Once the turn is started, silence is the model generating: app-server
+    sends nothing until it has something to say."""
+    steps = finished()
+    response, server = await _play(served, [(0.7, steps[0][1]), *steps[1:]],
+                                   init_timeout_s=0.3)
+    assert response.text == "done"
+    assert server.elapsed >= 0.7, "outlived the launch budget: the turn rule applied"
 
 
-def test_silence_after_a_tool_result_is_the_next_generation_step():
+@pytest.mark.asyncio
+async def test_silence_after_a_tool_result_is_the_next_generation_step(served):  # noqa: F811
     """THE live failure: tool result at 08:47:31, next tool call at 08:48:02,
     killed as idle at 08:48:16. After a tool answers the model reads the result
     and generates the next step - the same silence as before the first call."""
-    proc = FakeProc([
-        _ev("thread.started"),
-        _tool("item.started"),
-        (0.4, _tool("item.completed")),        # tool done
-        (0.7, _ev("turn.completed")),          # model generating the next step
-    ])
-    out, _ = _run(proc, init_timeout_s=0.3)
-    assert b"turn.completed" in out
-    assert proc.killed is False
+    steps = finished()
+    response, server = await _play(served, [
+        _STARTED, (0, ("call", "bash", {"command": "x"})), (0.7, steps[0][1]), *steps[1:],
+    ], tools=SlowTools({"bash": 0.4}), init_timeout_s=0.3)
+    assert response.text == "done"
+    assert server.tool_results == [
+        {"success": True, "contentItems": [{"type": "inputText", "text": "bash ok"}]}]
 
 
-def test_the_launch_edge_is_still_guarded_by_the_init_budget():
-    """Before the first protocol event nothing is generating: a child that
-    never speaks is ended on ``init_s`` (the pre-turn guard Codex asked to see
-    asserted directly, not via the generation rule)."""
-    proc = FakeProc([(5.0, _ev("thread.started"))])
+@pytest.mark.asyncio
+async def test_the_launch_edge_is_still_guarded_by_the_init_budget(served):  # noqa: F811
+    """Before the CLI answers anything nothing is generating: a server that
+    never speaks is ended on ``init_s``."""
     with pytest.raises(ProviderIdleTimeoutError) as info:
-        _run(proc, init_timeout_s=0.3)
-    assert proc.killed is True
+        await _play(served, finished(), launch_delay=5.0, init_timeout_s=0.3)
+    server = served[2]["server"]
+    assert server.killed is True
     assert info.value.attempt_telemetry["phase"] == "launch"
     assert info.value.attempt_telemetry["tool_phase"] is None
 
 
 # --- an open turn's silence is the model generating, not a hang ----------------
-#
-# ``codex exec --json`` emits NO deltas - not for reasoning, not for the assistant
-# message - so between one event and the next there is one whole model
-# round-trip of silence. Live on 2026-08-29 (#2674 deployed) a 31s gap between
-# two engine tool calls was killed at the 30s idle interval; the turn was healthy.
 
 
-def test_model_generation_silence_inside_an_open_turn_is_not_idle():
-    proc = FakeProc([
-        _ev("thread.started"),
-        _ev("turn.started"),
-        _tool("item.started"),
-        _tool("item.completed"),                          # tool answered...
-        (0.7, _tool("item.started", item_id="call_2")),   # ...model thinks 0.7s > idle 0.25
-        _tool("item.completed", item_id="call_2"),
-        _ev("item.completed", item={"type": "agent_message", "text": "done"}),
-        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+@pytest.mark.asyncio
+async def test_model_generation_silence_inside_an_open_turn_is_not_idle(served):  # noqa: F811
+    response, server = await _play(served, [
+        _STARTED,
+        (0, ("call", "bash", {"command": "x"})),          # tool answered...
+        (0.7, ("call", "read", {"path": "y"})),           # ...model thinks 0.7s
+        *finished(),
+    ], tools=SlowTools())
+    assert response.text == "done"
+    assert len(server.tool_results) == 2
+
+
+@pytest.mark.asyncio
+async def test_generation_silence_with_the_best_effort_events_dropped_is_still_not_idle(
+        served):  # noqa: F811
+    """No ``turn/started`` at all: the turn is running once ``turn/start`` was
+    answered, or the generation rule silently reverts to the launch budget."""
+    steps = finished()
+    response, server = await _play(served, [
+        (0, ("call", "bash", {"command": "x"})), (0.7, steps[0][1]), *steps[1:],
+    ], tools=SlowTools(), init_timeout_s=0.3)
+    assert response.text == "done"
+    assert server.requests("turn/start"), "the turn ran without a turn/started"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_exit_after_turn_completed_returns_the_finished_stream(
+        served):  # noqa: F811
+    """``turn/completed`` is the turn's end. A server still holding stdout
+    open afterwards is ended at once and the finished turn is returned."""
+    response, server = await _play(served, [
+        *finished(), (5.0, {"method": "item/completed", "params": {"item": {
+            "type": "agentMessage", "text": "straggler"}}}),
     ])
-    out, _err = _run(proc)
-    assert b"turn.completed" in out
-    assert proc.killed is False
+    assert server.elapsed < 2.0
+    assert response.text == "done"
+    assert server.killed is True                            # ended, not failed
 
 
-def test_generation_silence_with_the_best_effort_events_dropped_is_still_not_idle():
-    """Codex round 1 (P1): 0.146 drops ``turn.started`` / ``item.started`` under
-    backpressure (only ``TurnCompleted`` is guaranteed end to end).
-    A stream with NONE of the best-effort events must still be read as a
-    running turn, or the generation rule silently reverts to the 30s kill."""
-    proc = FakeProc([
-        _ev("thread.started"),
-        _tool("item.completed"),                          # its item.started was dropped
-        (0.7, _ev("item.completed", item={"type": "agent_message", "text": "done"})),
-        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
-    ])
-    out, _ = _run(proc, init_timeout_s=0.3)
-    assert b"turn.completed" in out
-    assert proc.killed is False
+@pytest.mark.asyncio
+async def test_the_tail_grace_outlasts_codex_own_shutdown_bound(served):  # noqa: F811
+    """There is no tail grace left to outlast: the adapter ends the app server
+    itself once the turn completes, never waiting on codex's own shutdown."""
+    response, server = await _play(served, [*finished(), (60.0, EOF)])
+    assert server.elapsed < 2.0 and server.killed and response.text == "done"
 
 
-def test_a_stalled_exit_after_turn_completed_returns_the_finished_stream(monkeypatch):
-    """Codex round 1 (P1): after ``turn.completed`` exec unsubscribes and awaits
-    ``client.shutdown()``, bounded at 45s in 0.146. The old 30s idle here
-    raised and DISCARDED a completed turn. Now the tail is cut and the stream
-    is returned; the caller reads past the exit code (see the helper test)."""
-    from tinyassets.providers import codex_provider
-
-    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
-    lines = [
-        _ev("thread.started"),
-        _ev("item.completed", item={"type": "agent_message", "text": "done"}),
-        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
-    ]
-    proc = FakeProc(lines + [(5.0, b"{\"type\": \"straggler\"}\n")])
-    t0 = time.monotonic()
-    out, _ = _run(proc)
-    assert time.monotonic() - t0 < 2.0
-    assert out == b"".join(lines)
-    assert proc.killed is True                            # ended, not failed
+@pytest.mark.asyncio
+async def test_a_failed_turn_with_a_stalled_exit_is_cut_the_same_way(served):  # noqa: F811
+    """A failed ``turn/completed`` is terminal too: its reason is reported, not
+    an idle timeout mislabelling a turn failure."""
+    info, server = await _stop(served, [
+        _STARTED, *finished(reply="", status="failed", error="boom"), (5.0, EOF),
+    ], ProviderError)
+    assert "boom" in str(info.value)
+    assert not isinstance(info.value, ProviderTimeoutError)
+    assert server.killed is True and server.elapsed < 2.0
 
 
-def test_the_tail_grace_outlasts_codex_own_shutdown_bound():
-    from tinyassets.providers.codex_provider import _TAIL_WAIT_S
-
-    assert _TAIL_WAIT_S > 45.0, "IN_PROCESS_SHUTDOWN_TIMEOUT is 45s in codex 0.146"
-
-
-def test_a_failed_turn_with_a_stalled_exit_is_cut_the_same_way(monkeypatch):
-    """``turn.failed`` is terminal too: nothing is generating, so the tail grace
-    applies and the stream (with the failure in it) comes back for the caller
-    to classify - not an idle timeout mislabelling a turn failure."""
-    from tinyassets.providers import codex_provider
-
-    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
-    proc = FakeProc([
-        _ev("thread.started"),
-        _ev("turn.started"),
-        _ev("turn.failed", error={"message": "boom"}),
-        (5.0, _ev("turn.completed")),
-    ])
-    t0 = time.monotonic()
-    out, _ = _run(proc)
-    assert time.monotonic() - t0 < 2.0
-    assert b"turn.failed" in out and b"turn.completed" not in out
-    assert proc.killed is True
+@pytest.mark.asyncio
+async def test_turn_completed_closes_a_tool_left_open(served):  # noqa: F811
+    """A tool still running when the turn completes is not waited for."""
+    tools = SlowTools({"bash": None})                     # never returns
+    steps = finished()
+    response, server = await _play(served, [
+        _STARTED, (0, ("call_nowait", "bash", {"command": "x"})), (0.1, steps[0][1]), *steps[1:],
+    ], tools=tools)
+    assert server.elapsed < 2.0
+    assert response.text == "done" and tools.cancelled == ["bash"]
 
 
-def test_turn_completed_closes_a_tool_left_open(monkeypatch):
-    """Codex round 1 (P1): a tool whose ``item.completed`` never arrived must
-    not hold the tail on the 900s tool allowance once the turn has completed."""
-    from tinyassets.providers import codex_provider
-
-    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
-    proc = FakeProc([
-        _ev("thread.started"),
-        _tool("item.started"),                            # never completes
-        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
-        (5.0, b""),
-    ])
-    t0 = time.monotonic()
-    out, _ = _run(proc)
-    assert time.monotonic() - t0 < 2.0
-    assert b"turn.completed" in out
-
-
-def test_an_open_turn_is_still_bounded_by_the_cap():
-    proc = FakeProc([
-        _ev("thread.started"),
-        _ev("turn.started"),
-        (6.0, _ev("turn.completed")),                     # cap is 5.0
-    ])
-    with pytest.raises(InteractiveDeadlineError) as info:
-        _run(proc)
+@pytest.mark.asyncio
+async def test_an_open_turn_is_still_bounded_by_the_cap(served):  # noqa: F811
+    info, server = await _stop(served, [_STARTED, (5.0, EOF)], InteractiveDeadlineError,
+                               absolute_cap_s=0.5)
     assert info.value.attempt_telemetry["tool_phase"] == "in_turn"
+    assert server.killed is True
 
 
 # --- the cap is a backstop, and it is classified honestly ---------------------
 
 
-def test_progressing_past_the_absolute_cap_is_an_interactive_deadline():
-    """Still working, out of runway: NOT the generic timeout the router cools on."""
-    proc = FakeProc([(0.1, _ev("item.started", item={"type": "agent_message"}))
-                     for _ in range(20)])
+@pytest.mark.asyncio
+async def test_progressing_past_the_absolute_cap_is_an_interactive_deadline(
+        served, monkeypatch):  # noqa: F811
+    """Still working, out of runway: NOT the generic timeout the router cools on.
+    Progress every 0.1s keeps the 0.25s turn wait from ever firing."""
+    _waits(monkeypatch, turn=0.25)
+    progress = (0.1, {"method": "item/started", "params": {"item": {"type": "agentMessage"}}})
     with pytest.raises(InteractiveDeadlineError) as info:
-        _run(proc, absolute_cap_s=0.45)
+        await _play(served, [_STARTED] + [progress] * 40, absolute_cap_s=0.45)
+    server = served[2]["server"]
     assert info.value.failure_class == "interactive_deadline"
     assert isinstance(info.value, ProviderTimeoutError), (
         "must stay a ProviderTimeoutError subclass for legacy except clauses"
     )
-    assert proc.killed is True
+    assert server.killed is True
 
 
-def test_a_finished_turn_returns_stdout_and_stderr_unchanged():
-    """Downstream parsing (agent_message / usage) must see exactly what codex wrote."""
-    lines = [
-        _ev("thread.started"),
-        b"\n",                                  # blank lines are not events
-        _ev("item.completed", item={"type": "agent_message", "text": "hi"}),
-        _ev("turn.completed", usage={"input_tokens": 3, "output_tokens": 2}),
-    ]
-    proc = FakeProc(lines, stderr=b"warning: something")
-    out, err = _run(proc)
-    assert out == b"".join(lines)
-    assert err == b"warning: something"
-    assert proc.killed is False
-
-
-def test_non_json_output_keeps_the_process_but_not_the_clock(monkeypatch):
-    """Chatter proves the process is alive, not that it is making progress.
-    Observable only with the in-turn allowance scaled down: inside the turn the
-    bound is ``_TURN_WAIT_S``, not the profile's idle interval."""
-    from tinyassets.providers import codex_provider
-
-    monkeypatch.setattr(codex_provider, "_TURN_WAIT_S", 0.25)
-    proc = FakeProc([
-        _ev("thread.started"),
-        (0.15, b"not json\n"),
-        (0.15, b"still not json\n"),           # 0.3s since the last real event
-        (0.15, _ev("turn.completed")),         # never reached: in-turn bound 0.25
+@pytest.mark.asyncio
+async def test_a_finished_turn_returns_stdout_and_stderr_unchanged(served):  # noqa: F811
+    """Downstream sees exactly what codex reported: its reply and its usage.
+    Blank lines are not protocol."""
+    response, _server = await _play(served, [
+        _STARTED, (0, b"\n"), *finished(reply="hi", usage=(3, 2)),
     ])
-    with pytest.raises(ProviderIdleTimeoutError) as info:
-        _run(proc)
+    assert response.text == "hi"
+    assert response.input_tokens == 3
+    assert response.output_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_non_json_output_keeps_the_process_but_not_the_clock(
+        served, monkeypatch):  # noqa: F811
+    """Chatter proves the process is alive, not that it is making progress.
+    Inside the turn the bound is ``_TURN_WAIT_S``."""
+    _waits(monkeypatch, turn=0.25)
+    info, _server = await _stop(served, [
+        _STARTED, (0.15, b"not json\n"), (0.15, b"still not json\n"),
+        (0.15, finished()[0][1]),                         # never reached
+    ], ProviderIdleTimeoutError)
     assert info.value.attempt_telemetry["tool_phase"] == "in_turn"
+    assert info.value.attempt_telemetry["phase"] == "streaming"
 
 
 # --- the served turn gets the generous cap, not the library default -----------
@@ -398,48 +349,38 @@ def test_a_nonsense_override_falls_back_to_no_cap_rather_than_a_guessed_one():
     assert profile.absolute_cap_s == UNBOUNDED_TURN_SECONDS
 
 
-# --- the real vocabulary, recorded from codex-cli 0.146.0 on 2026-08-29 -------
+# --- the real vocabulary, recorded from codex-cli 0.160.0 ---------------------
 
 
-def _real_codex_events():
-    """Exactly the event shapes `codex exec --json` emitted for a prompt that ran
-    `echo hi` then replied "done" (timings 0.46s .. 8.93s, progressive)."""
-    return [
-        _ev("thread.started", thread_id="thr_abc"),
-        _ev("turn.started"),
-        _ev("item.completed",
-            item={"id": "item_0", "type": "agent_message", "text": "Running it."}),
-        _ev("item.started",
-            item={"id": "item_1", "type": "command_execution", "command": "echo hi"}),
-        _ev("item.completed",
-            item={"id": "item_1", "type": "command_execution", "exit_code": 0}),
-        _ev("item.completed", item={"id": "item_2", "type": "agent_message", "text": "done"}),
-        _ev("turn.completed", usage={"input_tokens": 10, "output_tokens": 4}),
-    ]
+@pytest.mark.asyncio
+async def test_the_real_codex_vocabulary_streams_through_and_the_tool_key_matches(
+        served):  # noqa: F811
+    """The server messages a real codex-cli 0.160.0 app-server turn produced
+    (one dynamic ``read`` call, then a reply), replayed in order. A wrong
+    method or field name here would make every served turn idle out or lose
+    its reply (tests/support/codex_app_server_recording.py)."""
+    from tests.support.codex_app_server_recording import recorded_turn
+
+    script, call = recorded_turn()
+    tools = SlowTools({"read": 0.7})                  # beyond the 0.25s idle budget
+    response, server = await _play(served, script, tools=tools)
+    replies = [step["params"]["item"]["text"] for _, step in script
+               if step.get("method") == "item/completed"
+               and step["params"]["item"]["type"] == "agentMessage"]
+    assert tools.calls == [call["tool"]]
+    assert response.text == replies[-1]
+    assert (response.input_tokens, response.output_tokens) == (240, 20)
 
 
-def test_the_real_codex_vocabulary_streams_through_and_the_tool_key_matches():
-    """Guards the one P0 a wrong event name would cause: if the reader did not
-    recognise codex's real events as liveness, `first_progress_s` would kill
-    EVERY served turn. Recorded from the installed CLI, not from memory."""
-    ev = _real_codex_events()
-    # Put the whole tool call beyond the idle budget; it must survive because
-    # item_1's started/completed share an id and the wait is a tool wait.
-    items = ev[:3] + [ev[3], (0.6, ev[4])] + ev[5:]
-    proc = FakeProc(items)
-    out, _ = _run(proc)
-    assert out == b"".join(ev)
-    assert proc.killed is False
-
-
-def test_a_tool_that_never_completes_is_still_bounded_by_the_cap():
-    """The known cost of the tool-in-flight rule: a wedged tool waits for the
-    absolute cap, not the idle budget. Acceptable interim; must stay bounded."""
-    ev = _real_codex_events()
-    proc = FakeProc(ev[:4] + [(5.0, ev[6])])   # item_1 never completes, then silence
-    with pytest.raises(InteractiveDeadlineError):
-        _run(proc, absolute_cap_s=0.5)
-    assert proc.killed is True
+@pytest.mark.asyncio
+async def test_a_tool_that_never_completes_is_still_bounded_by_the_cap(served):  # noqa: F811
+    """A wedged tool waits for the tool allowance or the cap, whichever is
+    first; with the default allowance the cap ends it. Must stay bounded."""
+    info, server = await _stop(served, [_STARTED, (0, ("call", "bash", {"command": "x"}))],
+                               InteractiveDeadlineError, tools=SlowTools({"bash": None}),
+                               absolute_cap_s=0.5)
+    assert server.killed is True
+    assert info.value.attempt_telemetry["tool_phase"] == "in_tool"
 
 
 def test_an_ungranted_turn_keeps_the_library_cap():
@@ -454,214 +395,192 @@ def test_an_ungranted_turn_keeps_the_library_cap():
     assert profile.absolute_cap_s == DEFAULT_ABSOLUTE_CAP_S
 
 
-# --- round-2 findings on the tool rule -----------------------------------------
+# --- the tool rule ------------------------------------------------------------
 
 
-def test_a_wedged_tool_is_bounded_by_the_tool_wait_not_the_cap(monkeypatch):
+@pytest.mark.asyncio
+async def test_a_wedged_tool_is_bounded_by_the_tool_wait_not_the_cap(
+        served, monkeypatch):  # noqa: F811
     """Codex round 2 (P1): "not idle until the absolute cap" turned a silent
-    wedge into an hour-long wait. The tool allowance is now bounded."""
-    from tinyassets.providers import codex_provider
-
-    monkeypatch.setattr(codex_provider, "_TOOL_WAIT_S", 0.3)
-    ev = _real_codex_events()
-    proc = FakeProc(ev[:4] + [(5.0, ev[6])])   # tool opens, then silence
-    with pytest.raises(ProviderIdleTimeoutError) as info:
-        _run(proc, absolute_cap_s=60.0)         # the cap is NOT what fires
+    wedge into an hour-long wait. The tool allowance is bounded."""
+    _waits(monkeypatch, tool=0.3)
+    info, server = await _stop(served, [_STARTED, (0, ("call", "bash", {"command": "x"}))],
+                               ProviderIdleTimeoutError, tools=SlowTools({"bash": None}),
+                               absolute_cap_s=60.0)        # the cap is NOT what fires
     assert info.value.attempt_telemetry["tool_phase"] == "in_tool"
-    assert proc.killed is True
+    assert server.killed is True
+    assert server.elapsed < 5.0
 
 
-def test_a_recoverable_error_event_does_not_clear_an_open_tool():
-    """Codex round 3 (P1): codex 0.146 emits a top-level `error` for a
-    notification whose will_retry is true - the JSONL projection drops the
-    flag - while the turn stays Running and the tool is still coming back.
-    Clearing the tool on it re-armed idle mid-retry and killed a healthy turn."""
-    proc = FakeProc([
-        _ev("thread.started"),
-        _tool("item.started"),
-        _ev("error", message="transient upstream hiccup"),
-        (0.7, _tool("item.completed")),         # retry succeeds after 0.7s
-        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+@pytest.mark.asyncio
+async def test_a_recoverable_error_event_does_not_clear_an_open_tool(
+        served, monkeypatch):  # noqa: F811
+    """app-server reports a retrying upstream error as an ``error``
+    notification with ``willRetry``; the turn and our tool are still running.
+    It must not re-arm the turn wait under the tool."""
+    _waits(monkeypatch, turn=0.25)
+    retrying = {"method": "error", "params": {"error": {"message": "transient upstream hiccup"},
+                                              "willRetry": True}}
+    response, server = await _play(served, [
+        _STARTED, (0, ("call_nowait", "bash", {"command": "x"})), (0.05, retrying),
+        (0.9, finished()[0][1]), *finished()[1:],
+    ], tools=SlowTools({"bash": 0.7}))
+    assert response.text == "done"
+    assert server.tool_results[0]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_failure_event_closes_the_open_tool(served):  # noqa: F811
+    """A failed ``turn/completed`` while our tool runs: the tool is not owed
+    an answer any more, so it is cancelled and the failure is reported."""
+    tools = SlowTools({"bash": None})
+    info, server = await _stop(served, [
+        _STARTED, (0, ("call_nowait", "bash", {"command": "x"})),
+        (0.1, finished(reply="", status="failed", error="boom")[-1][1]), (5.0, EOF),
+    ], ProviderError, tools=tools)
+    assert "boom" in str(info.value)
+    assert server.elapsed < 2.0
+    assert server.killed is True and tools.cancelled == ["bash"]
+
+
+# --- only the protocol's word ends a turn --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_turn_completed_in_the_stream_is_the_protocols_word(served):  # noqa: F811
+    """A reply MENTIONING the event, the method name as plain text, and a
+    response carrying it are none of them completion."""
+    mention = {"method": "item/completed", "params": {"item": {
+        "type": "agentMessage", "text": "see turn/completed"}}}
+    response, server = await _play(served, [
+        _STARTED, (0, mention), (0, b"turn/completed\n"),
+        (0, {"id": 999, "result": {"method": "turn/completed"}}),
+        (0.2, finished()[0][1]), *finished(usage=(4, 1))[1:],
     ])
-    out, _ = _run(proc)                          # idle is 0.25; must survive
-    assert b"turn.completed" in out
-    assert proc.killed is False
+    assert response.text == "done"
+    assert response.input_tokens == 4
+    assert server.elapsed >= 0.2, "nothing before the real turn/completed ended it"
+    assert server.killed is True
 
 
-def test_a_terminal_failure_event_closes_the_open_tool(monkeypatch):
-    """`turn.failed` while a tool is open: the tool is not coming back, so the
-    tail grace applies instead of the tool allowance. (Only turn.failed: see
-    the recoverable `error` test above.)"""
-    from tinyassets.providers import codex_provider
-
-    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
-    proc = FakeProc([
-        _ev("thread.started"),
-        _tool("item.started"),
-        _ev("turn.failed", error={"message": "boom"}),
-        (5.0, _ev("turn.completed")),           # tail (0.3) cuts first
-    ])
-    t0 = time.monotonic()
-    out, _ = _run(proc)
-    assert time.monotonic() - t0 < 2.0
-    assert b"turn.failed" in out
-    assert proc.killed is True
+@pytest.mark.asyncio
+async def test_the_caller_reads_past_a_nonzero_exit_after_turn_completed(
+        served):  # noqa: F811
+    """The protocol's completed turn wins over whatever the process exits with."""
+    response, server = await _play(served, finished(reply="kept"), exit_code=1)
+    assert server.returncode == 1 or server.killed
+    assert response.text == "kept"
+    assert response.output_tokens == 1
 
 
-# --- round 1 on this change: the protocol's word beats the exit code ----------
+# --- real child processes -----------------------------------------------------
+
+_CHILD = r"""
+import json, os, sys, time
+def send(m):
+    sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+def big_reply():
+    item = {"type": "agentMessage", "text": "x" * 70000}
+    send({"method": "item/completed", "params": {"item": item}})
+    usage = {"last": {"inputTokens": 1, "outputTokens": 1}}
+    send({"method": "thread/tokenUsage/updated", "params": {"tokenUsage": usage}})
+    send({"method": "turn/completed", "params": {"turn": {"id": "t1", "status": "completed"}}})
+for line in sys.stdin:
+    m = json.loads(line); method, ident = m.get("method"), m.get("id")
+    if method == "initialize":
+        send({"id": ident, "result": {}})
+    elif method == "thread/start":
+        send({"id": ident, "result": {"thread": {"id": "thr-1", "model": "m"}}})
+    elif method == "turn/start":
+        send({"id": ident, "result": {"turn": {"id": "t1"}}})
+        send({"method": "turn/started", "params": {}})
+        MODE
+"""
+
+_BIG_REPLY = "big_reply()"
+
+_CLOSE_AND_LINGER = "os.close(1); time.sleep(30)"
 
 
-def test_turn_completed_in_the_stream_is_the_protocols_word():
-    from tinyassets.providers.codex_provider import _codex_turn_completed
-
-    assert _codex_turn_completed(b"".join(_real_codex_events())) is True
-    # A failed turn, plain text, or a message merely MENTIONING the event
-    # name are not completion.
-    assert _codex_turn_completed(_ev("thread.started") + _ev("turn.failed")) is False
-    assert _codex_turn_completed(b"turn.completed\n") is False
-    assert _codex_turn_completed(
-        _ev("item.completed", item={"type": "agent_message", "text": "see turn.completed"})
-    ) is False
-
-
-def test_the_caller_reads_past_a_nonzero_exit_after_turn_completed():
-    """Structural pin (the sandboxed --json path needs bwrap to drive live):
-    the exit-code raise is guarded by the protocol check, and the guard sits
-    before both exit-code classifications."""
-    import inspect
-
-    from tinyassets.providers import codex_provider
-
-    src = inspect.getsource(codex_provider.CodexProvider.complete)
-    guard = src.index("_codex_turn_completed(stdout)")
-    assert guard < src.index("codex exec returned exit code 1 quickly")
-    assert guard < src.index('f"codex exec exit {proc.returncode}{disk_stop_note(proc)}: "')
-    assert "keeping the finished turn" in src
-
-
-# --- round-2 findings that need a REAL subprocess ------------------------------
-
-
-def _child(code: str):
-    """A real asyncio subprocess running `python -c code`, with the reader limit."""
-    import sys
-
+async def _real_child(mode: str):
     from tinyassets.providers.codex_provider import _STDOUT_READER_LIMIT
 
-    return asyncio.create_subprocess_exec(
-        sys.executable, "-c", code,
+    return await asyncio.create_subprocess_exec(
+        sys.executable, "-c", _CHILD.replace("MODE", mode),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, limit=_STDOUT_READER_LIMIT,
     )
 
 
-def test_a_single_event_longer_than_64k_streams_intact():
-    """Codex round 2 (P1): asyncio's default 64 KiB line limit raised on one
-    70,000-char event. A GET /contents result is the base64 of a whole file."""
-    big = "x" * 70_000
-    # Built INSIDE the child: a 70 KB `python -c` argv is over the Windows
-    # command-line limit (WinError 206), which is a test artefact, not the bug.
-    code = (
-        "import json,sys;"
-        "sys.stdout.write(json.dumps({'type':'item.completed','item':{'id':'i',"
-        "'type':'agent_message','text':'x'*70000}})+'\\n');"
-        "sys.stdout.write(json.dumps({'type':'turn.completed','usage':{}})+'\\n');"
-        "sys.stdout.flush()"
-    )
-
-    async def go():
-        proc = await _child(code)
-        return await _stream_codex_exec(
-            proc, b"", ModelConfig(timeout=30, **_PROFILE), start=time.monotonic(),
-        )
-    out, _ = asyncio.run(go())
-    assert big.encode() in out
-    assert b"turn.completed" in out
+@pytest.mark.asyncio
+async def test_a_single_event_longer_than_64k_streams_intact(served):  # noqa: F811
+    """asyncio's default 64 KiB line limit raised on one 70,000-char event. A
+    GET /contents result is the base64 of a whole file."""
+    run, _launch, _state, config, _root = served
+    child = await _real_child(_BIG_REPLY)
+    response, _ = await run(server=child, cfg=config(**_PROFILE))
+    assert len(response.text) == 70_000
+    assert set(response.text) == {"x"}
 
 
-def test_stdout_eof_with_a_live_child_ends_the_child_and_leaks_no_task():
-    """Codex round 2 (P1): a child that closes fd 1 and keeps running used to
-    leave returncode=None, a live orphan and a pending stderr task."""
-    code = (
-        "import sys,os,time,json;"
-        "sys.stdout.write(json.dumps({'type':'thread.started'})+'\\n');sys.stdout.flush();"
-        "os.close(1);time.sleep(30)"
-    )
-
-    async def go():
-        proc = await _child(code)
-        t0 = time.monotonic()
-        out, _ = await _stream_codex_exec(
-            proc, b"", ModelConfig(timeout=30, **_PROFILE), start=t0,
-        )
-        pending = [t for t in asyncio.all_tasks()
-                   if t is not asyncio.current_task() and not t.done()]
-        return out, proc.returncode, time.monotonic() - t0, pending
-    out, rc, elapsed, pending = asyncio.run(go())
-    assert b"thread.started" in out
-    assert rc is not None, "child left running behind a returned reader"
-    assert elapsed < 15, f"took {elapsed:.1f}s; EOF grace is bounded"
+@pytest.mark.asyncio
+async def test_stdout_eof_with_a_live_child_ends_the_child_and_leaks_no_task(
+        served):  # noqa: F811
+    """A child that closes fd 1 and keeps running fails the turn at once, is
+    ended, and leaves no pending task behind."""
+    run, _launch, _state, config, _root = served
+    child = await _real_child(_CLOSE_AND_LINGER)
+    t0 = time.monotonic()
+    with pytest.raises(ProviderError, match="exited before the turn completed"):
+        await run(server=child, cfg=config(**_PROFILE))
+    elapsed = time.monotonic() - t0
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(child.wait(), timeout=5)
+    pending = [t for t in asyncio.all_tasks()
+               if t is not asyncio.current_task() and not t.done()]
+    assert child.returncode is not None, "child left running behind a returned turn"
+    assert elapsed < 15, f"took {elapsed:.1f}s"
     assert pending == [], f"leaked tasks: {pending}"
 
 
-# --- the P0: only the JSON path streams ----------------------------------------
+# --- only the served path is the app server -------------------------------------
 
 
 def test_only_the_json_path_streams_and_the_legacy_path_is_verbatim():
-    """Codex round 2 (P0): `--json` is added only when sandbox_workspace is set,
-    so a plain-text call has no events to reset a watchdog on; streaming it
-    killed every long non-served call on the 10s init budget. Structural pin:
-    the stream reader sits under the machine_accounting branch and the legacy
-    communicate()+wait_for(config.timeout) survives beside it."""
+    """Only a served (sandboxed) turn is the app server with its watchdog; a
+    plain-text call has no protocol events, so it keeps ``communicate()`` under
+    the legacy total ``config.timeout`` (streaming it once killed every long
+    non-served call on the 10s init budget)."""
     import inspect
 
     from tinyassets.providers import codex_provider
 
-    src = inspect.getsource(codex_provider)
-    call_site = src.split("if machine_accounting:\n", 1)[1][:1600]
-    assert "await _stream_codex_exec(" in call_site
-    assert "proc.communicate(input=full_input.encode" in call_site
-    assert "timeout=config.timeout," in call_site
+    served_src = inspect.getsource(codex_provider.CodexProvider._complete_served)
+    legacy_src = inspect.getsource(codex_provider.CodexProvider.complete)
+    assert "app.AppServerTurn(" in served_src and "communicate(" not in served_src
+    assert "proc.communicate(input=full_input.encode" in legacy_src
+    assert "timeout=config.timeout," in legacy_src
 
 
-# --- round 3: a caller's cancellation must survive the cleanup -----------------
+# --- a caller's cancellation must survive the cleanup -----------------------------
 
 
-def test_a_callers_cancellation_propagates_through_the_reap():
-    """Codex round 3 (P1): `suppress(BaseException)` around the bounded reap
-    swallowed a CancelledError delivered during the gather, so the caller got
-    `(b'', b'')` back instead of its cancellation. Reproduced with an stderr
-    drain that resists its first cancel, so the reap is still in progress when
-    the caller cancels."""
-
-    class _ResistantStderr:
-        def __init__(self):
-            self.resisted = False
-
-        async def read(self, _n):
-            try:
-                await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                if not self.resisted:
-                    self.resisted = True
-                    await asyncio.sleep(3600)   # ignore the first cancel
-                raise
-            return b""
-
-    async def go():
-        proc = FakeProc([_ev("thread.started"), _ev("turn.completed")])
-        proc.stderr = _ResistantStderr()
-        task = asyncio.create_task(_stream_codex_exec(
-            proc, b"", ModelConfig(timeout=30, **_PROFILE), start=time.monotonic(),
-        ))
-        # EOF is immediate; the 2s stderr grace then the reap follow. Cancel
-        # while the reap's bounded gather is in flight.
-        await asyncio.sleep(2.6)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            return "cancelled"
-        return "returned"
-
-    assert asyncio.run(go()) == "cancelled"
+@pytest.mark.asyncio
+async def test_a_callers_cancellation_propagates_through_the_reap(served):  # noqa: F811
+    """Cancelled mid-handshake (the server has not answered ``initialize``):
+    the cancellation reaches the caller, the process is ended, and the
+    outstanding request is not left pending (cross-family review, 2026-10-06)."""
+    run, _launch, state, config, _root = served
+    server = ScriptedAppServer(finished(), launch_delay=3600)
+    task = asyncio.create_task(run(server=server, cfg=config(**_PROFILE)))
+    for _ in range(200):
+        if server.requests("initialize"):
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    pending = [t for t in asyncio.all_tasks()
+               if t is not asyncio.current_task() and not t.done()]
+    assert server.killed is True
+    assert not any("request" in repr(t.get_coro()) for t in pending), pending

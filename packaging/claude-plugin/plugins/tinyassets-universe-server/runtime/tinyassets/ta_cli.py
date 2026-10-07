@@ -108,12 +108,15 @@ def _unique_keys(pairs):
     return result
 
 
-def main(argv=None):
+def main(argv=None, *, dispatch=None, load_extensions=True):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         raise ValueError("usage: ta search <words> | describe <name> | <name> --json '<args>'")
-    catalog = remote({"op": "catalog"})
-    local = extensions(catalog["extension_roots"])
+    invoke = dispatch or remote
+    catalog = invoke({"op": "catalog"})
+    if "error" in catalog:
+        return catalog
+    local = extensions(catalog["extension_roots"]) if load_extensions else {}
     capabilities = {item["name"]: item for item in catalog["capabilities"]}
     capabilities.update({item["name"]: item
                          for item in catalog.get("extension_capabilities", [])})
@@ -130,6 +133,8 @@ def main(argv=None):
     if argv[0] == "describe" and len(argv) == 2:
         item = capabilities[argv[1]]
         return {key: value for key, value in item.items() if key not in ("executable", "tool")}
+    if argv[0] == "call":
+        argv = argv[1:]
     if len(argv) != 3 or argv[1] != "--json":
         raise ValueError("a call requires <name> --json '<args>'")
     arguments = json.loads(argv[2])
@@ -144,7 +149,8 @@ def main(argv=None):
         results = []
         for key, item in sorted(capabilities.items()):
             if item.get("kind") == "hooks" and item.get("event") == arguments["event"]:
-                value = main([key, "--json", json.dumps(arguments)])
+                value = main([key, "--json", json.dumps(arguments)], dispatch=dispatch,
+                             load_extensions=load_extensions)
                 results.append({"hook": key, "result": value})
                 if isinstance(value, dict) and (value.get("error") or value.get("error_kind")):
                     return {"error": "extension_hook_failed", "results": results}
@@ -158,9 +164,14 @@ def main(argv=None):
         return json.loads(result.stdout)
     if name not in capabilities:
         raise ValueError(f"unknown capability: {name}")
-    result = remote({"op": "call", "name": name, "arguments": arguments})["result"]
+    response = invoke({"op": "call", "name": name, "arguments": arguments})
+    result = response.get("result", response)
     if (name.startswith("extension:") and isinstance(result, dict)
             and "extension_execution" in result):
+        # An extension's executable runs only inside the jail, never in the
+        # in-process host dispatch (which reads no local manifests either).
+        if not load_extensions:
+            return {"error": "extension execution requires the bash tool jail"}
         launch = result["extension_execution"]
         completed = subprocess.run(
             [launch["executable"], launch["entry"], json.dumps(launch["arguments"])],

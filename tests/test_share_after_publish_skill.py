@@ -28,7 +28,9 @@ def test_share_skill_is_seeded_indexed_and_never_overwrites_edits(tmp_path, monk
     seed_okf_bundle(home)
     assert (home / SHARE_SKILL_PATH).read_text(encoding="utf-8") == share_skill()
     assert "share-after-publish" in dict(universe_tools.skill_index(home))
-    assert SHARE_SKILL_PATH in universe_tools.harness_prompt(home)
+    # The index names the skill; the prompt states where a named skill lives.
+    prompt = universe_tools.harness_prompt(home)
+    assert "`share-after-publish`" in prompt and "skills/<name>/SKILL.md" in prompt
     write_universe_file(home, SHARE_SKILL_PATH, b"My own sharing recipe")
     seed_okf_bundle(home)
     assert (home / SHARE_SKILL_PATH).read_text(encoding="utf-8") == "My own sharing recipe"
@@ -44,7 +46,7 @@ def test_existing_owner_can_copy_or_delete_share_skill(tmp_path):
     (tmp_path / SHARE_SKILL_PATH).unlink()
     engine_mcp_server._handbook_read("write_graph.share-after-publish")
     assert universe_tools.skill_index(tmp_path) == []
-    assert SHARE_SKILL_PATH not in universe_tools.harness_prompt(tmp_path)
+    assert "`share-after-publish`" not in universe_tools.harness_prompt(tmp_path)
 
 
 @pytest.mark.usefixtures("cloud_runtime")

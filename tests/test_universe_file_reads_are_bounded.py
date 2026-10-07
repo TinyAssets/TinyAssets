@@ -64,9 +64,6 @@ ALLOWED = {
         "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
     ("tinyassets/universe_tools.py", "_try_lock_one"):
         "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
-    ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
-        "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
-        "reading it goes through universe_files",
     ("tinyassets/wiki/okf_export.py", "_conformance_report"):
         "reads the bundle this export just wrote into target_dir, which is refused "
         "when inside the wiki root; not an agent-written file",

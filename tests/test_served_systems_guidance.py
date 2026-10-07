@@ -25,7 +25,7 @@ from tinyassets.engine_mcp_server import (
     _handbook_read,
     served_tool_guidance,
 )
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
 CHAPTER = "systems"
 
@@ -51,7 +51,10 @@ def test_the_resident_index_maps_the_request_onto_the_chapter() -> None:
 def test_every_founder_turn_says_where_long_running_work_belongs(tmp_path) -> None:
     """The folder prompt told the agent what NOT to use bash for and nothing
     else; the service it then wrote under /u followed from that gap."""
-    prompt = _flat(universe_tools.harness_prompt(tmp_path))
+    from tinyassets.starter_skills import starter_agent_files
+
+    prompt = _flat(starter_agent_files()["skills/starter-workspace/SKILL.md"])
+    assert "ta search" in universe_tools.harness_prompt(tmp_path)
     assert "workflows and automations in this command center" in prompt
     assert "never a service hosted elsewhere" in prompt
     assert f"write_graph.{CHAPTER}" in prompt
@@ -100,7 +103,7 @@ def test_the_chapter_promises_only_what_the_platform_accepts() -> None:
     grant = re.search(r'``(\["agent"[^`]*\])``', text)
     assert grant, "the chapter shows a concrete narrowed grant"
     granted = set(json.loads(grant.group(1))) - {"agent"}
-    assert granted and granted <= set(SERVED_ENGINE_MCP_TOOLS), granted
+    assert granted and granted <= set(BACKEND_ENGINE_CAPABILITIES), granted
 
     # Every chapter it points at exists.
     for pointed in re.findall(r"chapter ``([a-z_]+)``", text):

@@ -43,7 +43,7 @@ from tinyassets.request_budget import (
     pooled_budget,
     request_budget_scope,
 )
-from tinyassets.served_tools import granted_tools
+from tinyassets.served_tools import granted_tools, model_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
@@ -160,6 +160,13 @@ class AgentTurnCoordinator:
         owner = self.adapter.check(self.context, self.config)
         if self.owner is not None and owner != self.owner:
             raise ProviderAuthorityHeldError("interactive agent owner changed")
+        if self.owner is None:
+            # The center's recorded owner, not this turn's principal: a co-admin's
+            # turn on a shared center, or any turn on an unattributed one, is
+            # admitted by the check above and must not be refused here.
+            from tinyassets.starter_release import prepare_center_starter
+
+            prepare_center_starter(self.context.universe_dir)
         return owner
 
     def _has_candidate_order(self):
@@ -394,7 +401,8 @@ class AgentTurnCoordinator:
         actor_id, graph_id = self.adapter.engine_identity(self.context, self.config)
         return open_engine_tools(
             actor_id=actor_id, graph_id=graph_id,
-            enabled_tools=granted_tools(self.config), timeout=timeout,
+            enabled_tools=model_tools(self.config),
+            capability_grant=granted_tools(self.config), timeout=timeout,
             **self.steering(),
         )
 
@@ -553,6 +561,10 @@ class AgentTurnCoordinator:
                     if self.interrupt is not None:
                         self.interrupt.check()
                     budget = self._daily_budget()
+                    # One definition: every executor gets the same instructions,
+                    # the budget line included (tests/test_one_agent_definition.py).
+                    instructions = self.system + (
+                        "\n\n" + budget.prompt_line() if budget is not None else "")
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
@@ -577,12 +589,10 @@ class AgentTurnCoordinator:
                                 tool_choice="none" if self._text_only else "auto",
                             ),
                         )
-                        prompt, system, observer = self.prompt, self.system, self._begin
-                        if budget is not None:
-                            system += "\n\n" + budget.prompt_line()
+                        prompt, system, observer = self.prompt, instructions, self._begin
                     else:
                         self.native_input = render_native_input(
-                            self.prompt, self.system, self._history(),
+                            self.prompt, instructions, self._history(),
                         )
                         prompt, system = self.native_input
                         config = replace(

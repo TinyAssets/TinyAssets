@@ -234,17 +234,16 @@ that exact action (D2/D3), so the next run's identical action proceeds under
 **Pause and stop** take effect at the activity run's next tool boundary.
 `holds(generation)` fails, and the run ends. Stop keeps `result_summary`.
 
-Implementation status (2026-10-03): the HTTP workflow coordinator enforces
-the captured activity/run/generation at its tool and inference boundaries,
-including an owner-request yield followed by another tool in the same model
-reply. Native agents' internal tool loops still lack this boundary, so an
-activity run REFUSES a native executor -- `WorkAgentAdapter.infer` raises
-`ProviderAuthorityHeldError` for any `native_agent` round of an activity run,
-first selection or mid-turn switch, before any launch. That is fail-closed, not
-completion of the cross-provider requirement above: lifting the refusal needs
-the native pre-tool boundary that
-`docs/concerns/2026-10-03-native-activity-yield-needs-a-tool-boundary.md`
-still tracks.
+Implementation status (2026-10-06): the boundary is the engine route, which
+every executor's model-visible tools cross -- HTTP agent rounds and Codex
+(app-server ``dynamicTools``) through ``engine_tool_client``, Claude through its
+one strict MCP server. ``ActivityFence`` (``tinyassets/activity_fence.py``)
+refuses every tool call made under an ``activity:<id>`` session once that
+activity leaves ``in_progress`` (yield, pause, stop), before any handler runs.
+The HTTP coordinator additionally checks the captured activity/run/generation
+at its own tool and inference boundaries. Native executors are no longer
+refused for activities; ``tests/test_one_agent_definition.py`` holds every
+provider kind to the same capability set.
 
 ### 5. Effects: a platform intent recorded before the wire
 

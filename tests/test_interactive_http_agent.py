@@ -24,11 +24,12 @@ served = authority_tests.served
 
 @pytest.fixture
 def agent(served, monkeypatch):
-    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
 
     base = served.rig.base
     uid = served.context.universe_dir.name
     set_founder_home(base, founder_sub="owner", universe_id=uid, platform_generated=True)
+    grant_universe_ownership(base, universe_id=uid, owner_id="owner")
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     from tests.engine_authority_helpers import seed_engine_authority
     seed_engine_authority(base, actor="owner", graph=uid)
@@ -68,7 +69,8 @@ def agent(served, monkeypatch):
         capacity_failures={},
         failure_bodies={},
         on_capacity=None,
-        tool_call=("read_graph", ' {"target": "status"} '),
+        tool_call=("bash", json.dumps({
+            "command": "ta call read_graph --json '{\"target\":\"status\"}'"})),
         config=ModelConfig(
             engine_mcp_enabled=True,
             engine_mcp_actor_id="owner",

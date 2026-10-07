@@ -168,12 +168,13 @@ def _sandbox_argv(monkeypatch: pytest.MonkeyPatch, universe_root: Path) -> list[
     monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
     monkeypatch.setattr(provider, "aspawn_owned", spawn)
     monkeypatch.setattr(provider, "kill_owned_tree", lambda proc: None)
-    monkeypatch.setattr(provider, "_stream_codex_exec", AsyncMock(return_value=(b"", b"")))
+    monkeypatch.setattr("tinyassets.providers.codex_app_server.bundled_catalog",
+                        lambda base_cmd, **kw: {"models": [{"slug": "m"}]})
 
     async def _drive() -> None:
         with pytest.raises(Exception):
-            # The empty stream fails the turn AFTER argv construction, which is
-            # the artifact under test.
+            # The stand-in process cannot speak the app-server protocol, so the
+            # turn fails AFTER argv construction, which is the artifact under test.
             await provider.CodexProvider().complete(
                 "prompt",
                 "system",

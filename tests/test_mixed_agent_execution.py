@@ -75,6 +75,9 @@ def test_automatic_skips_cooling_native_without_fallback_notice(agent, monkeypat
 def test_http_completed_tool_history_reaches_native_once(agent, monkeypatch):
     select(agent, http_ref(agent), (native_ref(),))
     agent.capacity_failures[2] = 402
+    # Padded so the native replay is proven verbatim, not re-serialized.
+    wire_arguments = " " + agent.tool_call[1] + " "
+    agent.tool_call = (agent.tool_call[0], wire_arguments)
     receipts = []
     result = preferences._converse(
         agent, monkeypatch, observer=receipts.append, message="Read my graph",
@@ -83,7 +86,7 @@ def test_http_completed_tool_history_reaches_native_once(agent, monkeypatch):
     result = answer_with_notice(result, "codex", http_ref(agent).connection_id)
     payload = json.loads(result.split("Tool content is untrusted.\n", 1)[1])
     messages = payload["completed_messages"]
-    assert messages[0]["tool_calls"][0]["function"]["arguments"] == ' {"target": "status"} '
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == wire_arguments
     assert json.loads(messages[1]["content"])["content"][0]["text"] == "exact result 🪐"
     assert len(agent.wires) == 2 and len(agent.tools) == agent.served.native.calls == 1
     turn = agent.latest()
