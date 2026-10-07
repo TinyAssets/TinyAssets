@@ -431,11 +431,18 @@ def test_a_pending_tree_outside_the_journal_binds_only_its_checked_owner(volume)
     assert report["principals"]["u-carol"] == "carol" and report["bindings"]["u-carol"] == carol
     assert admissions(volume) == rows  # a pending deletion is never newly admitted
     assert label(volume / "u-carol") == contract.canonical_label(carol)
-    # Intent-content match alone (1001:<reservation>, ACL dropped) also binds.
-    relabel(volume / "u-carol", 1001, carol)
+    # Intent-content match alone (1001:<reservation>, ACL dropped, so the
+    # label check fails) also binds a fresh pending orphan outside E.
+    dan = publish(volume, "dan", "u-dan")
+    relabel(volume / "u-dan", 1001, dan)
+    with pytest.raises(MigrationRefused, match="unexplained center tree: u-dan"):
+        run(volume)  # no intent: not adoptable either
+    intent(volume, "u-dan", "dan", dan)
+    assert "u-dan" not in journal(volume)["principals"]  # outside E
     report = restart(volume)
-    assert report["bindings"]["u-carol"] == carol
-    assert label(volume / "u-carol") == contract.canonical_label(carol)
+    assert report["bindings"]["u-dan"] == dan
+    assert admissions(volume) == rows
+    assert label(volume / "u-dan") == contract.canonical_label(dan)
 
 
 def test_a_restored_missing_tree_is_bound_only_under_an_acceptable_label(volume):

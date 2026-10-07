@@ -35,7 +35,8 @@ Evidence:
   - a tree labelled for bob but attributed to alice, with an intent naming
     either one, refused;
   - a correctly labelled pending orphan, bound with no new row;
-  - intent-only match on an ACL-less `1001:<reservation>` root, bound and
+  - intent-only match on a fresh orphan outside E with an ACL-less
+    `1001:<reservation>` root (no intent there means refusal), bound and
     relabelled;
   - a restored tree labelled for bob (three variants), refused with no
     mutation;
@@ -52,6 +53,9 @@ Evidence:
   - `role_center_admission_probe.py`: PASS. Every forged, retired, conflict
     and foreign refusal holds, daemon caps are zero, and the log is read only
     through the retired broker.
+- Mutation check: four mutations (resumable always true, always false,
+  root-ids check dropped, restorable always true). The new tests kill each
+  one.
 - Ruff and `git diff --check` are clean.
 
 Still owed: the cross-family round. Codex is out of budget until 2026-10-11,
