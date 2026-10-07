@@ -1,6 +1,7 @@
 """Real writer/router/adapter/journal/client composition, synthetic remote wires."""
 
 import asyncio
+import base64
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -102,6 +103,14 @@ def agent(served, monkeypatch):
             if state.fail_tool:
                 raise RuntimeError("synthetic post-dispatch disconnect")
             return CallToolResult(content=[TextContent(type="text", text="exact result 🪐")])
+
+        async def read_resource(self, uri):
+            # The private ta bridge: this owner has no installed extensions.
+            assert uri.startswith("ta-bridge://request/")
+            payload = uri.removeprefix("ta-bridge://request/").encode()
+            assert json.loads(base64.urlsafe_b64decode(payload)) == {"deliver": "extensions"}
+            empty = {"extensions": [], "undelivered": []}
+            return [SimpleNamespace(text=json.dumps(empty))]
 
     class Proxy:
         def close(self):

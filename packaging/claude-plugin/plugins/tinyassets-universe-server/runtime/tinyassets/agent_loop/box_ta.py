@@ -176,10 +176,10 @@ class TurnBridge:
                 raise EngineToolError("remote_ta_binding_refused")
         try:
             extensions, mounts = verified_bundle(await self.deliver())
-        except EngineToolError:
-            raise
         except Exception:
-            # Nothing has started: fail closed, never run against absent bytes.
+            # A delivery is a read and nothing has started, so even a lost reply
+            # (call_ta's "unknown") is not_sent: fail closed, never run against
+            # absent bytes, and never hold the turn for an effect that did not exist.
             raise EngineToolError("remote_extension_delivery_failed") from None
         with self._lock:
             self._mounts[execution] = mounts

@@ -232,7 +232,7 @@ def test_cross_owner_extension_never_reaches_remote_box(world, tmp_path, monkeyp
     assert nested == {"error": "invalid ta request"}
 
 
-@pytest.mark.parametrize("fault", ["digest", "transport"])
+@pytest.mark.parametrize("fault", ["digest", "transport", "lost_reply"])
 def test_failed_delivery_fails_closed_before_command_runs(box, tmp_path, fault):  # noqa: F811
     from tests.test_one_extension_unit import files
     from tinyassets.extension_manifest import build_revision
@@ -245,6 +245,9 @@ def test_failed_delivery_fails_closed_before_command_runs(box, tmp_path, fault):
     async def deliver():
         if fault == "transport":
             raise ConnectionError("engine unreachable")
+        if fault == "lost_reply":
+            # What call_ta really raises: a read with no effect is still not_sent.
+            raise EngineToolError("remote_ta_outcome_unknown", outcome="unknown")
         tampered = revision.blob[:-1] + bytes([revision.blob[-1] ^ 1])
         return {"extensions": [{"name": "sample", "revision": revision.digest, "generation": 1,
                                 "blob": base64.b64encode(tampered).decode()}],
