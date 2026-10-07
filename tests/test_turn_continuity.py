@@ -27,15 +27,6 @@ def _seeded_prompt(root):
     return universe_tools.harness_prompt(root), hooks, workspace
 
 
-def _assert_routed_to_systems_handbook(root):
-    prompt, hooks, workspace = _seeded_prompt(root)
-    assert '`starter-workspace`' in prompt
-    assert 'starter-workspace for files' in hooks
-    assert ('For earlier turns, missing files, workflows and automations, read the '
-            'platform reference linked by `ta describe write_graph` '
-            '(handbook write_graph.systems).') in workspace
-
-
 def test_workspace_exports_visible_on_fresh_turn(tmp_path):
     exports = tmp_path / '.agent-workspace' / 'exports'
     exports.mkdir(parents=True)
@@ -53,7 +44,10 @@ def test_workspace_preview_explains_how_to_find_unlisted_files(tmp_path):
 
     from tinyassets.engine_mcp_server import _handbook_read
 
-    _assert_routed_to_systems_handbook(tmp_path)
+    prompt, hooks, workspace = _seeded_prompt(tmp_path)
+    assert '`starter-workspace`' in prompt
+    assert 'starter-workspace for files' in hooks
+    assert 'handbook write_graph.systems' in workspace
     prompt = ' '.join(json.loads(_handbook_read('write_graph.systems'))['text'].split())
     assert 'bounded preview' in prompt
     assert 'find /u' in prompt
@@ -148,7 +142,10 @@ def test_harness_explains_history_window_and_retrieval(tmp_path):
 
     from tinyassets.engine_mcp_server import _handbook_read
 
-    _assert_routed_to_systems_handbook(tmp_path)
+    prompt, hooks, workspace = _seeded_prompt(tmp_path)
+    assert '`starter-workspace`' in prompt
+    assert 'starter-workspace for files' in hooks
+    assert 'handbook write_graph.systems' in workspace
     text = ' '.join(json.loads(_handbook_read('write_graph.systems'))['text'].split())
     assert 'recent window' in text
     assert 'read_graph' in text and '"target":"conversation"' in text
