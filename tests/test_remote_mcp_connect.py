@@ -255,3 +255,20 @@ def test_keyless_ask_carries_no_key_box_and_no_wider_reach(home):
                 "kind": "MCP", "title": "Connect", "body": "", "action": action,
                 "fields": fields}))
             assert refused.get("error"), (action, fields, refused)
+
+
+def test_connection_listing_survives_a_corrupt_binding_row(tmp_path):
+    from tinyassets import command_center_packages as packages
+    from tinyassets.extension_state import ExtensionStore, remote_mcp_by_connection
+
+    store = ExtensionStore(tmp_path, owner=OWNER, universe=UID, agent="main")
+    installed = store.install({"extension.json": json.dumps(MANIFEST).encode()})
+    store.transition("deepwiki", installed["revision"], expected_generation=0, active=True,
+                     bindings={"server": {"connection_id": "conn-1", "grant_id": "g",
+                                          "incarnation": "i"}})
+    assert [row["url"] for row in remote_mcp_by_connection(
+        tmp_path, owner=OWNER, universe=UID)["conn-1"]] == [URL]
+    assert remote_mcp_by_connection(tmp_path, owner="someone-else", universe=UID) == {}
+    with packages._db(tmp_path) as conn:
+        conn.execute("UPDATE extension_bindings SET bindings_json='{\"server\": 7}'")
+    assert remote_mcp_by_connection(tmp_path, owner=OWNER, universe=UID) == {}

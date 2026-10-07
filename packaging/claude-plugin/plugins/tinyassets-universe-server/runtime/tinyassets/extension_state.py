@@ -173,14 +173,15 @@ def remote_mcp_by_connection(base, *, owner, universe):
         store = ExtensionStore(base, owner=owner, universe=universe, agent=row["agent_id"])
         try:
             doc, _ = store.load(row["name"], row["revision"]).content()
-        except (ValueError, LookupError, OSError):
+            bindings = json.loads(row["bindings_json"])
+            pins = {slot: pin["connection_id"] for slot, pin in bindings.items()}
+        except (ValueError, LookupError, OSError, TypeError, AttributeError):
             continue  # Unreadable revisions are reported by the agent's own catalog.
-        bindings = json.loads(row["bindings_json"])
         for server in doc.get("mcp_servers", []):
-            pin = bindings.get(server.get("slot"))
-            if server["transport"] != "remote" or not pin:
+            connection_id = pins.get(server.get("slot"))
+            if server["transport"] != "remote" or not connection_id:
                 continue
-            found.setdefault(pin["connection_id"], []).append({
+            found.setdefault(connection_id, []).append({
                 "agent": row["agent_id"], "extension": row["name"], "server": server["name"],
                 "description": server["description"], "url": server["url"],
                 "capability": (f"extension:{row['name']}:{row['revision']}:"
