@@ -140,7 +140,12 @@ def cloud_connections(
         ledger = _ledger(actor)
         rows = []
         from tinyassets.api.connection_uses import connection_uses_view
+        from tinyassets.extension_state import remote_mcp_by_connection
 
+        # Remote MCP servers ride a connection through an active extension, so
+        # the connection that carries one says so; otherwise a server connected
+        # in one turn is invisible where the owner and agent look in the next.
+        mcp = remote_mcp_by_connection(Path(_base_path()), owner=actor, universe=uid)
         for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid):
             resource = ledger.get_connection(grant.connection_id)
             if resource is not None:
@@ -148,7 +153,8 @@ def cloud_connections(
                 # constant headers: the same connector reads the same way
                 # whether it reaches a platform or a model.
                 rows.append({**_project(resource, grant),
-                             **connection_uses_view(ledger, resource.connection_id)})
+                             **connection_uses_view(ledger, resource.connection_id),
+                             "mcp_servers": mcp.get(resource.connection_id, [])})
         return {
             "universe_id": uid,
             "connections": rows,
