@@ -143,6 +143,12 @@ def test_source_channel_approve_pins_universe_and_least_privilege(monkeypatch):
 
 
 def test_source_channel_is_in_served_tool_surface():
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    """Served = in a default turn's backend grant, reached through ``ta`` in bash;
+    the model's own inventory is the four tools."""
+    from types import SimpleNamespace
 
-    assert "source_channel" in SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import granted_tools, model_tools
+
+    default_turn = SimpleNamespace(engine_tool_grant=None)
+    assert "source_channel" in granted_tools(default_turn)
+    assert "bash" in model_tools(default_turn)

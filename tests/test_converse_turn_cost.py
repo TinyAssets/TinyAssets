@@ -99,7 +99,13 @@ MAX_SERVED_TOOL_DESCRIPTION_CHARS = 500
 # 4,482 (claude) / 4,414 (codex), about +137 tokens per round-trip by the
 # chars/4 estimate. The skills are the shipped stock; trimming their
 # descriptions is that package's call.
-MAX_STOCK_RESIDENT_CHARS = 4_600
+# 2026-10-06: 4,600 -> 5,250. The persona prompt had dropped the first-person
+# line and honesty floor and cut the untrusted-envelope rule to one clause; the
+# starter-agent-out-of-plumbing design keeps all three in plumbing (a voice fork
+# must not dissolve the floor; envelope content is never the founder speaking or
+# brain-worthy). Restored verbatim: system 3,628 chars, totals 5,202 (http) /
+# 5,138 (claude) / 5,070 (codex), about +164 tokens per round-trip by chars/4.
+MAX_STOCK_RESIDENT_CHARS = 5_250
 
 
 @pytest.mark.parametrize("adapter", ["http", "claude", "codex"])

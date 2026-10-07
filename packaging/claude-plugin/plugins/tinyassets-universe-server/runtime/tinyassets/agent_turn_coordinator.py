@@ -161,10 +161,12 @@ class AgentTurnCoordinator:
         if self.owner is not None and owner != self.owner:
             raise ProviderAuthorityHeldError("interactive agent owner changed")
         if self.owner is None:
-            from tinyassets.starter_release import prepare_starter
+            # The center's recorded owner, not this turn's principal: a co-admin's
+            # turn on a shared center, or any turn on an unattributed one, is
+            # admitted by the check above and must not be refused here.
+            from tinyassets.starter_release import prepare_center_starter
 
-            prepare_starter(self.context.universe_dir, owner_id=owner,
-                            center_id=self.context.universe_dir.name)
+            prepare_center_starter(self.context.universe_dir)
         return owner
 
     def _has_candidate_order(self):

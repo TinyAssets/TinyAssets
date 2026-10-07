@@ -208,7 +208,7 @@ def test_real_coordinator_budget_stops_before_extra_tool_effect(agent):
     assert len(agent.wires) == 3
     assert len(agent.tools) == 2
     assert agent.latest().state == "held_tool_not_sent"
-    assert held.value.completed_tools == ("read_graph", "read_graph")
+    assert held.value.completed_tools == tuple(name for name, _ in agent.tools)
     assert held.value.turn_requests == 3
     assert budget.receipt()["dispatched"] == 3
 

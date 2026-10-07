@@ -30,9 +30,18 @@ def prepare_starter(root: Path, *, owner_id: str, center_id: str, fresh=False) -
 
     if root.name != center_id or owner_of(root.parent, center_id) != owner_id:
         raise PermissionError("starter release requires the canonical owner/center binding")
+    from tinyassets.owner_control import ControlUnavailable
+
     with seed_store(root, owner_id=owner_id, center_id=center_id) as seeds:
         receipt = seeds.install(starter_manifest(), fresh=fresh)
-        deliver_notices(root, seeds)
+        try:
+            deliver_notices(root, seeds)
+        except ControlUnavailable:
+            # Owner controls are held elsewhere right now (an owner action, or the
+            # run that launched this turn). Nothing was queued; the notice stays
+            # undelivered in the durable outbox and the next prepare replays it.
+            # The files are installed, so the turn must not fail for this.
+            pass
         return receipt
 
 

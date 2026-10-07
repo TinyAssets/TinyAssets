@@ -67,8 +67,10 @@ def running(agent, source, monkeypatch):
         tools = len(agent.tools) == 0
         message = {"role": "assistant", "content": None if tools else "finished exact answer"}
         if tools:
+            # The model's own tool inventory is read/write/edit/bash; an engine
+            # tool is reached through ``ta`` in bash, the shape the agent fixture uses.
             message["tool_calls"] = [{"id": "source-tool", "type": "function", "function": {
-                "name": "read_graph", "arguments": '{"target":"status"}',
+                "name": agent.tool_call[0], "arguments": agent.tool_call[1],
             }}]
         response = json.dumps({"model": "source-actual-model", "choices": [{
             "message": message, "finish_reason": "tool_calls" if tools else "stop",

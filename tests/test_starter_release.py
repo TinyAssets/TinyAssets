@@ -45,6 +45,26 @@ def test_notice_survives_delivery_failure_and_replays(center, monkeypatch):
     assert len(pending_requests.list_pending(center)) == 1
 
 
+def test_busy_owner_controls_defer_the_notice_not_the_turn(center, monkeypatch):
+    """A turn's prepare must not fail because the owner's controls are held
+    elsewhere at that instant; the outbox replays the notice next time."""
+    from tinyassets.owner_control import ControlUnavailable
+    from tinyassets.storage import pending_requests
+
+    actual = pending_requests.create_request
+
+    def busy(*args, **kwargs):
+        raise ControlUnavailable("Owner controls are busy; retry the operation.")
+
+    monkeypatch.setattr(pending_requests, "create_request", busy)
+    assert prepare_center_starter(center)["transaction_id"]
+    assert (center / "starter/hooks.md").exists()
+    assert not owner_seed_view(center, owner_id="alice")[0]["delivered"]
+    monkeypatch.setattr(pending_requests, "create_request", actual)
+    prepare_center_starter(center)
+    assert owner_seed_view(center, owner_id="alice")[0]["delivered"] == 1
+    assert len(pending_requests.list_pending(center)) == 1
+
 @pytest.mark.parametrize("body", ["", "My own operating instructions"])
 def test_dormant_owner_files_preserved_and_candidates_adoptable(center, body):
     (center / "AGENTS.md").write_text(body, encoding="utf-8")
@@ -85,3 +105,32 @@ def test_failed_creation_archives_receipt_so_reused_id_can_be_provisioned(center
     second = prepare_starter(center, owner_id="alice", center_id=center.name, fresh=True)
     assert second["transaction_id"] != first["transaction_id"]
     assert (center / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("recorded_owner", ["alice", None])
+def test_a_co_admin_or_unattributed_turn_is_not_refused_by_the_release(tmp_path, monkeypatch,
+                                                                       recorded_owner):
+    """The turn's principal is admitted by its own authority check; the release
+    installs for the center's RECORDED owner (or nothing, when unattributed)."""
+    from types import SimpleNamespace
+
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+    from tinyassets.daemon_server import grant_universe_access, grant_universe_ownership
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    root = tmp_path / "u-shared"
+    root.mkdir()
+    if recorded_owner:
+        grant_universe_ownership(tmp_path, universe_id=root.name, owner_id=recorded_owner)
+    grant_universe_access(tmp_path, universe_id=root.name, actor_id="bob",
+                          permission="admin", granted_by="bob")
+    turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
+    turn.owner = None
+    turn.config = None
+    turn.context = SimpleNamespace(universe_dir=root)
+    turn.adapter = SimpleNamespace(check=lambda context, config: "bob")
+
+    assert turn._check_scope() == "bob"
+    assert (root / "starter/hooks.md").exists() == bool(recorded_owner)
+    if recorded_owner:
+        assert owner_seed_view(root, owner_id="alice")

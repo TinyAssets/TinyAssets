@@ -9,6 +9,33 @@ from tinyassets.conversation_memory import Msg, format_history
 from tinyassets.conversation_retrieval import read_conversation_page
 
 
+def _seeded_prompt(root):
+    """The harness prompt of a center holding the published starter files.
+
+    The pointer to earlier turns and unlisted files lives in the seeded
+    starter-workspace skill (starter-agent-out-of-plumbing); the resident
+    starter hooks route file questions to it and the prompt indexes it.
+    """
+    from tinyassets.starter_skills import starter_agent_files
+
+    files = starter_agent_files()
+    for relative, text in files.items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text(text, encoding='utf-8')
+    hooks = ' '.join(files['starter/hooks.md'].split())
+    workspace = ' '.join(files['skills/starter-workspace/SKILL.md'].split())
+    return universe_tools.harness_prompt(root), hooks, workspace
+
+
+def _assert_routed_to_systems_handbook(root):
+    prompt, hooks, workspace = _seeded_prompt(root)
+    assert '`starter-workspace`' in prompt
+    assert 'starter-workspace for files' in hooks
+    assert ('For earlier turns, missing files, workflows and automations, read the '
+            'platform reference linked by `ta describe write_graph` '
+            '(handbook write_graph.systems).') in workspace
+
+
 def test_workspace_exports_visible_on_fresh_turn(tmp_path):
     exports = tmp_path / '.agent-workspace' / 'exports'
     exports.mkdir(parents=True)
@@ -26,8 +53,7 @@ def test_workspace_preview_explains_how_to_find_unlisted_files(tmp_path):
 
     from tinyassets.engine_mcp_server import _handbook_read
 
-    prompt = universe_tools.harness_prompt(tmp_path)
-    assert 'Earlier turns and missing files: handbook write_graph.systems.' in prompt
+    _assert_routed_to_systems_handbook(tmp_path)
     prompt = ' '.join(json.loads(_handbook_read('write_graph.systems'))['text'].split())
     assert 'bounded preview' in prompt
     assert 'find /u' in prompt
@@ -122,8 +148,7 @@ def test_harness_explains_history_window_and_retrieval(tmp_path):
 
     from tinyassets.engine_mcp_server import _handbook_read
 
-    prompt = universe_tools.harness_prompt(tmp_path)
-    assert 'Earlier turns and missing files: handbook write_graph.systems.' in prompt
+    _assert_routed_to_systems_handbook(tmp_path)
     text = ' '.join(json.loads(_handbook_read('write_graph.systems'))['text'].split())
     assert 'recent window' in text
     assert 'read_graph' in text and '"target":"conversation"' in text
