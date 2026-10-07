@@ -14,7 +14,7 @@ scientific-computing domain module own?" It does not authorize changes in
 
 - Domain rows land here before any code work starts.
 - Engine work is out of scope unless a row proves an irreducible shared
-  primitive gap and `PLAN.md` is updated with approval.
+  primitive gap and an accepted ADR records it.
 - Domain nodes should compose existing evaluator/run/artifact primitives when
   possible.
 - Implementation files are future `domains/scientific_computing/` or an

@@ -147,11 +147,10 @@ RUN mkdir -p /opt/claude-code-install && \
 
 WORKDIR /build
 
-# Copy project metadata + source so editable install works. PLAN.md is NOT
-# copied: nothing in the runtime reads it (#3967 removed the daemon's PLAN
-# serving, and provider_jail never binds /app), and shipping it made every
-# PLAN.md edit a runtime change that rebuilt the image and killed in-flight
-# turns. Adding it back is what re-arms that -- see tests/test_runtime_paths.py.
+# Copy project metadata + source so editable install works. Every COPY source
+# here is a runtime input: editing one rebuilds the image and recreates the
+# production daemon (scripts/runtime_paths.py), so add nothing the runtime does
+# not read.
 COPY pyproject.toml ./
 COPY tinyassets/ ./tinyassets/
 COPY domains/ ./domains/

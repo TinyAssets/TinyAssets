@@ -1,4 +1,4 @@
-> **HISTORICAL — superseded.** This doc captured architecture intent as of Phase 2 era (~2026-04-05). Current architecture lives in PLAN.md. Kept for git/decision history. Do not edit, do not extend, do not cite as live.
+> **HISTORICAL — superseded.** This doc captured architecture intent as of Phase 2 era (~2026-04-05). Current architecture lives in docs/architecture.md (PLAN.md was retired 2026-10-06). Kept for git/decision history. Do not edit, do not extend, do not cite as live.
 
 # Import Compatibility After Phase 2 Extraction
 

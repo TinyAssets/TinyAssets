@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.runtime_repo_fixture import SERVED_LIMIT, make_repo, plan
+from tests.runtime_repo_fixture import make_repo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -202,6 +202,42 @@ def test_a_dockerfile_change_builds(repo):
     assert _decide(r, base, head).build is True
 
 
+def test_a_file_the_image_stops_copying_is_no_longer_a_runtime_input(repo):
+    """The Dockerfile's COPY manifest is the source of truth, not a hand-kept
+    list: a file leaving the image stops being a runtime input by itself."""
+    r, _ = repo
+    df = (r.root / "Dockerfile").read_text(encoding="utf-8")
+    no_copy = r.commit(
+        "stop shipping the rules file",
+        {
+            "Dockerfile": df.replace(
+                'COPY ["data/world_rules.lp", "/app/data/world_rules.lp"]\n', ""
+            )
+        },
+    )
+    assert "world_rules" not in (r.root / "Dockerfile").read_text(encoding="utf-8")
+    head = r.commit("rules", {"data/world_rules.lp": "rule2.\n"})
+    assert _decide(r, no_copy, head).build is False
+
+
+def test_a_file_the_image_starts_copying_becomes_a_runtime_input(repo):
+    """The safe direction, enforced by the manifest rather than by a rule:
+    adding a COPY is by itself enough to make every edit to that file runtime.
+    A runtime that starts reading a doc has to ship it, and shipping it arms
+    this."""
+    r, _ = repo
+    df = (r.root / "Dockerfile").read_text(encoding="utf-8")
+    patched = df.replace(
+        "COPY pyproject.toml ./\n", "COPY pyproject.toml ./\nCOPY docs/notes.md ./\n", 1
+    )
+    assert patched != df, "the anchor COPY line moved; update this test"
+    copied = r.commit("ship the notes", {"Dockerfile": patched})
+    head = r.commit("notes", {"docs/notes.md": "more\n"})
+    decision = _decide(r, copied, head)
+    assert decision.build is True
+    assert decision.runtime_paths == ("docs/notes.md",)
+
+
 def test_no_dockerfile_makes_everything_runtime(repo):
     r, base = repo
     gone = r.commit("drop df", {"Dockerfile": None})
@@ -214,67 +250,6 @@ def test_unreadable_host_manifest_makes_all_scripts_runtime(repo):
     gone = r.commit("drop manifest", {"deploy/install-host-uptime-services.sh": None})
     head = r.commit("tool", {"scripts/unrelated_tool.py": "TOOL = 2\n"})
     assert _decide(r, gone, head).build is True
-
-
-# --- PLAN.md: copied whole, served in excerpts --------------------------------
-
-
-def test_plan_edit_outside_served_sections_skips(repo):
-    r, base = repo
-    head = r.commit("plan", {"PLAN.md": plan(unserved="a new principle")})
-    decision = _decide(r, base, head)
-    assert decision.build is False, decision.reason
-
-
-def test_plan_edit_past_the_served_excerpt_skips(repo):
-    """#3970's shape: new text deep inside a served section, beyond the
-    excerpt the daemon returns. The served bytes are identical."""
-    r, base = repo
-    head = r.commit("plan", {"PLAN.md": plan(scoping_tail="a long new paragraph")})
-    assert _decide(r, base, head).build is False
-
-
-def test_plan_edit_inside_a_served_excerpt_builds(repo):
-    r, base = repo
-    head = r.commit("plan", {"PLAN.md": plan(daemon="the daemon changed")})
-    decision = _decide(r, base, head)
-    assert decision.build is True
-    assert decision.runtime_paths == ("PLAN.md (served section: Module: Daemon Platform)",)
-
-
-def test_removing_a_served_heading_builds(repo):
-    r, base = repo
-    text = plan().replace("## Module: Daemon Platform", "## Renamed Module")
-    head = r.commit("plan", {"PLAN.md": text})
-    assert _decide(r, base, head).build is True
-
-
-def test_plan_edit_builds_when_served_headings_are_unreadable(repo):
-    r, _ = repo
-    gone = r.commit("drop module", {"tinyassets/api/universe.py": None})
-    head = r.commit("plan", {"PLAN.md": plan(unserved="x")})
-    decision = _decide(r, gone, head)
-    assert decision.build is True
-    assert decision.runtime_paths == ("PLAN.md (served headings unreadable)",)
-
-
-def test_plan_compares_full_sections_when_the_excerpt_limit_is_unreadable(repo):
-    r, _ = repo
-    universe = (r.root / "tinyassets/api/universe.py").read_text(encoding="utf-8")
-    no_limit = r.commit(
-        "limit via name",
-        {"tinyassets/api/universe.py": universe.replace(f", {SERVED_LIMIT})", ", LIMIT)")},
-    )
-    head = r.commit("plan", {"PLAN.md": plan(scoping_tail="past the excerpt")})
-    assert _decide(r, no_limit, head).build is True
-
-
-def test_plan_is_not_special_once_the_image_stops_copying_it(repo):
-    r, _ = repo
-    df = (r.root / "Dockerfile").read_text(encoding="utf-8").replace("COPY PLAN.md ./\n", "")
-    no_copy = r.commit("stop copying PLAN", {"Dockerfile": df})
-    head = r.commit("plan", {"PLAN.md": plan(daemon="changed")})
-    assert _decide(r, no_copy, head).build is False
 
 
 # --- what production serves -------------------------------------------------
@@ -337,10 +312,10 @@ def test_decide_cli_writes_github_outputs(repo, tmp_path):
 # --- history walks (release-reconcile, deployed_sha) ----------------------------
 
 
-def test_newest_runtime_commit_walks_past_docs_and_unserved_plan(repo):
+def test_newest_runtime_commit_walks_past_every_non_runtime_commit(repo):
     r, _ = repo
     runtime = r.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
-    r.commit("plan", {"PLAN.md": plan(unserved="x")})
+    r.commit("root doc", {"AGENTS.md": "agents x\n"})
     head = r.commit("docs", {"docs/notes.md": "more\n"})
     assert rp.newest_runtime_commit(r.root, head) == runtime
 
@@ -355,140 +330,9 @@ def test_newest_runtime_commit_fails_open_when_the_walk_runs_out(repo):
 def test_runtime_commits_counts_only_runtime_commits(repo):
     r, base = repo
     runtime = r.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
-    r.commit("plan", {"PLAN.md": plan(unserved="x")})
+    r.commit("root doc", {"AGENTS.md": "agents x\n"})
     head = r.commit("docs", {"docs/notes.md": "more\n"})
     assert rp.runtime_commits(r.root, base, head) == [runtime]
-
-
-# --- the mirror of the daemon's PLAN.md serving (differential) ---------------
-
-
-def _universe():
-    return pytest.importorskip("tinyassets.api.universe")
-
-
-DAEMON_SOURCE = REPO_ROOT / "tinyassets" / "api" / "universe.py"
-
-# Daemon source with no served-headings constant at all -- what this repo's own
-# universe.py became once #3967 cut the change-loop paths out of it.
-UNSERVING_UNIVERSE = "def unrelated():\n    return 1\n"
-
-
-def test_the_daemon_serves_no_plan_sections_so_the_differential_has_no_subject():
-    """#3967 ("GitHub is an ordinary connection") deleted the change-loop paths
-    from ``tinyassets/api/universe.py``, and with them
-    ``_CHANGE_LOOP_PLAN_HEADINGS`` and ``_change_loop_plan_context``. The
-    classifier's PLAN.md refinement mirrors those two, so while they are gone
-    there is nothing to run a differential against.
-
-    This is a tripwire, not a retirement. It goes RED the moment a daemon
-    serves PLAN.md excerpts again -- which is exactly when the parity tests
-    this replaced have to come back, comparing ``served_plan_context`` against
-    the daemon's own builder. Until then the classifier must fail OPEN, which
-    the next test pins.
-    """
-    univ = _universe()
-    assert not hasattr(univ, rp.PLAN_HEADINGS_NAME)
-    assert not hasattr(univ, rp.PLAN_CONTEXT_FUNCTION)
-    assert rp.plan_serving(DAEMON_SOURCE.read_text(encoding="utf-8")) is None
-
-
-def test_a_daemon_that_serves_nothing_makes_every_plan_edit_build(repo):
-    """Fail open, the direction this whole module defends. With no served
-    headings to diff, the classifier cannot prove a PLAN.md edit is invisible
-    to production, so it must build. The unsafe alternative is skipping a
-    deploy for a PLAN.md the daemon does ship."""
-    r, _ = repo
-    base = r.commit("daemon stops serving PLAN", {"tinyassets/api/universe.py": UNSERVING_UNIVERSE})
-    assert rp.runtime_inputs(r.root, base).plan is None
-
-    # An edit to a section the serving daemon did NOT serve: skippable before,
-    # a build now, because nothing can say it is unserved.
-    head = r.commit("plan", {"PLAN.md": plan(unserved="changed")})
-    decision = _decide(r, base, head)
-    assert decision.build is True
-    assert "PLAN.md (served headings unreadable)" in decision.runtime_paths
-
-
-def test_served_plan_context_mirrors_a_serving_daemon(repo):
-    """The mirror itself, against a daemon that does serve: the classifier
-    reads the headings and the excerpt limit out of the daemon's own source
-    rather than restating them."""
-    r, base = repo
-    serving = rp.plan_serving((r.root / "tinyassets" / "api" / "universe.py").read_text("utf-8"))
-    assert serving is not None
-    assert serving.headings == ("Scoping Rules", "Module: Daemon Platform")
-    assert serving.limit == SERVED_LIMIT
-
-    # Only the served headings appear, each shortened to the daemon's limit.
-    context = rp.served_plan_context((r.root / "PLAN.md").read_text("utf-8"), serving)
-    assert sorted(context) == ["Module: Daemon Platform", "Scoping Rules"]
-    assert len(context["Scoping Rules"]) <= SERVED_LIMIT
-
-    # A heading the daemon does not serve never reaches the comparison.
-    head = r.commit("plan", {"PLAN.md": plan(unserved="changed")})
-    assert _decide(r, base, head).build is False
-
-
-# --- the image manifest is the positive fact --------------------------------
-
-
-def _dockerfile_copy_lines(text: str) -> list[str]:
-    """Every COPY/ADD line, so a prose mention in a comment cannot pass for a
-    copy (this Dockerfile explains the PLAN.md removal in a comment)."""
-    return [ln for ln in text.splitlines() if ln.strip().upper().startswith(("COPY ", "ADD "))]
-
-
-def test_the_image_ships_no_plan_so_plan_is_not_a_runtime_input():
-    """PLAN.md stopped being a runtime input by leaving the image, not by a
-    classifier exception.
-
-    Nothing in the runtime reads the bundled copy. No daemon module opens it --
-    ``tinyassets/api/wiki.py`` reads a *user project's* PLAN.md under its
-    projects root, a different file -- and a provider child cannot reach
-    ``/app`` at all: ``tinyassets/providers/provider_jail.py`` binds the owning
-    universe and "Nothing else. Not /data or another universe, not /app". The
-    ``/app/PLAN.md`` reads recorded in
-    ``docs/reviews/2026-09-24-provider-latency-rootcause.md`` predate that jail.
-
-    Stating that as a positive fact the classifier can read is the point. A
-    source scan could not: ``ast`` sees the same ``"PLAN.md"`` constant in the
-    daemon and in the user-project path, and the thing that used to tell them
-    apart (``_bundled_source_root``) is what #3967 deleted. The image manifest
-    is structural instead, and a wrong answer is impossible rather than
-    unlikely -- nothing can read a file the image does not contain.
-    """
-    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    # Neither a build-context copy nor a stage-to-stage one:
-    # dockerfile_copy_sources deliberately ignores ``--from`` copies, so
-    # checking every COPY line is what closes that hole.
-    assert [ln for ln in _dockerfile_copy_lines(text) if rp.PLAN in ln] == []
-    sources, everything = rp.dockerfile_copy_sources(text)
-    assert everything is False
-    assert rp.PLAN not in sources
-
-    inputs = _working_tree_inputs()
-    assert inputs.everything is False
-    assert inputs.covers(rp.PLAN) is False
-
-
-def test_re_adding_the_plan_copy_makes_it_a_runtime_input_again():
-    """The safe direction, enforced by the filesystem rather than by a rule: a
-    runtime that starts reading PLAN.md must put the file back in the image,
-    and putting it back is by itself enough to make every PLAN.md edit runtime
-    again. Driven off the real Dockerfile so it cannot drift from it."""
-    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    patched = text.replace(
-        "COPY pyproject.toml ./\n", f"COPY pyproject.toml ./\nCOPY {rp.PLAN} ./\n", 1
-    )
-    assert patched != text, "the anchor COPY line moved; update this test"
-
-    def read(path: str) -> str | None:
-        return patched if path == "Dockerfile" else _working_tree(path)
-
-    inputs = rp.runtime_inputs_from(read, _working_tree_files)
-    assert inputs.everything is False
-    assert inputs.covers(rp.PLAN) is True
 
 
 # --- the workflows agree with the classifier ---------------------------------

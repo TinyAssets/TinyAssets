@@ -9,9 +9,8 @@ correct the first time." He had already approved the sealed box on 2026-10-01:
 
 So this change builds the **final shape now, at small capacity**. Later growth
 changes capacity only: more cells, more box hosts, bigger machines. It does not
-change interfaces, data placement or code paths. PLAN.md already rejects
-feature phasing ("Phased rollout — explicitly rejected", Reference:
-Full-Platform Architecture). The founder's rule "all accounts, one code path"
+change interfaces, data placement or code paths. The retired PLAN.md already rejected
+feature phasing ("Phased rollout — explicitly rejected"); ADR-012 records it. The founder's rule "all accounts, one code path"
 also applies, so nothing here branches on tier or stage.
 
 Today's shape is one droplet whose daemon reads and writes every user's folder
@@ -184,6 +183,5 @@ changes (design §"Spec reconciliation owed"). Raw measurements are in
   - `universe-agent-harness`: §4.16 placement, §4.17/D11 export from the box.
   - `served-agent-brain-loop`: the thin loop is its execution substrate.
 - **Founder spend approvals:** marked per slice in `tasks.md` (S0, S1, S5, S10).
-- **PLAN.md:** Daemon Platform, Providers, Uptime & Alarms, Reference: System
-  Shape and Design Decisions are edited in this change. The founder approved the
-  direction on 2026-10-01/02.
+- **Decision record:** ADR-012 (`docs/decisions/`); `docs/architecture.md` is
+  updated as boundaries move. The founder approved the direction on 2026-10-01/02.

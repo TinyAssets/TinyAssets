@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-005 (2026-10-06): `PLAN.md` and `STATUS.md` are retired.
 
 ## Date
 

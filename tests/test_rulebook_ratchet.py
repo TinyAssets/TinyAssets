@@ -181,17 +181,13 @@ def test_combined_ceiling_is_not_loose(cb) -> None:
     assert cb.COMBINED_HARD_BYTES <= always
 
 
-def test_the_rule_is_stated_where_it_now_lives() -> None:
-    """The principle is PLAN.md's; the loop carries the one line an agent acts on.
+def test_the_agents_loop_says_a_new_rule_deletes_an_old_one() -> None:
+    """The loop carries the one line an agent acts on; this ratchet enforces it.
 
-    Before the 2026-09-26 recut both sentences sat in AGENTS.md. The founder's bar
-    moved principles to `PLAN.md`, so asserting the old wording in the always-loaded
-    file would pin the rulebook to the shape the recut removed.
+    The principle's prose lived in PLAN.md until that file was retired
+    (2026-10-06, ADR-005). The script is the rule now, so only the loop line is
+    asserted.
     """
-    plan = (REPO_ROOT / "PLAN.md").read_text(encoding="utf-8")
-    assert "The rulebook only shrinks" in plan
-    assert "A new rule must displace an old one" in plan
-
     agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "A new rule deletes an old one" in agents
 

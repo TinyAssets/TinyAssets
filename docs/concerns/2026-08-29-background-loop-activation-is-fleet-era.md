@@ -39,7 +39,7 @@ credential. Everything that decides WHETHER it may run is not:
   `tinyassets/cloud_worker.py` (2,171 lines), its healthcheck, and the canonical spec still
   requiring them (`openspec/specs/daemon-runtime-and-dispatch/spec.md:57,77`).
 
-Founder principle recorded the same day (PLAN.md, Cross-Cutting Principles): **nothing runs unless
+Founder principle recorded the same day (now ADR-009): **nothing runs unless
 it lives inside a user's universe, under that user's control.**
 
 ## Shape that fixes it

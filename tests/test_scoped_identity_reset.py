@@ -658,7 +658,7 @@ def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
         "tinyassets/__main__.py",
         # `tinyassets/cloud_worker.py` was a writer entrypoint until 2026-08-29,
         # when the host-run fleet was deleted: nothing runs outside a user's
-        # universe (PLAN.md). No module replaces it -- the served consumer runs
+        # universe (ADR-009). No module replaces it -- the served consumer runs
         # inside the daemon, which is covered by tinyassets/__main__.py.
         "tinyassets/mcp_server.py",
         "tinyassets/universe_server.py",

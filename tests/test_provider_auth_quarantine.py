@@ -11,7 +11,7 @@ the queue, with no signal in get_status. What remains under test:
 
 The ``run_supervisor`` self-quarantine cases were deleted on 2026-08-29 with
 the host-run `tinyassets.cloud_worker` fleet: nothing runs outside a user's
-universe (PLAN.md). The probe those cases gated on is still covered above.
+universe (ADR-009). The probe those cases gated on is still covered above.
 """
 
 from __future__ import annotations

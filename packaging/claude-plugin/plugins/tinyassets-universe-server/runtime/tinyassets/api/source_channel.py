@@ -138,7 +138,7 @@ def source_channel(
     `2026-09-24-source-channel-policy-store-has-no-reader`): they wrote and read
     an approval mode no gate consulted, so the owner configured nothing and was
     told `policy_set`. Since change `sandboxed-code-node` an approval gates no
-    run, and PLAN.md settles the direction -- authorship, not host approval,
+    run, and ADR-013 settles the direction -- authorship, not host approval,
     decides whose code runs. An unknown operation now says so.
     """
     from tinyassets.api.helpers import _base_path, _request_universe

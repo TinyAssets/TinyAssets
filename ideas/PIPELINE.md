@@ -8,7 +8,7 @@ as orphaned notes.
 - `captured`: recorded in `ideas/INBOX.md`, not yet clarified.
 - `triaged`: deduplicated, sized, and given a next home.
 - `promoted`: moved into a concrete surface such as `STATUS.md`,
-  `docs/design-notes/`, `docs/exec-plans/active/`, or `PLAN.md`.
+  `docs/design-notes/`, `docs/exec-plans/active/`, an ADR, or a spec.
 - `landed`: implemented and recorded in `ideas/SHIPPED.md`.
 - `dropped`: intentionally declined or deferred with a reason.
 - `reframed-community-build`: feature was approved as a concept but declined as a platform primitive per `project_community_build_over_platform_build` / `project_minimal_primitives_principle`; intent lives on as a community-build pattern (wiki rubric, chatbot composition, remixable node template) rather than platform code. Capture the composition path so the user-facing intent isn't lost.
@@ -20,7 +20,7 @@ as orphaned notes.
 | Small, ready, clearly bounded | `STATUS.md` `Work` | It is actionable now. |
 | New truth, risk, or contradiction | `STATUS.md` `Concerns` | It changes what is currently true. |
 | Needs reasoning or tradeoff analysis | `docs/design-notes/` | It needs durable thinking before build work. |
-| Changes design truth | `PLAN.md` after user approval | The architecture or principles change. |
+| Changes direction or a standing decision | `README.md` § Direction (founder) or a new ADR in `docs/decisions/` | The direction or a recorded decision changes. |
 | Multi-step delivery with checkpoints | `docs/exec-plans/active/` | It is too large for one board row. |
 | Already landed | `ideas/SHIPPED.md` | Keep the idea-to-shipping trail. |
 

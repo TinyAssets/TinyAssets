@@ -59,8 +59,7 @@ their own workflows call it through the generic authenticated external call."*
    `TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` are still in `/etc/tinyassets/env`, and
    `auth/provider.py` `vend_github_destination_secret` has no callers. The platform-token removal
    is a parallel lane; this branch leaves it alone.
-5. **Smaller GitHub-shaped leftovers:** `Dockerfile` still copies `PLAN.md` for the removed review
-   reader; `evaluation/patch_notes.py` has a `github_pr` evidence kind;
+5. **Smaller GitHub-shaped leftovers:** `evaluation/patch_notes.py` has a `github_pr` evidence kind;
    `webhook_inbound.py` passes through `x-github-*` headers; the `vcs` vault credential type has no
    reader now; the `TINYASSETS_SLACK_/TWITTER_OUTBOUND_VIA_CONNECTION` flags are just as inert as
    the GitHub one was; `openspec/changes/archive/2026-10-06-channel-agnostic-outbound/` still describes the deleted

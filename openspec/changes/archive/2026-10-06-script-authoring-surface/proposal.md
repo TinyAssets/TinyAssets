@@ -116,7 +116,7 @@ boundary is. **Delete them.** That concern file has been rewritten to say so.
   branch.
 * **Additive.** `write_graph` keeps working; nothing is removed until the
   script path is proven live. Deprecating the DSL is a separate, founder-owned
-  decision (`PLAN.md`).
+  decision (an ADR).
 * **Same trust boundary**, reached by a path with fewer places to disagree.
 * **Proof obligation.** Not "the tests pass". The founder's universe does the
   README-fix job as one `.py`, uncoached, through the live connector — the same

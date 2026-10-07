@@ -344,7 +344,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
         SourceReference("fantasy_daemon/__main__.py", "def _try_execute_claimed_branch_task("),
         # Retargeted 2026-08-29: the host-run `tinyassets/cloud_worker.py`
         # supervisor was deleted (nothing runs outside a user's universe --
-        # PLAN.md). The served consumer is now the only background claim root.
+        # ADR-009). The served consumer is now the only background claim root.
         SourceReference(
             "tinyassets/runtime/assigned_queue_consumer.py",
             "class AssignedQueueConsumer:",

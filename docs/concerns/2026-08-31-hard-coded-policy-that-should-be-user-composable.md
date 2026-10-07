@@ -28,7 +28,7 @@ The bet was correct. This file is the audit.
 **Does this protect other users and the host, or does it only constrain the
 user's own work?** The first is platform. The second is theirs to compose.
 
-This is not a new principle. `PLAN.md`'s existing rule already says *limit
+This is not a new principle. ADR-013 already says *limit
 USAGE (admissions, budget, consent), never SHAPE*. Most of what follows is that
 rule un-applied.
 
