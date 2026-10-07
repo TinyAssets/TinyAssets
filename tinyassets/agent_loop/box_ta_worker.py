@@ -12,9 +12,35 @@ import tempfile
 import threading
 from pathlib import Path
 
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+
+
+def stage(root, extensions):
+    """Host-verified revision bytes, read-only for this one launch; no host paths."""
+    for item in extensions:
+        if not _NAME.fullmatch(item["name"]) or not _DIGEST.fullmatch(item["revision"]):
+            raise ValueError("invalid extension delivery")
+        package = root / item["name"] / item["revision"]
+        for path, data in item["files"].items():
+            parts = path.split("/")
+            if path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+                raise ValueError("invalid extension path")
+            target = package.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(base64.b64decode(data, validate=True))
+            target.chmod(0o555)
+    for directory, _, _ in sorted(os.walk(root), reverse=True):
+        os.chmod(directory, 0o555)
+
+
+def unstage(root):
+    for directory, _, _ in os.walk(root):
+        os.chmod(directory, 0o700)
+
 
 def main():
-    bootstrap = json.loads(sys.stdin.buffer.readline(2 * 1024 * 1024))
+    bootstrap = json.loads(sys.stdin.buffer.readline(16 * 1024 * 1024))
     stopped = threading.Event()
     output_lock = threading.Lock()
     condition = threading.Condition()
@@ -53,6 +79,9 @@ def main():
         client = Path(directory) / "ta"
         client.write_text(bootstrap["client"], encoding="utf-8")
         client.chmod(0o700)
+        extensions = Path(directory) / "extensions"
+        extensions.mkdir()
+        stage(extensions, bootstrap.get("extensions", ()))
         address = "\0ta-" + os.urandom(16).hex()
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(address)
@@ -99,6 +128,7 @@ def main():
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
         env = {**os.environ, "TA_SOCKET": "@" + address[1:],
+               "TA_EXTENSION_ROOT": str(extensions),
                "PATH": directory + ":" + os.environ.get("PATH", "/usr/bin:/bin")}
         emit({"ready": True})
         try:
@@ -114,6 +144,7 @@ def main():
                 condition.notify_all()
             server.close()
             thread.join(timeout=1)
+            unstage(extensions)
 
 
 if __name__ == "__main__":

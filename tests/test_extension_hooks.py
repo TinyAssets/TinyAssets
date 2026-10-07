@@ -61,7 +61,7 @@ def test_automatic_tool_hooks_use_jail_and_revoke_fences(world, monkeypatch):
 
 def test_turn_event_runner_uses_existing_signed_tool_surface(world, monkeypatch):
     from tests.test_one_extension_unit import files
-    from tinyassets import engine_tool_client
+    from tinyassets import agent_turn_coordinator
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.extension_hooks import turn_event
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
@@ -91,12 +91,14 @@ def test_turn_event_runner_uses_existing_signed_tool_surface(world, monkeypatch)
         assert kwargs["actor_id"] == server._ACTOR_ID
         assert kwargs["enabled_tools"] == SERVED_ENGINE_MCP_TOOLS
         yield Session()
-    monkeypatch.setattr(engine_tool_client, "open_engine_tools", open_tools)
+    monkeypatch.setattr(agent_turn_coordinator, "open_engine_tools", open_tools)
     coordinator = SimpleNamespace(
         config=SimpleNamespace(engine_tool_grant=None),
         context=SimpleNamespace(universe_dir=root, acting_agent=None), owner=server._ACTOR_ID,
         _interrupted=lambda: False, steering=lambda: {},
         adapter=SimpleNamespace(engine_identity=lambda *a: (server._ACTOR_ID, root.name)))
+    coordinator._open_tools = lambda timeout: (
+        agent_turn_coordinator.AgentTurnCoordinator._open_tools(coordinator, timeout))
     for event in events:
         asyncio.run(turn_event(coordinator, event, {"event": event}))
     assert (root / ".agent-workspace" / "turn-hooks.log").read_text().splitlines() == list(events)

@@ -137,7 +137,7 @@ async def open_loop_tools(
             ))
             engine_tools = {tool.name: tool for tool in engine.tools}
         if ta_turn and "bash" in box_names:
-            from tinyassets.agent_loop.box_ta import TurnBridge, engine_ta
+            from tinyassets.agent_loop.box_ta import TurnBridge, engine_deliver, engine_ta
             from tinyassets.storage import data_dir
 
             if (actor_id, graph_id) != (owner, universe_dir.name):
@@ -145,7 +145,8 @@ async def open_loop_tools(
             bridge = TurnBridge(owner=owner, center=universe_dir.name, turn=ta_turn,
                                 handle=box._exec.handle,
                                 database=data_dir() / ".remote-ta-receipts.sqlite3",
-                                dispatch=lambda message: engine_ta(engine, message))
+                                dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
+                                deliver=lambda: engine_deliver(engine))
             stack.callback(bridge.close)
             box._exec.enable_ta(bridge)
         box_definitions = box_tool_definitions(root)

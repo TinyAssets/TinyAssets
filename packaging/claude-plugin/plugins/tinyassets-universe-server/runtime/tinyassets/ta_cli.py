@@ -42,6 +42,15 @@ def remote(message):
     return answer
 
 
+def _staged(path):
+    """A remote box stages the same read-only revision bytes per launch."""
+    mount = "/ta/extensions/"
+    root = os.environ.get("TA_EXTENSION_ROOT")
+    if root is None or not path.startswith(mount):
+        return path
+    return os.path.join(root, path[len(mount):])
+
+
 def extensions(roots):
     """Manifests are untrusted workspace files, read only by this jailed process."""
     found = {}
@@ -163,8 +172,8 @@ def main(argv=None):
             and "extension_execution" in result):
         launch = result["extension_execution"]
         completed = subprocess.run(
-            [launch["executable"], launch["entry"], json.dumps(launch["arguments"])],
-            cwd=launch["cwd"], stdout=subprocess.PIPE, check=True,
+            [_staged(launch["executable"]), launch["entry"], json.dumps(launch["arguments"])],
+            cwd=_staged(launch["cwd"]), stdout=subprocess.PIPE, check=True,
         )
         return json.loads(completed.stdout)
     return result

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import contextvars
 
 from tinyassets.extension_manifest import KINDS, ExtensionError
@@ -10,6 +11,18 @@ from tinyassets.extension_state import ExtensionStore
 from tinyassets.harness_settings import read_settings
 
 _MOUNTS = contextvars.ContextVar("extension_mounts", default=frozenset())
+#: Revision blobs one remote launch may receive; leaves room in ta's 8 MiB reply.
+REMOTE_BUNDLE_BYTES = 4 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def delivered(mounts):
+    """Revisions a trusted remote-box host verified and delivered for this launch."""
+    token = _MOUNTS.set(frozenset(mounts))
+    try:
+        yield
+    finally:
+        _MOUNTS.reset(token)
 
 
 def _schema(properties, required=()):
@@ -187,15 +200,13 @@ class ExtensionCapabilities:
                                capability=f"connection:{pin['connection_id']}:{required}")
         return pin
 
-    def materialize(self, directory):
-        """Trusted private staging, mounted read-only for exactly one bash launch."""
-        _MOUNTS.set(frozenset())
+    def deliverable(self):
+        """Active, enabled revisions this live authority may run; never grants or bindings."""
         try:
             self._authority()
         except ExtensionError:
-            return False  # No extension authority never grants a mount or breaks ordinary bash.
-        mounted = set()
-        directory.mkdir()
+            return []  # No extension authority never grants a mount or breaks ordinary bash.
+        found = []
         for state in self.store.list():
             if state["state"] != "active":
                 continue
@@ -203,9 +214,23 @@ class ExtensionCapabilities:
                 if not self._enabled(state["name"]):
                     continue
                 revision = self.store.load(state["name"], state["revision"])
-                _, files = revision.content()
+                revision.content()
             except (ValueError, LookupError, OSError):
                 continue  # Catalog reports the failure; lifecycle/revoke remain reachable.
+            found.append((state, revision))
+        return found
+
+    def materialize(self, directory):
+        """Trusted private staging, mounted read-only for exactly one bash launch."""
+        _MOUNTS.set(frozenset())
+        try:
+            self._authority()
+        except ExtensionError:
+            return False
+        mounted = set()
+        directory.mkdir()
+        for state, revision in self.deliverable():
+            _, files = revision.content()
             root = directory / state["name"] / state["revision"]
             for path, data in files.items():
                 target = root / path
@@ -216,6 +241,24 @@ class ExtensionCapabilities:
                 (state["name"], state["revision"], state["generation"]))
         _MOUNTS.set(frozenset(mounted))
         return True
+
+    def bundle(self, limit=REMOTE_BUNDLE_BYTES):
+        """Content-addressed revision blobs for one remote bash launch.
+
+        Only installed package bytes cross: no host path, binding, grant or
+        credential. Revisions past the size bound stay undelivered, so their
+        contributions remain runtime_unavailable (fail closed).
+        """
+        delivered, undelivered, used = [], [], 0
+        for state, revision in self.deliverable():
+            pin = {"name": state["name"], "revision": state["revision"],
+                   "generation": state["generation"]}
+            if used + len(revision.blob) > limit:
+                undelivered.append({**pin, "reason": "remote_bundle_limit"})
+                continue
+            used += len(revision.blob)
+            delivered.append({**pin, "blob": base64.b64encode(revision.blob).decode()})
+        return {"extensions": delivered, "undelivered": undelivered}
 
     def _mounted(self, state):
         return (state["name"], state["revision"], state["generation"]) in _MOUNTS.get()

@@ -59,7 +59,6 @@ async def _engine_event(server, event, payload):
 
 async def _turn_event(coordinator, event, payload):
     """Turn events have no authority beyond the triggering signed tool session."""
-    from tinyassets.engine_tool_client import open_engine_tools
     from tinyassets.served_tools import granted_tools
 
     config, ctx = coordinator.config, coordinator.context
@@ -71,11 +70,13 @@ async def _turn_event(coordinator, event, payload):
         return  # Stop is authoritative; a hook never restarts a stopped turn.
     if "bash" not in granted_tools(config):
         return "skipped: triggering turn has no bash grant"
-    actor, graph = coordinator.adapter.engine_identity(ctx, config)
-    async with open_engine_tools(actor_id=actor, graph_id=graph,
-                                 enabled_tools=granted_tools(config), timeout=30,
-                                 **coordinator.steering()) as session:
-        result = await session.call("bash", {"command": command(event, payload), "timeout": 30})
+    # The turn's own tool route: a bound remote box runs the hook in that box,
+    # with its delivered revision bytes, exactly where the turn's bash runs.
+    async with coordinator._open_tools(30) as session:
+        kwargs = ({"op_id": f"{coordinator.turn.turn_id}:hook:{event}"}
+                  if getattr(session, "takes_op_id", False) else {})
+        result = await session.call("bash", {"command": command(event, payload), "timeout": 30},
+                                    **kwargs)
         text = "\n".join(getattr(block, "text", "") for block in result.content)
         if result.isError or "[exit code 0]" not in text:
             raise RuntimeError("extension hook failed: " + text)
