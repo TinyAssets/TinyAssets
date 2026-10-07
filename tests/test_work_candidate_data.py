@@ -127,7 +127,7 @@ def test_a_graph_pin_the_advisory_order_omits_is_honoured_when_nothing_was_saved
     excludes.
     """
     choices = subscription_data()
-    assert [ref.model_id for ref in choices.order] == [""]
+    assert [ref.model_id for ref in choices.order] == ["", "future-native-model"]
 
     pinned = {"preferred": {"provider": "codex", "model": "future-native-model"}}
     choices.fit(

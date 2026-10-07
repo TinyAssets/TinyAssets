@@ -25,9 +25,12 @@ _BINDINGS = {"type": "object", "additionalProperties": _schema(
 _MCP_ARGS = _schema({"action": {"enum": ["discover", "call"]}, "tool": _TEXT,
                      "arguments": {"type": "object"}, "catalog_hash": _TEXT}, ["action"])
 LIFECYCLE = [
-    {"name": "extension:help", "description": "Read the extension authoring handbook",
+    {"name": "extension:help",
+     "description": "Read the extension handbook: tools, hooks, UI cards, remote MCP servers",
      "arguments": _schema({"chapter": {"enum": ["overview", "ui"]}})},
-    {"name": "extension:install", "description": "Install inert extension bytes; no grants",
+    {"name": "extension:install",
+     "description": ("Install an extension to add tools, hooks, cards, or connect a remote "
+                     "MCP server by its URL; inert until activated, no grants"),
      "arguments": _schema({"files": {"type": "object", "additionalProperties": _TEXT}}, ["files"])},
     {"name": "extension:events", "description": "Read recent hook failures or skipped events",
      "arguments": _schema({})},
@@ -75,6 +78,9 @@ Only stdio/package-cell admission remains unavailable pending U1.
 Activate may include bindings: {"slot":{"connection_id":"...","grant_id":"..."}}.
 Bindings use existing local grants only, pin their incarnation and never create
 or widen grants. A new activation generation is required to change a binding.
+A remote MCP slot binds an http connection the owner approved for the URL's
+host and path with POST; for a keyless server that is a connect ask with
+auth_scheme "none" (skills/connect, step 4). It then stays in ta search.
 Remote MCP contributions accept {"action":"discover"}, returning tools and a
 catalog_hash; call with {"action":"call","tool":"name","arguments":{},
 "catalog_hash":"..."}. Every exchange uses existing connection effect policy,

@@ -579,6 +579,9 @@ def prepare_owned_model_plan(
                 provider, required,
                 None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
             ))
+    from tinyassets.providers.default_model_evidence import cooling_sources, with_request_capacity
+
+    admitted = [with_request_capacity(base, owner, universe, c) for c in admitted]
     policy = replace(
         policy,
         ranking_source=next(iter(ranking_sources)) if len(ranking_sources) == 1 else None,
@@ -588,6 +591,7 @@ def prepare_owned_model_plan(
         tuple(source_policies),
         _reconnect_sources(base, owner, universe.name, chains),
         _refused_models(base, owner, chains),
+        cooling_sources(owner, admitted),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         # Name what is held and why: "no model connected" was wrong for an owner
