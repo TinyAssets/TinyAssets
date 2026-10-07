@@ -31,6 +31,7 @@ import os
 import stat
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -125,7 +126,9 @@ def read_universe_file(
     """
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
-        root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
+        # Selected, a symlinked root is refused rather than resolved (D60).
+        root_fd = fs.open_dir_nofollow(
+            root.absolute() if fs._reader_guards_selected() else root.resolve(strict=False))
         try:
             return fs.read_regular_file_beneath(root_fd, relpath, max_bytes=max_bytes)
         finally:
@@ -365,6 +368,86 @@ def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
         view = view[os.write(fd, view):]
+
+
+@contextmanager
+def readonly_lock_file(root: Path | str, directory: str, name: str):
+    """Pin an existing POSIX lock proof without write/create or link access.
+
+    Keep the context through the flock probe: a changed directory or file name
+    at exit invalidates the proof. Nonblocking open refuses FIFOs without waiting.
+    """
+    from contextlib import ExitStack
+
+    _check_component(directory)
+    _check_component(name)
+    with ExitStack() as stack:
+        def opened(component, flags, **kwargs):
+            fd = os.open(component, flags | os.O_CLOEXEC | os.O_NOFOLLOW, **kwargs)
+            stack.callback(os.close, fd)
+            return fd
+
+        root_fd = fs.open_dir_nofollow(Path(root))
+        stack.callback(os.close, root_fd)
+        parent = opened(directory, os.O_RDONLY | os.O_DIRECTORY, dir_fd=root_fd)
+        fd = opened(name, os.O_RDONLY | os.O_NONBLOCK, dir_fd=parent)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise UniverseFileError("invalid lock proof")
+        yield fd
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        parent_name = os.stat(directory, dir_fd=root_fd, follow_symlinks=False)
+        if (not os.path.samestat(info, named) or named.st_nlink != 1
+                or not os.path.samestat(os.fstat(parent), parent_name)):
+            raise UniverseFileError("lock proof changed")
+
+
+def open_broker_liveness_lock(root: Path | str, name: str) -> int:
+    """Daemon-owned kernel proof, broker-readable but never writable by it.
+
+    Pin every component and reject aliases before changing any metadata. This
+    is solely the daemon's private proof directory, never an engine work tree.
+    The caller locks/closes the returned descriptor; no PID sidecar is needed.
+    """
+    from contextlib import ExitStack
+
+    from tinyassets import role_modes
+
+    _check_component(name)
+    with ExitStack() as stack:
+        root_fd = fs.open_dir_nofollow(Path(root))
+        stack.callback(os.close, root_fd)
+        if os.fstat(root_fd).st_uid != os.geteuid():
+            raise UniverseFileError("liveness root is not daemon-owned")
+        directory = ".consumer_liveness"
+        try:
+            os.mkdir(directory, 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        parent = fs.open_subdir_nofollow(root_fd, directory)
+        stack.callback(os.close, parent)
+        parent_info = os.fstat(parent)
+        if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o022:
+            raise UniverseFileError("liveness directory is not private to daemon writes")
+        fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     0o600, dir_fd=parent)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.geteuid()):
+                raise UniverseFileError("invalid daemon liveness proof")
+            if (not os.path.samestat(info, os.stat(name, dir_fd=parent, follow_symlinks=False))
+                    or not os.path.samestat(parent_info, os.stat(
+                        directory, dir_fd=root_fd, follow_symlinks=False))):
+                raise UniverseFileError("daemon liveness proof changed")
+            os.fchown(parent, -1, role_modes.BROKER_READ_GID)
+            os.fchmod(parent, role_modes.LIVENESS_DIRECTORY_MODE)
+            os.fchown(fd, -1, role_modes.BROKER_READ_GID)
+            os.fchmod(fd, role_modes.LIVENESS_FILE_MODE)
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
 
 
 def open_lock_file(universe_dir: Path | str, relpath: str, *, mode: int = 0o644) -> int:

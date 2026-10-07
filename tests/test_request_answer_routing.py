@@ -326,22 +326,190 @@ def test_co_admin_attempt_never_stamps_an_unrecorded_ask(world):
     assert (received["owner"], received["agent"]) == (OWNER, agent)
 
 
-@pytest.mark.parametrize("shape", ["values", "reply"])
-def test_co_admin_cannot_answer_an_unrecorded_main_ask(world, shape):
-    """Review 4532 r2 probe 2: the co-admin's answer was delivered as their own."""
+def deliveries(home):
+    with closing(store._db(home)) as conn:
+        return conn.execute("SELECT count(*) FROM request_answer_deliveries").fetchone()[0]
+
+
+@pytest.mark.parametrize("actor", [OWNER, OTHER])
+@pytest.mark.parametrize("shape", ["values", "reply", "declined"])
+def test_co_admin_cannot_answer_an_unrecorded_main_ask(world, actor, shape):
+    """Review 4532 r2 probe 2, and the explained refusal from its final review."""
     home, _ = world
     row = ask(home)
     unrecorded(home, row)
     co_admin(home)
-    payload = ({"values": {"reply": "steal"}} if shape == "values"
-               else {"reply": "steal", "reply_id": "cross-owner"})
-    with as_other():
+    payload = {"values": {"reply": "Mine"}, "reply": {"reply": "Mine", "reply_id": "amb"},
+               "declined": {"decision": "declined"}}[shape]
+    with identity_context(Identity(user_id=actor, username=actor,
+                                   capabilities=["tinyassets.universe.write"])):
         result = answer_request(universe_id=home.name,
                                 payload={"request_id": row["request_id"], **payload})
+    assert result["error"] == "unrecorded_asker_ambiguous"
+    assert "doesn't record which agent asked" in result["detail"]
+    assert result["request_pending"] is True
+    stored = store.get_request(home, row["request_id"])
+    assert (stored["status"], stored["asking_context"]) == ("pending", {})
+    assert deliveries(home) == 0
+    assert drain(home) == []
+
+
+@pytest.mark.parametrize("actor", [OWNER, OTHER])
+def test_any_admin_dismisses_an_ambiguous_unrecorded_ask_delivering_nothing(world, actor):
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    co_admin(home)
+    with identity_context(Identity(user_id=actor, username=actor,
+                                   capabilities=["tinyassets.universe.write"])):
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
+    assert result["status"] == "dismissed", result
+    stored = store.get_request(home, row["request_id"])
+    assert (stored["status"], stored["asking_context"]) == ("dismissed", {})
+    assert deliveries(home) == 0
+    assert drain(home) == []
+
+
+def test_co_admin_cannot_dismiss_an_unrecorded_ask_with_a_known_owner(world):
+    """The binding's creator owns it unambiguously, so a co-admin is cross-owner."""
+    home, agent = world
+    row = ask(home, agent)
+    unrecorded(home, row)
+    co_admin(home)
+    with as_other():
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
     assert result["error"] == "not_found"
     stored = store.get_request(home, row["request_id"])
     assert (stored["status"], stored["asking_context"]) == ("pending", {})
     assert drain(home) == []
+
+
+def test_non_admin_cannot_dismiss_an_ambiguous_unrecorded_ask(world):
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    co_admin(home)
+    stranger = "stranger"
+    with identity_context(Identity(user_id=stranger, username=stranger,
+                                   capabilities=["tinyassets.universe.write"])):
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
+    assert result["error"] == "not_found"
+    assert store.get_request(home, row["request_id"])["status"] == "pending"
+
+
+@pytest.mark.parametrize("shape", ["item", "dismiss_reply", "dismiss_item"])
+def test_ambiguous_unrecorded_ask_refuses_item_and_mixed_dismissals(world, shape):
+    """Only a bare dismissal clears it; an item answer or a dismiss riding an
+    answer would still have to guess whose agent asked."""
+    home, _ = world
+    row = ask(home, items=[{"item_id": "a", "title": "Draft A", "fields": [
+        {"name": "reply", "type": "text", "label": "Reply"}]}])
+    unrecorded(home, row)
+    co_admin(home)
+    payload = {"item": {"item_id": "a", "values": {"reply": "Good"}},
+               "dismiss_reply": {"dismiss": True, "reply": "Mine", "reply_id": "amb"},
+               "dismiss_item": {"dismiss": True, "item_id": "a"}}[shape]
+    with as_other():
+        result = answer_request(universe_id=home.name,
+                                payload={"request_id": row["request_id"], **payload})
+    assert result["error"] == "unrecorded_asker_ambiguous", result
+    stored = store.get_request(home, row["request_id"])
+    assert (stored["status"], stored["asking_context"]) == ("pending", {})
+    assert stored["item_answers"]["a"]["status"] == "pending"
+    assert deliveries(home) == 0
+    assert drain(home) == []
+
+
+def test_check_explains_only_to_an_admin(world):
+    """The ambiguity explanation is for admins; anyone else stays a bare refusal."""
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    co_admin(home)
+    fresh = store.get_request(home, row["request_id"])
+    with as_other(), pytest.raises(request_answers.UnrecordedAskerAmbiguous):
+        request_answers.check(home, fresh)
+    for actor in ("stranger", ""):
+        with identity_context(Identity(user_id=actor, username=actor or "anon",
+                                       capabilities=["tinyassets.universe.write"])):
+            with pytest.raises(PermissionError) as refused:
+                request_answers.check(home, fresh)
+        assert not isinstance(refused.value, request_answers.UnrecordedAskerAmbiguous)
+    assert store.get_request(home, row["request_id"])["asking_context"] == {}
+
+
+def connection_owned(home, row, owner=OWNER):
+    """An older connection ask: its continuation recorded the owner before
+    asking_context existed."""
+    context = {"kind": "connection", "owner": owner, "home": home.name, "agent": "main",
+               "task_id": "act-older", "task_generation": 1, "turn": "t-older"}
+    from tinyassets.bound_requests import _schema
+
+    with closing(store._db(home)) as conn, conn:
+        _schema(conn)
+        conn.execute("UPDATE pending_requests SET context_json=? WHERE request_id=?",
+                     (json.dumps(context), row["request_id"]))
+
+
+def woken(home, request_id):
+    with closing(store._db(home)) as conn:
+        return [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload_json FROM activity_events WHERE request_id=?", (request_id,))]
+
+
+def test_unrecorded_connection_ask_belongs_to_its_recorded_owner(world):
+    """Review 4536 r1: a co-admin's dismissal declined the owner's connection."""
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    connection_owned(home, row)
+    co_admin(home)
+    with as_other():
+        for payload in ({"dismiss": True}, {"values": {"reply": "steal"}}):
+            result = answer_request(universe_id=home.name,
+                                    payload={"request_id": row["request_id"], **payload})
+            assert result["error"] == "not_found", result
+    assert store.get_request(home, row["request_id"])["status"] == "pending"
+    assert woken(home, row["request_id"]) == []
+    result = answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], "dismiss": True})
+    assert result["status"] == "dismissed", result
+    stored = store.get_request(home, row["request_id"])
+    assert stored["asking_context"]["owner"] == OWNER
+    wake, = woken(home, row["request_id"])
+    assert (wake["owner"], wake["agent"], wake["outcome"]) == (
+        OWNER, "main", {"connection": "declined"})
+
+
+def test_unrecorded_ask_an_activity_waits_on_belongs_to_its_owner(world):
+    from tinyassets import agent_activities
+
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    activity = agent_activities.create(home, owner_principal=OWNER, title="Post the reply",
+                                       brief="Wait for the owner's reply.", origin_kind="ask")
+    with closing(agent_activities._connect(home)) as conn, conn:
+        conn.execute("UPDATE activities SET status=?, waiting_request_id=? WHERE activity_id=?",
+                     (agent_activities.WAITING_ON_YOU, row["request_id"],
+                      activity["activity_id"]))
+    co_admin(home)
+    with as_other():
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
+    assert result["error"] == "not_found", result
+    assert agent_activities.get(home, activity["activity_id"])["status"] == (
+        agent_activities.WAITING_ON_YOU)
+    result = answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], "values": {"reply": "Ship it"}})
+    assert not result.get("error"), result
+    assert agent_activities.get(home, activity["activity_id"])["status"] != (
+        agent_activities.WAITING_ON_YOU)
+    received, = drain(home)
+    assert (received["owner"], received["agent"]) == (OWNER, "main")
 
 
 def test_sole_admin_still_answers_an_unrecorded_ask(world):

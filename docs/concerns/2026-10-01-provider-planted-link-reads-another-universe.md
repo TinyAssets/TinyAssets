@@ -7,6 +7,22 @@ summary: 'The provider jail binds the owning universe read-write and allows syml
 
 # A planted link turns a daemon read into a cross-user read
 
+## U1 founder D73 preview evidence (2026-10-06)
+
+`role_reader_alias_probe.py --image tinyassets-uid-d73-preview:cells` now
+includes `previews/owner-preview.png`: **132 denied, 22 own reads, zero foreign
+reads**, with foreign bytes and metadata unchanged. Production image
+`sha256:0969ce54e8f5177b24ed4fc383c15f308f36d546903b5bb5963b1cffaa78ba86`;
+the successful final build tag has identical RootFS layers. The D60 bounded
+namespace relabel/copy diagnostic also retains zero foreign reads under all
+three existing profiles. The actual preview renderer consumes only admitted
+UI/asset bytes; it mounts no owner filesystem. The separate cell-deny output
+writer replaces planted leaf symlinks/hardlinks/FIFOs with owner-labelled
+single-link files, without changing the foreign target. Its daemon readers
+remain the common descriptor-validated universe/API/platform readers above.
+Do not delete this concern: remaining actual classes and their full writable
+path/reader matrix still gate resolution.
+
 **Filed:** 2026-10-01. Found by the gpt-6-astra refute of the provider-jail
 egress fix (branch `fix/provider-jail-egress`) and reproduced the same day. It
 predates that branch: on main the provider jail loads no seccomp filter at all.

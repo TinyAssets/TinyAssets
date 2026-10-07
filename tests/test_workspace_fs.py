@@ -175,6 +175,103 @@ def test_create_lease_dir_refuses_an_existing_name(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture
+def isolation_on(monkeypatch):
+    from tinyassets.broker.supervisor import ENV_SWITCH, PROCESS
+
+    monkeypatch.setenv(ENV_SWITCH, PROCESS)
+
+
+@posix_only
+@pytest.mark.parametrize("operation", ["read", "copy"])
+def test_switch_off_reads_a_same_owner_hardlink_without_walking_ancestry(
+    tmp_path, operation, monkeypatch,
+):
+    # R2: production holds same-owner multi-link files; unselected reads keep
+    # main's behavior, with no ``..`` identity walk.
+    from tinyassets.broker.supervisor import ENV_SWITCH
+
+    monkeypatch.delenv(ENV_SWITCH, raising=False)
+
+    def no_walk(*_args):
+        raise AssertionError("identity walk ran with the switch OFF")
+
+    monkeypatch.setattr(wfs, "_read_owner_identity", no_walk)
+    monkeypatch.setattr(wfs, "_directory_owner_identity", no_walk)
+    (tmp_path / "owner" / "nested").mkdir(parents=True)
+    record = tmp_path / "owner" / "nested" / "record"
+    record.write_bytes(b"OWNER-BYTES")
+    os.link(record, tmp_path / "owner" / "twin")
+    fd = wfs.open_dir_nofollow(tmp_path / "owner")
+    try:
+        if operation == "read":
+            assert wfs.read_regular_file_beneath(
+                fd, "nested/record", max_bytes=1024) == b"OWNER-BYTES"
+        else:
+            assert wfs.copy_regular_file_beneath(
+                fd, "nested/record", tmp_path / "copy", max_bytes=1024) == 11
+            assert (tmp_path / "copy").read_bytes() == b"OWNER-BYTES"
+    finally:
+        os.close(fd)
+
+
+@posix_only
+@pytest.mark.parametrize("operation", ["read", "copy"])
+def test_regular_file_refuses_preplanted_hardlink(tmp_path, operation, isolation_on):
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"FOREIGN-PRIVATE-BYTES")
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    alias = owner / "record"
+    os.link(foreign, alias)
+    before = foreign.stat()
+    fd = wfs.open_dir_nofollow(owner)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath, match="links"):
+            if operation == "read":
+                wfs.read_regular_file_beneath(fd, "record", max_bytes=1024)
+            else:
+                wfs.copy_regular_file_beneath(fd, "record", owner / "copy", max_bytes=1024)
+        assert not (owner / "copy").exists()
+        alias.unlink()
+        alias.write_bytes(b"OWNER-CONTROL")
+        assert wfs.read_regular_file_beneath(fd, "record", max_bytes=1024) == b"OWNER-CONTROL"
+    finally:
+        os.close(fd)
+    assert foreign.read_bytes() == b"FOREIGN-PRIVATE-BYTES"
+    after = foreign.stat()
+    assert (before.st_uid, before.st_gid, before.st_mode, before.st_mtime_ns) == (
+        after.st_uid, after.st_gid, after.st_mode, after.st_mtime_ns)
+
+
+@posix_only
+def test_hardlink_validation_uses_open_descriptor_after_name_replacement(
+    tmp_path, monkeypatch, isolation_on,
+):
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"FOREIGN-PRIVATE-BYTES")
+    alias = tmp_path / "alias"
+    os.link(foreign, alias)
+    original_open = wfs._open_leaf
+
+    def replace_after_open(parent, name):
+        fd = original_open(parent, name)
+        # Keep both foreign links alive while substituting a benign pathname.
+        alias.rename(tmp_path / "retained-alias")
+        alias.write_bytes(b"BENIGN-REPLACEMENT")
+        return fd
+
+    monkeypatch.setattr(wfs, "_open_leaf", replace_after_open)
+    fd = wfs.open_dir_nofollow(tmp_path)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath, match="links"):
+            wfs.read_regular_file_beneath(fd, "alias", max_bytes=1024)
+    finally:
+        os.close(fd)
+    assert alias.read_bytes() == b"BENIGN-REPLACEMENT"
+    assert foreign.read_bytes() == b"FOREIGN-PRIVATE-BYTES"
+
+
 @posix_only
 def test_read_returns_the_bytes_of_a_regular_file(tmp_path: Path) -> None:
     (tmp_path / "repo").mkdir()
@@ -1021,3 +1118,25 @@ def test_open_subdir_nofollow_reports_a_missing_child_as_itself(
 def test_open_subdir_nofollow_refuses_loudly_off_posix(tmp_path: Path) -> None:
     with pytest.raises(NotImplementedError, match="POSIX"):
         wfs.open_subdir_nofollow(0, "workspaces")
+
+
+@posix_only
+@pytest.mark.parametrize("selected", [False, True])
+def test_universe_read_through_a_symlinked_root_follows_only_when_off(
+    tmp_path, monkeypatch, selected,
+):
+    from tinyassets.broker.supervisor import ENV_SWITCH, PROCESS
+    from tinyassets.universe_files import read_universe_file
+
+    if selected:
+        monkeypatch.setenv(ENV_SWITCH, PROCESS)
+    else:
+        monkeypatch.delenv(ENV_SWITCH, raising=False)
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "soul.md").write_bytes(b"SOUL")
+    (tmp_path / "alias").symlink_to(tmp_path / "real", target_is_directory=True)
+    if selected:
+        with pytest.raises(OSError):
+            read_universe_file(tmp_path / "alias", "soul.md")
+    else:
+        assert read_universe_file(tmp_path / "alias", "soul.md") == b"SOUL"
