@@ -33,6 +33,52 @@ def _request(path, document, *, descriptor=None):
         return json.loads(connection.recv(4096))
 
 
+def _protected_owner_answer(universe_id, payload):
+    """Synthetic signed-in owner fixture through the real cookie/origin route.
+
+    This seeds only disposable session state, never upgrades a bearer answer
+    or bypasses the application's consent check. It is not an IdP login proof.
+    """
+    import asyncio
+    import secrets
+    from urllib.parse import urlsplit
+
+    from starlette.requests import Request
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding import app_config, owner_sessions
+    from tinyassets.onboarding.inline_requests import handle_approval
+
+    cookie = secrets.token_urlsafe(32)
+    with owner_sessions.store() as db:
+        db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                   (owner_sessions.hashed(cookie), json.dumps(current_identity().to_dict()),
+                    time.time() + 60))
+    origin = urlsplit(app_config()["resource"])
+    body = json.dumps({**payload, "universe_id": universe_id}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "path": "/app/approvals/answer",
+                       "path_params": {"operation": "answer"}, "headers": [
+                           (b"origin", f"{origin.scheme}://{origin.netloc}".encode()),
+                           (b"host", origin.netloc.encode()),
+                           (b"content-type", b"application/json"),
+                           (b"cookie", f"{owner_sessions.COOKIE}={cookie}".encode())]}, receive)
+    previous = os.environ.get("TINYASSETS_ONBOARDING_APP")
+    os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
+    try:
+        response = asyncio.run(handle_approval(request))
+        return json.loads(response.body)
+    finally:
+        owner_sessions.revoke(cookie)
+        if previous is None:
+            os.environ.pop("TINYASSETS_ONBOARDING_APP", None)
+        else:
+            os.environ["TINYASSETS_ONBOARDING_APP"] = previous
+
+
 def _fence(path, proof, **extra):
     from tinyassets import rpc_frames as rf
 
@@ -473,7 +519,7 @@ def _disconnect_consumer(root):
             {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]})
         result = connect_http(universe_id="disconnect", payload=deposit)
         assert result["status"] == "provisioned" and len(result["allowed_endpoints"]) == 2
-        from tinyassets.api.pending_requests import _answer_request
+        from tinyassets.api.pending_requests import answer_request
 
         consent = request_from_user(universe_id="disconnect", payload={
             "kind": "Approval", "title": "Checkout", "body": "Fixture checkout", "fields": [],
@@ -481,10 +527,11 @@ def _disconnect_consumer(root):
                        "connection_id": result["connection_id"], "repo": "owner/repo",
                        "consents": ["workspace_checkout", "workspace_push"]}})
         assert consent.get("status") == "pending", consent
-        # The protected owner route; bearer answers are never consent.
-        granted = _answer_request(universe_id="disconnect", payload={
-            "request_id": consent["request_id"], "values": {}},
-            owner_session={"test": "disconnect"})
+        answer = {"request_id": consent["request_id"], "values": {}}
+        refused = answer_request(universe_id="disconnect", payload=answer)
+        assert refused.get("error") == "interactive_approval_required", refused
+        assert refused.get("request_pending") is True, refused
+        granted = _protected_owner_answer("disconnect", answer)
         assert granted.get("status") == "answered", granted
         assert "models.example.com/owner/repo" in granted["destinations"][0]
         print("D38 actual workspace consent capture/answer via launcher broker: owner metadata "
@@ -1034,12 +1081,13 @@ def _accounting_runtime(root, provider):
 
 def main():
     launcher = runpy.run_path("/usr/local/libexec/ta-launch.py")
-    permissions = runpy.run_path("/usr/local/libexec/ta-egress-migration.py")["_permissions"]
+    egress = runpy.run_path("/usr/local/libexec/ta-egress-migration.py")
+    permissions = egress["_permissions"]
 
-    def directory_permissions(path, uid, gid, mode):
+    def directory_permissions(path, uid, gid, mode, role_path=None):
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            permissions(fd, uid, gid, mode)
+            permissions(fd, uid, gid, mode, path=role_path)
         finally:
             os.close(fd)
     root = Path(tempfile.mkdtemp(prefix="uid-launcher-data-"))
@@ -1048,7 +1096,7 @@ def main():
     for child in (".broker", ".broker/state", ".broker/.outbound-proxy"):
         directory = root / child
         directory.mkdir(mode=0o2700)
-        directory_permissions(directory, 1002, 1101, 0o2700)
+        directory_permissions(directory, 1002, 1101, 0o2700, child)
     _seed_ledger(root)
     if os.environ.get("TA_ORACLE_HTTPS") == "1":
         stream = runpy.run_path("/app/scripts/role_stream_oracle.py")
@@ -1058,7 +1106,7 @@ def main():
     run.chmod(0o755)
     ipc = run / "broker"
     ipc.mkdir()
-    directory_permissions(ipc, 1002, 1101, 0o2750)
+    directory_permissions(ipc, 1002, 1101, 0o2750, egress["BROKER_SOCKET_DIR"])
     # Ledger fixture connections use SQLite's transaction context, which does
     # not close the handle. Collect those cyclic setup handles before forking;
     # their later collection must not change the launcher's fd-leak baseline.

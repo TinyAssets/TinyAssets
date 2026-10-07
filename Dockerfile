@@ -362,6 +362,11 @@ COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
 COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
 COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
 COPY deploy/role_egress_migration.py /usr/local/libexec/ta-egress-migration.py
+COPY --chmod=0555 deploy/role_owner_migration.py /usr/local/libexec/ta-owner-migration.py
+COPY --chmod=0555 deploy/role_metadata_migration.py /usr/local/libexec/ta-metadata-migration.py
+COPY --chmod=0555 deploy/role_volume_inventory.py /usr/local/libexec/ta-volume-inventory.py
+COPY --chmod=0555 deploy/role_volume_migration.py /usr/local/libexec/ta-volume-migration.py
+COPY --chmod=0555 deploy/role_startup.py /usr/local/libexec/ta-role-start.py
 COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
 COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
 COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py

@@ -132,12 +132,28 @@ def test_owner_channel_admission_retry_and_refusals(broker, tmp_path):  # noqa: 
     identities = store(tmp_path, "alice")
     broker.server._owner_identities = identities
     for changes in ({"token": "stale"}, {"generation": True}, {"machine": 300001},
-                    {"uid": 300001}, {"path": "/data/alice-home"}, {"event": "retire"},
+                    {"uid": 300001}, {"path": "/data/alice-home"},
                     {"principal": "bob"}, {"center": "../x"}, {"event": 1}):
         assert request(broker, **changes) == refused
+    # D218 retires a tree-less center only when the log admitted it.
+    assert request(broker, event="retire") == {"op": "CENTER_ADMISSION_UNADMITTED"}
+    assert request(broker, event="retire", token="stale") == refused
     assert rows(identities) == []
     first = {"op": "CENTER_ADMISSION_IS", "generation": 1, "machine": 300001}
     assert request(broker) == first
     assert request(broker) == first  # a lost acknowledgement is safe to retry
     assert request(broker, event="retire") == dict(first, generation=2)
     assert request(broker) == refused
+
+
+def test_client_distinguishes_a_never_admitted_retire(monkeypatch, tmp_path):
+    from tinyassets.broker import owner_identities
+
+    answers = iter([{"op": "CENTER_ADMISSION_UNADMITTED"}, {"op": "CENTER_ADMISSION_REFUSED"}])
+    monkeypatch.setattr(owner_identities, "_owner_request", lambda root, doc: next(answers))
+    with pytest.raises(owner_identities.CenterUnadmitted):
+        owner_identities.center_admission(tmp_path, event="retire", principal="alice",
+                                          center="alice-home")
+    with pytest.raises(RuntimeError, match="refused"):
+        owner_identities.center_admission(tmp_path, event="retire", principal="alice",
+                                          center="alice-home")

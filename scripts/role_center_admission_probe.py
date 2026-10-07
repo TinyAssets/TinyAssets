@@ -17,10 +17,17 @@ sys.path.insert(0, '/app')
 launch = runpy.run_path('/usr/local/libexec/ta-launch.py')
 bounded = runpy.run_path('/usr/local/libexec/ta-owner-launch.py')
 launch['verify_chain']()
-permissions = runpy.run_path('/usr/local/libexec/ta-egress-migration.py')['_permissions']
 def directory(path, uid, gid, mode):
+    # Exact fixture labels. The egress migration's _permissions never adds
+    # setgid outside its named platform directories (D219), and this probe's
+    # socket directory lives under a temporary run root.
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: permissions(fd, uid, gid, mode)
+    try:
+        os.fchown(fd, uid, gid); os.setegid(gid)  # no FSETID: join the group (D17)
+        try: os.fchmod(fd, mode)
+        finally: os.setegid(0)
+        info = os.fstat(fd)
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (uid, gid, mode), path
     finally: os.close(fd)
 root = Path(tempfile.mkdtemp(prefix='role-admission-'))
 root.chmod(0o755); os.chown(root, 1001, 1001)

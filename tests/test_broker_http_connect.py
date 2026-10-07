@@ -37,6 +37,7 @@ def test_fresh_repeat_additive_and_full_deposit(removal):
     resource = removal.ledger._get_connection_resource(connection)
     assert len(resource.allowed_endpoints) == 2 and resource.access_mode == "exact"
     assert removal.ledger.get_grant(grant).owner_user_id == "alice"
+    assert removal.ledger.get_grant(grant).unprompted_action_cap is None
     for _ in range(2):
         result = connect(destination="fresh-full", access="full")
         assert result.get("status") == "provisioned", result

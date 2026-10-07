@@ -41,6 +41,10 @@ class AdmissionRow:
 
 
 ADMISSION_EVENTS = ("admit", "retire")
+
+
+class CenterUnadmitted(LookupError):
+    """A retire named a center the log never admitted; nothing was appended."""
 # The bounded bootstrap's center character set (deploy/role_owner_launcher.py).
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -162,7 +166,7 @@ class OwnerIdentities:
                 machine = found[0]
             else:
                 if admitted is None:
-                    raise LookupError("retire requires a prior admit")
+                    raise CenterUnadmitted("retire requires a prior admit")
                 if "retire" in rows:
                     return _row(rows["retire"])
                 machine = admitted[4]
@@ -249,6 +253,8 @@ def center_admission(data_root: Path, *, event: str, principal: str,
     validate_center(center)
     answer = _owner_request(data_root, {"op": "CENTER_ADMISSION", "event": event,
                                         "principal": principal, "center": center})
+    if answer == {"op": "CENTER_ADMISSION_UNADMITTED"}:
+        raise CenterUnadmitted("the admission log never admitted this center")
     if (set(answer) != {"op", "generation", "machine"}
             or answer["op"] != "CENTER_ADMISSION_IS"
             or type(answer["generation"]) is not int or answer["generation"] < 1

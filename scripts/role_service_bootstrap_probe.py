@@ -16,10 +16,16 @@ sys.path.insert(0, '/app')
 launch = runpy.run_path('/usr/local/libexec/ta-launch.py')
 bounded = runpy.run_path('/usr/local/libexec/ta-owner-launch.py')
 launch['verify_chain']()
-permissions=runpy.run_path('/usr/local/libexec/ta-egress-migration.py')['_permissions']
+# Exact fixture modes. Not the migration's _permissions: D211 made it narrow
+# only, so it can never add the setgid bit a fresh mkdir lacks.
 def directory(path,uid,gid,mode):
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-    try: permissions(fd,uid,gid,mode)
+    try:
+        os.fchown(fd,uid,gid); os.setegid(gid)  # no FSETID: join the group (D17)
+        try: os.fchmod(fd,mode)
+        finally: os.setegid(0)
+        info=os.fstat(fd)
+        assert (info.st_uid,info.st_gid,info.st_mode&0o7777)==(uid,gid,mode),path
     finally: os.close(fd)
 root = Path(tempfile.mkdtemp(prefix='role-services-'))
 root.chmod(0o755); os.chown(root,1001,1001)

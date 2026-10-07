@@ -79,6 +79,28 @@ def test_pending_deletion_is_explained_with_or_without_its_tree():
     assert gone["principals"] == {"u-a": "alice"}
 
 
+def test_a_pending_tree_outside_e_needs_its_label_or_its_intent():
+    """A stray intent binds nothing: the tree must carry its owner's label or
+    the intent D218 wrote for that owner and reservation."""
+    journal = stable({"u-a": "alice"}, 1)
+    found = {"u-a": "alice", "u-p": "paul"}
+    with pytest.raises(Refused, match="deletion intent does not match.*u-p"):
+        reconcile(journal=journal, discovered=found, rows=[], pending={"u-p"})
+    with pytest.raises(Refused, match="deletion intent does not match"):
+        reconcile(journal=journal, discovered=found, rows=[], pending={"u-p"},
+                  resumable=lambda center, owner: owner == "mallory")
+    for check in ("adoptable", "resumable"):
+        plan = reconcile(journal=journal, discovered=found, rows=[], pending={"u-p"},
+                         **{check: lambda center, owner: (center, owner) == ("u-p", "paul")})
+        assert plan["principals"] == found and plan["adopt"] == [] and plan["missing"] == {}
+    # The seed path's retired-but-pending exception needs the intent too.
+    rows = [row(1, "admit", "paul", "u-p"), row(2, "retire", "paul", "u-p")]
+    with pytest.raises(Refused, match="deletion intent does not match"):
+        reconcile(journal=None, discovered={"u-p": "paul"}, rows=rows, pending={"u-p"})
+    assert reconcile(journal=None, discovered={"u-p": "paul"}, rows=rows, pending={"u-p"},
+                     resumable=lambda center, owner: True)["seed"] == []
+
+
 def test_f1_b_missing_center_starts_everyone_else_and_is_rechecked():
     journal = stable({"u-a": "alice", "u-l": "lost"}, 3)
     plan = reconcile(journal=journal, discovered={"u-a": "alice"}, rows=[])
@@ -89,8 +111,13 @@ def test_f1_b_missing_center_starts_everyone_else_and_is_rechecked():
                       discovered={"u-a": "alice"}, rows=[])
     assert again["missing"] == {"u-l": "lost"} and again["alarms"]  # re-checked, still loud
     restored = reconcile(journal=stable({"u-a": "alice"}, 3, missing=plan["missing"]),
-                         discovered={"u-a": "alice", "u-l": "lost"}, rows=[])
+                         discovered={"u-a": "alice", "u-l": "lost"}, rows=[],
+                         restorable=lambda center, owner: (center, owner) == ("u-l", "lost"))
     assert restored["principals"]["u-l"] == "lost" and restored["missing"] == {}
+    # A restored tree labelled for another owner is never admitted to this one.
+    with pytest.raises(Refused, match="restored center tree is labelled for another owner"):
+        reconcile(journal=stable({"u-a": "alice"}, 3, missing=plan["missing"]),
+                  discovered={"u-a": "alice", "u-l": "lost"}, rows=[])
     retired = reconcile(journal=stable({"u-a": "alice"}, 3, missing=plan["missing"]),
                         discovered={"u-a": "alice"}, rows=[row(4, "retire", "lost", "u-l")])
     assert retired["missing"] == {} and retired["alarms"] == []
@@ -112,6 +139,34 @@ def test_first_volume_and_forward_after_reverse_seed_rows_and_never_retire():
                   rows=[row(1, "admit", "alice", "u-a"), row(2, "retire", "alice", "u-a")])
     with pytest.raises(Refused, match="differs"):
         reconcile(journal=None, discovered={"u-a": "bob"}, rows=[row(1, "admit", "alice", "u-a")])
+
+
+def test_missing_is_carried_across_reverse_then_forward():
+    """The old image writes no rows, so a held center stays held and loud."""
+    rows = [row(1, "admit", "alice", "u-a"), row(2, "admit", "lost", "u-l")]
+    reverse = stable({"u-a": "alice"}, 2, missing={"u-l": "lost"}, direction="reverse")
+    plan = reconcile(journal=reverse, discovered={"u-a": "alice"}, rows=rows)
+    assert plan["missing"] == {"u-l": "lost"}
+    assert plan["alarms"] == [dict(center="u-l", principal="lost")]
+    # Retired before the reverse (the row is in the log): dropped.
+    retired = reconcile(journal=reverse, discovered={"u-a": "alice"},
+                        rows=[*rows, row(3, "retire", "lost", "u-l")])
+    assert retired["missing"] == {} and retired["alarms"] == []
+    # Restored while the old image ran: bound only under an acceptable label.
+    with pytest.raises(Refused, match="labelled for another owner: u-l"):
+        reconcile(journal=reverse, discovered={"u-a": "alice", "u-l": "lost"}, rows=rows)
+    back = reconcile(journal=reverse, discovered={"u-a": "alice", "u-l": "lost"}, rows=rows,
+                     restorable=lambda center, owner: True)
+    assert back["missing"] == {} and back["principals"]["u-l"] == "lost"
+    assert back["seed"] == []  # its admit row already exists
+
+
+def test_legacy_label_names_no_owner():
+    legacy, canonical = contract["legacy_label"], contract["canonical_label"]
+    assert legacy((1001, 1001, 0o755, None, None))
+    assert not legacy(canonical(300002))
+    assert not legacy((1001, 300002, 0o750, None, None))
+    assert not legacy((1001, 1001, 0o750, contract["canonical_root_acl"](300002), None))
 
 
 def test_interrupted_journal_keeps_exact_matching():
