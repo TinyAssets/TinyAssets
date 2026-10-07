@@ -891,7 +891,8 @@ class ProviderRouter:
             or parent_budget is not None and parent_budget is not request_budget
         ):
             raise ProviderAuthorityHeldError("invalid parent request budget")
-        cfg = replace(cfg, request_budget=request_budget, request_attempt=None)
+        cfg = replace(cfg, request_budget=request_budget, request_attempt=None,
+                      invocation_owner_user_id="")
         if _work_agent_observer is not None:
             if (type(invocation_carrier) is not ProviderInvocationCarrier
                     or not callable(_work_agent_observer) or _agent_execution_kind is None):
@@ -1356,6 +1357,12 @@ class ProviderRouter:
                         # The owning universe for every process this call
                         # launches; the shared spawn point jails to it, or
                         # refuses a launch with none (provider_jail).
+                        # Inert routing context: only the selected broker reads it.
+                        cfg = replace(cfg, invocation_owner_user_id=(
+                            served_authority.owner_user_id if served_authority is not None
+                            else invocation_carrier._receipt.principal_id
+                            if invocation_carrier is not None else ""
+                        ))
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
                             engine_route=_engine_route(cfg),

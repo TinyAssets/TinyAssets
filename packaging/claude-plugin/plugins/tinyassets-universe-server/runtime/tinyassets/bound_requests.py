@@ -148,6 +148,7 @@ def validate_action(raw):
 
 def _authority(home, packet, owner, agent):
     from tinyassets import addressed_agents
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.custom_agents import get_binding
     from tinyassets.effectors import authenticated_external_call as effector
     from tinyassets.storage.effector_consents import list_consents
@@ -157,12 +158,25 @@ def _authority(home, packet, owner, agent):
         addressed_agents.resolve(home.parent, universe_id=home.name, owner=owner, agent_id=agent)
     except addressed_agents.AgentNotAddressable as exc:
         raise RequestRefused("The initiating agent is no longer available.") from exc
-    grant, view, error = effector._read_connection_context(
-        db_path=home.parent / "outbound.db",
-        grant_id=packet["grant_id"],
-        connection_id=packet["connection_id"],
-        universe_id=home.name,
-    )
+    if broker_selected():
+        from tinyassets.broker.ledger_queries import authorized_connection
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        try:
+            grant, resource, incarnation = authorized_connection(
+                home.parent, principal=owner, command_center=home.name,
+                grant_id=packet["grant_id"], connection_id=packet["connection_id"])
+        except GrantResolutionError:
+            raise RequestRefused("Connection authority is unavailable.") from None
+        view, error = resource.to_view(), ""
+    else:
+        grant, view, error = effector._read_connection_context(
+            db_path=home.parent / "outbound.db",
+            grant_id=packet["grant_id"],
+            connection_id=packet["connection_id"],
+            universe_id=home.name,
+        )
+        incarnation = None
     if error or grant.owner_user_id != owner or view.owner_user_id != owner:
         raise RequestRefused("Connection authority is unavailable.")
     if not effector._check_consent(home, view.destination):
@@ -226,7 +240,9 @@ def _authority(home, packet, owner, agent):
         "connection_revision": digest(
             [
                 view.as_dict(),
-                ConnectionLedger(home.parent / "outbound.db").incarnation(packet["connection_id"]),
+                incarnation if incarnation is not None
+                else ConnectionLedger(home.parent / "outbound.db").incarnation(
+                    packet["connection_id"]),
             ]
         ),
         "consent_digest": digest([asdict(grant), consent]),

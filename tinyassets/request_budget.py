@@ -476,6 +476,12 @@ def requests_today(base_path, owner, source_ref, *, reset_timezone,
         reset = current.astimezone(ZoneInfo(reset_timezone)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).astimezone(timezone.utc)
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.broker.usage_evidence import daily_counts
+
+            return daily_counts(base_path, owner, source_ref, reset, current, zero_priced_models)
         events = []
         with closing(_read_only(Path(base_path) / DB_FILENAME)) as conn:
             tables = {row[0] for row in conn.execute(
@@ -558,6 +564,9 @@ def request_budget(base_path, owner, source_ref, model, *, preset, zero_priced_m
 
 def _source_budget_facts(context, *, owner=None, require_known_free_model=False):
     """Resolve installed source facts and captured prices locally, with no IO to a model."""
+    from tinyassets.broker.supervisor import broker_selected
+
+    selected = broker_selected()
     try:
         from tinyassets.providers.definition import get_definition
         from tinyassets.providers.free_sources import (
@@ -573,19 +582,31 @@ def _source_budget_facts(context, *, owner=None, require_known_free_model=False)
             root.name, selection.connection_id.removeprefix("api_key_http:"),
         )
         if definition is None or (owner is not None and definition.owner_user_id != owner):
+            if selected:
+                raise ProviderAuthorityHeldError("source budget authority is unavailable")
             return None
+        if selected and not owner:
+            raise ProviderAuthorityHeldError("source budget requires an admitted owner")
         owner = definition.owner_user_id
-        with closing(_read_only(root.parent / "outbound.db")) as conn:
-            row = conn.execute(
-                "SELECT c.allowed_endpoints_json FROM outbound_connections c "
-                "JOIN outbound_connection_grants g ON c.connection_id = g.connection_id "
-                "WHERE g.grant_id = ? AND g.owner_user_id = ? AND c.owner_user_id = ? "
-                "AND g.universe_id = ? AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
-                (definition.ref, owner, owner, root.name),
-            ).fetchone()
-        if row is None:
-            return None
-        hosts = {ep["host"] for ep in json.loads(row[0])}
+        if selected:
+            from tinyassets.broker.ledger_queries import granted_resource_row
+
+            resource = granted_resource_row(root.parent, principal=owner,
+                                             command_center=root.name, grant_id=definition.ref)
+            endpoints = json.loads(resource["allowed_endpoints_json"])
+        else:
+            with closing(_read_only(root.parent / "outbound.db")) as conn:
+                row = conn.execute(
+                    "SELECT c.allowed_endpoints_json FROM outbound_connections c "
+                    "JOIN outbound_connection_grants g ON c.connection_id = g.connection_id "
+                    "WHERE g.grant_id = ? AND g.owner_user_id = ? AND c.owner_user_id = ? "
+                    "AND g.universe_id = ? AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
+                    (definition.ref, owner, owner, root.name),
+                ).fetchone()
+            if row is None:
+                return None
+            endpoints = json.loads(row[0])
+        hosts = {ep["host"] for ep in endpoints}
         if len(hosts) != 1:
             return None
         host = hosts.pop()
@@ -593,7 +614,9 @@ def _source_budget_facts(context, *, owner=None, require_known_free_model=False)
             return None
         preset = daily_cap_for_host(host)
         return owner, preset
-    except Exception:  # noqa: BLE001 - unavailable source facts do not invent limits
+    except Exception as exc:  # noqa: BLE001 - fixed refusal or unavailable advisory facts
+        if selected:
+            raise ProviderAuthorityHeldError("source budget authority is unavailable") from exc
         return None
 
 

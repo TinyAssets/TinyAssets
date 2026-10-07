@@ -3793,6 +3793,7 @@ def _wrap_with_effects(
     ancestors: set[str] | None = None,
     chain_key: str = "",
     should_cancel: Callable[[], bool] | None = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Fire the node's declared ``effects`` the moment the node returns
     (design D1, change `sandboxed-code-node`): against the state merged with
@@ -3832,6 +3833,7 @@ def _wrap_with_effects(
                 effect_chain, node, view, state_schema=schema, ancestors=ancestors,
                 node_key=chain_key or node_id,
                 should_cancel=should_cancel,
+                execution_context=execution_context,
             )
         except EffectFailedError as exc:
             # Workspace stages return typed failure evidence after stopping
@@ -3929,6 +3931,7 @@ def _build_node(
         inner, node, effect_chain, state_schema, event_sink, ancestors=ancestors,
         chain_key=graph_node_id or node.node_id,
         should_cancel=should_cancel,
+        execution_context=execution_context,
     )
     if not graph_node_id or graph_node_id == node.node_id:
         return wrapped

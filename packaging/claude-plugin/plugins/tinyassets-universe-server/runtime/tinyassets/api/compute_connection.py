@@ -94,6 +94,11 @@ def _validate_http_grant(
                 "secure browser form / connect_http first)"
             ),
         }
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        return _validate_http_grant_broker(
+            base=base, universe_id=universe_id, actor=actor, grant_id=grant_id)
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     ledger = ConnectionLedger(base / "outbound.db")
@@ -118,6 +123,27 @@ def _validate_http_grant(
         resource is None
         or getattr(resource, "connection_type", "") != "http"
         or getattr(resource, "revoked_at", None) is not None
+    ):
+        return dict(_NOT_FOUND)
+    return None
+
+
+def _validate_http_grant_broker(
+    *, base: Path, universe_id: str, actor: str, grant_id: str
+) -> dict[str, Any] | None:
+    """The selected broker's projection of the same uniform not_found gate."""
+    from tinyassets.broker.ledger_queries import granted_resource_row
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    try:
+        resource = granted_resource_row(base, principal=actor, command_center=universe_id,
+                                        grant_id=grant_id)
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
+    if (
+        resource is None
+        or resource.get("connection_type", "") != "http"
+        or resource.get("revoked_at") is not None
     ):
         return dict(_NOT_FOUND)
     return None

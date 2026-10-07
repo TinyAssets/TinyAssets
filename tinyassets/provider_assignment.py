@@ -438,7 +438,8 @@ def reserve_served_provider_budget(
                 owner_user_id=authority.owner_user_id,
                 universe_id=authority.universe_id,
                 connection_id=_open_connection_id(
-                    Path(base_path), authority.universe_id, authority.provider
+                    Path(base_path), authority.universe_id, authority.provider,
+                    owner_user_id=authority.owner_user_id,
                 ),
             )
             verify_open_grant_custody(

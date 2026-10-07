@@ -263,7 +263,8 @@ def _universe_short(universe_id: str) -> str:
 
 
 def _read_connection(
-    *, db_path: Path, connection_id: str, universe_id: str, grant_id: str
+    *, db_path: Path, connection_id: str, universe_id: str, grant_id: str,
+    principal: str = "",
 ) -> tuple[Any, Any]:
     """The grant and the trusted connection resource, or a refusal.
 
@@ -272,7 +273,30 @@ def _read_connection(
     (not the redacted view) is needed for the credential REFERENCE -- never the
     secret, which only the worker child resolves.
     """
-    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.storage.outbound_connections import (
+        ConnectionLedger,
+        GrantResolutionError,
+        ProxyRequestError,
+    )
+
+    if broker_selected():
+        from tinyassets.broker.ledger_queries import authorized_connection
+
+        if not principal:
+            raise _Refused("no_universe_authority", "workspace requires an admitted owner")
+        try:
+            grant, resource, _ = authorized_connection(
+                db_path.parent, principal=principal, command_center=universe_id,
+                grant_id=grant_id, connection_id=connection_id,
+            )
+        except GrantResolutionError:
+            raise _Refused(
+                "connection_authority_unavailable", "connection authority refused",
+            ) from None
+        except ProxyRequestError:
+            raise _Refused("broker_unavailable", "credential broker unavailable") from None
+        return grant, resource
 
     ledger = ConnectionLedger(db_path)
     grant = ledger.get_grant(grant_id)
@@ -1428,6 +1452,7 @@ def _push(
     repo: str,
     execute: Any,
     ancestors: set[str] | None = None,
+    principal: str = "",
 ) -> dict[str, Any]:
     commit_sha = _str_field(packet, "commit_sha")
     slug = _str_field(packet, "branch_slug")
@@ -1443,7 +1468,7 @@ def _push(
     host = mount.host or host
     repo = mount.repo or repo
     _require_packet_agrees_with_mount(packet, mount)
-    resource = _connection_for_mount(base_path, mount, fallback=resource)
+    resource = _connection_for_mount(base_path, mount, fallback=resource, principal=principal)
     remote_ref = f"refs/heads/tiny/{_universe_short(universe_id)}/{slug}"
 
     staging = _staging_root(base_path, run_id, node_id)
@@ -1681,7 +1706,9 @@ def _require_packet_agrees_with_mount(packet: dict[str, Any], mount: Any) -> Non
         )
 
 
-def _connection_for_mount(base_path: Path, mount: Any, *, fallback: Any) -> Any:
+def _connection_for_mount(
+    base_path: Path, mount: Any, *, fallback: Any, principal: str = "",
+) -> Any:
     """The connection the CHECKOUT ran under, re-read and re-checked.
 
     Re-read rather than remembered: a connection revoked between the checkout
@@ -1697,6 +1724,7 @@ def _connection_for_mount(base_path: Path, mount: Any, *, fallback: Any) -> Any:
         connection_id=mount.connection_id,
         universe_id=_universe_id(base_path),
         grant_id=mount.grant_id,
+        principal=principal,
     )
     return resource
 
@@ -1825,6 +1853,7 @@ def run_workspace_effector(
     execute: Any = None,
     timeout_seconds: float = 0.0,
     should_cancel: Callable[[], bool] | None = None,
+    execution_context=None,
 ) -> dict[str, Any]:
     """Dispatch one ``workspace`` packet. Raises only a CANCELLATION.
 
@@ -1852,6 +1881,7 @@ def run_workspace_effector(
             timeout_seconds=timeout_seconds,
             admission=admission,
             should_cancel=should_cancel,
+            execution_context=execution_context,
         )
     except _Refused as refused:
         result = {"error": refused.error, "error_kind": refused.kind, **refused.extra}
@@ -1881,6 +1911,7 @@ def _run(
     ancestors: set[str] | None = None,
     timeout_seconds: float = 0.0,
     should_cancel: Callable[[], bool] | None = None,
+    execution_context=None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1909,6 +1940,21 @@ def _run(
         }
     universe_dir = Path(base_path)
     host = ""
+    from tinyassets.broker.supervisor import broker_selected
+
+    # The admitted owner only routes the selected broker's authority reads.
+    principal = ""
+    if broker_selected():
+        from tinyassets.auth.middleware import current_identity_or_none
+
+        identity = current_identity_or_none()
+        if execution_context is not None:
+            if (execution_context.universe_id != universe_id
+                    or not execution_context.owner_user_id):
+                raise _Refused("execution_context_mismatch", "workspace execution scope mismatch")
+            principal = execution_context.owner_user_id
+        else:
+            principal = identity.user_id if identity is not None else ""
 
     if chain is None:
         from tinyassets.effectors import active_effect_chain
@@ -1987,6 +2033,7 @@ def _run(
         connection_id=connection_id,
         universe_id=universe_id,
         grant_id=grant_id,
+        principal=principal,
     )
     # The credentialed host comes from the STORED connection, not the packet.
     # A packet may restate it; naming a different one is a refusal.
@@ -2039,6 +2086,6 @@ def _run(
             should_cancel=should_cancel,
         )
     else:
-        evidence = _push(**common)
+        evidence = _push(**common, principal=principal)
     evidence["matched_output_key"] = matched_key
     return evidence

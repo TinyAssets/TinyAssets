@@ -137,7 +137,10 @@ def cloud_connections(
         # build an authenticated_external_call node WITHOUT the owner pasting them
         # back by hand. Redacted views only (no credential_ref), scoped to the
         # owner's grants for THIS universe.
-        ledger = _ledger(actor)
+        from tinyassets.broker.supervisor import broker_selected
+
+        selected = broker_selected()
+        ledger = None if selected else _ledger(actor)
         rows = []
         from tinyassets.api.connection_uses import connection_uses_view
         from tinyassets.extension_state import remote_mcp_by_connection
@@ -145,15 +148,25 @@ def cloud_connections(
         # Remote MCP servers ride a connection through an active extension, so
         # the connection that carries one says so; otherwise a server connected
         # in one turn is invisible where the owner and agent look in the next.
-        mcp = remote_mcp_by_connection(Path(_base_path()), owner=actor, universe=uid)
-        for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid):
-            resource = ledger.get_connection(grant.connection_id)
+        base = Path(_base_path())
+        mcp = remote_mcp_by_connection(base, owner=actor, universe=uid)
+        if selected:
+            from tinyassets.broker.catalog import connections
+
+            inventory = ((grant, resource) for grant, resource, _ in connections(
+                base, principal=actor, command_center=uid))
+        else:
+            inventory = ((grant, ledger.get_connection(grant.connection_id))
+                         for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid))
+        for grant, resource in inventory:
             if resource is not None:
                 # What the connection is used for (call / model) and its
                 # constant headers: the same connector reads the same way
                 # whether it reaches a platform or a model.
+                scope = (dict(data_root=base, principal=actor, command_center=uid,
+                              grant_id=grant.grant_id) if selected else {})
                 rows.append({**_project(resource, grant),
-                             **connection_uses_view(ledger, resource.connection_id),
+                             **connection_uses_view(ledger, resource.connection_id, **scope),
                              "mcp_servers": mcp.get(resource.connection_id, [])})
         return {
             "universe_id": uid,
