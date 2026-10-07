@@ -9,7 +9,7 @@ Usage (typically backgrounded; result always lands in --out file):
   python scripts/peer_agent.py claude --out review.md --prompt-file brief.md
   python scripts/peer_agent.py codex --out fix.md --prompt "fix the flaky test" \
       --cwd ../wf-bug126 --write
-  echo "summarize PLAN.md" | python scripts/peer_agent.py claude
+  echo "summarize docs/architecture.md" | python scripts/peer_agent.py claude
 
 Modes:
   default   read-only-ish. claude: plain `-p` (edit/bash tools denied).

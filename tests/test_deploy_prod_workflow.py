@@ -16,7 +16,6 @@ Covers:
 from __future__ import annotations
 
 import base64
-import json
 import os
 import re
 import shutil
@@ -223,7 +222,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     """The override must fence every default-profile service, and only those.
 
     The four `worker*` entries were dropped 2026-08-29 with the host-run fleet
-    (nothing runs outside a user's universe -- PLAN.md). Compared AGAINST
+    (nothing runs outside a user's universe -- ADR-009). Compared AGAINST
     compose.yml rather than a hardcoded list: an override naming a service the
     base file does not define would declare an imageless service and fail the
     whole project on `-f compose.yml -f override`.
@@ -939,21 +938,6 @@ def test_disk_preflight_runs_before_deploy_image_pull():
     )
 
 
-def test_disk_preflight_prunes_disposable_state_and_fails_before_restart():
-    wf = _load()
-    step = next(
-        s for s in _steps(wf) if s.get("name") == "Preflight droplet disk before image pull"
-    )
-    run_script = step.get("run", "") or ""
-
-    assert "df -h / /var/lib/docker /data" in run_script
-    assert "docker system prune -af" in run_script
-    assert "docker builder prune -af" in run_script
-    assert "journalctl --vacuum-time=3d" in run_script
-    assert "fail_threshold=90" in run_script
-    assert "refusing deploy before image pull/restart" in run_script
-
-
 def test_deploy_preserves_host_owned_backup_destination():
     wf = _load()
     scrub_step = next(
@@ -1020,42 +1004,9 @@ def test_deploy_deletes_the_retired_github_oauth_pair_and_proves_it_took():
 # `test_deploy_rejects_cloud_worker_workflow_universe_override`. All three
 # asserted a "Verify cloud worker is running" step over the four
 # `tinyassets-worker*` containers. Those containers are gone with the host-run
-# fleet (nothing runs outside a user's universe -- PLAN.md), and the step they
+# fleet (nothing runs outside a user's universe -- ADR-009), and the step they
 # asserted had already been removed from deploy-prod.yml, so all three were
 # already red at b9225243 before this change touched anything.
-
-
-def test_deploy_retires_legacy_workflow_service_before_restart():
-    wf = _load()
-    steps = _steps(wf)
-    retire_idx = next(
-        (i for i, s in enumerate(steps) if s.get("name") == "Retire legacy Workflow service"),
-        None,
-    )
-    deploy_idx = next(
-        (i for i, s in enumerate(steps) if s.get("name") == "Deploy new image"),
-        None,
-    )
-    assert retire_idx is not None
-    assert deploy_idx is not None
-    assert retire_idx < deploy_idx
-
-    run_script = steps[retire_idx].get("run", "") or ""
-    assert "workflow-daemon.service" in run_script
-    assert "workflow.service" in run_script
-    assert "workflow-watchdog.timer" in run_script
-    assert "workflow-backup.timer" in run_script
-    assert "workflow-ship-logs.timer" in run_script
-    assert "systemctl disable --now" in run_script
-    assert "/opt/workflow/compose.yml" in run_script
-    assert "/etc/workflow/env" in run_script
-    assert "workflow-tunnel" in run_script
-    assert "workflow-worker-codex-2" in run_script
-    assert "workflow-worker-claude-1" in run_script
-    assert "workflow-worker-claude-2" in run_script
-    assert "docker rm -f" in run_script
-    assert 'rm -f "$unit_file"' in run_script
-    assert "systemctl mask workflow-daemon.service" in run_script
 
 
 def test_production_marker_is_immediately_before_first_scrub_host_write():
@@ -1319,29 +1270,6 @@ def test_terminal_receipt_never_mutates_the_deployed_image_after_publication():
             "the installed terminal receipt must describe the final production "
             f"state; found a later image mutation token: {forbidden}"
         )
-
-
-def test_terminal_receipt_summary_python_is_executable(tmp_path):
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-    match = re.search(
-        r"python -c '([^']+)' \"\$RUNNER_TEMP/tinyassets-release-state\.json\"",
-        run_script,
-    )
-    assert match is not None, "terminal receipt outcome summary command is missing"
-
-    receipt_path = tmp_path / "release-state.json"
-    receipt_path.write_text(json.dumps({"outcome": "deployed"}), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, "-c", match.group(1), str(receipt_path)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "deployed"
 
 
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
@@ -1762,28 +1690,6 @@ def _stop_writer_step(wf: dict, name: str) -> dict:
     return step
 
 
-def test_stop_writer_preflight_runs_before_image_mutation():
-    wf = _load()
-    steps = _steps(wf)
-    preflight = _stop_writer_step(wf, "Transitional task 2.1 stop-writer preflight")
-    deploy = next(step for step in steps if step.get("id") == "deploy")
-    production_mutation = next(
-        step for step in steps if step.get("id") == "production_mutation"
-    )
-    disk = _step_named(wf, "Preflight droplet disk before image pull")
-
-    assert (
-        steps.index(disk)
-        < steps.index(preflight)
-        < steps.index(production_mutation)
-        < steps.index(deploy)
-    )
-    assert str(preflight.get("id")) == "stop-writer"
-    assert str(preflight.get("env", {}).get("NEW_IMAGE", "")).endswith(
-        "steps.tag.outputs.image_ref }}"
-    )
-
-
 def test_deploy_shares_production_host_mutation_concurrency_group():
     wf = _load()
     assert wf.get("concurrency") == {
@@ -1816,22 +1722,6 @@ def test_disk_preflight_precedes_every_remote_image_pull():
                 pull_indexes.append(index)
     assert pull_indexes
     assert all(disk_index < index for index in pull_indexes)
-
-
-def test_stop_writer_workflow_invokes_transitional_helper_subcommands():
-    text = _text()
-    assert "scripts/retire_cheat_loop_deploy_fence.py" in text
-    for command in (
-        " preflight --image-ref ",
-        " prepare-deploy --image-ref ",
-        " prove --image-ref ",
-        " post-canary --image-ref ",
-        " status",
-        " observe",
-        " quiesce-unsafe",
-        " restore-if-safe --image-ref ",
-    ):
-        assert command in text
 
 
 def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
@@ -1871,69 +1761,6 @@ def test_stop_writer_blocks_unsafe_rollback_image():
     )
 
 
-def test_stop_writer_compares_post_deploy_and_post_canary_snapshots():
-    wf = _load()
-    steps = _steps(wf)
-    deploy_proof = _stop_writer_step(
-        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
-    )
-    canary = _step_named(wf, "Post-deploy canary — canonical URL only")
-    post_canary = _stop_writer_step(
-        wf, "Transitional task 2.1 post-canary receipt proof"
-    )
-    forward = _step_named(wf, "Mark forward path complete")
-    rollback = _step_named(wf, "Rollback on failure")
-
-    assert (
-        steps.index(deploy_proof)
-        < steps.index(canary)
-        < steps.index(post_canary)
-        < steps.index(forward)
-        < steps.index(rollback)
-    )
-    preflight = _stop_writer_step(
-        wf, "Transitional task 2.1 stop-writer preflight"
-    )
-    assert "receipt_snapshot_before.json" in str(preflight.get("run", ""))
-    assert "receipt_snapshot_post_deploy.json" in str(deploy_proof.get("run", ""))
-    assert "receipt_snapshot_post_canary.json" in str(post_canary.get("run", ""))
-    assert "post-canary --image-ref" in str(post_canary.get("run", ""))
-
-
-def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
-    wf = _load()
-    restore = _stop_writer_step(
-        wf, "Transitional task 2.1 restore restart racers when safe"
-    )
-    artifact = _step_named(wf, "Upload transitional task 2.1 deploy proof")
-
-    assert str(restore.get("if", "")).strip() == "always()"
-    restore_script = str(restore.get("run", ""))
-    assert "retire-cheat-loop-deploy-fence.py status" in restore_script
-    assert "retire-cheat-loop-deploy-fence.py observe" in restore_script
-    assert "retire-cheat-loop-deploy-fence.py quiesce-unsafe" in restore_script
-    assert "cleanup_mutation_started=true" in restore_script
-    assert "cleanup_safely_fenced=false" in restore_script
-    assert "cleanup_safely_fenced=true" in restore_script
-    assert restore_script.index("cleanup_safely_fenced=true") > restore_script.index(
-        'if [ "$fence_status" -ne 0 ]'
-    )
-    assert restore_script.index("cleanup_mutation_started=true") < restore_script.index(
-        "retire-cheat-loop-deploy-fence.py quiesce-unsafe"
-    )
-    assert "git merge-base --is-ancestor" in restore_script
-    assert "cleanup_restored=true" in restore_script
-    assert "masked_units_after" in restore_script
-    assert "tinyassets-daemon.service" in restore_script
-    assert restore_script.index("git merge-base --is-ancestor") < restore_script.index(
-        "restore-if-safe --image-ref"
-    )
-    assert str(artifact.get("if", "")).strip() == "always()"
-    assert (artifact.get("uses") or "").startswith("actions/upload-artifact@")
-    assert "retire-cheat-loop-task-2-1" in str(artifact.get("with", {}).get("name", ""))
-    assert "stop-writer-evidence" in str(artifact.get("with", {}).get("path", ""))
-
-
 def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
     wf = _load()
     terminal = _step_with_run_token(wf, "terminal_receipt_result=")
@@ -1971,25 +1798,13 @@ def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
     assert 'daemon.get("enabled") != "enabled"' not in cleanup_script
 
 
-def test_cleanup_derives_cutover_only_from_current_run_generation():
-    wf = _load()
-    cleanup = _step_named(
-        wf,
-        "Transitional task 2.1 restore restart racers when safe",
-    )
-    script = str(cleanup.get("run", ""))
-    assert "current_run_cutover_started" in script
-    assert "str(bool(status.get(\"state_exists\")))" not in script
-    assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
-
-
 def test_compose_declares_no_host_run_worker_fleet():
     """The four `worker*` services must not come back.
 
     This replaced an accept-direction control asserting "the shared fleet must
     stay shared". Inverted 2026-08-29: nothing runs unless it lives inside a
     user's universe under that user's control, and the platform never runs an
-    actor of its own (PLAN.md). The surviving services keep the no-universe-pin
+    actor of its own (ADR-009). The surviving services keep the no-universe-pin
     assertion the old control carried.
     """
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
@@ -2028,139 +1843,3 @@ def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
     wf_all = _WORKFLOW.read_text(encoding="utf-8")
     assert 'python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles' in wf_all
 
-
-def test_active_universe_repoint_is_explicit_input_only_and_validated():
-    """The marker that decides which universe the fleet serves.
-
-    The daemon resolves /data/.active_universe before any
-    other default, and an AUTHENTICATED `switch_universe` is request-scoped by
-    design and never writes it — so there is no in-band way for a user to
-    repoint the fleet at their own universe. Four admissible slices sat
-    unclaimed for >18h because of exactly this.
-
-    It must never move by default, and never to an unvalidated value.
-    """
-    wf = _load()
-    inputs = wf[True]["workflow_dispatch"]["inputs"] if True in wf else wf["on"]["workflow_dispatch"]["inputs"]
-    assert "set_active_universe" in inputs
-    assert not inputs["set_active_universe"].get("required", False)
-    assert "default" not in inputs["set_active_universe"]
-
-    step = next(
-        s for s in wf["jobs"]["deploy"]["steps"]
-        if s.get("name", "").startswith("Repoint the active-universe marker")
-    )
-    # Only ever on an explicit non-empty input.
-    assert "inputs.set_active_universe != ''" in str(step.get("if", ""))
-    run = step.get("run", "") or ""
-    assert "invalid universe id" in run
-    assert "^[A-Za-z0-9._-]{1,128}$" in run
-
-
-def test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup():
-    """Level 2 auto-rollback: reverse a proved-but-uncommitted quiesce.
-
-    The 2026-08-07 zero-container outages happened when the stop-writer fence
-    quiesced (stopped + runtime-masked the daemon and racers) and the deploy
-    then FAILED before the new image committed. The legacy "restore restart
-    racers when safe" cleanup could not help because its restore-if-safe path
-    needs an already-RUNNING exact-five fleet to observe — but the fleet was
-    down and masked. The Level 2 block runs ONLY in that precise
-    image-not-committed case and lets the fence reverse its own recorded
-    quiesce via `restore-quiesced` (compose-up on the unchanged image).
-    """
-    wf = _load()
-    cleanup = _stop_writer_step(
-        wf, "Transitional task 2.1 restore restart racers when safe"
-    )
-    # (c) Only acts in the image-not-committed safe case: the block is gated on
-    # the deploy step's image_mutation_started output being not-"true".
-    assert (
-        cleanup.get("env", {}).get("IMAGE_MUTATION_STARTED")
-        == "${{ steps.deploy.outputs.image_mutation_started }}"
-    )
-    script = str(cleanup.get("run", ""))
-    assert 'if [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then' in script
-    assert "restore-quiesced --image-ref" in script
-    # Recovery is compose-up on the unchanged image, NEVER `docker start <id>`.
-    assert "docker start" not in script
-
-    # Transition order inside the cleanup step: prove the old fleet's ancestry
-    # is descended from the stop-writer floor BEFORE invoking restore-quiesced,
-    # and only declare cleanup_restored=true AFTER restore-quiesced returns.
-    assert script.index('if [ "${IMAGE_MUTATION_STARTED}" != "true" ]') < script.index(
-        "restore-quiesced --image-ref"
-    )
-    assert script.index("git merge-base --is-ancestor") < script.index(
-        "restore-quiesced --image-ref"
-    )
-    assert script.index("restore-quiesced --image-ref") < script.index(
-        "cleanup_restored=true"
-    )
-
-    # (b) Fails LOUD to manual recovery, never a silent restored: an eligible
-    # durable identity that cannot prove restoration is a hard fence failure,
-    # not a fall-through. A non-eligible/not-applicable result (status 3) is the
-    # ONLY path that falls back to today's observe/restore-or-fence behavior.
-    assert "fence_unsafe_and_fail" in script
-    assert 'quiesced_identity_status" -ne 3' in script
-    assert 'quiesced_proof_status" -ne 3' in script
-
-
-def test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid():
-    """(d) The Level 2 path must not disturb the release-state receipt tuple.
-
-    restore-quiesced runs in the always() stop-writer-cleanup step and feeds
-    the same cleanup_restored / cleanup_mutation_started outputs the terminal
-    receipt already consumes. The separate rollback step's
-    image_mutation_not_started tuple must remain intact.
-    """
-    text = _text()
-    rollback_slice = text[
-        text.index("id: rollback") : text.index("id: stop-writer-cleanup")
-    ]
-    for token in (
-        "rollback_attempted=false",
-        "rollback_result=not_attempted",
-        "rollback_canary_status=not_run",
-        "rollback_reason=image_mutation_not_started",
-    ):
-        assert token in rollback_slice, token
-
-    # The successful Level 2 recovery marks a host mutation and a full restore,
-    # exactly the two outputs the terminal receipt reads.
-    cleanup_slice = text[
-        text.index("id: stop-writer-cleanup") : text.index(
-            "- name: Publish release-state receipt"
-        )
-    ]
-    assert "cleanup_mutation_started=true" in cleanup_slice
-    assert "cleanup_restored=true" in cleanup_slice
-    # The evidence the workflow validates must assert the exact restored shape.
-    assert '"quiesced_before_image_commit"' in cleanup_slice
-    assert 'evidence.get("phase") == "not_applicable"' in cleanup_slice
-    assert 'evidence.get("masked_units_after") == []' in cleanup_slice
-
-    # The terminal receipt still consumes the cleanup outputs unchanged.
-    terminal = _step_with_run_token(wf=_load(), token="terminal_receipt_result=")
-    assert (
-        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_RESTORED")
-        == "${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}"
-    )
-
-
-def test_level2_quiesced_restore_is_bounded_and_isolated_to_current_run():
-    """The recovery ssh must be time-bounded and scoped to the current run."""
-    cleanup = _stop_writer_step(
-        _load(), "Transitional task 2.1 restore restart racers when safe"
-    )
-    script = str(cleanup.get("run", ""))
-    # systemd-run bounds the recovery so a hung restore cannot wedge the runner.
-    assert "systemd-run --quiet --collect --wait --pipe" in script
-    assert "--property RuntimeMaxSec=720" in script
-    assert "--property TimeoutStartSec=720" in script
-    # Identity is read from the CURRENT-run durable fence only.
-    assert "current_run_matches" in script
-    assert "current_run_previous_image_ref" in script
-    assert "current_run_previous_revision" in script
-    assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script

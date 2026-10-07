@@ -1,7 +1,7 @@
 """connect_http — provision a generic outbound http connection (Slice 1).
 
 Requirement source:
-``openspec/changes/provision-http-connection-channel/specs/outbound-connection-provisioning/spec.md``.
+``openspec/changes/archive/2026-10-06-provision-http-connection-channel/specs/outbound-connection-provisioning/spec.md``.
 
 Covers: owner (admin, not write) gate, the vault http deposit + connection +
 grant round-trip, endpoint SSRF pre-validation (nothing mutated on bad input),

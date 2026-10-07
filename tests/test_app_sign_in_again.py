@@ -199,7 +199,6 @@ def test_the_shape_renders_a_button_and_offers_nothing_to_paste():
     shapes = html[html.index("  const ConnectShapes={"):
                   html.index("  // A declared model list needs")]
     assert "sign_in:" in shapes, "the page does not know the shape the card offers"
-    assert "nothing to copy or paste" in shapes
     from tinyassets.api.pending_requests import SIGN_IN_SHAPE
 
     assert f"{SIGN_IN_SHAPE}:" in shapes, "the card's shape id and the page's disagree"

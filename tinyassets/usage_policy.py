@@ -32,8 +32,8 @@ TIER_PAID = "paid"
 
 
 class AccountType(StrEnum):
-    """The ONLY per-account input allowed to change behaviour (PLAN.md, *Owner
-    surfaces are complete*; founder 2026-09-30: "there are only two account types,
+    """The ONLY per-account input allowed to change behaviour (ADR-011, *The Owner
+    Door Is Complete*; founder 2026-09-30: "there are only two account types,
     free or subscription and we dont care what connections they have").
 
     Resolved in exactly one place, per ACCOUNT: `universe_owner.account_type_of`

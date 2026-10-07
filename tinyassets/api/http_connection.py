@@ -123,6 +123,13 @@ URL_SECRET_FIELD_NAME = "capability_url"
 #: token bundle names the token URL a refresh token is sent to, so only the
 #: owner's own sign-in may write it.
 _SIGN_IN_AUTH_SCHEME = "oauth2"
+#: A public endpoint that takes no key (a keyless remote MCP server, an open
+#: API). Created ONLY by the owner approving a fieldless connect ask
+#: (``allow_keyless``), never at this door directly. The broker resolves a
+#: vault value for every http connection, so a fixed non-secret marker is
+#: stored and ``_build_http_secret_bundle`` signs ``none`` with no header.
+KEYLESS_AUTH_SCHEME = "none"
+_KEYLESS_MARKER = "keyless"
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
 
 
@@ -590,16 +597,18 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
 
 def connect_http(
     *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
+    allow_keyless: bool = False,
 ) -> dict[str, Any]:
     from tinyassets.onboarding.serving import _gesture_lock
 
     with _gesture_lock(_request_universe(universe_id)):
         return _connect_http(universe_id=universe_id, payload=payload,
-                             allow_oauth2=allow_oauth2)
+                             allow_oauth2=allow_oauth2, allow_keyless=allow_keyless)
 
 
 def _connect_http(
     *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
+    allow_keyless: bool = False,
 ) -> dict[str, Any]:
     """Provision (or rotate) a generic http connection for the owner's universe.
 
@@ -678,7 +687,8 @@ def _connect_http(
         # An explicit non-string / empty scheme is a malformed request, NOT an
         # invitation to silently default to bearer (Codex: falsy schemes defaulted).
         scheme = ""
-    if scheme not in _DEPOSITABLE_AUTH_SCHEMES and not (
+    keyless = allow_keyless and scheme == KEYLESS_AUTH_SCHEME
+    if scheme not in _DEPOSITABLE_AUTH_SCHEMES and not keyless and not (
         allow_oauth2 and scheme == _SIGN_IN_AUTH_SCHEME
     ):
         return {
@@ -691,6 +701,11 @@ def _connect_http(
         }
 
     secret = document.get("secret")
+    if keyless:
+        if secret is not None:
+            return {"error": "connection_setup_invalid",
+                    "detail": "a keyless connection carries no secret"}
+        secret = _KEYLESS_MARKER
     if not isinstance(secret, str) or not secret.strip():
         return {"error": "connection_setup_invalid", "detail": "secret is required"}
     if len(secret) > _MAX_SECRET_CHARS:

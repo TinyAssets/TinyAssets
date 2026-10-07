@@ -18,7 +18,7 @@ reusable plan or artifact that future sessions can act on.
 ## Boundary with implementation precedent
 
 Use this skill when a named outside source or a research finding may change
-TinyAssets strategy, PLAN/OpenSpec design truth, capability direction, or
+TinyAssets direction, ADRs or OpenSpec specs, capability direction, or
 cross-task architecture. Use a repo search for precedent instead for a
 bounded search for external code examples that informs one implementation
 decision inside an already-authorized lane.
@@ -67,8 +67,8 @@ When importing outside ideas:
    scoping. That is the only scan; there is no per-phase repeat.
 4. If you will write a durable artifact, check no open PR or active branch
    already owns those files (`python scripts/worktree_status.py`).
-6. Load `PLAN.md` sections relevant to the study. Full-load only when the
-   outside work could affect platform architecture or product direction.
+6. Read `README.md` § Direction, `docs/architecture.md`, and the ADRs and
+   specs relevant to the study.
 
 ### 2. Canonicalize The Outside Source
 
@@ -94,7 +94,7 @@ Map the outside system module by module:
 Map the relevant TinyAssets modules the same way:
 
 - use `rg --files`, AST summaries, tests, and targeted `docview.py`;
-- connect claims to `PLAN.md`, design notes, and current code;
+- connect claims to ADRs, specs, design notes, and current code;
 - note where TinyAssets already has a stronger primitive;
 - note where the outside system exposes a real gap.
 
@@ -165,7 +165,7 @@ For each material implication, include:
 - smallest credible integration slice;
 - risks and failure modes;
 - verification needed;
-- whether `PLAN.md` or an OpenSpec spec must change.
+- whether an ADR or an OpenSpec spec must change.
 
 When the outside work is a trace, data-flywheel, observability, or training-data
 project, also evaluate:
@@ -205,7 +205,7 @@ Add a `Worktree Landing Packet` to the report and mirror its essentials into
   (`codex/<slug>`, `claude/<slug>`, or the eventual team convention);
 - proposed worktree directory, normally `../wf-<slug>` unless the local
   worktree manager says otherwise;
-- relevant `PLAN.md` modules reviewed or needing review before build;
+- relevant ADRs and specs reviewed or needing review before build;
 - idea feed refs from `ideas/INBOX.md`, if loose captured ideas should be
   remembered at the bottom of the lane;
 - GitHub fold-back object: draft PR while blocked/reviewing, ready PR only

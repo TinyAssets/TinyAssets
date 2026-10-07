@@ -6,7 +6,7 @@ Covers:
 
 The supervisor-heartbeat WRITER and healthcheck cases were deleted on
 2026-08-29 with the host-run `tinyassets.cloud_worker` fleet -- nothing runs
-outside a user's universe (PLAN.md). The beat READER cases stay: the served
+outside a user's universe (ADR-009). The beat READER cases stay: the served
 `AssignedQueueConsumer` writes the same files.
   - last_activity_canary worker_liveness preference
   - ProviderRouter._call_meta shape + call_with_policy 3-tuple

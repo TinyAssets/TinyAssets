@@ -28,7 +28,7 @@ REQUIRED_PURPOSE_FIELDS = (
     "Branch:",
     "Base ref:",
     "Issue/PR:",   # wt.py's scaffold; a legacy "STATUS/Issue/PR:" still matches
-    "PLAN refs:",
+    "Spec refs:",
     "Ship condition:",
     "Abandon condition:",
     "Pickup hints:",

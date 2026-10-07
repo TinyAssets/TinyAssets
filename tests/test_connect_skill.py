@@ -23,7 +23,8 @@ def test_new_account_connect_skill_is_indexed_and_owner_editable(tmp_path, monke
     assert (home / CONNECT_SKILL_PATH).read_text(encoding="utf-8") == connect_skill()
     assert "connect" in dict(universe_tools.skill_index(home))
     assert CONNECT_SKILL_PATH in universe_tools.harness_prompt(home)
-    edited = connect_skill().replace("Connect any service, platform or API", "My connection recipe")
+    edited = connect_skill().replace(
+        "Connect any service, platform, API or remote MCP server", "My connection recipe")
     write_universe_file(home, CONNECT_SKILL_PATH, edited.encode("utf-8"))
     assert dict(universe_tools.skill_index(home))["connect"].startswith("My connection recipe")
     seed_okf_bundle(home)

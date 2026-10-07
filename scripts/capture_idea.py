@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--next-step",
         default=(
             "triage and choose whether this belongs in "
-            "PLAN.md, a design note, an openspec change, or an exec plan"
+            "an ADR, a design note, an openspec change, or an exec plan"
         ),
         help="Immediate next action for the captured idea",
     )

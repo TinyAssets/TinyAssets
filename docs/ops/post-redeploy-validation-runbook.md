@@ -26,7 +26,7 @@ Restart-only ops (no code change): `docs/ops/cloud-daemon-restart.md`.
 | `patch_branch` read-after-write contract (BUG-030 reproduction) | code already shipped (Task #11 verified) | §5.3 |
 | Failure-class shape on run failures (BUG-029 `actionable_by`) | code shipped (Task #10) | §5.4 |
 | Wiki status migration (#32) | STATUS Work "Wiki status migration" | §5.5 |
-| Mark's `change_loop_v1` end-to-end milestone | `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` R3 | §5.6 |
+| Mark's `change_loop_v1` end-to-end milestone | `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` (deleted 2026-10-06; in git history) R3 | §5.6 |
 | Sub-branch invocation Phase A (`a12e284`) | recent commit | §6.1 |
 | Bounty-calc query template substrate (`373df03`) | recent commit | §6.2 |
 | Dispatcher request_type substrate | landed `d06a6d7`/`79a3c28`/`218d9ec`/`c686b48` | §6.3 |
@@ -403,7 +403,7 @@ Track in STATUS Work row, delete row when batch complete.
 
 ### §5.6 Mark's `change_loop_v1` end-to-end milestone
 
-Per `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` R3:
+Per `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` (deleted 2026-10-06; in git history) R3:
 the "live loop" milestone needs cloud redeploy + Task #82 substrate land
 + host setting an env var. After §5.1-§5.4 all green:
 
@@ -629,6 +629,6 @@ Companion docs:
 - `docs/ops/cloud-daemon-restart.md` — restart-only ops, no deploy.
 - `docs/ops/acceptance-probe-catalog.md` — named probe definitions
   (PROBE-001 to PROBE-004).
-- `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` —
+- `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` (deleted 2026-10-06; in git history) —
   Mark's gap mapping; §5.6 implements the R3 wire-up step.
 - `STATUS.md` — live source of truth for which rows close.

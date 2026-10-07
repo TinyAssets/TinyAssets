@@ -1,7 +1,7 @@
 """The OWNER door: the app's reads of its owner's own data, always complete.
 
-There are two doors onto a universe's data (``PLAN.md``, *Owner surfaces are
-complete*; ``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``):
+There are two doors onto a universe's data (ADR-011, *The Owner Door Is
+Complete*; ``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``):
 
 * the **model door** — the MCP connector (``tinyassets.universe_server``) and the
   served-agent engine (``tinyassets.engine_mcp_server``). A model's context

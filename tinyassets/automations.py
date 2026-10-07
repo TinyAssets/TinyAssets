@@ -4,7 +4,7 @@ One universe, one owner, one recurring Branch run. This module is the whole
 storage + logic half of ``openspec/changes/user-owned-automations`` task 3.1/3.2;
 the MCP surface and the consumer pump call into it and add nothing of their own.
 
-What is deliberately NOT here (design D1, PLAN.md 2026-08-29 "nothing runs
+What is deliberately NOT here (design D1; ADR-009, 2026-08-29: "nothing runs
 outside a user's universe"):
 
 * **No provider.** A row records what to run and when, never which provider or

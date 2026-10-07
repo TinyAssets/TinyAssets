@@ -1145,3 +1145,18 @@ def test_a_provider_advertised_model_renders_as_a_normal_choice(tmp_path):
     # ...and the grant-only row is still gated, with its reason said out loud.
     assert "second" in " ".join(below), "a grant-only row escaped the Needs access group"
     assert any("model access optin required" in r["text"] for r in rows[divider:])
+
+
+def test_automatic_header_names_choice_and_reason_and_keeps_picker(tmp_path):
+    result = run_picker(tmp_path, "await ModelPicker.menuOpen();")
+    header = result["ui"]["btn-models"]["text"]
+    assert "first" in header and "strongest of your connected sources" in header
+    assert result["ui"]["model-menu"]["hidden"] is False
+    assert any("second" in row["text"] and not row["disabled"]
+               for row in result["ui"]["model-menu"]["children"])
+
+
+def test_stale_automatic_header_does_not_claim_a_current_strongest_model(tmp_path):
+    result = run_picker(tmp_path, "expire();ModelPicker.paintHeader();")
+    assert "strongest" not in result["ui"]["btn-models"]["text"]
+    assert "Automatic" in result["ui"]["btn-models"]["text"]

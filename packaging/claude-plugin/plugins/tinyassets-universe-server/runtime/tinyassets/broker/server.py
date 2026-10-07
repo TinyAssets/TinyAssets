@@ -139,19 +139,24 @@ class _Stream:
     upload: Any = None
     authority: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
+    refresh_sequence: int = 0
+    refresh_result: bool | None = None
+    refresh_pending: bool = False
 
 
 class BrokerServer:
     def __init__(self, *, ledger_for: Callable[[str], Any],
                  dispatch_for: Callable[..., Callable[..., Any]],
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
-                 uid_of: Callable[[socket.socket], int] = peer_uid) -> None:
+                 uid_of: Callable[[socket.socket], int] = peer_uid,
+                 owner_identities: Any = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
         self._fence = fence
         self._roles = dict(roles)
         self._uid_of = uid_of
+        self._owner_identities = owner_identities
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
@@ -297,11 +302,51 @@ class _Connection:
                     stream.wake.notify_all()
         elif op == "CANCEL" and stream is not None:
             await asyncio.to_thread(self._server.cancel, stream)
+        elif op == "REFRESH_ACK" and stream is not None:
+            with stream.wake:
+                if (set(doc) != {"op", "sequence", "ok"}
+                        or type(doc["sequence"]) is not int or type(doc["ok"]) is not bool
+                        or not stream.refresh_pending
+                        or doc["sequence"] != stream.refresh_sequence
+                        or stream.refresh_result is not None):
+                    raise rf.FrameError("invalid refresh acknowledgement")
+                stream.refresh_result = doc["ok"]
+                stream.wake.notify_all()
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "FENCE":
+        if op == "OWNER_IDENTITY":
+            answer = await asyncio.to_thread(self._owner_identity, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CENTER_ADMISSION":
+            answer = await asyncio.to_thread(self._center_admission, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "LEDGER_QUERY":
+            answer = await asyncio.to_thread(self._ledger_query, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "ERASE_ACCOUNT":
+            answer = await asyncio.to_thread(self._erase_account, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "USAGE":
+            answer = await asyncio.to_thread(self._usage, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "HTTP_CONNECT":
+            answer = await asyncio.to_thread(self._http_connect, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "HTTP_POLICY":
+            answer = await asyncio.to_thread(self._http_policy, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "DISCONNECT":
+            answer = await asyncio.to_thread(self._disconnect, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CAPABILITY":
+            answer = await asyncio.to_thread(self._capability, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CONNECTION_CATALOG":
+            answer = await asyncio.to_thread(self._connection_catalog, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "FENCE":
             try:
                 generation, token = await asyncio.to_thread(
                     self._server._fence.barrier, doc.get("generation"), doc.get("proof"),
@@ -320,6 +365,250 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _owner_identity(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.owner_identities import validate_principal
+
+        try:
+            if set(doc) != {"op", "principal", "allocate", "generation", "token"}:
+                raise ValueError("unsupported identity fields")
+            validate_principal(doc["principal"])
+            if (type(doc["allocate"]) is not bool or type(doc["generation"]) is not int
+                    or not isinstance(doc["token"], str)):
+                raise ValueError("invalid identity request")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._server._owner_identities is None:
+                    raise RuntimeError("owner identities are not initialized")
+                identity = self._server._owner_identities.resolve(
+                    doc["principal"], allocate=doc["allocate"])
+                return {"op": "OWNER_IDENTITY_IS", "uid": identity.uid, "gid": identity.gid}
+        except Exception:  # noqa: BLE001 - no identity, path or persisted state on refusal
+            return {"op": "OWNER_IDENTITY_REFUSED"}
+
+    def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """DA1: append-only admit/retire; machine always from the reservation."""
+        try:
+            if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
+                raise ValueError("unsupported admission fields")
+            if (not isinstance(doc["event"], str) or type(doc["generation"]) is not int
+                    or not isinstance(doc["token"], str)):
+                raise ValueError("invalid admission request")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._server._owner_identities is None:
+                    raise RuntimeError("owner identities are not initialized")
+                row = self._server._owner_identities.admission(
+                    doc["event"], doc["principal"], doc["center"])
+                return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
+                        "machine": row.machine}
+        except Exception:  # noqa: BLE001 - nothing appended or persisted on refusal
+            return {"op": "CENTER_ADMISSION_REFUSED"}
+
+    def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.account_erasure import local_erase, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token"}:
+                raise ValueError("unsupported erasure fields")
+            validate(doc["principal"], doc["command_center"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                counts = local_erase(self._server._ledger_for(doc["principal"]),
+                                     principal=doc["principal"],
+                                     command_center=doc["command_center"])
+                return {"op": "ACCOUNT_ERASED", "counts": counts}
+        except Exception:  # noqa: BLE001 - no persisted values on the wire
+            return {"op": "ACCOUNT_ERASURE_REFUSED"}
+
+    def _ledger_query(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.ledger_queries import local_query, validate_query
+
+        try:
+            if set(doc) != {"op", "query", "principal", "command_center", "grant_id",
+                            "connection_id", "generation", "token"}:
+                raise ValueError("unsupported ledger query fields")
+            validate_query(doc["query"], doc["principal"], doc["command_center"],
+                           doc["grant_id"], doc["connection_id"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            # Authenticate before even constructing the private ledger. Hold
+            # the generation across the transaction, just as for an egress send.
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                ledger = self._server._ledger_for(doc["principal"])
+                result = local_query(
+                    ledger, query=doc["query"], principal=doc["principal"],
+                    command_center=doc["command_center"], grant_id=doc["grant_id"],
+                    connection_id=doc["connection_id"],
+                )
+                answer = {"op": "LEDGER_RESULT", "result": result}
+                # Validate the bounded wire representation in the worker, so
+                # malformed persisted data cannot terminate the server handler.
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - no paths, SQL or values on the wire
+            error = "fenced" if isinstance(exc, Fenced) else (
+                "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                else "refused")
+            return {"op": "LEDGER_REFUSED", "error_class": error}
+
+    def _connection_catalog(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.catalog import local_page, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "cursor", "limit"}:
+                raise ValueError("unsupported catalog fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["cursor"], doc["limit"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_page(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    cursor=doc["cursor"], limit=doc["limit"])
+                answer = {"op": "CATALOG_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "CATALOG_REFUSED"}
+
+    def _disconnect(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.disconnect import local_operation, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported disconnect fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    document=doc["document"])
+                answer = {"op": "DISCONNECT_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "DISCONNECT_REFUSED", "error_class":
+                    "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                    else "refused"}
+
+    def _http_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.http_policy import local_operation, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported policy fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    document=doc["document"])
+                answer = {"op": "HTTP_POLICY_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "HTTP_POLICY_REFUSED", "error_class":
+                    "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                    else "refused"}
+
+    def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.usage import local_operation, validate
+        from tinyassets.request_budget import RequestBudgetExceeded
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "usage_id", "document"}:
+                raise ValueError("unsupported accounting fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                try:
+                    result = local_operation(self._server._ledger_for(doc["principal"]),
+                                             principal=doc["principal"],
+                                             command_center=doc["command_center"],
+                                             usage_id=doc["usage_id"], document=doc["document"])
+                    answer = {"op": "USAGE_RESULT", "result": result}
+                except RequestBudgetExceeded as exc:
+                    answer = {"op": "USAGE_STOPPED", "reason": exc.reason,
+                              "receipt": exc.request_receipt}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception:  # noqa: BLE001 - fixed refusal, no storage details on wire
+            return {"op": "USAGE_REFUSED"}
+
+    def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.http_connect import local_operation, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported connect fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    document=doc["document"])
+                answer = {"op": "HTTP_CONNECT_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "HTTP_CONNECT_REFUSED", "error_class":
+                    "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                    else "refused"}
+
+    def _capability(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.capabilities import local_operation, validate
+        from tinyassets.storage.outbound_connections import (
+            MODEL_USE_PRICED_CONFLICT,
+            SsrfValidationError,
+        )
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported capability fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                         principal=doc["principal"],
+                                         command_center=doc["command_center"],
+                                         document=doc["document"])
+                answer = {"op": "CAPABILITY_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - no persisted values or secrets on the wire
+            if isinstance(exc, Fenced):
+                error = "fenced"
+            elif isinstance(exc, SsrfValidationError):
+                error = "endpoint"
+            elif type(exc).__name__ == "GrantResolutionError":
+                error = "GrantResolutionError"
+            elif isinstance(exc, LookupError):
+                error = "lookup"
+            elif isinstance(exc, ValueError):
+                error = "priced_conflict" if str(exc) == MODEL_USE_PRICED_CONFLICT else "invalid"
+            else:
+                error = "refused"
+            return {"op": "CAPABILITY_REFUSED", "error_class": error}
 
     def _operation_state(self, namespace: str, op_id: str) -> tuple[str, str]:
         """``(state, side_effect_state)`` of an operation, never ``none`` on a guess."""
@@ -416,7 +705,8 @@ class _Connection:
                                                       resource)
                 threading.Thread(
                     target=self._run, args=(stream, dispatch, grant_id, verb, request,
-                                            doc.get("idle_s"), doc.get("inference_usage")),
+                                            doc.get("idle_s"), doc.get("inference_usage"),
+                                            doc.get("refresh") is True),
                     name=f"broker-stream-{stream_id}", daemon=True,
                 ).start()
             except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
@@ -457,8 +747,32 @@ class _Connection:
         self._checkpoint(stream)
         stream.wrote = True
 
+    def _refresh(self, stream: _Stream, destination: str, rejected_digest: str) -> None:
+        from tinyassets.storage.outbound_connections import ConnectionAuthorizationError
+
+        with stream.wake:
+            self._checkpoint(stream)
+            stream.refresh_sequence += 1
+            stream.refresh_result = None
+            stream.refresh_pending = True
+        try:
+            self.send(rf.control(stream.id, {
+                "op": "REFRESH", "sequence": stream.refresh_sequence,
+                "destination": destination, "rejected_digest": rejected_digest}), stream)
+            with stream.wake:
+                while stream.refresh_result is None:
+                    self._checkpoint(stream)
+                    stream.wake.wait(min(0.1, max(0, stream.deadline - time.monotonic())))
+                self._checkpoint(stream)
+                if not stream.refresh_result:
+                    raise ConnectionAuthorizationError("daemon refresh failed")
+        finally:
+            with stream.wake:
+                stream.refresh_pending = False
+
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
-             request: dict[str, Any], idle_s: Any, inference_usage=None) -> None:
+             request: dict[str, Any], idle_s: Any, inference_usage=None,
+             refresh_enabled: bool = False) -> None:
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
             if stream.cancelled:
@@ -478,6 +792,8 @@ class _Connection:
                 checkpoint=lambda: self._checkpoint(stream),
                 deadline_at=stream.deadline,
                 **({"body": stream.upload} if stream.upload is not None else {}),
+                **({"refresh_request": lambda destination, rejected: self._refresh(
+                    stream, destination, rejected)} if refresh_enabled else {}),
                 **({"inference_usage": inference_usage, "operation_id": stream.op_id}
                    if inference_usage is not None else {}),
             )

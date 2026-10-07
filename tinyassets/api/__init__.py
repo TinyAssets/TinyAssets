@@ -1,6 +1,6 @@
 """Engine MCP API namespace.
 
-This package is the home for FastMCP sub-apps per PLAN.md §Module Layout:
+This package is the home for FastMCP sub-apps per `docs/architecture.md`:
   api/runs.py, api/branches.py, api/judgments.py, api/goals.py, api/wiki.py
 
 create_app() is a stub — the FastMCP submodule extraction is in-flight.
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 def create_app(registry: Any | None = None) -> FastAPI:
     """Return a bare FastAPI app shell.
 
-    Once the FastMCP api/* submodules are built (PLAN.md target), this will
+    Once the FastMCP api/* submodules are built (the target layout), this will
     mount them. Until then it returns an empty app so callers have a stable
     import surface. fastapi is imported lazily so the MCPB stdio bundle —
     which doesn't ship fastapi — can import this package.

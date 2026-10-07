@@ -66,7 +66,7 @@ for one forge-shaped problem, and it would still be the platform holding
 knowledge about git.
 
 It gets stated in the **user's own workflow**, which is
-`openspec/changes/script-authoring-surface`. There the script says where it
+`openspec/changes/archive/2026-10-06-script-authoring-surface`. There the script says where it
 clones from; there is no inference to get wrong, and a user connecting to a
 forge nobody has heard of writes it themselves. The inference bug and the
 authoring-surface proposal are the same problem seen from two ends.
@@ -84,7 +84,7 @@ authoring-surface proposal are the same problem seen from two ends.
 
 ## Related
 
-* `openspec/changes/script-authoring-surface/` — the shape argument and the
+* `openspec/changes/archive/2026-10-06-script-authoring-surface/` — the shape argument and the
   four-primitive floor.
 * `2026-08-31-fixing-an-authority-key-orphans-the-grants-written-under-the-old-one.md`
   — why the host value could not simply be changed underneath existing grants.

@@ -67,7 +67,6 @@ packaging/       # Windows tray plugin + MCPB bundle — tray not in container
 tests/
 docs/
 *.md
-!PLAN.md
 !pyproject.toml
 
 # IDE + editor noise

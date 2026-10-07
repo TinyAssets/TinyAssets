@@ -75,6 +75,6 @@ concluded the feature was broken.
 * `docs/concerns/2026-08-31-one-repository-two-authority-keys-by-capitalisation.md`
   — the same family (one repository, two keys), still open, and the reason the
   casing fix was rejected rather than shipped.
-* `openspec/changes/script-authoring-surface/` — the shape argument. This is
+* `openspec/changes/archive/2026-10-06-script-authoring-surface/` — the shape argument. This is
   gate five in a day; every one has been a defect in a hand-written description
   of what the code was going to do.

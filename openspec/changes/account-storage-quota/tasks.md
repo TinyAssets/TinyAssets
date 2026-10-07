@@ -76,5 +76,5 @@ Design approval gates task 2 onward. Task 1 is read-only and gates the numbers.
       `ui-test` on a free account: a refused write that shows the Upgrade link,
       then delete and retry.
 - [ ] 4.3 Sync the deltas into `openspec/specs/`, archive this change, and
-      update `PLAN.md`'s usage-limit section (the founder approves PLAN.md
-      edits).
+      record the usage-limit decision as an ADR in `docs/decisions/` (the
+      founder accepts direction-level ADRs).

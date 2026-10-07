@@ -6,7 +6,7 @@ competing lease implementation. No production ingress slice ships before task
 1.1 exists and its candidate traffic gate passes.
 
 - [ ] 1.1 FIRST build the required Linux deploy-during-traffic PR harness from design.md. Record a red baseline reproducing today's 520 and cut-off turn on wait/recreate, with digests, HTTP/turn/browser/effect evidence. Run the same oracle for every slice; enforce it before anything touching production ingress ships.
-- [ ] 1.2 Implement the proposed delta specs consuming target-architecture D11/S8a/S8b and PLAN.md:875; inventory work origins and prerequisites. Integrate merged #4497 recovery and #4490 client_send_id without duplicating either contract.
+- [ ] 1.2 Implement the proposed delta specs consuming target-architecture D11/S8a/S8b; inventory work origins and prerequisites. Integrate merged #4497 recovery and #4490 client_send_id without duplicating either contract.
 
 ## 2. Durable boundaries and per-key ownership
 
@@ -20,5 +20,5 @@ competing lease implementation. No production ingress slice ships before task
 
 ## 3. Release proof
 
-- [ ] 3.1 Route compatible deploy/reconcile/rollback through the controller with durable receipts and resource preflight. Enforce D11/PLAN declared schema-maintenance exclusion across frontends, owners, boxhostd, Litestream and backups; never present maintenance/force as zero-impact.
+- [ ] 3.1 Route compatible deploy/reconcile/rollback through the controller with durable receipts and resource preflight. Enforce D11 declared schema-maintenance exclusion across frontends, owners, boxhostd, Litestream and backups; never present maintenance/force as zero-impact.
 - [ ] 3.2 Require red-to-green traffic evidence for deploy, rollback, ingress replacement, memory/admission pressure, independent key moves and straggler completion. Run affected/heavy tests, ruff and Linux oracle; complete required cross-family floor/correctness review. After authorized rollout assert deployed SHA and public handles, prove a rendered real-user app pass across deploy, sync specs and resolve concerns only with evidence.

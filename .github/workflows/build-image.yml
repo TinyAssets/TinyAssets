@@ -14,9 +14,7 @@ name: Build and publish image
 #   2. The `decide` job asks scripts/runtime_paths.py whether the pushed head is
 #      runtime-equivalent to the sha production's receipt names -- judged on
 #      the whole served..head range, so batched merges and a docs merge on top
-#      of an undeployed runtime merge still build. PLAN.md is copied into the
-#      image but only its served change-loop excerpts are read at runtime; an
-#      edit elsewhere in it is not a runtime change.
+#      of an undeployed runtime merge still build.
 #   3. On `skip`, the run cancels ITSELF. deploy-prod.yml fires only on a
 #      SUCCESSFUL build, so nothing is deployed, install-host-services.yml
 #      (chained on a successful deploy) does not run, and production is
@@ -35,7 +33,6 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - 'pyproject.toml'
-      - 'PLAN.md'
       - 'tinyassets/**'
       - 'domains/**'
       - 'fantasy_daemon/**'

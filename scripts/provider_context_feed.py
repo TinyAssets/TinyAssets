@@ -88,7 +88,7 @@ SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "coordination",
         re.compile(
-            r"\b(worktree|PLAN\.md|PR|pull request|branch|Depends|"
+            r"\b(worktree|ADR-\d+|PR|pull request|branch|Depends|"
             r"claim|review gate|fold-back|active lane|parked draft|orphaned|"
             r"abandoned|swept|live-safe|live deploy|dirty checkout)\b",
             re.IGNORECASE,
@@ -125,12 +125,10 @@ SOURCE_PRIORITY: dict[str, int] = {
     "brain-concept": 42,
     "brain-plan": 43,
     "vetted-specs": 45,
-    "proposed-design": 50,
     "provider-routing": 55,
     "provider-config": 60,
     "exec-plan": 65,
     "idea-feed": 70,
-    "reflection": 75,
     "activity-log": 90,
 }
 
@@ -186,10 +184,8 @@ def default_specs(root: Path) -> list[SourceSpec]:
         SourceSpec("pages/concepts", "shared", "brain-concept"),
         SourceSpec("pages/plans", "shared", "brain-plan"),
         SourceSpec("docs/audits", "shared", "research-artifact"),
-        SourceSpec("docs/design-notes/proposed", "shared", "proposed-design"),
         SourceSpec("docs/exec-plans/active", "shared", "exec-plan"),
         SourceSpec("docs/vetted-specs.md", "shared", "vetted-specs", False),
-        SourceSpec("REFLECTION.md", "shared", "reflection", False),
     ]
     specs.extend(
         SourceSpec(str(path), "shared", "worktree-purpose", False)

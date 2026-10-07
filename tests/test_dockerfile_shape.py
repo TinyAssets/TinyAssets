@@ -332,7 +332,7 @@ def test_compose_requires_explicit_workflow_image_without_latest_default():
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
     # The four `worker*` services were deleted on 2026-08-29 with the host-run
-    # fleet: nothing runs outside a user's universe (PLAN.md). Derived rather
+    # fleet: nothing runs outside a user's universe (ADR-009). Derived rather
     # than listed, so a NEW service on the TinyAssets image inherits the pin
     # requirement instead of silently escaping this test.
     tinyassets_services = [
@@ -406,7 +406,7 @@ def test_compose_daemon_has_no_platform_login_home():
 
 # The former `test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off`
 # asserted the host-run fleet MUST exist. Deleted 2026-08-29: nothing runs
-# unless it lives inside a user's universe under that user's control (PLAN.md),
+# unless it lives inside a user's universe under that user's control (ADR-009),
 # and the platform never runs an actor of its own. Its inverse is below.
 
 

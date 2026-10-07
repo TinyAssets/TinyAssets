@@ -52,13 +52,13 @@ def _manifest_setup(tmp_path, monkeypatch, *, custom=False, http=False):
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+    from tinyassets.providers.router import ProviderRouter
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
-    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
-        _providers={name: SimpleNamespace(is_available=lambda: True)
-                    for name in ("codex", "claude-code")},
-    ))
+    router = ProviderRouter({name: SimpleNamespace(is_available=lambda: True)
+                             for name in ("codex", "claude-code")})
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
     universe = _seed(tmp_path)
     set_founder_home(
         tmp_path, founder_sub="owner-1", universe_id="u-owner", platform_generated=True,

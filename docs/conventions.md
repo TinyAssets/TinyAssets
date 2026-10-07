@@ -2,7 +2,7 @@
 
 ## Files
 
-- Keep `AGENTS.md` and `PLAN.md` short enough to scan quickly; `AGENTS.md` has a
+- Keep `AGENTS.md` and `docs/architecture.md` short enough to scan; `AGENTS.md` has a
   HARD budget enforced by the `context-budget` invariant.
 - Push durable reasoning into `docs/design-notes/`.
 - Push formal accepted decisions into `docs/decisions/`.

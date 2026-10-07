@@ -1,7 +1,7 @@
 """The two doors are separated by imports, not by a list of exceptions.
 
-``PLAN.md`` (*Owner surfaces are complete; bounding is a model-door projection;
-the only per-account input is account type*) and
+ADR-011 (*The owner door is complete; only the model door bounds; the only
+per-account input is account type*) and
 ``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``.
 On 2026-09-30 the founder's request rail vanished because the app read it
 through the connector, whose 24 KB model ceiling cut his 34 KB queue. The fix
@@ -41,8 +41,8 @@ _BOUNDING = frozenset({
 })
 
 #: The ONLY modules allowed to import the ceiling or the projections: the model
-#: door. A new entry here is a design change, not a fix -- read the PLAN.md
-#: paragraph first.
+#: door. A new entry here is a design change, not a fix -- read ADR-011
+#: first.
 _MODEL_DOOR = frozenset({
     "tinyassets/universe_server.py",
     "tinyassets/engine_mcp_server.py",

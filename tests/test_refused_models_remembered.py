@@ -60,6 +60,7 @@ def _saved_first_then_second(agent):
 
 
 def test_the_next_turn_does_not_ask_a_recently_refused_model_first(agent, monkeypatch):
+    from tinyassets.providers.model_preferences import ModelPreferences
     from tinyassets.storage.refused_models import record_refused_model
 
     _with_second_model(monkeypatch)
@@ -69,7 +70,8 @@ def test_the_next_turn_does_not_ask_a_recently_refused_model_first(agent, monkey
         model_id=first.model_id, failure_class="provider_refused", detail="HTTP 403: no",
     )
 
-    assert prefs._converse(agent, monkeypatch) == "finished exact answer"
+    automatic = ModelPreferences("automatic", None, ()).document()
+    assert prefs._converse(agent, monkeypatch, automatic) == "finished exact answer"
 
     asked = [wire[1]["body"]["model"] for wire in agent.wires]
     assert asked[0] == SECOND, asked
@@ -156,7 +158,6 @@ def test_a_workflow_keeps_the_owners_explicit_order_despite_a_mark(agent, monkey
         base=agent.served.rig.base, universe=agent.served.context.universe_dir,
         owner="owner", agent=agent.served.agent,
     )
-    # The served order demotes it...
-    assert prepared.plan.next_candidate("owner", "u-models") == second
-    # ...the workflow order keeps the owner's explicit order and admits.
+    # Both served and workflow orders preserve the owner's explicit choice.
+    assert prepared.plan.next_candidate("owner", "u-models") == first
     assert WorkCandidateData(prepared.plan).order == (first, second)
