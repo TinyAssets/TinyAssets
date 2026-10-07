@@ -61,7 +61,9 @@ def test_one_call_delivers_and_reuses_private_source(world):
     _grant(base, receiver)
     first = _send(title="Missing feature", details="I tried this.\nIt was missing.")
     assert first.get("sent") is True, first
-    assert first == {"sent": True, "delivery_id": first["delivery_id"], "to": "Test intake"}
+    assert first == {"sent": True, "delivery_id": first["delivery_id"], "to": "Test intake",
+                     "status": first["status"]}
+    assert first["delivery_id"] in first["status"]
     second = _send(title="Another gap", details="More details")
     assert second["sent"] is True
     assert second["delivery_id"] != first["delivery_id"]

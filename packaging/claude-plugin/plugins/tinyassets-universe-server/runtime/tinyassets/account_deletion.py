@@ -744,6 +744,9 @@ def _delivery_deletion_targets(conn, *, principal: str, home: str):
                 # through the receiver's own run bindings and receiver-owned objects,
                 # which this deletion never touches for the other party.
                 targets.append(("graph_delivery_files", child_where, params))
+            if "graph_delivery_answers" in live:
+                # The receiving owner's answer is part of the two-party receipt.
+                targets.append(("graph_delivery_answers", child_where, params))
             targets.append(("graph_deliveries", delivery_where, params))
         targets.extend([
             ("graph_output_links", f"link_id IN ({link_sql})", (home, home)),
