@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The public MCP entry point: the canonical handle set served at https://tinyassets.io/mcp as thin routers over `tinyassets.api.*` handlers, MCP prompts that teach connecting chatbots, legacy fat-tool deprecation, the Cloudflare Worker front door, and the public canaries that guard the surface.
+The public MCP entry point: the canonical handle set served at https://tinyassets.io/mcp as thin routers over `tinyassets.api.*` handlers, MCP prompts that teach connecting chatbots, the Cloudflare Worker front door, and the public canaries that guard the surface.
 ## Requirements
 ### Requirement: Remote Streamable-HTTP MCP Endpoint
 
@@ -52,26 +52,6 @@ The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`
 
 - **WHEN** a client calls `read_graph(target="bogus")`
 - **THEN** the result is a JSON error with `error="unknown_target"`, `handle="read_graph"`, and the list of allowed targets
-
-### Requirement: Legacy Fat Tools Registered But Hidden
-
-The server SHALL keep the five legacy fat tools (`universe`,
-`extensions`, `goals`, `gates`, `wiki`) registered and
-dispatchable for one migration release while being hidden from `tools/list`
-by the `_DeprecatedToolVisibility` middleware. Every call to a hidden legacy
-tool SHALL be logged as deprecated. Like every handle they require a valid
-bearer: the transport SHALL challenge an unauthenticated call before it can
-reach them.
-
-#### Scenario: Legacy tool is absent from the advertised list but still callable
-
-- **WHEN** an authenticated client reads `tools/list` and then calls the legacy `universe` tool by name
-- **THEN** `universe` does not appear in the advertised list, the call still dispatches and returns a result, and a `deprecated-tool-call name=universe` warning is logged
-
-#### Scenario: Unauthenticated caller is refused before a legacy tool
-
-- **WHEN** an unauthenticated client calls a deprecated fat tool
-- **THEN** the transport returns an authentication challenge and the legacy tool is not dispatched
 
 ### Requirement: Connector-Safe Handle Names
 

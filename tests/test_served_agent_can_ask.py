@@ -31,7 +31,7 @@ def _write_graph_guidance() -> str:
     Distinct from ``_write_graph_source`` on purpose: that asserts what the
     IMPLEMENTATION does, this asserts what the AGENT is told. Since 2026-09-26 the
     long-form half of that is a handbook chapter rather than function source
-    (`openspec/specs/served-agent-tool-guidance/spec.md`).
+    (`openspec/changes/archive/2026-09-26-engine-tool-manual-on-demand/`).
     """
     from tinyassets import engine_mcp_server as e
 

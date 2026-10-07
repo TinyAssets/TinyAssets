@@ -91,7 +91,7 @@ Progress:
 
 ### ChatGPT App Directory Submission
 
-Artifact: `chatgpt-app-submission.json`
+Artifact: `docs/ops/chatgpt-app-submission.json`
 
 Submit through an OpenAI workspace that has app write/read permissions and org
 verification complete.
@@ -102,7 +102,7 @@ Known blockers:
 - 2026-05-02 after host login, in-app browser reached
   `https://platform.openai.com/apps-manage`, created a `TinyAssets` app draft,
   and stopped at the submission form before uploading
-  `chatgpt-app-submission.json`, logo assets, or entering developer/support,
+  `docs/ops/chatgpt-app-submission.json`, logo assets, or entering developer/support,
   privacy/TOS, demo recording, commerce, and final review fields.
 - BUG-034 tracks the current ChatGPT connector approval/post-approval stall.
 - If the App Directory dashboard requires an embedded app resource, a widget/CSP

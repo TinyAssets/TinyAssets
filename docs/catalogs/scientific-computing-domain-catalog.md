@@ -24,7 +24,7 @@ scientific-computing domain module own?" It does not authorize changes in
 
 | Id | Domain node | Status | User signal | Existing artifacts | Implementation boundary | Acceptance before code |
 |---|---|---|---|---|---|---|
-| SCI-EVAL-001 | `hyperparameter_importance` evaluator node | scoped, lane-blocked | Priya W&B trial: users want to know which sweep knobs matter most. | `docs/design-notes/2026-04-25-hyperparameter-importance-node.md`; `docs/specs/2026-04-27-hyperparameter-importance-evaluator-node.md`; `docs/specs/2026-04-27-hyperparameter-importance-fixture-pack.md`; `docs/exec-plans/active/2026-04-27-hyperparameter-importance-implementation-cards.md` | Future scientific-computing module only. No `EvaluatorKind` expansion, no engine dispatch change, no `tinyassets/` edits for v1. | Domain module location exists; fixture data is ready; v1 method remains observational and names that limitation in output. |
+| SCI-EVAL-001 | `hyperparameter_importance` evaluator node | scoped, lane-blocked | Priya W&B trial: users want to know which sweep knobs matter most. | `docs/design-notes/2026-04-25-hyperparameter-importance-node.md` (deleted 2026-10-06; in git history); `docs/specs/2026-04-27-hyperparameter-importance-evaluator-node.md`; `docs/specs/2026-04-27-hyperparameter-importance-fixture-pack.md`; `docs/exec-plans/active/2026-04-27-hyperparameter-importance-implementation-cards.md` | Future scientific-computing module only. No `EvaluatorKind` expansion, no engine dispatch change, no `tinyassets/` edits for v1. | Domain module location exists; fixture data is ready; v1 method remains observational and names that limitation in output. |
 
 ## SCI-EVAL-001 Notes
 

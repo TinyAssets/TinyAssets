@@ -523,7 +523,7 @@ A universe owner SHALL be able to serve converse/writer turns on a registered op
 
 ### Requirement: Connection readiness recognizes current accepted manifest members without authorizing execution
 
-The connection-request rail SHALL determine whether an owner has exactly one
+The pending connection-request read SHALL determine whether an owner has exactly one
 current serving binding using local assignment and custody evidence. For a
 manifest assignment, any currently accepted member that passes the existing
 owner, universe, assignment and custody checks SHALL satisfy connection readiness;

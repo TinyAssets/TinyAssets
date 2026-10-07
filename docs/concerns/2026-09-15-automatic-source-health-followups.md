@@ -31,7 +31,7 @@ Post-deploy watch, September15 23:03UTC: release cee95ccbde4c passed protected
 deployment/public-canary checks. An ordinary new Automatic message completed
 through Codex after the prior turn's sign-in failure, without settings changes or
 replay. Narrow live acceptance is recorded in
-../../openspec/changes/select-agent-models/automatic-source-health-live.md.
+../../openspec/changes/archive/2026-10-06-select-agent-models/automatic-source-health-live.md.
 Subsequent owner use contradicted lasting recovery: September15 failures at
 16:10,16:19,16:26PDT were each followed by a repeated request answered by Codex.
 PR3862 removes the timer expiry; deployed long-gap proof remains pending.

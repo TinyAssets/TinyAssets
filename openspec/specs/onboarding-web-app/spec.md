@@ -171,12 +171,12 @@ SHALL NOT be inferred from age alone.
 - **AND** age alone never makes a live turn eligible for settlement
 
 ### Requirement: The app reads its owner's data through the owner door, complete
- Every read the app renders (the request rail, restore-access, bindings, the model picker, status, conversation history and message expansion, and the reads a custom UI bundle makes through the bridge) SHALL go through the owner door: `POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status` (the `get_status` arguments). The owner door SHALL be authenticated by the same bearer middleware as every other `/app` route, SHALL execute each read under the request identity through the same domain function and owner gate the connector uses, and SHALL return the complete document. The owner door SHALL contain no size, limit or truncation logic and SHALL NOT import the model-context ceiling or projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
+ Every read the app renders (pending requests, restore-access, bindings, the model picker, status, conversation history and message expansion, and the reads a custom UI bundle makes through the bridge) SHALL go through the owner door: `POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status` (the `get_status` arguments). The owner door SHALL be authenticated by the same bearer middleware as every other `/app` route, SHALL execute each read under the request identity through the same domain function and owner gate the connector uses, and SHALL return the complete document. The owner door SHALL contain no size, limit or truncation logic and SHALL NOT import the model-context ceiling or projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
 
 The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
 (Electron over the live SPA) load the same page and therefore the same doors.
 
-#### Scenario: A heavy account gets its whole rail
+#### Scenario: A heavy account gets its whole request list
 - **WHEN** an owner has 40 pending requests totalling more than 60 KB
 - **THEN** the owner door returns all 40, with no truncation marker
 - **AND** the same read on the connector is bounded visibly
@@ -186,31 +186,8 @@ The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
 - **THEN** the owner door returns the same refusal the connector returns, and none of that universe's data
 
 #### Scenario: Account type is the only per-account difference
-- **WHEN** a free account and a subscription account with the same data read the rail, status and bindings
+- **WHEN** a free account and a subscription account with the same data read pending requests, status and bindings
 - **THEN** the documents are identical apart from tier-derived numbers
-
-### Requirement: Open requests stay in view above the composer
-Pending requests that need the owner SHALL render in a dedicated region directly
-above the composer, outside the scrolling conversation history, so a reader at
-the latest messages always sees them without scrolling. The region SHALL be
-hidden when nothing is pending, SHALL be bounded in height and scroll on its
-own when many are pending, and SHALL use compact one-line tabs at phone width.
-Answer paths SHALL be unchanged. Answered request history stays read-only in the
-rail. This is the interim placement until the approval sheet and "Needs you"
-inbox replace it.
-
-#### Scenario: Requests with a long conversation
-- **WHEN** an owner with more than 80 messages is reading the latest messages and two requests are pending
-- **THEN** both requests are visible above the composer at phone and desktop width
-
-#### Scenario: A new request arrives
-- **WHEN** a request arrives while the owner reads the latest messages
-- **THEN** it appears in the pending region without scrolling, and answering it uses the existing path
-- **AND** the conversation stays pinned to its latest message when the pending region appears or grows
-
-#### Scenario: A request arrives while reading older messages
-- **WHEN** the owner has scrolled up and a request arrives
-- **THEN** the conversation preserves the owner's scroll position
 
 ### Requirement: An owner surface never vanishes silently
 
@@ -218,9 +195,9 @@ A failed or unreadable owner read SHALL leave its surface visible with a
 statement that it could not load and a way to retry. It SHALL NOT be drawn as
 empty, and it SHALL NOT be hidden.
 
-#### Scenario: The rail read fails
-- **WHEN** the rail read errors, returns an error document, or returns no list
-- **THEN** the rail is shown with a line saying it couldn't load what's waiting, and a retry
+#### Scenario: The requests read fails
+- **WHEN** the pending-requests read errors, returns an error document, or returns no list
+- **THEN** the Needs you inbox is shown with a line saying it couldn't load what's waiting, and a retry
 - **AND** items from an earlier successful load stay (a typed answer is not wiped) under that line, so they are not presented as freshly confirmed
 
 ### Requirement: History is paged by an explicit cursor
@@ -265,7 +242,7 @@ Gestures that leave the thread at the bottom SHALL keep following enabled.
   so the late older page does not pull the reader away from the latest message
 
 ### Requirement: The chat with an agent floats over the command center
-The app SHALL present the chat with an agent (thread, request rail, model bar,
+The app SHALL present the chat with an agent (thread, Needs you inbox, model bar,
 composer and status lines) as a floating "chat cloud" above the command-center
 stage, which the owner can drag, resize, and shrink to a bubble and expand
 again by pointer, touch or keyboard. It SHALL start open and filling the stage

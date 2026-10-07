@@ -51,5 +51,5 @@ Delete this file when one of those lands.
 
 ## Related
 
-- `openspec/changes/bind-immutable-run-files/` - the accepted file design this sits under.
+- `openspec/changes/archive/2026-10-06-bind-immutable-run-files/` - the accepted file design this sits under.
 - `tests/test_app_account_transition.py` - covers the sign-out path that IS fenced.

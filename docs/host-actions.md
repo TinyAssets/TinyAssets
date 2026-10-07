@@ -1052,7 +1052,7 @@ One merged front-door body before public-read sync.
 
 Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** without this review.
 *Depends on:* exact-head dual-family review; POSIX/production Codex integration.
-*Owner artifacts:* `openspec/changes/byo-llm-connect-flow/`,
+*Owner artifacts:* `openspec/changes/archive/2026-10-06-byo-llm-connect-flow/`,
 `openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
 
 ### Activate hosted-preview publication

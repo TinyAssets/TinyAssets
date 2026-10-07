@@ -22,7 +22,7 @@ PLAN.md design decision: System Shape § "Single canonical public entry point."
 **Architecture constraint.** `deploy/cloudflare-worker/worker.js:31` uses
 `mcp.tinyassets.io` as the tunnel origin for Worker subrequests — deleting the CNAME
 would break the Worker. The CNAME stays; public access is blocked via Cloudflare Access.
-Options analysis: `docs/design-notes/2026-04-20-single-entry-execution-options.md`.
+Options analysis: `docs/design-notes/2026-04-20-single-entry-execution-options.md` (deleted 2026-10-06; in git history).
 
 ---
 
