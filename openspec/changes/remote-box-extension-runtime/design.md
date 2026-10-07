@@ -40,3 +40,7 @@ engine turns, with no change. On the thin loop it is the box, with the op id
 `<turn>:hook:<event>`. Tool-level `before_tool`/`after_tool` events still fire
 in engine middleware for engine-routed tools; loop-served box tools fire none,
 as before.
+
+## Hook integrity
+
+On the thin loop, turn hooks run in the owner's box with the box's integrity: best-effort and influenceable by the agent's own code, never a tamper-proof audit. See `docs/concerns/remote-box-tool-hooks.md`.
