@@ -111,9 +111,9 @@ tinyassets-cli        # the command line`}</code>
                     <td>Design</td>
                     <td>
                       <a href={SITE.plan} target="_blank" rel="noreferrer">
-                        PLAN.md
+                        docs/architecture.md
                       </a>{" "}
-                      is how the system works and why.
+                      is how the system works.
                     </td>
                   </tr>
                   <tr>

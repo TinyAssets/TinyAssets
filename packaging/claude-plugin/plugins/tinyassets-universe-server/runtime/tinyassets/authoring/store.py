@@ -9,7 +9,7 @@ shape every shipped per-context store uses (see
 ``CREATE TABLE IF NOT EXISTS`` DDL applied on open. The prototype Postgres
 mirror of these tables lives in
 ``prototype/full-platform-v0/migrations/012_authoring_sessions.sql`` for the
-platform store; PLAN has not chosen a canonical store, so neither is treated as
+platform store; no decision has chosen a canonical store, so neither is treated as
 the single substrate (design.md: "Target guarantees are technology-neutral where
 PLAN has not chosen a substrate").
 

@@ -2,7 +2,7 @@
 
 ## Why
 
-PLAN.md § Cross-Cutting Principles (founder directive, 2026-09-21 PDT) requires
+ADR-008 (founder directive, 2026-09-21 PDT) requires
 that the hosted platform run exclusively on cloud infrastructure and that
 `DESKTOP-KCPMGP3` — the founder's personal home desktop — never serve platform
 traffic, execute platform/universe work, supply a model relay, hold required

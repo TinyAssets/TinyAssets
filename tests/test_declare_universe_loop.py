@@ -35,7 +35,7 @@ def _build_branch(us) -> str:
                        "prompt_template": "do {x}", "input_keys": ["x"], "output_keys": ["y"]}],
         "edges": [{"from": "step", "to": "END"}],
     }
-    res = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(spec)))
+    res = json.loads(us._extensions_impl(action="build_branch", spec_json=json.dumps(spec)))
     assert res["status"] == "built", res
     return res["branch_def_id"]
 

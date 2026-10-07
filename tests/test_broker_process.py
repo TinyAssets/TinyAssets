@@ -1,7 +1,7 @@
 """The broker as a real child process, end to end (S6 part 4).
 
-POSIX only. The daemon-side supervisor spawns ``tinyassets.broker.process``,
-runs the owner's fence barrier and publishes ``owner.json``; with the switch
+POSIX only. The fixture supplies process startup while the daemon-side
+supervisor runs the owner's fence barrier and retains it in memory; with the switch
 on, ``resolve_exact_scoped_proxy`` hands out a proxy whose requests are broker
 streams. The http path stays disabled (no deployment flag), so a request is
 authorized, admitted, recorded and then refused by the driver: the whole
@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from tinyassets.broker.supervisor import ENV_SWITCH, PROCESS, BrokerSupervisor, read_owner
+from tinyassets.broker.supervisor import ENV_SWITCH, PROCESS, BrokerSupervisor, get_supervisor
 from tinyassets.storage.outbound_connections import (
     ConnectionLedger,
     GrantResolutionError,
@@ -45,18 +45,67 @@ def broker(tmp_path, monkeypatch):
     )
     ledger.grant_connection(grant_id="grant-a", connection_id="conn-a",
                             owner_user_id="alice", universe_id="cc-alice")
-    supervisor = BrokerSupervisor(root, child_env=lambda env: {
-        k: v for k, v in env.items() if k != "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"})
+    # Real broker transport/ledger test under the oracle's unprivileged uid.
+    # Only role startup is substituted here; distinct-uid launcher acceptance
+    # runs scripts/role_launcher_oracle.py in the production image.
+    import subprocess
+    import time
+    from hashlib import sha256
+
+    from tinyassets.broker import supervisor as module
+
+    processes = []
+    socket_path = root / "broker.sock"
+    monkeypatch.setattr(module, "BROKER_SOCKET", socket_path)
+    monkeypatch.setattr(module, "_protect_daemon", lambda: None)
+
+    def peer(self, sock):
+        assert module._peer(sock)[1:] == (os.getuid(), os.getgid())
+
+    def acquire(self):
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+        socket_path.unlink(missing_ok=True)
+        argv = [sys.executable, "-m", "tinyassets.broker.process",
+                "--socket", str(socket_path), "--state", str(root / ".broker/state"),
+                "--data-root", str(root), "--owner-uid", str(os.getuid()),
+                "--proof-sha256", sha256(self._proof.encode()).hexdigest()]
+        environment = dict(os.environ)
+        environment.pop("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", None)
+        process = subprocess.Popen(argv, env=environment, close_fds=True)
+        processes.append(process)
+        deadline = time.monotonic() + 20
+        while not socket_path.exists():
+            assert process.poll() is None, "fixture broker exited"
+            assert time.monotonic() < deadline, "fixture broker timed out"
+            time.sleep(0.02)
+
+    monkeypatch.setattr(BrokerSupervisor, "_acquire", acquire)
+    monkeypatch.setattr(BrokerSupervisor, "verify_broker", peer)
+    supervisor = BrokerSupervisor(root)
     supervisor.start()
-    yield ledger, supervisor, root
-    supervisor.stop()
+    supervisor._test_processes = processes
+    try:
+        yield ledger, supervisor, root
+    finally:
+        current = get_supervisor(root)
+        if current is not None:
+            current.stop()
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
 
 
 def test_the_supervisor_publishes_the_owner_pair_with_tight_permissions(broker):
     _, supervisor, root = broker
-    owner = read_owner(root)
-    assert owner["generation"] == 1 and owner["token"]
-    assert oct((root / ".broker" / "owner.json").stat().st_mode & 0o777) == "0o600"
+    owner = get_supervisor(root)
+    assert owner is supervisor
+    generation, token = owner.fence()
+    assert generation == 1 and token
+    assert not (root / ".broker" / "owner.json").exists()
     assert oct(supervisor.socket_path.stat().st_mode & 0o777) == "0o600"
 
 
@@ -92,25 +141,19 @@ def test_selected_but_not_running_is_a_loud_refusal(broker):
 
 
 def test_a_crashed_broker_is_restarted_with_the_same_owner_token(broker, monkeypatch):
-    import threading
-
     _, supervisor, root = broker
-    before = read_owner(root)
-    restarted = threading.Event()
-    fence = supervisor._fence
-
-    def observe_fence():
-        fence()
-        restarted.set()
-
-    monkeypatch.setattr(supervisor, "_fence", observe_fence)
-    crashed = supervisor._process
+    before = supervisor.fence()
+    crashed = supervisor._test_processes[-1]
     crashed.kill()
     crashed.wait(timeout=10)
-    assert restarted.wait(20), "replacement broker never completed its fence barrier"
-    assert supervisor._process is not crashed
-    assert supervisor._process.poll() is None
-    assert read_owner(root) == before
+    # Lifecycle belongs to the launcher; the fixture simulates its restart
+    # without calling stop/start or re-fencing the daemon's in-memory state.
+    supervisor._acquire()
+    assert supervisor._test_processes[-1] is not crashed
+    assert supervisor._test_processes[-1].poll() is None
+    assert get_supervisor(root).fence() == before
+    supervisor._fence()
+    assert supervisor.fence() == before
     assert os.path.exists(supervisor.socket_path)
 
 
@@ -121,20 +164,20 @@ def test_a_new_supervisor_rotates_generation_and_refuses_the_old_pair(broker):
     from tinyassets.broker.process import lease_verifier
 
     _, supervisor, root = broker
-    before = read_owner(root)
+    before = supervisor.fence()
     supervisor.stop()
-    replacement = BrokerSupervisor(root, child_env=supervisor._child_env)
+    replacement = BrokerSupervisor(root)
     try:
         replacement.start()
-        after = read_owner(root)
-        assert after["generation"] == before["generation"] + 1
-        assert after["token"] != before["token"]
-        verify = lease_verifier(sha256(replacement._proof.encode()).hexdigest(),
-                                after["generation"])
-        assert verify(after["generation"], replacement._proof)
-        assert not verify(before["generation"], replacement._proof)
+        after = replacement.fence()
+        assert after[0] == before[0] + 1
+        assert after[1] != before[1]
+        verify = lease_verifier(sha256(replacement._proof.encode()).hexdigest())
+        assert verify(after[0], replacement._proof)
+        assert not verify(after[0], supervisor._proof)
         fence = Fence(root / ".broker" / "state" / "fence.json", verify_lease_proof=verify)
-        assert not fence.admits(before["generation"], before["token"])
+        assert not fence.admits(*before)
+        assert fence.admits(*after)
+        assert not (root / ".broker/owner.json").exists()
     finally:
         replacement.stop()
-

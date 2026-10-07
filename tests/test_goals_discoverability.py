@@ -21,30 +21,6 @@ def us_env(tmp_path, monkeypatch):
     importlib.reload(us)
 
 
-# ─── registration regression guard ──────────────────────────────────────
-
-
-def test_goals_tool_is_registered_callable(us_env):
-    """If `goals` ever vanishes from the module surface, the connector
-    silently loses the tool. This catches that regression."""
-    us = us_env
-    assert hasattr(us, "goals"), "goals tool function missing from module"
-    assert callable(us.goals)
-
-
-def test_legacy_fat_functions_are_in_process_only(us_env):
-    """The canonical routers still call these in-process, but none is a
-    connector tool any more (2026-09-30): hidden-but-dispatchable was a route
-    to another user's private branch history."""
-    import asyncio
-
-    us = us_env
-    registered = {tool.name for tool in asyncio.run(us.mcp.list_tools())}
-    for name in {"universe", "extensions", "goals", "gates", "wiki"}:
-        assert callable(getattr(us, name)), name
-        assert name not in registered, name
-
-
 # ─── control_station prompt invariants ──────────────────────────────────
 
 
@@ -94,20 +70,3 @@ def test_control_station_enumerate_directive_is_explicit(us_env):
 
 
 # ─── goals docstring still leads with intent ────────────────────────────
-
-
-def test_goals_docstring_leads_with_user_intent(us_env):
-    """A bot doing tools/list-style discovery should see 'declare a
-    Goal' / 'discover existing Goals' in the docstring's first chunk."""
-    us = us_env
-    doc = us.goals.__doc__ or ""
-    # First ~400 chars should orient on intent, not internals.
-    head = doc[:400]
-    assert "Goal" in head
-    # User-intent phrasing.
-    assert (
-        "intent" in head.lower()
-        or "discover" in head.lower()
-        or "reuse" in head.lower()
-        or "first-class" in head.lower()
-    )

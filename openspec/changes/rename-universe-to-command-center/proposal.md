@@ -76,7 +76,7 @@ proposal. It is part of this program so the vocabulary is decided once.
 
   **The seven handle names do not change**, so the canary's `--assert-handles`
   set does not change.
-- **C2. Living docs.** Update PLAN.md, README, `openspec/specs` (including
+- **C2. Living docs.** Update `docs/architecture.md`, README, `openspec/specs` (including
   renaming the two `universe-*` capability dirs), skills, `docs/reference`, and
   the active changes this program touches. Dated records are not rewritten.
 - **The cutover (C3 + C4 + C5).** The founder decided on 2026-10-01 to rename

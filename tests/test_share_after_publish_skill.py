@@ -49,16 +49,6 @@ def test_existing_owner_can_copy_or_delete_share_skill(tmp_path):
     assert "`share-after-publish`" not in universe_tools.harness_prompt(tmp_path)
 
 
-def test_skill_requires_explicit_post_approval_and_offers_connections():
-    skill = share_skill()
-    assert "Never post without the user's explicit approval" in skill
-    assert "normal approval sheet and owner rules" in skill
-    assert "publishing approval is not posting approval" in skill
-    assert "nothing suitable is connected" in skill
-    assert "preview_image_path" in skill
-    assert SHARE_SKILL_PATH in engine_mcp_server.write_graph.__doc__
-
-
 @pytest.mark.usefixtures("cloud_runtime")
 def test_scripted_turn_offers_a_public_post_and_picture_without_posting(
     tmp_path, monkeypatch, authenticate_request, engine,

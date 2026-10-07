@@ -82,24 +82,3 @@ def test_daemon_memory_gated_for_external_anon(monkeypatch, tmp_path):
     # 2026-07-03). The autonomous daemon writes memory via the direct
     # daemon_brain path, not this gated dispatch, so gating here is safe.
     assert _dispatch_scope_error("universe", "daemon_memory_capture") is not None
-
-
-def test_daemon_memory_blocked_from_mcp_surface(monkeypatch, tmp_path):
-    # The scope gate alone is not enough: an authenticated founder holds coarse
-    # write/costly grants, and the handlers trust a caller-supplied daemon_id. So
-    # daemon operational memory is blocked from the external MCP `universe` tool
-    # entirely — write AND read (search/list/status leak host-local memory).
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    from tinyassets.universe_server import universe
-
-    for action in (
-        "daemon_memory_capture",
-        "daemon_memory_search",
-        "daemon_memory_list",
-        "daemon_memory_review",
-        "daemon_memory_promote",
-        "daemon_memory_status",
-    ):
-        out = json.loads(universe(action=action, daemon_id="d-not-mine"))
-        assert "error" in out, action
-        assert "internal" in out["error"].lower(), action

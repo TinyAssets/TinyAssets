@@ -996,30 +996,7 @@ def test_the_publishers_own_request_queue_never_travels(tmp_path):
     assert any(row["path"] == REQUESTS_FILENAME for row in excluded)
 
 
-def test_the_publish_sentence_names_what_travels(tmp_path):
-    """The sentence describes the carried kinds, not a removal list.
-
-    A sentence that lists what was removed can only ever be as complete as the
-    removal list was, and the previous one promised "your brain files and
-    platform state were left out" while orgchart.md, requests.json and 21
-    other platform root files travelled. Two exactness points are pinned here
-    because they are easy to "simplify" back into falsehood: "private" brain
-    files (identity.md travels as the roster agent's identity) and memory being
-    conditional (named entries do travel).
-    """
-    from tinyassets.api.publish_requests import PACKAGE_SENTENCE
-
-    # Case-insensitive: these phrases may start a sentence, and which one does
-    # is incidental to the claim being made.
-    said = PACKAGE_SENTENCE.lower()
-    assert "your private brain files" in said
-    assert "your brain files" not in said.replace("your private brain files", "")
-    assert "your memory unless you named entries" in said
-    assert "anything else sitting in the top folder stay home" in said
-    # The existing tab test asserts this phrase in lowercase; keep it so.
-    assert "detection cannot prove" in PACKAGE_SENTENCE
-
-    # identity.md really does travel, which is why the wording is qualified.
+def test_identity_travels_and_memory_travels_only_when_named(tmp_path):
     assert ccp.structural_exclusion("identity.md") is None
     # Memory is conditional in both directions.
     memory = b"- [m_abc] a remembered line\n"

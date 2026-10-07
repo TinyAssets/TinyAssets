@@ -93,7 +93,7 @@ def us_env(tmp_path: Path, monkeypatch):
 
 
 def _call(us, action: str, **kwargs) -> dict:
-    return json.loads(us.goals(action=action, **kwargs))
+    return json.loads(us._goals_impl(action=action, **kwargs))
 
 
 def _seed_runnable_branch(

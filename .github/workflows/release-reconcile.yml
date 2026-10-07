@@ -167,11 +167,11 @@ jobs:
             exit 0
           fi
 
-          # The path filter is a coarse superset: PLAN.md is copied into the
-          # image, but only its served change-loop excerpts are read at
-          # runtime, and build-image.yml cancels itself (deploying nothing) for
-          # a head that is runtime-equivalent to production. Ask the SAME
-          # classifier for the newest commit that really changed runtime, or a
+          # The path filter is a coarse superset: it can hit a commit that
+          # changes no runtime input, and build-image.yml cancels itself
+          # (deploying nothing) for a head that is runtime-equivalent to
+          # production. Ask the SAME classifier, which refines the coarse
+          # answer, for the newest commit that really changed runtime, or a
           # skipped merge would read as drift here and be redeployed on every
           # tick. A missing or failing classifier keeps the coarse answer,
           # which can only be newer -- it errs toward deploying.

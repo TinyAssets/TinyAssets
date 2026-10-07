@@ -61,7 +61,7 @@ logger = logging.getLogger("universe_server.engine_helpers")
 # ---------------------------------------------------------------------------
 # Public action ledger
 # ---------------------------------------------------------------------------
-# PLAN.md Design Decision: "Private chats, public actions." Every universe-
+# Design decision: "Private chats, public actions." Every universe-
 # affecting write must be publicly attributable. The ledger is the durable
 # record of who did what, when.
 

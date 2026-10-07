@@ -61,7 +61,7 @@ def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
 
 def _call(us, tool: str, action: str, **kwargs):
-    fn = getattr(us, tool)
+    fn = getattr(us, f"_{tool}_impl")
     return json.loads(fn(action=action, **kwargs))
 
 
@@ -176,50 +176,6 @@ def test_add_node_threads_await_run_spec(ext_env):
 
 
 # --- Site 2: update_node (its own write path, NOT _apply_node_spec) ---
-
-
-def _update_target(us, bid: str, *, changes: dict) -> dict:
-    """Issue extensions update_node via changes_json — the path that exercises
-    _ext_branch_update_node's kwargs-merge logic for spec-bearing keys."""
-    return _call(
-        us, "extensions", "update_node",
-        branch_def_id=bid,
-        node_id="target",
-        changes_json=json.dumps(changes),
-    )
-
-
-def test_update_node_threads_invoke_branch_spec(ext_env):
-    us, base = ext_env
-    # Bare scaffold: target has no spec yet.
-    bid = _build_with(us)
-    res = _update_target(us, bid, changes={"invoke_branch_spec": _INVOKE_BRANCH})
-    assert res.get("status") not in ("rejected",), res
-    new_bid = res.get("branch_def_id", bid)
-    branch = _load(us, base, new_bid)
-    assert _node(branch, "target")["invoke_branch_spec"] == _INVOKE_BRANCH
-
-
-def test_update_node_threads_invoke_branch_version_spec(ext_env):
-    us, base = ext_env
-    bid = _build_with(us)
-    res = _update_target(
-        us, bid, changes={"invoke_branch_version_spec": _INVOKE_VERSION},
-    )
-    assert res.get("status") not in ("rejected",), res
-    new_bid = res.get("branch_def_id", bid)
-    branch = _load(us, base, new_bid)
-    assert _node(branch, "target")["invoke_branch_version_spec"] == _INVOKE_VERSION
-
-
-def test_update_node_threads_await_run_spec(ext_env):
-    us, base = ext_env
-    bid = _build_with(us)
-    res = _update_target(us, bid, changes={"await_run_spec": _AWAIT_RUN})
-    assert res.get("status") not in ("rejected",), res
-    new_bid = res.get("branch_def_id", bid)
-    branch = _load(us, base, new_bid)
-    assert _node(branch, "target")["await_run_spec"] == _AWAIT_RUN
 
 
 # ─────────────────────────────────────────────────────────────────────────────

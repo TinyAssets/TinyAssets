@@ -31,14 +31,7 @@ from a hand-kept list that can drift:
 * the Python the deploy runs: every ``scripts/*.py`` those workflows, actions,
   the host manifest or the Dockerfile name, plus the transitive closure of
   their local imports (:func:`python_import_closure`). An import that cannot
-  be resolved makes all of ``scripts/`` count;
-* ``PLAN.md`` is copied into the image, but the daemon serves only a
-  1400-character excerpt of each section named by ``_CHANGE_LOOP_PLAN_HEADINGS``
-  (``_change_loop_plan_context`` in ``tinyassets/api/universe.py``). A
-  ``PLAN.md`` change is runtime exactly when one of those served excerpts
-  changed. The headings and the excerpt length are read from the head tree's
-  own source, so a code change that serves more is itself a runtime change and
-  deploys; if either cannot be read, the whole file counts.
+  be resolved makes all of ``scripts/`` count.
 
 **Fail open.** Anything this module cannot establish -- an unreadable
 Dockerfile, a wildcard ``COPY``, an unknown production sha, a production sha
@@ -68,9 +61,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DOCKERFILE = "Dockerfile"
 HOST_MANIFEST = "deploy/install-host-uptime-services.sh"
-UNIVERSE_MODULE = "tinyassets/api/universe.py"
-PLAN = "PLAN.md"
-PLAN_HEADINGS_NAME = "_CHANGE_LOOP_PLAN_HEADINGS"
 
 #: Changes to these always change production, whatever the Dockerfile says.
 BUILD_DEFINITION = (DOCKERFILE, ".dockerignore")
@@ -127,22 +117,6 @@ def _git_ok(repo: Path, *args: str) -> str:
     if proc.returncode != 0:
         raise ClassifyError(f"git {' '.join(args)}: {(proc.stderr or '').strip()}")
     return proc.stdout
-
-
-def _show(repo: Path, rev: str, path: str) -> str | None:
-    """File content at ``rev``; None ONLY when the path is absent from that tree.
-
-    Any other failure raises: reading "absent" on both sides of a PLAN.md
-    comparison would make a git error look like "nothing served changed".
-    """
-    proc = _git(repo, "show", f"{rev}:{path}")
-    if proc.returncode == 0:
-        return proc.stdout
-    if _git(repo, "cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
-        raise ClassifyError(f"git show {rev}:{path}: {(proc.stderr or '').strip()}")
-    if _git(repo, "cat-file", "-e", f"{rev}:{path}").returncode == 0:
-        raise ClassifyError(f"git show {rev}:{path}: {(proc.stderr or '').strip()}")
-    return None
 
 
 def resolve(repo: Path, rev: str) -> str:
@@ -249,22 +223,6 @@ def host_manifest_files(text: str) -> list[str] | None:
     return files
 
 
-PLAN_CONTEXT_FUNCTION = "_change_loop_plan_context"
-PLAN_SHORTEN_FUNCTION = "_shorten"
-
-
-@dataclass(frozen=True)
-class PlanServing:
-    """How the daemon serves PLAN.md: which headings, and how much of each.
-
-    ``limit`` is None when the excerpt length could not be read; the full
-    sections are then compared, which is strictly stricter.
-    """
-
-    headings: tuple[str, ...]
-    limit: int | None
-
-
 def _parse(source: str | None) -> ast.Module | None:
     if source is None:
         return None
@@ -274,117 +232,12 @@ def _parse(source: str | None) -> ast.Module | None:
         return None
 
 
-def plan_serving(universe_source: str | None) -> PlanServing | None:
-    """Read the served headings and excerpt length from the daemon's source."""
-    tree = _parse(universe_source)
-    if tree is None:
-        return None
-    headings = plan_headings(tree)
-    if headings is None:
-        return None
-    return PlanServing(headings=headings, limit=plan_excerpt_limit(tree))
-
-
-def plan_excerpt_limit(tree: ast.Module) -> int | None:
-    """The literal ``N`` in ``_shorten(excerpt, N)`` inside the context builder."""
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == PLAN_CONTEXT_FUNCTION:
-            limits = {
-                call.args[1].value
-                for call in ast.walk(node)
-                if isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == PLAN_SHORTEN_FUNCTION
-                and len(call.args) >= 2
-                and isinstance(call.args[1], ast.Constant)
-                and type(call.args[1].value) is int
-            }
-            return limits.pop() if len(limits) == 1 else None
-    return None
-
-
-def plan_headings(tree: ast.Module) -> tuple[str, ...] | None:
-    """The served PLAN.md headings, read from the daemon's own constant."""
-    for node in tree.body:
-        targets: list[ast.expr] = []
-        value: ast.expr | None = None
-        if isinstance(node, ast.Assign):
-            targets, value = list(node.targets), node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets, value = [node.target], node.value
-        if value is None:
-            continue
-        if any(isinstance(t, ast.Name) and t.id == PLAN_HEADINGS_NAME for t in targets):
-            try:
-                headings = ast.literal_eval(value)
-            except (ValueError, SyntaxError):
-                return None
-            if isinstance(headings, (tuple, list)) and all(
-                isinstance(h, str) for h in headings
-            ):
-                return tuple(headings)
-            return None
-    return None
-
-
-def extract_plan_section(text: str, heading: str) -> str:
-    """Mirror of ``tinyassets.api.universe._extract_plan_section``.
-
-    ``tests/test_runtime_paths.py`` differential-tests the two against the real
-    PLAN.md and edge cases, so a change to the daemon's extraction that this
-    mirror misses fails CI in the PR that makes it.
-    """
-    lines = text.splitlines()
-    start = None
-    marker = f"## {heading}"
-    for idx, line in enumerate(lines):
-        if line.strip() == marker:
-            start = idx
-            break
-    if start is None:
-        return ""
-    end = len(lines)
-    for idx in range(start + 1, len(lines)):
-        if lines[idx].startswith("## "):
-            end = idx
-            break
-    return "\n".join(lines[start:end]).strip()
-
-
-def shorten(value: str, max_chars: int) -> str:
-    """Mirror of ``tinyassets.api.universe._shorten`` for a string value."""
-    if len(value) <= max_chars:
-        return value
-    return value[: max(0, max_chars - 15)].rstrip() + "\n...[truncated]"
-
-
-def served_plan_context(text: str, serving: PlanServing) -> dict[str, str]:
-    """What ``_change_loop_plan_context`` returns for a given PLAN.md text.
-
-    Differential-tested against the daemon's function. With no known limit the
-    full sections are returned, which can only make MORE changes count.
-    """
-    sections: dict[str, str] = {}
-    for heading in serving.headings:
-        excerpt = extract_plan_section(text, heading)
-        if not excerpt:
-            sections[heading] = (
-                f"[ERROR: unable to resolve bundled PLAN.md section: ## {heading}]"
-            )
-        elif serving.limit is None:
-            sections[heading] = excerpt
-        else:
-            sections[heading] = shorten(excerpt, serving.limit)
-    return sections
-
-
 @dataclass(frozen=True)
 class RuntimeInputs:
     """What production runs from one tree."""
 
     paths: tuple[str, ...]
     everything: bool = False
-    plan: PlanServing | None = None
     notes: tuple[str, ...] = field(default=())
 
     def covers(self, path: str) -> bool:
@@ -710,7 +563,6 @@ def runtime_inputs_from(
     return RuntimeInputs(
         paths=tuple(dict.fromkeys(paths)),
         everything=everything,
-        plan=plan_serving(read(UNIVERSE_MODULE)),
         notes=tuple(notes),
     )
 
@@ -739,22 +591,7 @@ def runtime_changes(repo: Path, base: str | None, head: str) -> list[str]:
     path. Raises :class:`ClassifyError` when git cannot answer.
     """
     inputs = runtime_inputs(repo, head)
-    hits: list[str] = []
-    for path in changed_paths(repo, base, head):
-        if not inputs.covers(path):
-            continue
-        if path == PLAN and not inputs.everything and base is not None:
-            if inputs.plan is None:
-                hits.append(f"{PLAN} (served headings unreadable)")
-                continue
-            before = served_plan_context(_show(repo, base, PLAN) or "", inputs.plan)
-            after = served_plan_context(_show(repo, head, PLAN) or "", inputs.plan)
-            changed = [h for h in inputs.plan.headings if before[h] != after[h]]
-            if changed:
-                hits.append(f"{PLAN} (served section: {', '.join(changed)})")
-            continue
-        hits.append(path)
-    return hits
+    return [path for path in changed_paths(repo, base, head) if inputs.covers(path)]
 
 
 def first_parent(repo: Path, rev: str) -> str | None:

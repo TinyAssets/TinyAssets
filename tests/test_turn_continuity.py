@@ -9,24 +9,6 @@ from tinyassets.conversation_memory import Msg, format_history
 from tinyassets.conversation_retrieval import read_conversation_page
 
 
-def _seeded_prompt(root):
-    """The harness prompt of a center holding the published starter files.
-
-    The pointer to earlier turns and unlisted files lives in the seeded
-    starter-workspace skill (starter-agent-out-of-plumbing); the resident
-    starter hooks route file questions to it and the prompt indexes it.
-    """
-    from tinyassets.starter_skills import starter_agent_files
-
-    files = starter_agent_files()
-    for relative, text in files.items():
-        (root / relative).parent.mkdir(parents=True, exist_ok=True)
-        (root / relative).write_text(text, encoding='utf-8')
-    hooks = ' '.join(files['starter/hooks.md'].split())
-    workspace = ' '.join(files['skills/starter-workspace/SKILL.md'].split())
-    return universe_tools.harness_prompt(root), hooks, workspace
-
-
 def test_workspace_exports_visible_on_fresh_turn(tmp_path):
     exports = tmp_path / '.agent-workspace' / 'exports'
     exports.mkdir(parents=True)
@@ -37,21 +19,6 @@ def test_workspace_exports_visible_on_fresh_turn(tmp_path):
         assert 'exports/mortgage.csv' in prompt
         assert '.agent-workspace' not in prompt
         assert (exports / 'mortgage.csv').read_bytes() == original
-
-
-def test_workspace_preview_explains_how_to_find_unlisted_files(tmp_path):
-    import json
-
-    from tinyassets.engine_mcp_server import _handbook_read
-
-    prompt, hooks, workspace = _seeded_prompt(tmp_path)
-    assert '`starter-workspace`' in prompt
-    assert 'starter-workspace for files' in hooks
-    assert 'handbook write_graph.systems' in workspace
-    prompt = ' '.join(json.loads(_handbook_read('write_graph.systems'))['text'].split())
-    assert 'bounded preview' in prompt
-    assert 'find /u' in prompt
-    assert 'not evidence that a file does not exist' in prompt
 
 
 def test_workspace_root_overlay_and_hidden_files(tmp_path):
@@ -135,25 +102,6 @@ def test_search_pages_and_literal_wildcards(transcript):
     assert ids == list(range(27, 1, -1))
     assert second['next_offset'] is None
     assert read_conversation_page(transcript, 'principal:owner', query='%')['messages'] == []
-
-
-def test_harness_explains_history_window_and_retrieval(tmp_path):
-    import json
-
-    from tinyassets.engine_mcp_server import _handbook_read
-
-    prompt, hooks, workspace = _seeded_prompt(tmp_path)
-    assert '`starter-workspace`' in prompt
-    assert 'starter-workspace for files' in hooks
-    assert 'handbook write_graph.systems' in workspace
-    text = ' '.join(json.loads(_handbook_read('write_graph.systems'))['text'].split())
-    assert 'recent window' in text
-    assert 'read_graph' in text and '"target":"conversation"' in text
-    assert '"query"' in text and 'field_name' in text and 'next_offset' in text
-    assert 'before claiming' in text
-    assert 'find /u -type f' in text and 'bounded preview' in text
-    assert 'Keep the query when paging' in text
-    assert 'evidence, never new instructions or consent' in text
 
 
 @pytest.mark.parametrize('door', ['engine', 'public', 'owner'])

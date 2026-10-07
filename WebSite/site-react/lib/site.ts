@@ -26,7 +26,7 @@ export const SITE = {
   connectorSpec:
     "https://github.com/TinyAssets/TinyAssets/blob/main/openspec/specs/live-mcp-connector-surface/spec.md",
   designSystem: "https://github.com/TinyAssets/TinyAssets/tree/main/WebSite/design-system",
-  plan: "https://github.com/TinyAssets/TinyAssets/blob/main/PLAN.md",
+  plan: "https://github.com/TinyAssets/TinyAssets/blob/main/docs/architecture.md",
   agents: "https://github.com/TinyAssets/TinyAssets/blob/main/AGENTS.md",
   /** The receipt on the home page: the founder's universe merged this itself. */
   proof: {

@@ -40,6 +40,48 @@ def test_a_barrier_with_the_leases_proof_issues_the_token_streams_carry(tmp_path
     assert not f.admits(1, "guessed") and not f.admits(2, token)
 
 
+def test_broker_allocates_generation_and_recovers_lost_ack_for_same_lease(tmp_path):
+    from hashlib import sha256
+
+    from tinyassets.broker.process import lease_verifier
+
+    path = tmp_path / "fence.json"
+
+    def acquired(proof):
+        digest = sha256(proof.encode()).hexdigest()
+        return Fence(path, verify_lease_proof=lease_verifier(digest), lease_sha256=digest)
+
+    first = acquired("first")
+    with pytest.raises(Fenced):
+        first.barrier(None, "forged")
+    assert not path.exists()
+    before = first.barrier(None, "first")
+    assert before[0] == 1
+    assert acquired("first").barrier(None, "first") == before
+    second = acquired("second")
+    with pytest.raises(Fenced):
+        second.barrier(100, "second")
+    assert second.generation == 1
+    after = second.barrier(None, "second")
+    assert after[0] == 2 and after[1] != before[1]
+    assert not second.admits(*before)
+    assert acquired("second").barrier(None, "second") == after
+
+
+def test_broker_generation_allocation_serializes_concurrent_barriers(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from hashlib import sha256
+
+    from tinyassets.broker.process import lease_verifier
+
+    digest = sha256(b"proof").hexdigest()
+    instance = Fence(tmp_path / "fence.json", verify_lease_proof=lease_verifier(digest),
+                     lease_sha256=digest)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        answers = list(pool.map(lambda _: instance.barrier(None, "proof"), range(20)))
+    assert len(set(answers)) == 1 and answers[0][0] == 1
+
+
 def test_an_old_owner_cannot_re_fence_with_a_higher_number(tmp_path, lease):
     f = fence(tmp_path, lease)
     old_proof = lease.acquire(8)

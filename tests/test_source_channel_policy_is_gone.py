@@ -10,7 +10,7 @@ set a policy, read it back, and change nothing observable. Hard Rule 8 calls tha
 worse than a crash.
 
 Deleted rather than rewired, because a rewire contradicts an approved principle.
-PLAN.md (founder-approved 2026-08-30) settles it: **authorship, not host
+ADR-013 (founder-approved 2026-08-30) settles it: **authorship, not host
 approval, decides whose code runs**, and the OS sandbox bounds what it touches.
 Since change `sandboxed-code-node` an approval gates no run, so there is no
 enforcement point left for a per-channel approval mode to reach. The channel

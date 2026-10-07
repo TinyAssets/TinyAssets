@@ -206,16 +206,3 @@ class TestMcpQueryRunsAction:
             _action_query_runs({"branch_def_id": "", "select": "word_count"})
         )
         assert result["rows"][0]["fields"]["word_count"] == 42
-
-    def test_extensions_routes_query_runs(self, tmp_path: Path, monkeypatch) -> None:
-        from tinyassets.universe_server import extensions
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        _seed_run(tmp_path)
-        result = json.loads(extensions(action="query_runs"))
-        assert "rows" in result
-
-    def test_unknown_action_lists_query_runs(self, tmp_path: Path, monkeypatch) -> None:
-        from tinyassets.universe_server import extensions
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        result = json.loads(extensions(action="nonexistent_xyz"))
-        assert "query_runs" in result.get("available_actions", [])

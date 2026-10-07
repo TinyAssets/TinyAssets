@@ -192,7 +192,7 @@ def _dispatcher_startup(universe_path: Path) -> None:
         # could all carry — and reclaiming "our own" non-unique id would steal a
         # live twin's task (Codex review). Defined locally because its previous
         # home, the host-run cloud_worker fleet, is deleted: nothing runs outside
-        # a user's universe (PLAN.md, 2026-08-29). Kept as an exclusion because
+        # a user's universe (ADR-009, 2026-08-29). Kept as an exclusion because
         # an operator may still export the shared id by hand.
         shared_fallback_worker_id = "cloud-droplet"
 

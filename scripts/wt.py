@@ -65,7 +65,7 @@ Provider: {provider}
 Branch: {branch}
 Base ref: {base_ref}
 Issue/PR: TODO — link the issue, PR, or openspec/changes/ dir
-PLAN refs: TODO — relevant PLAN.md module(s)
+Spec refs: TODO — relevant openspec/specs capability or ADR
 Ship condition: TODO — what must be true to merge
 Abandon condition: TODO — when to sweep this lane
 Pickup hints: TODO — where to resume

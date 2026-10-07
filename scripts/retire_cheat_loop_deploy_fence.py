@@ -179,7 +179,7 @@ WRITER_PROCESS_MARKERS = (
     "tinyassets.universe_server",
     "tinyassets.daemon_server",
     # DELIBERATELY outlives its module. `tinyassets/cloud_worker.py` was deleted
-    # on 2026-08-29 (nothing runs outside a user's universe -- PLAN.md), so no
+    # on 2026-08-29 (nothing runs outside a user's universe -- ADR-009), so no
     # current image can start one. This is a DETECTOR, not a service list: a
     # container left running from a pre-prune image is precisely the stray
     # writer the prune creates, and dropping the marker would blind the fence

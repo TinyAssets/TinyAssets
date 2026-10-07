@@ -1,6 +1,6 @@
 """The command center agent's four tools: ``read``, ``write``, ``edit``, ``bash``.
 
-Slice S1 of "the command center is the harness" (PLAN.md Scoping Rule 1; OpenSpec
+Slice S1 of "the command center is the harness" (ADR-013; OpenSpec
 change ``universe-harness-four-tools``). A command center IS its agent's harness and
 project folder, so its agent works in that folder with the same four
 primitives pi.dev gives an agent, and builds everything else from them.

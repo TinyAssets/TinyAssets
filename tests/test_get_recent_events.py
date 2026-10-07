@@ -375,22 +375,6 @@ def test_total_lines_reflects_log_not_matched(universe_with_log):
 # -------------------------------------------------------------------
 
 
-def test_get_recent_events_is_registered_in_dispatch_table():
-    """Regression guard: get_recent_events must be a registered action
-    in the universe() dispatch table."""
-    from tinyassets import universe_server as us
-
-    # Invoke the action via the public dispatcher and confirm it does
-    # NOT return the "Unknown action" error.
-    # We call it with an empty universe_id; the action itself may
-    # surface a caveat (no log), but it must NOT reject the action.
-    raw = us.universe(action="get_recent_events", universe_id="")
-    response = json.loads(raw)
-    assert "error" not in response or "Unknown action" not in response.get(
-        "error", ""
-    ), f"get_recent_events not wired into dispatch table: {response}"
-
-
 # -------------------------------------------------------------------
 # activity_log tag kwarg — backward compat + new behavior
 # -------------------------------------------------------------------

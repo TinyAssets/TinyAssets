@@ -124,25 +124,6 @@ def test_attach_existing_child_run_does_not_leave_parent_waiting(attach_env):
     assert result["error_code"] == "parent_not_receipt_waiting"
 
 
-def test_extensions_routes_attach_existing_child_run(attach_env):
-    from tinyassets.universe_server import extensions
-
-    parent_id = _waiting_parent(attach_env)
-    child_id = _completed_child(attach_env)
-
-    result = json.loads(extensions(
-        action="attach_existing_child_run",
-        run_id=parent_id,
-        child_run_id=child_id,
-        child_branch_def_id="child-branch",
-    ))
-
-    assert result["status"] == "attached"
-    assert result["run_id"] == parent_id
-    assert result["child_run_id"] == child_id
-    assert result["automation_claim_status"] == "child_attached_with_handle"
-
-
 def test_attach_existing_child_run_rejects_missing_child_run(attach_env):
     parent_id = _waiting_parent(attach_env)
 

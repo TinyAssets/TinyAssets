@@ -67,8 +67,8 @@ class Budget:
 #                          part of the per-turn payload, but part of the rulebook,
 #                          so it is ratcheted the same way.
 #
-# PLAN.md is design truth, not a rule file, and is not budgeted. STATUS.md was
-# retired 2026-08-25 and left the set entirely.
+# PLAN.md (retired 2026-10-06, ADR-005) and STATUS.md (retired 2026-08-25) left
+# the set entirely.
 #
 # Pins are EXACT post-recut sizes (2026-09-26), not round numbers: a ceiling set at
 # the achieved value is a ratchet, one set at a comfortable round number is a
@@ -79,8 +79,8 @@ class Budget:
 # one fact means a reflow that removes words can still fail — a second authority
 # for the same thing, which is what the 2026-09-26 cut was removing.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "hard", 2829, 0,
-           "The loop and the un-inferable facts. Principles live in PLAN.md."),
+    Budget("AGENTS.md", "hard", 2816, 0,
+           "The loop and the un-inferable facts. Direction lives in README.md."),
     Budget("CLAUDE.md", "hard", 420, 0,
            "Two harness quirks. Nothing else belongs here."),
     Budget("docs/reference/executable-gates.md", "hard", 1154, 0,
@@ -99,7 +99,7 @@ FORBIDDEN: tuple[str, ...] = (
 
 # HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
 # anything they @import), pinned at the achieved post-recut total.
-COMBINED_HARD_BYTES = 3249
+COMBINED_HARD_BYTES = 3236
 
 
 @dataclass

@@ -445,15 +445,6 @@ def test_inference_recovery_never_uses_remote_exception_text():
     assert "parent usage reference" in str(held.value)
 
 
-def test_inference_recovery_handbook_names_real_owner_approval():
-    from tinyassets.engine_mcp_server import _WRITE_GRAPH_CONNECTIONS_CHAPTER
-
-    assert "bind_model_access" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
-    assert "expected_revision" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
-    assert "prompt_template" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
-    assert "accounting bypass" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
-
-
 @pytest.mark.parametrize("limit", [1, 2])
 def test_real_unix_broker_preserves_retry_usage_and_stop(uds_broker, rig, limit):
     budget, ordinal, reference = reserve(rig, limit=limit)

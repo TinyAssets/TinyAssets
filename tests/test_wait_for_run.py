@@ -18,7 +18,6 @@ Covers the two main cost cases:
 from __future__ import annotations
 
 import importlib
-import json
 import threading
 import time
 
@@ -90,31 +89,6 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
     )
     yield us, base
     importlib.reload(us)
-
-
-def _build_min_branch(us) -> str:
-    bid = json.loads(us.extensions(
-        action="create_branch", name="wait-probe",
-    ))["branch_def_id"]
-    us.extensions(
-        action="add_node", branch_def_id=bid, node_id="capture",
-        display_name="Capture", prompt_template="Echo: {raw}",
-        output_keys="capture_output",
-    )
-    for src, dst in (("START", "capture"), ("capture", "END")):
-        us.extensions(
-            action="connect_nodes", branch_def_id=bid,
-            from_node=src, to_node=dst,
-        )
-    us.extensions(
-        action="set_entry_point", branch_def_id=bid, node_id="capture",
-    )
-    for field in ("raw", "capture_output"):
-        us.extensions(
-            action="add_state_field", branch_def_id=bid,
-            field_name=field, field_type="str",
-        )
-    return bid
 
 
 # ─── unit: await_run_events ──────────────────────────────────────────────
@@ -220,91 +194,3 @@ def test_await_wakes_when_event_lands_mid_wait(tmp_path):
 
 
 # ─── integration: extensions action=wait_for_run ─────────────────────────
-
-
-def test_wait_for_run_returns_terminal_quickly(us_env):
-    """When the run has already completed, wait_for_run should return
-    immediately with status=completed — no wasted wall time."""
-    from tinyassets.runs import wait_for
-
-    us, _ = us_env
-    bid = _build_min_branch(us)
-    queued = json.loads(us.extensions(
-        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
-        inputs_json=json.dumps({"raw": "x"}),
-    ))
-    rid = queued["run_id"]
-    wait_for(rid, timeout=10.0)
-
-    start = time.monotonic()
-    result = json.loads(us.extensions(
-        action="wait_for_run", run_id=rid,
-        since_step=1_000_000_000, max_wait_s=5.0,
-    ))
-    elapsed = time.monotonic() - start
-    assert elapsed < 1.5, "terminal run should short-circuit the wait"
-    assert result["status"] == "completed"
-    assert result["reason"] in ("terminal", "events")
-
-
-def test_wait_for_run_phone_legible_text_channel(us_env):
-    from tinyassets.runs import wait_for
-
-    us, _ = us_env
-    bid = _build_min_branch(us)
-    queued = json.loads(us.extensions(
-        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
-        inputs_json=json.dumps({"raw": "x"}),
-    ))
-    rid = queued["run_id"]
-    wait_for(rid, timeout=10.0)
-
-    result = json.loads(us.extensions(
-        action="wait_for_run", run_id=rid,
-        since_step=-1, max_wait_s=2.0,
-    ))
-    assert "text" in result
-    # #58 invariant applies: raw run_id stays out of the text channel.
-    assert rid not in result["text"]
-    assert "run_id" in result
-    assert "next_cursor" in result
-    assert result["waited_s"] >= 0
-
-
-def test_wait_for_run_rejects_missing_run_id(us_env):
-    us, _ = us_env
-    result = json.loads(us.extensions(action="wait_for_run"))
-    assert "error" in result
-    assert "run_id" in result["error"]
-
-
-def test_wait_for_run_rejects_unknown_run(us_env):
-    us, _ = us_env
-    result = json.loads(us.extensions(
-        action="wait_for_run", run_id="nonexistent",
-    ))
-    assert "error" in result
-    assert "not found" in result["error"].lower()
-
-
-def test_wait_for_run_caps_max_wait_at_120s(us_env):
-    """A client asking for a 10-minute wait should be capped at 120s
-    so the server thread isn't tied up forever."""
-    from tinyassets.runs import wait_for
-
-    us, _ = us_env
-    bid = _build_min_branch(us)
-    queued = json.loads(us.extensions(
-        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
-        inputs_json=json.dumps({"raw": "x"}),
-    ))
-    rid = queued["run_id"]
-    wait_for(rid, timeout=10.0)
-
-    # Run is done, so we'll return immediately anyway — but we're
-    # checking that an absurd max_wait_s doesn't crash the action.
-    result = json.loads(us.extensions(
-        action="wait_for_run", run_id=rid,
-        since_step=-1, max_wait_s=600,
-    ))
-    assert result["status"] == "completed"

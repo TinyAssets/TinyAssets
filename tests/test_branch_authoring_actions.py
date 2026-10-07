@@ -36,26 +36,8 @@ def branch_env(tmp_path, monkeypatch, authenticate_request):
 
 
 def _call(us, action, **kwargs):
-    result = us.extensions(action=action, **kwargs)
+    result = us._extensions_impl(action=action, **kwargs)
     return json.loads(result)
-
-
-def test_create_branch_round_trips(branch_env):
-    us, _ = branch_env
-    result = _call(us, "create_branch", name="Recipe tracker",
-                   description="Capture recipes")
-    assert result["status"] == "created"
-    assert result["branch_def_id"]
-
-    got = _call(us, "get_branch", branch_def_id=result["branch_def_id"])
-    assert got["name"] == "Recipe tracker"
-    assert got["description"] == "Capture recipes"
-
-
-def test_create_branch_requires_name(branch_env):
-    us, _ = branch_env
-    result = _call(us, "create_branch", name="")
-    assert "error" in result
 
 
 def test_list_branches_returns_summaries(branch_env):
@@ -65,19 +47,23 @@ def test_list_branches_returns_summaries(branch_env):
     that author drafts must opt into ``scope="all"`` to see them.
     """
     us, _ = branch_env
-    _call(us, "create_branch", name="A")
-    _call(us, "create_branch", name="B")
+    _draft(us, "A")
+    _draft(us, "B")
 
     listing = _call(us, "list_branches", scope="all")
-    assert listing["count"] == 2
-    names = sorted(b["name"] for b in listing["branches"])
+    # build_branch's standalone-shadow check creates the system-owned
+    # standalone node registry row, which scope="all" also lists.
+    mine = [b for b in listing["branches"] if b["branch_def_id"] != "__standalone_nodes__"]
+    assert len(mine) == 2
+    names = sorted(b["name"] for b in mine)
     assert names == ["A", "B"]
     assert all("node_count" in b for b in listing["branches"])
 
 
-def _build_basic_spec(name: str) -> dict:
+def _build_basic_spec(name: str, description: str = "") -> dict:
     return {
         "name": name,
+        "description": description,
         "entry_point": "ready",
         "node_defs": [{
             "node_id": "ready",
@@ -92,13 +78,21 @@ def _build_basic_spec(name: str) -> dict:
     }
 
 
+def _draft(us, name: str, description: str = "") -> dict:
+    """An unpublished branch, built through ``build_branch``."""
+    built = _call(us, "build_branch",
+                  spec_json=json.dumps(_build_basic_spec(name, description)))
+    assert built["status"] == "built", built
+    return built
+
+
 def test_list_branches_scope_published_filters_on_published_versions(branch_env):
     """`scope="published"` requires an actual published version snapshot;
     the legacy ``published`` boolean flag is no longer sufficient on its own.
     """
     us, _ = branch_env
     versioned = _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Versioned")))
-    _call(us, "create_branch", name="Probe draft")
+    _draft(us, "Probe draft")
     legacy_flagged = _call(
         us,
         "build_branch",
@@ -133,7 +127,7 @@ def test_list_branches_scope_published_is_the_default(branch_env):
     """Omitting `scope` is equivalent to `scope="published"`."""
     us, _ = branch_env
     versioned = _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Versioned")))
-    _call(us, "create_branch", name="Draft only")
+    _draft(us, "Draft only")
     _call(us, "publish_version", branch_def_id=versioned["branch_def_id"])
 
     default_listing = _call(us, "list_branches")
@@ -162,7 +156,7 @@ def test_list_branches_scope_mine_filters_to_caller(
 
     from tinyassets import universe_server as us2
     importlib.reload(us2)
-    json.loads(us2.extensions(
+    json.loads(us2._extensions_impl(
         action="build_branch",
         spec_json=json.dumps(_build_basic_spec("Theirs")),
     ))
@@ -170,7 +164,7 @@ def test_list_branches_scope_mine_filters_to_caller(
     # Back to tester; only the two `Mine *` branches must come back.
     authenticate_request("tester")
     importlib.reload(us2)
-    listing = json.loads(us2.extensions(action="list_branches", scope="mine"))
+    listing = json.loads(us2._extensions_impl(action="list_branches", scope="mine"))
     names = sorted(b["name"] for b in listing["branches"])
     assert names == ["Mine 1", "Mine 2"], listing
 
@@ -196,25 +190,29 @@ def test_list_branches_node_count_matches_node_defs_length(branch_env):
     canonical count (``len(branch.node_defs)``).
     """
     us, _ = branch_env
-    created = _call(us, "create_branch", name="Counted")
+    # 3 distinct node_defs so the bug shape (double-count) would manifest
+    # as 6 instead of 3.
+    nids = ("alpha", "beta", "gamma")
+    chain = ["START", *nids, "END"]
+    created = _call(us, "build_branch", spec_json=json.dumps({
+        "name": "Counted",
+        "entry_point": "alpha",
+        "node_defs": [{"node_id": nid, "display_name": nid,
+                       "prompt_template": f"do {nid}"} for nid in nids],
+        "edges": [{"from": a, "to": b} for a, b in zip(chain, chain[1:])],
+    }))
     bid = created["branch_def_id"]
-
-    # Populate 3 distinct node_defs so the bug shape (double-count)
-    # would manifest as 6 instead of 3.
-    for nid in ("alpha", "beta", "gamma"):
-        _call(us, "add_node", branch_def_id=bid, node_id=nid,
-              display_name=nid, prompt_template=f"do {nid}")
 
     # Truth: get_branch.node_defs length.
     got = _call(us, "get_branch", branch_def_id=bid)
     expected = len(got["node_defs"])
     assert expected == 3, (
-        f"precondition: add_node should have created 3 node_defs; "
+        f"precondition: build_branch should have created 3 node_defs; "
         f"got {expected}"
     )
 
     # list_branches.node_count must match. Use scope="all" so the
-    # add_node-built draft is included (default scope filters to
+    # unpublished draft is included (default scope filters to
     # branches with a published version).
     listing = _call(us, "list_branches", scope="all")
     entry = next(b for b in listing["branches"] if b["branch_def_id"] == bid)
@@ -226,286 +224,16 @@ def test_list_branches_node_count_matches_node_defs_length(branch_env):
     )
 
 
-def test_delete_branch(branch_env):
-    us, _ = branch_env
-    created = _call(us, "create_branch", name="Doomed")
-    bid = created["branch_def_id"]
-
-    deleted = _call(us, "delete_branch", branch_def_id=bid)
-    assert deleted["status"] == "deleted"
-
-    missing = _call(us, "get_branch", branch_def_id=bid)
-    assert "error" in missing
-
-
-def test_add_node_rejects_source_and_template_both(branch_env):
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="X")["branch_def_id"]
-
-    result = _call(
-        us, "add_node",
-        branch_def_id=bid, node_id="n1", display_name="One",
-        source_code="def run(state): pass",
-        prompt_template="This is a prompt",
-    )
-    assert "error" in result
-
-
-def test_add_node_duplicate_id_rejected(branch_env):
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="X")["branch_def_id"]
-
-    first = _call(
-        us, "add_node",
-        branch_def_id=bid, node_id="dup", display_name="First",
-        prompt_template="one",
-    )
-    assert first["status"] == "added"
-
-    second = _call(
-        us, "add_node",
-        branch_def_id=bid, node_id="dup", display_name="Second",
-        prompt_template="two",
-    )
-    assert "error" in second
-
-
-def test_set_entry_point_updates_branch(branch_env):
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="X")["branch_def_id"]
-    _call(
-        us, "add_node",
-        branch_def_id=bid, node_id="capture", display_name="Capture",
-        prompt_template="...",
-    )
-    _call(us, "set_entry_point", branch_def_id=bid, node_id="capture")
-
-    got = _call(us, "get_branch", branch_def_id=bid)
-    assert got["entry_point"] == "capture"
-
-
-def test_add_state_field_duplicate_rejected(branch_env):
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="X")["branch_def_id"]
-    first = _call(
-        us, "add_state_field",
-        branch_def_id=bid, field_name="raw", field_type="str",
-    )
-    assert first["status"] == "added"
-    dup = _call(
-        us, "add_state_field",
-        branch_def_id=bid, field_name="raw", field_type="str",
-    )
-    assert "error" in dup
-
-
-def test_validate_reports_errors_on_empty_branch(branch_env):
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="Empty")["branch_def_id"]
-    result = _call(us, "validate_branch", branch_def_id=bid)
-    assert result["valid"] is False
-    assert any("at least one node" in e.lower() for e in result["errors"])
-
-
-def test_describe_branch_points_at_runner(branch_env):
-    """Phase 3 shipped — describe_branch should direct users to the runner.
-
-    PR-178 collapsed the surface to the canonical handles, so the guidance
-    names `run_graph`; `run_branch` is the retired spelling. Asserting the
-    retired name is absent keeps it from creeping back into user-facing text.
-    """
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="Empty")["branch_def_id"]
-    result = _call(us, "describe_branch", branch_def_id=bid)
-    assert "run_branch" not in result["summary"], result["summary"]
-    assert "run_graph" in result["summary"]
-    assert "inputs_json" in result["summary"]
-
-
-def test_recipe_tracker_end_to_end(branch_env):
-    us, base = branch_env
-
-    created = _call(
-        us, "create_branch",
-        name="Recipe tracker",
-        description="Capture, categorize, archive recipes",
-    )
-    bid = created["branch_def_id"]
-    assert created["status"] == "created"
-
-    for node_id, display, template in (
-        ("capture", "Capture raw recipe",
-         "Read the user's message and extract recipe."),
-        ("categorize", "Categorize recipe",
-         "Classify by cuisine and meal type."),
-        ("archive", "Archive to library",
-         "Format as a wiki entry."),
-    ):
-        r = _call(
-            us, "add_node",
-            branch_def_id=bid, node_id=node_id,
-            display_name=display, prompt_template=template,
-        )
-        assert r["status"] == "added"
-
-    for src, dst in (
-        ("START", "capture"),
-        ("capture", "categorize"),
-        ("categorize", "archive"),
-        ("archive", "END"),
-    ):
-        _call(us, "connect_nodes",
-              branch_def_id=bid, from_node=src, to_node=dst)
-
-    _call(us, "set_entry_point", branch_def_id=bid, node_id="capture")
-
-    for fname, ftype, default in (
-        ("raw_recipe", "str", ""),
-        ("category", "str", ""),
-        ("archived", "bool", "false"),
-    ):
-        r = _call(
-            us, "add_state_field",
-            branch_def_id=bid, field_name=fname,
-            field_type=ftype, field_default=default,
-        )
-        assert r["status"] == "added"
-
-    validated = _call(us, "validate_branch", branch_def_id=bid)
-    assert validated["valid"] is True, validated
-
-    described = _call(us, "describe_branch", branch_def_id=bid)
-    assert described["valid"] is True
-    assert "recipe tracker" in described["summary"].lower()
-    assert "capture" in described["summary"]
-    assert "run_branch" not in described["summary"], described["summary"]
-    assert "run_graph" in described["summary"]
-
-    # Ledger was appended — we made 1 create + 3 add_node + 4 connect_nodes
-    # + 1 set_entry_point + 3 add_state_field = 12 write ops
-    ledger_path = base / "ledger.json"
-    assert ledger_path.exists()
-    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    actions = [e["action"] for e in ledger]
-    assert actions.count("create_branch") == 1
-    assert actions.count("add_node") == 3
-    assert actions.count("connect_nodes") == 4
-    assert actions.count("set_entry_point") == 1
-    assert actions.count("add_state_field") == 3
-
-
-def test_ledger_attribution_uses_current_actor(
-    branch_env,
-    authenticate_request: Callable[[str | None], None],
-):
-    us, base = branch_env
-    authenticate_request("alice")
-    try:
-        _call(us, "create_branch", name="alice's branch")
-    finally:
-        authenticate_request("tester")
-
-    ledger = json.loads((base / "ledger.json").read_text(encoding="utf-8"))
-    assert any(
-        e["action"] == "create_branch" and e["actor"] == "alice"
-        for e in ledger
-    )
-
-
 def test_read_actions_do_not_hit_ledger(branch_env):
     us, base = branch_env
-    bid = _call(us, "create_branch", name="X")["branch_def_id"]
+    bid = _draft(us, "X")["branch_def_id"]
     _call(us, "get_branch", branch_def_id=bid)
     _call(us, "list_branches", scope="all")
-    _call(us, "validate_branch", branch_def_id=bid)
-    _call(us, "describe_branch", branch_def_id=bid)
 
     ledger = json.loads((base / "ledger.json").read_text(encoding="utf-8"))
-    # Only the create_branch should be logged
+    # Only the build_branch should be logged
     assert len(ledger) == 1
-    assert ledger[0]["action"] == "create_branch"
-
-
-def test_unknown_action_without_metadata_is_denied(branch_env):
-    us, _ = branch_env
-    result = _call(us, "flimflam")
-    assert "error" in result
-    assert result.get("available_actions", []) == []
-
-
-def test_missing_branch_id_returns_error(branch_env):
-    us, _ = branch_env
-    for action in (
-        "get_branch", "validate_branch", "describe_branch",
-        "delete_branch", "set_entry_point", "add_state_field",
-        "connect_nodes", "add_node",
-    ):
-        result = _call(us, action)
-        assert "error" in result, f"action {action} accepted empty id"
-
-
-def test_describe_branch_returns_mermaid_flowchart(branch_env):
-    """Claude.ai auto-renders fenced mermaid blocks. Verify the block shape."""
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="Recipe tracker")["branch_def_id"]
-    _call(us, "add_node", branch_def_id=bid,
-          node_id="capture", display_name="Capture raw recipe",
-          prompt_template="...")
-    _call(us, "add_node", branch_def_id=bid,
-          node_id="archive", display_name="Archive to library",
-          prompt_template="...")
-    _call(us, "connect_nodes", branch_def_id=bid,
-          from_node="START", to_node="capture")
-    _call(us, "connect_nodes", branch_def_id=bid,
-          from_node="capture", to_node="archive")
-    _call(us, "connect_nodes", branch_def_id=bid,
-          from_node="archive", to_node="END")
-    _call(us, "set_entry_point", branch_def_id=bid, node_id="capture")
-
-    described = _call(us, "describe_branch", branch_def_id=bid)
-    mermaid = described["mermaid"]
-    assert mermaid.startswith("```mermaid\nflowchart")
-    assert mermaid.endswith("```")
-    # Nodes referenced by id
-    assert 'capture["Capture raw recipe"]' in mermaid
-    assert 'archive["Archive to library"]' in mermaid
-    # Edges rendered as arrows
-    assert "START --> capture" in mermaid
-    assert "capture --> archive" in mermaid
-    assert "archive --> END" in mermaid
-    # Entry point is highlighted
-    assert "class capture entry" in mermaid
-    # Summary also contains the mermaid block so markdown clients render it
-    assert "```mermaid" in described["summary"]
-
-
-def test_describe_empty_branch_still_emits_mermaid(branch_env):
-    """Even a zero-node branch returns a valid mermaid skeleton (START+END)."""
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="Empty")["branch_def_id"]
-
-    described = _call(us, "describe_branch", branch_def_id=bid)
-    mermaid = described["mermaid"]
-    assert "flowchart" in mermaid
-    assert "START" in mermaid
-    assert "END" in mermaid
-
-
-def test_mermaid_label_escapes_quotes_and_newlines(branch_env):
-    """Quotes and newlines in display_name must not break the mermaid block."""
-    us, _ = branch_env
-    bid = _call(us, "create_branch", name="Edge cases")["branch_def_id"]
-    _call(us, "add_node", branch_def_id=bid,
-          node_id="weird", display_name='Node with "quotes" and\nnewline',
-          prompt_template="...")
-
-    described = _call(us, "describe_branch", branch_def_id=bid)
-    mermaid = described["mermaid"]
-    # Double quote replaced with single quote inside the label
-    assert '"quotes"' not in mermaid
-    assert "'quotes'" in mermaid
-    # Newline in label collapsed to space, not a real newline breaking syntax
-    assert "Node with 'quotes' and newline" in mermaid
+    assert ledger[0]["action"] == "build_branch"
 
 
 def test_read_graph_branches_lists_own_workflows_by_name_and_id(branch_env):
@@ -514,8 +242,8 @@ def test_read_graph_branches_lists_own_workflows_by_name_and_id(branch_env):
     enumeration is not exposed by the advertised handles" when asked to rename a
     workflow (2026-08-25) and had to ask the user for the id. This closes that."""
     us, _ = branch_env
-    created = _call(us, "create_branch", name="Compute plug-and-play check",
-                    description="one-node provider check")
+    created = _draft(us, "Compute plug-and-play check",
+                     description="one-node provider check")
     bid = created["branch_def_id"]
     listing = json.loads(us.read_graph(target="branches"))
     rows = listing["branches"]

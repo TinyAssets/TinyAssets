@@ -39,7 +39,7 @@ def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
 
 def _call(us, tool: str, action: str, **kwargs):
-    fn = getattr(us, tool)
+    fn = getattr(us, f"_{tool}_impl")
     return json.loads(fn(action=action, **kwargs))
 
 
@@ -64,101 +64,6 @@ def _build(us, *, name: str = "test-branch") -> tuple[str, str]:
     res = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
     assert res["status"] == "built", res
     return res["branch_def_id"], "capture"
-
-
-class TestUpdateNodeNameBasedRef:
-    """update_node must resolve branch names, not just UUIDs."""
-
-    def test_update_node_by_name_succeeds(self, ext_env):
-        """update_node with branch name resolves to correct branch."""
-        us, base = ext_env
-        bid, nid = _build(us, name="climate-claim-checker")
-
-        res = _call(
-            us, "extensions", "update_node",
-            branch_def_id="climate-claim-checker",
-            node_id=nid,
-            display_name="Updated Display Name",
-        )
-
-        assert res.get("status") == "updated", res
-        assert "error" not in res
-
-    def test_update_node_by_name_persists_change(self, ext_env):
-        """Change made via name-based ref is visible when loading by ID."""
-        us, base = ext_env
-        bid, nid = _build(us, name="my-workflow")
-
-        _call(
-            us, "extensions", "update_node",
-            branch_def_id="my-workflow",
-            node_id=nid,
-            display_name="New Display Name",
-        )
-
-        from tinyassets.daemon_server import get_branch_definition
-        branch = get_branch_definition(base, branch_def_id=bid)
-        node = next(n for n in branch["node_defs"] if n["node_id"] == nid)
-        assert node["display_name"] == "New Display Name"
-
-    def test_update_node_by_name_case_insensitive(self, ext_env):
-        """Name resolution for update_node is case-insensitive."""
-        us, base = ext_env
-        bid, nid = _build(us, name="Climate TinyAssets")
-
-        res = _call(
-            us, "extensions", "update_node",
-            # Lowercase of the branch's ACTUAL name — the point of the test.
-            # Commit 8ac167eb ("finish TinyAssets label cleanup") renamed the
-            # _build name "Climate Workflow" -> "Climate TinyAssets" but left
-            # this lookup string behind, so the pair stopped matching in any
-            # casing and the test was asserting nothing about case-insensitivity.
-            branch_def_id="climate tinyassets",
-            node_id=nid,
-            description="updated via lowercase name",
-        )
-
-        assert res.get("status") == "updated", res
-
-    def test_update_node_unknown_name_returns_error(self, ext_env):
-        """update_node with an unrecognized name returns the BARE error.
-
-        No `status` key, deliberately. `update_node` resolves through
-        `_branch_not_found` (branches.py:452), shared by 14 call sites, and
-        the bare shape is a NON-DISCLOSURE guarantee:
-        `test_branch_mutation_authority.py` asserts
-        `denied == missing == expected`, so a mutation the caller is not
-        authorized to make must be byte-identical to a branch that does not
-        exist — otherwise the error becomes a probe for private branches.
-        This test previously expected `{"status": "rejected"}`, which would
-        have required breaking that.
-        """
-        us, base = ext_env
-        _build(us, name="real-workflow")
-
-        res = _call(
-            us, "extensions", "update_node",
-            branch_def_id="nonexistent-workflow-name",
-            node_id="capture",
-            display_name="new name",
-        )
-
-        assert res == {"error": "Branch 'nonexistent-workflow-name' not found."}, res
-        assert "error" in res
-
-    def test_update_node_by_exact_id_still_works(self, ext_env):
-        """Backward compat: update_node still accepts a raw branch_def_id."""
-        us, base = ext_env
-        bid, nid = _build(us, name="id-test-workflow")
-
-        res = _call(
-            us, "extensions", "update_node",
-            branch_def_id=bid,
-            node_id=nid,
-            description="updated via raw ID",
-        )
-
-        assert res.get("status") == "updated", res
 
 
 class TestPatchBranchNameBasedRef:

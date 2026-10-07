@@ -24,7 +24,7 @@ def test_direct_wrappers_keep_json_string_contract() -> None:
     from tinyassets import universe_server as us
 
     status_raw = us.get_status()
-    wiki_raw = us.wiki(action="list")
+    wiki_raw = us._wiki_impl(action="list")
 
     assert isinstance(status_raw, str)
     assert isinstance(wiki_raw, str)

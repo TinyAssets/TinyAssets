@@ -99,36 +99,28 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
 
 
 def _build_two_node_branch(us) -> str:
-    """Build a tiny 2-node branch via the universe_server dispatcher."""
-    bid = json.loads(us.extensions(
-        action="create_branch", name="progress-probe",
-    ))["branch_def_id"]
-    us.extensions(
-        action="add_node", branch_def_id=bid, node_id="capture",
-        display_name="Capture", prompt_template="Echo: {raw}",
-        output_keys="capture_output",
-    )
-    us.extensions(
-        action="add_node", branch_def_id=bid, node_id="tag",
-        display_name="Tag", prompt_template="Tag: {capture_output}",
-        output_keys="tag_output",
-    )
-    for src, dst in (
-        ("START", "capture"), ("capture", "tag"), ("tag", "END"),
-    ):
-        us.extensions(
-            action="connect_nodes", branch_def_id=bid,
-            from_node=src, to_node=dst,
-        )
-    us.extensions(
-        action="set_entry_point", branch_def_id=bid, node_id="capture",
-    )
-    for field in ("raw", "capture_output", "tag_output"):
-        us.extensions(
-            action="add_state_field", branch_def_id=bid,
-            field_name=field, field_type="str",
-        )
-    return bid
+    """Build a tiny 2-node branch through ``build_branch``."""
+    built = json.loads(us._extensions_impl(action="build_branch", spec_json=json.dumps({
+        "name": "progress-probe",
+        "entry_point": "capture",
+        "node_defs": [
+            {"node_id": "capture", "display_name": "Capture",
+             "prompt_template": "Echo: {raw}", "output_keys": ["capture_output"]},
+            {"node_id": "tag", "display_name": "Tag",
+             "prompt_template": "Tag: {capture_output}", "output_keys": ["tag_output"]},
+        ],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "tag"},
+            {"from": "tag", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": field, "type": "str"}
+            for field in ("raw", "capture_output", "tag_output")
+        ],
+    })))
+    assert built["status"] == "built", built
+    return built["branch_def_id"]
 
 
 def _make_recipe_branch() -> BranchDefinition:
@@ -246,7 +238,7 @@ def test_on_node_records_running_then_ran_events(us_env):
 
     us, base = us_env
     bid = _build_two_node_branch(us)
-    queued = json.loads(us.extensions(
+    queued = json.loads(us._extensions_impl(
         action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
         inputs_json=json.dumps({"raw": "x"}),
     ))
