@@ -243,9 +243,18 @@ def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
                 resource, probe=host.startswith("https://"))
         except OAuthError as exc:
             last = exc
-            if host.startswith("https://"):
+            if exc.code == "protected_resource_mismatch":
                 continue
             candidates, scopes, identified = [], [], ""
+            if host.startswith("https://"):
+                # A failed endpoint probe/challenge must not hide legacy root
+                # metadata. Retry without probing, just as for a bare host.
+                try:
+                    candidates, scopes, identified = _resource_metadata(origin, probe=False)
+                except OAuthError as root_exc:
+                    last = root_exc
+                    if root_exc.code == "protected_resource_mismatch":
+                        continue
         for candidate in candidates or [origin]:
             try:
                 selected = identified if candidates else resource
@@ -353,8 +362,7 @@ def offer_hosts(offer: dict[str, Any]) -> list[str]:
     return hosts
 
 
-def register_public_client(registration_url: str, *, redirect_uri: str,
-                           scopes: list[str]) -> str:
+def register_public_client(registration_url: str, *, redirect_uri: str) -> str:
     """RFC 7591 dynamic registration of a PUBLIC client; returns its id.
 
     A server that insists on a confidential client (issues a secret) is
@@ -368,8 +376,8 @@ def register_public_client(registration_url: str, *, redirect_uri: str,
         "client_name": "TinyAssets",
         "application_type": "web",
     }
-    if scopes:
-        body["scope"] = " ".join(scopes)
+    # This client is shared by issuer/callback; owner scopes belong only on
+    # each authorization request, never on the shared registration.
     status, doc = request_json("POST", registration_url, json_body=body)
     if status not in (200, 201) or not isinstance(doc, dict):
         from tinyassets.connection_oauth.transport import server_error_detail

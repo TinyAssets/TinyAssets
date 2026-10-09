@@ -131,7 +131,7 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
             raise FlowError("registration_required", 409)
         try:
             client_id = register_public_client(offer["registration_url"],
-                                               redirect_uri=callback, scopes=scopes)
+                                               redirect_uri=callback)
             remember_client(offer["issuer"], callback, client_id, "dcr")
         except (OAuthError, KeyError) as exc:
             code = exc.code if isinstance(exc, OAuthError) else "client_registration_failed"

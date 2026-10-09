@@ -140,7 +140,6 @@ def test_rejected_dcr_is_registration_required(monkeypatch):
         discovery.register_public_client(
             "https://auth.example/register",
             redirect_uri="https://tinyassets.io/app/model-callback/connect",
-            scopes=[],
         )
 
 
@@ -248,6 +247,79 @@ def test_legacy_endpoint_uses_origin_authorization_metadata(monkeypatch):
     monkeypatch.setattr(discovery, "fetch_server_metadata", fetch)
     assert discovery._metadata_for(["https://api.example/mcp"])[0] == "metadata"
     assert seen == ["https://api.example"]
+
+
+@pytest.mark.parametrize("probe_error", ["timeout", "malformed_challenge"])
+@pytest.mark.parametrize("root_metadata", [False, True])
+def test_full_url_probe_error_preserves_root_fallback(monkeypatch, probe_error, root_metadata):
+    from tinyassets.connection_oauth import transport
+
+    origin = "https://api.example"
+    issuer = "https://auth.example" if root_metadata else origin
+    fetched = []
+
+    def probe(*args, **kwargs):
+        if probe_error == "timeout":
+            raise OAuthError("oauth_server_unreachable")
+        return 401, {}, {
+            "www-authenticate": "Bearer error=invalid_request, error_description=Missing token"
+        }
+
+    def request(method, url, **kwargs):
+        fetched.append(url)
+        if url == origin + "/.well-known/oauth-protected-resource" and root_metadata:
+            return 200, {"resource": origin, "authorization_servers": [issuer]}
+        if url == issuer + "/.well-known/oauth-authorization-server":
+            return 200, metadata(issuer)
+        return 404, {}
+
+    monkeypatch.setattr(transport, "request_json_with_headers", probe)
+    monkeypatch.setattr(discovery, "request_json", request)
+    bare = discovery._metadata_for(["api.example"])[0]
+    fetched.clear()
+    full, resource, _ = discovery._metadata_for([origin + "/v1/items"])
+    assert full == bare
+    assert full.issuer == issuer
+    assert origin + "/.well-known/oauth-protected-resource" in fetched
+    assert resource == (origin if root_metadata else origin + "/v1/items")
+
+
+def test_shared_registration_does_not_limit_second_owner_scopes(provider, app, monkeypatch):
+    monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    original_route, original_authorize = provider.route, provider.authorize
+    registered_scopes, authorized = {}, []
+
+    def route(method, host, path, headers, body):
+        status, doc = original_route(method, host, path, headers, body)
+        if host == AUTH and path == "/register" and method == "POST":
+            registration = json.loads(body)
+            registered_scopes[doc["client_id"]] = (
+                set(registration["scope"].split()) if "scope" in registration else None
+            )
+        return status, doc
+
+    def authorize(url):
+        query = dict(parse_qsl(urlsplit(url).query))
+        scopes = set(query["scope"].split())
+        allowed = registered_scopes[query["client_id"]]
+        assert allowed is None or scopes <= allowed, "registration rejects invalid_scope"
+        authorized.append((query["client_id"], scopes))
+        return original_authorize(url)
+
+    monkeypatch.setattr(provider, "route", route)
+    monkeypatch.setattr(provider, "authorize", authorize)
+    for owner, uid, scopes in (
+        (OWNER, UID, ["read"]),
+        (fixtures.OTHER, fixtures.OTHER_UID, ["read", "write"]),
+    ):
+        with _as(owner):
+            asked = _ask(uid=uid, action={**TASKS_ASK, "oauth": {"scopes": scopes}})
+        assert _sign_in(provider, asked["request_id"], owner=owner)[2].status_code == 200
+    assert len(registered_scopes) == 1
+    assert authorized == [
+        (authorized[0][0], {"read"}),
+        (authorized[0][0], {"read", "write"}),
+    ]
 
 
 def test_bad_first_resource_does_not_mask_second_host(monkeypatch):
