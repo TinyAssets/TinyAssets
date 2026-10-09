@@ -27,15 +27,18 @@ def installed_source(tmp_path):
         dict(_FIELDS, id=SOURCE.removeprefix("api_key_http:"), visibility="private",
              created_at="2026-10-04T00:00:00+00:00"),
     ]))
-    with sqlite3.connect(tmp_path / "outbound.db") as conn:
-        conn.execute("CREATE TABLE outbound_connections "
-                     "(connection_id TEXT, owner_user_id TEXT, revoked_at TEXT)")
-        conn.execute("CREATE TABLE outbound_connection_grants "
-                     "(grant_id TEXT, connection_id TEXT, owner_user_id TEXT, "
-                     "universe_id TEXT, revoked_at TEXT)")
-        conn.execute("INSERT INTO outbound_connections VALUES ('connection','owner',NULL)")
-        conn.execute("INSERT INTO outbound_connection_grants "
-                     "VALUES ('grant','connection','owner','home',NULL)")
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "owner")
+    ledger.create_connection(
+        connection_id="connection", owner_user_id="owner", connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("POST",), provider="http",
+        destination="compute:synthetic", credential_ref="vault://http/synthetic",
+        allowed_endpoints=[dict(host="models.example", path_template="/v1/chat",
+                                methods=["POST"])])
+    ledger.grant_connection(grant_id="grant", connection_id="connection",
+                            owner_user_id="owner", universe_id="home")
 
 
 @pytest.fixture
@@ -63,7 +66,15 @@ def claim(budget, ref, **changes):
                   grant_id="grant", connection_id="connection", verb="POST",
                   request=WIRE, operation_id=ref.operation_id)
     fields.update(changes)
-    return budget._store.claim_reference(ref.reference, **fields)
+    return _broker_store(budget._store.base).claim_reference(ref.reference, **fields)
+
+
+def _broker_store(base):
+    """Claim and retry are broker-local primitives, never daemon IPC commands."""
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    return UsageStore(base, broker_ledger=ConnectionLedger(
+        base / ".broker" / "outbound.db", data_root=base))
 
 
 @pytest.mark.parametrize("change", [
@@ -100,7 +111,8 @@ def test_shared_store_reservation_is_atomic_across_independent_connections(budge
         store = UsageStore(budget._store.base)
         try:
             return store.mutate(budget._scope, "reserve", owner="owner", universe="home",
-                                source_ref=f"source-{number}", model="model", free=True)
+                                source_ref=f"source-{number}", model="model", free=True,
+                                purpose="reply")
         except RequestBudgetExceeded:
             return None
 
@@ -168,8 +180,14 @@ def test_router_settlement_revokes_unconsumed_ticket_before_refund(budget):
     assert budget.receipt()["attempts"][0]["state"] == "not_sent"
 
 
-def test_dispatch_day_and_source_purpose_survive_reloading(tmp_path):
+def test_dispatch_day_and_source_purpose_survive_reloading(tmp_path, monkeypatch):
     clock = [datetime(2026, 10, 3, 23, 59, tzinfo=timezone.utc)]
+    original_load = UsageStore._load
+
+    def broker_clock(store, conn, scope, **kwargs):
+        return original_load(store, conn, scope, **dict(kwargs, wall_clock=lambda: clock[0]))
+
+    monkeypatch.setattr(UsageStore, "_load", broker_clock)
     budget = TurnRequestBudget("owner", "home", wall_clock=lambda: clock[0])
     budget.persist(tmp_path)
     for purpose in ("reply", "review"):
@@ -283,6 +301,23 @@ def test_store_connections_close_without_garbage_collection(budget):
         gc.enable()
 
 
+def test_broker_ledger_context_closes_after_commit_and_rollback(tmp_path):
+    ledger = _broker_store(tmp_path)._ledger
+    with ledger._connect() as committed:
+        committed.execute("CREATE TABLE close_proof (value INTEGER)")
+        committed.execute("INSERT INTO close_proof VALUES (1)")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        committed.execute("SELECT 1")
+    with pytest.raises(RuntimeError, match="rollback"):
+        with ledger._connect() as rolled_back:
+            rolled_back.execute("INSERT INTO close_proof VALUES (2)")
+            raise RuntimeError("rollback")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        rolled_back.execute("SELECT 1")
+    with ledger._connect() as current:
+        assert [row[0] for row in current.execute("SELECT value FROM close_proof")] == [1]
+
+
 @pytest.mark.parametrize("action", ["claim", "issue"])
 def test_inferred_parent_close_is_durable_after_rejected_reference(budget, monkeypatch, action):
     ordinal = reserve(budget)
@@ -341,7 +376,9 @@ def _gc_during_lease_registration(base):
 
     gc.disable()
     abandoned = TurnRequestBudget("owner", "home")
-    abandoned.persist(base)
+    with patch("tinyassets.storage.agent_request_usage.UsageStore",
+               return_value=_broker_store(base)):
+        abandoned.persist(base)
     abandoned.cycle = abandoned
     del abandoned
 
@@ -374,8 +411,9 @@ def test_gc_finalizer_cannot_deadlock_lease_registration(tmp_path):
 def _reserve_in_process(arguments):
     base, scope, number = arguments
     try:
-        return UsageStore(base).mutate(scope, "reserve", owner=scope[0], universe=scope[1],
-                                       source_ref=f"source-{number}", model="model", free=True)
+        return _broker_store(base).mutate(scope, "reserve", owner=scope[0], universe=scope[1],
+                                          source_ref=f"source-{number}", model="model", free=True,
+                                          purpose="reply")
     except RequestBudgetExceeded:
         return None
 

@@ -4868,6 +4868,16 @@ def _reject_secret_material(value: object) -> None:
             _reject_secret_material(item)
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Ledger transactions retire their descriptor without waiting for GC."""
+
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class ConnectionLedger:
     """SQLite ledger for user-owned connections and universe grants."""
 
@@ -4955,7 +4965,7 @@ class ConnectionLedger:
                 )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._db_path, timeout=30.0)
+        connection = sqlite3.connect(self._db_path, timeout=30.0, factory=_ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
