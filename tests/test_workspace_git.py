@@ -6,6 +6,12 @@ with injected fakes, so they run identically on Linux and Windows. The bundle
 tests drive a REAL ``git``: the whole point of the bundle path is what git
 actually writes into ``.git/config``, which a fake launcher cannot prove.
 They skip when git is not on PATH.
+
+``run_git`` here is :func:`tinyassets.workspace_git.run_git_in_cell` -- the
+owner git cell's entry point, which is where the spawn, the environment, the
+scrubbing and the kill-the-group behaviour all live. The daemon-side
+``run_git`` builds no child at all; its hand-off to the cell has its own
+tests at the bottom of this file.
 """
 
 from __future__ import annotations
@@ -39,14 +45,30 @@ from tinyassets.workspace_git import (
     libcurl_supports_multi_resolve,
     pin_address,
     populate_workspace_from_bundle,
-    run_git,
     scrub_text,
     unbundle_into_fresh_repo,
     verify_bundle,
 )
+from tinyassets.workspace_git import run_git_in_cell as run_git
 
 TOKEN = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
 IS_WINDOWS = os.name == "nt"
+
+#: The daemon-side hand-off, captured before the fixture below repoints the
+#: helpers' seam at the cell-side function. Its own tests use this.
+daemon_run_git = wg.run_git
+
+
+@pytest.fixture(autouse=True)
+def _git_runs_where_the_cell_runs_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bundle helpers orchestrate git steps; each step is a cell call.
+
+    In production ``run_git`` hands every step to the owner's git cell, which
+    runs ``run_git_in_cell``. These tests drive the helpers with an injected
+    launcher, which only the cell-side function accepts -- so point the
+    helpers' seam at it, the way the cell's own entry point does.
+    """
+    monkeypatch.setattr(wg, "run_git", wg.run_git_in_cell)
 
 
 # ---------------------------------------------------------------------------
@@ -2479,3 +2501,69 @@ def test_libcurl_version_text_fails_loud_with_neither():
         )
     assert excinfo.value.code == "bad_argument"
     assert "neither" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# the daemon-side hand-off: nothing spawns here
+# ---------------------------------------------------------------------------
+
+
+def test_run_git_hands_the_request_to_the_owner_cell(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon validates, then the owner's git cell runs it."""
+    from types import SimpleNamespace
+
+    from tinyassets import role_git
+
+    seen: dict[str, object] = {}
+
+    def cell(argv, *, cwd, options, timeout_s):
+        seen.update(argv=list(argv), cwd=str(cwd), options=tuple(options),
+                    timeout_s=timeout_s)
+        return SimpleNamespace(returncode=0, stdout="on branch main\n", stderr="")
+
+    monkeypatch.setattr(role_git, "run", cell)
+    monkeypatch.setattr(wg.subprocess, "Popen", lambda *a, **k: pytest.fail(
+        "the daemon spawned git instead of handing it to the cell"))
+    result = daemon_run_git(
+        ["status", "--short"], cwd=tmp_path, home_dir=empty_home,
+        path="/usr/bin", options=("-c", "core.hooksPath="), timeout_s=12,
+    )
+    assert seen == {"argv": ["status", "--short"], "cwd": str(tmp_path),
+                    "options": ("-c", "core.hooksPath="), "timeout_s": 12.0}
+    assert result.returncode == 0 and "on branch main" in result.stdout_tail
+
+
+@pytest.mark.parametrize(
+    ("extra", "detail"),
+    [
+        ({"launcher": lambda *a, **k: None}, "an injected launcher"),
+        ({"git_binary": "/opt/git/bin/git"}, "another git binary"),
+        ({"pass_fds": (3,)}, "an inherited descriptor"),
+        ({"preexec_fn": lambda: None}, "its own child setup"),
+    ],
+)
+def test_run_git_refuses_every_daemon_uid_spelling(
+    tmp_path: Path, empty_home: Path, extra: dict, detail: str
+) -> None:
+    """Each of these asks for a git the daemon runs itself. That mode is gone."""
+    with pytest.raises(WorkspaceGitError) as caught:
+        daemon_run_git(["status"], cwd=tmp_path, home_dir=empty_home,
+                   path="/usr/bin", timeout_s=5, **extra)
+    assert caught.value.code == "bad_argument", detail
+    assert "not admitted" in str(caught.value), detail
+
+
+def test_run_git_validates_before_it_reaches_the_cell(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A secret in the invocation never leaves the daemon."""
+    from tinyassets import role_git
+
+    monkeypatch.setattr(role_git, "run", lambda *a, **k: pytest.fail(
+        "a credentialed invocation reached the cell"))
+    with pytest.raises(WorkspaceGitError, match="credential appears"):
+        daemon_run_git(["push", f"https://{TOKEN}@example.com/r.git"], cwd=tmp_path,
+                   home_dir=empty_home, path="/usr/bin", timeout_s=5,
+                   extra_secrets=(TOKEN,))

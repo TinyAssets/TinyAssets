@@ -9,6 +9,9 @@ from tinyassets.broker.owner_identities import OwnerIdentity
 from tinyassets.owner_launcher_client import OwnerLauncherClient
 from tinyassets.ta_capabilities import JailBridge
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_other_cell_classes_cannot_receive_tool_socket_descriptors():
     client = object.__new__(OwnerLauncherClient)

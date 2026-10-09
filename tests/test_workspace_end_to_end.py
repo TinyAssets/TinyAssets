@@ -128,7 +128,8 @@ def _make_universe(
     os.chmod(pool_root, 0o700)
 
     ledger = ConnectionLedger(
-        data_root / "outbound.db", verify_authenticated_principal=lambda: "user-1"
+        data_root / ".broker" / "outbound.db", data_root=data_root,
+        verify_authenticated_principal=lambda: "user-1"
     )
     ledger.create_connection(
         connection_id="conn-git",

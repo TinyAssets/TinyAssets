@@ -99,7 +99,8 @@ def test_live_http_custody_matches_legacy(tmp_path, monkeypatch, condition):
     try:
         if condition == "revoked-grant":
             ConnectionLedger(
-                tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-1",
+                tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+                verify_authenticated_principal=lambda: "owner-1",
             ).revoke_grant(_GRANT_ID)
         else:
             with sqlite3.connect(tmp_path / "outbound.db") as conn:

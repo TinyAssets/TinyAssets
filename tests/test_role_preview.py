@@ -5,6 +5,9 @@ import pytest
 
 from tinyassets import role_decoder, role_preview, ui_preview
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_selected_preview_refusal_never_runs_in_daemon(monkeypatch):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
@@ -22,19 +25,19 @@ def test_selected_preview_refusal_never_runs_in_daemon(monkeypatch):
         ui_preview._run_child({}, 60)
 
 
-def test_selected_broker_requires_bounded_preview(monkeypatch):
-    from tinyassets.broker import supervisor
-
+def test_preview_without_a_bounded_launcher_refuses_rather_than_rendering(monkeypatch):
+    """No launcher is not "render here": the cell is the only renderer."""
     monkeypatch.setattr(role_decoder, '_bounded_client', None)
-    monkeypatch.setattr(supervisor, 'broker_selected', lambda: True)
     monkeypatch.setattr(ui_preview, '_host_slot', contextlib.nullcontext)
 
     def forbidden(*args):
         pytest.fail('preview escaped without a bounded launcher')
 
     monkeypatch.setattr(ui_preview, '_supervised', forbidden)
-    with pytest.raises(ui_preview.PreviewUnavailable, match='bounded launcher is required'):
-        ui_preview._run_child({}, 60)
+    spec = {'base_path': '/absent', 'owner_user_id': 'alice',
+            'universe_id': 'alice', 'hashes': {}}
+    with pytest.raises(Exception, match='bounded preview launcher|not admitted'):
+        role_preview.render(spec, 60)
 
 
 @pytest.mark.parametrize('wall', [0, -1, 61, float('nan'), float('inf'), True])

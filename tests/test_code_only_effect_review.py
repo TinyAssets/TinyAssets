@@ -133,7 +133,7 @@ def rig(tmp_path, monkeypatch, request):
                     allowed_statuses={"running"})
     wrapper = UniverseBoundProviderCall(session, UniverseContext(universe_dir=universe),
                                        "run_graph")
-    ledger = ConnectionLedger(tmp_path / "outbound.db",
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
                               verify_authenticated_principal=lambda: "acct_alice")
     ledger.create_connection(connection_id="synthetic-http", owner_user_id="acct_alice",
                              connection_class="outbound-http", scopes=("POST",),

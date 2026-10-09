@@ -92,7 +92,7 @@ def _seed_grant(base: Path, *, owner: str, universe: str,
                 grant_id: str = _GRANT_ID, conn_id: str = _CONN_ID) -> None:
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: owner)
     ledger.create_connection(
         connection_id=conn_id, owner_user_id=owner, connection_class="http",

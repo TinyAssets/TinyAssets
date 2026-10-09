@@ -259,7 +259,7 @@ def _seed_open_serving_assignment(
     connection_id = "http_" + "b" * 32
     grant_id = "http_grant_" + "a" * 32
     ledger = ConnectionLedger(
-        base_path / "outbound.db",
+        base_path / ".broker" / "outbound.db", data_root=base_path,
         verify_authenticated_principal=lambda: owner_user_id,
     )
     ledger.create_connection(

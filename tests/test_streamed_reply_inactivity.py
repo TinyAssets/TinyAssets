@@ -239,23 +239,20 @@ def test_a_header_drip_ends_at_the_inference_budget_not_the_stream_total():
 
 
 @pytest.mark.parametrize("unit", ['"', "\\", "\u6c49", "\U0001f600"])
-def test_a_full_stream_body_fits_one_proxy_frame(unit):
-    """Quote/backslash escaping doubles a body; non-ASCII now travels as UTF-8."""
-    from tinyassets.storage.outbound_connections import (
-        _MAX_PROXY_FRAME_BYTES,
-        INFERENCE_STREAM_MAX_BODY_BYTES,
-        _send_message,
-    )
+def test_a_full_stream_body_fits_one_broker_control_frame(unit):
+    """Quote/backslash escaping doubles a body; non-ASCII travels as UTF-8.
 
-    class Channel:
-        def send_bytes(self, payload):
-            self.size = len(payload)
+    The body cap exists so the broker can always answer in ONE control frame.
+    ``rf.control`` raises above the limit, so encoding the largest allowed
+    body is the whole assertion.
+    """
+    from tinyassets import rpc_frames as rf
+    from tinyassets.storage.outbound_connections import INFERENCE_STREAM_MAX_BODY_BYTES
 
     width = len(unit.encode("utf-8"))
     body = unit * (INFERENCE_STREAM_MAX_BODY_BYTES // width)
-    channel = Channel()
-    _send_message(channel, {"ok": True, "result": {"status": 200, "body": body}})
-    assert channel.size <= _MAX_PROXY_FRAME_BYTES
+    frame = rf.control(rf.CONNECTION, {"op": "RESULT", "status": 200, "body": body})
+    assert len(frame) <= rf.MAX_CONTROL_FRAME + rf.HEADER_BYTES
 
 
 def test_a_credential_split_across_streamed_deltas_is_refused(broker):  # noqa: F811

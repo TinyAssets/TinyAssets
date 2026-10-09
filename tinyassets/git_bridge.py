@@ -83,17 +83,8 @@ class PRResult:
 # ---------------------------------------------------------------------------
 
 
-def _bounded_selected() -> bool:
-    from tinyassets import role_decoder
-
-    return role_decoder._bounded_client is not None
-
-
 def _run(command, *, capture_output, text, check, timeout, cwd):
     """Keep owner git and its hooks inside the startup-admitted owner cell."""
-    if not _bounded_selected():
-        return subprocess.run(command, capture_output=capture_output, text=text,
-                              check=check, timeout=timeout, cwd=cwd)
     try:
         return _run_bounded(command, timeout=timeout, cwd=cwd)
     except (OSError, ValueError, RuntimeError):
@@ -125,18 +116,16 @@ def _run_bounded(command, *, timeout, cwd):
 def is_enabled(repo_path: Path | None = None) -> bool:
     """Return True if ``git`` is usable from the current working tree.
 
-    Cached at first call. Checks:
+    Checks:
     1. ``git`` binary is on PATH.
     2. ``git rev-parse --is-inside-work-tree`` inside ``repo_path`` (or CWD).
 
-    Fail-open: when either check fails, callers should treat git features
-    as no-ops rather than raising. Use :func:`invalidate_cache` in tests
-    to re-probe.
+    Never cached across calls: the probe runs in the owner's git cell, so the
+    answer is per-owner and per-repository, and one owner's refusal must not
+    disable git for the next. Fail-open: when either check fails, callers
+    should treat git features as no-ops rather than raising.
     """
     global _ENABLED_CACHE
-    if not _bounded_selected() and _ENABLED_CACHE is not None:
-        return _ENABLED_CACHE
-
     if shutil.which("git") is None:
         logger.info("git_bridge: git binary not found on PATH; disabling")
         _ENABLED_CACHE = False

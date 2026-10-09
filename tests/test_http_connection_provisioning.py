@@ -133,7 +133,8 @@ def _ledger(base: Path, actor: str) -> Any:
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     return ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: actor
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: actor
     )
 
 
@@ -418,7 +419,8 @@ def test_connections_list_isolates_by_owner_not_just_universe(base: Path) -> Non
     # property of the list_grants owner filter, which this exercises head-on).
     def _seed(owner: str, dest: str, conn_id: str, grant_id: str) -> None:
         ledger = ConnectionLedger(
-            base / "outbound.db", verify_authenticated_principal=lambda: owner
+            base / ".broker" / "outbound.db", data_root=base,
+            verify_authenticated_principal=lambda: owner
         )
         ledger.create_connection(
             connection_id=conn_id, owner_user_id=owner, connection_class="http",
@@ -1257,8 +1259,8 @@ def test_http_cap_migration_preserves_other_caps_and_malformed_rows(base: Path) 
         before = conn.execute(
             "SELECT * FROM outbound_connection_grants ORDER BY grant_id"
         ).fetchall()
-    ConnectionLedger(base / "outbound.db")
-    ConnectionLedger(base / "outbound.db")
+    ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     with ledger._connect() as conn:
         after = conn.execute(
             "SELECT * FROM outbound_connection_grants ORDER BY grant_id"
@@ -1281,7 +1283,7 @@ def test_http_cap_migration_concurrent_opens(base: Path) -> None:
 
     def open_ledger(_index: int) -> Any:
         barrier.wait(timeout=10)
-        return ConnectionLedger(base / "outbound.db").get_grant(grant_id)
+        return ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).get_grant(grant_id)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         grants = list(pool.map(open_ledger, range(8)))
@@ -1306,13 +1308,13 @@ def test_http_cap_migration_lock_failure_preserves_cap_then_retries(
     with sqlite3.connect(base / "outbound.db") as writer:
         writer.execute("BEGIN IMMEDIATE")
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            ConnectionLedger(base / "outbound.db")
+            ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
         cap = writer.execute(
             "SELECT unprompted_action_cap_json FROM outbound_connection_grants WHERE grant_id = ?",
             (grant_id,),
         ).fetchone()[0]
         assert json.loads(cap)["name"] == "http_requests"
-    assert ConnectionLedger(base / "outbound.db").get_grant(grant_id).unprompted_action_cap is None
+    assert ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).get_grant(grant_id).unprompted_action_cap is None
 
 
 def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
@@ -1321,7 +1323,7 @@ def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-reopen")
-    ConnectionLedger(base / "outbound.db")
+    ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     statements: list[str] = []
     original = ConnectionLedger._connect
 
@@ -1334,7 +1336,7 @@ def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
     monkeypatch.setattr(ConnectionLedger, "_connect", traced_connect)
     with sqlite3.connect(base / "outbound.db") as writer:
         writer.execute("BEGIN IMMEDIATE")
-        reopened = ConnectionLedger(base / "outbound.db")
+        reopened = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
         assert reopened.get_grant(grant_id).unprompted_action_cap is None
     assert not any(
         sql.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE", "REPLACE", "BEGIN"))

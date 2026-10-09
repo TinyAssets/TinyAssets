@@ -521,7 +521,7 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
-    resource = ConnectionLedger(app / "outbound.db")._get_connection_resource(connection_id)
+    resource = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
     bundle = _vault_bundle(app)
     assert bundle.token_url == f"https://{TOKEN}/token"
@@ -729,7 +729,7 @@ def test_an_oauth_connection_is_never_usable_by_another_universe(provider, app, 
     connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
 
     # The other owner cannot open a proxy on the grant...
-    other_ledger = ConnectionLedger(app / "outbound.db",
+    other_ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app,
                                     verify_authenticated_principal=lambda: OTHER)
     with pytest.raises(GrantResolutionError):
         other_ledger.resolve_exact_scoped_proxy(universe_id=OTHER_UID, grant_id=grant_id,

@@ -186,7 +186,6 @@ PINNED: dict[str, list[str]] = {
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
         "_on_disk_document_is_newer: .read_text()",
-        "_persist_credential_vault_file: open()",
         "_read_credential_material: .read_bytes()",
         "_remove_snapshot_tree: .unlink()",
         "_remove_snapshot_tree: .unlink()",

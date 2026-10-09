@@ -25,7 +25,7 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 def scene(tmp_path, monkeypatch):
     universe, agent, first = _setup(tmp_path, monkeypatch)
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "owner-1",
     )
     ledger.create_connection(

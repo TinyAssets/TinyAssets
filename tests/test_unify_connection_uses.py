@@ -636,7 +636,7 @@ def _priced_connection(base):
 
     answered = _answer(_ask(PRICED_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
     assert answered["status"] == "answered", answered
-    ledger = ConnectionLedger(base / "outbound.db")
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     grant = ledger.get_grant(_ids(universe_id=UID, destination="priced")[1])
     ledger.configure_capability(
         connection_id=grant.connection_id, capability_kind="model_discovery",

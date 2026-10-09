@@ -137,7 +137,7 @@ def _cloud_authority_fixture(
     payload["provider_binding_id"] = binding.binding_id
     definition = _automation().RepositorySpecWorkDefinition.from_dict(payload)
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "acct_alice",
     )
     ledger.create_connection(

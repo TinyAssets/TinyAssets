@@ -344,6 +344,7 @@ def _universe_view(
     root: Path, egress_socket: Path | None = None, *, agent_id: str,
     ta_socket: Path | None = None,
     extension_root: Path | None = None,
+    promote_brain_files: bool = True,
 ) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
@@ -360,7 +361,12 @@ def _universe_view(
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
     workspace = _workspace(root)
-    _promote_brain_files(root, workspace, agent_id=agent_id)
+    # The owner's tool cell passes False: its maintenance cell
+    # (:func:`tinyassets.role_tool_files.maintain`) has already promoted, as
+    # the owner, immediately before this view is built. Promoting again from
+    # inside the cell would be a second writer for the same names.
+    if promote_brain_files:
+        _promote_brain_files(root, workspace, agent_id=agent_id)
     mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
@@ -410,6 +416,7 @@ def tool_jail_argv(
     egress_socket: Path | None = None,
     ta_socket: Path | None = None,
     extension_root: Path | None = None,
+    promote_brain_files: bool = True,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     if not agent_id.strip():
@@ -422,7 +429,8 @@ def tool_jail_argv(
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket,
-                          extension_root=extension_root)
+                          extension_root=extension_root,
+                          promote_brain_files=promote_brain_files)
     # The egress socket lives in the daemon-owned sidecar folder, outside the
     # command center, so it has to be declared as the exact path this jail is
     # allowed to bind from there. A directory prefix is not a capability: the
@@ -657,70 +665,26 @@ def run_jailed(
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
+    Nothing is spawned here. The request goes to the owner's tool cell
+    (:func:`tinyassets.role_tools.run`), which keeps the daemon-side queueing,
+    seed boundary and disk accounting and runs the nested jail as the owner.
+
     If every host slot is taken the call WAITS for one; it is not refused for the
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
     with a user in front of it can surface a waiting state. ``stop`` is polled
-    while the jail runs; once it names a reason the jail is killed
+    while the cell runs; once it names a reason the cell is killed
     (``activity_stopped``): an activity that yielded, paused or stopped.
     """
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
-    wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
-    cap = int(output_bytes if output_bytes is not None else limits.output_bytes)
-    cpu = min(int(limits.cpu_seconds), int(wall) + 1)
-    limited = _limited(inner, limits, cpu_seconds=cpu)
-    root = Path(universe_dir).resolve()
-    # The jail itself adds up to three processes (bwrap, its pid-1, prlimit's
-    # exec target); the tree cap is the rlimit plus that overhead.
-    process_cap = int(limits.processes) + 3
-    queued: list[float] = []
-    # The jail is resolved and its seccomp descriptor opened BEFORE queueing, so
-    # a host that cannot jail at all refuses immediately instead of waiting to be
-    # told so. The cost is that a queued call holds ONE pipe descriptor for the
-    # length of its wait (Codex refute, 2026-09-30): bounded by the transport's
-    # own thread pool, so ~40 descriptors against a 1024 `nofile` limit. Taking
-    # the slot first instead ran the bwrap probe before validation and broke the
-    # refusal ordering these tests pin, which is a worse trade than 40 pipes.
-    filter_fd = _seccomp_fd()
-    try:
-        egress = {} if egress_socket is None else {"egress_socket": egress_socket}
-        if ta_socket is not None:
-            egress["ta_socket"] = ta_socket
-        if extension_root is not None:
-            egress["extension_root"] = extension_root
-        argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
-        from tinyassets.starter_seeds import seed_boundary
+    from tinyassets.role_tools import run
 
-        with seed_boundary(root), _slot(root, on_wait=on_wait, waited=queued):
-            try:
-                budget = jail_disk.open_budget(
-                    root, min_free_bytes=limits.min_free_disk_bytes,
-                    min_free_inodes=limits.min_free_inodes,
-                )
-            except jail_disk.DiskFloorRefused as below:
-                raise UniverseToolError(
-                    f"{below}, so the tool jail will not start; nothing ran"
-                ) from None
-            try:
-                with _root_cgroup(limits, process_cap) as cgroup:
-                    if cgroup is not None:
-                        # The shell joins the cgroup, THEN becomes bwrap: nothing
-                        # of the jail ever runs outside it. A failed join never
-                        # execs.
-                        argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
-                                str(cgroup / "cgroup.procs"), *argv]
-                    run = _supervise(
-                        argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
-                        cap=cap, process_cap=process_cap, budget=budget, stop=stop,
-                    )
-            finally:
-                budget.settle()
-            return replace(
-                run, waited=queued[0] if queued else 0.0, notice=budget.notice,
-                disk_bound=budget.bound,
-            )
-    finally:
-        os.close(filter_fd)
+    return run(
+        Path(universe_dir).resolve(), inner, agent_id=agent_id, stdin=stdin,
+        limits=limits, wall_seconds=wall_seconds, output_bytes=output_bytes,
+        on_wait=on_wait, egress_socket=egress_socket, ta_socket=ta_socket,
+        stop=stop, extension_root=extension_root,
+    )
 
 
 #: Where a root-run jail creates its cgroup. Substituted by tests.

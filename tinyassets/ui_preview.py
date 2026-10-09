@@ -278,20 +278,12 @@ def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
 
 
 def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
-    from tinyassets import role_decoder
+    """The render happens in the owner's preview cell and nowhere else."""
+    from tinyassets.role_preview import render
 
     with _host_slot():
-        if role_decoder._bounded_client is not None:
-            from tinyassets.role_preview import render
-
-            result = render(spec, wall_seconds)
-            out, err, code, breach = result.stdout, b'', result.returncode, ''
-        else:
-            from tinyassets.broker.supervisor import broker_selected
-
-            if broker_selected():
-                raise PreviewUnavailable('ui_preview_unavailable: bounded launcher is required')
-            out, err, code, breach = _supervised(json.dumps(spec).encode("utf-8"), wall_seconds)
+        result = render(spec, wall_seconds)
+        out, err, code, breach = result.stdout, b'', result.returncode, ''
     if breach:
         raise PreviewUnavailable(f"ui_preview_{breach}")
     lines = [line for line in out.decode("utf-8", "replace").splitlines()
@@ -649,8 +641,41 @@ if __name__ == "__main__":
 PREVIEW_DIR = "previews"
 
 
+def _checked_ui_id(ui_id: str) -> str:
+    """The app's own id shape, so nothing like ``../x`` ever names a file."""
+    import re
+
+    ui_id = str(ui_id)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", ui_id) or ui_id in _RESERVED:
+        raise PreviewUnavailable(
+            f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
+    return ui_id
+
+
 def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     """Put ``png`` at ``/u/previews/<ui_id>.png``; the path as the agent sees it.
+
+    Daemon side: nothing is written here. The bytes and the id go to the
+    owner's preview-write cell (:func:`tinyassets.role_preview.write`), which
+    runs :func:`write_preview_in_cell` against the pinned center descriptor.
+    """
+    ui_id = _checked_ui_id(ui_id)
+    name = f"{ui_id}.png"
+    try:
+        from tinyassets.role_preview import write
+
+        return write(universe_dir, ui_id, png)
+    except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
+        # UniverseFileError (a link or a non-directory on the path), a directory
+        # at the target, permissions: the screenshot is not written, and the
+        # agent is told why.
+        raise PreviewUnavailable(
+            f"ui_preview_failed: /u/{PREVIEW_DIR}/{name} could not be written "
+            f"({type(exc).__name__}: {str(exc)[:200]})") from None
+
+
+def write_preview_in_cell(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
+    """Write the screenshot. The only caller is the owner preview-write cell.
 
     The folder is the agent's own and the agent can change it WHILE this runs,
     so the bytes go through the one universe writer,
@@ -664,42 +689,20 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     The universe root is checked here, not there. ``write_universe_file``
     resolves its root before the no-follow walk, so that walk is link-free only
     BELOW the root and cannot refuse a link at or above the universe dir itself
-    (``docs/concerns/2026-10-02-universe-files-resolves-its-root.md``). Today
-    the only caller hands over an already-resolved path -- ``api/helpers``'
-    ``_universe_dir`` does ``(base / universe_id).resolve()`` -- so this cannot
-    fire through ``api/app_ui``; it is here so a future caller that passes an
-    unresolved path does not silently write through a linked ancestor.
+    (``docs/concerns/2026-10-02-universe-files-resolves-its-root.md``).
     """
     import os
-    import re
 
     from tinyassets import workspace_fs as fs
     from tinyassets.universe_files import write_universe_file
 
-    # The server stores any non-empty ui_id; only the app's own id shape names
-    # a file, so nothing like "../x" ever becomes a path.
-    ui_id = str(ui_id)
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", ui_id) or ui_id in _RESERVED:
-        raise PreviewUnavailable(
-            f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
+    ui_id = _checked_ui_id(ui_id)
     name = f"{ui_id}.png"
     try:
-        from tinyassets import role_decoder
-        from tinyassets.broker.supervisor import broker_selected
-
-        if role_decoder._bounded_client is not None:
-            from tinyassets.role_preview import write
-
-            return write(universe_dir, ui_id, png)
-        if broker_selected():
-            raise PreviewUnavailable('ui_preview_unavailable: bounded launcher is required')
         if fs._POSIX:
             os.close(fs.open_dir_nofollow(universe_dir))
         write_universe_file(universe_dir, f"{PREVIEW_DIR}/{name}", png)
     except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
-        # UniverseFileError (a link or a non-directory on the path), a directory
-        # at the target, permissions: the screenshot is not written, and the
-        # agent is told why.
         raise PreviewUnavailable(
             f"ui_preview_failed: /u/{PREVIEW_DIR}/{name} could not be written "
             f"({type(exc).__name__}: {str(exc)[:200]})") from None

@@ -1057,7 +1057,8 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
         permission="admin", granted_by="owner-akh",
     )
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-akh"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-akh"
     )
     ledger.create_connection(
         connection_id="http_akh", owner_user_id="owner-akh", connection_class="http",
@@ -1096,7 +1097,8 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
 
     # A DIFFERENT founder whose grant belongs to another owner is refused not_found.
     other_ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-akh"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-akh"
     )
     other_ledger.grant_connection(
         grant_id="grant_foreign_owner", connection_id="http_akh",

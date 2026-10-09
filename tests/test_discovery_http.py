@@ -65,7 +65,8 @@ def test_pre_registration_discovery_keeps_owner_and_universe_fences(rig, owner, 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner"
     )
     endpoints = [
         {"host": "models.example.com", "path_template": "/api/models/user", "methods": ["GET"]},

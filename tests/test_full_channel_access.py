@@ -49,7 +49,8 @@ GITHUB_ENDPOINT = {
 
 def _ledger(tmp_path, actor="user-1"):
     return ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: actor
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: actor
     )
 
 
@@ -886,7 +887,8 @@ def test_a_full_yes_cannot_land_on_a_host_added_while_the_tab_was_open(base):  #
     connection_id = deposited["connection_id"]
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     )
     read_at_ask_time = ledger.policy_json(connection_id)
     assert read_at_ask_time is not None
@@ -959,7 +961,8 @@ def test_the_full_ask_records_the_policy_its_sentence_was_written_from(base):  #
     assert snapshot["access_mode"] == "exact"
 
     endpoints_json, scopes_json = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     ).policy_json(deposited["connection_id"])
     assert snapshot["endpoints_json"] == endpoints_json
     assert snapshot["scopes_json"] == scopes_json
@@ -987,7 +990,8 @@ def test_an_ask_without_a_snapshot_still_answers(base):  # noqa: F811
     assert answered["status"] == "extended", answered
 
     assert ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     ).access_mode(deposited["connection_id"]) == "full"
 
 
@@ -1012,7 +1016,8 @@ def test_a_channel_upgraded_to_full_carries_every_verb(base):  # noqa: F811
     deposited = _deposit("u-1")
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     )
     connection_id = deposited["connection_id"]
     resource = ledger._get_connection_resource(connection_id)
@@ -1142,7 +1147,8 @@ def test_the_ask_records_which_deposit_it_is_about(base):  # noqa: F811
     reach = _full_channel_reach("u-1", {"destination": "github", "access": "full"})
     snapshot = reach["policy_snapshot"]
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     )
     assert snapshot["incarnation"] == ledger.incarnation(deposited["connection_id"])
     assert snapshot["incarnation"]

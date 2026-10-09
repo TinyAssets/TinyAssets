@@ -26,7 +26,6 @@ from tinyassets import graph_compiler as gc
 from tinyassets.branches import NodeDefinition
 from tinyassets.effectors import EffectChain
 from tinyassets.node_sandbox import (
-    WORKSPACE_MOUNT_POINT,
     NodeSandbox,
     PlainSubprocessLauncher,
     WorkspaceLimits,
@@ -83,15 +82,12 @@ def test_argv_without_a_workspace_is_unchanged() -> None:
 
 
 def test_argv_with_a_workspace_adds_exactly_one_bind() -> None:
-    argv = _argv(
-        workspace_bind="/srv/pool/lease-1/gen-2/repo",
-        allowed_workspace_roots=("/srv/pool",),
-    )
+    argv = _argv(workspace_bind="/proc/self/fd/7", pass_fds=(7,))
     assert argv == [
         *BASE_ARGV,
         "--ro-bind", "/usr", "/usr",
         "--ro-bind", "/bin", "/bin",
-        "--bind", "/srv/pool/lease-1/gen-2/repo", "/workspace",
+        "--bind", "/proc/self/fd/7", "/workspace",
         "--chdir", "/workspace",
         "--",
     ]
@@ -104,12 +100,10 @@ def test_argv_with_a_workspace_adds_exactly_one_bind() -> None:
 
 def test_the_workspace_bind_is_the_only_difference() -> None:
     plain = _argv()
-    bound = _argv(
-        workspace_bind="/srv/pool/x", allowed_workspace_roots=("/srv/pool",)
-    )
+    bound = _argv(workspace_bind="/proc/self/fd/7", pass_fds=(7,))
     assert [item for item in plain if item not in bound] == []
     assert [item for item in bound if item not in plain] == [
-        "--bind", "/srv/pool/x", "/workspace", "/workspace",
+        "--bind", "/proc/self/fd/7", "/workspace", "/workspace",
     ]
 
 
@@ -123,6 +117,9 @@ REFUSED_BINDS: list[tuple[str, str, tuple[str, ...]]] = [
     ("no_roots_at_all", "/srv/pool/repo", ()),
     ("empty", "", ("/srv/pool",)),
     ("nul", "/srv/pool/re\x00po", ("/srv/pool",)),
+    # The plain path form itself is gone: a vouched-for root no longer buys it.
+    ("inside_a_vouched_root", "/srv/pool/lease-1/gen-2/repo", ("/srv/pool",)),
+    ("universe_workspaces_root", "/data/u1/workspaces/repo", ("/data/u1/workspaces",)),
 ]
 
 
@@ -135,36 +132,21 @@ def test_refused_workspace_binds(path: str, roots: tuple[str, ...]) -> None:
         _argv(workspace_bind=path, allowed_workspace_roots=roots)
 
 
-def test_a_universe_workspaces_root_under_data_is_bindable() -> None:
-    """``/data`` is never bound *by default*; a root the caller vouches for is."""
-    argv = _argv(
-        workspace_bind="/data/universes/u1/workspaces/repo/gen-3",
-        allowed_workspace_roots=("/data/universes/u1/workspaces",),
-    )
-    assert "--bind" in argv
-    assert argv[argv.index("--bind") + 2] == WORKSPACE_MOUNT_POINT
+def test_a_plain_path_bind_refuses_by_name() -> None:
+    """Design §5: only a held descriptor may be bound, whatever the roots say.
 
-
-def test_a_bind_that_only_resolves_into_a_root_still_refuses() -> None:
-    """Both checks earn their keep, and in opposite directions.
-
-    The realpath check catches a path INSIDE a root that leaves it. This one
-    catches the reverse: a path outside every root that resolves into one, ie
-    a symlink pointing into the pool. Neither is a lease the caller vouched
-    for, and only the literal check refuses this shape.
+    The realpath/allowed_roots comparison is gone. A plain path is swappable
+    by a rename between the check and the mount, and with per-owner isolation
+    the kernel is what keeps an owner's child out of another owner's tree.
     """
-    with pytest.raises(ValueError, match="not beneath an allowed root"):
+    for roots in ((), ("/srv/pool",), ("/",)):
+        with pytest.raises(ValueError, match="not a held directory descriptor"):
+            _validate_workspace_bind("/srv/pool/lease-1", roots, lambda p: p)
+    # Including the shape a symlink into a vouched root used to need its own
+    # refusal for: there is no path shape left that is admitted.
+    with pytest.raises(ValueError, match="not a held directory descriptor"):
         _validate_workspace_bind(
             "/tmp/sneaky", ("/srv/pool",), lambda p: "/srv/pool/lease-1"
-        )
-
-
-def test_a_symlinked_bind_source_that_leaves_the_root_refuses() -> None:
-    with pytest.raises(ValueError, match="resolves to"):
-        _validate_workspace_bind(
-            "/srv/pool/lease-1",
-            ("/srv/pool",),
-            lambda p: "/etc/shadow-dir",
         )
 
 
@@ -192,49 +174,48 @@ def test_a_held_directory_handle_needs_that_descriptor_inherited() -> None:
         _validate_workspace_bind("/proc/self/fd/7", (), lambda p: p)
 
 
-def test_empty_roots_refuse_by_name() -> None:
-    """Fail closed, and say which condition closed it."""
-    with pytest.raises(ValueError, match="no allowed workspace roots"):
-        _validate_workspace_bind("/srv/pool/repo", (), lambda p: p)
+def test_the_daemon_has_no_workspace_launcher_factory() -> None:
+    """The nested jail is resolved INSIDE the owner's node cell.
 
-
-def test_the_default_factory_hands_the_descriptors_to_the_launcher(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The production factory, not a test double: the double is where the
-    descriptors were being dropped unnoticed."""
+    ``WORKSPACE_LAUNCHER_FACTORY`` was the last seam through which the daemon
+    built a bwrap child for a workspace node; the cell does it now, from the
+    workspace it mounted itself.
+    """
     from tinyassets import node_sandbox
 
-    monkeypatch.setattr(
-        node_sandbox, "_probe", lambda: {"bwrap_available": True}
+    assert not hasattr(node_sandbox, "WORKSPACE_LAUNCHER_FACTORY")
+    assert not hasattr(node_sandbox, "_default_workspace_launcher")
+
+
+def test_the_cell_resolves_the_workspace_launcher_from_the_mount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the factory used to do, where it happens now: inside the cell.
+
+    ``run_nested`` is the cell's entry, and it is what carries the bind, the
+    roots AND the descriptors over to the launcher -- the three a loose-argument
+    call site used to drop.
+    """
+    from tinyassets import node_sandbox
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    mount = WorkspaceMount(
+        bind_source="/proc/self/fd/9", pass_fds=(9,), allowed_roots=("/srv/pool",)
     )
-    launcher = node_sandbox._default_workspace_launcher(
-        WorkspaceMount(
-            bind_source="/proc/self/fd/9",
-            pass_fds=(9,),
-            allowed_roots=("/srv/pool",),
-        )
-    )
+    launcher = _launcher_for_workspace(BwrapLauncher(bwrap_path="/usr/bin/bwrap"), mount)
     assert launcher.pass_fds == (9,)
     assert launcher.workspace_bind == "/proc/self/fd/9"
     assert launcher.allowed_workspace_roots == ("/srv/pool",)
     argv = launcher.build_argv("print(1)", ["30", "1", ""])
     assert argv[argv.index("--bind") + 1] == "/proc/self/fd/9"
-
-
-def test_the_default_factory_refuses_without_a_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tinyassets import node_sandbox
-    from tinyassets.providers.base import SandboxUnavailableError
-
+    # And the cell refuses rather than running unsandboxed when there is none.
     monkeypatch.setattr(
         node_sandbox, "_probe", lambda: {"bwrap_available": False, "reason": "no bwrap"}
     )
+    from tinyassets.providers.base import SandboxUnavailableError
+
     with pytest.raises(SandboxUnavailableError):
-        node_sandbox._default_workspace_launcher(
-            WorkspaceMount(bind_source="/srv/pool/x", allowed_roots=("/srv/pool",))
-        )
+        node_sandbox._default_launcher()
 
 
 def test_a_descriptor_bind_reaches_both_the_argv_and_the_child() -> None:
@@ -807,22 +788,26 @@ def test_bytes_leave_the_real_jail_with_their_digest_intact(workspace: Path) -> 
         "        'where': ws.path,\n"
         "    }}\n"
     )
-    # Built the way the compiler builds it: a PATH bind must name the root it
-    # is allowed to come from, and `for_workspace` is what carries that over.
-    mount = WorkspaceMount(
-        bind_source=str(workspace), allowed_roots=(str(workspace.parent),)
-    )
-    result = NodeSandbox(
-        launcher=BwrapLauncher().for_workspace(mount), timeout=120
-    ).run_sync(
-        node_id="ws-node",
-        source_code=source,
-        input_state={},
-        input_keys=[],
-        output_keys=["result"],
-        timeout=120,
-        workspace=mount,
-    )
+    # Built the way the compiler builds it: a HELD DESCRIPTOR, which is the
+    # only bind form left, and `for_workspace` is what carries it over.
+    handle = os.open(str(workspace), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        mount = WorkspaceMount(
+            bind_source=f"/proc/self/fd/{handle}", pass_fds=(handle,)
+        )
+        result = NodeSandbox(
+            launcher=BwrapLauncher().for_workspace(mount), timeout=120
+        ).run_nested(
+            node_id="ws-node",
+            source_code=source,
+            input_state={},
+            input_keys=[],
+            output_keys=["result"],
+            timeout=120,
+            workspace=mount,
+        )
+    finally:
+        os.close(handle)
     assert result.success is True, result.error
     payload = result.output_state["result"]
     assert payload["made_rc"] == 0, payload
@@ -1766,7 +1751,7 @@ def test_the_descriptor_reaches_both_the_launcher_and_the_child(
     captured: dict[str, object] = {}
     real_popen = subprocess.Popen
 
-    def factory(sandbox_mount):
+    def for_workspace(_launcher, sandbox_mount):
         captured["factory_pass_fds"] = tuple(sandbox_mount.pass_fds or ())
         captured["factory_bind"] = sandbox_mount.bind_source
         launcher = BwrapLauncher(bwrap_path=PY).for_workspace(sandbox_mount)
@@ -1778,7 +1763,12 @@ def test_the_descriptor_reaches_both_the_launcher_and_the_child(
         kwargs.pop("pass_fds", None)
         return real_popen([PY, "-c", "raise SystemExit(0)"], **kwargs)
 
-    monkeypatch.setattr(node_sandbox, "WORKSPACE_LAUNCHER_FACTORY", factory)
+    # The launcher is resolved inside the cell now, from the mount the cell
+    # was handed; the compiler only carries the mount there.
+    monkeypatch.setattr(node_sandbox, "_launcher_for_workspace", for_workspace)
+    monkeypatch.setattr(
+        node_sandbox, "DEFAULT_LAUNCHER_FACTORY", lambda: BwrapLauncher(bwrap_path=PY)
+    )
     monkeypatch.setattr(node_sandbox.sys, "platform", "linux")
     monkeypatch.setattr(node_sandbox.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
@@ -1903,17 +1893,8 @@ def test_a_workspace_command_timeout_reaches_the_compiler_as_its_own_class(
             )
 
     monkeypatch.setattr(node_sandbox, "NodeSandbox", _TimedOut)
-    # The compiler resolves the workspace launcher BEFORE it builds the sandbox
-    # (a bind-less launcher would report /workspace as its root and emit no
-    # --bind for it), so a fake NodeSandbox is no longer enough on a host
-    # without bwrap.
-    monkeypatch.setattr(
-        node_sandbox,
-        "WORKSPACE_LAUNCHER_FACTORY",
-        lambda sandbox_mount: PlainSubprocessLauncher(
-            workspace_bind=sandbox_mount.bind_source
-        ),
-    )
+    # The compiler builds no launcher at all now, so a fake NodeSandbox is
+    # again enough on a host without bwrap.
     chain = EffectChain()
     chain.register_workspace("checkout", WorkspaceMount(bind_source=str(workspace)))
     fn = gc._build_source_code_node(
@@ -2188,19 +2169,25 @@ def test_a_double_forked_sleeper_dies_with_the_jail(tmp_path: Path) -> None:
         f"    ws.run([{PY!r}, '-c', 'import time; time.sleep(120)'], timeout=2)\n"
         "    return {'result': 'never'}\n"
     )
-    launcher = BwrapLauncher(
-        workspace_bind=str(root), allowed_workspace_roots=(str(tmp_path),)
-    )
-    sandbox = NodeSandbox(launcher=launcher, timeout=30)
-    result = sandbox.run_sync(
-        node_id="ws-node",
-        source_code=source,
-        input_state={},
-        input_keys=[],
-        output_keys=["result"],
-        timeout=30,
-        workspace=WorkspaceMount(bind_source=str(root)),
-    )
+    handle = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        mount = WorkspaceMount(
+            bind_source=f"/proc/self/fd/{handle}", pass_fds=(handle,)
+        )
+        sandbox = NodeSandbox(
+            launcher=BwrapLauncher().for_workspace(mount), timeout=30
+        )
+        result = sandbox.run_nested(
+            node_id="ws-node",
+            source_code=source,
+            input_state={},
+            input_keys=[],
+            output_keys=["result"],
+            timeout=30,
+            workspace=mount,
+        )
+    finally:
+        os.close(handle)
     assert result.success is False
     assert result.workspace_timeout is True
     assert (root / "sleeper-up").is_file(), (

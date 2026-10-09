@@ -35,8 +35,6 @@ from tinyassets.storage.outbound_connections import (
     CredentialBlindBroker,
     OutboundDeadlineExceeded,
     ProxyRequestError,
-    _adapter_safe_proxy_error,
-    _ProxyChannel,
     _SsrfHardenedHttpDriver,
 )
 
@@ -61,7 +59,8 @@ MODEL_USE = {
 @pytest.fixture
 def broker(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner"
     )
     for connection_id, grant_id in (("conn-model", "grant-model"), ("conn-plain", "grant-plain")):
         ledger.create_connection(
@@ -177,28 +176,6 @@ def test_a_deadline_crosses_the_broker_typed_and_fixed(broker):
     with pytest.raises(ProxyRequestError) as error:
         instance.dispatch("grant-model", "POST", {"url": INFERENCE_URL, "body": {}})
     assert type(error.value) is ProxyRequestError
-
-
-def test_the_child_boundary_keeps_the_deadline_typed():
-    assert _adapter_safe_proxy_error(OutboundDeadlineExceeded("x")) == (
-        "outbound request exceeded its time budget"
-    )
-
-    class Channel:
-        def send_bytes(self, _payload):
-            pass
-
-        def recv_bytes(self, *_):
-            import json
-
-            return json.dumps({
-                "ok": False, "error_type": "OutboundDeadlineExceeded",
-                "message": "outbound request exceeded its time budget",
-            }).encode()
-
-    channel = _ProxyChannel(Channel(), process=None)
-    with pytest.raises(OutboundDeadlineExceeded):
-        channel.request("POST", {"url": INFERENCE_URL})
 
 
 # --------------------------------------------------------------------------

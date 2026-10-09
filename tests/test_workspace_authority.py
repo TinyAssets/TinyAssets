@@ -373,7 +373,8 @@ def test_a_connection_id_that_could_forge_a_key_is_refused(connection_id) -> Non
 
 def _ledger(tmp_path, actor="user-1"):
     return ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: actor
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: actor
     )
 
 

@@ -172,7 +172,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/node_sandbox.py::NodeSandbox.run_sync": (CALL_SCOPED, "child process wait"),
+    "tinyassets/node_sandbox.py::NodeSandbox.run_nested": (CALL_SCOPED, "child process wait"),
     "tinyassets/node_sandbox.py::_watch_process_tree_rss": (CALL_SCOPED, "child RSS watch"),
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::blocking_provider_child": (CALL_SCOPED, "slot wait"),

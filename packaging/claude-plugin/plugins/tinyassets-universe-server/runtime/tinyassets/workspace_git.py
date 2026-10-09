@@ -63,6 +63,7 @@ __all__ = [
     "pin_address",
     "populate_workspace_from_bundle",
     "run_git",
+    "run_git_in_cell",
     "scrub_text",
     "unbundle_into_fresh_repo",
     "verify_bundle",
@@ -1091,13 +1092,6 @@ def classify_stderr(stderr_text: str) -> str:
     return "other"
 
 
-def _disable_core_dumps() -> None:  # pragma: no cover - runs in the child
-    """POSIX preexec: a core dump of a credentialed git would hold the token."""
-    import resource
-
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-
 def _tail_text(raw: object) -> str:
     if raw is None:
         return ""
@@ -1134,29 +1128,6 @@ def _reject_secrets_in(
                     "a credential appears in the git invocation; the broker is the "
                     "only path a secret may take",
                 )
-
-
-def _default_launcher(command: Sequence[str], **kwargs: Any) -> Any:
-    """Spawn, wait bounded, and on timeout kill the whole process GROUP.
-
-    ``subprocess.run``'s own timeout kills only the tracked pid, so a git that
-    double-forked a helper would leave it running with the operation's file
-    descriptors. This is the seam every production call goes through; a test
-    injects its own launcher instead.
-    """
-    timeout = kwargs.pop("timeout", None)
-    kwargs.pop("check", None)
-    proc = subprocess.Popen(command, **kwargs)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # The process group, not the pid: see kill_git.
-        try:
-            kill_git(proc, timeout_s=10.0)
-        except WorkspaceGitError:
-            logging.getLogger(__name__).error("git survived SIGKILL after a timeout")
-        raise
-    return subprocess.CompletedProcess(list(command), proc.returncode, stdout, stderr)
 
 
 #: Descriptors every git this process runs inherits: the workspace worker's
@@ -1203,35 +1174,23 @@ def inheriting(fd: int | None):
         _SCOPED_FDS.reset(token)
 
 
-def run_git(
+def _checked_git_request(
     argv: Sequence[str],
     *,
     cwd: str | os.PathLike[str],
     home_dir: str | os.PathLike[str],
     path: str,
-    options: Sequence[str] = (),
+    options: Sequence[str],
     timeout_s: float,
-    launcher: Callable[..., object] | None = None,
-    git_binary: str = "git",
-    extra_secrets: Sequence[str] = (),
-    preexec_fn: Callable[[], None] | None = None,
-    pass_fds: Sequence[int] = (),
-) -> GitResult:
-    """Run ``git <options...> <argv...>`` and return a bounded, scrubbed result.
+    git_binary: str,
+    extra_secrets: Sequence[str],
+    pass_fds: Sequence[int],
+) -> dict[str, str]:
+    """Validate one git request and return its canonical environment.
 
-    The environment is built HERE, from ``home_dir`` and ``path`` -- a caller
-    cannot hand in a dict, so it cannot hand in ``GIT_DIR``,
-    ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_CONFIG_COUNT`` or a
-    ``GIT_TRACE*``. Blindness is enforced rather than trusted: the key set is
-    asserted against :data:`GIT_ENVIRONMENT_KEYS` and every known secret is
-    rejected out of argv, options, the environment and the binary path before
-    anything spawns.
-
-    The child never inherits this process's environment, never gets a stdin,
-    and on POSIX cannot write a core dump and starts in a NEW SESSION -- so it
-    leads its own process group and a timeout takes down anything it spawned.
-    Output is truncated to the last 64 KiB of each stream and scrubbed before
-    it is returned or classified.
+    Shared by :func:`run_git` (daemon side, hands the request to the owner's
+    git cell) and :func:`run_git_in_cell` (the cell, which spawns it), so the
+    two can never diverge on what a well-formed request is.
     """
     if not isinstance(argv, Sequence) or isinstance(argv, (str, bytes)) or not argv:
         raise WorkspaceGitError("bad_argument", "run_git needs a non-empty argv sequence")
@@ -1256,24 +1215,103 @@ def run_git(
     for key in env:
         if key.startswith("GIT_") and key not in GIT_ENVIRONMENT_KEYS:
             raise WorkspaceGitError("bad_argument", f"{key} is not a permitted GIT_* variable")
+    _reject_secrets_in([git_binary, *options, *argv], env, extra_secrets)
+    return env
 
+
+def run_git(
+    argv: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str],
+    home_dir: str | os.PathLike[str],
+    path: str,
+    options: Sequence[str] = (),
+    timeout_s: float,
+    launcher: Callable[..., object] | None = None,
+    git_binary: str = "git",
+    extra_secrets: Sequence[str] = (),
+    preexec_fn: Callable[[], None] | None = None,
+    pass_fds: Sequence[int] = (),
+) -> GitResult:
+    """Hand ``git <options...> <argv...>`` to the owner's git cell.
+
+    Nothing spawns here. The request is validated and then executed by
+    :mod:`tinyassets.role_git`, which admits the owner scope and runs
+    :func:`run_git_in_cell` inside that owner's cell.
+
+    The environment is still built and asserted HERE, from ``home_dir`` and
+    ``path``, so a caller cannot hand in ``GIT_DIR``,
+    ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_CONFIG_COUNT`` or a
+    ``GIT_TRACE*``, and every known secret is rejected out of argv, options,
+    the environment and the binary path before the request leaves the daemon.
+    The cell builds its own ``home_dir`` and asserts the same keys again.
+
+    Output is truncated to the last 64 KiB of each stream and scrubbed before
+    it is returned or classified.
+    """
+    _checked_git_request(
+        argv, cwd=cwd, home_dir=home_dir, path=path, options=options,
+        timeout_s=timeout_s, git_binary=git_binary, extra_secrets=extra_secrets,
+        pass_fds=pass_fds,
+    )
+    from tinyassets.role_git import run as run_owner_git
+
+    # Owner git runs in the owner's git cell and nowhere else. A caller that
+    # needs a launcher, an inherited descriptor or its own child setup is
+    # asking for a daemon-uid git; that mode does not exist.
+    if (launcher is not None or git_binary not in ('git', '/usr/bin/git') or pass_fds
+            or _INHERITED_FDS or _SCOPED_FDS.get() or preexec_fn is not None):
+        raise WorkspaceGitError(
+            'bad_argument', 'git cell descriptor/launcher mode not admitted')
+    completed = run_owner_git(argv, cwd=cwd, options=options, timeout_s=float(timeout_s))
+    stderr_scrubbed = scrub_text(_tail_text(completed.stderr), extra_secrets)
+    return GitResult(returncode=completed.returncode,
+                     stdout_tail=scrub_text(_tail_text(completed.stdout), extra_secrets),
+                     stderr_class=classify_stderr(stderr_scrubbed),
+                     stderr_scrubbed=stderr_scrubbed)
+
+
+def run_git_in_cell(
+    argv: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str],
+    home_dir: str | os.PathLike[str],
+    path: str,
+    options: Sequence[str] = (),
+    timeout_s: float,
+    launcher: Callable[..., object] | None = None,
+    git_binary: str = "git",
+    extra_secrets: Sequence[str] = (),
+    preexec_fn: Callable[[], None] | None = None,
+    pass_fds: Sequence[int] = (),
+) -> GitResult:
+    """Spawn git HERE. The only caller is the owner git cell's entry point.
+
+    This is :func:`run_git`'s body minus the hand-off: the cell is already the
+    owner's process in the owner's mount namespace, so spawning git from it is
+    the confined execution, not a daemon-uid fallback. The daemon never calls
+    it -- :func:`run_git` goes to :mod:`tinyassets.role_git` instead.
+
+    The environment is built HERE, from ``home_dir`` and ``path`` -- a caller
+    cannot hand in a dict, so it cannot hand in ``GIT_DIR``,
+    ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_CONFIG_COUNT`` or a
+    ``GIT_TRACE*``. Blindness is enforced rather than trusted: the key set is
+    asserted against :data:`GIT_ENVIRONMENT_KEYS` and every known secret is
+    rejected out of argv, options, the environment and the binary path before
+    anything spawns.
+
+    The child never inherits this process's environment, never gets a stdin,
+    and on POSIX cannot write a core dump and starts in a NEW SESSION -- so it
+    leads its own process group and a timeout takes down anything it spawned.
+    Output is truncated to the last 64 KiB of each stream and scrubbed before
+    it is returned or classified.
+    """
+    env = _checked_git_request(
+        argv, cwd=cwd, home_dir=home_dir, path=path, options=options,
+        timeout_s=timeout_s, git_binary=git_binary, extra_secrets=extra_secrets,
+        pass_fds=pass_fds,
+    )
     command = [git_binary, *options, *argv]
-    _reject_secrets_in(command, env, extra_secrets)
-    from tinyassets import role_decoder
-
-    if role_decoder._bounded_client is not None:
-        from tinyassets.role_git import run as run_owner_git
-
-        if (launcher is not None or git_binary not in ('git', '/usr/bin/git') or pass_fds
-                or _INHERITED_FDS or _SCOPED_FDS.get() or preexec_fn is not None):
-            raise WorkspaceGitError(
-                'bad_argument', 'git cell descriptor/launcher mode not admitted')
-        completed = run_owner_git(argv, cwd=cwd, options=options, timeout_s=float(timeout_s))
-        stderr_scrubbed = scrub_text(_tail_text(completed.stderr), extra_secrets)
-        return GitResult(returncode=completed.returncode,
-                         stdout_tail=scrub_text(_tail_text(completed.stdout), extra_secrets),
-                         stderr_class=classify_stderr(stderr_scrubbed),
-                         stderr_scrubbed=stderr_scrubbed)
     run = launcher if launcher is not None else _default_launcher
     kwargs: dict[str, object] = {
         "cwd": str(cwd),
@@ -1318,14 +1356,44 @@ def run_git(
     )
 
 
-def kill_git(proc: object, *, timeout_s: float = 5.0) -> int:
-    """SIGKILL a git started by :func:`run_git` and everything it spawned.
+def _default_launcher(command: Sequence[str], **kwargs: Any) -> Any:
+    """Spawn, wait bounded, and on timeout kill the whole process GROUP.
 
-    ``run_git`` puts the child in its own session on POSIX, so signalling the
-    process GROUP reaches a helper git double-forked away -- killing only the
-    tracked pid would leave it running. Raises ``timeout`` if the tracked
-    process has still not exited: a caller must never be told a process is
-    gone while it holds a lease or a credential.
+    ``subprocess.run``'s own timeout kills only the tracked pid, so a git that
+    double-forked a helper would leave it running with the operation's file
+    descriptors. This is the seam the cell's git goes through; a test injects
+    its own launcher instead.
+    """
+    timeout = kwargs.pop("timeout", None)
+    kwargs.pop("check", None)
+    proc = subprocess.Popen(command, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # The process group, not the pid: see kill_git.
+        try:
+            kill_git(proc, timeout_s=10.0)
+        except WorkspaceGitError:
+            logging.getLogger(__name__).error("git survived SIGKILL after a timeout")
+        raise
+    return subprocess.CompletedProcess(list(command), proc.returncode, stdout, stderr)
+
+
+def _disable_core_dumps() -> None:  # pragma: no cover - runs in the child
+    """POSIX preexec: a core dump of a credentialed git would hold the token."""
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def kill_git(proc: object, *, timeout_s: float = 5.0) -> int:
+    """SIGKILL a git started inside the cell and everything it spawned.
+
+    :func:`run_git_in_cell` puts the child in its own session on POSIX, so
+    signalling the process GROUP reaches a helper git double-forked away --
+    killing only the tracked pid would leave it running. Raises ``timeout`` if
+    the tracked process has still not exited: a caller must never be told a
+    process is gone while it holds a lease or a credential.
     """
     pid = getattr(proc, "pid", None)
     if pid is None or not hasattr(proc, "wait"):

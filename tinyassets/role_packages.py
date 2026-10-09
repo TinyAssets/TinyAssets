@@ -73,8 +73,8 @@ def start(universe_dir, revision, *, slots=None, capabilities=None, egress=False
     if type(revision) is not str or not re.fullmatch('[a-f0-9]{64}', revision):
         raise ValueError('invalid package revision')
     client = role_decoder._bounded_client
-    if client is None or not supervisor.broker_selected():
-        raise PermissionError('package requires its bounded owner launcher and broker')
+    if client is None:
+        raise PermissionError('package requires its bounded owner launcher')
     supervisor._protect_daemon()
     root, center = data_dir().resolve(), Path(universe_dir)
     principal = current_identity().user_id

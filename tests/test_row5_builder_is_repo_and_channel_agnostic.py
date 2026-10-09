@@ -63,7 +63,8 @@ def _universe_for(tmp_path: Path, host: str, repo: str) -> tuple[Path, Path]:
     universe_dir = data_root / UNIVERSE
     universe_dir.mkdir(parents=True)
     ledger = ConnectionLedger(
-        data_root / "outbound.db", verify_authenticated_principal=lambda: "user-1"
+        data_root / ".broker" / "outbound.db", data_root=data_root,
+        verify_authenticated_principal=lambda: "user-1"
     )
     ledger.create_connection(
         connection_id="conn-git",

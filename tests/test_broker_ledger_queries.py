@@ -18,7 +18,7 @@ from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResol
 
 @pytest.fixture
 def ledger(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     for owner in ("alice", "bob"):
         ledger.create_connection(
             connection_id=f"conn-{owner}", owner_user_id=owner, connection_class="http",

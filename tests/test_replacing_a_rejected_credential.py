@@ -424,7 +424,7 @@ def _policy(base, uid, *, destination="acme", actor="alice"):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: actor)
     return ledger.policy_json(conn_id), ledger.get_grant(grant_id)
 
@@ -626,7 +626,7 @@ def test_a_sign_in_connection_is_not_rotated_by_pasting(base):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, _ = _ids(universe_id="u-1", destination="acme")
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
         connection.execute(
@@ -722,7 +722,7 @@ def test_a_grant_bound_to_another_universe_is_refused(base):
     _login("alice")
     _deposit("u-1")
     _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
         connection.execute(
@@ -743,7 +743,7 @@ def _ledger_connection(base, *, uid, destination, actor="alice", **over):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: actor)
     fields = {
         "connection_id": conn_id,
@@ -906,7 +906,8 @@ def test_a_connection_with_no_live_grant_is_not_rotatable(base):
     _deposit("u-1")
     _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
     ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     ).revoke_grant(grant_id)
 
     refused = rotate_http(universe_id="u-1", payload=json.dumps({

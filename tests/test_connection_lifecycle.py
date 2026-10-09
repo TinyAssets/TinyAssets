@@ -157,7 +157,7 @@ def test_disconnect_preserves_other_accepted_source(rig, removed_index):
     assert after.state == "ready"
     assert [m.provider for m in after.candidates] == ["api_key_http:" + expected.id]
     assert after.generation == before.generation + 1
-    ledger = ConnectionLedger(rig[0] / "outbound.db")
+    ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
     assert ledger.get_connection([second, first][removed_index]["connection_id"]) is not None
     from tinyassets.provider_serving_binding import serving_connection_is_current
 
@@ -168,7 +168,7 @@ def test_disconnect_preserves_other_accepted_source(rig, removed_index):
 
 def test_stale_incarnation_cannot_remove_reconnected_source(rig):
     conn, _ = source(rig)
-    ledger = ConnectionLedger(rig[0] / "outbound.db")
+    ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
     old = ledger.incarnation(conn["connection_id"])
     remove()
     source(rig)
@@ -228,7 +228,7 @@ def test_app_lists_and_removes_without_llm(rig, monkeypatch):
     )
     assert status == 200, result
     assert result["status"] == "removed"
-    assert ConnectionLedger(rig[0] / "outbound.db").get_connection(conn["connection_id"]) is None
+    assert ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).get_connection(conn["connection_id"]) is None
 
 
 def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
@@ -239,13 +239,13 @@ def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
     )
     assert status == 403, doc
     assert (
-        ConnectionLedger(rig[0] / "outbound.db").get_connection(conn["connection_id"]) is not None
+        ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).get_connection(conn["connection_id"]) is not None
     )
 
 
 def test_cross_origin_cannot_disconnect(rig, monkeypatch):
     conn, _ = source(rig)
-    ledger = ConnectionLedger(rig[0] / "outbound.db")
+    ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
     _home(monkeypatch, "u-owner")
     status, _ = post_connections(
         {
@@ -300,7 +300,7 @@ def test_old_remove_request_cannot_delete_replacement(rig):
     )
     assert answered.get("error") == "connection_changed", answered
     assert (
-        ConnectionLedger(rig[0] / "outbound.db").get_connection(conn["connection_id"]) is not None
+        ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).get_connection(conn["connection_id"]) is not None
     )
 
 

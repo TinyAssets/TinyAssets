@@ -57,7 +57,7 @@ def _seed_binding(
 
     universe = base / universe_id
     universe.mkdir(parents=True, exist_ok=True)
-    ledger = ConnectionLedger(base / "outbound.db")
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     ledger.create_connection(
         connection_id=_CONNECTION_ID,
         owner_user_id=owner,
@@ -437,7 +437,7 @@ def test_capability_revoke_is_seen_on_next_status_check(monkeypatch, tmp_path):
     universe = _seed_binding(tmp_path, monkeypatch)
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     ledger.configure_capability(
         connection_id=_CONNECTION_ID,
         capability_kind="realtime_voice",
@@ -457,7 +457,7 @@ def test_grant_revoke_fails_closed_before_session(monkeypatch, tmp_path):
     universe = _seed_binding(tmp_path, monkeypatch)
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ConnectionLedger(tmp_path / "outbound.db").revoke_grant(_GRANT_ID)
+    ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path).revoke_grant(_GRANT_ID)
     proxy = _FakeProxy({})
     with pytest.raises(rv.RealtimeVoiceError) as caught:
         asyncio.run(
@@ -478,7 +478,7 @@ def test_capability_disclosure_changes_when_bound_service_changes(monkeypatch, t
     first = rv.voice_capability(universe, "user_owner")["disclosure_id"]
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     ledger.configure_capability(
         connection_id=_CONNECTION_ID,
         capability_kind="realtime_voice",

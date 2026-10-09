@@ -43,7 +43,7 @@ def seed(ledger):
 
 
 def test_transaction_erases_only_owner_and_counts_indirect_rows(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     seed(ledger)
     counts = local_erase(ledger, principal="erase-a", command_center=ACCOUNT_SCOPE)
     assert len(counts) == 9 and set(counts.values()) == {1}
@@ -55,7 +55,7 @@ def test_transaction_erases_only_owner_and_counts_indirect_rows(tmp_path):
 
 
 def test_foreign_grant_aborts_entire_erasure(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     seed(ledger)
     with ledger._connect() as db:
         db.execute("UPDATE outbound_connection_grants SET owner_user_id='erase-b' "
@@ -69,7 +69,7 @@ def test_foreign_grant_aborts_entire_erasure(tmp_path):
 
 
 def test_sql_failure_rolls_back_already_deleted_rows(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     seed(ledger)
     with ledger._connect() as db:
         db.execute("CREATE TRIGGER refuse_erasure BEFORE DELETE ON agent_request_usage "

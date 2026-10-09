@@ -52,7 +52,7 @@ def source(rig, monkeypatch):
                                                        "agent_score": 14.25,
                                                        "reason_score": 22.5},
     }]})
-    broker_ledger = ConnectionLedger(rig.base / "outbound.db",
+    broker_ledger = ConnectionLedger(rig.base / ".broker" / "outbound.db", data_root=rig.base,
                                       verify_authenticated_principal=lambda: "owner")
 
     def network(**kwargs):

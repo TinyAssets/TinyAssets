@@ -8,8 +8,12 @@ import pytest
 
 from tinyassets.owner_launcher_client import OwnerLauncherClient
 
-pytestmark = pytest.mark.skipif(
-    os.name != 'posix' or not hasattr(os, 'pidfd_open'), reason='Linux pidfd and Unix credentials')
+# This drives the real bounded launcher channel; no double is installed.
+pytestmark = [
+    pytest.mark.role_split,
+    pytest.mark.skipif(os.name != 'posix' or not hasattr(os, 'pidfd_open'),
+                       reason='Linux pidfd and Unix credentials'),
+]
 
 
 def test_daemon_uid_cannot_impersonate_owner_launcher():

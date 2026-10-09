@@ -26,7 +26,8 @@ OPTED = {**SOURCE, "redirect_mode": "public_https_get"}
 def _seed(base, mode):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
-    ledger = ConnectionLedger(base / "outbound.db", verify_authenticated_principal=lambda: "alice")
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
+    verify_authenticated_principal=lambda: "alice")
     cid, gid = _ids(universe_id="u-1", destination="downloads")
     ledger.create_connection(
         connection_id=cid,
@@ -96,7 +97,7 @@ def test_legacy_identity_repair_is_stable_and_changes_no_policy_or_grants(base):
         grants = [dict(row) for row in conn.execute("SELECT * FROM outbound_connection_grants")]
 
     def reopen(_):
-        return ConnectionLedger(base / "outbound.db").incarnation(cid)
+        return ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).incarnation(cid)
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         tokens = list(pool.map(reopen, range(12)))
@@ -122,10 +123,10 @@ def test_repair_covers_rollback_rows_and_never_reuses_previous_identity(base):
         # Simulate a rollback writer recreating the same id and policy without
         # the new field. A previous approval must not attach to that generation.
         conn.execute("UPDATE outbound_connections SET incarnation = ''")
-    reopened = ConnectionLedger(base / "outbound.db")
+    reopened = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     replacement_token = reopened.incarnation(cid)
     assert replacement_token and replacement_token != original_token
-    assert ConnectionLedger(base / "outbound.db").incarnation(cid) == replacement_token
+    assert ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).incarnation(cid) == replacement_token
     refused = answer_request(
         universe_id="u-1", payload={"request_id": asked["request_id"], "values": {}}
     )

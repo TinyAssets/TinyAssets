@@ -165,7 +165,7 @@ def test_close_ends_a_read_waiting_in_another_thread_within_its_idle_bound(dribb
 
 @pytest.fixture
 def ledger(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db",
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
                               verify_authenticated_principal=lambda: "owner")
     ledger.create_connection(
         connection_id="conn-model", owner_user_id="owner", connection_class="http",

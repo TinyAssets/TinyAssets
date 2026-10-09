@@ -31,7 +31,6 @@ import base64
 import io
 import json
 import struct
-import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -190,10 +189,7 @@ def bound_image(data: bytes, path: str = "", *,
     if not _DECODE_SLOTS.acquire(timeout=DECODE_WALL_SECONDS):
         return f"error: {name} could not be shown now: image decoding is busy, try again"
     try:
-        from tinyassets.broker.supervisor import broker_selected
-
-        answer = _decode_in_child(data, mime, **(
-            {"universe_dir": universe_dir} if broker_selected() else {}))
+        answer = _decode_in_child(data, mime, universe_dir=universe_dir)
     finally:
         _DECODE_SLOTS.release()
     if isinstance(answer, str):
@@ -222,26 +218,15 @@ def _limit_self(memory_bytes: int, cpu_seconds: int) -> None:
 
 
 def _decode_in_child(data: bytes, mime: str, *, universe_dir=None) -> tuple[dict, bytes] | str:
-    from tinyassets.broker.supervisor import broker_selected
+    """The decode runs in the owner's decoder cell; there is no daemon-uid decode."""
+    from tinyassets.role_decoder import decode
 
     try:
-        if broker_selected():
-            from tinyassets.role_decoder import decode
-
-            done = decode(data, mime, universe_dir)
-        else:
-            done = subprocess.run(
-                [sys.executable, "-m", "tinyassets.tool_images", mime,
-                 str(DECODE_MEMORY_BYTES), str(DECODE_CPU_SECONDS)],
-                input=data, capture_output=True, timeout=DECODE_WALL_SECONDS,
-                cwd=str(Path(__file__).resolve().parents[1]),
-            )
-    except (subprocess.TimeoutExpired, TimeoutError):
+        done = decode(data, mime, universe_dir)
+    except TimeoutError:
         return f"took longer than {DECODE_WALL_SECONDS:.0f} s to decode"
     except (OSError, RuntimeError, ValueError):
-        if broker_selected():
-            return "could not enter the admitted image decoder cell"
-        raise
+        return "could not enter the admitted image decoder cell"
     head, _, body = done.stdout.partition(b"\n")
     try:
         meta = json.loads(head.decode("utf-8")) if head else {}
@@ -372,6 +357,3 @@ def main() -> int:  # pragma: no cover - exercised through bound_image
     out.flush()
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())

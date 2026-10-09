@@ -52,7 +52,8 @@ def _seed(base: Path, *, owner: str = "founder", universe: str = "u-x") -> None:
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: owner
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: owner
     )
     ledger.create_connection(
         connection_id=_CONN_ID,
@@ -331,7 +332,8 @@ def _seed_single_path(base: Path, path: str, *, owner: str = "founder",
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: owner
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: owner
     )
     ledger.create_connection(
         connection_id=_CONN_ID,

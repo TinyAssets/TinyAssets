@@ -28,7 +28,8 @@ def _seed_grant(tmp_path: Path, monkeypatch) -> str:
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     (tmp_path / "u").mkdir(exist_ok=True)
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "o"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "o"
     )
     ledger.create_connection(
         connection_id="http_c", owner_user_id="o", connection_class="http",

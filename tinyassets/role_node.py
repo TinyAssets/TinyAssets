@@ -44,7 +44,11 @@ def _workspace_fd(workspace):
         raise ValueError('node cannot inherit unrelated descriptors')
     from tinyassets.workspace_fs import open_dir_nofollow
 
-    sandbox._validate_workspace_bind(source, workspace.allowed_roots, os.path.realpath, ())
+    # A path-form capability is opened no-follow here and then checked against
+    # the admitted owner identity by `run` before the cell starts; the
+    # descriptor, not the string, is what the launcher binds. There is no
+    # realpath/allowed_roots comparison left to make: the owner labels are the
+    # boundary (design §5).
     return open_dir_nofollow(source)
 
 
@@ -215,7 +219,7 @@ def cell_main(mounted):
 
     try:
         instance = sandbox.NodeSandbox(max_output_bytes=request.pop('max_output_bytes'))
-        result = instance.run_sync(**request, workspace=workspace, invoke=invoke)
+        result = instance.run_nested(**request, workspace=workspace, invoke=invoke)
         try:
             encoded = _encode({'result': asdict(result)}, OUTPUT_BOUND)
         except ValueError:

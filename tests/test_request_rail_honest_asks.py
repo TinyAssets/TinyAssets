@@ -34,7 +34,7 @@ def _stored_paths(root, uid="u-1", destination="github", actor="alice"):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, _ = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(root / "outbound.db",
+    ledger = ConnectionLedger(root / ".broker" / "outbound.db", data_root=root,
                               verify_authenticated_principal=lambda: actor)
     res = ledger._get_connection_resource(conn_id)
     return sorted(e.path_template for e in res.allowed_endpoints)
@@ -158,7 +158,7 @@ def test_extending_never_stores_a_duplicate_endpoint(base):  # noqa: F811
 def _ledger(root, actor="alice"):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    return ConnectionLedger(root / "outbound.db",
+    return ConnectionLedger(root / ".broker" / "outbound.db", data_root=root,
                             verify_authenticated_principal=lambda: actor)
 
 
