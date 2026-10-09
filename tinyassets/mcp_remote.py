@@ -152,6 +152,12 @@ class RemoteMcp:
             if method in {"initialize", "notifications/initialized"}:
                 self._reset()
             if isinstance(exc, asyncio.CancelledError):
+                if method == "tools/call" and attempt.get("request_id") is not None:
+                    # Preserve the wire operation for an enclosing deadline.
+                    # Collecting transports may already have started a worker
+                    # before their stream context yields; cancellation cannot
+                    # establish that no bytes were sent.
+                    exc.mcp_op_id = op_id
                 if (self._version != VERSIONS[0] and method == "tools/call"
                         and attempt.get("request_id") is not None):
                     # Ask the server to cancel without replaying. A collecting
@@ -227,7 +233,8 @@ class RemoteMcp:
                         raise McpError("MCP notification returned a body")
                 return None
             if (status == 400 and method == "tools/list"
-                    and self._version == VERSIONS[0] and not self.catalog_hash):
+                    and self._version == VERSIONS[0] and not self.catalog_hash
+                    and "cursor" not in params):
                 from tinyassets.mcp_protocol import probe_error
 
                 await probe_error(stream, request_id)
@@ -264,6 +271,10 @@ class RemoteMcp:
                     raise McpError("invalid MCP result")
                 found = message["result"]
                 if self._version == VERSIONS[0]:
+                    result_type = found.get("resultType", "complete")
+                    if (result_type not in ("complete", "input_required")
+                            or (result_type == "input_required" and method != "tools/call")):
+                        raise McpError("unsupported MCP result type")
                     # A final response completes the request even if the server
                     # neglects to close its SSE stream. Context exit closes it.
                     return found
@@ -307,6 +318,7 @@ class RemoteMcp:
                             continue
                         except ProtocolRejected as exc:
                             if (exc.code == -32022 and self._version == VERSIONS[0]
+                                    and cursor is None
                                     and any(v in exc.supported for v in VERSIONS[1:])):
                                 await self._initialize()
                                 continue

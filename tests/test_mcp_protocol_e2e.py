@@ -51,8 +51,13 @@ async def test_local_standard_server_through_real_broker(broker, encoding):  # n
             status = 200 if valid else 400
             if encoding == "challenge":
                 status, result = 401, {}
+            elif method == "server/discover":
+                result = {"supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}},
+                          "_meta": {PREFIX + "serverInfo": {"name": "Local", "version": "1"}}}
             elif method == "tools/list":
                 result = {"tools": [{"name": "write", "inputSchema": {"type": "object"}}]}
+            elif method != "tools/call":
+                status, result = 404, {}
             elif not consent.is_set():
                 result = {"resultType": "input_required", "requestState": "opaque/+state=",
                           "inputRequests": {"login": {"method": "elicitation/create",
@@ -65,10 +70,14 @@ async def test_local_standard_server_through_real_broker(broker, encoding):  # n
             else:
                 status, result = 400, {}
                 violations.append(doc)
+            result.setdefault("resultType", "complete")
             document = {"jsonrpc": "2.0", "id": doc["id"], "result": result}
             if status == 400:
                 document = {"jsonrpc": "2.0", "id": doc["id"],
                             "error": {"code": -32020, "message": "header mismatch"}}
+            elif status == 404:
+                document = {"jsonrpc": "2.0", "id": doc["id"],
+                            "error": {"code": -32601, "message": "method not found"}}
             payload = json.dumps(document).encode()
             if encoding == "sse":
                 payload = b": comment\r\n\r\ndata: " + payload + b"\r\n\r\n"
@@ -118,7 +127,8 @@ async def test_local_standard_server_through_real_broker(broker, encoding):  # n
             await remote.discover()
             result = await remote.call("write", {"value": "one"},
                                        catalog_hash=remote.catalog_hash, op_id=new_op_id())
-            assert result == {"content": [{"type": "text", "text": "completed"}]}
+            assert result == {"resultType": "complete",
+                              "content": [{"type": "text", "text": "completed"}]}
             assert effects == [{"value": "one"}]
             assert len(prompts) == 1
             assert len(seen) == 3

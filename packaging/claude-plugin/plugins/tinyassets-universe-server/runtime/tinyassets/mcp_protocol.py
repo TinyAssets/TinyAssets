@@ -140,35 +140,45 @@ async def continue_call(remote, original, result, *, op_id, notify):
     """Only explicit MRTR responses authorize a new round, never a lost response."""
     consented = set()
     # Pending data is private to this coroutine/host/binding, not a public resume token.
-    async with asyncio.timeout(900):
-        for _ in range(300):
-            requests = url_requests(result)
-            if requests and remote._elicit_url is None:
-                raise McpError("MCP URL elicitation requires a protected host")
-            responses = {}
-            repeated = False
-            for key, url, message in requests:
-                await asyncio.to_thread(remote._check_authority, remote._binding)
-                identity = (key, url, message)
-                if identity in consented:
-                    action, repeated = "accept", True
-                else:
-                    action = await remote._elicit_url(UrlElicitation(
-                        remote._binding, op_id, key, url, message))
-                if action not in ("accept", "decline", "cancel"):
-                    raise McpError("invalid host elicitation response")
-                if action != "accept":
-                    raise McpError("MCP elicitation cancelled")
-                consented.add(identity)
-                responses[key] = {"action": action}
-            if repeated or not requests:
-                await asyncio.sleep(1)
-            params = {**original}
-            if "inputRequests" in result:
-                params["inputResponses"] = responses
-            if "requestState" in result:
-                params["requestState"] = result["requestState"]
-            result = await remote._rpc("tools/call", params, op_id=new_op_id(), notify=notify)
-            if result.get("resultType") != "input_required":
-                return result
+    try:
+        async with asyncio.timeout(900):
+            for _ in range(300):
+                requests = url_requests(result)
+                if requests and remote._elicit_url is None:
+                    raise McpError("MCP URL elicitation requires a protected host")
+                responses = {}
+                repeated = False
+                for key, url, message in requests:
+                    await asyncio.to_thread(remote._check_authority, remote._binding)
+                    identity = (key, url, message)
+                    if identity in consented:
+                        action, repeated = "accept", True
+                    else:
+                        action = await remote._elicit_url(UrlElicitation(
+                            remote._binding, op_id, key, url, message))
+                    if action not in ("accept", "decline", "cancel"):
+                        raise McpError("invalid host elicitation response")
+                    if action != "accept":
+                        raise McpError("MCP elicitation cancelled")
+                    consented.add(identity)
+                    responses[key] = {"action": action}
+                if repeated or not requests:
+                    await asyncio.sleep(1)
+                params = {**original}
+                if "inputRequests" in result:
+                    params["inputResponses"] = responses
+                if "requestState" in result:
+                    params["requestState"] = result["requestState"]
+                result = await remote._rpc("tools/call", params, op_id=new_op_id(), notify=notify)
+                if result.get("resultType") != "input_required":
+                    return result
+    except TimeoutError as exc:
+        from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+
+        wire_op = getattr(exc.__cause__, "mcp_op_id", None)
+        if wire_op is not None:
+            unknown = AmbiguousProxyOutcome("MCP tool outcome unknown; do not replay")
+            unknown.op_id = wire_op
+            raise unknown from None
+        raise McpError("MCP continuation expired") from None
     raise McpError("MCP continuation limit reached")

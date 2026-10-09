@@ -335,3 +335,81 @@ async def test_sse_cr_only_final_delimiter_is_delivered():
 
     assert [m async for m in messages(chunks(), "text/event-stream")] == [
         {"jsonrpc": "2.0", "id": 1, "result": {}}]
+
+
+@pytest.mark.asyncio
+async def test_unknown_modern_result_type_is_not_treated_as_tool_success():
+    broker = Broker([reply({"tools": TOOLS}), reply({"resultType": "future_extension"})])
+    client = remote(broker)
+    await client.discover()
+    with pytest.raises(AmbiguousProxyOutcome):
+        await client.call("write", {}, catalog_hash=client.catalog_hash, op_id="one")
+    assert len(broker.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_page_error_cannot_change_protocol_era():
+    broker = Broker([reply({"tools": TOOLS, "nextCursor": "page2"}),
+                     (400, {"Content-Type": "application/json"}, {"error": {
+                         "code": -32602, "message": "invalid cursor"}})])
+    client = remote(broker)
+    with pytest.raises(McpError):
+        await client.discover()
+    assert len(broker.calls) == 2
+    assert client._version == VERSION
+    assert not client.catalog_hash
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["host", "sleep", "wire"])
+async def test_continuation_deadline_preserves_whether_a_round_is_unknown(monkeypatch, stage):
+    from tinyassets import mcp_protocol
+
+    real_timeout = asyncio.timeout
+    timeouts = []
+
+    def timeout(_):
+        timer = real_timeout(None)
+        timeouts.append(timer)
+        return timer
+
+    async def expire():
+        timeouts[0].reschedule(asyncio.get_running_loop().time())
+        await asyncio.Future()
+
+    monkeypatch.setattr(mcp_protocol.asyncio, "timeout", timeout)
+    result = {"resultType": "input_required", "requestState": "opaque"}
+    broker = Broker([reply({"tools": TOOLS}), reply(needed() if stage == "host" else result),
+                     reply({"content": []})])
+    original = broker.stream
+
+    @asynccontextmanager
+    async def stream(**kwargs):
+        # Model a collector that has begun an operation before yielding its head.
+        if stage == "wire" and len(broker.calls) == 2:
+            broker.calls.append(kwargs)
+            await expire()
+        async with original(**kwargs) as connection:
+            yield connection
+
+    broker.stream = stream
+
+    async def sleep(_):
+        if stage == "sleep":
+            await expire()
+
+    monkeypatch.setattr(mcp_protocol.asyncio, "sleep", sleep)
+
+    async def consent(_):
+        await expire()
+
+    client = remote(broker, elicit_url=consent)
+    await client.discover()
+    expected = AmbiguousProxyOutcome if stage == "wire" else McpError
+    with pytest.raises(expected) as caught:
+        await client.call("write", {}, catalog_hash=client.catalog_hash, op_id="one")
+    assert len(broker.calls) == (3 if stage == "wire" else 2)
+    if stage == "wire":
+        assert caught.value.op_id == broker.calls[-1]["op_id"]
+    else:
+        assert "expired" in str(caught.value)
