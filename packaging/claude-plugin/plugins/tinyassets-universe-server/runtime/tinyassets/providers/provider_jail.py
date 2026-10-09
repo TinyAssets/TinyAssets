@@ -395,8 +395,7 @@ def _validated_view(
 
     ``platform_sources`` are the resolved paths THIS MODULE just constructed
     for the launch -- the egress proxy socket and, when there is one, the
-    engine relay socket. They are the only sources outside the command center
-    a view may bind. Everything else must resolve inside the command center.
+    engine relay socket. They are the only sidecar sources a view may bind.
 
     It is an exact set, not a directory prefix, and that distinction is the
     whole point: the sidecar folder used to be allowed wholesale, so a view
@@ -405,8 +404,11 @@ def _validated_view(
     link to the sidecar folder in its place; the resolution landed inside the
     allowed prefix, and the command center got a writable handle on platform
     state -- including the consent database that decides what it may do.
+
+    Another owner's tree needs no check here: the jail runs as its owner in
+    that owner's cell, and the kernel refuses the bind (design section 5).
     """
-    root = view.universe_dir.resolve(strict=False)
+    sidecars = view.universe_dir.resolve(strict=False).parent / UNIVERSE_SIDECARS_DIR
     checked: list[JailMount] = []
     for mount in view.mounts:
         if mount.op not in ("bind", "ro-bind", "bind-try", "ro-bind-try", "tmpfs",
@@ -429,8 +431,9 @@ def _validated_view(
             source = mount.source.resolve(strict=not mount.op.endswith("-try"))
         except OSError:
             raise _refuse("a bind source does not exist") from None
-        if not (_within(source, root) or source in platform_sources):
-            raise _refuse("a view may only bind paths inside its own command center")
+        if (_overlaps(source, sidecars)
+                and source not in platform_sources):
+            raise _refuse("a view may not bind platform sidecar state")
         checked.append(JailMount(mount.op, dest, source))
     for name, _value in view.setenv:
         if not name or "=" in name:

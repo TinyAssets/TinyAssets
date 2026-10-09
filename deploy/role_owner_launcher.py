@@ -139,7 +139,7 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
                     '--socket', str(broker_dir / 'broker.sock'),
                     '--state', str(data_root / '.broker' / 'state'),
                     '--data-root', str(data_root), '--owner-uid', '1001',
-                    '--proof-sha256', digest, '--role-split',
+                    '--proof-sha256', digest,
                     '--mapper-channel', str(admission_broker.fileno()),
                     '--mapper-pid', mapper]
             os.chdir('/')
