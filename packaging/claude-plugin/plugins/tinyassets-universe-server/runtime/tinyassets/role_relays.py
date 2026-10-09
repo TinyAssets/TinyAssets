@@ -84,7 +84,8 @@ def pin_for_owner(path, center, uid, *, kind):
     from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
 
     pattern = (rf'egress-{os.getpid()}\.sock' if kind == 'egress'
-               else r'ta-[a-f0-9]{32}\.sock' if kind == 'ta' else '')
+               else r'ta-[a-f0-9]{32}\.sock' if kind == 'ta'
+               else rf'engine-{os.getpid()}-[a-f0-9]{{12}}\.sock' if kind == 'engine' else '')
     if (type(uid) is not int or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST
             or path.parent != center.parent / UNIVERSE_SIDECARS_DIR / center.name
             or not pattern or not re.fullmatch(pattern, path.name)):
