@@ -1,9 +1,8 @@
-"""The provider jail's policy: when it applies, what it refuses, what it binds.
+"""The provider launch scope and the shared jail view pieces.
 
-Platform-neutral where it can be: every refusal here happens BEFORE a process
-exists, so it is asserted on any host, and the spawn functions are replaced by
-tripwires that fail the test if anything is launched. The real-jail proof of
-what a jailed provider can read is ``tests/test_provider_universe_jail.py``.
+Every refusal here happens BEFORE a process exists, so it is asserted on any
+host. A provider process itself runs in its owner's cell
+(``tests/test_role_provider_execution.py``).
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ from tinyassets.providers.provider_jail import (
     JailMount,
     ProviderConfinementError,
     UniverseView,
-    confine_launch,
     default_view,
     jail_argv,
     provider_launch_scope,
@@ -47,10 +45,20 @@ def no_spawn(monkeypatch: pytest.MonkeyPatch) -> list:
         launched.append(args)
         raise AssertionError("a refused launch reached the process spawn")
 
-    monkeypatch.setattr(owned_process, "_aspawn_anchored", _tripwire)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _tripwire)
     monkeypatch.setattr(asyncio, "create_subprocess_shell", _tripwire)
     return launched
+
+
+@pytest.fixture(autouse=True)
+def prepared_workspace(monkeypatch):
+    """The agent workspace is made by the owner's tool-files cell in production
+    (``role_tools.prepare``); here a plain directory stands in for it."""
+    from tinyassets import role_tools
+
+    def prepare(universe_dir, *, agent_id):
+        (Path(universe_dir) / provider_jail.AGENT_WORKSPACE_DIR).mkdir(exist_ok=True)
+    monkeypatch.setattr(role_tools, "prepare", prepare)
 
 
 def _universe(root: Path, name: str = "u-alpha") -> Path:
@@ -60,10 +68,6 @@ def _universe(root: Path, name: str = "u-alpha") -> Path:
     return universe
 
 
-def test_a_launch_outside_any_provider_scope_is_unchanged():
-    assert confine_launch(["tool", "--flag"]) is None
-
-
 def test_a_provider_launch_with_no_owning_universe_is_refused_before_spawn(no_spawn):
     """A host-authority provider call (no universe) never runs a CLI on the host."""
 
@@ -71,27 +75,7 @@ def test_a_provider_launch_with_no_owning_universe_is_refused_before_spawn(no_sp
         with provider_launch_scope(None):
             await owned_process.aspawn_owned([sys.executable, "-c", "pass"])
 
-    with pytest.raises(ProviderConfinementError, match="no owning command center"):
-        asyncio.run(drive())
-    assert no_spawn == []
-
-
-def test_no_os_sandbox_refuses_rather_than_running_unconfined(
-    tmp_path, monkeypatch, no_spawn,
-):
-    from tinyassets.providers import base
-
-    monkeypatch.setattr(
-        base, "get_sandbox_status",
-        lambda: {"bwrap_available": False, "reason": "bwrap not found on PATH"},
-    )
-    universe = _universe(tmp_path)
-
-    async def drive():
-        with provider_launch_scope(universe):
-            await owned_process.aspawn_owned([sys.executable, "-c", "pass"])
-
-    with pytest.raises(ProviderConfinementError, match="no OS sandbox"):
+    with pytest.raises(ProviderConfinementError, match="not admitted"):
         asyncio.run(drive())
     assert no_spawn == []
 
@@ -122,15 +106,6 @@ def test_a_view_cannot_mount_over_system_roots(tmp_path, dest):
     view = UniverseView(universe_dir=universe, mounts=(JailMount("tmpfs", dest),))
     with pytest.raises(ProviderConfinementError, match="may not mount"):
         jail_argv(["cli"], view, bwrap_path="bwrap")
-
-
-def test_a_view_for_another_universe_than_the_call_is_refused(tmp_path, no_spawn):
-    universe = _universe(tmp_path)
-    other = _universe(tmp_path, "u-bravo")
-    view = UniverseView(universe_dir=other, mounts=())
-    with provider_launch_scope(universe):
-        with pytest.raises(ProviderConfinementError, match="different command center"):
-            confine_launch(["cli"], view=view)
 
 
 @posix_paths
@@ -284,165 +259,6 @@ def test_powershell_is_on_the_one_host_reach_floor():
     assert "PowerShell" in _ENGINE_DISALLOWED_TOOLS
 
 
-# --- the network, filter and limits every provider launch gets -------------
-
-
-def _sidecar(universe: Path, name: str) -> Path:
-    directory = universe.parent / provider_jail.UNIVERSE_SIDECARS_DIR / universe.name
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / name
-    path.touch()
-    return path
-
-
-@pytest.fixture
-def wired(tmp_path, monkeypatch):
-    """A universe whose proxy (and engine relay) are stand-in sidecar files."""
-    from tinyassets import universe_egress
-
-    universe = _universe(tmp_path).resolve()
-    egress = _sidecar(universe, "egress-1.sock")
-    engine = _sidecar(universe, "engine-1-abc.sock")
-    relays: list = []
-
-    def _relay(universe_dir, *, actor_id, graph_id):
-        relays.append((Path(universe_dir), actor_id, graph_id))
-        return engine, 8791
-
-    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    monkeypatch.setattr(universe_egress, "ensure_proxy", lambda universe_dir: egress)
-    monkeypatch.setattr(universe_egress, "ensure_engine_relay", _relay)
-    monkeypatch.setattr(provider_jail.shutil, "which",
-                        lambda name, path=None: f"/usr/bin/{name}")
-    return universe, egress, engine, relays
-
-
-def _bind_of(argv: list[str], dest: str) -> str | None:
-    for i, arg in enumerate(argv[:-2]):
-        if arg == "--bind" and argv[i + 2] == dest:
-            return argv[i + 1]
-    return None
-
-
-@posix_paths
-def test_a_provider_launch_has_no_host_network_only_its_universe_proxy(wired):
-    from tinyassets import universe_egress
-
-    universe, egress, _engine, relays = wired
-    with provider_launch_scope(universe):
-        launch = confine_launch(["cli", "-p"], env={"HTTPS_PROXY": "http://elsewhere:1"})
-    try:
-        argv = launch.argv
-        outer = argv[: argv.index("--")]
-        assert "--share-net" not in argv
-        assert _bind_of(outer, universe_egress.JAIL_SOCKET) == str(egress)
-        # No engine route was granted, so no relay was asked for or bound.
-        assert relays == [] and _bind_of(outer, universe_egress.JAIL_ENGINE_SOCKET) is None
-        # The proxy environment is set by the jail and overrides the provider's.
-        setenv = {outer[i + 1]: outer[i + 2] for i, a in enumerate(outer) if a == "--setenv"}
-        for name, value in universe_egress.PROXY_ENV:
-            assert setenv[name] == value, name
-        # Inside: limits first, then the forwarder, then the command itself.
-        inner = argv[argv.index("--") + 1:]
-        assert inner[0] == "/usr/bin/prlimit"
-        assert {a.split("=")[0] for a in inner[1:inner.index("--")]} == {
-            "--nproc", "--nofile", "--core"}
-        forwarder = inner[inner.index("--") + 1:]
-        assert forwarder[:5] == ["/usr/bin/python3", "-I", "-S", "-c", universe_egress.FORWARDER]
-        assert forwarder[5:] == [f"3128={universe_egress.JAIL_SOCKET}", "--", "cli", "-p"]
-    finally:
-        launch.close()
-
-
-@posix_paths
-@pytest.mark.parametrize("nested", [False, True], ids=["deny", "served"])
-def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired, nested):
-    """Every launch gets the full deny profile unless its adapter declared a
-    nested sandbox (a served codex turn), which gets the permissive one."""
-    universe, *_ = wired
-    with provider_launch_scope(universe):
-        launch = (confine_launch(["cli"], nested_sandbox=True) if nested
-                  else confine_launch(["cli"]))
-    fd, seed_fd = launch.pass_fds
-    assert launch.argv[launch.argv.index("--sync-fd") + 1] == str(seed_fd)
-    assert launch.argv[launch.argv.index("--seccomp") + 1] == str(fd)
-    from tinyassets.providers.jail_seccomp import deny_program
-
-    assert os.read(fd, 1 << 16) == deny_program(nested_sandbox=nested)
-    launch.close()
-    with pytest.raises(OSError):
-        os.fstat(fd)
-    with pytest.raises(OSError):
-        os.fstat(seed_fd)
-
-
-@posix_paths
-def test_an_engine_route_binds_only_the_relay_to_that_route(wired):
-    from tinyassets import universe_egress
-
-    universe, _egress, engine, relays = wired
-    with provider_launch_scope(universe, engine_route=("user_1", "u-alpha")):
-        launch = confine_launch(["cli"])
-    launch.close()
-    assert relays == [(universe, "user_1", "u-alpha")]
-    assert _bind_of(launch.argv, universe_egress.JAIL_ENGINE_SOCKET) == str(engine)
-    assert f"8791={universe_egress.JAIL_ENGINE_SOCKET}" in launch.argv
-
-
-@posix_paths
-def test_no_proxy_means_no_launch_never_an_unfiltered_one(wired, monkeypatch, no_spawn):
-    from tinyassets import universe_egress
-
-    universe, *_ = wired
-    monkeypatch.setattr(universe_egress, "ensure_proxy", lambda universe_dir: None)
-
-    async def drive():
-        with provider_launch_scope(universe):
-            await owned_process.aspawn_owned(["cli"])
-
-    with pytest.raises(ProviderConfinementError, match="egress proxy"):
-        asyncio.run(drive())
-    assert no_spawn == []
-
-
-@posix_paths
-def test_a_host_without_prlimit_refuses_rather_than_running_unlimited(wired, monkeypatch):
-    universe, *_ = wired
-    monkeypatch.setattr(provider_jail.shutil, "which",
-                        lambda name, path=None: None if name == "prlimit" else f"/usr/bin/{name}")
-    with provider_launch_scope(universe):
-        with pytest.raises(ProviderConfinementError, match="prlimit is not installed"):
-            confine_launch(["cli"])
-
-
-@posix_paths
-def test_the_spawn_point_passes_the_filter_and_closes_its_copy(wired, monkeypatch):
-    universe, *_ = wired
-    seen: dict = {}
-
-    async def _spawn(argv, *, extra_fds=(), **kwargs):
-        seen["fds"] = extra_fds
-        seen["open_during_spawn"] = [_is_open(fd) for fd in extra_fds]
-        raise RuntimeError("spawn failed after the jail was built")
-
-    monkeypatch.setattr(owned_process, "_aspawn_anchored", _spawn)
-
-    async def drive():
-        with provider_launch_scope(universe):
-            await owned_process.aspawn_owned(["cli"])
-
-    with pytest.raises(RuntimeError, match="spawn failed"):
-        asyncio.run(drive())
-    assert seen["open_during_spawn"] == [True, True]
-    assert [_is_open(fd) for fd in seen["fds"]] == [False, False], "a launch fd leaked"
-
-
-def _is_open(fd: int) -> bool:
-    try:
-        os.fstat(fd)
-    except OSError:
-        return False
-    return True
 
 
 def test_the_router_grants_an_engine_route_only_when_the_call_wires_one():

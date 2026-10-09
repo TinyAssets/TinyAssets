@@ -2,7 +2,7 @@
 
 The job exists because `required-tests` records every bwrap-gated jail proof
 (`tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc`
-and the codex coding-turn cases in `tests/test_native_refresh_jail.py`) as
+and the owner-cell seccomp profiles in `tests/test_jail_seccomp_profiles.py`) as
 SKIPPED (no bubblewrap on the hosted image), and a skip is invisible in a green
 run. Each assertion here pins a property whose loss would turn the job
 back into decoration or widen it past "cloud-only test infrastructure":
@@ -138,9 +138,8 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "scripts/ci_assert_junit_case.py",
         "tinyassets/node_sandbox.py",
         "tests/test_delivery_node_rpc.py",
-        "tests/test_native_refresh_jail.py",
         "tinyassets/providers/codex_provider.py",
-        "tests/test_provider_universe_jail.py",
+        "tests/test_jail_seccomp_profiles.py",
         "tinyassets/providers/provider_jail.py",
         "tinyassets/providers/owned_process.py",
         "tinyassets/providers/router.py",
@@ -235,8 +234,7 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
     # whole file's marker would drop its cases without any red.
     assert files >= {
         "tests/test_delivery_node_rpc.py",
-        "tests/test_native_refresh_jail.py",
-        "tests/test_provider_universe_jail.py",
+        "tests/test_jail_seccomp_profiles.py",
         "tests/test_universe_tools_jail.py",
     }, files
 

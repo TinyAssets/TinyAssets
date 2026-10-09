@@ -71,16 +71,19 @@ def served(monkeypatch, tmp_path):
     from tinyassets.providers import codex_provider as provider
 
     monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
-    auth_dir = tmp_path / ".runtime" / "auth"
+    from tinyassets import credential_vault
+
+    auth_dir = tmp_path / ".runtime" / "provider-launch-credentials" / "codex-1"
     auth_dir.mkdir(parents=True)
     monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
-    monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
-        "bwrap_available": True, "bwrap_path": "fake-bwrap"})
     monkeypatch.setattr(provider, "subprocess_env_for_provider", lambda *a, **kw: {
         "CODEX_HOME": str(auth_dir), "TINYASSETS_ENGINE_MCP_BEARER": "stale-secret"})
-    monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
-    monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
-    monkeypatch.setattr(app, "bundled_catalog", lambda base_cmd, **kw: BUNDLED)
+    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
+
+    async def bundled(base_cmd, **kw):
+        return BUNDLED
+    monkeypatch.setattr(app, "bundled_catalog", bundled)
     state = {"tools": FakeTools(), "opened": [], "server": None}
 
     @contextlib.asynccontextmanager
@@ -99,7 +102,8 @@ def served(monkeypatch, tmp_path):
 
     def config(**overrides):
         fields = dict(sandbox_workspace=True, engine_mcp_enabled=True,
-                      engine_mcp_actor_id="acct_alice", engine_mcp_graph_id="u-alice")
+                      engine_mcp_actor_id="acct_alice", engine_mcp_graph_id="u-alice",
+                      credential_snapshot_dir=auth_dir)
         fields.update(overrides)
         return ModelConfig(**fields)
 
@@ -121,24 +125,25 @@ async def test_served_launch_is_the_app_server_with_every_native_tool_off(served
     argv = list(launch.call_args.args)
     assert argv[:2] == ["codex", "app-server"]
     assert argv[1:1 + len(app.SERVED_LAUNCH_ARGS)] == list(app.SERVED_LAUNCH_ARGS)
-    assert argv[-2:] == ["-c", 'model_catalog_json="/codex-home/model-catalog.json"']
+    assert argv[-2] == "-c" and argv[-1].startswith(
+        'model_catalog_json="/tmp/provider-auth/model-catalog-')
     flat = " ".join(argv)
     for absent in ("exec", "mcp_servers", "--json", 'web_search="cached"', "workspace-write"):
         assert absent not in argv and absent not in flat.split()
     assert "mcp_servers" not in flat
     kwargs = launch.call_args.kwargs
     assert not kwargs.get("nested_sandbox"), "codex runs nothing that needs its own sandbox"
-    assert "TINYASSETS_ENGINE_MCP_BEARER" not in kwargs["env"], "no bearer enters the jail"
-    mounts = {(m.dest, str(m.source)) for m in kwargs["universe_view"].mounts if m.source}
-    assert ("/codex-home/model-catalog.json",
-            str(root.resolve() / ".runtime" / "codex-model-catalog.json")) in mounts
+    assert "TINYASSETS_ENGINE_MCP_BEARER" not in kwargs["env"], "no bearer enters the cell"
+    assert "universe_view" not in kwargs and "cwd" not in kwargs, "the cell decides its view"
 
 
 @pytest.mark.asyncio
 async def test_the_launch_catalog_clears_every_model_pinned_native_tool(served):
     run, *_rest, root = served
     await run()
-    catalog = json.loads((root / ".runtime" / "codex-model-catalog.json").read_text())
+    [catalog_file] = (root / ".runtime" / "provider-launch-credentials" / "codex-1").glob(
+        "model-catalog-*.json")
+    catalog = json.loads(catalog_file.read_text())
     for entry in catalog["models"]:
         assert "tool_mode" not in entry
         assert entry["multi_agent_version"] is None and entry["apply_patch_tool_type"] is None
@@ -321,7 +326,7 @@ async def test_cancelling_the_turn_ends_the_process(served):
     assert server.killed
 
 
-# --- native session continuity (more in tests/test_agent_sessions.py) ---------
+# --- no native session survives a cell: every thread is new and ephemeral -----
 
 def _ref(udir, *, prompt="fresh prompt", resume="new message", key="thread:principal:o"):
     return agent_sessions.AgentSessionRef(
@@ -329,20 +334,15 @@ def _ref(udir, *, prompt="fresh prompt", resume="new message", key="thread:princ
         resume_prompt=resume, built_at=100.0)
 
 
-@posix_only
 @pytest.mark.asyncio
-async def test_a_changed_tool_set_starts_a_new_thread(served, monkeypatch):
-    from tinyassets.providers import codex_provider as provider
-
-    run, _launch, state, config, root = served
+async def test_a_session_turn_starts_a_fresh_ephemeral_thread_with_its_full_prompt(served):
+    run, _launch, _state, config, root = served
     ref = _ref(root)
     await run(cfg=config(agent_session=ref))
-    monkeypatch.setattr(provider, "_native_session_exists", lambda store, handle: True)
-    state["tools"] = FakeTools()
-    state["tools"].tools = state["tools"].tools[:2]
     _, server = await run(cfg=config(agent_session=ref))
     assert server.requests("thread/resume") == []
-    assert len(server.requests("thread/start")) == 1
+    [start] = server.requests("thread/start")
+    assert start["params"]["ephemeral"] is True
 
 
 # --- lifecycle: errors, failures and stops (cross-family review 2026-10-06) ---
@@ -419,21 +419,3 @@ def test_no_project_doc_reaches_the_model():
         app.SERVED_LAUNCH_ARGS, app.SERVED_LAUNCH_ARGS[1:])
 
 
-def test_the_served_home_receives_only_the_credential(tmp_path):
-    """Nothing but the credential enters CODEX_HOME: a ``config.toml`` could add
-    tools, and an ``AGENTS.md`` there is sent to the model."""
-    from tinyassets.providers.codex_provider import _codex_home_file_mounts
-
-    for name in ("auth.json", "config.toml", ".lock", "AGENTS.md", "AGENTS.override.md",
-                 "instructions.md"):
-        (tmp_path / name).write_text("x", encoding="utf-8")
-    assert [(m.dest, m.source) for m in _codex_home_file_mounts(tmp_path)] == [
-        ("/codex-home/auth.json", tmp_path / "auth.json")]
-
-
-def test_a_home_without_its_credential_refuses_the_launch(tmp_path):
-    from tinyassets.providers.codex_provider import _codex_home_file_mounts
-
-    (tmp_path / "AGENTS.md").write_text("x", encoding="utf-8")
-    with pytest.raises(ProviderError):
-        _codex_home_file_mounts(tmp_path)

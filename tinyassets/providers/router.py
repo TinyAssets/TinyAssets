@@ -1355,9 +1355,9 @@ class ProviderRouter:
                         if _work_agent_observer is not None:
                             _work_agent_observer(invocation_carrier, None, cfg)
                         # The owning universe for every process this call
-                        # launches; the shared spawn point jails to it, or
-                        # refuses a launch with none (provider_jail).
-                        # Inert routing context: only the selected broker reads it.
+                        # launches; the shared spawn point cells its owner
+                        # there, or refuses a launch with none. The broker
+                        # routes compute for this owner.
                         cfg = replace(cfg, invocation_owner_user_id=(
                             served_authority.owner_user_id if served_authority is not None
                             else invocation_carrier._receipt.principal_id

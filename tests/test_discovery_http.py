@@ -34,7 +34,6 @@ URL = "https://models.example.com/api/models/user"
 def test_malformed_broker_projection_is_a_typed_refusal(tmp_path, monkeypatch, facts):
     from tinyassets.broker import ledger_queries
 
-    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
     monkeypatch.setattr(ledger_queries, "query_ledger", lambda *a, **kw: facts)
     with pytest.raises(discovery.ModelDiscoveryUnavailable) as caught:
         discovery.read_granted_discovery_document(
@@ -139,18 +138,31 @@ def rig(tmp_path, monkeypatch):
             if state.fail_close:
                 raise RuntimeError("synthetic-private-close-details")
 
-    def start(self, **kwargs):
-        state.starts.append(kwargs)
-        return ScopedConnectionProxy(
-            grant_id=kwargs["grant_id"],
-            provider=kwargs["provider"],
-            destination=kwargs["destination"],
-            scopes=kwargs["scopes"],
-            _channel=Channel(),
-            access_mode=ledger.get_connection_view("conn-discovery").access_mode,
-        )
+    # The broker's two seams, answered from the same real ledger: its one
+    # read transaction (``query_ledger``) and its scoped channel.
+    from tinyassets.broker import ledger_queries
+    from tinyassets.storage import outbound_connections
 
-    monkeypatch.setattr(ConnectionLedger, "_start_scoped_proxy", start)
+    def query_ledger(base, *, query, principal, command_center, grant_id):
+        grant = ledger.get_grant(grant_id)
+        if (grant is None or grant.revoked_at is not None or grant.owner_user_id != principal
+                or grant.universe_id != command_center):
+            raise outbound_connections.GrantResolutionError("grant not admitted")
+        with ledger._connect() as conn:
+            row = conn.execute("SELECT * FROM outbound_connections WHERE connection_id = ?",
+                               (grant.connection_id,)).fetchone()
+        return {"resource": None if row is None else dict(row)}
+
+    def broker_channel(base, *, principal, command_center, grant_id, connection_id):
+        state.starts.append({"owner_user_id": principal, "universe_id": command_center,
+                             "grant_id": grant_id, "connection_id": connection_id})
+        view = ledger.get_connection_view(connection_id)
+        return ScopedConnectionProxy(
+            grant_id=grant_id, provider=view.provider, destination=view.destination,
+            scopes=view.scopes, _channel=Channel(), access_mode=view.access_mode)
+
+    monkeypatch.setattr(ledger_queries, "query_ledger", query_ledger)
+    monkeypatch.setattr(discovery, "_broker_channel", broker_channel)
 
     def read(**kwargs):
         args = dict(

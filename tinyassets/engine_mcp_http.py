@@ -14,10 +14,17 @@ Each server is PINNED to exactly one ``(founder actor, universe graph)`` via env
 binds ``127.0.0.1`` only, and requires a per-server bearer secret on every request
 (Codex gate #6 — the loopback listener is reachable by any in-container process).
 
+Each server is control plane, not an owner engine: it holds the canonical
+handlers over shared stores, so it never enters an owner cell (per-role D9/F1).
+The untrusted side is the provider CLI, which runs as its owner in a
+provider-exec cell and reaches only its own center's server, through a pinned
+relay socket forwarded to the route's loopback port inside the cell, plus the
+bearer. The daemon is made non-dumpable before any server starts, so a server
+cannot read the daemon's environment or memory through procfs.
+
 Admission follows current serving ownership and admin ACL, not a vetted-universe
 list. Deleted or ambiguous owners fail closed. A versioned owner/port/secret route map is
 published (mode 0600) and consumed by the shared ``read_engine_mcp_route`` reader.
-The derived ``url`` is retained only for older readers and rollback.
 """
 from __future__ import annotations
 
@@ -288,9 +295,9 @@ class _EngineServer:
         oauth_service = client_config(Path(self._data_dir) / self.universe_id, self.owner)
         self._oauth_service = oauth_service
 
-        # Keep daemon-only credentials out of the inherited environment.
-        # This is not process isolation: the shared UID/PID namespace still
-        # permits credential recovery via the daemon's or tini's /proc environ.
+        # Keep daemon-only credentials out of the inherited environment. The
+        # daemon itself is non-dumpable (``supervisor._protect_daemon``), so
+        # its /proc environ and memory stay closed to this same-uid child.
         env = child_env(os.environ)
         env[ENV] = json.dumps(oauth_service)
         env["TINYASSETS_ENGINE_ACTOR_ID"] = self.owner
@@ -388,12 +395,16 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
     if not _engine_mcp_enabled():
         return []
 
+    from tinyassets.broker.supervisor import _protect_daemon
     from tinyassets.storage import data_dir
 
     root = Path(data_dir() if base is None else base)
     if not root.is_absolute():
         raise ValueError("engine MCP data root must be absolute")
     data_dir_env = str(root)
+    # Before the first same-uid child exists: no engine server may read the
+    # daemon's environment or memory. Refuses unless the daemon is retired.
+    _protect_daemon()
 
     servers: dict[str, _EngineServer] = {}
     used_ports: set[int] = set()

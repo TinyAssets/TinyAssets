@@ -27,12 +27,8 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
-import subprocess
-import tempfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from tinyassets.exceptions import (
@@ -63,13 +59,14 @@ def reduced_catalog(bundled: dict, model: str | None) -> dict:
 _BUNDLED: dict[tuple, dict] = {}
 
 
-def bundled_catalog(base_cmd: list[str], *, use_shell: bool = False) -> dict:
+async def bundled_catalog(base_cmd: list[str]) -> dict:
     """``codex debug models --bundled`` for this binary, cached by its stat.
 
-    Static data shipped in the binary. Run with an empty private home and no
-    inherited credential, so no account state is read.
+    Static data shipped in the binary, read in the owner's provider cell with
+    no credential in its environment, so no account state is read.
     """
     from tinyassets.providers.codex_provider import _resolved_codex_executable
+    from tinyassets.providers.owned_process import aspawn_owned, kill_owned_tree
 
     try:
         real, _ = _resolved_codex_executable(base_cmd)
@@ -79,36 +76,25 @@ def bundled_catalog(base_cmd: list[str], *, use_shell: bool = False) -> dict:
         key = (tuple(base_cmd), None, None)
     if key in _BUNDLED:
         return _BUNDLED[key]
-    with tempfile.TemporaryDirectory(prefix="ta-codex-catalog-") as home:
-        env = {name: value for name, value in os.environ.items() if name.upper() in {
-            "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "LANG"}}
-        env.update(CODEX_HOME=home, HOME=home, USERPROFILE=home)
-        try:
-            dumped = subprocess.run(  # noqa: S603 - the resolved codex command
-                [*base_cmd, "debug", "models", "--bundled"], capture_output=True, check=True,
-                text=True, encoding="utf-8", env=env, timeout=60, shell=use_shell,
-            )
-            catalog = json.loads(dumped.stdout)
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            raise ProviderError("codex bundled model catalog is unavailable") from exc
+    proc = await aspawn_owned(
+        [*base_cmd, "debug", "models", "--bundled"], env={},
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(60):
+            stdout, _stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise ProviderError("codex bundled model catalog is unavailable")
+        catalog = json.loads(stdout)
+    except (OSError, TimeoutError, ValueError) as exc:
+        raise ProviderError("codex bundled model catalog is unavailable") from exc
+    finally:
+        kill_owned_tree(proc)
     if not isinstance(catalog, dict):
         raise ProviderError("codex bundled model catalog is malformed")
     _BUNDLED[key] = catalog
     return catalog
-
-
-def write_catalog(catalog: dict, path: Path) -> Path:
-    """Atomically write the launch catalog (a platform-owned file)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".codex-catalog-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(catalog, handle)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-    return path
 
 
 def dynamic_tools(definition) -> list[dict]:
