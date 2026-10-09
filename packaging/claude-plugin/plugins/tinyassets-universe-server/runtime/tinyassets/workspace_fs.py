@@ -44,6 +44,11 @@ _POSIX = os.name == "posix" and os.open in os.supports_dir_fd
 
 _COPY_CHUNK = 1024 * 1024
 _LEASE_DIR_MODE = 0o700
+#: A workspace an OWNER CELL creates inside its command center. The group bits
+#: carry the inherited ACL mask, which is what keeps the daemon's named rwx
+#: entry effective: ``0o700`` would zero the mask and lock the daemon out of
+#: the lease it has to open, measure and reclaim.
+OWNER_WORK_DIR_MODE = 0o770
 _COPY_DEST_MODE = 0o600
 #: A lease directory's name must be unguessable: the parent is shared, and an
 #: attacker who can predict the name can create it first. 16 hex chars is 64
@@ -504,6 +509,14 @@ def _create_dir_beneath(parent_fd: int, name: str, *, mode: int) -> int:
             raise UnsafePoolPath(
                 f"{name!r} is owned by uid {opened.st_uid}, not this process"
             )
+        # ``mkdir`` subtracts the process umask, so the mode below is the mode
+        # this call ASKED for only after this. It matters for an owner work
+        # directory, whose group bits carry the inherited ACL mask: an
+        # inherited 0o022 umask would silently drop the daemon's named rwx.
+        # Safe by construction -- the handle is the fresh directory we own.
+        if stat.S_IMODE(opened.st_mode) != mode:
+            os.fchmod(fd, mode)
+            opened = os.fstat(fd)
         if stat.S_IMODE(opened.st_mode) != mode:
             raise UnsafePoolPath(
                 f"{name!r} has mode {stat.S_IMODE(opened.st_mode):#o}, not the "
@@ -587,6 +600,72 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
             "the lease directory"
         )
 
+    return _create_dir_beneath(parent_fd, name, mode=mode)
+
+
+def _overflow_uid() -> int:
+    """How the host daemon's uid appears inside an owner cell's user namespace.
+
+    The cell is mapped ``0 300000 100000``, so every host uid outside that
+    window -- the daemon's 1001 included -- reads back as the kernel's overflow
+    uid. There is no way to see 1001 from in there, and nothing should try.
+    """
+    try:
+        return int(Path("/proc/sys/kernel/overflowuid").read_text())
+    except OSError:
+        return 65534
+
+
+def create_cell_lease_dir(
+    parent_fd: int, name: str, *, mode: int = OWNER_WORK_DIR_MODE
+) -> int:
+    """Create one lease directory from INSIDE the owner cell, and return its handle.
+
+    The cell is the only process that can make a lease the owner owns, which is
+    what a node cell needs before it will mount one. Its parent is the pool
+    directory the daemon prepared for exactly this owner
+    (``workspace_owner_pool.prepare``), so the ownership rule differs from
+    :func:`create_lease_dir`'s by exactly one case: the parent may be owned by
+    the daemon as well as by this owner.
+
+    What this proves, and what it does not. It proves the parent belongs to the
+    daemon or to this owner, that it is not world-writable, and that the handle
+    returned is the fresh, empty, owner-owned directory with the mode this call
+    asked for. It does NOT read the parent's ACL: a POSIX ACL makes the group
+    bits report the mask, so a group-write test here would refuse every
+    correctly prepared parent. That the parent's ACL names only the daemon and
+    this one owner is asserted on the DAEMON side before the cell starts; the
+    unguessable name is what closes the rest.
+    """
+    _require_posix("create_cell_lease_dir")
+    _require_component(name)
+    if len(name) < MIN_LEASE_NAME_CHARS or any(char not in _HEX for char in name):
+        raise UnsafePoolPath(
+            f"a lease directory name must be at least {MIN_LEASE_NAME_CHARS} "
+            f"random hex characters (secrets.token_hex(8) or wider), got {name!r}"
+        )
+    parent = os.fstat(parent_fd)
+    if not stat.S_ISDIR(parent.st_mode):
+        raise UnsafePoolPath("the pool parent handed to the cell is not a directory")
+    if parent.st_uid not in (os.getuid(), _overflow_uid()):
+        raise UnsafePoolPath(
+            f"the pool parent is owned by uid {parent.st_uid}, which is neither "
+            "this owner nor the daemon"
+        )
+    if parent.st_mode & stat.S_IWOTH:
+        raise UnsafePoolPath("the pool parent is world-writable")
+    return _create_dir_beneath(parent_fd, name, mode=mode)
+
+
+def create_cell_subdir(parent_fd: int, name: str, *, mode: int = OWNER_WORK_DIR_MODE) -> int:
+    """A FIXED-name owner directory inside a directory the cell already walked.
+
+    ``<lease>/repo`` and a permanent ``<repo-key>/<generation>``: the name is
+    the platform's, not a secret, so the entropy rule would be cargo. The
+    mkdirat/openat verification still runs.
+    """
+    _require_posix("create_cell_subdir")
+    _require_component(name)
     return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
@@ -992,8 +1071,10 @@ class RealPoolFilesystem:
             relative = Path(os.path.abspath(path)).relative_to(self._data_root)
         except ValueError:
             return False
-        return (len(relative.parts) >= 2 and not relative.parts[0].startswith(".")
-                and relative.parts[0] != "scratch")
+        # Every workspace lease lives inside a command center now, the scratch
+        # pool included (``workspace_owner_pool``), and the owner made the
+        # directory -- so there is no daemon-only pool root left to except.
+        return len(relative.parts) >= 2 and not relative.parts[0].startswith(".")
 
     def remove_tree_no_follow(self, path: Path) -> None:
         """Delete a tree bottom-up, never descending into a link or junction.

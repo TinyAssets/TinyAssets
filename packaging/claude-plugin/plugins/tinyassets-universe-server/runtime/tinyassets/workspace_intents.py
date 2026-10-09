@@ -239,29 +239,21 @@ def reconcile_push_intents(
 
         execute = execute_workspace_operation
 
-    from tinyassets import workspace_staging
-
+    # No staging: the probe is one route-only ls-remote inside the owner's own
+    # cell, so there is no local directory to make, hold or sweep.
+    del staging_root
     settled: list[tuple[str, str]] = []
     for intent in intents:
-        # Owned by this process's liveness token and removed after the probe,
-        # whatever it answered: it used to be left behind on every pass.
-        # ``staging_root`` names the directory whose ``.workspace-staging`` is used.
-        with workspace_staging.staging(
-            staging_root if staging_root is not None else base_path,
-            f"reconcile-{intent.intent_id}",
-        ) as staging:
-            _reconcile_one(
-                base_path, intent, staging, settled,
-                execute=execute,
-                revalidate=revalidate, host=host,
-            )
+        _reconcile_one(
+            base_path, intent, settled,
+            execute=execute, revalidate=revalidate, host=host,
+        )
     return settled
 
 
 def _reconcile_one(
     base_path: str | Path,
     intent: PushIntent,
-    staging: Path,
     settled: list[tuple[str, str]],
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]],
@@ -285,7 +277,7 @@ def _reconcile_one(
             return
 
     try:
-        credential_ref = _broker_credential_ref(base_path, intent)
+        principal = _intent_principal(base_path, intent)
     except Exception:
         # No unknown authority may reach even a read-only remote probe.
         _defer(base_path, intent, reason="broker authority unavailable")
@@ -306,11 +298,13 @@ def _reconcile_one(
             {
                 "op": "ls_remote",
                 "universe_dir": str(base_path),
-                "credential_ref": credential_ref,
+                "principal": principal,
+                "agent": f"workspace-intent-{intent.intent_id[:16]}",
+                "grant_id": intent.grant_id,
+                "connection_id": intent.connection_id,
                 "host": intent_host,
                 "owner_repo": intent.repo,
                 "remote_ref": intent.remote_ref,
-                "staging_dir": str(staging),
             }
         )
     except Exception:
@@ -357,8 +351,15 @@ def _defer(base_path: str | Path, intent: PushIntent, *, reason: str) -> None:
     )
 
 
-def _broker_credential_ref(base_path: str | Path, intent: PushIntent) -> str:
-    """Recover authority from the daemon's persisted run, never intent payloads."""
+def _intent_principal(base_path: str | Path, intent: PushIntent) -> str:
+    """The owner whose authority settles this intent.
+
+    Recovered from the daemon's persisted run, never from intent payloads, and
+    revalidated end to end -- grant, host, scope, consent -- before anything
+    reaches even a read-only remote probe. What comes back is the PRINCIPAL: no
+    credential crosses this boundary any more, because the probe runs in that
+    owner's own cell and only the broker resolves the token.
+    """
     from tinyassets import runs
     from tinyassets.broker.ledger_queries import authorized_connection
     from tinyassets.effectors.workspace import _require_consent, _require_scope, transport_host_for
@@ -380,4 +381,4 @@ def _broker_credential_ref(base_path: str | Path, intent: PushIntent) -> str:
                      access_mode=connection_access_mode(resource))
     if not resource.credential_ref:
         raise PermissionError("intent custody unavailable")
-    return resource.credential_ref
+    return run["owner_user_id"]

@@ -162,8 +162,13 @@ def serve(proxy, conn, raw):
 
 
 @contextlib.contextmanager
-def routes(proxy, client, connections, agent, *, authority=lambda: None):
-    """Trusted inputs from the current owner launch, not box request fields."""
+def _open_routes(proxy, client, connections, agent, *, authority=lambda: None):
+    """Register the ephemeral routes and yield ``{source url: replacement url}``.
+
+    Trusted inputs from the current owner launch, not box request fields. Both
+    public forms below are projections of this one mapping: a shell prefix for
+    an extension launch, and config pairs for a cell request.
+    """
     live = threading.Event()
     live.set()
     identifiers, rewrites, sockets = [], {}, set()
@@ -187,11 +192,7 @@ def routes(proxy, client, connections, agent, *, authority=lambda: None):
                         client, grant, view, incarnation, agent, live, client._fence(), sockets,
                         authority)
                 rewrites[source] = grant.grant_id, f"http://{HOST}/{identifier}/{repo}.git"
-        env = {"GIT_CONFIG_COUNT": str(len(rewrites)), "GIT_TERMINAL_PROMPT": "0"}
-        for index, (source, (_, replacement)) in enumerate(rewrites.items()):
-            env[f"GIT_CONFIG_KEY_{index}"] = f"url.{replacement}.insteadOf"
-            env[f"GIT_CONFIG_VALUE_{index}"] = source
-        yield "export " + " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + "; "
+        yield {source: replacement for source, (_, replacement) in rewrites.items()}
     finally:
         live.clear()
         with _lock:
@@ -200,5 +201,38 @@ def routes(proxy, client, connections, agent, *, authority=lambda: None):
             for conn in tuple(sockets):
                 with contextlib.suppress(OSError):
                     conn.shutdown(2)
+
+
+def config_pairs(rewrites):
+    """``[(git config key, value), ...]`` for one route mapping."""
+    return [(f"url.{replacement}.insteadOf", source)
+            for source, replacement in rewrites.items()]
+
+
+@contextlib.contextmanager
+def routes(proxy, client, connections, agent, *, authority=lambda: None):
+    """The routes as a shell prefix: a jailed launch inherits them as GIT_CONFIG_*."""
+    with _open_routes(proxy, client, connections, agent, authority=authority) as rewrites:
+        env = {"GIT_CONFIG_COUNT": str(len(rewrites)), "GIT_TERMINAL_PROMPT": "0"}
+        for index, (key, value) in enumerate(config_pairs(rewrites)):
+            env[f"GIT_CONFIG_KEY_{index}"] = key
+            env[f"GIT_CONFIG_VALUE_{index}"] = value
+        yield "export " + " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + "; "
+
+
+@contextlib.contextmanager
+def rewrite_options(proxy, client, connections, agent, *, authority=lambda: None):
+    """The routes as DATA: ``['-c', 'url.<route>.insteadOf=<source>', ...]``.
+
+    A cell is handed git options, never an environment: ``run_git_in_cell``
+    builds git's environment from empty, so ``-c`` is the only channel. The
+    caller must keep this context open for the whole operation; leaving it
+    expires every route and shuts every connection still using one.
+    """
+    with _open_routes(proxy, client, connections, agent, authority=authority) as rewrites:
+        options = []
+        for key, value in config_pairs(rewrites):
+            options.extend(("-c", f"{key}={value}"))
+        yield options
 
 

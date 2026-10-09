@@ -1434,6 +1434,18 @@ def _require_ok(result: GitResult, what: str, fallback: str = "other") -> GitRes
 # ---------------------------------------------------------------------------
 
 
+def _spawning(runner: Callable[..., GitResult] | None) -> Callable[..., GitResult]:
+    """Which git seam these helpers use: the daemon's or the cell's own.
+
+    The daemon (``None``) hands every git to the owner's cell through
+    :func:`run_git`. Inside a cell there is no second cell to hand it to, so
+    the cell passes :func:`run_git_in_cell` and the helper spawns git itself --
+    confined execution, not a daemon-uid fallback. Resolved here, late, so a
+    test that replaces ``run_git`` still sees its replacement.
+    """
+    return run_git if runner is None else runner
+
+
 def _require_sha(commit_sha: str) -> str:
     if not isinstance(commit_sha, str) or not _SHA1_RE.match(commit_sha):
         raise WorkspaceGitError("bad_argument", "commit sha must be 40 lowercase hex characters")
@@ -1463,6 +1475,7 @@ def _verify_prerequisite_free(
     timeout_s: float,
     launcher: Callable[..., object],
     git_binary: str,
+    runner: Callable[..., GitResult] | None = None,
 ) -> list[str]:
     """Verify a bundle in a FRESH EMPTY bare repo; return the refs it carries.
 
@@ -1487,9 +1500,10 @@ def _verify_prerequisite_free(
         raise WorkspaceGitError("bad_argument", "bundle verification scratch_dir must be empty")
     bare = scratch / "verify.git"
     bare.mkdir()
+    spawn = _spawning(runner)
 
     def _run(argv: list[str]) -> GitResult:
-        return run_git(
+        return spawn(
             argv,
             cwd=bare,
             home_dir=home_dir,
@@ -1535,6 +1549,7 @@ def create_bundle(
     timeout_s: float = 120.0,
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
+    runner: Callable[..., GitResult] | None = None,
 ) -> Path:
     """Bundle exactly one commit from ``repo_dir`` into ``bundle_path``.
 
@@ -1557,9 +1572,10 @@ def create_bundle(
         raise WorkspaceGitError("bad_argument", "create_bundle bundle_path has no parent directory")
 
     common = ["-c", f"core.hooksPath={NULL_DEVICE}", "--no-replace-objects"]
+    spawn = _spawning(runner)
 
     def _run(argv: list[str]) -> GitResult:
-        return run_git(
+        return spawn(
             argv,
             cwd=repo,
             home_dir=home_dir,
@@ -1587,6 +1603,7 @@ def create_bundle(
             timeout_s=timeout_s,
             launcher=launcher,
             git_binary=git_binary,
+            runner=runner,
         )
     except WorkspaceGitError:
         # An unverifiable bundle must not survive where a caller could pick it
@@ -1609,6 +1626,7 @@ def verify_bundle(
     timeout_s: float = 120.0,
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
+    runner: Callable[..., GitResult] | None = None,
 ) -> list[str]:
     """Verify a bundle credential-free in a fresh bare repo; return its refs.
 
@@ -1636,6 +1654,7 @@ def verify_bundle(
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
+        runner=runner,
     )
 
 
@@ -1650,6 +1669,7 @@ def unbundle_into_fresh_repo(
     timeout_s: float = 300.0,
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
+    runner: Callable[..., GitResult] | None = None,
 ) -> str:
     """Populate an empty directory from a bundle; return the commit sha.
 
@@ -1695,9 +1715,10 @@ def unbundle_into_fresh_repo(
         else:
             dest.mkdir(parents=True)
         work_dir = dest
+    spawn = _spawning(runner)
 
     def _run(argv: list[str], options: Sequence[str] = ()) -> GitResult:
-        return run_git(
+        return spawn(
             argv,
             cwd=work_dir,
             home_dir=home_dir,
@@ -1750,6 +1771,7 @@ def populate_workspace_from_bundle(
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
     dest_fd: int | None = None,
+    runner: Callable[..., GitResult] | None = None,
 ) -> str:
     """Unbundle into a fresh repo and check the commit out on a local branch.
 
@@ -1770,11 +1792,12 @@ def populate_workspace_from_bundle(
         launcher=launcher,
         git_binary=git_binary,
         dest_fd=dest_fd,
+        runner=runner,
     )
     work_dir: str | os.PathLike[str] = (
         dest_dir if dest_fd is None else f"/proc/self/fd/{dest_fd}"
     )
-    result = run_git(
+    result = _spawning(runner)(
         ["checkout", "--quiet", "-B", checkout_ref, sha],
         cwd=work_dir,
         home_dir=home_dir,

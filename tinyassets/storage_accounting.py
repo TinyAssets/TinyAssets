@@ -308,10 +308,19 @@ def _daemon_memory(base: Path, account_id: str) -> int:
 
 def _workspaces(base: Path, universe_id: str) -> int:
     """A universe's permanent workspace generations (published, and any being
-    built or awaiting discard): ``<uid>/workspaces``."""
+    built or awaiting discard): ``<uid>/workspaces``.
+
+    The scratch pool is a directory inside it since the owner split (a lease
+    has to be the owner's own directory, and an owner cell is bound to its
+    command center), and scratch is never charged -- so it is excluded here
+    rather than silently billed.
+    """
+    from tinyassets.workspace_owner_pool import SCRATCH_DIR
+
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
         raise ValueError(f"not a command center id: {universe_id!r}")
-    return _walk_bytes(base / universe_id / "workspaces")
+    return _walk_bytes(base / universe_id / "workspaces",
+                       exclude_top=frozenset({SCRATCH_DIR}))
 
 
 def _blob_sum(columns: tuple[str, ...]) -> str:
@@ -572,7 +581,9 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: package versions and consent pins, inside "
         ".command-center-packages/ (blob bytes are charged as packages)"
     ),
-    "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
+    "scratch": ("platform: the pre-owner-split shared scratch pool, never charged "
+                "(storage-permanent-vs-scratch); leases now live in each center's "
+                "own workspaces/scratch"),
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".remote-ta-receipts.sqlite3": "platform: remote-box ta call receipts for retry dedup, bound to live turns",
     ".agent-turn-runners": "platform: per-turn runner liveness claims, settled with the turn",

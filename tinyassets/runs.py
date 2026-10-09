@@ -1116,19 +1116,22 @@ atexit.register(_stop_all_workspace_sweepers)
 
 
 def _ensure_scratch_root(base: Path) -> Path:
-    """The scratch pool's parent - ``<data>/scratch``, ONE level above the
-    universe directory ``base`` (the adapter admits into ``base.parent /
-    "scratch"``; Codex code round 2 caught the two disagreeing) - created
-    once, mode 0700, never with ``parents=True``: the data root itself must
-    already exist. The no-follow lease helpers refuse a missing or
-    group-writable parent, so a fresh host needs this before its first
-    checkout (lane E finding)."""
-    root = base.parent / "scratch"
-    if not root.exists():
-        root.mkdir(mode=0o700)
-    if os.name == "posix":
-        os.chmod(root, 0o700)
-    return root
+    """The scratch pool's parent, inside the command center ``base``.
+
+    ``<center>/workspaces/scratch`` since the owner split: a lease has to be
+    the owner's own directory, only that owner's cell can create one, and a
+    cell is bound to its command center. The daemon owns the pool directory
+    above it and labels it for exactly that owner
+    (:func:`workspace_owner_pool.prepare`), which is where creation now
+    happens -- per operation, under the admitted owner identity, rather than
+    once from a startup path that has no owner to name.
+
+    Returned (not created) here so the startup sweep and the adapter still
+    agree on ONE spelling of the pool root.
+    """
+    from tinyassets.effectors.workspace import scratch_pool_root
+
+    return scratch_pool_root(base)
 
 
 def ensure_workspace_reconciled(
