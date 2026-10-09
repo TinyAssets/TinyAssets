@@ -84,6 +84,14 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
     # -- bounded waits inside one call -----------------------------------------
+    "tinyassets/role_preview_cell.py::supervised": (
+        CALL_SCOPED,
+        "one owner-cell preview polls its child until exit, deadline or resource breach",
+    ),
+    "tinyassets/role_preview_cell.py::supervised#2": (
+        CALL_SCOPED,
+        "the preview waits for namespace cleanup before returning its bounded result",
+    ),
     "tinyassets/mcp_protocol.py::continue_call": (
         CALL_SCOPED,
         "bounded MRTR continuation of one host-consented remote call; stops with "
