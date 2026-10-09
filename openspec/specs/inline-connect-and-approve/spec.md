@@ -13,7 +13,8 @@ as-built specification does not assert deployment or full change completion.
 The public edge SHALL preserve hosted model binding cookies named
 `__Host-ta-model-` followed by exactly 43 URL-safe characters, only on app routes,
 with Path=/ and the existing host-only Secure, HttpOnly and SameSite rules.
-Web sign-in states SHALL start with `web.`. Owner callback routing SHALL match
+Client-generated web sign-in states SHALL start with `web.`; the normal web
+entry point continues to use server-owned PKCE. Owner callback routing SHALL match
 only `oa_` or `oa_app_` followed by exactly 43 URL-safe characters.
 
 #### Scenario: Hosted model browser round trip
