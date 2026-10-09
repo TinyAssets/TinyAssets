@@ -802,7 +802,7 @@ def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
 # keep the guarantees the old `mcp_servers` wiring had: the workspace stays
 # untrusted, the route fails closed, and its secret never reaches the CLI.
 
-_UNTRUSTED = ("-c", 'projects."/workspace".trust_level="untrusted"')
+_UNTRUSTED = ("-c", 'projects."/tmp/workspace".trust_level="untrusted"')
 
 
 def _codex_route(tmp_path, monkeypatch, **entry):
