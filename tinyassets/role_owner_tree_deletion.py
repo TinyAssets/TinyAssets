@@ -5,16 +5,10 @@ removes the owner identity's entries and leaves daemon entries. Pass two runs
 here, as the daemon, with no capability: it removes UID1001 entries and the
 empty structure pass one left, and refuses anything else with its path.
 
-The two-pass route applies only to a center whose forward role migration is
-verified. A legacy single-UID volume (no owner migration, or a completed
-reverse) returns ``None`` and the caller keeps its existing traversal. Any
-other layout state refuses: neither route is safe on a half-migrated volume.
-
-The intent and token persist before pass one, so a crash or failure resumes
-with the same token. The startup reverse migration refuses while any intent
-exists (``deploy/role_volume_migration.py``). Before ``finish`` the center is
-retired in the admission log (DA6), which is what lets the next startup accept
-the smaller principal set.
+Every center is deleted this way; the service refuses a volume the migration
+has not marked ``owner-split``. The intent and token persist before pass one,
+so a crash or failure resumes with the same token. Before ``finish`` the center
+is retired in the admission log (DA6).
 """
 
 from __future__ import annotations
@@ -30,7 +24,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Also named by deploy/role_volume_migration.py, which cannot import the app.
 INTENT_DIR = ".role-owner-delete"
 DAEMON_UID = 1001
 OWNER_ID_FIRST, OWNER_ID_LAST = 300001, 399999
@@ -42,38 +35,6 @@ _DIRECTORY = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOL
 
 class OwnerTreeDeletionRefused(RuntimeError):
     """The two-pass deletion cannot proceed safely; nothing more was removed."""
-
-
-def _read_layout(root_fd: int) -> dict[str, Any]:
-    try:
-        fd = os.open(".layout.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                     dir_fd=root_fd)
-    except FileNotFoundError:
-        return {}  # no layout marker: never migrated
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OwnerTreeDeletionRefused("layout marker is not a regular file")
-        with os.fdopen(os.dup(fd), "rb") as handle:
-            return json.loads(handle.read(1 << 20))
-    finally:
-        os.close(fd)
-
-
-def _layout_split(root_fd: int) -> bool:
-    """True after a verified forward migration, False on a legacy layout."""
-    layout = _read_layout(root_fd)
-    roles = layout.get("roles") or {}
-    owners = roles.get("owners")
-    if owners is None:
-        return False
-    if layout.get("state") != "stable" or roles.get("state") != "stable":
-        raise OwnerTreeDeletionRefused("role migration is not verified")
-    if owners == {"state": "stable", "direction": "reverse"}:
-        return False
-    if (owners != {"state": "stable", "direction": "forward"}
-            or roles.get("metadata") != {"state": "stable", "direction": "forward"}):
-        raise OwnerTreeDeletionRefused("role migration is not verified")
-    return True
 
 
 def _center_name(center: str) -> str:
@@ -259,17 +220,15 @@ def daemon_pass(root: str | Path, center: str, *, machine: int) -> dict[str, int
 def delete_center(root: str | Path, center: str, *, principal: str) -> dict[str, Any] | None:
     """Delete one migrated center with two capability-free passes, resumably.
 
-    Returns ``None`` when the volume is a legacy single-UID layout and no
-    two-pass deletion is pending: the caller's existing traversal applies.
-    The caller holds the authenticated principal's identity context.
+    Returns ``None`` when no tree, no intent and no admission exist: there is
+    nothing to delete. The caller holds the authenticated principal's identity
+    context.
     """
     from tinyassets import role_owner_delete
     from tinyassets.auth.middleware import current_identity
     from tinyassets.owner_launcher_client import OwnerLaunchRefused
 
     center = _center_name(center)
-    if os.name != "posix":
-        return None  # the role split exists only on Linux
     root = Path(root)
     root_fd = os.open(os.fspath(root), _DIRECTORY)
     try:
@@ -280,8 +239,6 @@ def delete_center(root: str | Path, center: str, *, principal: str) -> dict[str,
             info = os.stat(center, dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
             info = None
-        if intent is None and not _layout_split(root_fd):
-            return None
         if current_identity().user_id != principal:
             raise OwnerTreeDeletionRefused("deletion principal is not the admitted identity")
         if intent is None and info is None:
@@ -332,7 +289,7 @@ def _retire_missing(root: Path, center: str) -> dict[str, Any] | None:
 
     No pass can run and no fence exists, so only its ``retire`` row remains;
     the mapper verifies it as an unbound no-op. A tree-less center the log never
-    admitted has nothing to retire, and the caller's existing traversal applies.
+    admitted has nothing to retire.
     """
     from tinyassets import role_owner_delete
     from tinyassets.broker.owner_identities import CenterUnadmitted

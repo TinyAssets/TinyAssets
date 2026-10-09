@@ -20,8 +20,8 @@ def _scope(universe_dir, token, *, finishing=False):
     if type(token) is not str or not re.fullmatch('[a-f0-9]{32}', token):
         raise ValueError('invalid owner deletion token')
     client = role_decoder._bounded_client
-    if client is None or not supervisor.broker_selected():
-        raise PermissionError('owner deletion requires its bounded launcher and broker')
+    if client is None:
+        raise PermissionError('owner deletion requires its bounded launcher')
     supervisor._protect_daemon()
     root, center = data_dir().resolve(), Path(universe_dir)
     principal = current_identity().user_id

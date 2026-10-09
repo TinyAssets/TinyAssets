@@ -1,6 +1,6 @@
 """Runtime command-center admission (owner-dynamic-admission DA3/DA4).
 
-Only while the bounded mapper client is installed. A new center root gets the
+Every center is created here, through the bounded mapper client. A new center root gets the
 canonical migrated label ``1001:<machine>``, mode 0750, the canonical access
 ACL and no default ACL, without any process gaining a capability: a fixed
 ``center-root`` owner cell makes a setgid directory ``g`` inside daemon-private
@@ -243,21 +243,17 @@ def _seed_entries(root_fd, center, key):
 
 
 def bounded_client():
-    """The installed D69/D70 client, or None: every rule here is inert without it."""
+    """The installed D69/D70 client; admission refuses loudly without it."""
     from tinyassets import role_decoder
 
-    return role_decoder._bounded_client
+    client = role_decoder._bounded_client
+    if client is None:
+        raise AdmissionRefused('runtime admission requires the bounded mapper client')
+    return client
 
 
 def ensure_center_dir(udir) -> None:
-    """A write site's ``udir.mkdir(parents=True, exist_ok=True)``.
-
-    Legacy (no client): exactly that mkdir. With the bounded client installed a
-    missing root refuses loudly: only admit_center creates one (DA4).
-    """
-    if bounded_client() is None:
-        udir.mkdir(parents=True, exist_ok=True)
-        return
+    """A write site's guard: only admit_center creates a center root (DA4)."""
     if not udir.is_dir():
         raise AdmissionRefused(f'command center {udir.name!r} has no admitted root')
 
@@ -272,8 +268,6 @@ def admit_center(data_root, *, principal, center):
     from tinyassets.broker.owner_identities import center_admission, owner_identity
 
     client = bounded_client()
-    if client is None:
-        raise AdmissionRefused('runtime admission requires the bounded mapper client')
     identity = owner_identity(data_root, principal=principal, allocate=True)
     root_fd = os.open(data_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
