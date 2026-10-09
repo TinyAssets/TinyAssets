@@ -197,6 +197,108 @@ def test_daemon_returns_only_public_identity(app):
     ) == {"client_id": "public-client"}
 
 
+def test_public_cache_expires_even_without_an_authorization_callback(universes, monkeypatch):
+    from tinyassets.connection_oauth import pkce
+
+    now = pkce.time.time()
+    pkce.remember_client("https://auth.example", "https://tinyassets.io/cb", "old", "dcr")
+    assert pkce.cached_client("https://auth.example", "https://tinyassets.io/cb") == "old"
+    monkeypatch.setattr(pkce.time, "time", lambda: now + 3601)
+    assert pkce.cached_client("https://auth.example", "https://tinyassets.io/cb") == ""
+
+
+def test_root_challenge_names_parent_resource(monkeypatch):
+    from tinyassets.connection_oauth import transport
+
+    monkeypatch.setattr(
+        transport,
+        "request_json_with_headers",
+        lambda *a, **k: (
+            401,
+            {},
+            {
+                "www-authenticate": 'Bearer resource_metadata="https://api.example/.well-known/oauth-protected-resource"'
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        discovery,
+        "request_json",
+        lambda *a, **k: (
+            200,
+            {"resource": "https://api.example/", "authorization_servers": ["https://auth.example"]},
+        ),
+    )
+    assert discovery._resource_metadata("https://api.example/mcp", probe=True) == (
+        ["https://auth.example"],
+        [],
+        "https://api.example/",
+    )
+
+
+def test_legacy_endpoint_uses_origin_authorization_metadata(monkeypatch):
+    monkeypatch.setattr(discovery, "_resource_metadata", lambda *a, **k: ([], [], ""))
+    seen = []
+
+    def fetch(issuer):
+        seen.append(issuer)
+        return "metadata"
+
+    monkeypatch.setattr(discovery, "fetch_server_metadata", fetch)
+    assert discovery._metadata_for(["https://api.example/mcp"])[0] == "metadata"
+    assert seen == ["https://api.example"]
+
+
+def test_bad_first_resource_does_not_mask_second_host(monkeypatch):
+    def resource(url, **kw):
+        if "first" in url:
+            raise OAuthError("protected_resource_mismatch")
+        return ["https://auth.example"], [], url
+
+    monkeypatch.setattr(discovery, "_resource_metadata", resource)
+    monkeypatch.setattr(discovery, "fetch_server_metadata", lambda issuer: "metadata")
+    assert (
+        discovery._metadata_for(["https://first.example/mcp", "https://second.example/mcp"])[1]
+        == "https://second.example/mcp"
+    )
+
+
+def test_cache_failure_is_a_recoverable_offer_reason(provider, monkeypatch):
+    from tinyassets.connection_oauth import pkce
+
+    def unavailable(*args):
+        raise OAuthError("platform_client_unavailable")
+
+    monkeypatch.setattr(pkce, "cached_client", unavailable)
+    assert discovery.resolve_offer({}, [API]) == (None, "platform_client_unavailable")
+
+
+def test_null_scope_retains_grant_scope(monkeypatch):
+    monkeypatch.setattr(
+        tokens, "request_json", lambda *a, **k: (200, {"access_token": "fresh", "scope": None})
+    )
+    fresh = tokens.refresh(
+        tokens.TokenBundle("a", "https://auth.example/token", "c", "r", scope="tools.read")
+    )
+    assert fresh.scope == "tools.read"
+
+
+def test_expired_registration_on_pending_card_registers_again(provider, app, monkeypatch):
+    from tinyassets.connection_oauth import pkce
+
+    monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
+    with _as(OWNER):
+        first = _ask()
+    assert _sign_in(provider, first["request_id"])[2].status_code == 200
+    with _as(OWNER):
+        second = _ask(action={**TASKS_ASK, "destination": "second"})
+    assert second["action"]["oauth"]["registration_method"] == "cached"
+    now = pkce.time.time()
+    monkeypatch.setattr(pkce.time, "time", lambda: now + 3601)
+    assert _sign_in(provider, second["request_id"])[2].status_code == 200
+    assert len(provider.clients) == 2
+
+
 @pytest.mark.parametrize("registration", ["cimd", "dcr", "existing"])
 @pytest.mark.parametrize("discovery_route", ["challenge", "path"])
 def test_unlisted_mcp_through_connect_card(
@@ -300,7 +402,7 @@ def test_unlisted_mcp_through_connect_card(
     assert done.status_code == 200, done.text
     bundle = _vault_bundle(app)
     assert bundle.resource == endpoint and bundle.issuer == issuer and bundle.scope == "tools.read"
-    assert cached_client(issuer, callback) == bundle.client_id
+    assert cached_client(issuer, callback) == (bundle.client_id if registration == "dcr" else "")
     assert cached_client(issuer + "/", callback) == ""
     refreshed = tokens.refresh(bundle)
     assert refreshed.resource == endpoint and len(forms) == 2

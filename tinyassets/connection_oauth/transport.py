@@ -113,7 +113,7 @@ def request_json_with_headers(
     secrets: tuple[str, ...] = (),
     basic_auth: tuple[str, str] | None = None,
 ) -> tuple[int, Any, dict[str, str]]:
-    """One bounded request; returns ``(status, parsed JSON or None)``.
+    """One bounded request; returns status, parsed JSON (or None), and response headers.
 
     ``secrets`` are values this request carries (a refresh token, a code) so
     they are scrubbed from anything that could surface as detail.

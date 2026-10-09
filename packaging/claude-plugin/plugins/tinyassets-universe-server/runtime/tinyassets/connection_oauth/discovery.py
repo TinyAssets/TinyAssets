@@ -196,14 +196,25 @@ def _resource_metadata(resource: str, *, probe: bool) -> tuple[list[str], list[s
     well_known = origin + "/.well-known/oauth-protected-resource"
     urls.extend([(well_known + parts.path.rstrip("/"), resource),
                  (origin + "/.well-known/oauth-protected-resource", origin)])
+    last = None
     for url, expected_resource in dict.fromkeys(urls):
         status, doc = request_json("GET", url)
         if status != 200 or not isinstance(doc, dict):
             continue
         named = doc.get("resource")
-        if named != expected_resource and not (
-                url == origin + "/.well-known/oauth-protected-resource" and named == resource):
-            raise OAuthError("protected_resource_mismatch")
+        # A challenge can name a parent protected resource (including the
+        # origin). Bind that canonical identifier, never a sibling or host.
+        named_parts = urlsplit(named) if isinstance(named, str) else None
+        parent = bool(named_parts and named_parts.scheme == parts.scheme
+                      and named_parts.netloc == parts.netloc
+                      and not named_parts.query and not named_parts.fragment
+                      and (parts.path or "/").startswith(named_parts.path.rstrip("/") + "/"))
+        challenged = url == challenge.get("resource_metadata")
+        root = url == origin + "/.well-known/oauth-protected-resource"
+        compatible = (challenged or root) and (parent or named == resource)
+        if named != expected_resource and not compatible:
+            last = OAuthError("protected_resource_mismatch")
+            continue
         servers = _strings(doc.get("authorization_servers")) or ()
         scopes = challenge.get("scope")
         try:
@@ -211,6 +222,8 @@ def _resource_metadata(resource: str, *, probe: bool) -> tuple[list[str], list[s
         except ValueError:
             raise OAuthError("invalid_resource_metadata") from None
         return [validate_https_url(v) for v in servers[:_MAX_ISSUERS]], wanted, named
+    if last:
+        raise last
     return [], [], ""
 
 
@@ -223,10 +236,20 @@ def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
     last = OAuthError("no_authorization_server_metadata")
     for host in hosts[:_MAX_ISSUERS]:
         resource = host if host.startswith("https://") else f"https://{host}"
-        candidates, scopes, identified = _resource_metadata(resource, probe=host.startswith("https://"))
-        for candidate in candidates or [resource]:
+        parts = urlsplit(resource)
+        origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+        try:
+            candidates, scopes, identified = _resource_metadata(
+                resource, probe=host.startswith("https://"))
+        except OAuthError as exc:
+            last = exc
+            if host.startswith("https://"):
+                continue
+            candidates, scopes, identified = [], [], ""
+        for candidate in candidates or [origin]:
             try:
-                return fetch_server_metadata(candidate), identified if candidates else "", scopes
+                selected = identified if candidates else resource
+                return fetch_server_metadata(candidate), selected, scopes
             except OAuthError as exc:
                 last = exc
     raise last
@@ -282,18 +305,27 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     if reason:
         return None, reason
     client_id = requested.get("client_id", "")
-    from tinyassets.connection_oauth.flow import configured_redirect_uri
+    from tinyassets.connection_oauth.flow import callback_origin, configured_redirect_uri
     from tinyassets.connection_oauth.pkce import cached_client
 
     callback = configured_redirect_uri()
-    client_id = client_id or cached_client(metadata.issuer, callback)
     method = "existing"
-    if not client_id and metadata.cimd_supported and callback:
+    if not client_id:
+        try:
+            client_id = cached_client(metadata.issuer, callback)
+        except OAuthError as exc:
+            return None, exc.code
+        if client_id:
+            method = "cached"
+    cimd = ""
+    if metadata.cimd_supported and callback:
         from tinyassets.onboarding.source_connect import CLIENT_METADATA_PATH
 
-        client_id = callback.rsplit("/app/", 1)[0] + CLIENT_METADATA_PATH
+        cimd = callback_origin(callback) + CLIENT_METADATA_PATH
+    if not client_id and cimd:
+        client_id = cimd
         method = "cimd"
-    registration = "" if client_id else metadata.registration_endpoint
+    registration = metadata.registration_endpoint if not client_id or method == "cached" else ""
     if not client_id and not registration:
         return None, "registration_required"
     return {
@@ -307,6 +339,7 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
         "source": "discovered",
         "resource": resource,
         "registration_method": method if client_id else "dcr",
+        **({"fallback_client_id": cimd} if method == "cached" and cimd else {}),
     }, ""
 
 

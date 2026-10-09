@@ -89,15 +89,20 @@ Unsupported or rejected client identity returns registration_required; revoked
 grants return reconnect_required. Transient network failures remain retryable.
 
 Storage: add a public-registration table to the existing daemon OAuth flow DB,
-keyed by exact issuer and redirect URI, containing only public client_id and
-registration method. Isolated children read public identities through the existing
+keyed by exact issuer and redirect URI, containing only public client_id,
+registration method and expires_at (one hour). Only platform-created DCR IDs
+enter this shared cache; requester-supplied clients remain request-local and
+CIMD identity is derived from configured callback_origin. Isolated children read public identities through the existing
 daemon OAuth RPC, never by opening the daemon DB. This is platform client identity,
 not owner authority or
 credentials. No outbound ledger, broker or spawn-site migration. Add optional
 resource and issuer fields to the existing vault token bundle; old bundles
 decode with empty fields. Bind resource in authorize, exchange and refresh;
 retain requested scope when the token response omits scope. AS scope metadata
-is advisory, never an exhaustive allowlist. Rejected cached clients are evicted.
+is advisory, never an exhaustive allowlist. Token-endpoint client rejection
+evicts the cache entry. Authorization-server refusals that never return cannot
+be observed: one-hour expiry bounds stale DCR reuse, including pending cards,
+and the next attempt registers afresh (or reports registration_required).
 Per-owner credential custody and the isolation cutover remain unchanged.
 
 MCP remote attach discovers protected-resource and authorization-server metadata. Support OAuth with PKCE S256, dynamic client registration (DCR), a TinyAssets-hosted HTTPS client metadata document (CIMD), and explicitly configured static-client fallback; advertise which method the server supports rather than requiring all simultaneously. Bearer/API-key auth uses private capture, never URL query credentials. Reuse generic-oauth-connections and protected server-side PKCE/state/session validation; bind resource/audience and the registered redirect URI, validate discovered endpoints through broker policy, and never forward one resource's token to another resource. Unsupported registration produces an actionable error. No per-provider code and no account credential export.

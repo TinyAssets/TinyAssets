@@ -31,7 +31,7 @@ then CIMD then DCR selection, issuer/callback-keyed public registration persiste
 resource propagation and typed registration/reconnect errors. Reuses the already
 served /app/oauth/client-metadata.json; no new public route. The existing daemon
 OAuth RPC supplies public cache reads to isolated children. No broker, outbound
-storage or spawn-site edits are needed for this slice.
+storage or spawn-site files were edited.
 
 Proof: seven targeted regressions failed before and passed after; all six local
 MCP connect-card cases (challenge/path x CIMD/DCR/existing) also failed against
@@ -41,3 +41,23 @@ expanded validation and PR/review results are recorded in the implementation PR.
 This is API-level card/callback and local-server proof, not a rendered-browser or
 production deployment assertion. Server-owned callback/mobile return and live
 acceptance remain with the existing follow-on lane; do not mark ladder 1.10 done.
+
+Claude floor review (peer-agents, 2026-10-09) returned ADAPT; dispositions:
+AGREE 1: requester-supplied clients never enter shared registration state; only
+platform-created DCR IDs are cached. CIMD is derived, not owner-controlled.
+AGREE 2: token rejection evicts; no-callback authorization refusals cannot be
+observed. One-hour expiry now bounds stale DCR reuse and expired pending cards
+register afresh. Immediate detection of an external page refusing a client is
+not claimed.
+AGREE 3/4: parent/root challenges are accepted only on the same origin/path;
+a bad candidate does not mask another host, and legacy AS discovery uses origin.
+AGREE 5/6/7: cache RPC errors become offer reasons, null scope retains the grant
+scope, and CIMD uses the shared callback_origin derivation. Regression tests added.
+No second peer round or Drain-Review receipt; the lead owns merge acceptance.
+
+Isolation-lane integration finding: outbound_connections.py projects response
+headers into a dict, discarding repeated WWW-Authenticate fields. A Bearer
+challenge can be hidden if a different scheme is the last field. Combined
+headers work here. Full separate-header interoperability needs the reserved
+HTTP driver to preserve/combine WWW-Authenticate before that projection; this
+slice does not edit that file or bypass the SSRF driver.

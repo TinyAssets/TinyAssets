@@ -102,7 +102,7 @@ def _registration_table(conn):
     conn.execute(
         "CREATE TABLE IF NOT EXISTS oauth_public_clients ("
         "issuer TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
-        "client_id TEXT NOT NULL, method TEXT NOT NULL, "
+        "client_id TEXT NOT NULL, method TEXT NOT NULL, expires_at REAL NOT NULL, "
         "PRIMARY KEY (issuer, redirect_uri))"
     )
 
@@ -121,8 +121,9 @@ def cached_client(issuer: str, redirect_uri: str) -> str:
     with flows_db(_base_path()) as (conn, _):
         _registration_table(conn)
         row = conn.execute(
-            "SELECT client_id FROM oauth_public_clients WHERE issuer=? AND redirect_uri=?",
-            (issuer, redirect_uri),
+            "SELECT client_id FROM oauth_public_clients "
+            "WHERE issuer=? AND redirect_uri=? AND expires_at>?",
+            (issuer, redirect_uri, time.time()),
         ).fetchone()
         return row[0] if row else ""
 
@@ -133,8 +134,8 @@ def remember_client(issuer: str, redirect_uri: str, client_id: str, method: str)
     with flows_db(_base_path()) as (conn, _):
         _registration_table(conn)
         conn.execute(
-            "INSERT OR REPLACE INTO oauth_public_clients VALUES (?, ?, ?, ?)",
-            (issuer, redirect_uri, client_id, method),
+            "INSERT OR REPLACE INTO oauth_public_clients VALUES (?, ?, ?, ?, ?)",
+            (issuer, redirect_uri, client_id, method, time.time() + 3600),
         )
 
 

@@ -70,8 +70,12 @@ Discovery SHALL use an actual Bearer challenge, then endpoint-path and root
 well-known metadata, validate resource identity and exact issuer equality, and
 apply SSRF checks to every target. Registration SHALL prefer an accepted existing
 client, then advertised CIMD, then DCR with application_type web. Public client
-registrations SHALL persist by exact issuer and redirect URI in the OAuth flow
-store, without owner tokens. GET /app/oauth/client-metadata.json SHALL publish the
+registrations created by the platform SHALL persist by exact issuer and redirect
+URI in the OAuth flow store, without owner tokens. Requester-supplied client IDs
+SHALL NOT enter that shared cache. DCR entries SHALL expire within one hour;
+an expired entry on a pending card SHALL trigger fresh registration or an
+actionable registration_required failure. Token-endpoint client rejection SHALL
+evict the cached identity; no callback is assumed for authorization-page refusal. GET /app/oauth/client-metadata.json SHALL publish the
 stable HTTPS TinyAssets client identity and exact callback with public auth none.
 The token bundle SHALL retain optional resource and issuer without breaking old
 bundles. Authorize, exchange and refresh SHALL send that resource. Requested or

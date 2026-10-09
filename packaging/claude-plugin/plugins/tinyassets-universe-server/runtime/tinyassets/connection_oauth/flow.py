@@ -123,7 +123,12 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
     from tinyassets.connection_oauth.pkce import cached_client, remember_client
 
     client_id = offer.get("client_id") or cached_client(offer["issuer"], callback)
+    if offer.get("registration_method") == "cached":
+        # A stale pending card must not revive an expired registration.
+        client_id = cached_client(offer["issuer"], callback) or offer.get("fallback_client_id", "")
     if not client_id:
+        if not offer.get("registration_url"):
+            raise FlowError("registration_required", 409)
         try:
             client_id = register_public_client(offer["registration_url"],
                                                redirect_uri=callback, scopes=scopes)
@@ -219,7 +224,7 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
 
             forget_client(offer["issuer"], flow["client_id"])
         raise FlowError(exc.code, 502, exc.detail) from None
-    if offer.get("source") == "discovered":
+    if offer.get("source") == "discovered" and offer.get("registration_method") == "dcr":
         from tinyassets.connection_oauth.pkce import remember_client
 
         remember_client(offer["issuer"], flow["redirect_uri"], flow["client_id"],

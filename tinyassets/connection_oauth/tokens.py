@@ -132,6 +132,7 @@ def _token_response(status: int, doc: Any, *, secrets: tuple[str, ...]) -> dict[
                     "unauthorized_client": "registration_required",
                     "invalid_grant": "reconnect_required", "invalid_scope": "insufficient_scope"}
         error = doc.get("error") if isinstance(doc, dict) else ""
+        error = error if isinstance(error, str) else ""
         code = recovery.get(error, "token_request_failed")
         raise OAuthError(code, server_error_detail(status, doc, secrets),
                          status=status)
@@ -209,7 +210,8 @@ def exchange_code(*, token_url: str, client_id: str, code: str, verifier: str,
     return TokenBundle(
         access_token=doc["access_token"], token_url=token_url, client_id=client_id,
         refresh_token=_token(doc["refresh_token"]) if doc.get("refresh_token") else "",
-        expires_at=_expires_at(doc, now), scope=str(doc.get("scope", scope)),
+        expires_at=_expires_at(doc, now),
+        scope=str(doc["scope"] if doc.get("scope") is not None else scope),
         provider_id=provider_id, resource=resource, issuer=issuer,
     )
 
@@ -230,7 +232,8 @@ def refresh(bundle: TokenBundle) -> TokenBundle:
     return replace(
         bundle, access_token=doc["access_token"],
         refresh_token=_token(rotated) if rotated else bundle.refresh_token,
-        expires_at=_expires_at(doc, now), scope=str(doc.get("scope", bundle.scope)),
+        expires_at=_expires_at(doc, now),
+        scope=str(doc["scope"] if doc.get("scope") is not None else bundle.scope),
     )
 
 
