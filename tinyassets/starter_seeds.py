@@ -571,6 +571,23 @@ class SeedStore:
         ]
         return tx
 
+    def installed(self, manifest: SeedManifest) -> dict | None:
+        """This exact release's committed receipt when ``install`` has nothing to do.
+
+        ``None`` when a journal needs recovery, a notice is undelivered, or the
+        release was never installed (or was published again under the same
+        version): those need ``install`` under the exclusive boundary.
+        """
+        if self._rows("seed_transactions", "phase!='committed'"):
+            return None
+        if any(not row["delivered"] for row in self._rows("seed_notices")):
+            return None
+        key = f"automatic:{manifest.bundle_id}:{manifest.version}"
+        prior = self._rows("seed_transactions", "request_key=?", (key,))
+        if not prior or prior[0]["manifest_hash"] != manifest.sha256:
+            return None
+        return self.receipt(prior[0]["transaction_id"])
+
     def notices(self) -> list[dict]:
         return [dict(row, payload=json.loads(row["payload"])) for row in self._rows("seed_notices")]
 

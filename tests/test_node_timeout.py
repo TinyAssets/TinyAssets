@@ -90,6 +90,18 @@ def test_run_with_timeout_propagates_internal_errors():
         _run_with_timeout(_boom, timeout_s=5.0, node_id="bad")
 
 
+def test_a_timeout_raised_by_the_work_is_not_the_nodes_own_deadline():
+    """Live 2026-10-09: a 5s lock wait inside an agent node read as "exceeded
+    2592000s timeout". Since 3.11 the builtin TimeoutError IS
+    concurrent.futures.TimeoutError, so the work's own one must pass through."""
+    def _busy():
+        raise TimeoutError("starter file boundary is busy; retry the turn")
+
+    with pytest.raises(TimeoutError, match="boundary is busy") as exc_info:
+        _run_with_timeout(_busy, timeout_s=60.0, node_id="manager")
+    assert not isinstance(exc_info.value, NodeTimeoutError)
+
+
 # ─── default timeout raised to 300s ──────────────────────────────────────
 
 
