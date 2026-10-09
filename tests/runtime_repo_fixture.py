@@ -11,14 +11,14 @@ import subprocess
 from pathlib import Path
 
 DOCKERFILE = """\
-FROM python:3.11-slim AS builder
+FROM mirror.gcr.io/library/python:3.11-slim AS builder
 COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
 WORKDIR /build
 COPY pyproject.toml ./
 COPY tinyassets/ ./tinyassets/
 RUN echo building && \\
     echo done
-FROM python:3.11-slim
+FROM mirror.gcr.io/library/python:3.11-slim
 COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --chown=1001:1001 scripts/_canary_common.py /app/scripts/_canary_common.py
 COPY ["data/world_rules.lp", "/app/data/world_rules.lp"]

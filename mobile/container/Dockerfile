@@ -4,7 +4,7 @@
 # 2026-08-31 (developer.android.com/google/play/requirements/target-sdk).
 # Capacitor 8 defaults to compileSdk/targetSdk 36, needs node >= 22, and
 # compiles its Java at source/target 21 -- JDK 17 fails with "invalid source release: 21".
-FROM ubuntu:24.04
+FROM mirror.gcr.io/library/ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ANDROID_SDK_ROOT=/opt/android-sdk

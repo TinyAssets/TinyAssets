@@ -7,7 +7,7 @@
 # Throwaway prototype container; real track-C build pulls from a proper
 # registry + runs on Fly.io Machines per spec #27 §6.
 
-FROM python:3.11-slim
+FROM mirror.gcr.io/library/python:3.11-slim
 
 WORKDIR /app
 
