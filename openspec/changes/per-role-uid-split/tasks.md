@@ -48,7 +48,8 @@ until that PR merges inside the maintenance window.
 Proof, 2026-10-09: `role_migrate_probe.py` passed all 356 interruption points,
 all preflight refusals, converged no-op, and numeric-owner/mode/ACL snapshot restore.
 The production-backup rehearsal for 1.4 is recorded in the runbook (2026-10-08).
-The full production image `sha256:4e613c6be8a1e5822561f6c8d1eec45c80e5cc03a58c56b557cd6fa675d21c8c`
+The full production image built from `eb7604293a`,
+`sha256:4102baa237574dfbb5db13276feb5368a3abb8e6a76a0ff67f21c5ebb370fddb`,
 passed migration, actual serving, all eleven cell legs, and the shipped
 Claude/Codex CLI execution and discovery probes. This includes engine HTTP tool
 write/read, real dependency download/offline installation, workspace leases,
@@ -78,5 +79,6 @@ The credential broker and reader switches, legacy liveness, single-UID deletion,
 and unconfined consumer fallbacks are absent. Design section 5's code deletions
 and their legacy tests are already applied; its four concern deletions remain
 conditioned on production Verify. The remaining `ENV_SWITCH` in served_chat is
-the unrelated agent-loop selector. The previous run's shipping image log confirms
-the image digest above and `ROLE IMAGE ORACLE PASS`; it does not close task 2.5.
+the unrelated agent-loop selector. The resumed image run completed migration,
+actual serving, all eleven cell legs and the provider probes with
+`ROLE IMAGE ORACLE PASS`; it does not close the stricter task 2.5.
