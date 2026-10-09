@@ -50,8 +50,8 @@ def test_owner_completion_bootstrap_in_rendered_app(app_url, browser, outcome):
         assert sent[-1][1]["authorization"] == "Bearer " + expected
         assert len(sent) == (2 if outcome == "renewal" else 1)
     else:
-        message = ("Sign in to this browser" if outcome in {"no_session", "logout"}
-                   else "Start sign-in again")
+        message = {"no_session": "blocked the sign-in cookie",
+                   "logout": "Sign in to this browser"}.get(outcome, "Start sign-in again")
         page.wait_for_function("text=>document.getElementById('signin-notice').textContent.includes(text)",
                                arg=message)
         assert page.locator("#signin-notice").is_visible()
