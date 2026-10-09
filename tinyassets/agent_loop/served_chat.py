@@ -3,7 +3,7 @@
 ``TINYASSETS_AGENT_LOOP=thin`` routes an HTTP-protocol chat turn through the
 thin loop: the same :class:`AgentTurnCoordinator` and journal, with its tools
 opened by :func:`~.tool_session.open_loop_tools` -- box tools on a handle bound
-at turn start, owner reads in the loop, the rest on the engine route. Unset, or any
+at turn start, with backend capabilities reached through ta. Unset, or any
 other value, keeps today's path. Native (CLI) turns are untouched either way:
 command adapters and file-OAuth CLIs keep running as CLIs (D6).
 
@@ -19,7 +19,6 @@ import threading
 from typing import Any
 
 from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor, BoxTools
-from tinyassets.agent_loop.owner_reads import OWNER_READ_TOOLS
 from tinyassets.agent_loop.tool_session import open_loop_tools
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
 from tinyassets.served_tools import granted_tools, model_tools
@@ -70,7 +69,6 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
         return open_loop_tools(
             granted=model_tools(coordinator.config),
             capability_grant=granted_tools(coordinator.config),
-            loop_reads=OWNER_READ_TOOLS,
             bind_box=None if provider is None else (
                 lambda: bind_turn_box(owner=owner, command_center=universe_dir.name,
                                       turn_id=turn_id)

@@ -442,7 +442,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
 
     FAIL-CLOSED: the engine MCP is wired only when the founder actor_id AND the
     universe graph_id are both present; a missing either returns no flags so the
-    turn stays WebFetch-only rather than exposing tools with an unbound identity.
+    turn stays tool-free rather than exposing tools with an unbound identity.
     The server itself binds ``_current_identity`` to the founder and pins every
     handler to ``engine_mcp_graph_id`` (see ``tinyassets.engine_mcp_server``).
     """
@@ -548,7 +548,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
         if legacy_path.is_file() and not legacy_path.is_symlink():
             legacy_path.unlink()
     except OSError:
-        # If we cannot write the config, fail closed to WebFetch-only rather than
+        # If we cannot write the config, fail closed to tool-free rather than
         # passing --mcp-config a missing path (which would error the whole turn).
         return []
     return ["--mcp-config", str(config_path), "--strict-mcp-config"]
@@ -615,7 +615,7 @@ def _sandbox_cli_args(
     if config.workflow_node:
         config = _confine_workflow_node(config)
     if config.sandbox_workspace:
-        if config.engine_mcp_enabled:
+        if config.sandbox_chat or config.engine_mcp_enabled:
             # No native tools or deferred ToolSearch handle in a served turn.
             # MCP discovery is projected by the bound private engine route.
             flags += ["--tools", ""]
@@ -635,7 +635,7 @@ def _sandbox_cli_args(
         # auto-approving tools this turn never pre-approved. `default` (accepted
         # alongside its newer name `manual`) approves NOTHING implicitly: the
         # only callable tools are the ones `--allowedTools` pre-approves --
-        # WebFetch plus, when engine MCP is on, the declared
+        # when engine MCP is on, the declared
         # `mcp__tinyassets__*` handles. A headless turn cannot answer a prompt,
         # so anything else is refused rather than waiting. This pins the
         # behaviour this provider already had with first-party OAuth; it is

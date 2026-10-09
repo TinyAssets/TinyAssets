@@ -13,6 +13,35 @@ from tinyassets.providers.base import ModelConfig
 from tinyassets.providers.claude_provider import _sandbox_cli_args
 
 
+def test_non_granted_served_provider_launches_have_no_tools(tmp_path):
+    import asyncio
+    from contextlib import AsyncExitStack
+    from types import SimpleNamespace
+
+    from tinyassets.agent_definition import agent_definition
+    from tinyassets.providers.codex_app_server import thread_start_params
+    from tinyassets.providers.codex_provider import _served_engine_tools
+    from tinyassets.universe_intelligence import _sandboxed_config
+
+    config = _sandboxed_config(SimpleNamespace(config=SimpleNamespace(timeout=300)),
+                               granted=False)
+
+    async def codex_tools():
+        async with AsyncExitStack() as stack:
+            return await _served_engine_tools(stack, config, timeout=300)
+
+    codex = asyncio.run(codex_tools())
+    launch = thread_start_params(agent_definition(codex.tools if codex else (), ""),
+                                 model=None, cwd=str(tmp_path), ephemeral=True)
+    flags, cwd = _sandbox_cli_args(config, tmp_path)
+    assert codex is None
+    assert launch["dynamicTools"] == []
+    assert "--tools" in flags and flags[flags.index("--tools") + 1] == ""
+    assert config.allowed_tools == () and "--allowedTools" not in flags
+    assert "WebFetch" in config.disallowed_tools
+    assert cwd == str(tmp_path) and not config.engine_mcp_enabled
+
+
 def test_default_config_is_noop_for_host_trusted_roles():
     # A plain ModelConfig (branch runs, judges, etc.) must NOT be sandboxed —
     # no tool flags, no cwd override.

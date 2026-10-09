@@ -15,7 +15,7 @@ from tinyassets.engine_tool_client import EngineToolError
 THREAD = "thread:owner-chat"
 
 
-def _open(universe, box, *, granted=("bash",), reads=(), session_key=THREAD, turn="live-1"):
+def _open(universe, box, *, granted=("bash",), session_key=THREAD, turn="live-1"):
     def bind():
         handle = box.bind(universe.name, account="owner", turn="t1")
         return BoxTools(BoxExecutor(box, handle, limits=None)), "/cc"
@@ -23,7 +23,7 @@ def _open(universe, box, *, granted=("bash",), reads=(), session_key=THREAD, tur
     def no_engine():
         raise AssertionError("the engine route must not open for loop-only tools")
 
-    return open_loop_tools(granted=granted, loop_reads=reads, bind_box=bind, owner="owner",
+    return open_loop_tools(granted=granted, bind_box=bind, owner="owner",
                            universe_dir=universe, engine_identity=no_engine, timeout=30,
                            session_key=session_key, turn=turn)
 
@@ -63,7 +63,7 @@ def test_a_name_outside_the_inventory_is_refused(tmp_path):
 
 def test_a_granted_box_tool_with_no_box_is_refused_before_anything_opens(tmp_path):
     async def scenario():
-        async with open_loop_tools(granted=("bash",), loop_reads=(), bind_box=None,
+        async with open_loop_tools(granted=("bash",), bind_box=None,
                                    owner="owner", universe_dir=tmp_path,
                                    engine_identity=lambda: ("owner", tmp_path.name),
                                    timeout=30):

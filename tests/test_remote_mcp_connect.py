@@ -85,7 +85,7 @@ def test_no_served_guidance_says_mcp_attachment_is_unavailable():
 
 def _backend(base, agent="main"):
     return Capabilities(base / UID, ExecutionContext(UID, OWNER, agent), [], None,
-                        lambda: None)
+                        lambda: None, capability_grant=("write_graph", "run_graph"))
 
 
 def _ta(monkeypatch, service, *argv):
