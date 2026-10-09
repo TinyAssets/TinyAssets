@@ -95,11 +95,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Verify immutable execution and import chain
+        run: |
+          docker run --rm --network none --user 0:0 --cap-drop ALL \
+              --entrypoint /opt/venv/bin/python tinyassets-daemon:ci \
+              -I -S -B /usr/local/libexec/ta-chain.py
+
       - name: Unmodified image refuses unadmitted startup
         run: |
-          # No published port, credentials, mounted state or admission fixture.
+          # Production's posture (compose user 0, the bootstrap's four caps, NNP)
+          # on a volume the owner-split migration never ran on: PID1 must refuse
+          # (Fact 8) before forking anything. No port, credentials or fixture.
           # Keep the exited container until logs and exit status are checked.
-          docker run -d --network none \
+          docker run -d --network none --user 0:0 --cap-drop ALL \
+              --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP \
+              --security-opt no-new-privileges=true \
               --name tinyassets-daemon-unadmitted-ci \
               -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
               -e UNIVERSE_SERVER_DEV_USER=ci-smoke \
@@ -108,7 +118,7 @@ jobs:
           docker logs tinyassets-daemon-unadmitted-ci > "$RUNNER_TEMP/unadmitted.log" 2>&1
           cat "$RUNNER_TEMP/unadmitted.log"
           test "$EXIT_CODE" = 78
-          grep -q 'platform_not_cloud' "$RUNNER_TEMP/unadmitted.log"
+          grep -q 'startup refused: no readable layout marker' "$RUNNER_TEMP/unadmitted.log"
           if grep -q 'Uvicorn running on' "$RUNNER_TEMP/unadmitted.log"; then
             echo "::error::Unadmitted image started a listener"
             exit 1

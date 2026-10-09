@@ -38,19 +38,18 @@ def test_the_floor_is_the_wal_reset_fix():
 
 
 def test_the_entry_point_checks_before_the_server_loads():
-    """`python -m tinyassets.serve` is the container CMD. The check must run in
-    its __main__ block and before universe_server is imported, so no storage is
-    opened by an older library."""
-    tree = ast.parse((REPO / "tinyassets" / "serve.py").read_text(encoding="utf-8"))
-    main_block = next(
-        node for node in tree.body
-        if isinstance(node, ast.If) and "__main__" in ast.unparse(node.test)
-    )
-    calls = [ast.unparse(stmt) for stmt in main_block.body]
+    """The container CMD is the PID1 launcher (deploy/role_launcher.py). Its
+    main() must assert the floor before universe_server is imported, so no
+    storage is opened by an older library."""
+    tree = ast.parse((REPO / "deploy" / "role_launcher.py").read_text(encoding="utf-8"))
+    main = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == "main")
+    calls = [ast.unparse(stmt) for stmt in main.body]
     floor = next(i for i, c in enumerate(calls) if c == "require_sqlite_floor()")
     server = next(i for i, c in enumerate(calls) if "tinyassets.universe_server" in c)
     assert floor < server
-    assert 'CMD ["python", "-m", "tinyassets.serve"]' in DOCKERFILE
+    command = '["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]'
+    assert f"CMD {command}" in DOCKERFILE
 
 
 def _arg(name: str) -> str:

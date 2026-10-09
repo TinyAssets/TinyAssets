@@ -356,6 +356,7 @@ def python_import_closure(
     files: set[str],
     read: Callable[[str], str | None],
     stop: Callable[[str], bool],
+    image_files: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str]]:
     """Repo files the ``seeds`` import, transitively (seeds included).
 
@@ -366,7 +367,9 @@ def python_import_closure(
     resolved, a dynamic import, or an unparseable file is returned in the
     second list -- the caller fails open on it. ``stop(path)`` is True for files
     already runtime by another rule (the image's package trees); their own
-    imports are the image's concern and are not walked.
+    imports are the image's concern and are not walked. A dynamic import in one
+    of ``image_files`` (a file the Dockerfile copies) loads another image file
+    by its installed path, and every such file is a COPY source already.
     """
     stdlib = set(getattr(sys, "stdlib_module_names", ()))
     seen: set[str] = set()
@@ -392,7 +395,7 @@ def python_import_closure(
             if isinstance(node, ast.Call):
                 func = node.func
                 name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                if name in _DYNAMIC_IMPORTERS:
+                if name in _DYNAMIC_IMPORTERS and path not in image_files:
                     unresolved.append(f"{path} (dynamic import)")
                 continue
             if isinstance(node, ast.Import):
@@ -551,7 +554,9 @@ def runtime_inputs_from(
         def already_runtime(path: str) -> bool:
             return any(path == t or path.startswith(t.rstrip("/") + "/") for t in image_trees)
 
-        closure, unresolved = python_import_closure(seeds, files, read, already_runtime)
+        closure, unresolved = python_import_closure(
+            seeds, files, read, already_runtime,
+            frozenset(p for p in image_sources if p.endswith(".py")))
         paths.extend(closure)
         if unresolved:
             # Fail open: whatever it could have reached counts.

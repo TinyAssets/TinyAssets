@@ -55,7 +55,9 @@ def test_docker_ci_preserves_unmodified_refusal_and_authenticated_protocol():
     assert "--mount" not in refusal
     assert "-p " not in refusal
     assert 'test "$EXIT_CODE" = 78' in refusal
-    assert "platform_not_cloud" in refusal
+    # Owner split: PID1 refuses an unmigrated volume before the app loads.
+    assert "startup refused: no readable layout marker" in refusal
+    assert "--cap-add SETPCAP" in refusal and "--user 0:0" in refusal
     assert "timeout 60 docker wait" in refusal
     positive = commands["Start isolated protocol fixture with simulated admission"]
     assert "127.0.0.1:8001:8001" in positive
