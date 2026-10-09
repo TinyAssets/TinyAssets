@@ -62,8 +62,16 @@ COMPOSE_ENV = {
 # docs/ops/owner-split-cutover-runbook.md step 4: the one-shot migration's
 # capabilities. The service image never holds them.
 MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
-LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "tool_files", "provider_exec",
-             "two_pass_delete")
+#: Every in-container leg this script can drive, in the order it drives them.
+LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
+             "provider_exec", "workspace_remote", "two_pass_delete")
+#: Legs a known defect blocks. Excluded from the default set, named loudly at
+#: both ends of a run, and still runnable with ``--legs``. Never silently
+#: skipped: the oracle refuses to pretend an unproven thing is proven.
+BLOCKED_LEGS = {
+    "tool_files": "docs/concerns/2026-10-08-admitted-center-has-no-owner-owned-entries.md",
+}
+DEFAULT_LEGS = tuple(name for name in LEG_NAMES if name not in BLOCKED_LEGS)
 
 #: The daemon serves only on an admitted cloud runtime: the link-local metadata
 #: id must match the deploy-recorded one in the data root
@@ -104,6 +112,7 @@ WANTED = json.loads(os.environ['ORACLE_LEGS'])
 PYTHON = '/usr/local/bin/python3.11'
 CLAUDE = '/opt/claude-code-install/node_modules/.bin/claude'
 NEW_PRINCIPAL, NEW_CENTER = 'dana', 'u-dana'
+SNAPSHOTS = {}
 
 # The production bootstrap, unmodified: the layout-marker refusal, the admission
 # log read through a fully retired broker child, the broker and bounded-mapper
@@ -218,11 +227,15 @@ def leg_daemon_reader():
                     theirs_fd, 'notes/n0.md', max_bytes=4096,
                     expected_identity=(owner_identity(DATA, principal='bob').gid,) * 2)),
         )
-        # The same reader on the owner's OWN file still works: these are
-        # refusals of foreign bytes, not a broken reader.
+        # The same reader on this owner's OWN file still works: these are
+        # refusals of foreign bytes, not a broken reader. `notes/` is 0700
+        # owner-only, so the daemon cannot read that one either -- by design.
         found['own_read'] = workspace_fs.read_regular_file_beneath(
-            mine_fd, 'notes/n0.md', max_bytes=4096,
+            mine_fd, 'universe.json', max_bytes=4096,
             expected_identity=(owner_identity(DATA, principal='bob').gid,) * 2).decode()
+        found['own_notes_are_owner_only'] = refuses(
+            "the daemon reading this owner's 0700 notes directory", lambda:
+            workspace_fs.read_regular_file_beneath(mine_fd, 'notes/n0.md', max_bytes=4096))
     finally:
         os.close(mine_fd)
         os.close(theirs_fd)
@@ -256,12 +269,80 @@ def leg_admission():
                 root=[root.st_uid, root.st_gid, oct(stat.S_IMODE(root.st_mode))])
 
 
-def leg_tool_files():
-    """A tool-files cell for the center admitted after boot, as its own uid.
+def snapshot_dir(center):
+    """A daemon-sealed launch snapshot, made and sealed by the shipped code.
 
-    This is the proof that the runtime bind is live: the mapper resolves the
-    owner from its own binding table, so a cell for a center admitted after
-    boot cannot start unless the ADMIT op bound it.
+    ``credential_vault`` is the only writer of a launch snapshot: it creates
+    ``.runtime/provider-launch-credentials/<name>`` and seals each level with
+    ``role_snapshot.seal`` so this one owner traverses and reads, and nobody
+    else sees anything. An empty one proves the cell boundary; filling it needs
+    a credential, which the oracle has none of.
+    """
+    from tinyassets import credential_vault as vault
+
+    from tinyassets.role_snapshot import owner_uid, seal
+
+    made = SNAPSHOTS.get(center)
+    if made is None:
+        root, identity = vault._prepare_snapshot_root(DATA / center)
+        made, _ = vault._create_snapshot_directory(root, identity)
+        marker = made / 'oracle-marker'
+        vault._write_exclusive_snapshot_file(marker, b'oracle-snapshot-marker\n')
+        fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            seal(fd, owner_uid(DATA / center), directory=False)
+        finally:
+            os.close(fd)
+        SNAPSHOTS[center] = made
+    return made
+
+
+def in_provider_cell(principal, center, argv, *, engine_route=None, timeout=180):
+    """One provider-exec cell launch through the one spawn point."""
+    pipes = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                 stderr=asyncio.subprocess.PIPE)
+
+    async def run():
+        with provider_launch_scope(DATA / center, credential_dir=snapshot_dir(center),
+                                   engine_route=engine_route):
+            process = await aspawn_owned(argv, env={'TERM': 'dumb'}, **pipes)
+        async with asyncio.timeout(timeout):
+            out, err = await process.communicate(b'')
+        return out, err, process.returncode
+
+    with identity_context(Identity(principal, principal)):
+        return asyncio.run(run())
+
+
+def leg_new_center_cell():
+    """signup -> admit -> cell, with no restart: a cell as the NEW owner's uid.
+
+    The mapper resolves the owner from its own binding table and authenticates
+    PID 1 per message, so a cell for a center admitted after boot cannot start
+    at all unless the runtime ADMIT op bound it. Nothing was restarted between
+    `leg_admission` and here.
+    """
+    principal, center = NEW_PRINCIPAL, NEW_CENTER
+    identity = owner_identity(DATA, principal=principal)
+    out, err, code = in_provider_cell(principal, center, [
+        PYTHON, '-I', '-S', '-c',
+        "import json,os;print(json.dumps(dict(uid=os.getuid(),gid=os.getgid())))"])
+    assert code == 0, (code, out[-2000:], err[-2000:])
+    seen = json.loads(out)
+    inner = identity.uid - 300000
+    assert seen == dict(uid=inner, gid=inner), (seen, inner)
+    return dict(principal=principal, center=center, machine=identity.uid, cell=seen)
+
+
+def leg_tool_files():
+    """A tool-files cell on the center admitted after boot.
+
+    BLOCKED, and excluded from the default leg set: see
+    docs/concerns/2026-10-08-admitted-center-has-no-owner-owned-entries.md. A
+    center the migration relabelled already has an owner-owned
+    `.agent-workspace`; one admitted after the cutover has nothing the owner may
+    write, and `role_tools.maintain` mkdirs at the center root, where the
+    canonical ACL grants the owner r-x only.
     """
     principal, center = NEW_PRINCIPAL, NEW_CENTER
     identity = owner_identity(DATA, principal=principal)
@@ -282,16 +363,25 @@ fields = dict(l.split(':', 1) for l in open('/proc/self/status').read().splitlin
 opened, wrote = [], []
 for path in targets:
     try:
-        os.listdir(path) if os.path.isdir(path) else open(path, 'rb').read()
+        os.close(os.open(path, os.O_RDONLY))
         opened.append(path)
     except OSError:
         pass
     try:
-        with open(os.path.join(path, 'oracle-write') if os.path.isdir(path) else path, 'ab'):
-            pass
+        # Never O_CREAT: a cell's root is its own tmpfs, so creating a name
+        # there would read as having written the host path it is spelled like.
+        os.close(os.open(path, os.O_WRONLY))
         wrote.append(path)
     except OSError:
         pass
+# The positive control: the cell's own sealed snapshot IS its only view of the
+# center, readable and not writable. Without it "saw nothing" proves nothing.
+own = sorted(os.listdir('/snapshot'))
+try:
+    os.close(os.open('/snapshot/oracle-write', os.O_WRONLY | os.O_CREAT))
+    snapshot_writable = True
+except OSError:
+    snapshot_writable = False
 try:
     socket.create_connection(tuple(outside), timeout=4).close(); direct = 'connected'
 except OSError:
@@ -305,7 +395,8 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
     nnp=int(fields['NoNewPrivs']),
     fds=sorted(int(n) for n in os.listdir('/proc/self/fd') if n.isdigit()
                and os.path.exists('/proc/self/fd/' + n)),
-    opened=opened, wrote=wrote, direct=direct, engine=engine)))
+    opened=opened, wrote=wrote, own=own, snapshot_writable=snapshot_writable,
+    direct=direct, engine=engine)))
 """
     # A stand-in engine route on the daemon's loopback; the owner-checked relay
     # re-reads the route per connection, and here that read answers this port.
@@ -326,11 +417,13 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
     principal = 'bob'
     center = center_of(principal)
     other = center_of('alice')
-    snapshot = DATA / center / '.runtime/provider-launch-credentials/snap'
-    own = DATA / center / '.agent-workspace'
+    # Every host path this class must not reach: the other owner's tree, its
+    # notes and its vault, the broker's private state, the volume root, and this
+    # owner's OWN center (a provider cell gets its sealed snapshot, nothing more).
     targets = [str(DATA / other), str(DATA / other / 'notes' / 'n0.md'),
                str(DATA / other / '.credential-vault.json'),
-               str(DATA / '.broker' / 'state'), str(DATA), str(own)]
+               str(DATA / '.broker' / 'state'), str(DATA), str(DATA / center),
+               str(DATA / center / '.credential-vault.json')]
     # An address the CONTAINER can reach, so "the cell cannot" is a real
     # refusal and not an artefact of a network that has no route at all.
     outside = (os.environ['ORACLE_OUTSIDE_HOST'], int(os.environ['ORACLE_OUTSIDE_PORT']))
@@ -339,32 +432,70 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
         reachable = True
     except OSError:
         reachable = False
-    pipes = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                 stderr=asyncio.subprocess.PIPE)
-
-    async def run(argv):
-        with provider_launch_scope(DATA / center, credential_dir=snapshot,
-                                   engine_route=(principal, center)):
-            process = await aspawn_owned(argv, env={'TERM': 'dumb'}, **pipes)
-        async with asyncio.timeout(180):
-            return (await process.communicate(b''), process.returncode)
-
-    with identity_context(Identity(principal, principal)):
-        (out, err), code = asyncio.run(run(
-            [PYTHON, '-I', '-S', '-c', probe,
-             json.dumps([targets, port, list(outside)]).encode().hex()]))
-        assert code == 0, (code, out[-2000:], err[-2000:])
-        seen = json.loads(out)
-        (version, verr), vcode = asyncio.run(run([CLAUDE, '--version']))
+    route = (principal, center)
+    out, err, code = in_provider_cell(principal, center, [
+        PYTHON, '-I', '-S', '-c', probe,
+        json.dumps([targets, port, list(outside)]).encode().hex()], engine_route=route)
+    assert code == 0, (code, out[-2000:], err[-2000:])
+    seen = json.loads(out)
+    version, verr, vcode = in_provider_cell(principal, center, [CLAUDE, '--version'],
+                                            engine_route=route)
     inner = BINDINGS[(principal, center)] - 300000
     assert seen['uid'] == seen['gid'] == inner, seen
     assert seen['caps'] == 0 and seen['nnp'] == 1 and seen['fds'] == [0, 1, 2], seen
-    assert seen['opened'] == [] and seen['wrote'] == [str(own)], seen
+    assert seen['opened'] == [] and seen['wrote'] == [], seen
+    # The control: it really has a view, and that view is read-only.
+    assert seen['own'] and seen['snapshot_writable'] is False, seen
     assert reachable, 'the oracle network has no route to prove a cell refusal'
     assert seen['direct'] == 'refused' and seen['engine'] == 'ENGINE-ROUTE-OK', seen
     assert vcode == 0 and version.strip(), (vcode, version, verr[-2000:])
     return dict(center=center, cell=seen, claude=version.decode().strip(),
-                daemon_reaches_outside=reachable, outside=list(outside))
+                foreign_targets=targets, daemon_reaches_outside=reachable,
+                outside=list(outside))
+
+
+def leg_workspace_remote():
+    """A workspace-remote cell (branch iso/cutover-ws): the owner's own lease.
+
+    ``create`` reaches no remote, so the cell gets no egress socket at all. The
+    lease and its content directory must come out owner-owned, which is the
+    whole reason that work moved into a cell.
+    """
+    import secrets
+
+    from tinyassets import role_remote_git, workspace_owner_pool
+    from tinyassets.workspace_pool import WORKSPACES_DIR
+
+    principal = 'alice'
+    center = center_of(principal)
+    identity = owner_identity(DATA, principal=principal)
+    name = secrets.token_hex(12)
+    parts = list(workspace_owner_pool.pool_parts('scratch', ''))
+    answer = role_remote_git.run(
+        {'op': 'create', 'timeout_s': 60, 'options': [], 'storage': 'scratch',
+         'lease_parent': parts, 'lease_name': name},
+        universe_dir=DATA / center, principal=principal, egress_socket=None)
+    assert answer.get('ok') and answer.get('bytes') == 0, answer
+    assert answer['lease'] == '/'.join((*parts, name)), answer
+    lease = DATA / center / Path(*parts) / name
+    made = lease.stat()
+    content = (lease / answer['content']).stat()
+    assert (made.st_uid, made.st_gid) == (identity.uid, identity.gid), made
+    assert (content.st_uid, content.st_gid) == (identity.uid, identity.gid), content
+    # The pool parent stays the daemon's; this one owner reaches it by ACL and
+    # nobody else by anything (tinyassets/workspace_owner_pool.py).
+    from tinyassets.role_center_admission import _acl
+
+    pool_path = DATA / center / WORKSPACES_DIR
+    pool = pool_path.stat()
+    access = os.getxattr(pool_path, 'system.posix_acl_access')
+    assert (pool.st_uid, access) == (1001, _acl(7, {identity.gid: 7}, mask=7)), pool
+    assert not stat.S_IMODE(pool.st_mode) & 0o007, pool
+    return dict(center=center, machine=identity.uid, answer=answer,
+                lease_owner=[made.st_uid, made.st_gid],
+                content_owner=[content.st_uid, content.st_gid],
+                daemon_pool=[pool.st_uid, pool.st_gid, oct(stat.S_IMODE(pool.st_mode))],
+                daemon_pool_acl_grants_only_this_owner=True)
 
 
 def leg_two_pass_delete():
@@ -396,11 +527,13 @@ def leg_two_pass_delete():
                 receipt=json.loads(json.dumps(receipt, default=str)))
 
 
-# EXTENSION POINT. One cell class is one leg: add ``leg_workspace_remote`` here
-# and its name to LEG_NAMES in this file's host half. Nothing else changes.
+# EXTENSION POINT. One cell class is one leg: add the function above and its
+# name to LEG_NAMES (and DEFAULT_LEGS) in this file's host half.
 LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
-        'admission': leg_admission, 'tool_files': leg_tool_files,
-        'provider_exec': leg_provider_exec, 'two_pass_delete': leg_two_pass_delete}
+        'admission': leg_admission, 'new_center_cell': leg_new_center_cell,
+        'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
+        'workspace_remote': leg_workspace_remote,
+        'two_pass_delete': leg_two_pass_delete}
 
 report, failed = {}, []
 for name in WANTED:
@@ -448,20 +581,46 @@ def _posture(name, image, volume, *, user, caps, entrypoint=None, extra=()):
     return command + [image]
 
 
-#: Built into the fixture because production carries it: the deploy records the
-#: expected instance id in the data root, and the migration must leave it alone.
+#: The two deploy-written records a real production volume carries into the
+#: window, in the exact shape deploy-prod.yml installs them. Both are inputs the
+#: serving daemon reads: the expected instance id gates serving at all
+#: (``tinyassets/platform_runtime_provenance.py``), and the release receipt is
+#: what ``ta-op pulse`` reports. The migration must carry them, not refuse them.
 FIXTURE_EXTRA = """
-import json, os
+import json, os, sqlite3, sys
 from pathlib import Path
+sys.path.insert(0, '/app')
 probe = runpy.run_path('/src/scripts/role_migrate_probe.py')
+# role_migrate_probe's authority tables carry only the three columns the
+# migration reads. The booted daemon reads the same tables, so rebuild them with
+# the shipped DDL and write the rows through the shipped writers.
+AUTHORITY = (('alice', 'u-alice'), ('bob', 'u-bob'))
+ACL = (('legacy-one', 'carol', 'admin'), ('legacy-one', 'dave', 'read'))
 
 
 def extra(data):
-    # What deploy-prod writes on the box; the serving gate reads it.
-    path = Path(data) / 'platform-expected-instance.json'
-    path.write_text(json.dumps({{'schema': 'platform_expected_instance', 'version': 1,
-                                'expected_instance_id': {instance!r}}}))
-    os.chmod(path, 0o600)
+    from tinyassets.daemon_server import (grant_universe_access, initialize_author_server,
+                                          set_founder_home)
+    with sqlite3.connect(Path(data) / '.tinyassets.db') as db:
+        db.execute('DROP TABLE founder_home')
+        db.execute('DROP TABLE universe_acl')
+    initialize_author_server(data)
+    for founder, universe in AUTHORITY:
+        set_founder_home(data, founder_sub=founder, universe_id=universe)
+    for universe, actor, permission in ACL:
+        grant_universe_access(data, universe_id=universe, actor_id=actor,
+                              permission=permission, granted_by=actor)
+    expected = Path(data) / 'platform-expected-instance.json'
+    expected.write_text(json.dumps({{'schema': 'platform_expected_instance', 'version': 1,
+                                    'expected_instance_id': {instance!r}}}))
+    os.chmod(expected, 0o600)
+    # `install -m 0644 -o root -g root` from the host, so root-owned on purpose.
+    receipt = Path(data) / 'release-state.json'
+    receipt.write_text(json.dumps({{'receipt_available': True, 'git_sha': {sha!r},
+                                   'image_tag': {sha!r},
+                                   'deployed_at': '2026-10-08T00:00:00.000000Z'}}))
+    os.chown(receipt, 0, 0)
+    os.chmod(receipt, 0o644)
 
 
 probe['build'](Path('/data'), extra=extra)
@@ -482,7 +641,8 @@ def stage_migrate(args):
                      extra=["--rm", "--network", "none", "-v", f"{source}:/src:ro"])
     made = subprocess.run(build + [
         "-I", "-B", "-c",
-        "import runpy\n" + FIXTURE_EXTRA.format(instance=METADATA_INSTANCE_ID),
+        "import runpy\n" + FIXTURE_EXTRA.format(instance=METADATA_INSTANCE_ID,
+                                                sha=args.image),
     ], capture_output=True, text=True)
     expect(made.returncode == 0,
            f"production-shaped fixture: {made.stdout.strip()} names{made.stderr[-2000:]}")
@@ -571,7 +731,12 @@ def stage_serve(args):
                        caps=COMPOSE_CAPS,
                        extra=["-d", "--network", args.network,
                               "-e", "TINYASSETS_IMAGE=" + args.image,
-                              "-e", "TINYASSETS_WIKI_CANARY_TOKEN=" + bearer])
+                              "-e", "TINYASSETS_WIKI_CANARY_TOKEN=" + bearer,
+                              # No WorkOS config here, so the shipped
+                              # DevAuthProvider serves; it needs the local
+                              # operator named. Without it every authenticated
+                              # request is a 500 and the full canary cannot run.
+                              "-e", "UNIVERSE_SERVER_DEV_USER=oracle-founder"])
     started = subprocess.run(command, capture_output=True, text=True)
     expect(started.returncode == 0, f"serving container started{started.stderr[-2000:]}")
     deadline = time.monotonic() + args.serve_timeout
@@ -673,7 +838,7 @@ def main(argv=None):
     parser.add_argument("--network", help="docker network name (default <prefix>-net)")
     parser.add_argument("--stages", default=",".join(STAGES),
                         help="comma-separated subset of " + ",".join(STAGES))
-    parser.add_argument("--legs", default=",".join(LEG_NAMES),
+    parser.add_argument("--legs", default=",".join(DEFAULT_LEGS),
                         help="comma-separated subset of " + ",".join(LEG_NAMES))
     parser.add_argument("--serve-timeout", type=float, default=300)
     parser.add_argument("--cells-timeout", type=float, default=900)
@@ -687,7 +852,12 @@ def main(argv=None):
         raise SystemExit(f"unknown legs: {sorted(unknown)}")
     digest = docker("image", "inspect", args.image, "--format", "{{.Id}}").stdout.strip()
     print(f"cutover image: {args.image} {digest}", flush=True)
-    report = {"image": args.image, "digest": digest}
+    blocked = {name: reason for name, reason in BLOCKED_LEGS.items()
+               if name not in args.legs}
+    for name, reason in sorted(blocked.items()):
+        print(f"NOT PROVEN: leg {name} is blocked by {reason}", flush=True)
+    report = {"image": args.image, "digest": digest, "legs": list(args.legs),
+              "not_proven": blocked}
     try:
         for name in args.stages.split(","):
             if not name:
@@ -701,6 +871,8 @@ def main(argv=None):
         if not args.keep:
             docker("volume", "rm", "-f", args.volume, check=False)
     print("\nROLE IMAGE ORACLE REPORT " + json.dumps(report, indent=1, default=str), flush=True)
+    for name, reason in sorted(blocked.items()):
+        print(f"NOT PROVEN: leg {name} is blocked by {reason}", flush=True)
     print("ROLE IMAGE ORACLE PASS", flush=True)
     return 0
 
