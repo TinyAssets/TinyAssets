@@ -79,7 +79,7 @@ def test_dockerfile_builder_has_nodejs_for_npm():
 def test_dockerfile_final_stage_has_nodejs_runtime():
     """Final stage must ship nodejs so the codex CLI (Node.js binary) can run."""
     text = DOCKERFILE.read_text(encoding="utf-8")
-    # The final stage starts at 'FROM python:3.11-slim' (second FROM).
+    # The final stage starts at the second FROM.
     # Assert nodejs appears after the second FROM.
     froms = [i for i, line in enumerate(text.splitlines()) if line.startswith("FROM ")]
     assert len(froms) >= 2, "Expected at least 2 FROM stages"
@@ -148,6 +148,11 @@ def test_dockerfile_base_images_are_digest_pinned():
         if line.startswith("FROM ")
     ]
     assert from_lines, "Dockerfile must contain FROM lines"
+    base = (
+        "FROM mirror.gcr.io/library/python:3.11-slim@sha256:"
+        "a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0"
+    )
+    assert from_lines == [f"{base} AS builder", base]
     assert all("@sha256:" in line for line in from_lines), (
         "Dockerfile FROM images must be pinned by digest, not mutable tags"
     )
