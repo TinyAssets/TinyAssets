@@ -4282,12 +4282,13 @@ def main(
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
     if transport == "streamable-http":
-        # The credential broker process (S6), before anything that makes an
-        # outbound call: its engine children reach it through the same socket.
-        # No-op unless TINYASSETS_CREDENTIAL_BROKER=process.
-        from tinyassets.broker.supervisor import start_broker
+        # The PID1 bootstrap adopted the credential broker before retiring;
+        # nothing outbound may run without it, so refuse to serve instead.
+        from tinyassets.broker.supervisor import BrokerUidSplitRequired, get_supervisor
+        from tinyassets.storage import data_dir
 
-        _credential_broker = start_broker()  # noqa: F841
+        if get_supervisor(data_dir()) is None:
+            raise BrokerUidSplitRequired("serve through the PID1 bootstrap")
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
         # tools are available on EVERY served turn after a clean boot — no

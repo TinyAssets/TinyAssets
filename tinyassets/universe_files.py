@@ -126,9 +126,8 @@ def read_universe_file(
     """
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
-        # Selected, a symlinked root is refused rather than resolved (D60).
-        root_fd = fs.open_dir_nofollow(
-            root.absolute() if fs._reader_guards_selected() else root.resolve(strict=False))
+        # A symlinked root is refused rather than resolved (D60).
+        root_fd = fs.open_dir_nofollow(root.absolute())
         try:
             return fs.read_regular_file_beneath(root_fd, relpath, max_bytes=max_bytes)
         finally:

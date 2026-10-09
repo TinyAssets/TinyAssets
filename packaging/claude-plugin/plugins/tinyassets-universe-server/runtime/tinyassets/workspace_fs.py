@@ -590,19 +590,6 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
     return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
-def _reader_guards_selected() -> bool:
-    """Alias refusal and owner-identity walks ride the isolation switch.
-
-    Production holds legitimate same-owner multi-link files (interrupted brain
-    promotion, agent ``ln``, local git clones), and on the shared-uid jail no
-    cross-owner alias can be planted. So with the switch OFF a read behaves as
-    before the per-role uid split; ON, the dedicated-owner guards apply.
-    """
-    from tinyassets.broker.supervisor import broker_selected
-
-    return broker_selected()
-
-
 def _directory_owner_identity(fd: int) -> tuple[int, int] | None:
     """D60 label on a pinned owner root, assigned in privileged migration.
 
@@ -661,8 +648,7 @@ def _open_regular_beneath(
         raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
     parts = _split_relpath(relpath)
     current = dir_fd
-    guarded = _reader_guards_selected()
-    identity = _read_owner_identity(dir_fd) if guarded else None
+    identity = _read_owner_identity(dir_fd)
     if expected_identity is not None:
         if identity is not None and identity != expected_identity:
             raise UnsafePoolPath("read root does not match the admitted owner identity")
@@ -672,8 +658,6 @@ def _open_regular_beneath(
         for part in parts[:-1]:
             current = _open_child_dir(current, part)
             opened.append(current)
-            if not guarded:
-                continue
             child_identity = _directory_owner_identity(current)
             if child_identity is not None:
                 if identity is not None and child_identity != identity:
@@ -689,11 +673,6 @@ def _open_regular_beneath(
             raise UnsafePoolPath(
                 f"{str(relpath)!r} is not a regular file (mode {info.st_mode:#o}); "
                 "a workspace read never opens a device, a FIFO or a directory"
-            )
-        if guarded and info.st_nlink != 1:
-            raise UnsafePoolPath(
-                f"{str(relpath)!r} has {info.st_nlink} links; "
-                "a workspace read refuses aliased regular files"
             )
         if identity is not None and (info.st_uid, info.st_gid) != identity:
             raise UnsafePoolPath(

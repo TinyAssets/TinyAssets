@@ -1259,6 +1259,21 @@ def run_git(
 
     command = [git_binary, *options, *argv]
     _reject_secrets_in(command, env, extra_secrets)
+    from tinyassets import role_decoder
+
+    if role_decoder._bounded_client is not None:
+        from tinyassets.role_git import run as run_owner_git
+
+        if (launcher is not None or git_binary not in ('git', '/usr/bin/git') or pass_fds
+                or _INHERITED_FDS or _SCOPED_FDS.get() or preexec_fn is not None):
+            raise WorkspaceGitError(
+                'bad_argument', 'git cell descriptor/launcher mode not admitted')
+        completed = run_owner_git(argv, cwd=cwd, options=options, timeout_s=float(timeout_s))
+        stderr_scrubbed = scrub_text(_tail_text(completed.stderr), extra_secrets)
+        return GitResult(returncode=completed.returncode,
+                         stdout_tail=scrub_text(_tail_text(completed.stdout), extra_secrets),
+                         stderr_class=classify_stderr(stderr_scrubbed),
+                         stderr_scrubbed=stderr_scrubbed)
     run = launcher if launcher is not None else _default_launcher
     kwargs: dict[str, object] = {
         "cwd": str(cwd),

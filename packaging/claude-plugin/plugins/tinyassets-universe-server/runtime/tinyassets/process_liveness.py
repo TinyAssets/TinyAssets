@@ -96,34 +96,11 @@ def owner_state(base_path: str | Path, token: str) -> str:
     The file is the proof, and one owner can hold work in many places, so a
     probe that deleted it after reclaiming ONE thing would leave every other
     thing of that dead owner unprovable (Codex round 2, 2026-09-27).
-    """
-    if os.name == "posix":
-        return _readonly_owner_state(base_path, token)
 
-    from tinyassets.singleton_lock import _lock_fd, _unlock_fd
-
-    path = liveness_path(base_path, token)
-    if path is None or not path.is_file():
-        return UNKNOWN
-    try:
-        fd = os.open(str(path), os.O_RDWR)
-    except OSError:
-        return UNKNOWN
-    try:
-        if not _lock_fd(fd):
-            return ALIVE
-        _unlock_fd(fd)
-        return DEAD
-    finally:
-        os.close(fd)
-
-
-def _readonly_owner_state(base_path: str | Path, token: str) -> str:
-    """POSIX flock needs no write access; only contention proves life.
-
-    Pin the proof directory and refuse links/non-files before probing. A FIFO
-    must not block the broker, and an unrelated flock error must not authorize
-    another inference request. A replaced proof is unknown, never dead/alive.
+    POSIX flock needs no write access; only contention proves life. Pin the
+    proof directory and refuse links/non-files before probing. A FIFO must not
+    block the broker, and an unrelated flock error must not authorize another
+    inference request. A replaced proof is unknown, never dead/alive.
     """
     import errno
     import fcntl
