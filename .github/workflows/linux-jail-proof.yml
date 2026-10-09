@@ -12,10 +12,6 @@ name: linux-jail-proof
 #     (tinyassets/node_sandbox.py BwrapLauncher);
 #   * tests/test_jail_seccomp_profiles.py loads each named owner-cell seccomp
 #     profile into real bubblewrap and checks its syscall answers;
-#   * tests/test_native_metadata_jail.py runs native model discovery
-#     (tinyassets/providers/native_jsonrpc_discovery.py) in the real jail and
-#     proves its metadata child reads only its own launch credential snapshot --
-#     not a sibling launch's, and not the platform's own state;
 #   * tests/test_universe_tools_jail.py drives the universe agent's four tools
 #     (tinyassets/universe_tools.py, served by tinyassets/engine_mcp_server.py)
 #     through the real tool jail and proves: only its own universe at /u, no
@@ -96,8 +92,8 @@ on:
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
       - "tinyassets/providers/codex_provider.py"
-      # Native metadata discovery's own snapshot confinement.
-      - "tests/test_native_metadata_jail.py"
+      # Discovery cell confinement is proved by scripts/role_provider_cell_probe.py
+      # against the production image; the pre-cell jail test is retired.
       - "tinyassets/providers/native_jsonrpc_discovery.py"
       # The shared jail pieces, the cell seccomp profiles, the spawn point,
       # the router that binds the owning universe and the adapters.

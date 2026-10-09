@@ -217,7 +217,8 @@ def _exec_argv(cmd: list[str]) -> list[str]:
     """The argv the container execs, as its bash would split it."""
     import shlex
 
-    line = next(ln for ln in _user_script(cmd).splitlines() if ln.startswith("exec "))
+    script = cmd[-1] if "--oracle-venues" in cmd[-1] else _user_script(cmd)
+    line = next(ln for ln in script.splitlines() if ln.startswith("exec "))
     return shlex.split(line)[1:]
 
 
@@ -229,7 +230,7 @@ def test_required_runner_execs_the_gate_script_with_the_callers_arguments_unchan
     # The runner's command line arrives whole and in order; the only addition is
     # the short temp root outside the repo that the pytest mode also adds.
     assert _exec_argv(cmd) == [
-        "python", "scripts/ci_required_tests.py", *_SHARD_ARGS,
+        "python", "scripts/ci_required_tests.py", "--oracle-venues", *_SHARD_ARGS,
         "--pytest-arg=--basetemp=/tmp/b",
     ]
     assert "pytest -p no:cacheprovider" not in _user_script(cmd)
@@ -283,7 +284,7 @@ def test_required_runner_keeps_a_basetemp_the_caller_chose():
     cmd = _runner_command(
         "--out", "/o", runner_args=[*_SHARD_ARGS, "--pytest-arg=--basetemp=/tmp/x"],
     )
-    assert _user_script(cmd).count("--basetemp") == 1
+    assert cmd[-1].count("--basetemp") == 1
 
 
 def test_required_runner_refuses_every_weaker_venue():
