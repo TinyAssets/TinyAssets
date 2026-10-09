@@ -812,38 +812,35 @@ def test_a_full_channel_carries_every_verb_not_just_the_synthesized_get(tmp_path
     assert _verb_within_scopes("POST", exact.scopes) is False
 
 
-def test_a_full_deposit_moves_an_existing_connection(tmp_path):
-    """Rotating a key with a full ask used to leave the connection exact: the
-    mode was read only inside the create branch, so the owner read "full
-    access" and got the endpoints they already had."""
-    ledger = _ledger(tmp_path)
-    _create(ledger)
-    assert ledger.access_mode("conn-1") == ACCESS_EXACT
+def test_a_full_deposit_moves_an_existing_connection(base):  # noqa: F811
+    from tests.test_workspace_authority import (
+        GIT_HOST,
+        _deposit,
+        _login,
+        _make_universe,
+    )
+    from tests.test_workspace_authority import (
+        GITHUB_ENDPOINT as endpoint,
+    )
+    from tinyassets.api.http_connection import connect_http
 
-    endpoints_json, scopes_json = ledger.policy_json("conn-1")
-    assert ledger.set_access_mode(
-        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
-        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json,
-    ) is True
-    assert ledger.access_mode("conn-1") == ACCESS_FULL
-
-    import inspect
-
-    from tinyassets.api import http_connection as hc
-
-    # The public lifecycle wrapper delegates to the implementation whose
-    # existing-connection mode transition these assertions protect.
-    wrapper = inspect.getsource(hc.connect_http)
-    assert "_gesture_lock(" in wrapper
-    # The owner's universe and payload reach the implementation. Asserted by
-    # argument rather than by the whole call's literal text, so a new
-    # pass-through parameter is not a false failure.
-    assert "return _connect_http(" in wrapper
-    assert "universe_id=universe_id" in wrapper
-    assert "payload=payload" in wrapper
-    body = inspect.getsource(hc._connect_http)
-    assert "set_access_mode(" in body
-    assert body.index("set_access_mode(") < body.index("Idempotent grant bound")
+    _make_universe(base, "u-rotate", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-rotate")
+    ledger = _ledger(base, "alice")
+    connection_id = deposited["connection_id"]
+    assert ledger.access_mode(connection_id) == ACCESS_EXACT
+    rotated = connect_http(universe_id="u-rotate", payload=json.dumps({
+        "destination": "github", "secret": "new-owner-key",
+        "auth_scheme": "bearer", "access": "full",
+        "allowed_endpoints": [endpoint], "git_host": GIT_HOST,
+    }))
+    assert rotated.get("status") == "provisioned", rotated
+    assert rotated["connection_id"] == connection_id
+    assert ledger.access_mode(connection_id) == ACCESS_FULL
+    view = ledger.get_connection_view(connection_id)
+    assert all(_verb_within_scopes(verb, view.scopes, view.access_mode)
+               for verb in _SSRF_ALLOWED_METHODS)
 
 
 # ---------------------------------------------------------------------------
@@ -874,7 +871,6 @@ def test_a_full_yes_cannot_land_on_a_host_added_while_the_tab_was_open(base):  #
         GITHUB_ENDPOINT as WA_ENDPOINT,
     )
     from tests.test_workspace_authority import (
-        _connection,
         _deposit,
         _login,
         _make_universe,
@@ -896,6 +892,7 @@ def test_a_full_yes_cannot_land_on_a_host_added_while_the_tab_was_open(base):  #
         "endpoints_json": read_at_ask_time[0],
         "scopes_json": read_at_ask_time[1],
         "access_mode": "exact",
+        "incarnation": ledger.incarnation(connection_id),
     }
 
     # (2) another device widens, exactly. The mode does not move.
@@ -919,11 +916,11 @@ def test_a_full_yes_cannot_land_on_a_host_added_while_the_tab_was_open(base):  #
         "policy_snapshot": snapshot,
     }))
     assert answered.get("error") == "connection_conflict", answered
-    assert "did not see" in str(answered.get("detail", ""))
+    assert answered["resource"] == "connection"
     assert ledger.access_mode(connection_id) == "exact", (
         "a host the owner never read was granted in full"
     )
-    hosts = {ep.host for ep in _connection("u-1", connection_id).allowed_endpoints}
+    hosts = {ep.host for ep in ledger.get_connection(connection_id).allowed_endpoints}
     assert "api.other.example" in hosts
 
     # Re-asking is what lands it: the new tab names both hosts.
@@ -937,6 +934,7 @@ def test_a_full_yes_cannot_land_on_a_host_added_while_the_tab_was_open(base):  #
             "endpoints_json": fresh[0],
             "scopes_json": fresh[1],
             "access_mode": "exact",
+            "incarnation": ledger.incarnation(connection_id),
         },
     }))
     assert landed["status"] == "extended", landed
@@ -1152,3 +1150,27 @@ def test_the_ask_records_which_deposit_it_is_about(base):  # noqa: F811
     )
     assert snapshot["incarnation"] == ledger.incarnation(deposited["connection_id"])
     assert snapshot["incarnation"]
+
+
+@pytest.mark.parametrize("snapshot", [None, {}, {
+    "access_mode": "exact", "endpoints_json": "[]", "scopes_json": "[]",
+}])
+def test_full_answer_with_incomplete_snapshot_refuses_before_broker(
+    base, monkeypatch, snapshot,  # noqa: F811
+):
+    from tests.test_workspace_authority import _deposit, _login, _make_universe
+    from tinyassets.api.http_connection import extend_http
+    from tinyassets.broker import http_policy
+
+    _make_universe(base, "u-incomplete", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-incomplete")
+    def forbidden(*args, **kwargs):
+        pytest.fail("incomplete approval reached broker mutation")
+    monkeypatch.setattr(http_policy, "update_policy", forbidden)
+    result = extend_http(universe_id="u-incomplete", payload=json.dumps({
+        "destination": "github", "endpoints": [], "scopes": [], "access": "full",
+        "policy_snapshot": snapshot,
+    }))
+    assert result == {"error": "connection_conflict", "resource": "connection"}
+    assert _ledger(base, "alice").access_mode(deposited["connection_id"]) == ACCESS_EXACT

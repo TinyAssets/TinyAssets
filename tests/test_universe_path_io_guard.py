@@ -27,7 +27,12 @@ _REPO = Path(__file__).resolve().parent.parent
 _PKG = _REPO / "tinyassets"
 
 #: The helpers themselves: the only modules allowed to do the raw I/O.
-_EXEMPT = {"tinyassets/universe_files.py", "tinyassets/workspace_fs.py"}
+_EXEMPT = {
+    "tinyassets/universe_files.py", "tinyassets/workspace_fs.py",
+    # Lower-level owner-inode creation/publication used by universe_files.
+    # It pins every parent, validates custody, and never follows symlinks.
+    "tinyassets/role_content.py",
+}
 
 _TOUCHES_UNIVERSE = re.compile(
     r"universe_dir|universe_path|\budir\b|_universe_dir|data_dir\(\)|_base_path\(\)"

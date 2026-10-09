@@ -1140,7 +1140,8 @@ def bash(
         from tinyassets.ta_capabilities import JailBridge
 
         ended = threading.Event()
-        with JailBridge(_halting(ta_dispatch, stop, ended)) as bridge, for_launch(
+        with JailBridge(_halting(ta_dispatch, stop, ended),
+                        universe_dir=universe_dir) as bridge, for_launch(
             getattr(ta_dispatch, "extension_backend", None)
         ) as git_prefix:
             if bridge.extension_root is not None:

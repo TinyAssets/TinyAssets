@@ -139,6 +139,116 @@ class RegistryTransportTests(unittest.TestCase):
             self.assertEqual(upstream.fileno(), -1)
             self.assertEqual(relay.fileno(), -1)
 
+    def test_closed_client_tail_is_charged_and_upstream_must_drain(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget()
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.sendall(b"request")
+            self.assertEqual(server.recv(1024), b"request")
+            server.sendall(b"response")
+            self.assertEqual(client.recv(1024), b"response")
+            client.close()
+            self.assertEqual(server.recv(1024), b"")  # client EOF was propagated
+            server.sendall(b"terminal TLS record")
+            # The discarded record is accounted even though nobody receives it.
+            import time
+            end = time.monotonic() + 1
+            while transfer.snapshot().bytes_transferred < 34 and time.monotonic() < end:
+                time.sleep(0.005)
+            self.assertEqual(transfer.snapshot().bytes_transferred, 34)
+            self.assertIsNone(transfer.snapshot().failure)
+            self.assertTrue(runner.is_alive(), "cannot finish before upstream EOF")
+            server.shutdown(socket.SHUT_WR)
+            result = self.finish(runner, transfer)
+            self.assertEqual(result.bytes_transferred, 34)
+
+    def test_closed_client_drain_cannot_hide_byte_limit(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget(max_bytes=3)
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.close()
+            self.assertEqual(server.recv(1024), b"")
+            server.sendall(b"tail exceeds budget")
+            result = self.finish(runner, transfer, "byte_limit")
+            self.assertEqual(result.bytes_transferred, 3)
+
+    def test_client_read_shutdown_without_eof_remains_transport_failure(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget()
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.shutdown(socket.SHUT_RD)
+            server.sendall(b"undeliverable response")
+            result = self.finish(runner, transfer, "transport_failed")
+            self.assertEqual(result.bytes_transferred, 22)
+
+    def close_registry_relay(self, runner, transfer):
+        from tinyassets.workspace_registry_relay import RegistryRelay
+
+        # Transport is real; only the unrelated sidecar-path cleanup is absent.
+        relay = object.__new__(RegistryRelay)
+        relay.budget, relay._closed = transfer, False
+        relay._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        relay._thread = threading.Thread(target=lambda: None)
+        relay._thread.start()
+        relay._workers, relay._lock = [runner], threading.Lock()
+        relay.path, relay._identity = None, None
+        with patch('tinyassets.workspace_registry_relay.role_relays.remove'):
+            relay.close()
+        return relay
+
+    def test_retirement_charges_maximum_when_a_tunnel_has_not_drained(self):
+        client, relay = self.pair()
+        upstream, _server = self.pair()
+        transfer = budget(timeout_s=10)
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            closed = self.close_registry_relay(runner, transfer)
+        self.assertEqual(closed.failure, 'transport_failed')
+        self.assertEqual(closed.charge, transfer.max_bytes)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(closed.snapshot.active, 0)
+
+    def test_retirement_waits_for_clean_tail_and_charges_actual_bytes(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget()
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.close()
+            self.assertEqual(server.recv(1024), b"")
+            server.sendall(b'charged tail')
+            finish = threading.Timer(0.05, server.shutdown, args=(socket.SHUT_WR,))
+            finish.start()
+            try:
+                closed = self.close_registry_relay(runner, transfer)
+            finally:
+                finish.join()
+        self.assertIsNone(closed.failure)
+        self.assertEqual(closed.charge, len(b'charged tail'))
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(closed.snapshot.active, 0)
+
     def test_byte_limit_stops_transport_without_overreading(self):
         client, relay = self.pair()
         upstream, server = self.pair()

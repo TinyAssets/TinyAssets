@@ -393,10 +393,9 @@ def _answered_policy_snapshot(document: dict) -> dict[str, str] | None:
     }
     if not all(isinstance(v, str) and v for v in snapshot.values()):
         return None
-    # The incarnation is OPTIONAL within a snapshot that has the rest: a row
-    # raised before it existed still gets the ask/answer drift check. Requiring
-    # it would silently downgrade those rows to no snapshot at all, which is
-    # the weaker guarantee wearing the stronger one's name.
+    # Preserve an older snapshot as an incomplete approval rather than silently
+    # downgrading it to no snapshot. The mutation boundary requires its deposit
+    # incarnation and asks for fresh approval when it is absent.
     incarnation = raw.get("incarnation")
     snapshot["incarnation"] = incarnation if isinstance(incarnation, str) else ""
     return snapshot  # type: ignore[return-value]
@@ -632,7 +631,7 @@ def _deposit_http(*, uid, actor, destination, secret):
 
 def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destination,
                   connection_id, grant_id, scheme, credential_ref, git_host,
-                  requested_endpoints, http_scopes):
+                  requested_endpoints, http_scopes, access_mode=ACCESS_EXACT):
     """Pure existing-policy conflict checks, shared with broker preparation/commit."""
     legacy_scope_upgrade = False
     endpoints_extend = False
@@ -707,8 +706,16 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
             and not scopes_match
             and tuple(resource.scopes) == ("http",)
         )
+        # Full channel access already authorizes every supported HTTP verb.
+        # A same-policy key rotation may therefore widen its verb projection,
+        # while owner, destination, endpoints and git host must still match.
+        full_scope_upgrade = (
+            access_mode == ACCESS_FULL and not non_scope_mismatch
+            and set(resource.scopes) <= set(http_scopes)
+        )
         if non_scope_mismatch or (
             not scopes_match and not legacy_scope_upgrade and not endpoints_extend
+            and not full_scope_upgrade
         ):
             return {"error": "connection_conflict", "resource": "connection"}
     if existing_grant is not None and (
@@ -1602,6 +1609,10 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     from tinyassets.broker.http_policy import read_policy, update_policy
 
     full = preview.get("access") == ACCESS_FULL and not redirect_extension
+    if full and "policy_snapshot" in document:
+        answered = _answered_policy_snapshot(document)
+        if answered is None or not answered.get("incarnation"):
+            return {"error": "connection_conflict", "resource": "connection"}
     expected = ((_answered_policy_snapshot(document) if full else expected_redirect)
                 or {"access_mode": preview["expected_access_mode"],
                     "endpoints_json": preview["stored_json"],

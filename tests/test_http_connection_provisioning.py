@@ -823,11 +823,12 @@ def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
     assert recs[0]["token"] == "founder-secret"
 
 
-def test_inert_self_heal_after_grant_fault(base: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A mid-provision fault (the grant write raises after the vault + connection
-    landed) leaves only INERT partial state — a connection with no grant, which
-    cannot authorize a call. The deterministic-id retry completes it (Codex review
-    finding #1: the claim is inert-self-heal, not all-or-nothing)."""
+def test_atomic_broker_commit_rolls_back_grant_fault_then_retries(
+    base: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The broker commits connection and grant together. A grant fault rolls
+    back both ledger rows; the owner's vault deposit remains retryable.
+    """
     from tinyassets.storage import outbound_connections as oc
 
     udir = _make_universe(base, "u-heal", admin="founder")
@@ -844,19 +845,19 @@ def test_inert_self_heal_after_grant_fault(base: Path, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(oc.ConnectionLedger, "grant_connection", _flaky_grant)
 
-    # First call: vault + connection land, grant raises. The fault surfaces, not
-    # a usable connection.
-    with pytest.raises(RuntimeError):
+    # The vault lands; the broker transaction rolls back both ledger writes.
+    from tinyassets.broker.client import BrokerRefused
+
+    with pytest.raises(BrokerRefused, match="credential broker connect refused"):
         _connect("u-heal")
     from tinyassets.api.http_connection import _ids
 
     conn_id, grant_id = _ids(universe_id="u-heal", destination="webhook:acme")
     ledger = _ledger(base, "founder")
-    assert ledger._get_connection_resource(conn_id) is not None  # inert connection
+    assert ledger._get_connection_resource(conn_id) is None  # rolled back with the grant
     assert ledger.get_grant(grant_id) is None  # no grant → cannot authorize a call
 
-    # Retry (same deterministic ids): reuses the inert connection, completes the
-    # grant. Now usable, exactly once.
+    # Retry (same deterministic ids) commits both rows, exactly once.
     healed = _connect("u-heal")
     assert healed["status"] == "provisioned"
     assert healed["connection_id"] == conn_id
@@ -897,7 +898,9 @@ def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
     # 1. Founder's first call: the vault deposit lands (owner recorded), then
     #    create_connection raises. The fault surfaces; no connection row exists.
     _login("founder")
-    with pytest.raises(RuntimeError):
+    from tinyassets.broker.client import BrokerRefused
+
+    with pytest.raises(BrokerRefused, match="credential broker connect refused"):
         _connect("u-orphan", secret="founder-secret")
 
     from tinyassets.api.http_connection import _ids
@@ -1306,7 +1309,7 @@ def test_http_cap_migration_lock_failure_preserves_cap_then_retries(
         return conn
 
     monkeypatch.setattr(ConnectionLedger, "_connect", short_timeout)
-    with sqlite3.connect(base / "outbound.db") as writer:
+    with sqlite3.connect(base / ".broker" / "outbound.db") as writer:
         writer.execute("BEGIN IMMEDIATE")
         with pytest.raises(sqlite3.OperationalError, match="locked"):
             ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
@@ -1336,7 +1339,7 @@ def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
         return conn
 
     monkeypatch.setattr(ConnectionLedger, "_connect", traced_connect)
-    with sqlite3.connect(base / "outbound.db") as writer:
+    with sqlite3.connect(base / ".broker" / "outbound.db") as writer:
         writer.execute("BEGIN IMMEDIATE")
         reopened = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
         assert reopened.get_grant(grant_id).unprompted_action_cap is None

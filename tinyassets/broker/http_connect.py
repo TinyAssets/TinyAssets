@@ -76,7 +76,8 @@ def local_operation(ledger, *, principal, command_center, document):
             actor=principal, uid=command_center, destination=destination,
             connection_id=connection_id, grant_id=grant_id, scheme=scheme,
             credential_ref="vault://http/" + destination, git_host=host,
-            requested_endpoints=policy["endpoints"], http_scopes=tuple(policy["scopes"]))
+            requested_endpoints=policy["endpoints"], http_scopes=tuple(policy["scopes"]),
+            access_mode=access)
         if "error" in plan:
             return plan
         if document["action"] == "prepare":

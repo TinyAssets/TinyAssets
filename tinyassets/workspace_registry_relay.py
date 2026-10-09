@@ -58,8 +58,6 @@ class RegistryRelay:
         if self._closed:
             return
         self._closed = True
-        before = self.budget.snapshot()
-        self.budget.cancel()
         self._server.close()
         self._thread.join(timeout=1)
         end = time.monotonic() + 2
@@ -67,9 +65,17 @@ class RegistryRelay:
             workers = tuple(self._workers)
         for worker in workers:
             worker.join(timeout=max(0, end - time.monotonic()))
+        # Give completed clients' charged upstream tails a bounded clean drain.
+        # Cancellation of a still-active tunnel is uncertain termination, even
+        # when its worker responds promptly: retain the maximum reservation.
+        before = self.budget.snapshot()
+        self.budget.cancel()
+        end = time.monotonic() + 0.25
+        for worker in workers:
+            worker.join(timeout=max(0, end - time.monotonic()))
         role_relays.remove(self.path, self._identity)
         self.snapshot = self.budget.snapshot()
-        self.failure = before.failure
+        self.failure = before.failure or ('transport_failed' if before.active else None)
         if any(w.is_alive() for w in workers) or self.snapshot.active:
             self.failure = self.failure or 'transport_failed'
         self.charge = (self.budget.max_bytes if self.failure
