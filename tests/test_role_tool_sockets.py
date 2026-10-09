@@ -22,7 +22,6 @@ def test_other_cell_classes_cannot_receive_tool_socket_descriptors():
 
 @pytest.mark.skipif(os.name != 'posix', reason='Linux socket ACL descriptors')
 def test_pinned_socket_acl_names_only_the_owner_and_preserves_inode(tmp_path, monkeypatch):
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     monkeypatch.setattr(role_modes, 'WORK_GID', os.getgid())
     center = tmp_path / 'alice'
     center.mkdir()
@@ -51,7 +50,6 @@ def test_pinned_socket_acl_names_only_the_owner_and_preserves_inode(tmp_path, mo
 
 @pytest.mark.skipif(os.name != 'posix', reason='Linux relay socket descriptors')
 def test_replaced_capability_socket_is_not_unlinked_on_cleanup(tmp_path, monkeypatch):
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     monkeypatch.setattr(role_modes, 'WORK_GID', os.getgid())
     center = tmp_path / 'alice'
     center.mkdir()
@@ -65,7 +63,6 @@ def test_replaced_capability_socket_is_not_unlinked_on_cleanup(tmp_path, monkeyp
 
 
 def test_socket_paths_cannot_be_supplied_to_unscoped_capability_bridge(monkeypatch):
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     with pytest.raises(ValueError, match='command center'):
         with JailBridge(lambda value: value):
             pytest.fail('unscoped bridge started')

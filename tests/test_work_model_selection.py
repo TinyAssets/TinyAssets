@@ -173,7 +173,8 @@ def test_http_work_refuses_changed_or_unavailable_selection(
         if failure == "stale_catalogue":
             snapshot = replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=6))
         elif failure == "revoked_source":
-            ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path).revoke_grant("http_grant_" + "a" * 32)
+            ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
+            ledger.revoke_grant("http_grant_" + "a" * 32)
         return snapshot
 
     monkeypatch.setattr(work_model_selection, "prepare_work_model_snapshot", prepare)

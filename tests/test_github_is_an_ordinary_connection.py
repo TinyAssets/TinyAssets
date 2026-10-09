@@ -345,7 +345,8 @@ def _connect_forge(base, *, git_host=None):
 def _stored(base, connection_id):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    return ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)._get_connection_resource(connection_id)
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    return ledger._get_connection_resource(connection_id)
 
 
 def test_the_per_service_git_host_table_is_gone():

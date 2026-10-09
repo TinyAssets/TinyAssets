@@ -13,7 +13,6 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX broker metadat
 @pytest.fixture
 def base(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
     return tmp_path
 
@@ -53,9 +52,3 @@ def test_failed_group_assignment_preserves_existing_metadata_and_removes_only_te
     assert os.path.samestat(path.stat(), before[1])
     assert list(path.parent.iterdir()) == [path]
 
-
-def test_unsplit_registration_retains_private_single_uid_mode(base, monkeypatch):
-    monkeypatch.delenv("TINYASSETS_CREDENTIAL_BROKER")
-    register("legacy")
-    path = base / "alice/provider_definitions.json"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600

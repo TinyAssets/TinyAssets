@@ -13,7 +13,6 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux role rela
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
     monkeypatch.setattr(role_modes, "WORK_GID", os.getgid())
     monkeypatch.setattr(role_modes, "DAEMON_UID", os.getuid())
     (tmp_path / "alice").mkdir()

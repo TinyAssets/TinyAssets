@@ -457,7 +457,8 @@ def test_grant_revoke_fails_closed_before_session(monkeypatch, tmp_path):
     universe = _seed_binding(tmp_path, monkeypatch)
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path).revoke_grant(_GRANT_ID)
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
+    ledger.revoke_grant(_GRANT_ID)
     proxy = _FakeProxy({})
     with pytest.raises(rv.RealtimeVoiceError) as caught:
         asyncio.run(

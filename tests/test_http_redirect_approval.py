@@ -126,7 +126,8 @@ def test_repair_covers_rollback_rows_and_never_reuses_previous_identity(base):
     reopened = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     replacement_token = reopened.incarnation(cid)
     assert replacement_token and replacement_token != original_token
-    assert ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).incarnation(cid) == replacement_token
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    assert ledger.incarnation(cid) == replacement_token
     refused = answer_request(
         universe_id="u-1", payload={"request_id": asked["request_id"], "values": {}}
     )

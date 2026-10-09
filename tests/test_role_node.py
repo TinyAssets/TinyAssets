@@ -11,7 +11,6 @@ pytestmark = pytest.mark.role_split
 
 
 def test_selected_node_requires_scope_before_any_local_spawn(monkeypatch):
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     def forbidden(*args, **kwargs):
         pytest.fail('selected owner node fell back to a daemon child')
     monkeypatch.setattr(node_sandbox.subprocess, 'Popen', forbidden)

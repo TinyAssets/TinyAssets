@@ -1283,7 +1283,8 @@ def test_http_cap_migration_concurrent_opens(base: Path) -> None:
 
     def open_ledger(_index: int) -> Any:
         barrier.wait(timeout=10)
-        return ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).get_grant(grant_id)
+        ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+        return ledger.get_grant(grant_id)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         grants = list(pool.map(open_ledger, range(8)))
@@ -1314,7 +1315,8 @@ def test_http_cap_migration_lock_failure_preserves_cap_then_retries(
             (grant_id,),
         ).fetchone()[0]
         assert json.loads(cap)["name"] == "http_requests"
-    assert ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).get_grant(grant_id).unprompted_action_cap is None
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    assert ledger.get_grant(grant_id).unprompted_action_cap is None
 
 
 def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(

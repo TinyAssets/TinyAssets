@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from tests.test_broker_capabilities import document
 from tests.support.broker_ipc import discovery  # noqa: F401
+from tests.test_broker_capabilities import document
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.broker.capabilities import capability_operation
 from tinyassets.broker.client import BrokerRefused

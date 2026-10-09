@@ -110,7 +110,6 @@ def test_selected_workspace_creator_requires_owner_cell(monkeypatch, tmp_path):
     from tinyassets import role_decoder, universe_tools
     from tinyassets.providers.provider_jail import ensure_agent_workspace
 
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     monkeypatch.setattr(role_decoder, '_bounded_client', None)
     with pytest.raises(universe_tools.UniverseToolError, match='bounded owner launcher'):
         ensure_agent_workspace(tmp_path)

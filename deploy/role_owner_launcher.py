@@ -191,10 +191,9 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
     from hashlib import sha256
 
     sys.path.insert(0, '/app')
+    from tinyassets.broker.supervisor import BrokerSupervisor, _protect_daemon
     from tinyassets.owner_launcher_client import OwnerLauncherClient
     from tinyassets.role_decoder import install_bounded_client
-
-    from tinyassets.broker.supervisor import BrokerSupervisor, _protect_daemon
 
     _protect_daemon()
     proof = secrets.token_urlsafe(32)

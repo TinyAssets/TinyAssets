@@ -228,7 +228,8 @@ def test_app_lists_and_removes_without_llm(rig, monkeypatch):
     )
     assert status == 200, result
     assert result["status"] == "removed"
-    assert ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).get_connection(conn["connection_id"]) is None
+    ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
+    assert ledger.get_connection(conn["connection_id"]) is None
 
 
 def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
@@ -238,9 +239,8 @@ def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
         "/app/connections", identity=_user("foreign"), monkeypatch=monkeypatch
     )
     assert status == 403, doc
-    assert (
-        ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).get_connection(conn["connection_id"]) is not None
-    )
+    ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
+    assert ledger.get_connection(conn["connection_id"]) is not None
 
 
 def test_cross_origin_cannot_disconnect(rig, monkeypatch):
@@ -299,9 +299,8 @@ def test_old_remove_request_cannot_delete_replacement(rig):
         universe_id="u-owner", payload={"request_id": asked["request_id"], "values": {}}
     )
     assert answered.get("error") == "connection_changed", answered
-    assert (
-        ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).get_connection(conn["connection_id"]) is not None
-    )
+    ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
+    assert ledger.get_connection(conn["connection_id"]) is not None
 
 
 def post_connections(body, *, identity, monkeypatch, origin="https://tinyassets.io"):

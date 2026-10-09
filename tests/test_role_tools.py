@@ -12,7 +12,6 @@ pytestmark = pytest.mark.role_split
 
 
 def test_selected_tool_requires_bounded_launcher(monkeypatch, tmp_path):
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     monkeypatch.setattr(role_decoder, '_bounded_client', None)
     def forbidden(*args, **kwargs):
         pytest.fail('selected tool attempted a daemon subprocess')
@@ -22,7 +21,6 @@ def test_selected_tool_requires_bounded_launcher(monkeypatch, tmp_path):
 
 
 def test_selected_tool_refuses_unadmitted_sockets_before_owner_resolution(monkeypatch, tmp_path):
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
     for socket_kind in ('ta_socket', 'egress_socket'):
         with pytest.raises(universe_tools.UniverseToolError, match='socket forwarding'):

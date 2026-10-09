@@ -521,7 +521,8 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
-    resource = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)._get_connection_resource(connection_id)
+    ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)
+    resource = ledger._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
     bundle = _vault_bundle(app)
     assert bundle.token_url == f"https://{TOKEN}/token"
@@ -641,34 +642,6 @@ def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp
     assert failure["provider_detail"] == (
         "HTTP 400: invalid_grant - refresh token already used")
     assert provider.api_calls == []  # nothing was sent on a dead authorization
-
-
-def test_the_failure_record_crosses_the_proxy_boundary_and_maps_to_auth():
-    from tinyassets.exceptions import ProviderAuthenticationError
-    from tinyassets.storage.outbound_connections import (
-        ConnectionAuthorizationError,
-        _ProxyChannel,
-    )
-
-    class _Wire:
-        def __init__(self):
-            self.sent = []
-
-        def send_bytes(self, payload):
-            self.sent.append(payload)
-
-        def recv_bytes(self, _limit):
-            return json.dumps({"ok": False, "error_type": "ConnectionAuthorizationError",
-                               "message": "x", "failure": {
-                                   "stage": "connection", "class": "auth",
-                                   "provider_detail": "HTTP 400: invalid_grant"}}).encode()
-
-    channel = _ProxyChannel(_Wire(), process=None)
-    with pytest.raises(ConnectionAuthorizationError) as caught:
-        channel.request("POST", {"url": "https://api.example.net/x"})
-    assert caught.value.failure == {"stage": "connection", "class": "auth",
-                                    "provider_detail": "HTTP 400: invalid_grant"}
-    assert ProviderAuthenticationError.failure_class == "auth_invalid"
 
 
 # --------------------------------------------------------------------------- #
