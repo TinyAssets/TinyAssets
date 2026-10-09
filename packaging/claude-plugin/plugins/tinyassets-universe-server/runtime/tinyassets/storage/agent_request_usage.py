@@ -72,12 +72,13 @@ if hasattr(os, "register_at_fork"):
 
 
 class ParentUsageLease:
-    def __init__(self, base, token):
+    def __init__(self, base, token, *, broker_readable=False):
         from tinyassets.process_liveness import hold_liveness
 
         self.token = token
         with _PARENT_LEASES_LOCK:
-            _PARENT_LEASES[token] = hold_liveness(base, token)
+            _PARENT_LEASES[token] = (hold_liveness(base, token, broker_readable=True)
+                                     if broker_readable else hold_liveness(base, token))
 
     def close(self):
         from tinyassets.singleton_lock import release_singleton_lock
@@ -154,7 +155,12 @@ class InferenceUsageStopped(ProviderAuthorityHeldError):
 def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, verb, request,
                             envelope, operation_id):
     """Trusted factory binding; wire fields cannot turn accounting off or buy capacity."""
-    store = UsageStore(base)
+    # Only the broker's relocated ledger lives under .broker/; any other ledger
+    # keeps the daemon's own accounting database.
+    db_path = getattr(ledger, "_db_path", None)
+    relocated = (db_path is not None and
+                 Path(db_path).resolve() == Path(base).resolve() / ".broker" / "outbound.db")
+    store = UsageStore(base, broker_ledger=ledger if relocated else None)
     root = (store.base / universe).resolve()
     if root.parent != store.base:
         raise ProviderAuthorityHeldError("inference accounting command center changed")
@@ -198,12 +204,23 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
 class UsageStore:
     """One trusted data root. No database path is ever read from a wire envelope."""
 
-    def __init__(self, base_path):
+    def __init__(self, base_path, *, broker_ledger=None):
+        from tinyassets.broker.supervisor import broker_selected
+
         self.base = Path(base_path).resolve()
-        self.path = self.base / DB_FILENAME
+        self._ledger = broker_ledger
+        self._remote = broker_ledger is None and broker_selected()
+        self.path = broker_ledger._db_path if broker_ledger is not None else self.base / DB_FILENAME
+
+    def _rpc(self, scope, action, **fields):
+        from tinyassets.broker.usage import operation
+
+        return operation(self.base, scope, {"action": action, **fields})
 
     @contextmanager
     def _connection(self, *, write=False):
+        if self._remote:
+            raise ProviderAuthorityHeldError("daemon accounting requires broker IPC")
         with closing(sqlite3.connect(self.path, timeout=10, isolation_level=None)) as conn:
             conn.row_factory = sqlite3.Row
             for statement in _SCHEMA:
@@ -229,22 +246,34 @@ class UsageStore:
             "deadline",
         )}
         scope = (budget.owner, budget.universe, usage_id)
-        token = owner_token(self.base)
+        token = owner_token(self.base, broker_readable=self._remote)
         parent_token = "request_" + usage_id
-        lease = ParentUsageLease(self.base, parent_token)
+        lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
         try:
-            with self._connection(write=True) as conn:
-                conn.execute("INSERT INTO agent_request_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                             (*scope, json.dumps(policy), json.dumps(budget._failures),
-                              token, parent_token, int(budget._closed),
-                              budget.wall_clock().astimezone(timezone.utc).isoformat()))
-                self._save(conn, scope, budget)
+            if self._remote:
+                self._rpc(scope, "create", policy=policy, failures=budget._failures,
+                          attempts=[asdict(a) for a in budget._attempts], closed=budget._closed,
+                          owner_token=token, parent_token=parent_token)
+            else:
+                self._insert(scope, budget, token, parent_token)
         except BaseException:
             lease.close()
             raise
         if budget._closed:
             lease.close()
         return usage_id, lease
+
+    def _insert(self, scope, budget, token, parent_token):
+        policy = {name: getattr(budget, name) for name in (
+            "max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
+            "deadline",
+        )}
+        with self._connection(write=True) as conn:
+            conn.execute("INSERT INTO agent_request_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (*scope, json.dumps(policy), json.dumps(budget._failures),
+                          token, parent_token, int(budget._closed),
+                          budget.wall_clock().astimezone(timezone.utc).isoformat()))
+            self._save(conn, scope, budget)
 
     def _load(self, conn, scope, *, clock=time.monotonic, wall_clock=None):
         from tinyassets.process_liveness import ALIVE, owner_state
@@ -290,6 +319,14 @@ class UsageStore:
     def mutate(self, scope, operation, *args, clock=time.monotonic, wall_clock=None, **kwargs):
         from tinyassets.request_budget import RequestBudgetExceeded
 
+        if self._remote:
+            from tinyassets.broker.usage import mutation_document
+
+            if (operation == "reserve"
+                    and (kwargs.get("owner"), kwargs.get("universe")) != scope[:2]):
+                raise ProviderAuthorityHeldError("parent request budget scope changed")
+            document = mutation_document(operation, args, kwargs)
+            return self._rpc(scope, **document)["value"]
         error = None
         with self._connection(write=True) as conn:
             budget = self._load(conn, scope, clock=clock, wall_clock=wall_clock)
@@ -304,6 +341,8 @@ class UsageStore:
         return result
 
     def receipt(self, scope, *, clock=time.monotonic, wall_clock=None):
+        if self._remote:
+            return self._rpc(scope, "receipt")["receipt"]
         # Reconcile a provably abandoned dispatch conservatively; no replay.
         with self._connection(write=True) as conn:
             budget = self._load(conn, scope, clock=clock, wall_clock=wall_clock)
@@ -311,6 +350,8 @@ class UsageStore:
             return {**budget.receipt(), "usage_id": scope[2]}
 
     def link(self, scope, kind, subject_id):
+        if self._remote:
+            return self._rpc(scope, "link", kind=kind, subject_id=subject_id)["value"]
         if kind not in {"turn", "run"} or not isinstance(subject_id, str) or not subject_id:
             raise ValueError("invalid inference usage link")
         with self._connection(write=True) as conn:
@@ -320,6 +361,9 @@ class UsageStore:
                          (*scope, kind, subject_id))
 
     def for_subject(self, owner, universe, kind, subject_id):
+        if self._remote:
+            return self._rpc((owner, universe, ""), "for_subject",
+                             kind=kind, subject_id=subject_id)["receipts"]
         with self._connection() as conn:
             ids = [row[0] for row in conn.execute(
                 "SELECT usage_id FROM agent_request_usage_links "
@@ -355,25 +399,52 @@ class UsageStore:
             if (definition.owner_user_id != scope[0] or definition.ref != grant_id
                     or definition.access_method != "api_key_http"):
                 raise ValueError("source grant mismatch")
-            uri = (self.base / "outbound.db").as_uri() + "?mode=ro"
-            with closing(sqlite3.connect(uri, uri=True)) as ledger:
-                grant = ledger.execute(
-                    "SELECT 1 FROM outbound_connection_grants g "
-                    "JOIN outbound_connections c ON g.connection_id=c.connection_id "
-                    "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
-                    "AND c.owner_user_id=? AND g.universe_id=? "
-                    "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
-                    (grant_id, connection_id, scope[0], scope[0], scope[1]),
-                ).fetchone()
-            if grant is None:
-                raise ValueError("source grant unavailable")
+            self._validate_source_grant(scope, grant_id, connection_id)
         except (OSError, ValueError, TypeError, KeyError, StopIteration, sqlite3.Error) as exc:
             raise ProviderAuthorityHeldError(
                 "inference usage reservation does not match its admitted source"
             ) from exc
 
+    def _validate_source_grant(self, scope, grant_id, connection_id):
+        from tinyassets.broker.supervisor import broker_selected
+
+        if self._ledger is not None:
+            from tinyassets.broker.ledger_queries import GRANTED_RESOURCE, local_query
+
+            local_query(self._ledger, query=GRANTED_RESOURCE, principal=scope[0],
+                        command_center=scope[1], grant_id=grant_id, connection_id=connection_id)
+            return
+        if broker_selected():
+            from tinyassets.broker.ledger_queries import granted_resource_row
+
+            try:
+                row = granted_resource_row(self.base, principal=scope[0],
+                                           command_center=scope[1], grant_id=grant_id)
+                if row["connection_id"] != connection_id:
+                    raise ValueError("source connection changed")
+            except (RuntimeError, PermissionError, ValueError, KeyError) as exc:
+                raise ProviderAuthorityHeldError("source grant unavailable") from exc
+            return
+        uri = (self.base / "outbound.db").as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as ledger:
+            grant = ledger.execute(
+                "SELECT 1 FROM outbound_connection_grants g "
+                "JOIN outbound_connections c ON g.connection_id=c.connection_id "
+                "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
+                "AND c.owner_user_id=? AND g.universe_id=? "
+                "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
+                (grant_id, connection_id, scope[0], scope[0], scope[1]),
+            ).fetchone()
+        if grant is None:
+            raise ValueError("source grant unavailable")
+
     def issue_reference(self, scope, ordinal, *, grant_id, connection_id, verb, request,
                         operation_id):
+        if self._remote:
+            result = self._rpc(scope, "issue_reference", ordinal=ordinal, grant_id=grant_id,
+                               connection_id=connection_id, verb=verb, request=request,
+                               operation_id=operation_id)
+            return InferenceUsageReference.from_document(result["reference"])
         from tinyassets.broker.ops import canonical_op_id
         from tinyassets.request_budget import RequestBudgetExceeded
 
@@ -441,6 +512,8 @@ class UsageStore:
 
     def settle_invocation(self, scope, ordinal, outcome):
         """Only pending attempts settle; a first 401 never becomes retry success."""
+        if self._remote:
+            return self._rpc(scope, "settle_invocation", ordinal=ordinal, outcome=outcome)["value"]
         with self._connection(write=True) as conn:
             budget = self._load(conn, scope)
             row = conn.execute(

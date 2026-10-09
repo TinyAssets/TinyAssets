@@ -217,12 +217,86 @@ class ApiKeyHttpProvider(BaseProvider):
     ) -> Any:
         if self._proxy_override is not None:
             return self._proxy_override
+        from tinyassets.broker.supervisor import BrokerUidSplitRequired, broker_selected
         from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        if broker_selected():
+            from tinyassets.broker.ledger_queries import authorized_connection
+            from tinyassets.storage.outbound_connections import (
+                ProxyRequestError,
+                ScopedConnectionProxy,
+                _broker_channel,
+            )
+
+            try:
+                grant, resource, _incarnation = authorized_connection(
+                    db_path.parent, principal=owner_user_id, command_center=universe_id,
+                    grant_id=grant_id, connection_id=connection_id)
+                if resource.connection_type != "http":
+                    raise ProxyRequestError("credential broker requires an HTTP connection")
+                channel = _broker_channel(
+                    db_path.parent, principal=owner_user_id, command_center=universe_id,
+                    grant_id=grant_id, connection_id=connection_id)
+                if channel is None:
+                    raise ProxyRequestError("credential broker channel unavailable")
+            except (ProxyRequestError, OSError, BrokerUidSplitRequired, ValueError):
+                # Only queries/acquisition occurred. Do not conservatively
+                # charge an unknown send for a request that never started.
+                raise ProviderUnavailableError("compute broker admission unavailable") from None
+            return ScopedConnectionProxy(
+                grant_id=grant.grant_id, provider=resource.provider,
+                destination=resource.destination, scopes=resource.scopes,
+                access_mode=resource.access_mode, _channel=channel)
 
         ledger = ConnectionLedger(db_path, verify_authenticated_principal=lambda: owner_user_id)
         return ledger.resolve_exact_scoped_proxy(
             universe_id=universe_id, grant_id=grant_id, connection_id=connection_id
         )
+
+    def _connection_context(self, universe_dir: Path, config: ModelConfig):
+        """Live source facts for the independently admitted running owner."""
+        from tinyassets.broker.supervisor import BrokerUidSplitRequired, broker_selected
+        from tinyassets.storage.outbound_connections import (
+            ConnectionLedger,
+            GrantResolutionError,
+            ProxyRequestError,
+            _resource_from_row,
+        )
+
+        universe_id, grant_id = universe_dir.name, self._definition.ref
+        if broker_selected():
+            from tinyassets.broker.ledger_queries import granted_resource_row
+
+            principal = getattr(config, "invocation_owner_user_id", "")
+            if (not isinstance(principal, str) or not principal
+                    or self._definition.owner_user_id != principal
+                    or self._definition.universe_id != universe_id):
+                raise ProviderUnavailableError("compute source does not match admitted owner")
+            try:
+                row = granted_resource_row(
+                    universe_dir.parent, principal=principal, command_center=universe_id,
+                    grant_id=grant_id)
+            except GrantResolutionError:
+                raise ProviderUnavailableError(
+                    "compute connection authority is unavailable") from None
+            except (ProxyRequestError, OSError, BrokerUidSplitRequired, ValueError):
+                raise ProviderUnavailableError("compute broker admission unavailable") from None
+            resource = _resource_from_row(row)
+            if resource.connection_type != "http":
+                raise ProviderUnavailableError("compute source requires an HTTP connection")
+            return resource.connection_id, principal, resource.to_view()
+
+        read_ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        grant = read_ledger.get_grant(grant_id)
+        if grant is None or getattr(grant, "revoked_at", None) is not None:
+            raise ProviderUnavailableError(f"compute grant {grant_id} is absent or revoked")
+        if getattr(grant, "universe_id", "") != universe_id:
+            raise ProviderUnavailableError("compute grant is not bound to the running command "
+                "center")
+        view = read_ledger.get_connection_view(grant.connection_id)
+        if view is None:
+            raise ProviderUnavailableError("compute connection resource is absent")
+        return grant.connection_id, grant.owner_user_id, view
 
     async def complete(
         self,
@@ -280,7 +354,6 @@ class ApiKeyHttpProvider(BaseProvider):
             )
         from tinyassets.storage.outbound_connections import (
             ConnectionAuthorizationError,
-            ConnectionLedger,
             GrantResolutionError,
             OutboundDeadlineExceeded,
         )
@@ -290,19 +363,8 @@ class ApiKeyHttpProvider(BaseProvider):
         universe_id = universe_dir.name
         grant_id = self._definition.ref
 
-        # Grant read + universe-isolation gate (belt; resolver re-checks it too).
-        read_ledger = ConnectionLedger(db_path)
-        grant = read_ledger.get_grant(grant_id)
-        if grant is None or getattr(grant, "revoked_at", None) is not None:
-            raise ProviderUnavailableError(f"compute grant {grant_id} is absent or revoked")
-        if getattr(grant, "universe_id", "") != universe_id:
-            raise ProviderUnavailableError("compute grant is not bound to the running command "
-                "center")
-        connection_id = grant.connection_id
-        owner_user_id = grant.owner_user_id
-        view = read_ledger.get_connection_view(connection_id)
-        if view is None:
-            raise ProviderUnavailableError("compute connection resource is absent")
+        # Authority read precedes encoding; proxy admission rechecks live scope.
+        connection_id, owner_user_id, view = self._connection_context(universe_dir, config)
         host = _single_host(view)
 
         selection = getattr(config, "selected_model", None)

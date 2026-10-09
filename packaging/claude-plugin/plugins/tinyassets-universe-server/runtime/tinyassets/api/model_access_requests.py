@@ -116,9 +116,12 @@ def capture_action(uid: str, action: dict) -> dict:
 
 
 def _connection_incarnations(base, owner, uid, membership):
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.providers.definition import get_definition
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
+    if broker_selected():
+        return _broker_connection_incarnations(base, owner, uid, membership)
     ledger = ConnectionLedger(base / "outbound.db")
     captured = {}
     for provider in membership:
@@ -130,6 +133,30 @@ def _connection_incarnations(base, owner, uid, membership):
                 or grant.owner_user_id != owner or grant.universe_id != uid):
             raise PermissionError("model connection changed")
         incarnation = ledger.incarnation(grant.connection_id)
+        if not incarnation:
+            raise PermissionError("model connection changed")
+        captured[provider] = incarnation
+    return captured
+
+
+def _broker_connection_incarnations(base, owner, uid, membership):
+    from tinyassets.broker.ledger_queries import granted_resource_row
+    from tinyassets.providers.definition import get_definition
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    captured = {}
+    for provider in membership:
+        if not provider.startswith("api_key_http:"):
+            continue
+        definition = get_definition(uid, provider.removeprefix("api_key_http:"))
+        if definition is None or definition.owner_user_id != owner:
+            raise PermissionError("model connection changed")
+        try:
+            resource = granted_resource_row(base, principal=owner, command_center=uid,
+                                            grant_id=definition.ref)
+        except GrantResolutionError:
+            raise PermissionError("model connection changed") from None
+        incarnation = resource["incarnation"]
         if not incarnation:
             raise PermissionError("model connection changed")
         captured[provider] = incarnation

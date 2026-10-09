@@ -1358,11 +1358,21 @@ def command_center_summary(universe_dir: Path, owner: str) -> str:
         if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
             return ""
         branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
-        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.broker.catalog import connections
+
+            inventory = (connection for _grant, connection, _ in connections(
+                universe_dir.parent, principal=owner, command_center=universe_dir.name,
+                limit=21))
+        else:
+            ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+            inventory = (ledger.get_connection_view(grant.connection_id)
+                         for grant in ledger.list_grants(owner_user_id=owner,
+                                                         universe_id=universe_dir.name, limit=21))
         names = []
-        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
-                                        limit=21):
-            connection = ledger.get_connection_view(grant.connection_id)
+        for connection in inventory:
             if connection and connection.owner_user_id == owner and connection.revoked_at is None:
                 names.append(connection.destination)
         active = _universe_active_turn(universe_dir)

@@ -286,13 +286,23 @@ def _reconcile_one(
             settled.append((intent.intent_id, "sent"))
             return
 
+    from tinyassets.broker.supervisor import broker_selected
+
     credential_ref = ""
-    if credential_ref_for is not None:
+    if broker_selected():
+        try:
+            credential_ref = _broker_credential_ref(base_path, intent)
+        except Exception:
+            # No unknown authority may reach even a read-only remote probe.
+            _defer(base_path, intent, reason="broker authority unavailable")
+            settled.append((intent.intent_id, "sent"))
+            return
+    elif credential_ref_for is not None:
         try:
             credential_ref = credential_ref_for(intent.connection_id)
         except Exception:
             credential_ref = ""
-    if not credential_ref:
+    if not credential_ref and not broker_selected():
         credential_ref = _credential_ref(base_path, intent.connection_id)
 
     # The intent's OWN host, never a module default: defaulting to
@@ -364,6 +374,10 @@ def _credential_ref(base_path: str | Path, connection_id: str) -> str:
     """The connection's credential REFERENCE (never a secret), or empty."""
     if not connection_id:
         return ""
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        raise RuntimeError("broker custody lookup requires admitted intent scope")
     try:
         from tinyassets.storage.outbound_connections import ConnectionLedger
 
@@ -372,3 +386,29 @@ def _credential_ref(base_path: str | Path, connection_id: str) -> str:
         return str(getattr(resource, "credential_ref", "") or "")
     except Exception:
         return ""
+
+
+def _broker_credential_ref(base_path: str | Path, intent: PushIntent) -> str:
+    """Recover authority from the daemon's persisted run, never intent payloads."""
+    from tinyassets import runs
+    from tinyassets.broker.ledger_queries import authorized_connection
+    from tinyassets.effectors.workspace import _require_consent, _require_scope, transport_host_for
+    from tinyassets.storage.workspace_authority import connection_access_mode
+
+    base = Path(base_path)
+    run = runs.get_run(base.parent, intent.run_id)
+    if (not run or not run.get("owner_user_id")
+            or run.get("queue_universe_id") != base.name or intent.universe_id != base.name):
+        raise PermissionError("intent has no admitted run scope")
+    _, resource, _ = authorized_connection(
+        base.parent, principal=run["owner_user_id"], command_center=base.name,
+        grant_id=intent.grant_id, connection_id=intent.connection_id)
+    host = transport_host_for(resource)
+    if not intent.host or intent.host != host:
+        raise PermissionError("intent destination changed")
+    _require_scope(resource, "push", host, intent.repo)
+    _require_consent(base, "push", host, intent.repo, intent.connection_id,
+                     access_mode=connection_access_mode(resource))
+    if not resource.credential_ref:
+        raise PermissionError("intent custody unavailable")
+    return resource.credential_ref
