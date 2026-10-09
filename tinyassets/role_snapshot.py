@@ -12,12 +12,11 @@ import struct
 from pathlib import Path
 
 
-def owner_uid(universe: Path) -> int | None:
-    from tinyassets import role_decoder, workspace_fs
+def owner_uid(universe: Path) -> int:
+    """The center's dedicated owner gid, or a refusal. Never an unlabelled root."""
+    from tinyassets import workspace_fs
     from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
 
-    if role_decoder._bounded_client is None:
-        return None
     fd = workspace_fs.open_dir_nofollow(universe)
     try:
         info = os.fstat(fd)

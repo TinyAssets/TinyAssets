@@ -2546,26 +2546,24 @@ def _build_source_code_node(
             # so the node would have run against a mount point that does not
             # exist.
             sandbox_mount = None
-            workspace_launcher = None
             if mount is not None:
-                from tinyassets.node_sandbox import WORKSPACE_LAUNCHER_FACTORY
-
                 # Through the translator, never inline: it is the one place
                 # that turns a held descriptor into the bind and the pass_fds
                 # list, and the one place that checks the descriptor is still a
                 # live directory. Building the mount at the call site is how
-                # both were dropped (Codex #14b). The factory takes the MOUNT so
-                # they cannot be dropped again on the way to the launcher.
+                # both were dropped (Codex #14b).
                 sandbox_mount = _sandbox_workspace_mount(
                     mount,
                     node.node_id,
                     allowed_roots=_workspace_bind_roots(base_path),
                 )
-                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
+            # No launcher: the node runs in the owner's node cell, which
+            # resolves the nested jail from the workspace IT mounted. The
+            # command center is what admits that cell, so it is passed here.
             result = NodeSandbox(
                 timeout=timeout_s,
-                launcher=workspace_launcher,
                 should_cancel=should_cancel,
+                universe_dir=base_path,
             ).run_sync(
                 node_id=node.node_id,
                 source_code=src,
