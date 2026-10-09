@@ -46,7 +46,12 @@ def test_reconcile_uses_persisted_run_and_broker_not_injected_custody(pending):
 
     answer = intents.reconcile_push_intents(pending.base, execute=execute)
     assert answer == [(pending.intent, "done")]
-    assert requests[0]["credential_ref"] == "vault://http/synthetic"
+    # The owner comes from the persisted run and the broker's live grant; the
+    # credential does not come at all, because the probe runs in that owner's
+    # own cell and only the broker resolves a token.
+    assert requests[0]["principal"] == "alice"
+    assert (requests[0]["grant_id"], requests[0]["connection_id"]) == ("grant-a", "conn-a")
+    assert "credential_ref" not in requests[0]
     assert not (pending.root / "outbound.db").exists()
 
 
@@ -84,8 +89,8 @@ def test_broker_outage_defers_and_never_borrows_custody(pending, monkeypatch):
         pending.base, execute=lambda request: sent.append(request)) == [(pending.intent, "sent")]
     assert not sent
     # The helper itself refuses without the run's admitted scope: there is no
-    # second route to a credential reference to fall back to.
+    # second route to the owner's authority to fall back to.
     with pytest.raises(Exception, match="admitted run scope|not running"):
-        intents._broker_credential_ref(
+        intents._intent_principal(
             pending.base, intents.open_intents(pending.base)[0])
     assert not (pending.root / "outbound.db").exists()

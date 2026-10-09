@@ -2346,18 +2346,19 @@ def _build_node_mcp_invoker(
 
 
 def _workspace_bind_roots(base_path: str | Path | None) -> tuple[str, ...]:
-    """The two roots a workspace bind may live under, derived the way the
-    adapter derives them: the shared scratch pool beside the universe, and the
-    universe's own workspaces. An unknown base path vouches for nothing, and an
-    empty tuple refuses every bind - the fail-closed direction.
+    """The one root a workspace bind may live under, derived the way the
+    adapter derives it: the command center's own ``workspaces``.
+
+    It used to be two, because the scratch pool sat beside the center. The
+    owner split moved the pool inside it (``workspaces/scratch``) -- a lease
+    has to be the owner's own directory and an owner cell is bound to one
+    center -- so this root covers both classes and nothing outside the center
+    is namable at all. An unknown base path vouches for nothing, and an empty
+    tuple refuses every bind: the fail-closed direction.
     """
     if not base_path:
         return ()
-    universe_dir = Path(base_path)
-    return (
-        str(universe_dir.parent / "scratch"),
-        str(universe_dir / "workspaces"),
-    )
+    return (str(Path(base_path) / "workspaces"),)
 
 
 def _build_source_code_node(

@@ -315,10 +315,8 @@ PINNED: dict[str, list[str]] = {
         "_write_probe_cache_file: os.replace()",
         "subprocess_env_for_provider: .read_text()",
     ],
-    "tinyassets/providers/claude_provider.py": [
-        "_engine_mcp_flags: .unlink()",
-        "_engine_mcp_flags: .write_text()",
-    ],
+    # ``claude_provider`` had two in ``_engine_mcp_flags``; they are gone from
+    # the tree, and this ratchet only ever shrinks, so the pin goes with them.
     "tinyassets/providers/codex_provider.py": [
         "_resolved_codex_executable: .open()",
     ],
@@ -445,9 +443,11 @@ PINNED: dict[str, list[str]] = {
         "_rmtree: shutil.rmtree()",
         "hold_in_use: os.open()",
     ],
-    "tinyassets/workspace_worker.py": [
-        "_handle_checkout: shutil.rmtree()",
-    ],
+    # ``workspace_worker`` had one: the credentialed clone it deleted out of
+    # its staging directory. The daemon runs no git and stages nothing now, so
+    # the module does no file I/O at all; the clone's removal moved into the
+    # owner's cell (``workspace_remote_cell``), which touches only paths
+    # beneath the command center the launcher mounted for it.
 }
 
 

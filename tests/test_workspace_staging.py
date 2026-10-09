@@ -370,13 +370,24 @@ def test_an_uninspectable_tree_is_logged_every_pass(tmp_path, monkeypatch, caplo
     assert caplog.text.count("locks uninspectable") == 2
 
 
-def test_a_scoped_inheritance_reaches_only_gits_inside_the_block(tmp_path, monkeypatch):
+@_POSIX_ONLY
+def test_a_cell_git_inherits_only_the_descriptors_its_own_operation_passes(tmp_path):
+    """The staging in-use share this file used to test is gone.
+
+    It existed so a git outliving a killed worker kept the staging tree marked
+    in use; there is no daemon-side git and no staging to mark. What a git
+    inherits now is exactly what ITS operation passed -- and a process-wide
+    share is impossible, because the store it came from no longer exists.
+    """
     from tinyassets import workspace_git
 
-    monkeypatch.setattr(workspace_git, "_INHERITED_FDS", ())
-    fd = os.open(str(tmp_path / "share"), os.O_RDWR | os.O_CREAT)
+    assert not hasattr(workspace_git, "inheriting")
+    assert not hasattr(workspace_git, "inherit_descriptor")
+    fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
     home = tmp_path / "git-home"
     home.mkdir()
+    other = tmp_path / "git-home-2"
+    other.mkdir()
     seen: list = []
 
     def _launcher(command, **kwargs):
@@ -387,21 +398,18 @@ def test_a_scoped_inheritance_reaches_only_gits_inside_the_block(tmp_path, monke
 
         return _Done()
 
-    def _git():
-        workspace_git.run_git(
+    try:
+        workspace_git.run_git_in_cell(
             ["--version"], cwd=tmp_path, home_dir=home, path="/usr/bin",
+            timeout_s=5, launcher=_launcher, pass_fds=(fd,),
+        )
+        workspace_git.run_git_in_cell(
+            ["--version"], cwd=tmp_path, home_dir=other, path="/usr/bin",
             timeout_s=5, launcher=_launcher,
         )
-
-    try:
-        with workspace_git.inheriting(fd):
-            _git()
-        _git()
     finally:
         os.close(fd)
-    if os.name == "posix":
-        assert fd in seen[0]
-    assert fd not in seen[1], "a scoped share must not leak into later gits"
+    assert seen == [(fd,), ()], seen
 
 
 @_POSIX_ONLY

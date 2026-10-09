@@ -26,8 +26,6 @@ tests substitute them by parameter, never by an environment switch.
 
 from __future__ import annotations
 
-import contextlib
-import contextvars
 import ipaddress
 import logging
 import os
@@ -1130,48 +1128,11 @@ def _reject_secrets_in(
                 )
 
 
-#: Descriptors every git this process runs inherits: the workspace worker's
-#: staging in-use share (`workspace_worker._mark_staging_in_use`). Process-wide
-#: only in the one-request worker child, which exits after its operation.
-_INHERITED_FDS: tuple[int, ...] = ()
-#: The same, scoped to a block (`inheriting`): a long-lived server process must
-#: not hand one operation's share to every later git -- the number would be
-#: stale once that operation closed it.
-_SCOPED_FDS: contextvars.ContextVar[tuple[int, ...]] = contextvars.ContextVar(
-    "workspace_git_scoped_fds", default=(),
-)
-
-
-def _require_descriptor(fd: object) -> int:
-    if not isinstance(fd, int) or isinstance(fd, bool) or fd < 0:
-        raise WorkspaceGitError("bad_argument", "an inherited descriptor must be an fd")
-    return fd
-
-
-def inherit_descriptor(fd: int) -> None:
-    """Make every later git in this process inherit ``fd``."""
-    global _INHERITED_FDS
-    fd = _require_descriptor(fd)
-    if fd not in _INHERITED_FDS:
-        _INHERITED_FDS = (*_INHERITED_FDS, fd)
-
-
-@contextlib.contextmanager
-def inheriting(fd: int | None):
-    """Every git run inside this block inherits ``fd`` (None: no-op).
-
-    Used by the PARENT for git it runs itself against staging (populate), so a
-    git that outlives a killed parent still holds the tree's in-use share
-    (gpt-6-astra, PR #4143 round 3).
-    """
-    if fd is None:
-        yield
-        return
-    token = _SCOPED_FDS.set((*_SCOPED_FDS.get(), _require_descriptor(fd)))
-    try:
-        yield
-    finally:
-        _SCOPED_FDS.reset(token)
+# There used to be a process-wide and a block-scoped set of descriptors every
+# git here inherited: the staging tree's in-use share, so a git that outlived
+# a killed worker kept the tree marked. Both are gone with the daemon-side
+# git. A cell's git inherits exactly the descriptors ITS operation passes
+# (``pass_fds``), and the cell's own lifetime is the share.
 
 
 def _checked_git_request(
@@ -1260,7 +1221,7 @@ def run_git(
     # needs a launcher, an inherited descriptor or its own child setup is
     # asking for a daemon-uid git; that mode does not exist.
     if (launcher is not None or git_binary not in ('git', '/usr/bin/git') or pass_fds
-            or _INHERITED_FDS or _SCOPED_FDS.get() or preexec_fn is not None):
+            or preexec_fn is not None):
         raise WorkspaceGitError(
             'bad_argument', 'git cell descriptor/launcher mode not admitted')
     completed = run_owner_git(argv, cwd=cwd, options=options, timeout_s=float(timeout_s))
@@ -1323,12 +1284,12 @@ def run_git_in_cell(
         "check": False,
         "shell": False,
     }
-    inherited = () if _IS_WINDOWS else (*_INHERITED_FDS, *_SCOPED_FDS.get())
-    if pass_fds or inherited:
+    if pass_fds and not _IS_WINDOWS:
         # The descriptor must survive into the child, or /proc/self/fd/<n>
-        # in its cwd names nothing. `_INHERITED_FDS` is the staging in-use
-        # share: a git that outlives its worker keeps the tree marked in use.
-        kwargs["pass_fds"] = tuple(dict.fromkeys((*pass_fds, *inherited)))
+        # in its cwd names nothing. Exactly what this operation passed: a
+        # process-wide share would hand one operation's descriptor to every
+        # later git, and the number is stale as soon as that one closes it.
+        kwargs["pass_fds"] = tuple(dict.fromkeys(pass_fds))
     child_setup = preexec_fn if preexec_fn is not None else (
         None if _IS_WINDOWS else _disable_core_dumps
     )

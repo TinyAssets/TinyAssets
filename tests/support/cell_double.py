@@ -95,6 +95,70 @@ def _git(argv, *, cwd, options, timeout_s):
                           stderr=result.stderr_scrubbed, cell={})
 
 
+#: Local bare repositories that stand in for a remote in the workspace-remote
+#: cell double, keyed by ``owner/name``. A test that wants a real clone or push
+#: registers one; the double then rewrites the route URL (which points at
+#: ``ta-git.invalid`` through a proxy no test process runs) to that path, and
+#: leaves every other option exactly as the daemon built it.
+REMOTE_REPOS: dict[str, str] = {}
+
+
+def _local_options(options, repo):
+    """The cell's git options with the unreachable route pointed at a local repo."""
+    local = REMOTE_REPOS.get(repo)
+    if local is None:
+        return list(options)
+    kept = []
+    index = 0
+    while index < len(options):
+        if options[index] != "-c":
+            kept.append(options[index])
+            index += 1
+            continue
+        setting = options[index + 1]
+        index += 2
+        if setting.startswith("http.proxy="):
+            continue  # no in-cell forwarder here: the remote is a path
+        if setting.startswith("url.http://ta-git.invalid/") and ".insteadOf=" in setting:
+            source = setting.split(".insteadOf=", 1)[1]
+            kept.extend(("-c", f"url.{local}.insteadOf={source}"))
+            continue
+        kept.extend(("-c", setting))
+    return kept
+
+
+def _remote_git(request, *, universe_dir, principal, egress_socket):
+    """The workspace-remote cell: the real operation, run here.
+
+    ``role_remote_git.run``'s daemon-side work is the part a test process
+    cannot have (an owner uid, a mapper, a labelled pool directory), so the
+    pool parent is created plainly and the cell's own
+    ``workspace_remote_cell.perform`` runs unconfined in this process -- the
+    same git, the same lease layout, the same answer.
+    """
+    from tinyassets import workspace_fs
+    from tinyassets.workspace_remote_cell import perform
+
+    center = Path(universe_dir)
+    if not principal:
+        raise PermissionError("workspace git scope is not an admitted command center")
+    parent = center
+    for part in request.get("lease_parent") or ():
+        parent = parent / part
+        parent.mkdir(mode=0o770, exist_ok=True)
+    document = dict(request)
+    if document.get("options"):
+        document["options"] = _local_options(document["options"], document.get("repo", ""))
+    root_fd = workspace_fs.open_dir_nofollow(center)
+    try:
+        with tempfile.TemporaryDirectory(prefix="ta-cell-remote-") as scratch:
+            return perform(document, root_fd=root_fd, root_path=center, scratch=scratch,
+                           git_binary="git", path=os.environ.get("PATH", "/usr/bin:/bin"))
+    finally:
+        if isinstance(root_fd, int):
+            os.close(root_fd)
+
+
 def _render(spec, wall_seconds):
     """The preview cell: the real browser child supervisor, run here."""
     from tinyassets import ui_preview
@@ -231,6 +295,7 @@ def owner_cell_double(request, monkeypatch):
         role_modes,
         role_node,
         role_preview,
+        role_remote_git,
         role_snapshot,
         role_tools,
         role_video,
@@ -240,6 +305,7 @@ def owner_cell_double(request, monkeypatch):
     monkeypatch.setattr(role_decoder, "decode", _decode)
     monkeypatch.setattr(role_node, "run", _node)
     monkeypatch.setattr(role_git, "run", _git)
+    monkeypatch.setattr(role_remote_git, "run", _remote_git)
     monkeypatch.setattr(role_preview, "render", _render)
     monkeypatch.setattr(role_preview, "write", _write_preview)
     monkeypatch.setattr(role_tools, "run", _tool_run)
@@ -253,4 +319,8 @@ def owner_cell_double(request, monkeypatch):
     monkeypatch.setattr(role_modes, "WORK_GID", os.getgid() if hasattr(os, "getgid") else 0)
     monkeypatch.setattr(role_modes, "BROKER_READ_GID",
                         os.getgid() if hasattr(os, "getgid") else 0)
-    yield _InstalledLauncher()
+    REMOTE_REPOS.clear()
+    try:
+        yield _InstalledLauncher()
+    finally:
+        REMOTE_REPOS.clear()
