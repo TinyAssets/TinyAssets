@@ -839,6 +839,10 @@ def test_a_full_deposit_moves_an_existing_connection(base):  # noqa: F811
     assert rotated["connection_id"] == connection_id
     assert ledger.access_mode(connection_id) == ACCESS_FULL
     view = ledger.get_connection_view(connection_id)
+    assert view.owner_user_id == "alice"
+    assert view.connection_id == connection_id
+    assert view.revoked_at is None
+    assert "new-owner-key" not in json.dumps(rotated)
     assert all(_verb_within_scopes(verb, view.scopes, view.access_mode)
                for verb in _SSRF_ALLOWED_METHODS)
 

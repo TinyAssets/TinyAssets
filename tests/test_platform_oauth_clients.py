@@ -471,7 +471,10 @@ def test_invalid_directory_does_not_block_engine_restart(configured, app, monkey
     assert first.module.__name__ not in sys.modules
     assert engine.start()
     assert engine.endpoint is not first
+    second = engine.endpoint
+    assert second.module.__name__ in sys.modules
     engine.stop()
+    assert second.module.__name__ not in sys.modules
     assert set(service._bindings) == before
     assert SECRET_NAME not in os.environ and directory.secret(SECRET_NAME) == SECRET
 

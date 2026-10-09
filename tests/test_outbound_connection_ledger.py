@@ -337,6 +337,7 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
     assert not hasattr(proxy, "_dispatch_handle")
     assert not hasattr(proxy._channel, "_process")
     assert not hasattr(proxy._channel, "_dispatch")
+    assert not hasattr(proxy._channel._client, "_dispatch")
     assert "_PROXY_DISPATCHERS" not in vars(
         __import__(
             "tinyassets.storage.outbound_connections",
