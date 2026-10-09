@@ -4,7 +4,7 @@ Implementation backlog only. Card ownership belongs to inline-connect-and-approv
 
 - [ ] 1.1 Verify generic OAuth, streaming broker and existing request/card prerequisites; add typed MCP metadata preserving HTTP rows and rollback cleanup.
 - [x] 1.2 Add MCP OAuth metadata discovery, PKCE/resource binding and DCR/CIMD/static registration without per-platform code; retain the optional provider directory.
-- [ ] 1.3 Consume streaming broker for initialization, paginated tools, streaming calls and safe renewal; verify cross-chunk scanning, cancellation and uncertain-call non-replay.
+- [x] 1.3 Extend the remote adapter to MCP 2026-07-28 and legacy negotiation, JSON/SSE, scanned auth challenges, HTTP cancellation and host-bound URL MRTR continuation; prove local standards-server traffic through broker IPC and uncertain-call non-replay. Live host callback/durable wake wiring remains 1.6 (see docs/concerns/mcp-current-protocol-host-wiring.md).
 - [ ] 1.4 Implement exact-revision jailed stdio and scoped proxy auth; support warned named-own-key opt-in in a separate process/user/filesystem sandbox, with grant/revision isolation and no host fallback. Verify agent/other-author code cannot read server /proc, environment, arguments or files; reuse broker scanning on stdout/stderr and prove split-chunk key bytes never reach model context, logs or transcript. Verify the warning names only that server's code and author as key readers.
 - [ ] 1.5 Implement protected secret entry and allowlisted egress slots with owner/incarnation checks and credential-free output/export.
 - [ ] 1.6 Wire ta catalog/dispatch and existing inline coordinator; verify stale catalogs, Stop, account switching, callback replay and crash recovery.
