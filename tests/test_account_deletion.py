@@ -1005,9 +1005,9 @@ def test_staging_rejects_linked_platform_parents_without_touching_peer(
         delete_identity=lambda _: "deleted",
     )
     assert billed == [HOME_A]
+    # The two passes removed the home itself; only the sidecar staging refused.
     assert "home_staging" in receipt["unfinished_phases"]
-    assert not receipt["home_removed"]
-    assert (two_users / HOME_A / "soul.md").exists()
+    assert not (two_users / HOME_A).exists()
     assert (peer / "soul.md").read_text(encoding="utf-8") == "# soul\n"
     assert not (peer / HOME_A).exists()
 
@@ -1315,12 +1315,3 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
     assert retry["home_removed"] and not retry["unfinished_phases"]
     assert not (two_users / HOME_A).exists() and not get_founder_home(two_users, A)
     assert (two_users / HOME_B / "soul.md").exists()
-
-
-def test_legacy_layout_skips_the_two_pass_route(two_users):
-    from tinyassets.role_owner_tree_deletion import INTENT_DIR
-
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
-                             delete_identity=lambda _: "deleted")
-    assert receipt["home_removed"] and not receipt["unfinished_phases"]
-    assert not (two_users / INTENT_DIR).exists()

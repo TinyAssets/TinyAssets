@@ -181,7 +181,6 @@ def test_finish_scope_survives_removed_center_and_identity_record(tmp_path, monk
     monkeypatch.setattr(role_decoder, '_bounded_client', client)
     monkeypatch.setattr(storage, 'data_dir', lambda: tmp_path)
     monkeypatch.setattr(middleware, 'current_identity', lambda: SimpleNamespace(user_id='alice'))
-    monkeypatch.setattr(supervisor, 'broker_selected', lambda: True)
     monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
     def removed(*args, **kwargs):
         raise AssertionError('finished deletion must not resolve an erased identity')

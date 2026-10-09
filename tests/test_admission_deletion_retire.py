@@ -76,7 +76,6 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "data_dir", lambda: data)
     monkeypatch.setattr(middleware, "current_identity",
                         lambda: SimpleNamespace(user_id="alice"))
-    monkeypatch.setattr(supervisor, "broker_selected", lambda: True)
     monkeypatch.setattr(supervisor, "_protect_daemon", lambda: None)
     monkeypatch.setattr(owner_identities, "center_admission", center_admission)
     return SimpleNamespace(identities=identities, mapper=mapper, data=data,

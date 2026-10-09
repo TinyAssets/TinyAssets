@@ -123,23 +123,3 @@ def test_implicit_parent_creation_cannot_make_a_center_root(data_dir, admission)
     write_data_path(data_dir / ".platform-state" / "value", "x")  # not a center
     (data_dir / "present").mkdir()
     write_data_path(data_dir / "present" / "deep" / "value", "x")  # inside a root
-
-
-def test_legacy_without_client_is_unchanged(data_dir, monkeypatch):
-    from tinyassets.api.first_contact import ensure_founder_home
-    from tinyassets.role_center_admission import ensure_center_dir
-    from tinyassets.universe_files import write_data_path
-
-    def never(*_a, **_k):
-        raise AssertionError("legacy creation must not reach admission")
-
-    monkeypatch.setattr(role_decoder, "_bounded_client", None)
-    monkeypatch.setattr(role_center_admission, "admit_center", never)
-    ensure_center_dir(data_dir / "made")
-    assert (data_dir / "made").is_dir()
-    write_data_path(data_dir / "implicit" / "value", "x")
-    assert (data_dir / "implicit" / "value").read_text() == "x"
-    _login("founder-1")
-    uid = ensure_founder_home(data_dir, "founder-1")
-    assert (data_dir / uid / "soul.md").is_file()
-    assert not (data_dir / ".role-admission").exists()

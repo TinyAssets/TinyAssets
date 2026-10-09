@@ -387,6 +387,8 @@ class _Connection:
 
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
+        from tinyassets.broker.owner_identities import CenterUnadmitted
+
         try:
             if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
                 raise ValueError("unsupported admission fields")
@@ -400,6 +402,9 @@ class _Connection:
                     doc["event"], doc["principal"], doc["center"])
                 return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
                         "machine": row.machine}
+        except CenterUnadmitted:
+            # D218 retires a tree-less center only if the log admitted it.
+            return {"op": "CENTER_ADMISSION_UNADMITTED"}
         except Exception:  # noqa: BLE001 - nothing appended or persisted on refusal
             return {"op": "CENTER_ADMISSION_REFUSED"}
 

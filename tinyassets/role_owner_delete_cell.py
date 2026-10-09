@@ -80,6 +80,11 @@ def remove_owned(root, *, classify_daemon, overflow_uid=None):
     with os.scandir(root) as entries:
         for entry in entries:
             walk(root, entry.name, entry.name, 1)
+    info = os.fstat(root)
+    if (info.st_uid, info.st_gid) == (uid, gid):
+        # A subtree root the owner holds (pool reclamation): unmask the
+        # daemon's named ACL entry so its pass can remove what remains.
+        os.chmod(f'/proc/self/fd/{root}', stat.S_IMODE(info.st_mode) | 0o770)
     os.fsync(root)
     return dict(visited=visited, removed=removed, retained=retained)
 
