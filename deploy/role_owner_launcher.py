@@ -1,4 +1,4 @@
-"""D62 bounded launcher, staged until the complete class matrix is admitted.
+"""D62 bounded owner launcher used by the production bootstrap.
 
 Loaded by the verified startup chain before namespace entry. The startup parent
 installs the fixed maps and becomes the daemon; no privileged mapper survives.
@@ -58,7 +58,7 @@ def package_usage(pid, proc='/proc'):
 
 
 def bootstrap_services(data_root, run_root, bindings, launch, *, generation):
-    """Staged PID1 bootstrap; never called by the production entrypoint yet.
+    """Production PID1 bootstrap for the broker and bounded owner mapper.
 
     Migration/owner bindings must already be verified with all writers stopped.
     ``generation`` is the admission-log high-water mark that startup reconciled

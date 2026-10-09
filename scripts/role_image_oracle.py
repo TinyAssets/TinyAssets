@@ -561,8 +561,22 @@ def leg_engine_http():
                                  tools=('read', 'write', 'bash', 'get_status'))
         route = EngineMcpRoute(principal, center, url,
                                server.secret, server.grant_key)
+        from tinyassets.extension_state import ExtensionStore
+        store = ExtensionStore(DATA, owner=principal, universe=center, agent='main')
+        package = {
+            'extension.json': json.dumps({'schema_version': 2, 'name': 'oracle',
+                'executable': 'run.py', 'tools': [
+                    {'name': 'hello', 'description': 'Oracle', 'arguments': {}}]}).encode(),
+            'run.py': b'#!/usr/bin/env python3\nprint("OWNER-EXTENSION-OK")\n',
+        }
+        with identity_context(Identity(principal, principal)):
+            installed = store.install(package)
+            store.transition('oracle', installed['revision'], expected_generation=0,
+                             active=True, ceiling=('bash',))
 
         async def call():
+            import base64
+            from tinyassets.agent_loop.box_ta import verified_bundle
             async with _make_client(route, 120) as client:
                 written = await client.call_tool('write', {
                     'path': 'engine-proof.txt', 'content': 'OWNER-ENGINE-CELL-OK',
@@ -575,6 +589,14 @@ def leg_engine_http():
                 bridged = await client.call_tool('bash', {'command': 'ta search status'})
                 bridge_text = ''.join(getattr(block, 'text', '') for block in bridged.content)
                 assert not bridged.is_error and 'get_status' in bridge_text, bridged
+                payload = base64.urlsafe_b64encode(b'{"deliver":"extensions"}').decode()
+                contents = await client.read_resource('ta-bridge://request/' + payload)
+                assert len(contents) == 1, contents
+                bundle, mounts = verified_bundle(json.loads(contents[0].text))
+                assert mounts == {('oracle', installed['revision'], 1)}, mounts
+                assert len(bundle) == 1 and bundle[0]['name'] == 'oracle', bundle
+                assert {name: base64.b64decode(data) for name, data in
+                        bundle[0]['files'].items()} == package, bundle
                 return text
 
         import tempfile
@@ -594,7 +616,8 @@ def leg_engine_http():
             assert not (extension / 'forbidden').exists()
         text = asyncio.run(call())
         return dict(center=center, result=text, daemon_pid=os.getpid(),
-                    endpoint_thread=server.thread.name, extension_readonly=True)
+                    endpoint_thread=server.thread.name, extension_readonly=True,
+                    remote_extension_bundle=True)
     finally:
         server.stop()
 

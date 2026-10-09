@@ -5,8 +5,11 @@ precondition refusing) is proven as root on ext4 by scripts/role_migrate_probe.p
 """
 import os
 import runpy
+import signal
 import sqlite3
 import stat
+import sys
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -19,6 +22,44 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATE = runpy.run_path(str(ROOT / "deploy" / "role_migrate.py"))
 MODES = runpy.run_path(str(ROOT / "tinyassets" / "role_modes.py"))
 BINDINGS = {"u-a": 300001}
+
+
+@pytest.mark.parametrize("close_output", [False, True])
+def test_broker_log_deadline_kills_and_reaps_a_silent_child(monkeypatch, tmp_path, close_output):
+    contract = runpy.run_path(str(ROOT / "deploy/role_admission_contract.py"))
+    launcher = runpy.run_path(str(ROOT / "deploy/role_launcher.py"))
+    call = contract["_broker_child"]
+    monkeypatch.setitem(call.__globals__, "PYTHON", sys.executable)
+    monkeypatch.setitem(call.__globals__, "_BROKER_LOG",
+                        "import os,signal; " + ("os.close(1); " if close_output else "")
+                        + "signal.pause()")
+    children = []
+    fork = os.fork
+
+    def record_child():
+        pid = fork()
+        if pid:
+            children.append(pid)
+        return pid
+
+    def emergency_timeout(*_args):
+        raise AssertionError("broker log ignored its deadline")
+
+    monkeypatch.setattr(os, "fork", record_child)
+    previous = signal.signal(signal.SIGALRM, emergency_timeout)
+    signal.alarm(5)
+    started = time.monotonic()
+    try:
+        with pytest.raises(contract["ContractRefused"], match="exceeded its bound"):
+            call(tmp_path, {"close_descriptors": launcher["close_descriptors"],
+                            "retire_child": lambda role: None}, {}, timeout=0.2)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    assert time.monotonic() - started < 3
+    assert len(children) == 1
+    with pytest.raises(ChildProcessError):
+        os.waitpid(children[0], os.WNOHANG)
 
 
 def _info(kind, mode=0o644):

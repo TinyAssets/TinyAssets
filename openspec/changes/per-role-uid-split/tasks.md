@@ -56,7 +56,7 @@ write/read, real dependency download/offline installation, workspace leases,
 owner storage measurement, admission without restart, two-pass deletion, and
 foreign-byte/capability refusals. Preview passed in this same production image:
 a timed-out cell was reaped and its successor rendered the expected PNG.
-Root role tests passed 45/45. The resumed full required-CI Linux selection passed
+Root role tests passed 45/45. Before the final #4552 merge, the full required-CI Linux selection passed
 all six cutover shards: 27,064 passed, 96 skipped, zero failures; the aggregate gate
 passed. The merge-base/main baseline `b5bc266a92` ran all six shards: 26,935 passed,
 99 skipped, one failure in
@@ -85,3 +85,14 @@ conditioned on production Verify. The remaining `ENV_SWITCH` in served_chat is
 the unrelated agent-loop selector. The resumed image run completed migration,
 actual serving, all eleven cell legs and the provider probes with
 `ROLE IMAGE ORACLE PASS`; it does not close the stricter task 2.5.
+
+Cross-family review of `374f46288b` returned ADAPT. AGREE: main advanced to
+`956e2838d6` (#4552); merged it in `cfe18ec48f` and the combined remote-box
+extension, hook, tool-session, lifecycle, migration and launcher selection passed
+102/102 on Linux with zero skips. AGREE: the broker-log read could hang before
+checking its deadline. Reads now poll with the remaining deadline; EOF also has
+a bounded child-exit wait, and every incomplete child is killed and reaped. Both
+silent-output and closed-output hangs have real-fork regression coverage. The
+stale staged-bootstrap docstrings were corrected. The review inspected only part
+of the full change and reported no floor violation in that inspected scope.
+The complete jail selection and rebuilt-image extension-delivery proof are pending.

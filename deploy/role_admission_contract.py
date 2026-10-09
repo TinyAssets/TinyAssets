@@ -12,6 +12,7 @@ import errno
 import json
 import os
 import re
+import select
 import signal
 import stat
 import struct
@@ -129,19 +130,36 @@ def _broker_child(data_root, launch, request, timeout):
     os.close(writer)
     output = b""
     deadline = time.monotonic() + timeout
+    status = None
     try:
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([reader], [], [], remaining)[0]:
+                raise ContractRefused("retired broker log read exceeded its bound")
             chunk = os.read(reader, 65536)
             if not chunk:
                 break
             output += chunk
             if time.monotonic() >= deadline or len(output) > 64 * 1024 * 1024:
                 raise ContractRefused("retired broker log read exceeded its bound")
+        # EOF does not prove the child exited: it may close stdout then hang.
+        while status is None:
+            reaped, result = os.waitpid(child, os.WNOHANG)
+            if reaped:
+                status = result
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ContractRefused("retired broker log read exceeded its bound")
+            time.sleep(min(0.01, remaining))
     finally:
         os.close(reader)
-        if time.monotonic() >= deadline:
-            os.kill(child, signal.SIGKILL)
-        _, status = os.waitpid(child, 0)
+        if status is None:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(child, 0)
     if status:
         raise ContractRefused("retired broker admission log access failed")
     return json.loads(output)
