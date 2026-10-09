@@ -187,7 +187,7 @@ class TestFloorSurvivesTheFork:
                 universe_dir=universe, config=load_universe_config(universe)
             )
         )
-        assert cfg.allowed_tools == ("WebFetch",)
+        assert cfg.allowed_tools == ()
         assert "Bash" in cfg.disallowed_tools
 
 

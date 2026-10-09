@@ -550,7 +550,7 @@ def _sandbox_cli_args(config: ModelConfig, universe_dir: Path | None) -> list[st
     if config.workflow_node:
         config = _confine_workflow_node(config)
     if config.sandbox_workspace:
-        if config.engine_mcp_enabled:
+        if config.sandbox_chat or config.engine_mcp_enabled:
             # No native tools or deferred ToolSearch handle in a served turn.
             # MCP discovery is projected by the bound private engine route.
             flags += ["--tools", ""]
@@ -570,7 +570,7 @@ def _sandbox_cli_args(config: ModelConfig, universe_dir: Path | None) -> list[st
         # auto-approving tools this turn never pre-approved. `default` (accepted
         # alongside its newer name `manual`) approves NOTHING implicitly: the
         # only callable tools are the ones `--allowedTools` pre-approves --
-        # WebFetch plus, when engine MCP is on, the declared
+        # when engine MCP is on, the declared
         # `mcp__tinyassets__*` handles. A headless turn cannot answer a prompt,
         # so anything else is refused rather than waiting. This pins the
         # behaviour this provider already had with first-party OAuth; it is

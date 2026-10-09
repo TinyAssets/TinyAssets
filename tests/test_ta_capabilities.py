@@ -170,7 +170,8 @@ def test_bad_extension_is_reported_without_breaking_other_capabilities(
 def backend(root, *, agent="worker", owner="user-1", platform=(), call=None,
             authority=lambda: None):
     return Capabilities(root, ExecutionContext(root.name, owner, agent),
-                        list(platform), call, authority)
+                        list(platform), call, authority,
+                        capability_grant=("write_graph", "run_graph"))
 
 
 def invoke(service, **message):
@@ -396,6 +397,52 @@ FILE_TOOLS = ("read", "write", "edit", "bash")
 
 def platform_call(name):
     return {"op": "call", "name": name, "arguments": {}}
+
+
+@pytest.mark.parametrize("action", ["install", "activate", "revoke"])
+def test_status_only_signed_turn_cannot_mutate_extensions(tmp_path, monkeypatch, action):
+    import base64
+
+    from tinyassets.extension_state import ExtensionStore
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.served_tools import granted_tools
+    from tinyassets.shared_self import _granted_config
+
+    root = tmp_path / "home"
+    root.mkdir()
+    store = ExtensionStore(tmp_path, owner="user-1", universe="home", agent="worker")
+    files = {"extension.json": b'{"schema_version":2,"name":"sample"}'}
+    installed = store.install(files)
+    generation = 0
+    if action == "revoke":
+        state = store.transition("sample", installed["revision"], expected_generation=0,
+                                 active=True)
+        generation = state["generation"]
+    before = store.list()
+    files["new.txt"] = b"must not be installed by a read-only turn"
+    arguments = ({"files": {p: base64.b64encode(v).decode() for p, v in files.items()}}
+                 if action == "install" else {"name": "sample",
+                 "revision": installed["revision"], "expected_generation": generation})
+    config = _granted_config(ModelConfig(), {"tools_allowed": ["agent", "get_status"]})
+    signed_launch(monkeypatch, granted_tools(config), session="node:b:worker", turn="t1")
+    calls = []
+    status, answer, listing, help_result, events = through_ta(
+        grant_engine(monkeypatch, root, calls), platform_call("get_status"),
+        {"op": "call", "name": f"extension:{action}", "arguments": arguments},
+        platform_call("extension:list"), platform_call("extension:help"),
+        platform_call("extension:events"))
+    assert answer == {"error": "mutation capability not granted"}
+    assert store.list() == before
+    assert listing == {"result": {"extensions": before}}
+    assert "handbook" in help_result["result"] and "result" in events
+    assert status == {"result": {"called": "get_status"}} and calls == ["get_status"]
+    # The same real dispatcher permits the effect only after a signed mutation grant.
+    signed_launch(monkeypatch, ["write"], session="node:b:worker", turn="t2")
+    (allowed,) = through_ta(grant_engine(monkeypatch, root, calls),
+                           {"op": "call", "name": f"extension:{action}",
+                            "arguments": arguments})
+    assert "result" in allowed
+    assert store.list() != before
 
 
 def test_unrestricted_launch_keeps_every_served_capability_and_connections(
