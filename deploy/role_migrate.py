@@ -925,12 +925,13 @@ def step_marker(root, document, snapshot):
     marked = {**base, "split": SPLIT, "snapshot": snapshot,
               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     temporary = ".layout.json." + secrets.token_hex(8) + ".tmp"
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644,
                  dir_fd=root)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(marked, handle, sort_keys=True)
         handle.flush()
         os.fchown(handle.fileno(), DAEMON, DAEMON)
+        os.fchmod(handle.fileno(), 0o644)  # PID1 reads it as root without DAC_OVERRIDE
         os.fsync(handle.fileno())
     os.replace(temporary, MARKER, src_dir_fd=root, dst_dir_fd=root)
     os.fsync(root)
