@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/workspace_provision_process.py::run_provision_stage": (
+        CALL_SCOPED, "bounded dependency stage inside one owner cell; ends with the call",
+    ),
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
@@ -75,16 +78,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
     # -- bounded waits inside one call -----------------------------------------
-    "tinyassets/ui_preview.py::_supervised": (
-        CALL_SCOPED,
-        "one requested preview polls its child tree until exit, wall deadline "
-        "or a resource breach; no scheduled or autonomous preview work",
-    ),
-    "tinyassets/ui_preview.py::_supervised#2": (
-        CALL_SCOPED,
-        "the same preview waits at most ten seconds for namespace descendants "
-        "to stop during cleanup, then refuses further previews if uncontained",
-    ),
     "tinyassets/owner_lease.py::_lock_blocking": (
         CALL_SCOPED, "one owner-tree gate acquisition retries until timeout_s",
     ),

@@ -64,7 +64,8 @@ COMPOSE_ENV = {
 MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 #: Every in-container leg this script can drive, in the order it drives them.
 LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
-             "provider_exec", "workspace_remote", "workspace_provision", "two_pass_delete")
+             "provider_exec", "workspace_remote", "workspace_provision", "engine_http",
+             "two_pass_delete")
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
 #: skipped: the oracle refuses to pretend an unproven thing is proven.
@@ -452,6 +453,60 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
                 outside=list(outside))
 
 
+def leg_engine_http():
+    """Real HTTP handler reaches an owner tool cell using the daemon's clients."""
+    import sqlite3
+    import time
+
+    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.engine_mcp_http import _EngineServer, EngineMcpRoute
+    from tinyassets.engine_tool_client import _make_client
+    from tinyassets.storage import DB_FILENAME
+
+    principal, center = NEW_PRINCIPAL, NEW_CENTER
+    os.environ['TINYASSETS_ENGINE_MCP_TOOLS'] = '1'
+    definition = publish_definition(DATA, author_id=principal, payload={
+        'schema_version': 1, 'name': 'Oracle engine', 'description': 'oracle',
+        'tags': [], 'components': {'identity': {'kind': 'soul', 'config': {}}},
+    })
+    binding = create_binding(DATA, universe_id=center,
+        definition_id=definition['agent_definition_id'], created_by=principal,
+        payload={'schema_version': 1, 'name': 'Oracle engine', 'role': 'writer'})
+    with sqlite3.connect(DATA / DB_FILENAME) as conn:
+        conn.execute("UPDATE agent_bindings SET status='serving' WHERE agent_binding_id=?",
+                     (binding['agent_binding_id'],))
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        port = listener.getsockname()[1]
+    server = _EngineServer(center, principal, port, str(DATA))
+    assert server.start()
+    try:
+        deadline = time.monotonic() + 30
+        while not server.server.started and server.alive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server.server.started, 'engine endpoint did not start'
+        route = EngineMcpRoute(principal, center, f'http://127.0.0.1:{port}/mcp',
+                               server.secret, server.grant_key)
+
+        async def call():
+            async with _make_client(route, 120) as client:
+                written = await client.call_tool('write', {
+                    'path': 'engine-proof.txt', 'content': 'OWNER-ENGINE-CELL-OK',
+                })
+                assert not written.is_error, written
+                result = await client.call_tool('read', {'path': 'engine-proof.txt'})
+                assert not result.is_error, result
+                text = ''.join(getattr(block, 'text', '') for block in result.content)
+                assert 'OWNER-ENGINE-CELL-OK' in text, text
+                return text
+
+        text = asyncio.run(call())
+        return dict(center=center, result=text, daemon_pid=os.getpid(),
+                    endpoint_thread=server.thread.name)
+    finally:
+        server.stop()
+
+
 def leg_workspace_remote():
     """A workspace-remote cell (branch iso/cutover-ws): the owner's own lease.
 
@@ -569,7 +624,7 @@ LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
         'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
         'workspace_remote': leg_workspace_remote,
         'workspace_provision': leg_workspace_provision,
-        'two_pass_delete': leg_two_pass_delete}
+        'engine_http': leg_engine_http, 'two_pass_delete': leg_two_pass_delete}
 
 report, failed = {}, []
 for name in WANTED:
@@ -599,7 +654,7 @@ def expect(condition, message):
     print(f"ok   {message}", flush=True)
 
 
-def docker(*args, check=True, text=True):
+def docker(*args, check=True, text=True, encoding="utf-8"):
     return subprocess.run(["docker", *args], capture_output=True, text=text, check=check)
 
 
@@ -679,7 +734,7 @@ def stage_migrate(args):
         "-I", "-B", "-c",
         "import runpy\n" + FIXTURE_EXTRA.format(instance=METADATA_INSTANCE_ID,
                                                 sha=args.image),
-    ], capture_output=True, text=True)
+    ], capture_output=True, text=True, encoding="utf-8")
     expect(made.returncode == 0,
            f"production-shaped fixture: {made.stdout.strip()} names{made.stderr[-2000:]}")
 
@@ -688,7 +743,7 @@ def stage_migrate(args):
                        caps=MIGRATION_CAPS, entrypoint="/opt/venv/bin/python",
                        extra=["--rm", "--network", "none"])
         return subprocess.run(run + ["-I", "-B", "/usr/local/libexec/ta-migrate.py", *flags],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8")
 
     before = migrate("--check")
     expect(before.returncode == 1 and "reserve identity: alice" in before.stdout,
@@ -750,7 +805,7 @@ def _metadata(args, *, start):
          "--cap-add", "NET_BIND_SERVICE", "--entrypoint", "/opt/venv/bin/python",
          args.image, "-I", "-B", "-c",
          METADATA_SERVER.format(body=METADATA_INSTANCE_ID)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8")
     expect(started.returncode == 0, f"link-local metadata service{started.stderr[-2000:]}")
     return name
 
@@ -773,7 +828,7 @@ def stage_serve(args):
                               # operator named. Without it every authenticated
                               # request is a 500 and the full canary cannot run.
                               "-e", "UNIVERSE_SERVER_DEV_USER=oracle-founder"])
-    started = subprocess.run(command, capture_output=True, text=True)
+    started = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
     expect(started.returncode == 0, f"serving container started{started.stderr[-2000:]}")
     deadline = time.monotonic() + args.serve_timeout
     pulse = None
@@ -839,7 +894,7 @@ def stage_cells(args):
                               "-e", "ORACLE_LEGS=" + json.dumps(list(args.legs)),
                               "-e", "ORACLE_OUTSIDE_HOST=" + METADATA_ADDRESS,
                               "-e", "ORACLE_OUTSIDE_PORT=80"])
-    result = subprocess.run(command + ["-I", "-B", "-"], input=CELLS, text=True,
+    result = subprocess.run(command + ["-I", "-B", "-"], input=CELLS, text=True, encoding="utf-8",
                             capture_output=True, timeout=args.cells_timeout)
     output = result.stdout + result.stderr
     print(output, flush=True)
@@ -853,7 +908,7 @@ def stage_providers(args):
     """Builder C's probe, unchanged: the real CLIs in real provider-exec cells."""
     probe = Path(__file__).resolve().parent / "role_provider_cell_probe.py"
     result = subprocess.run([sys.executable, "-I", str(probe), "--image", args.image],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8")
     print(result.stdout[-6000:] + result.stderr[-2000:], flush=True)
     expect(result.returncode == 0 and "PROVIDER CELL PROBE PASS" in result.stdout,
            "role_provider_cell_probe: the shipped Claude and Codex CLIs in provider-exec cells")

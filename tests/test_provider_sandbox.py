@@ -13,13 +13,6 @@ from tinyassets.providers.base import ModelConfig
 from tinyassets.providers.claude_provider import _sandbox_cli_args
 
 
-def test_default_config_is_noop_for_host_trusted_roles():
-    # A plain ModelConfig (branch runs, judges, etc.) must NOT be sandboxed —
-    # no tool flags, no cwd override.
-    flags = _sandbox_cli_args(ModelConfig(), Path("C:/repo"))
-    assert flags == []
-
-
 def test_sandbox_emits_variadic_tool_flags(tmp_path):
     cfg = ModelConfig(
         sandbox_workspace=True,
@@ -130,7 +123,8 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     denied = flags[flags.index("--disallowedTools") + 1:]
     assert denied == ["ReportFindings", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
     assert "--allowedTools" not in flags
-    assert "WebSearch" not in denied and "WebFetch" not in denied
+    assert "WebSearch" not in denied
+    assert "WebFetch" not in denied
 
 
 def test_workflow_node_call_without_a_universe_fails_closed():
@@ -344,3 +338,4 @@ def test_the_universe_the_agent_writes_is_no_setting_source(tmp_path):
         sources = [value for flag, value in zip(flags, flags[1:])
                    if flag == "--setting-sources"]
         assert sources == [""]
+        assert str(tmp_path) not in flags

@@ -99,6 +99,12 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
                     raise RuntimeError('tool relay is not a socket')
                 host['sockets'][key] = [info.st_dev, info.st_ino]
                 os.set_inheritable(fd, True)
+    if tool and 'x' in selector:
+        info = os.fstat(6)
+        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022:
+            raise RuntimeError('tool extension descriptor is invalid')
+        host['sockets']['x'] = [info.st_dev, info.st_ino]
+        os.set_inheritable(6, True)
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
@@ -147,6 +153,8 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
             argv.extend(['--bind-fd', '5', '/provider-engine.sock'])
     elif tool:
         argv.extend(tool_mounts(uid))
+        if 'x' in mime:
+            argv.extend(['--ro-bind-fd', '6', '/tool-extensions'])
         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
             if key in mime:
                 argv.extend(['--bind-fd', str(fd), destination])
@@ -543,7 +551,8 @@ if __name__ == "__main__":
         sys.stdout.buffer.write(_frame({'files': answer}, 16384))
         sys.stdout.buffer.flush()
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool'
-            and sys.argv[2] in ('-', 'e', 't', 'et') and 0 < int(sys.argv[4]) < 100000):
+            and sys.argv[2] in ('-', 'e', 't', 'et', 'x', 'ex', 'tx', 'etx')
+            and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool=True)
     elif len(sys.argv) == 6 and sys.argv[1] == 'inside-tool' and 0 < int(sys.argv[5]) < 100000:
         host = json.loads(sys.argv[3])
@@ -554,6 +563,12 @@ if __name__ == "__main__":
                 info = os.stat(target, follow_symlinks=False)
                 if [info.st_dev, info.st_ino] != sockets[key] or not stat.S_ISSOCK(info.st_mode):
                     raise RuntimeError('tool socket mount differs from pinned source')
+        if set(sockets) != set(sys.argv[2].strip('-')):
+            raise RuntimeError('tool mounts differ from their admitted flags')
+        if 'x' in sockets:
+            info = os.stat('/tool-extensions', follow_symlinks=False)
+            if [info.st_dev, info.st_ino] != sockets['x'] or not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError('tool extension mount differs from pinned source')
         proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-nested')
         proof['source'] = source
         proof['sockets'] = sockets
@@ -562,7 +577,8 @@ if __name__ == "__main__":
         sys.path.insert(0, '/app')
         from tinyassets.role_tools import cell_main
 
-        raise SystemExit(cell_main(egress='e' in sockets, ta='t' in sockets))
+        raise SystemExit(cell_main(egress='e' in sockets, ta='t' in sockets,
+                                   extensions='x' in sockets))
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-node'
             and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), node=True)

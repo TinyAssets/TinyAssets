@@ -356,6 +356,9 @@ def test_provider_spawn_sites_own_their_family_through_one_module():
         and getattr(node.func.value, "id", "") == "os"
     ]
     assert signals == [], "owned_process gained a direct signal"
+    assert "from tinyassets.role_provider_execution import spawn" in owned
+    assert "self.cell.revoke()" in owned
+    assert "self.cell.wait(timeout)" in owned
 
     # The contrast that made the original omission a defect, kept as evidence.
     for owner in ("node_sandbox.py", "workspace_git.py"):

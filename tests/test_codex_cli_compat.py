@@ -168,7 +168,8 @@ async def test_served_model_selection_is_native_unless_explicit(
         assert result.model == "provider-default"
     # The model is a thread parameter, never a launch flag.
     inner = launch.call_args.args
-    assert "-m" not in inner and "--model" not in inner
+    assert "-m" not in inner
+    assert "--model" not in inner
     assert result.text == "done" and result.input_tokens == 5 and result.output_tokens == 3
     assert list(inner[1:1 + len(SERVED_LAUNCH_ARGS)]) == list(SERVED_LAUNCH_ARGS)
     assert "--dangerously-bypass-approvals-and-sandbox" not in inner

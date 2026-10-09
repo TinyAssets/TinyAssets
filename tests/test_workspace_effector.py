@@ -1212,7 +1212,6 @@ def test_a_created_workspace_can_be_discarded(
     assert chain.workspace_mount_or_none("n0") is None
 
 
-@pytest.mark.skipif(os.name != "posix", reason="the owner cell's helpers are POSIX-only")
 @pytest.mark.parametrize("is_ancestor", [True, False])
 def test_discard_uses_graph_ancestry_through_real_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_ancestor: bool,
@@ -1764,7 +1763,6 @@ def test_a_push_holds_the_capability_across_the_whole_cell_operation(
     assert chain.workspace_holds.get("n0", 0) == 0, "and the hold is released after"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="real directory descriptors are POSIX-only")
 def test_the_held_descriptors_are_duplicates_not_the_originals(
     tmp_path: Path, chain: EffectChain
 ) -> None:
@@ -1901,7 +1899,6 @@ def test_a_push_journals_the_host_grant_and_universe(
     assert row == (HOST, "grant-git", UNIVERSE)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="real directory descriptors are POSIX-only")
 def test_a_failed_checkout_closes_what_it_opened_and_owes_the_wipe(
     tmp_path: Path, chain: EffectChain, no_real_git, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2845,8 +2842,10 @@ def test_provision_execution_reserved_before_wire_and_published_only_on_success(
         calls.append("execute")
         assert admitted is manifests
         assert chain.workspace_mount_or_none("n1") is None
-        # Worker staging and its credentials must already be gone.
-        assert all(not Path(request["staging_dir"]).exists() for request in worker.requests)
+        # The owner cell owns the lease; no daemon staging or raw credential is exported.
+        assert all("staging_dir" not in request for request in worker.requests)
+        assert kwargs["principal"] == _principal()
+        assert kwargs["universe_dir"] == universe
         assert kwargs["storage_bound"] == kwargs["max_transfer_bytes"]
         assert kwargs["timeout_s"] == 20
         with sqlite3.connect(wse._pool_db(universe)) as db:
@@ -2900,7 +2899,7 @@ def test_each_new_provision_attempt_reserves_again_after_prior_refund(tmp_path, 
     monkeypatch.setattr(workspace_provision_execution, "execute_provision", execute)
     for _ in range(2):
         result = wse._provision_checkout(
-            {"python": "requirements.txt"}, base_path=universe,
+            {"python": "requirements.txt"}, base_path=universe, principal=_principal(),
             resource=SimpleNamespace(connection_id="conn-git"), host=HOST, repo=REPO,
             lease=SimpleNamespace(reserved_bytes=1000), lease_fd=3, repo_fd=4,
             run_id="same-run", node_id="same-node", universe_id=UNIVERSE,

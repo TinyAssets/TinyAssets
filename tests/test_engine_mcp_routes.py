@@ -290,23 +290,21 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
     chosen = tmp_path / "chosen"
     chosen.mkdir()
     seed_engine_authority(chosen)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(chosen))
     observed = []
     original = http._serving_universe_owners
     def observed_owners(root, **kwargs):
         observed.append(root)
         return original(root, **kwargs)
     monkeypatch.setattr(http, "_serving_universe_owners", observed_owners)
-    child_envs = []
+    endpoints = []
 
-    def spawn_without_process(*args, **kwargs):
-        # Record only fixture identity/root values, not the inherited environment
-        # or generated bearer. No real subprocess is launched.
-        child_envs.append({key: kwargs["env"][key] for key in (
-            "TINYASSETS_DATA_DIR", "TINYASSETS_ENGINE_ACTOR_ID", "TINYASSETS_ENGINE_GRAPH_ID",
-        )})
-        return SimpleNamespace(poll=lambda: None)
+    def record_endpoint(actor, graph, secret, key):
+        endpoints.append((actor, graph))
+        return SimpleNamespace(close=lambda: None)
 
-    monkeypatch.setattr(http.subprocess, "Popen", spawn_without_process)
+    from tinyassets import engine_endpoint
+    monkeypatch.setattr(engine_endpoint, "EngineEndpoint", record_endpoint)
     from tinyassets.broker import supervisor
 
     monkeypatch.setattr(supervisor, "_protect_daemon", lambda: None)
@@ -315,10 +313,7 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
     [server] = http.start_engine_mcp_http_servers(chosen)
     assert observed == [chosen]
     assert server._data_dir == str(chosen)
-    assert child_envs == [{
-        "TINYASSETS_DATA_DIR": str(chosen), "TINYASSETS_ENGINE_ACTOR_ID": "actor-a",
-        "TINYASSETS_ENGINE_GRAPH_ID": "u-a",
-    }]
+    assert endpoints == [("actor-a", "u-a")]
     assert _read(root=chosen).actor_id == "actor-a"
 
 

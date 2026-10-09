@@ -264,3 +264,13 @@ instead of celling drops out of PR2. There is no unconfined fallback.
   It stays blocked on D5.
 - **#4556** (L3): not superseded. It lands, and PR2 deletes its switch branches.
 - Keep both feature branches until PR2 has passed Verify (Fact 13).
+
+### Engine endpoint completion
+
+The authenticated per-center engine HTTP endpoint runs canonical control-plane handlers
+in the daemon, where the bootstrap-installed broker and mapper clients exist. Each
+endpoint has a separate handler module with fixed owner and graph pins; request and
+lifespan context carry that endpoint and its grant key without changing process environment.
+No daemon-UID engine subprocess is launched. Provider cells retain the same pinned relay
+and bearer protocol. Port reuse requires endpoint retirement; tool authority is still
+rechecked on every call.

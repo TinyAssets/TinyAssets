@@ -113,9 +113,10 @@ def launch_tools() -> tuple[str, ...] | None:
             (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip(), "", "",
             os.environ.get("TINYASSETS_ENGINE_STDIO_GRANT", ""),
         )
+    from tinyassets.engine_endpoint import grant_key
+
     session_key, turn = _route_params()
-    return verified_launch_grant(
-        (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip(), session_key, turn, grant)
+    return verified_launch_grant(grant_key(), session_key, turn, grant)
 
 
 def outside_origin():

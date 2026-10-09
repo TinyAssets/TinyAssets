@@ -406,7 +406,6 @@ PINNED: dict[str, list[str]] = {
         # not hand back. Opened O_NOFOLLOW.
         "_host_slot: os.open()",
         # Linux /proc, not a data path at all: reaping the render's strays.
-        "_proc_snapshot: open()",
     ],
     "tinyassets/universe_tools.py": [
         # Direct-child removals in the validated, provider-masked workspace.

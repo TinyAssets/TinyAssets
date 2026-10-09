@@ -976,7 +976,8 @@ def test_partial_staging_is_receipted_billing_runs_and_retry_resumes(two_users, 
             delete_identity=lambda _: "deleted",
         )
     assert billed == [HOME_A]
-    assert not receipt["home_removed"]
+    # Owner deletion precedes sidecar staging; a failed sidecar keeps its retry receipt.
+    assert receipt["home_removed"] and not home.exists()
     assert "home_staging" in receipt["unfinished_phases"]
     assert Path(receipt["home_staged_path"]).is_dir()
     assert account_deletion.pending_deletions(two_users)
@@ -1006,6 +1007,7 @@ def test_staging_rejects_linked_platform_parents_without_touching_peer(
     )
     assert billed == [HOME_A]
     # The two passes removed the home itself; only the sidecar staging refused.
+    assert receipt["home_removed"] is True
     assert "home_staging" in receipt["unfinished_phases"]
     assert not (two_users / HOME_A).exists()
     assert (peer / "soul.md").read_text(encoding="utf-8") == "# soul\n"

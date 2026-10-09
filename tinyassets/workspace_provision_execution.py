@@ -110,7 +110,8 @@ def execute_provision(manifests, *, lease_fd, repo_fd, max_transfer_bytes,
                 raise RuntimeError('provisioning cell proof is absent')
             send(payload)
             answer = read()
-            if answer == {'acquired': True}:
+            acquired = answer == {'acquired': True}
+            if acquired:
                 relay.close()
                 if relay.failure:
                     cell.cancel()
@@ -121,6 +122,8 @@ def execute_provision(manifests, *, lease_fd, repo_fd, max_transfer_bytes,
             if (set(answer) != {'failure'} or answer['failure'] is not None
                     and (type(answer['failure']) is not str or len(answer['failure']) > 80)):
                 raise RuntimeError('invalid provisioning terminal receipt')
+            if answer['failure'] is None and not acquired:
+                raise RuntimeError('provisioning success has no acquisition receipt')
             if cell.wait(30) != 0:
                 raise RuntimeError('provisioning cell did not terminate')
             return ProvisionResult(answer['failure'], charge)

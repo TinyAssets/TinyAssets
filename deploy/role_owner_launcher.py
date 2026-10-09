@@ -500,7 +500,7 @@ class OwnerLauncher:
         if kind == 'node-sandbox':
             fields.add('workspace')
         if kind == 'tool-jail':
-            fields.update(('egress', 'ta'))
+            fields.update(('egress', 'ta', 'extensions'))
         if kind in ('provider-discovery', 'workspace-remote'):
             fields.add('egress')
         if kind == 'provider-exec':
@@ -514,6 +514,7 @@ class OwnerLauncher:
                         if kind in ('tool-jail', 'package', 'workspace-remote') else
                         sum(request.get(key) is True for key in ('egress', 'engine'))
                         if kind in ('provider-discovery', 'provider-exec') else 0)
+        extension_count = int(kind == 'tool-jail' and request.get('extensions') is True)
         mounted = kind in {'workspace-git', 'workspace-remote', 'workspace-provision',
                            'preview-write', 'tool-jail',
                            'tool-files', 'provider-discovery', 'provider-exec', 'package',
@@ -549,7 +550,7 @@ class OwnerLauncher:
                 or (kind == 'provider-exec' and (type(request['engine']) is not bool
                     or (request['engine'] and not request['egress'])))
                 or (kind == 'tool-jail' and any(
-                    type(request[key]) is not bool for key in ('egress', 'ta')))
+                    type(request[key]) is not bool for key in ('egress', 'ta', 'extensions')))
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
                     or request['mime'] not in {
@@ -557,7 +558,8 @@ class OwnerLauncher:
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
                 or len(received) != (2 if mounted else 1)
-                    + int(streaming) + socket_count + int(kind == 'provider-exec')):
+                    + int(streaming) + socket_count + extension_count
+                    + int(kind == 'provider-exec')):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
@@ -613,6 +615,11 @@ class OwnerLauncher:
                         or not re.fullmatch(pattern, source[len(prefix):])):
                     raise ValueError('tool relay does not match admitted center')
                 index += 1
+        if extension_count:
+            info = os.fstat(received[2 + socket_count])
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                    or info.st_mode & 0o022):
+                raise ValueError('tool extension tree is not daemon-owned sealed content')
         if kind in ('provider-discovery', 'provider-exec'):
             # D82: exactly one daemon-sealed launch snapshot of this admitted
             # center; the caller names no path, identity or executable.
@@ -698,13 +705,14 @@ class OwnerLauncher:
                     stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
                 retained = (3,) if mounted else ()
                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
-                             'package', 'workspace-remote', 'workspace-provision') and socket_count:
+                             'package', 'workspace-remote', 'workspace-provision') and (
+                                 socket_count or extension_count):
                     import fcntl
 
                     # Copy before assigning fixed slots, so a destination
                     # cannot overwrite another received source descriptor.
                     sources = [fcntl.fcntl(value, fcntl.F_DUPFD_CLOEXEC, 20)
-                               for value in received[:2 + socket_count]]
+                               for value in received[:2 + socket_count + extension_count]]
                     fd = sources[0]
                     os.dup2(sources[1], 3)
                     index = 2
@@ -719,12 +727,15 @@ class OwnerLauncher:
                             os.dup2(sources[index], target)
                             retained.append(target)
                             index += 1
+                    if extension_count:
+                        os.dup2(sources[index], 6)
+                        retained.append(6)
                 os.dup2(fd, 0)
                 os.dup2(fd, 1)
                 error = (os.open('/dev/null', os.O_WRONLY) if stderr_copy is None
                          else stderr_copy)
                 os.dup2(error, 2)
-                if mounted and not socket_count:
+                if mounted and not (socket_count or extension_count):
                     os.dup2(received[1], 3)
                 self.launch['close_descriptors'](retained)
                 os.setgroups([])
@@ -761,7 +772,9 @@ class OwnerLauncher:
                 elif kind == 'tool-jail':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool',
                                ('e' if request['egress'] else '')
-                               + ('t' if request['ta'] else '') or '-', self.data_root, str(inner)]
+                               + ('t' if request['ta'] else '')
+                               + ('x' if request['extensions'] else '') or '-',
+                               self.data_root, str(inner)]
                 elif kind == 'node-sandbox':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-node',
                                'workspace' if mounted else 'data', self.data_root, str(inner)]

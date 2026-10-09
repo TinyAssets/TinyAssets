@@ -343,7 +343,8 @@ def test_an_unknown_op_is_refused_before_any_authority_read(rig, seams, op) -> N
 def test_a_non_mapping_request_is_refused() -> None:
     for bad in (None, [], "checkout", 7):
         answer = ww.execute_workspace_operation(bad)
-        assert (answer["ok"], answer["stderr_class"]) == (False, "bad_argument")
+        assert answer["ok"] is False
+        assert answer["stderr_class"] == "bad_argument"
 
 
 def test_execute_uses_the_injected_spawn(rig) -> None:

@@ -236,6 +236,11 @@ class ExtensionCapabilities:
                 target.chmod(0o555)
             mounted.add(
                 (state["name"], state["revision"], state["generation"]))
+        # The temporary parent stays private to the daemon. This selected tree
+        # must be traversable after the mapper retires to the owner, regardless
+        # of the daemon umask; its cell mount is read-only.
+        for folder in (directory, *(p for p in directory.rglob("*") if p.is_dir())):
+            folder.chmod(0o755)
         _MOUNTS.set(frozenset(mounted))
         return True
 

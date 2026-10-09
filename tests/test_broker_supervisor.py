@@ -14,9 +14,6 @@ import pytest
 
 from tinyassets.broker.supervisor import BrokerSupervisor, BrokerUidSplitRequired
 
-pytestmark = pytest.mark.skipif(
-    not hasattr(os, "pidfd_open"), reason="the adoption pins a Linux process handle")
-
 PROOF = "x" * 48
 
 #: A LIVE pid, so the adoption's process handle stays unreadable and the

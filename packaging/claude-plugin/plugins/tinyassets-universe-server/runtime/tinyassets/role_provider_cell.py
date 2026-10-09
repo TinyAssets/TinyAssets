@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import resource
 import stat
 
 MAX_CONFIG_BYTES = 64 * 1024
@@ -179,6 +178,8 @@ def copy_snapshot(source, destination):
 
 
 def cell_main(data_root, *, execution=False, egress=False, engine=False):
+    import resource
+
     # No RLIMIT_AS: Node/V8 reserves large virtual ranges. Discovery has the
     # mapper's fixed 35s deadline; execution has no wall clock, only CPU time
     # plus the mapper's external RSS/process-count guard.

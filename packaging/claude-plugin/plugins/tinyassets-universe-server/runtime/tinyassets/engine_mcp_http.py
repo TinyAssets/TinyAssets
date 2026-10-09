@@ -10,7 +10,7 @@ transport connects reliably, so the engine server runs over HTTP.
 This starts one loopback HTTP engine server per SERVING universe and KEEPS them
 running — so the capability survives a container recreate AND a lone engine-server
 crash, with no host tending it (the founder's "24/7 without this computer" rule).
-Each server is PINNED to exactly one ``(founder actor, universe graph)`` via env,
+Each server is PINNED to exactly one ``(founder actor, universe graph)`` in its own handler module,
 binds ``127.0.0.1`` only, and requires a per-server bearer secret on every request
 (Codex gate #6 — the loopback listener is reachable by any in-container process).
 
@@ -19,8 +19,8 @@ handlers over shared stores, so it never enters an owner cell (per-role D9/F1).
 The untrusted side is the provider CLI, which runs as its owner in a
 provider-exec cell and reaches only its own center's server, through a pinned
 relay socket forwarded to the route's loopback port inside the cell, plus the
-bearer. The daemon is made non-dumpable before any server starts, so a server
-cannot read the daemon's environment or memory through procfs.
+bearer. Handlers run in the daemon, sharing its bootstrap-installed broker and mapper
+clients. No additional daemon-UID interpreter is spawned.
 
 Admission follows current serving ownership and admin ACL, not a vetted-universe
 list. Deleted or ambiguous owners fail closed. A versioned owner/port/secret route map is
@@ -35,8 +35,6 @@ import os
 import re
 import secrets
 import socket
-import subprocess
-import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,78 +270,48 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
 
 
 class _EngineServer:
-    """One pinned loopback engine MCP server subprocess, with a stable secret."""
-
-    __slots__ = ("universe_id", "owner", "port", "secret", "grant_key", "_data_dir", "proc",
-                 "_oauth_service")
+    """One pinned loopback endpoint using the daemon's installed role clients."""
 
     def __init__(self, universe_id, owner, port, data_dir_env):
-        self.universe_id = universe_id
-        self.owner = owner
-        self.port = port
-        self.secret = secrets.token_urlsafe(32)
-        self.grant_key = secrets.token_urlsafe(32)
+        self.universe_id, self.owner, self.port = universe_id, owner, port
+        self.secret, self.grant_key = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         self._data_dir = data_dir_env
-        self.proc = None
-        self._oauth_service = None
+        self.thread = self.server = self.endpoint = None
 
     def start(self) -> bool:
-        from tinyassets.connection_oauth.service import ENV, client_config, release_client
-        from tinyassets.platform_secrets import child_env
+        import uvicorn
 
-        release_client(self._oauth_service)
-        oauth_service = client_config(Path(self._data_dir) / self.universe_id, self.owner)
-        self._oauth_service = oauth_service
+        from tinyassets.engine_endpoint import EngineEndpoint
+        from tinyassets.storage import data_dir
 
-        # Keep daemon-only credentials out of the inherited environment. The
-        # daemon itself is non-dumpable (``supervisor._protect_daemon``), so
-        # its /proc environ and memory stay closed to this same-uid child.
-        env = child_env(os.environ)
-        env[ENV] = json.dumps(oauth_service)
-        env["TINYASSETS_ENGINE_ACTOR_ID"] = self.owner
-        env["TINYASSETS_ENGINE_GRAPH_ID"] = self.universe_id
-        env["TINYASSETS_DATA_DIR"] = self._data_dir
-        env["TINYASSETS_ENGINE_MCP_HTTP_PORT"] = str(self.port)
-        env["TINYASSETS_ENGINE_MCP_HTTP_SECRET"] = self.secret
-        env["TINYASSETS_ENGINE_MCP_GRANT_KEY"] = self.grant_key
-        # The engine acts for this owner: it joins the owner tree, so its death
-        # is part of the proof a successor needs (execution-owner-lease D2).
-        from tinyassets.owner_lease import TREE_ENV
-
-        if os.environ.get(TREE_ENV):
-            env[TREE_ENV] = os.environ[TREE_ENV]
-        try:
-            self.proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
-                [sys.executable, "-m", "tinyassets.engine_mcp_server"],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:  # noqa: BLE001
-            release_client(self._oauth_service)
-            logger.exception(
-                "engine http: failed to start server for %s", self.universe_id
-            )
-            return False
-        logger.info(
-            "engine http: started server for %s on 127.0.0.1:%d",
-            self.universe_id, self.port,
+        if Path(self._data_dir).resolve() != data_dir().resolve():
+            raise ValueError("engine endpoint root differs from the daemon root")
+        if self.alive():
+            raise RuntimeError("engine endpoint is already serving")
+        if self.endpoint is not None:
+            self.endpoint.close()
+        self.endpoint = EngineEndpoint(self.owner, self.universe_id, self.secret, self.grant_key)
+        self.server = uvicorn.Server(uvicorn.Config(
+            self.endpoint, host="127.0.0.1", port=self.port, log_level="warning",
+        ))
+        self.thread = threading.Thread(
+            target=self.server.run, name=f"engine-mcp-{self.universe_id}", daemon=True,
         )
+        self.thread.start()
         return True
 
     def alive(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
+        return self.thread is not None and self.thread.is_alive()
 
     def stop(self) -> None:
-        from tinyassets.connection_oauth.service import release_client
-
-        release_client(self._oauth_service)
-        if self.proc is not None and self.proc.poll() is None:
-            try:
-                self.proc.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+        if self.server is not None:
+            self.server.should_exit = True
+        if self.thread is not None:
+            self.thread.join(timeout=10)
+            if self.thread.is_alive():
+                raise RuntimeError("engine endpoint did not retire; its port remains reserved")
+        if self.endpoint is not None:
+            self.endpoint.close()
 
 
 def _write_routes(root: Path, servers) -> None:
@@ -402,8 +370,7 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
     if not root.is_absolute():
         raise ValueError("engine MCP data root must be absolute")
     data_dir_env = str(root)
-    # Before the first same-uid child exists: no engine server may read the
-    # daemon's environment or memory. Refuses unless the daemon is retired.
+    # Serving begins only after the daemon has retired its bootstrap authority.
     _protect_daemon()
 
     servers: dict[str, _EngineServer] = {}
@@ -418,9 +385,10 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
         return port
 
     def _retire(uid: str) -> None:
-        srv = servers.pop(uid, None)
+        srv = servers.get(uid)
         if srv is not None:
             srv.stop()
+            servers.pop(uid)
             used_ports.discard(srv.port)  # release the port (Codex 2026-08-19 d3)
 
     # Initial servers for whatever is serving now.
@@ -447,18 +415,11 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
                     _retire(uid)
                     changed = True
                 # Respawn crashed servers for still-desired universes.
-                respawned = False
                 for uid, srv in servers.items():
                     if not srv.alive():
                         logger.warning("engine http: respawning dead server %s", uid)
                         srv.start()
-                        changed = respawned = True
-                if respawned:
-                    # The dead child's runs: its liveness lock is gone, so this
-                    # is proof, not a guess. Recover them now, not next tick.
-                    from tinyassets.api.runs import recover_dead_owner_runs_now
-
-                    recover_dead_owner_runs_now()
+                        changed = True
                 # Stand up servers for newly-serving (or re-owned) universes.
                 for uid, owner in current.items():
                     if uid not in servers:
