@@ -45,7 +45,14 @@ def store():
         "(state_hash TEXT PRIMARY KEY, cookie_hash TEXT NOT NULL, verifier BLOB NOT NULL, "
         "redirect_uri TEXT NOT NULL, expires_at REAL NOT NULL)"
     )
-    conn.execute("DELETE FROM owner_login_flows WHERE expires_at<=?", (time.time(),))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS owner_login_completions "
+        "(handle_hash TEXT PRIMARY KEY, state_hash TEXT UNIQUE NOT NULL, "
+        "payload BLOB NOT NULL, expires_at REAL NOT NULL)"
+    )
+    conn.execute("DELETE FROM owner_login_completions WHERE expires_at<=?", (time.time() - 600,))
+    # Keep expired rows briefly so a late callback can explain expiry and age.
+    conn.execute("DELETE FROM owner_login_flows WHERE expires_at<=?", (time.time() - 600,))
     conn.execute("DELETE FROM owner_sessions WHERE expires_at<=?", (time.time(),))
     conn.commit()
     try:
@@ -169,47 +176,120 @@ async def begin(request):
     return response
 
 
-async def callback(request):
+async def complete(request):
+    return await callback(request, completion=True)
+
+
+async def callback(request, *, completion=False):
     import httpx
     from starlette.concurrency import run_in_threadpool
-    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-    from tinyassets.auth.middleware import _get_provider
-    from tinyassets.onboarding import app_config
+    from tinyassets.auth.middleware import _get_provider, current_identity_or_none
+    from tinyassets.onboarding import _read_small_json, app_config, onboarding_enabled
     from tinyassets.onboarding.session_store import seal_key
+
+    row = None
 
     def refused(reason, *, upstream_status=None):
         # Never log URLs, codes, cookies, tokens, state, or exception strings.
+        try:
+            referer = urlsplit(request.headers.get("referer", ""))
+            referer_origin = (
+                f"{referer.scheme}://{referer.hostname}"
+                + (f":{referer.port}" if referer.port else "")
+                if referer.scheme in {"http", "https"} and referer.hostname else None
+            )
+        except ValueError:
+            referer_origin = None
+        diagnostics = {
+            "cookie_names": sorted(request.cookies),
+            "sec_fetch_site": request.headers.get("sec-fetch-site"),
+            "sec_fetch_mode": request.headers.get("sec-fetch-mode"),
+            "referer_origin": referer_origin,
+            "flow_age_seconds": round(time.time() - (row["expires_at"] - 600), 1)
+            if row is not None else None,
+        }
         logging.getLogger(__name__).warning(
-            "owner_sign_in_refused reason=%s upstream_status=%s", reason, upstream_status,
-            extra={"refusal_reason": reason, "upstream_status": upstream_status},
+            "owner_sign_in_refused reason=%s upstream_status=%s diagnostics=%s",
+            reason, upstream_status, json.dumps(diagnostics, ensure_ascii=True),
+            extra={"refusal_reason": reason, "upstream_status": upstream_status, **diagnostics},
         )
-        response = HTMLResponse(
-            "Sign-in could not finish. Close this window and try again.",
-            status_code=403,
-            headers=HEADERS,
-        )
+        message = ("This sign-in link expired. Start sign-in again."
+                   if reason == "flow_expired" else
+                   "Sign-in could not finish. Start sign-in again.")
+        response = (JSONResponse({"error": reason, "message": message},
+                                 status_code=403, headers=HEADERS) if completion else
+                    HTMLResponse(message, status_code=403, headers=HEADERS))
         response.delete_cookie(FLOW_COOKIE, secure=True, httponly=True, samesite="lax")
         return response
 
+    cfg = app_config()
     state = request.query_params.get("state", "")
+    code = request.query_params.get("code", "")
+    bearer_identity = None
+    if completion:
+        if not onboarding_enabled() or not cfg["configured"]:
+            return refused("not_configured")
+        origin = urlsplit(cfg["resource"])
+        if (request.headers.get("origin") != f"{origin.scheme}://{origin.netloc}"
+                or request.headers.get("content-type", "").split(";")[0].strip().lower()
+                != "application/json"):
+            return refused("same_origin_json_required")
+        bearer_identity = current_identity_or_none()
+        if (not request.headers.get("authorization", "").lower().startswith("bearer ")
+                or bearer_identity is None or not bearer_identity.user_id):
+            return refused("bearer_required")
+        data = await _read_small_json(request, limit=4096)
+        handle = data.get("completion") if isinstance(data, dict) else None
+        if not isinstance(handle, str) or len(handle) != 43:
+            return refused("invalid_completion")
+        with store() as conn:
+            pending = conn.execute(
+                "SELECT * FROM owner_login_completions WHERE handle_hash=?", (hashed(handle),)
+            ).fetchone()
+        if pending is None:
+            return refused("completion_not_found")
+        try:
+            sealed = pending["payload"]
+            state, code = json.loads(AESGCM(seal_key()).decrypt(
+                sealed[:12], sealed[12:], handle.encode()))
+        except (InvalidTag, ValueError, TypeError):
+            return refused("invalid_completion")
     # Purpose is part of the server-minted, persisted state, not a callback flag.
     app_login = state.startswith("oa_app_")
     cookie = request.cookies.get(FLOW_COOKIE, "")
-    if not cookie:
-        return refused("missing_flow_cookie")
     with store() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT * FROM owner_login_flows WHERE state_hash=? AND cookie_hash=? AND expires_at>?",
-            (hashed(state), hashed(cookie), time.time()),
+            "SELECT * FROM owner_login_flows WHERE state_hash=?",
+            (hashed(state),),
         ).fetchone()
         if row is None:
-            return refused("flow_not_found_cookie_mismatch_or_expired")
-        if not request.query_params.get("code"):
+            return refused("flow_not_found")
+        if row["expires_at"] <= time.time():
+            return refused("flow_expired")
+        if not cookie:
+            if not completion:
+                if not code or len(code) > 4096:
+                    return refused("missing_or_invalid_authorization_code")
+                handle = secrets.token_urlsafe(32)
+                nonce = secrets.token_bytes(12)
+                sealed = nonce + AESGCM(seal_key()).encrypt(
+                    nonce, json.dumps([state, code]).encode(), handle.encode())
+                try:
+                    conn.execute("INSERT INTO owner_login_completions VALUES (?,?,?,?)",
+                                 (hashed(handle), hashed(state), sealed, row["expires_at"]))
+                except sqlite3.IntegrityError:
+                    return refused("callback_already_received")
+                return RedirectResponse("/app#owner_completion=" + handle,
+                                        status_code=303, headers=HEADERS)
+        if not completion and not secrets.compare_digest(row["cookie_hash"], hashed(cookie)):
+            return refused("flow_cookie_mismatch")
+        if not code:
             return refused("missing_authorization_code")
         conn.execute("DELETE FROM owner_login_flows WHERE state_hash=?", (hashed(state),))
-    cfg = app_config()
+        conn.execute("DELETE FROM owner_login_completions WHERE state_hash=?", (hashed(state),))
     try:
         sealed = row["verifier"]
         verifier = AESGCM(seal_key()).decrypt(sealed[:12], sealed[12:], state.encode()).decode()
@@ -220,7 +300,7 @@ async def callback(request):
                     "grant_type": "authorization_code",
                     "client_id": cfg["client_id"],
                     "redirect_uri": row["redirect_uri"],
-                    "code": request.query_params["code"],
+                    "code": code,
                     "code_verifier": verifier,
                     "resource": cfg["resource"],
                 },
@@ -230,6 +310,8 @@ async def callback(request):
         identity = await run_in_threadpool(_get_provider().resolve_token, tokens["access_token"])
         if identity is None or not identity.user_id:
             return refused("identity_unresolved")
+        if completion and identity.user_id != bearer_identity.user_id:
+            return refused("identity_mismatch")
         refresh = tokens.get("refresh_token")
         if app_login and (not isinstance(refresh, str) or not 0 < len(refresh) <= 4096):
             return refused("app_refresh_missing_or_invalid")
@@ -257,8 +339,8 @@ async def callback(request):
     handoff = approval_handoff.return_path(request, identity.user_id)
     if handoff:
         destination = handoff
-    response = RedirectResponse(destination, status_code=303,
-                                headers=HEADERS)
+    response = (JSONResponse({"redirect": destination}, headers=HEADERS) if completion else
+                RedirectResponse(destination, status_code=303, headers=HEADERS))
     if app_login:
         from tinyassets.onboarding import (
             _REFRESH_COOKIE,

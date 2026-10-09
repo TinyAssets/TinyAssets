@@ -113,7 +113,9 @@ def test_app_callback_requires_original_browser_and_unexpired_purpose(login, kin
             else:
                 params["state"] = params["state"].replace("oa_app_", "oa_")
             response = await client.get("/app", params=params)
-            assert response.status_code == 403
+            assert response.status_code == (303 if kind == "missing_cookie" else 403)
+            if kind == "missing_cookie":
+                assert response.headers["location"].startswith("/app#owner_completion=")
             assert not client.cookies.get(sessions.COOKIE)
             assert not client.cookies.get(onboarding._REFRESH_COOKIE)
             assert not calls
