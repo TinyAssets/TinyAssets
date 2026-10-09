@@ -1055,3 +1055,29 @@ def test_universe_read_through_a_symlinked_root_is_refused(tmp_path):
     (tmp_path / "alias").symlink_to(tmp_path / "real", target_is_directory=True)
     with pytest.raises(OSError):
         read_universe_file(tmp_path / "alias", "soul.md")
+
+
+@posix_only
+def test_every_lease_is_owner_scoped_so_reclamation_takes_the_two_pass_route(
+    tmp_path,
+) -> None:
+    """A wipe inside a command center is the owner's pass, then the daemon's.
+
+    The scratch pool used to sit beside the centers, where the daemon owned
+    everything and could delete it alone -- so the classifier excepted that
+    root by name. The pool is inside the center now and the LEASE is the
+    owner's own directory, which the daemon cannot remove; the exception is
+    gone, and a scratch lease takes the same two-pass route as a permanent
+    generation (``role_owner_delete.remove_subtree``).
+    """
+    fs = wfs.RealPoolFilesystem()
+    fs._data_root = Path(os.path.abspath(tmp_path))
+    center = Path(os.path.abspath(tmp_path)) / "cc-alice"
+
+    assert fs.owner_scoped(center / "workspaces" / "scratch" / ("a" * 32))
+    assert fs.owner_scoped(center / "workspaces" / "scratch" / ".quarantine" / "a.1")
+    assert fs.owner_scoped(center / "workspaces" / "h--o--n" / "1")
+    # Platform state is the daemon's own, and so is anything outside the root.
+    assert not fs.owner_scoped(Path(os.path.abspath(tmp_path)) / ".workspace-staging" / "r")
+    assert not fs.owner_scoped(center), "a center root is admission's, not a subtree"
+    assert not fs.owner_scoped(Path("/elsewhere/deep"))
