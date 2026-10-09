@@ -707,6 +707,7 @@ def _provision_checkout(
     requested: Any, *, base_path: Path, resource: Any, host: str, repo: str,
     lease: Any, lease_fd: int, repo_fd: int, run_id: str, node_id: str,
     universe_id: str, timeout_seconds: float, should_cancel: Callable[[], bool] | None,
+    principal: str,
 ) -> dict[str, Any]:
     """Consent -> complete manifest admission -> fresh reservation -> execution.
 
@@ -751,6 +752,7 @@ def _provision_checkout(
         max_bytes=bound, refusal="workspace_provision_failed")
     result = execute_provision(
         manifests, lease_fd=lease_fd, repo_fd=repo_fd, max_transfer_bytes=bound,
+        universe_dir=base_path, principal=principal,
         storage_bound=bound, timeout_s=timeout_seconds,
         cancelled=should_cancel if should_cancel is not None else lambda: False)
     _reconcile_operation(base_path, operation_id, result.bytes_to_charge)
@@ -917,6 +919,7 @@ def _checkout(
             provision_evidence = _provision_checkout(
                 packet["provision"], base_path=base_path, resource=resource,
                 host=host, repo=repo, lease=lease, lease_fd=lease_fd, repo_fd=repo_fd,
+                principal=principal,
                 run_id=run_id, node_id=node_id, universe_id=universe_id,
                 timeout_seconds=timeout_seconds, should_cancel=should_cancel)
         # A cancellation arriving between the final stage and publication still

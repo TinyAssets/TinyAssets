@@ -509,11 +509,13 @@ class OwnerLauncher:
             fields.update(('revision', 'ta', 'egress'))
         if kind == 'owner-delete':
             fields.add('delete_token')
-        socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
+        socket_count = (1 if kind == 'workspace-provision' else
+                        sum(request.get(key) is True for key in ('egress', 'ta'))
                         if kind in ('tool-jail', 'package', 'workspace-remote') else
                         sum(request.get(key) is True for key in ('egress', 'engine'))
                         if kind in ('provider-discovery', 'provider-exec') else 0)
-        mounted = kind in {'workspace-git', 'workspace-remote', 'preview-write', 'tool-jail',
+        mounted = kind in {'workspace-git', 'workspace-remote', 'workspace-provision',
+                           'preview-write', 'tool-jail',
                            'tool-files', 'provider-discovery', 'provider-exec', 'package',
                            'owner-delete', 'owner-delete-subtree',
                            'center-root'} or (
@@ -521,12 +523,13 @@ class OwnerLauncher:
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'workspace-remote',
-                                'ui-preview', 'preview-write',
+                                'workspace-provision', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
                                 'package', 'owner-delete', 'owner-delete-subtree',
                                 'center-root'}
-                or (kind in ('center-root', 'owner-delete-subtree') and not streaming)
+                or (kind in ('center-root', 'owner-delete-subtree', 'workspace-provision')
+                    and not streaming)
                 # A workspace operation reaches a remote only through the
                 # center's own checking proxy. Making an empty workspace
                 # reaches nothing, and gets no socket at all.
@@ -650,7 +653,7 @@ class OwnerLauncher:
                     or info.st_uid not in (inner, self.overflow_uid)
                     or not source.startswith(prefix) or source.endswith(' (deleted)')):
                 raise ValueError('subtree is not an owner directory inside the admitted center')
-        if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
+        if kind in ('workspace-git', 'workspace-provision') or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
                 raise ValueError('git directory is not owned by the admitted owner')
@@ -658,6 +661,14 @@ class OwnerLauncher:
             prefix = self.data_root + '/' + request['command_center'] + '/'
             if not source.startswith(prefix) or source.endswith(' (deleted)'):
                 raise ValueError('git directory is outside the admitted command center')
+        if kind == 'workspace-provision':
+            info = os.fstat(received[2])
+            source = os.readlink(f'/proc/self/fd/{received[2]}')
+            prefix = self.data_root + '/.universe-sidecars/' + request['command_center'] + '/'
+            if (not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != self.overflow_uid or not source.startswith(prefix)
+                    or not re.fullmatch(r'registry-[a-f0-9]{32}\.sock', source[len(prefix):])):
+                raise ValueError('registry relay is outside the admitted center')
         fd = received[0]
         self._daemon_endpoint(fd, socket.SOCK_STREAM)
         status_channel = None
@@ -687,7 +698,7 @@ class OwnerLauncher:
                     stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
                 retained = (3,) if mounted else ()
                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
-                             'package', 'workspace-remote') and socket_count:
+                             'package', 'workspace-remote', 'workspace-provision') and socket_count:
                     import fcntl
 
                     # Copy before assigning fixed slots, so a destination
@@ -698,6 +709,9 @@ class OwnerLauncher:
                     os.dup2(sources[1], 3)
                     index = 2
                     retained = [3]
+                    if kind == 'workspace-provision':
+                        os.dup2(sources[2], 4)
+                        retained.append(4)
                     slots = ((('egress', 4), ('engine', 5)) if kind.startswith('provider-')
                              else (('egress', 4), ('ta', 5)))
                     for name, target in slots:
@@ -753,6 +767,9 @@ class OwnerLauncher:
                                'workspace' if mounted else 'data', self.data_root, str(inner)]
                 elif kind == 'workspace-git':
                     command = ['/usr/local/libexec/ta-git.py', 'enter', str(inner), self.data_root]
+                elif kind == 'workspace-provision':
+                    command = ['/usr/local/libexec/ta-provision.py', 'enter', str(inner),
+                               self.data_root]
                 elif kind == 'workspace-remote':
                     command = ['/usr/local/libexec/ta-git.py', 'enter-remote', str(inner),
                                self.data_root, 'e' if request['egress'] else '-']
@@ -775,7 +792,7 @@ class OwnerLauncher:
         # never a clock.
         deadline = float('inf') if kind in ('provider-exec', 'package') else time.monotonic() + (
             155 if kind == 'ingestion-video' else
-            1810 if kind in ('node-sandbox', 'workspace-remote') else
+            1810 if kind in ('node-sandbox', 'workspace-remote', 'workspace-provision') else
             660 if kind == 'tool-jail' else
             75 if kind == 'ui-preview' else
             65 if kind == 'workspace-git' else 35)

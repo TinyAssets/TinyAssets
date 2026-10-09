@@ -368,6 +368,7 @@ COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
 COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
 COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
 COPY deploy/role_git.py /usr/local/libexec/ta-git.py
+COPY deploy/role_provision.py /usr/local/libexec/ta-provision.py
 COPY deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.py
 COPY deploy/role_migrate.py /usr/local/libexec/ta-migrate.py
 COPY deploy/broker_main.py /app/broker_main.py
@@ -395,7 +396,7 @@ RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker /run/tinyassets-roles/bro
     chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh \
         /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-launch.py \
         /usr/local/libexec/ta-owner-launch.py /usr/local/libexec/ta-decoder.py \
-        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-admission-contract.py \
+        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py /usr/local/libexec/ta-admission-contract.py \
         /usr/local/libexec/ta-migrate.py && \
     /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 

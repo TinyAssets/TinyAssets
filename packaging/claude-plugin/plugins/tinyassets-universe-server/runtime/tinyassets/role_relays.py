@@ -17,7 +17,7 @@ def directory(path, *, create):
     if (path.parent.parent.name != UNIVERSE_SIDECARS_DIR
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", path.parent.name)
             or not re.fullmatch(
-                r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12}|ta-[a-f0-9]{32})\.sock",
+                r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12}|ta-[a-f0-9]{32}|registry-[a-f0-9]{32})\.sock",
                 path.name)):
         raise PermissionError("invalid role relay path")
     descriptor = workspace_fs.open_dir_nofollow(path.parent.parent.parent)
@@ -84,6 +84,7 @@ def pin_for_owner(path, center, uid, *, kind):
     from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
 
     pattern = (rf'egress-{os.getpid()}\.sock' if kind == 'egress'
+               else r'registry-[a-f0-9]{32}\.sock' if kind == 'registry'
                else r'ta-[a-f0-9]{32}\.sock' if kind == 'ta'
                else rf'engine-{os.getpid()}-[a-f0-9]{{12}}\.sock' if kind == 'engine' else '')
     if (type(uid) is not int or not OWNER_ID_FIRST <= uid <= OWNER_ID_LAST

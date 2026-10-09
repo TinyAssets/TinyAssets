@@ -64,7 +64,7 @@ COMPOSE_ENV = {
 MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 #: Every in-container leg this script can drive, in the order it drives them.
 LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
-             "provider_exec", "workspace_remote", "two_pass_delete")
+             "provider_exec", "workspace_remote", "workspace_provision", "two_pass_delete")
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
 #: skipped: the oracle refuses to pretend an unproven thing is proven.
@@ -496,6 +496,43 @@ def leg_workspace_remote():
                 daemon_pool_acl_grants_only_this_owner=True)
 
 
+def leg_workspace_provision():
+    """Real acquisition and offline pip install as the owner, without dependencies."""
+    import secrets
+    from tinyassets import role_remote_git, workspace_owner_pool, workspace_fs
+    from tinyassets.workspace_provision import admit_requirements
+    from tinyassets.workspace_provision_execution import execute_provision
+    from tinyassets.workspace_resolver import ProvisionManifests
+
+    principal = 'alice'
+    center = DATA / center_of(principal)
+    identity = owner_identity(DATA, principal=principal)
+    parts = list(workspace_owner_pool.pool_parts('scratch', ''))
+    name = secrets.token_hex(12)
+    answer = role_remote_git.run(
+        dict(op='create', timeout_s=60, options=[], storage='scratch',
+             lease_parent=parts, lease_name=name),
+        universe_dir=center, principal=principal, egress_socket=None)
+    assert answer['ok'], answer
+    lease = center / Path(*parts) / name
+    lease_fd = workspace_fs.open_dir_nofollow(lease)
+    repo_fd = workspace_fs.open_subdir_nofollow(lease_fd, 'repo')
+    try:
+        result = execute_provision(
+            ProvisionManifests(admit_requirements(''), None),
+            lease_fd=lease_fd, repo_fd=repo_fd, universe_dir=center, principal=principal,
+            max_transfer_bytes=1024 * 1024, storage_bound=128 * 1024 * 1024,
+            timeout_s=120, cancelled=lambda: False)
+        assert result.failure is None and result.bytes_to_charge == 0, result
+        made = (lease / 'repo' / '.venv').stat()
+        assert (made.st_uid, made.st_gid) == (identity.uid, identity.gid), made
+    finally:
+        os.close(repo_fd)
+        os.close(lease_fd)
+    return dict(center=center.name, machine=identity.uid, installed='.venv',
+                bytes_to_charge=result.bytes_to_charge, registry_retired_before_install=True)
+
+
 def leg_two_pass_delete():
     """D10/D85/D218: owner pass, daemon pass, retire; zero bytes left."""
     principal = 'bob'
@@ -531,6 +568,7 @@ LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
         'admission': leg_admission, 'new_center_cell': leg_new_center_cell,
         'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
         'workspace_remote': leg_workspace_remote,
+        'workspace_provision': leg_workspace_provision,
         'two_pass_delete': leg_two_pass_delete}
 
 report, failed = {}, []

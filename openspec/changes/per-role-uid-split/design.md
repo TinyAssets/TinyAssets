@@ -219,6 +219,16 @@ shared stores, and the network.
 
 ## 6. Build order: three PRs
 
+The founder's final integration instruction folds these into one cutover PR.
+Workspace dependency provisioning is preserved: its acquisition and offline
+installation run as the owner in a `workspace-provision` cell with a pinned
+lease. Acquisition receives only an invocation-scoped registry relay (HTTPS to
+the three existing registry hosts, shared transfer and connection budget).
+The daemon closes that relay and confirms quiescence before installation.
+Installation receives no network relay. Canonical manifest digests, storage,
+output, memory, cancellation and deadline bounds remain mandatory. The daemon
+retains the full transfer reservation whenever terminal evidence is uncertain.
+
 | PR | Contents | Release-critical (cap 8) | Proof | Days |
 |---|---|---|---|---|
 | **1. Migration and runbook (inert)** | `deploy/role_migrate.py` (forward-only fold of the five U2 modules); `role_admission_contract.py` (kept parts); the inert deploy modules `role_owner_launcher`, `role_decoder`, `role_git`, `broker_main` (no Dockerfile `COPY` yet); the broker admission tables; probes and tests; the runbook | 6 | Root oracle (`linux_oracle.py`): kill at every step, then rerun, gives a byte-identical manifest (path, uid, gid, mode, ACL, sha), and a converged rerun is a no-op. Preflight refuses each precondition. Rehearsal on a restored copy of the latest production backup: `--check` 0 diffs, 0 cross-owner inodes, wall time recorded. Snapshot restore round-trip keeps numeric owners and ACLs. Merges like any PR. | 3–4 |

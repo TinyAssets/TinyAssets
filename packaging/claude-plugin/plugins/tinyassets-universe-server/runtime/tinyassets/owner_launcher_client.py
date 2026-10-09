@@ -204,7 +204,7 @@ class OwnerLauncherClient:
                             'extensions', 'revision', 'delete_token'}:
             raise ValueError('unsupported cell parameters')
         if socket_fds and (kind not in ('tool-jail', 'package', 'provider-discovery',
-                                        'provider-exec', 'workspace-remote')
+                                        'provider-exec', 'workspace-remote', 'workspace-provision')
                            or len(socket_fds) > 2):
             raise ValueError('unsupported cell sockets')
         if (extension_fd is not None) is not bool(document.get('extensions')):
