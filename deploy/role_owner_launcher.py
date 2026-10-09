@@ -516,6 +516,7 @@ class OwnerLauncher:
                         if kind in ('provider-discovery', 'provider-exec') else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
                            'provider-discovery', 'provider-exec', 'package', 'owner-delete',
+                           'owner-delete-subtree',
                            'center-root'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
@@ -523,8 +524,9 @@ class OwnerLauncher:
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
-                                'package', 'owner-delete', 'center-root'}
-                or (kind == 'center-root' and not streaming)
+                                'package', 'owner-delete', 'owner-delete-subtree',
+                                'center-root'}
+                or (kind in ('center-root', 'owner-delete-subtree') and not streaming)
                 or (kind == 'owner-delete' and (not streaming
                     or type(request['delete_token']) is not str
                     or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
@@ -633,6 +635,16 @@ class OwnerLauncher:
                         or not re.fullmatch(rf'engine-{self.daemon_pid}-[a-f0-9]{{12}}\.sock',
                                             source[len(prefix):])):
                     raise ValueError('provider engine relay does not match admitted center')
+        if kind == 'owner-delete-subtree':
+            # Pool reclamation: one owner subtree strictly below the center root,
+            # removed by the owner first (two-pass); no account deletion fence.
+            info = os.fstat(received[1])
+            source = os.readlink(f'/proc/self/fd/{received[1]}')
+            prefix = self.data_root + '/' + request['command_center'] + '/'
+            if (not stat.S_ISDIR(info.st_mode) or info.st_gid != inner
+                    or info.st_uid not in (inner, self.overflow_uid)
+                    or not source.startswith(prefix) or source.endswith(' (deleted)')):
+                raise ValueError('subtree is not an owner directory inside the admitted center')
         if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
@@ -718,7 +730,7 @@ class OwnerLauncher:
                 elif kind == 'ingestion-video':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
                                'video', self.data_root, str(inner)]
-                elif kind == 'owner-delete':
+                elif kind in ('owner-delete', 'owner-delete-subtree'):
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-owner-delete',
                                'delete', self.data_root, str(inner)]
                 elif kind == 'center-root':
