@@ -68,6 +68,7 @@ async def handle_connections(request):
     def run():
         from tinyassets.api.helpers import _base_path
         from tinyassets.api.http_connection import _project, remove_http
+        from tinyassets.broker.supervisor import broker_selected
         from tinyassets.onboarding.serving import _require_current_admin
         from tinyassets.providers.connection_lifecycle import unfinished_disconnections
         from tinyassets.shared_self import require_founder_home
@@ -89,10 +90,20 @@ async def handle_connections(request):
                     },
                 )
                 return result, 409 if result.get("error") else 200
-            ledger = ConnectionLedger(base / "outbound.db")
+            selected = broker_selected()
+            if selected:
+                from tinyassets.broker.catalog import connections
+
+                inventory = connections(
+                    base, principal=identity.user_id, command_center=uid, limit=100)
+            else:
+                ledger = ConnectionLedger(base / "outbound.db")
+                inventory = (
+                    (grant, ledger.get_connection(grant.connection_id), None)
+                    for grant in ledger.list_grants(owner_user_id=identity.user_id, universe_id=uid)
+                )
             rows = []
-            for grant in ledger.list_grants(owner_user_id=identity.user_id, universe_id=uid):
-                resource = ledger.get_connection(grant.connection_id)
+            for grant, resource, incarnation in inventory:
                 if (
                     resource
                     and resource.owner_user_id == identity.user_id
@@ -101,7 +112,8 @@ async def handle_connections(request):
                     rows.append(
                         {
                             **_project(resource, grant),
-                            "incarnation": ledger.incarnation(resource.connection_id),
+                            "incarnation": incarnation if selected
+                            else ledger.incarnation(resource.connection_id),
                         }
                     )
             known = {row["connection_id"] for row in rows}

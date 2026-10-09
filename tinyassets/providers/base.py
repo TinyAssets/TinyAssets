@@ -404,6 +404,13 @@ class ModelConfig:
     request_attempt: int | None = field(default=None, repr=False, compare=False)
     """Router-owned ordinal. The HTTP broker consumes it; never caller authority."""
 
+    invocation_owner_user_id: str = field(default="", repr=False, compare=False)
+    """Router-owned principal from admitted serving/work authority.
+
+    Internal broker routing context, not a capability. The router overwrites
+    caller input for every dispatch; source definitions cannot supply it.
+    """
+
     secondary_call: bool = False
     """This call is the platform's own bookkeeping beside a founder turn, not the
     turn. Set for post-reply learning extraction; never for a served reply.

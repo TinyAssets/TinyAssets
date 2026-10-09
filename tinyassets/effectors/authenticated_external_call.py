@@ -922,14 +922,29 @@ def _build_url(request: dict[str, Any], host: str) -> tuple[str, str]:
 # from "successful wire-request assertion via an injected driver").
 # --------------------------------------------------------------------------- #
 def _read_connection_context(
-    *, db_path: Path, grant_id: str, connection_id: str, universe_id: str
+    *, db_path: Path, grant_id: str, connection_id: str, universe_id: str,
+    principal: str = "",
 ) -> tuple[Any, Any, str]:
-    """Return ``(grant, connection_view, error_kind)`` — plain reads, no principal.
+    """Return ``(grant, connection_view, error_kind)`` for the admitted scope.
 
     Enforces the isolation gate: the grant must exist, be active, and be bound to
     the RUNNING universe. ``error_kind`` empty on success.
     """
-    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
+
+    if broker_selected():
+        from tinyassets.broker.ledger_queries import authorized_connection
+
+        if not principal:
+            return None, None, "no_universe_authority"
+        try:
+            grant, resource, _incarnation = authorized_connection(
+                Path(db_path).parent, principal=principal, command_center=universe_id,
+                grant_id=grant_id, connection_id=connection_id)
+        except GrantResolutionError:
+            return None, None, "connection_authority_unavailable"
+        return grant, resource.to_view(), ""
 
     ledger = ConnectionLedger(db_path)
     grant = ledger.get_grant(grant_id)
@@ -963,7 +978,31 @@ def _open_connection_proxy(
     row), gated upstream by the universe match. ``resolve_exact_scoped_proxy``
     spawns the broker worker; the credential is resolved and applied inside it.
     """
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    if broker_selected():
+        from tinyassets.broker.ledger_queries import authorized_connection
+        from tinyassets.storage.outbound_connections import (
+            ProxyRequestError,
+            ScopedConnectionProxy,
+            _broker_channel,
+        )
+
+        grant, resource, _incarnation = authorized_connection(
+            Path(db_path).parent, principal=owner_user_id, command_center=universe_id,
+            grant_id=grant_id, connection_id=connection_id)
+        if resource.connection_type != "http":
+            raise ProxyRequestError("credential broker requires an HTTP connection")
+        channel = _broker_channel(
+            Path(db_path).parent, principal=owner_user_id, command_center=universe_id,
+            grant_id=grant_id, connection_id=connection_id)
+        if channel is None:
+            raise ProxyRequestError("credential broker channel unavailable")
+        return ScopedConnectionProxy(
+            grant_id=grant.grant_id, provider=resource.provider,
+            destination=resource.destination, scopes=resource.scopes,
+            access_mode=resource.access_mode, _channel=channel)
 
     ledger = ConnectionLedger(
         db_path,
@@ -1088,11 +1127,17 @@ def _run(
             "matched_output_key": matched_key,
         }
 
+    from tinyassets.auth.middleware import current_identity_or_none
+
+    identity = current_identity_or_none()
+    principal = (execution_context.owner if execution_context is not None
+                 else identity.user_id if identity is not None else "")
     grant, view, gate_error = _read_connection_context(
         db_path=db_path,
         grant_id=grant_id,
         connection_id=connection_id,
         universe_id=universe_id,
+        principal=principal,
     )
     if gate_error:
         return {

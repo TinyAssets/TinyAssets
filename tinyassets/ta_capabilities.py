@@ -60,12 +60,23 @@ class Capabilities:
         # A launch whose grant withholds connections neither lists nor calls one.
         if not self.connections_granted:
             return {}
-        ledger = ConnectionLedger(self.root.parent / "outbound.db")
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.broker.catalog import connections
+
+            inventory = ((grant, view) for grant, view, _ in connections(
+                self.root.parent, principal=self.context.owner,
+                command_center=self.context.universe))
+        else:
+            ledger = ConnectionLedger(self.root.parent / "outbound.db")
+            # No catalogue truncation. Existing ledger API has no cursor.
+            inventory = ((grant, ledger.get_connection_view(grant.connection_id))
+                         for grant in ledger.list_grants(owner_user_id=self.context.owner,
+                                                         universe_id=self.context.universe,
+                                                         limit=2**31 - 1))
         found = {}
-        # No catalogue truncation. Existing ledger API has no cursor.
-        for grant in ledger.list_grants(owner_user_id=self.context.owner,
-                                        universe_id=self.context.universe, limit=2**31 - 1):
-            view = ledger.get_connection_view(grant.connection_id)
+        for grant, view in inventory:
             if (view is None or view.owner_user_id != self.context.owner
                     or view.revoked_at is not None or view.connection_type != "http"):
                 continue

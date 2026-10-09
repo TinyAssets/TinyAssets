@@ -101,6 +101,12 @@ def configure_provider_capability(
             "resource": "provider_capability",
         }
 
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        return _configure_broker_capability(
+            base=base, actor=actor, home=home, authority=authority,
+            document=document, enabled=enabled)
     ledger = ConnectionLedger(base / "outbound.db")
     grant = ledger.get_grant(authority.grant_id)
     connection = ledger.get_connection_view(authority.connection_id)
@@ -122,6 +128,42 @@ def configure_provider_capability(
             descriptor=document.get("descriptor"),
             enabled=enabled,
         )
+    except (LookupError, PermissionError, SsrfValidationError, ValueError) as exc:
+        return {"error": "provider_capability_invalid", "detail": str(exc)}
+    response: dict[str, Any] = {
+        "status": "configured" if enabled else "revoked",
+        "capability_kind": document["capability_kind"],
+        "provider": authority.provider,
+    }
+    if capability is not None:
+        response["descriptor"] = capability.descriptor()
+    return response
+
+
+def _configure_broker_capability(
+    *, base, actor: str, home: str, authority, document: dict[str, Any], enabled: bool,
+) -> dict[str, Any]:
+    """The selected broker's form of the serving-provider capability write."""
+    from tinyassets.broker.capabilities import capability_operation
+    from tinyassets.broker.ledger_queries import authorized_connection
+    from tinyassets.storage.outbound_connections import GrantResolutionError, SsrfValidationError
+
+    try:
+        authorized_connection(base, principal=actor, command_center=home,
+                              grant_id=authority.grant_id, connection_id=authority.connection_id)
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
+    try:
+        capability = capability_operation(
+            base, principal=actor, command_center=home, grant_id=authority.grant_id,
+            action="configure",
+            connection_id=authority.connection_id,
+            capability_kind=document.get("capability_kind"),
+            descriptor=document.get("descriptor"),
+            enabled=enabled,
+        )
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
     except (LookupError, PermissionError, SsrfValidationError, ValueError) as exc:
         return {"error": "provider_capability_invalid", "detail": str(exc)}
     response: dict[str, Any] = {
@@ -178,26 +220,52 @@ def _configure_model_discovery(
     gate = _validate_http_grant(base=base, universe_id=uid, actor=actor, grant_id=definition.ref)
     if gate is not None:
         return gate
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(definition.ref)
-    if grant is None or grant.owner_user_id != actor or grant.universe_id != uid:
-        return dict(_NOT_FOUND)
-    try:
-        capability = ledger.configure_capability(
-            connection_id=grant.connection_id,
-            capability_kind="model_discovery",
-            descriptor=document.get("descriptor"),
-            enabled=enabled,
-            expected_grant=grant,
-            preview=preview,
-        )
-    except (LookupError, PermissionError):
-        return dict(_NOT_FOUND)
-    except (SsrfValidationError, ValueError):
-        return {
-            "error": "provider_capability_invalid",
-            "detail": "discovery descriptor is invalid or its URLs are not permitted",
-        }
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.broker.capabilities import capability_operation
+        from tinyassets.broker.ledger_queries import granted_resource_row
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        try:
+            row = granted_resource_row(base, principal=actor, command_center=uid,
+                                       grant_id=definition.ref)
+            capability = capability_operation(
+                base, principal=actor, command_center=uid, grant_id=definition.ref,
+                action="configure", connection_id=row["connection_id"],
+                capability_kind="model_discovery",
+                descriptor=document.get("descriptor"),
+                enabled=enabled,
+                preview=preview,
+            )
+        except (LookupError, PermissionError, GrantResolutionError):
+            return dict(_NOT_FOUND)
+        except (SsrfValidationError, ValueError):
+            return {
+                "error": "provider_capability_invalid",
+                "detail": "discovery descriptor is invalid or its URLs are not permitted",
+            }
+    else:
+        ledger = ConnectionLedger(base / "outbound.db")
+        grant = ledger.get_grant(definition.ref)
+        if grant is None or grant.owner_user_id != actor or grant.universe_id != uid:
+            return dict(_NOT_FOUND)
+        try:
+            capability = ledger.configure_capability(
+                connection_id=grant.connection_id,
+                capability_kind="model_discovery",
+                descriptor=document.get("descriptor"),
+                enabled=enabled,
+                expected_grant=grant,
+                preview=preview,
+            )
+        except (LookupError, PermissionError):
+            return dict(_NOT_FOUND)
+        except (SsrfValidationError, ValueError):
+            return {
+                "error": "provider_capability_invalid",
+                "detail": "discovery descriptor is invalid or its URLs are not permitted",
+            }
     response: dict[str, Any] = {
         "status": "preview" if preview else ("configured" if enabled else "revoked"),
         "capability_kind": "model_discovery",
