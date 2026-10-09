@@ -121,9 +121,6 @@ PINNED: dict[str, list[str]] = {
         "save: os.replace()",
         "save: os.unlink()",
     ],
-    "tinyassets/api/first_contact.py": [
-        "ensure_founder_home: shutil.rmtree()",
-    ],
     "tinyassets/api/pending_requests.py": [
         "_first_power_preset: .read_text()",
     ],
@@ -135,7 +132,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/api/universe.py": [
         "_action_control_daemon: .unlink()",
         "_action_create_universe: .write_text()",
-        "_action_create_universe: shutil.rmtree()",
         "_action_switch_universe: .write_text()",
         "_read_founder_offers: .read_text()",
         "_write_founder_offers: os.replace()",
@@ -237,7 +233,6 @@ PINNED: dict[str, list[str]] = {
         "try_acquire_idle_cycle_slot: os.replace()",
     ],
     "tinyassets/ingestion/extractors.py": [
-        "_extract_pdf: .open()",
         "synthesize_source: .read_text()",
     ],
     "tinyassets/knowledge/raptor.py": [
@@ -293,7 +288,6 @@ PINNED: dict[str, list[str]] = {
         "read_expected_instance_id: .open()",
     ],
     "tinyassets/process_liveness.py": [
-        "owner_state: os.open()",
         "remove_if_dead: .unlink()",
         "remove_if_dead: .unlink()",
         "remove_if_dead: .unlink()",
@@ -334,6 +328,14 @@ PINNED: dict[str, list[str]] = {
         "_write: .unlink()",
         "_write: os.replace()",
         "list_commons_definitions: .read_text()",
+    ],
+    # owner-dynamic-admission DA3: every call is descriptor-relative with
+    # O_NOFOLLOW; the setgid hand-off cannot go through the path helpers.
+    "tinyassets/role_center_admission.py": [
+        "_open_dir: os.open()",
+        "_remove_tree: os.unlink()",
+        "admit_center: os.open()",
+        "admit_center: os.open()",
     ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
@@ -399,9 +401,6 @@ PINNED: dict[str, list[str]] = {
         "_read_raw: .read_text()",
         "_write_raw: .write_text()",
         "_write_raw: os.replace()",
-    ],
-    "tinyassets/universe_egress.py": [
-        "__init__: .unlink()",
     ],
     "tinyassets/ui_preview.py": [
         # The host-wide render slot's flock holder at the DATA ROOT

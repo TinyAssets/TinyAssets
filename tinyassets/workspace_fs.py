@@ -927,6 +927,11 @@ class RealPoolFilesystem:
         self._retry_total_s = retry_total_s
         self._retry_step_s = retry_step_s
         self._sleep = sleep
+        from tinyassets.storage import data_dir
+
+        # Resolved once, before any check: the data root is where command
+        # centers live, and their subtrees delete in two passes.
+        self._data_root = Path(os.path.abspath(data_dir()))
 
     def exists(self, path: Path) -> bool:
         """Presence WITHOUT following links: a dangling symlink is present, and
@@ -982,10 +987,9 @@ class RealPoolFilesystem:
         daemon cannot remove or move: delete it in place, in two passes."""
         if not self._posix:
             return False
-        from tinyassets.storage import data_dir
-
+        # Lexical only: this check makes no filesystem call by path.
         try:
-            relative = Path(path).relative_to(data_dir().resolve())
+            relative = Path(os.path.abspath(path)).relative_to(self._data_root)
         except ValueError:
             return False
         return (len(relative.parts) >= 2 and not relative.parts[0].startswith(".")
@@ -1003,11 +1007,10 @@ class RealPoolFilesystem:
         target = Path(path)
         if self.owner_scoped(target):
             from tinyassets.role_owner_delete import remove_subtree
-            from tinyassets.storage import data_dir
             from tinyassets.universe_owner import owner_of
 
-            root = data_dir().resolve()
-            owner = owner_of(root, target.relative_to(root).parts[0])
+            center = Path(os.path.abspath(target)).relative_to(self._data_root).parts[0]
+            owner = owner_of(self._data_root, center)
             if not owner:
                 raise UnsafePoolPath("an unowned command center admits no deletion")
             remove_subtree(target, principal=owner)

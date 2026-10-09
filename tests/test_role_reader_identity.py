@@ -11,14 +11,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(autouse=True)
-def isolation_on(monkeypatch):
-    # The D60 identity guards ride the isolation switch (R2); OFF reads as main.
-    from tinyassets.broker.supervisor import ENV_SWITCH, PROCESS
-
-    monkeypatch.setenv(ENV_SWITCH, PROCESS)
-
-
 def test_open_descriptor_checks_uid_and_gid_after_foreign_name_retirement(tmp_path):
     own = tmp_path / "alice"
     own.mkdir()
