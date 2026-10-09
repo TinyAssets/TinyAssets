@@ -33,6 +33,7 @@ import json
 import socket
 import ssl
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -60,9 +61,12 @@ def _approve(prompt, system, role="writer"):
 
 
 @pytest.fixture(autouse=True)
-def _a_reviewer_that_approves():
-    """A bound reviewer grants no authority and does not opt the owner in."""
-    with agent_review.bound(_approve, active=True):
+def _a_reviewer_that_approves(_signed_in_operator):
+    """Bind the connection fixture's owner; review itself grants no authority."""
+    from tinyassets.auth.middleware import identity_context
+
+    with identity_context(replace(_signed_in_operator, user_id="user-1")), \
+            agent_review.bound(_approve, active=True):
         yield
 
 
@@ -90,9 +94,9 @@ def _setup(
         universe_dir,
         [{"credential_type": "http", "destination": vault_name, "token": token}],
     )
-    db_path = data_root / "outbound.db"
+    db_path = data_root / ".broker" / "outbound.db"
     ledger = ConnectionLedger(
-        db_path, verify_authenticated_principal=lambda: "user-1"
+        db_path, data_root=data_root, verify_authenticated_principal=lambda: "user-1"
     )
     ledger.create_connection(
         connection_id="conn-http",
@@ -241,7 +245,7 @@ def _install_inprocess_proxy(
 
 def _read_audit(data_root, grant_id):
     runtime_id = hashlib.sha256(grant_id.encode("utf-8")).hexdigest()
-    path = Path(data_root) / ".outbound-proxy" / runtime_id / "audit.jsonl"
+    path = Path(data_root) / ".broker" / ".outbound-proxy" / runtime_id / "audit.jsonl"
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -545,9 +549,9 @@ def test_second_arbitrary_channel_works_with_zero_platform_code(tmp_path, monkey
 
 
 # --------------------------------------------------------------------------- #
-# Real spawned worker: credential resolved by the worker; effector stays blind
+# Served broker: credential resolved by the broker; effector stays blind
 # --------------------------------------------------------------------------- #
-def test_real_spawned_worker_resolves_credential_and_stays_blind(tmp_path, monkeypatch):
+def test_served_broker_resolves_credential_and_stays_blind(tmp_path, monkeypatch):
     monkeypatch.setenv(_HTTP_FLAG, "1")
     data_root, universe_dir, db_path = _setup(tmp_path)
 
@@ -610,7 +614,8 @@ def test_grant_from_another_universe_is_refused(tmp_path, monkeypatch):
         run_state=run_state,
         base_path=str(other_dir),  # running universe-2; grant is bound to universe-1
     )
-    assert evidence["error_kind"] == "grant_not_for_universe"
+    # The broker does not disclose foreign grant details to the caller.
+    assert evidence["error_kind"] == "connection_authority_unavailable"
 
 
 # --------------------------------------------------------------------------- #
