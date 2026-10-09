@@ -163,7 +163,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/node_sandbox.py::NodeSandbox.run_sync": (CALL_SCOPED, "child process wait"),
+    "tinyassets/node_sandbox.py::NodeSandbox.run_nested": (CALL_SCOPED, "child process wait"),
     "tinyassets/node_sandbox.py::_watch_process_tree_rss": (CALL_SCOPED, "child RSS watch"),
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::blocking_provider_child": (CALL_SCOPED, "slot wait"),
@@ -184,6 +184,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "host-side disk-budget watch for one jailed provider launch; ends with "
         "proc.wait or budget-breach family teardown and settles that launch's budget",
     ),
+    "tinyassets/role_node.py::run": (CALL_SCOPED, "node cell supervision"),
+    "tinyassets/role_package_cell.py::run": (CALL_SCOPED, "package cell supervision"),
+    "tinyassets/role_tools.py::run": (CALL_SCOPED, "tool cell supervision"),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
     "tinyassets/runs.py::await_run_events": (CALL_SCOPED, "caller waits on a run"),

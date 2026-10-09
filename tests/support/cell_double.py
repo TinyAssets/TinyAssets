@@ -69,20 +69,28 @@ def _git(argv, *, cwd, options, timeout_s):
     ``git_bridge`` rewrites absolute pathspecs to ``/workspace/...`` because
     the cell's cwd IS the bound workspace. Here the cwd is the real directory,
     so the same names are turned back into cwd-relative ones.
+
+    A request the cell cannot carry out surfaces as ``OwnerLaunchRefused``,
+    which is what ``role_git.run`` raises when a cell does not complete -- not
+    as the cell's own internal error class.
     """
-    from tinyassets.workspace_git import run_git_in_cell
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
+    from tinyassets.workspace_git import WorkspaceGitError, run_git_in_cell
 
     arguments = list(argv)
     if "--" in arguments:
         for index in range(arguments.index("--") + 1, len(arguments)):
             if arguments[index].startswith("/workspace/"):
                 arguments[index] = arguments[index][len("/workspace/"):]
-    with tempfile.TemporaryDirectory(prefix="ta-cell-git-home-") as home:
-        result = run_git_in_cell(
-            arguments, cwd=cwd, home_dir=home,
-            path=os.environ.get("PATH", "/usr/bin:/bin"), git_binary="git",
-            options=tuple(options), timeout_s=float(timeout_s),
-        )
+    try:
+        with tempfile.TemporaryDirectory(prefix="ta-cell-git-home-") as home:
+            result = run_git_in_cell(
+                arguments, cwd=cwd, home_dir=home,
+                path=os.environ.get("PATH", "/usr/bin:/bin"), git_binary="git",
+                options=tuple(options), timeout_s=float(timeout_s),
+            )
+    except WorkspaceGitError as refused:
+        raise OwnerLaunchRefused(f"git cell did not complete: {refused}") from None
     return SimpleNamespace(returncode=result.returncode, stdout=result.stdout_tail,
                           stderr=result.stderr_scrubbed, cell={})
 

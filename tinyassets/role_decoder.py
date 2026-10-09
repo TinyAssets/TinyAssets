@@ -24,8 +24,8 @@ def decode(data: bytes, mime: str, universe_dir: Path):
     from tinyassets.storage import data_dir
     from tinyassets.tool_images import MAX_IMAGE_SOURCE_BYTES
 
-    if _bounded_client is None:
-        raise RuntimeError("bounded decoder launcher is unavailable")
+    # Scope first, launcher second: a foreign owner, or a caller with no
+    # command center at all, is refused before the bounded channel is touched.
     supervisor._protect_daemon()
     if universe_dir is None:
         raise PermissionError("decoder requires admitted owner scope")
@@ -37,6 +37,8 @@ def decode(data: bytes, mime: str, universe_dir: Path):
                 root, universe_id=universe.name, actor_id=owner) == "admin")
             or not isinstance(data, bytes) or len(data) > MAX_IMAGE_SOURCE_BYTES):
         raise PermissionError("decoder scope is not admitted")
+    if _bounded_client is None:
+        raise RuntimeError("bounded decoder launcher is unavailable")
     identity = owner_identity(root, principal=owner)
     return _bounded_client.decode(data, mime, principal=owner,
                                   command_center=universe.name, identity=identity)
