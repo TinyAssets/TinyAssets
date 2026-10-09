@@ -71,3 +71,56 @@ def test_a_granted_box_tool_with_no_box_is_refused_before_anything_opens(tmp_pat
 
     with pytest.raises(EngineToolError, match="box_unavailable"):
         asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("message", [
+    {"ta": {"op": "catalog"}, "mounts": [["foreign", "revision", 1]]},
+    {"deliver": "extensions"},
+])
+def test_box_cannot_supply_host_envelopes_without_installed_extensions(message):
+    from tinyassets.agent_loop.box_ta import engine_ta
+
+    class Engine:
+        async def call_ta(self, envelope):
+            assert envelope == {"ta": message, "mounts": []}
+            return {"error": "invalid ta request"}
+
+    assert asyncio.run(engine_ta(Engine(), message)) == {"error": "invalid ta request"}
+
+
+@pytest.mark.parametrize("agent", ["main", "helper"])
+def test_extension_delivery_observes_activation_and_revocation_between_launches(tmp_path, agent):
+    from tests.test_one_extension_unit import files
+    from tinyassets.addressed_agents import memory_session
+    from tinyassets.agent_loop.box_ta import engine_deliver
+    from tinyassets.engine_steering import STEERED_PREFIX
+    from tinyassets.extension_state import ExtensionStore
+
+    root = tmp_path / "center"
+    root.mkdir()
+    calls = []
+    bundle = {"extensions": [], "undelivered": []}
+
+    class Engine:
+        async def call_ta(self, message):
+            calls.append(message)
+            return bundle
+
+    def deliver():
+        return asyncio.run(engine_deliver(
+            Engine(), universe_dir=root, owner="owner",
+            session_key=STEERED_PREFIX + memory_session("owner", agent)))
+
+    assert deliver() == bundle
+    assert calls == []
+    store = ExtensionStore(tmp_path, owner="owner", universe=root.name, agent=agent)
+    installed = store.install(files())
+    revision = installed["revision"]
+    assert deliver() == bundle
+    assert calls == []
+    store.transition("sample", revision, expected_generation=0, active=True)
+    assert deliver() == bundle
+    assert calls == [{"deliver": "extensions"}]
+    store.transition("sample", revision, expected_generation=1, active=False)
+    assert deliver() == bundle
+    assert calls == [{"deliver": "extensions"}]

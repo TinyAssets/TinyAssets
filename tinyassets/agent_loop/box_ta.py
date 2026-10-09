@@ -24,13 +24,64 @@ PREFIX = b"\x1eTA1 "
 UNKNOWN = {"error": "ta outcome unknown; do not retry with a new request id"}
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 
-async def engine_ta(engine, message):
-    """Reuse local ta's grants, connection custody, owner gates and review."""
-    return await engine.call_ta(message)
+async def engine_ta(engine, message, mounts=()):
+    """Reuse local ta's grants, connection custody, owner gates and review.
+
+    The box message rides INSIDE the trusted envelope, so a box can never claim
+    a delivery; ``mounts`` are only revisions this host verified and delivered.
+    """
+    # Only the original operation shape may travel bare. An untrusted box
+    # envelope (including delivery requests) must stay nested even without mounts.
+    bare = not mounts and isinstance(message, dict) and "op" in message
+    envelope = message if bare else {"ta": message, "mounts": sorted(map(list, mounts))}
+    return await engine.call_ta(envelope)
+
+
+async def engine_deliver(engine, *, universe_dir=None, owner=None, session_key=""):
+    """Fetch this launch's active extension revisions on the same signed session."""
+    if universe_dir is not None:
+        from tinyassets.addressed_agents import MAIN_AGENT, agent_of_session
+        from tinyassets.command_center_packages import database_path
+        from tinyassets.engine_steering import STEERED_PREFIX
+        from tinyassets.extension_state import ExtensionStore
+
+        agent = MAIN_AGENT
+        if session_key.startswith(STEERED_PREFIX + "agent:"):
+            agent = agent_of_session(session_key[len(STEERED_PREFIX):], owner)
+            if not agent or agent == MAIN_AGENT:
+                # Leave unresolved session authority to the signed engine.
+                return await engine.call_ta({"deliver": "extensions"})
+
+        def active():
+            if not database_path(universe_dir.parent).is_file():
+                return False
+            store = ExtensionStore(universe_dir.parent, owner=owner,
+                                   universe=universe_dir.name, agent=agent)
+            return any(row["state"] == "active" for row in store.list())
+
+        # Re-check each launch so activation during a turn takes effect. A
+        # plain backend read needs no extension transport when none are active.
+        if not await asyncio.to_thread(active):
+            return {"extensions": [], "undelivered": []}
+    return await engine.call_ta({"deliver": "extensions"})
+
+
+def _mounts(value):
+    if not isinstance(value, list):
+        raise ValueError
+    found = set()
+    for item in value:
+        if (not isinstance(item, list) or len(item) != 3
+                or not all(isinstance(x, str) for x in item[:2])
+                or type(item[2]) is not int):
+            raise ValueError
+        found.add(tuple(item))
+    return found
 
 
 async def engine_resource(server, payload):
     """Private MCP resource: no shell, argv limits, or model-facing tool schema."""
+    from tinyassets.extension_capabilities import ExtensionCapabilities, delivered
     from tinyassets.ta_capabilities import engine_dispatch
 
     if len(payload) > 4 * ((MAX_REQUEST + 2) // 3):
@@ -39,23 +90,61 @@ async def engine_resource(server, payload):
         raw = base64.b64decode(payload, altchars=b"-_", validate=True)
         if len(raw) > MAX_REQUEST:
             raise ValueError
-        message = json.loads(raw)
+        envelope = json.loads(raw)
+        if envelope == {"deliver": "extensions"}:
+            message, mounts = None, set()
+        elif isinstance(envelope, dict) and set(envelope) == {"ta", "mounts"}:
+            message, mounts = envelope["ta"], _mounts(envelope["mounts"])
+        elif isinstance(envelope, dict) and "op" in envelope:
+            # Original ta wire shape has no authority to claim mounted bytes.
+            message, mounts = envelope, set()
+        else:
+            raise ValueError
     except (ValueError, TypeError):
         return json.dumps({"error": "invalid ta request"})
     dispatch = await engine_dispatch(server)
     if dispatch is None:
         return json.dumps({"error": "ta authority unavailable"})
-    answer = await asyncio.to_thread(dispatch, message)
+    if message is None:
+        answer = await asyncio.to_thread(ExtensionCapabilities(dispatch.extension_backend).bundle)
+    else:
+        # Dispatch re-checks every revision against current active state.
+        with delivered(mounts):
+            answer = await asyncio.to_thread(dispatch, message)
     encoded = json.dumps(answer)
     if len(encoded.encode()) > MAX_RESPONSE:
         return json.dumps({"error": "ta response too large; request a smaller page"})
     return encoded
 
 
+def verified_bundle(answer):
+    """Content-addressed check on the trusted host before any byte enters a box."""
+    from tinyassets.extension_manifest import Revision
+
+    if not isinstance(answer, dict) or set(answer) != {"extensions", "undelivered"}:
+        raise ValueError("extension delivery unavailable")
+    extensions, mounts = [], set()
+    for item in answer["extensions"]:
+        if set(item) != {"name", "revision", "generation", "blob"}:
+            raise ValueError("invalid extension delivery")
+        blob = base64.b64decode(item["blob"], validate=True)
+        if hashlib.sha256(blob).hexdigest() != item["revision"]:
+            raise ValueError("extension delivery digest mismatch")
+        doc, files = Revision(item["name"], item["revision"], blob).content()
+        if doc["name"] != item["name"] or type(item["generation"]) is not int:
+            raise ValueError("invalid extension delivery")
+        extensions.append({"name": item["name"], "revision": item["revision"],
+                           "files": {path: base64.b64encode(data).decode()
+                                     for path, data in sorted(files.items())}})
+        mounts.add((item["name"], item["revision"], item["generation"]))
+    return extensions, frozenset(mounts)
+
+
 class TurnBridge:
     """One live turn. Receipts survive this object and the platform process."""
 
-    def __init__(self, *, owner, center, turn, handle, database: Path, dispatch):
+    def __init__(self, *, owner, center, turn, handle, database: Path, dispatch,
+                 deliver=None):
         if not all(isinstance(x, str) and x for x in (owner, center, turn)):
             raise ValueError("ta requires owner, center and turn")
         expected = (owner, center, turn)
@@ -68,6 +157,8 @@ class TurnBridge:
         self.scope = json.dumps(expected)
         self.database = database
         self.dispatch = dispatch
+        self.deliver = deliver
+        self._mounts = {}
         self.loop = asyncio.get_running_loop()
         self._lock = threading.Lock()
         self._active = True
@@ -107,6 +198,24 @@ class TurnBridge:
             for future in self._executions.get(execution, ()):
                 future.cancel()
 
+    async def extensions(self, handle, execution):
+        """Verified revision files for one execution; any failure refuses the launch."""
+        if self.deliver is None:
+            return []
+        with self._lock:
+            if not self._active or handle != self.handle or execution in self._cancelled:
+                raise EngineToolError("remote_ta_binding_refused")
+        try:
+            extensions, mounts = verified_bundle(await self.deliver())
+        except Exception:
+            # A delivery is a read and nothing has started, so even a lost reply
+            # (call_ta's "unknown") is not_sent: fail closed, never run against
+            # absent bytes, and never hold the turn for an effect that did not exist.
+            raise EngineToolError("remote_extension_delivery_failed") from None
+        with self._lock:
+            self._mounts[execution] = mounts
+        return extensions
+
     def request(self, handle, execution, request, message):
         """Called on the box collector thread; duplicates never redispatch."""
         if not isinstance(request, str) or not _ID.fullmatch(request):
@@ -127,7 +236,10 @@ class TurnBridge:
                         return {"error": "ta request id reused with different arguments"}
                     return json.loads(row[1]) if row[1] else dict(UNKNOWN)
                 db.execute("INSERT INTO ta_receipts VALUES (?,?,?,?,NULL)", (*key, digest))
-            future = asyncio.run_coroutine_threadsafe(self.dispatch(message), self.loop)
+            mounts = self._mounts.get(execution)
+            call = (self.dispatch(message) if mounts is None
+                    else self.dispatch(message, mounts=mounts))
+            future = asyncio.run_coroutine_threadsafe(call, self.loop)
             self._pending.add(future)
             self._executions.setdefault(execution, set()).add(future)
         try:
@@ -149,11 +261,16 @@ class TurnBridge:
                 self._executions[execution].discard(future)
 
 
-def worker_argv(command, *, root, execution):
-    """Only public source and command arguments cross the box boundary."""
+def worker_argv(command, *, root, execution, extensions=()):
+    """Only public source, command arguments and verified package bytes cross."""
     from tinyassets.ta_capabilities import CLIENT_SOURCE
+    from tinyassets.universe_files import read_data_path
 
-    source = Path(__file__).with_name("box_ta_worker.py").read_text(encoding="utf-8")
+    source = read_data_path(Path(__file__).with_name("box_ta_worker.py"))
+    client = read_data_path(CLIENT_SOURCE)
+    if source is None or client is None:
+        raise FileNotFoundError("remote ta worker or client source is missing")
     bootstrap = json.dumps({"command": command,
-                            "client": CLIENT_SOURCE.read_text(encoding="utf-8")}).encode() + b"\n"
-    return ["python3", "-c", source], bootstrap
+                            "client": client.decode("utf-8"),
+                            "extensions": list(extensions)}).encode() + b"\n"
+    return ["python3", "-c", source.decode("utf-8")], bootstrap
