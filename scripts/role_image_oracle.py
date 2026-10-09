@@ -500,9 +500,24 @@ def leg_engine_http():
                 assert 'OWNER-ENGINE-CELL-OK' in text, text
                 return text
 
+        import tempfile
+        from tinyassets import universe_tools
+        with tempfile.TemporaryDirectory(prefix='ta-') as temporary:
+            extension = Path(temporary) / 'extensions'
+            extension.mkdir()
+            extension.chmod(0o755)
+            (extension / 'proof.txt').write_text('EXTENSION-READ-ONLY-OK')
+            (extension / 'proof.txt').chmod(0o555)
+            with identity_context(Identity(principal, principal)):
+                proof = universe_tools.run_jailed(DATA / center,
+                    ['/bin/sh', '-c', 'cat /ta/extensions/proof.txt; '
+                     '! touch /ta/extensions/forbidden'],
+                    agent_id='main', extension_root=extension)
+            assert proof.exit_code == 0 and b'EXTENSION-READ-ONLY-OK' in proof.output, proof
+            assert not (extension / 'forbidden').exists()
         text = asyncio.run(call())
         return dict(center=center, result=text, daemon_pid=os.getpid(),
-                    endpoint_thread=server.thread.name)
+                    endpoint_thread=server.thread.name, extension_readonly=True)
     finally:
         server.stop()
 

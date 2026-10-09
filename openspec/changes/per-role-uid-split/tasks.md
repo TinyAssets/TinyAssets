@@ -49,6 +49,7 @@ Proof, 2026-10-09: `role_migrate_probe.py` passed all 356 interruption points,
 all preflight refusals, converged no-op, and numeric-owner/mode/ACL snapshot restore.
 The production-shaped migrated-volume image oracle passed serving, admission,
 provider CLIs, workspace/provision cells and deletion at `6f838d1761`; root role
-tests passed 45/45. The new real engine HTTP-to-tool-cell leg exposed nested
-workspace preparation still calling the daemon; completion and final suite proof remain pending.
+tests passed 45/45. The real engine HTTP-to-tool-cell write/read and read-only extension mount now
+pass on the diagnostic image; the final production rebuild and full-suite comparison
+remain pending. Nested prepared-workspace regression tests pass 8/8 on Linux.
 The production-backup rehearsal for 1.4 is recorded in the runbook (2026-10-08).

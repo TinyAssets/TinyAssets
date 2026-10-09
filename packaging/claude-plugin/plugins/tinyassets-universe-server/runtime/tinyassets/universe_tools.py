@@ -345,6 +345,7 @@ def _universe_view(
     ta_socket: Path | None = None,
     extension_root: Path | None = None,
     promote_brain_files: bool = True,
+    workspace_prepared: bool = False,
 ) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
@@ -356,11 +357,22 @@ def _universe_view(
     """
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
-    for name in AGENT_HARNESS_DIRS:
-        path = root / name
-        if not os.path.lexists(path):
-            path.mkdir(mode=0o755)
-    workspace = _workspace(root)
+    if workspace_prepared:
+        # The daemon admitted and prepared this cell through tool-files. The
+        # cell has no launcher authority and must only consume that workspace.
+        workspace = root / WORKSPACE_DIR
+        try:
+            prepared = stat.S_ISDIR(workspace.lstat().st_mode)
+        except OSError:
+            prepared = False
+        if not prepared:
+            raise UniverseToolError("the prepared agent workspace is not a plain directory")
+    else:
+        for name in AGENT_HARNESS_DIRS:
+            path = root / name
+            if not os.path.lexists(path):
+                path.mkdir(mode=0o755)
+        workspace = _workspace(root)
     # The owner's tool cell passes False: its maintenance cell
     # (:func:`tinyassets.role_tool_files.maintain`) has already promoted, as
     # the owner, immediately before this view is built. Promoting again from
@@ -417,6 +429,7 @@ def tool_jail_argv(
     ta_socket: Path | None = None,
     extension_root: Path | None = None,
     promote_brain_files: bool = True,
+    workspace_prepared: bool = False,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     if not agent_id.strip():
@@ -430,7 +443,8 @@ def tool_jail_argv(
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket,
                           extension_root=extension_root,
-                          promote_brain_files=promote_brain_files)
+                          promote_brain_files=promote_brain_files,
+                          workspace_prepared=workspace_prepared)
     # The egress socket lives in the daemon-owned sidecar folder, outside the
     # command center, so it has to be declared as the exact path this jail is
     # allowed to bind from there. A directory prefix is not a capability: the

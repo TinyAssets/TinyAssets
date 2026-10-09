@@ -208,7 +208,7 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                 socket_info = os.fstat(descriptor)
                 socket_sources[key] = [socket_info.st_dev, socket_info.st_ino]
         if extension_root is not None:
-            extension_fd = _pin_extension_root(Path(extension_root))
+            extension_fd = _pin_extension_root(Path(extension_root), identity.uid)
             extension_info = os.fstat(extension_fd)
             socket_sources['x'] = [extension_info.st_dev, extension_info.st_ino]
         with _center_lock(center), seed_boundary(center), tools._slot(
@@ -296,15 +296,32 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
         os.close(fd)
 
 
-def _pin_extension_root(path: Path):
+def _pin_extension_root(path: Path, owner_uid: int):
     """Open the daemon-materialised extension tree, following no link.
 
     The directory is built by ``ta_capabilities.JailBridge`` in the daemon's
     own temporary area for exactly one command, so it must be daemon-owned and
     unwritable by anyone else before a descriptor for it enters a cell.
     """
+    import tempfile
+
+    from tinyassets.role_snapshot import seal
     from tinyassets.workspace_fs import open_dir_nofollow
 
+    if (path.name != 'extensions' or not path.parent.name.startswith('ta-')
+            or path.parent.parent != Path(tempfile.gettempdir()).resolve()):
+        raise PermissionError('extension tree is outside the daemon staging area')
+    parent = open_dir_nofollow(path.parent)
+    try:
+        info = os.fstat(parent)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o027:
+            raise PermissionError('extension staging parent is not private daemon content')
+        # bwrap canonicalizes descriptor mounts before opening their source.
+        # Only this owner may traverse the private staging parent; it cannot
+        # list it, and the credential-blind relay socket retains mode 0600.
+        seal(parent, owner_uid, directory=True, traverse_only=True)
+    finally:
+        os.close(parent)
     descriptor = open_dir_nofollow(path)
     try:
         info = os.fstat(descriptor)
@@ -354,6 +371,7 @@ def cell_main(*, egress=False, ta=False, extensions=False):
         argv = tools.tool_jail_argv(root,
             inner,
             agent_id=request['agent_id'], seccomp_fd=filter_fd, promote_brain_files=False,
+            workspace_prepared=True,
             egress_socket=Path('/tool-egress.sock') if egress else None,
             ta_socket=Path('/tool-ta.sock') if ta else None,
             extension_root=Path(EXTENSION_MOUNT) if extensions else None)

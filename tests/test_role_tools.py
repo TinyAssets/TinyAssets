@@ -63,3 +63,28 @@ def test_image_read_preserves_its_existing_source_allowance(monkeypatch, tmp_pat
     monkeypatch.setattr(universe_tools, 'RUNNER', runner)
     assert 'missing fixture' in universe_tools.read_file(tmp_path, 'image.png', agent_id='main')
     assert seen == [universe_tools.MAX_IMAGE_SOURCE_BYTES]
+
+
+def test_prepared_cell_view_never_requests_daemon_preparation(monkeypatch, tmp_path):
+    workspace = tmp_path / universe_tools.WORKSPACE_DIR
+    workspace.mkdir()
+    (workspace / 'identity.md').write_text('new brain', encoding='utf-8')
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('prepared owner cell requested daemon workspace authority')
+
+    monkeypatch.setattr(role_tools, 'prepare', forbidden)
+    view = universe_tools._universe_view(tmp_path, agent_id='main',
+        workspace_prepared=True, promote_brain_files=False)
+    assert view.mounts[0].source == workspace
+    assert not (tmp_path / 'identity.md').exists()
+    assert not (tmp_path / 'skills').exists()
+
+
+@pytest.mark.parametrize('kind', ['missing', 'file'])
+def test_prepared_cell_view_requires_existing_directory(tmp_path, kind):
+    if kind == 'file':
+        (tmp_path / universe_tools.WORKSPACE_DIR).write_text('invalid', encoding='utf-8')
+    with pytest.raises(universe_tools.UniverseToolError, match='prepared agent workspace'):
+        universe_tools._universe_view(tmp_path, agent_id='main',
+            workspace_prepared=True, promote_brain_files=False)

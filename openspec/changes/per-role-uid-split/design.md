@@ -274,3 +274,10 @@ lifespan context carry that endpoint and its grant key without changing process 
 No daemon-UID engine subprocess is launched. Provider cells retain the same pinned relay
 and bearer protocol. Port reuse requires endpoint retirement; tool authority is still
 rechecked on every call.
+
+Tool extension mounts carry one daemon-pinned directory descriptor in fixed slot 6.
+The mapper checks daemon ownership and no group/other write access; both cell layers
+bind it read-only and verify its inode. Because bubblewrap canonicalizes fd sources,
+the private per-call temporary parent grants only that owner a traverse-only ACL.
+It stays unlistable; the sibling relay socket remains daemon-only. Nested tool cells
+reuse the explicitly prepared workspace and never call daemon preparation again.
