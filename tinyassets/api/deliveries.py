@@ -13,10 +13,11 @@ from tinyassets.storage import deliveries, receiver_links
 
 WRITE_ACTIONS = frozenset({
     "create_receiver", "update_receiver", "revoke_receiver", "connect_output",
-    "disconnect_output", "deliver_output",
+    "disconnect_output", "deliver_output", "answer_delivery",
 })
 READ_ACTIONS = frozenset({
     "inspect_receiver", "discover_receivers", "list_output_links", "get_delivery",
+    "list_deliveries",
 })
 
 
@@ -559,6 +560,55 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
     return receipt
 
 
+def enveloped(receipt):
+    """A receipt whose answer note is marked as the receiving owner's words."""
+    from tinyassets.untrusted import envelope
+
+    answer = receipt.get("answer")
+    if answer:
+        receipt = dict(receipt, answer=dict(
+            answer, note=envelope("receiving-owner", answer["note"])))
+    return receipt
+
+
+def take_answered_notices(*, universe_id, principal_id):
+    """One platform notice per newly answered delivery this sender made, told once.
+
+    Turn context, never a resident prompt line: the agent that filed a patch
+    request learns it shipped (or was declined), so a workaround or a "the
+    platform can't do X" belief built on the gap does not outlive the fix.
+    """
+    with deliveries.transaction(management._base()) as conn:
+        answered = deliveries.take_new_answers_in_transaction(
+            conn, principal_id=principal_id, universe_id=universe_id,
+        )
+    notices = []
+    for receipt in answered:
+        delivery_id = receipt["delivery_id"]
+        note = json.dumps(enveloped(receipt)["answer"]["note"], ensure_ascii=False)
+        notices.append(
+            f"[Platform notice] A request you sent was answered: delivery {delivery_id} "
+            f"is {receipt['outcome']}. Re-check anything in your own files that "
+            "depended on it -- a workaround script, a skill, a note or belief that "
+            "the platform cannot do this -- and update or retire it. "
+            f'read_graph target="delivery" query="{delivery_id}" shows it again. '
+            f"The receiving owner's note: {note}"
+        )
+    return notices
+
+
+def answer_delivery(*, universe_id, delivery_id, outcome, note=""):
+    """The receiving owner says what came of a delivery: ``resolved`` or ``declined``."""
+    principal = management._principal(write=True)
+    base = management._base()
+    management._require_admin(base, universe_id, principal)
+    with deliveries.transaction(base) as conn:
+        return enveloped(deliveries.answer_in_transaction(
+            conn, delivery_id=delivery_id, principal_id=principal,
+            universe_id=universe_id, outcome=outcome, note=note,
+        ))
+
+
 def action(action_name, kwargs):
     """Called only by the canonical extensions action/scope dispatcher."""
     try:
@@ -573,6 +623,7 @@ def action(action_name, kwargs):
             "connect_output": management.connect_output,
             "disconnect_output": management.disconnect_output,
             "deliver_output": deliver_output,
+            "answer_delivery": answer_delivery,
         }
         if action_name in functions:
             if action_name == "create_receiver" and payload.get("receiver_id"):
@@ -590,10 +641,16 @@ def action(action_name, kwargs):
             management._require_admin(base, uid, principal)
             with deliveries.transaction(base) as conn:
                 if action_name == "get_delivery":
-                    result = deliveries.read_receipt_in_transaction(
+                    result = enveloped(deliveries.read_receipt_in_transaction(
                         conn, delivery_id=payload["delivery_id"],
                         principal_id=principal, universe_id=uid,
-                    )
+                    ))
+                elif action_name == "list_deliveries":
+                    result = {"deliveries": [enveloped(item) for item in (
+                        deliveries.list_sent_in_transaction(
+                            conn, principal_id=principal, universe_id=uid,
+                            limit=payload.get("limit") or 20,
+                        ))]}
                 elif action_name == "list_output_links":
                     result = {"links": [dict(row) for row in conn.execute(
                         "SELECT link_id, branch_def_id, node_id, receiver_id, "

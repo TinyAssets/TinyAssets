@@ -82,6 +82,8 @@ def test_run_actions_table_keys_are_expected_set():
         # discover_receivers: any authenticated user searching the receivers whose
         # owners marked them discoverable. A read, so it stays out of the write set.
         "discover_receivers",
+        # The receiving owner's answer to a delivery, and the sender's own list.
+        "answer_delivery", "list_deliveries",
     }
     assert set(_RUN_ACTIONS.keys()) == expected
 
