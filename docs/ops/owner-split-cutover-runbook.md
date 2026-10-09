@@ -4,8 +4,20 @@ One maintenance window moves production from one daemon uid to per-owner
 isolation (`openspec/changes/per-role-uid-split/design.md`). It is forward
 only. Rollback means restoring the snapshot taken in step 3.
 
-Budget about 60 minutes. The founder schedules the window. Replace this line
-with the rehearsal's measured wall time (task 1.4) once it has run.
+Budget about 60 minutes. The founder schedules the window.
+
+Rehearsal (2026-10-08) on a restored copy of the 2026-10-08 03:00 nightly
+backup (68,763 names, 6 centers):
+
+| Step | Result |
+|---|---|
+| `--check` before the apply | 66,007 diffs, preflight passed, 0 cross-owner inodes |
+| The apply | 65,989 entries changed in 3 m 32 s (Docker Desktop disk) |
+| `--check` after the apply | 0 diffs |
+| Converged rerun | 3.7 s, nothing changed |
+
+The bootstrap then accepted all six owner bindings. Plan about 5 minutes for
+step 4.
 
 All host commands run on the production box as root:
 

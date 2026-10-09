@@ -149,6 +149,7 @@ def build(data: Path, *, extra=None):
     # Five-link shape: same-owner multi-link inodes inside one owner's .runtime.
     os.link(data / "u-alice/.runtime/cache/a", data / "u-alice/.runtime/cache/b")
     os.symlink("notes", data / "u-alice" / "notes-link")
+    os.symlink("../cache/a", data / "u-alice" / ".runtime" / "cache" / "scratch-link")
     if extra:
         extra(data)
     for path in (data, *data.rglob("*")):

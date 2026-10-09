@@ -367,14 +367,17 @@ def target(path, info, bindings, modes):
         return "skip"  # the marker step writes it; step 3 removes the staging area
     if re.fullmatch(r"\.layout\.json\.[0-9a-f]{16}\.tmp", path):
         return "remove"  # an interrupted marker write
+    if kind == stat.S_IFLNK and len(parts) > 1:
+        # A link's own label grants nothing and this walk never follows one, so
+        # it and its target are left alone (production: workspace links, and
+        # provider CLI scratch links under .runtime). A top-level link refuses.
+        return "skip"
     if top in bindings:
         machine = bindings[top]
         if len(parts) == 1:
             return (DAEMON, machine, 0o750, canonical_root_acl(machine), None)
         entry = parts[1]
         if entry in OWNER_HIDDEN or not (entry.startswith(".") or entry in VAULT_NAMES):
-            if kind == stat.S_IFLNK:
-                return "skip"  # workspace symlinks and their targets are left alone
             _require_plain(path, kind)
             mode = live & 0o777
             if regular:

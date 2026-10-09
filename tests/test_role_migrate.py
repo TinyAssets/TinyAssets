@@ -74,6 +74,7 @@ def test_owner_work_is_owner_owned_and_daemon_keeps_access():
     assert target("u-a/notes/a.md")[3] == MIGRATE["KEEP"]
     assert target("u-a/.agent-workspace", stat.S_IFDIR, 0o755)[0] == 300001
     assert target("u-a/notes-link", stat.S_IFLNK) == "skip"
+    assert target("u-a/.runtime/provider-child/tmp/task.output", stat.S_IFLNK) == "skip"
 
 
 def test_platform_entries_inside_a_center_stay_daemon_owned():
@@ -104,7 +105,7 @@ def test_sidecar_files_keep_their_own_mode():
 
 @pytest.mark.parametrize("path, kind", [
     ("u-a/notes/pipe", stat.S_IFIFO),
-    ("u-a/.runtime/link", stat.S_IFLNK),
+    ("community-link", stat.S_IFLNK),
     ("community-pool/socket", stat.S_IFSOCK),
 ])
 def test_special_files_refuse(path, kind):
