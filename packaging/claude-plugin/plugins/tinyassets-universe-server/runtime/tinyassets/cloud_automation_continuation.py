@@ -698,7 +698,6 @@ def prepare_inactive_cloud_continuation(
     from tinyassets.storage.cloud_automation_continuation import (
         SQLiteCloudAutomationContinuationStore,
     )
-    from tinyassets.storage.outbound_connections import ConnectionLedger
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,
     )
@@ -715,14 +714,9 @@ def prepare_inactive_cloud_continuation(
     )
     if any(not isinstance(store, expected) for store, expected in stores):
         raise ValueError("cloud continuation stores must use canonical owners")
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.connection_authority import require_connection_authority
 
-    if broker_selected():
-        from tinyassets.broker.connection_authority import require_connection_authority
-
-        require_connection_authority(connection_ledger)
-    elif not isinstance(connection_ledger, ConnectionLedger):
-        raise ValueError("connection_ledger must be a ConnectionLedger")
+    require_connection_authority(connection_ledger)
     control_paths = {Path(store.base_path).resolve() for store, _expected in stores}
     if len(control_paths) != 1:
         raise CloudContinuationPreparationError(
@@ -850,7 +844,6 @@ def advance_active_cloud_continuation(
     from tinyassets.storage.cloud_automation_continuation import (
         SQLiteCloudAutomationContinuationStore,
     )
-    from tinyassets.storage.outbound_connections import ConnectionLedger
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,
     )
@@ -872,14 +865,9 @@ def advance_active_cloud_continuation(
     )
     if any(not isinstance(store, expected) for store, expected in stores):
         raise ValueError("cloud continuation stores must use canonical owners")
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.connection_authority import require_connection_authority
 
-    if broker_selected():
-        from tinyassets.broker.connection_authority import require_connection_authority
-
-        require_connection_authority(connection_ledger)
-    elif not isinstance(connection_ledger, ConnectionLedger):
-        raise ValueError("connection_ledger must be a ConnectionLedger")
+    require_connection_authority(connection_ledger)
     if len({Path(store.base_path).resolve() for store, _kind in stores}) != 1:
         raise CloudContinuationPreparationError(
             "control_plane_mismatch",
@@ -1333,7 +1321,6 @@ class PreparedCloudContinuationActivationService:
         from tinyassets.storage.cloud_automation_continuation import (
             SQLiteCloudAutomationContinuationStore,
         )
-        from tinyassets.storage.outbound_connections import ConnectionLedger
         from tinyassets.storage.provider_work_authority import (
             SQLiteProviderWorkAuthorityStore,
         )
@@ -1352,14 +1339,9 @@ class PreparedCloudContinuationActivationService:
         )
         if any(not isinstance(store, expected) for store, expected in stores):
             raise ValueError("cloud activation service requires canonical stores")
-        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.broker.connection_authority import require_connection_authority
 
-        if broker_selected():
-            from tinyassets.broker.connection_authority import require_connection_authority
-
-            require_connection_authority(connection_ledger)
-        elif not isinstance(connection_ledger, ConnectionLedger):
-            raise ValueError("connection_ledger must be a ConnectionLedger")
+        require_connection_authority(connection_ledger)
         if len({Path(store.base_path).resolve() for store, _expected in stores}) != 1:
             raise ValueError("cloud activation stores must share one control plane")
         if not isinstance(audience_resolver, CloudContinuationAttemptAudienceResolver):

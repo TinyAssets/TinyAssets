@@ -68,11 +68,10 @@ async def handle_connections(request):
     def run():
         from tinyassets.api.helpers import _base_path
         from tinyassets.api.http_connection import _project, remove_http
-        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.broker.catalog import connections
         from tinyassets.onboarding.serving import _require_current_admin
         from tinyassets.providers.connection_lifecycle import unfinished_disconnections
         from tinyassets.shared_self import require_founder_home
-        from tinyassets.storage.outbound_connections import ConnectionLedger
 
         with identity_context(identity):
             uid = onboarding._read_home(identity, raise_errors=True)
@@ -90,18 +89,8 @@ async def handle_connections(request):
                     },
                 )
                 return result, 409 if result.get("error") else 200
-            selected = broker_selected()
-            if selected:
-                from tinyassets.broker.catalog import connections
-
-                inventory = connections(
-                    base, principal=identity.user_id, command_center=uid, limit=100)
-            else:
-                ledger = ConnectionLedger(base / "outbound.db")
-                inventory = (
-                    (grant, ledger.get_connection(grant.connection_id), None)
-                    for grant in ledger.list_grants(owner_user_id=identity.user_id, universe_id=uid)
-                )
+            inventory = connections(
+                base, principal=identity.user_id, command_center=uid, limit=100)
             rows = []
             for grant, resource, incarnation in inventory:
                 if (
@@ -109,13 +98,7 @@ async def handle_connections(request):
                     and resource.owner_user_id == identity.user_id
                     and resource.connection_type == "http"
                 ):
-                    rows.append(
-                        {
-                            **_project(resource, grant),
-                            "incarnation": incarnation if selected
-                            else ledger.incarnation(resource.connection_id),
-                        }
-                    )
+                    rows.append({**_project(resource, grant), "incarnation": incarnation})
             known = {row["connection_id"] for row in rows}
             rows.extend(
                 row

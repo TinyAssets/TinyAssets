@@ -8,7 +8,7 @@ import os
 import sqlite3
 import threading
 import time
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -16,7 +16,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tinyassets.exceptions import ProviderAuthorityHeldError
-from tinyassets.storage import DB_FILENAME
 
 UNBOUNDED = None
 LEARNING_MIN_REMAINING = 10
@@ -464,73 +463,20 @@ def _read_only(path):
 
 def requests_today(base_path, owner, source_ref, *, reset_timezone,
                    zero_priced_models=(), now=None):
-    """Local dispatch evidence plus legacy round estimates, never remote quota.
+    """Local dispatch evidence from the broker's usage store, never remote quota.
 
     Durable attempts use their own UTC dispatch time, including failed/helper
     requests and midnight crossings. Linked journal rounds are excluded, so the
-    same request is not counted twice. Older unlinked rounds remain estimates
-    bucketed by turn creation because they have no dispatch timestamp.
+    same request is not counted twice.
     """
     try:
         current = now or _now()
         reset = current.astimezone(ZoneInfo(reset_timezone)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).astimezone(timezone.utc)
-        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.broker.usage_evidence import daily_counts
 
-        if broker_selected():
-            from tinyassets.broker.usage_evidence import daily_counts
-
-            return daily_counts(base_path, owner, source_ref, reset, current, zero_priced_models)
-        events = []
-        with closing(_read_only(Path(base_path) / DB_FILENAME)) as conn:
-            tables = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'",
-            )}
-            if "agent_request_attempts" in tables:
-                rows = conn.execute(
-                    "SELECT usage_id, ordinal, attempt_json FROM agent_request_attempts "
-                    "WHERE owner=? AND source_ref=? AND dispatched_at IS NOT NULL "
-                    "AND julianday(dispatched_at) >= julianday(?) "
-                    "AND julianday(dispatched_at) <= julianday(?)",
-                    (owner, source_ref, reset.isoformat(), current.isoformat()),
-                )
-                for usage_id, ordinal, raw in rows:
-                    attempt = json.loads(raw)
-                    instant = datetime.fromisoformat(attempt["dispatched_at"])
-                    if attempt["free"] is True and reset <= instant <= current:
-                        events.append((instant, usage_id, ordinal, attempt["state"] == "succeeded"))
-            if "agent_turns" in tables:
-                unlinked = (
-                    "AND NOT EXISTS (SELECT 1 FROM agent_request_usage_links u "
-                    "WHERE u.owner=t.owner_user_id AND u.universe=t.universe_id "
-                    "AND u.kind='turn' AND u.subject_id=t.turn_id) "
-                    if "agent_request_usage_links" in tables else ""
-                )
-                rows = conn.execute(
-                    "SELECT t.created_at, t.turn_id, r.ordinal, r.candidate_json, r.state, "
-                    "r.reply_json FROM agent_turns t JOIN agent_turn_rounds r "
-                    "ON (t.owner_user_id=r.owner_user_id AND t.universe_id=r.universe_id "
-                    "AND t.turn_id=r.turn_id) WHERE t.owner_user_id=? "
-                    "AND julianday(t.created_at) >= julianday(?) "
-                    "AND julianday(t.created_at) <= julianday(?) " + unlinked,
-                    (owner, reset.isoformat(), current.isoformat()),
-                )
-                for created_at, turn_id, ordinal, raw, state, reply in rows:
-                    instant = datetime.fromisoformat(created_at)
-                    candidate = json.loads(raw)
-                    model = candidate.get("model", "")
-                    if (reset <= instant <= current and candidate.get("source_ref") == source_ref
-                            and (model.endswith(":free") or model in zero_priced_models)):
-                        events.append((instant, turn_id, ordinal, reply is not None
-                                       and state not in {"failed", "inference_started"}))
-            elif "agent_request_attempts" not in tables:
-                return None
-        successful = 0
-        for count, event in enumerate(sorted(events), 1):
-            if event[3]:
-                successful = count
-        return len(events), successful
+        return daily_counts(base_path, owner, source_ref, reset, current, zero_priced_models)
     except Exception:  # noqa: BLE001 - unavailable advisory evidence never breaks a turn
         return None
 
@@ -564,10 +510,8 @@ def request_budget(base_path, owner, source_ref, model, *, preset, zero_priced_m
 
 def _source_budget_facts(context, *, owner=None, require_known_free_model=False):
     """Resolve installed source facts and captured prices locally, with no IO to a model."""
-    from tinyassets.broker.supervisor import broker_selected
-
-    selected = broker_selected()
     try:
+        from tinyassets.broker.ledger_queries import granted_resource_row
         from tinyassets.providers.definition import get_definition
         from tinyassets.providers.free_sources import (
             daily_cap_for_host,
@@ -582,30 +526,13 @@ def _source_budget_facts(context, *, owner=None, require_known_free_model=False)
             root.name, selection.connection_id.removeprefix("api_key_http:"),
         )
         if definition is None or (owner is not None and definition.owner_user_id != owner):
-            if selected:
-                raise ProviderAuthorityHeldError("source budget authority is unavailable")
-            return None
-        if selected and not owner:
+            raise ProviderAuthorityHeldError("source budget authority is unavailable")
+        if not owner:
             raise ProviderAuthorityHeldError("source budget requires an admitted owner")
         owner = definition.owner_user_id
-        if selected:
-            from tinyassets.broker.ledger_queries import granted_resource_row
-
-            resource = granted_resource_row(root.parent, principal=owner,
-                                             command_center=root.name, grant_id=definition.ref)
-            endpoints = json.loads(resource["allowed_endpoints_json"])
-        else:
-            with closing(_read_only(root.parent / "outbound.db")) as conn:
-                row = conn.execute(
-                    "SELECT c.allowed_endpoints_json FROM outbound_connections c "
-                    "JOIN outbound_connection_grants g ON c.connection_id = g.connection_id "
-                    "WHERE g.grant_id = ? AND g.owner_user_id = ? AND c.owner_user_id = ? "
-                    "AND g.universe_id = ? AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
-                    (definition.ref, owner, owner, root.name),
-                ).fetchone()
-            if row is None:
-                return None
-            endpoints = json.loads(row[0])
+        resource = granted_resource_row(root.parent, principal=owner,
+                                        command_center=root.name, grant_id=definition.ref)
+        endpoints = json.loads(resource["allowed_endpoints_json"])
         hosts = {ep["host"] for ep in endpoints}
         if len(hosts) != 1:
             return None
@@ -614,10 +541,8 @@ def _source_budget_facts(context, *, owner=None, require_known_free_model=False)
             return None
         preset = daily_cap_for_host(host)
         return owner, preset
-    except Exception as exc:  # noqa: BLE001 - fixed refusal or unavailable advisory facts
-        if selected:
-            raise ProviderAuthorityHeldError("source budget authority is unavailable") from exc
-        return None
+    except Exception as exc:  # noqa: BLE001 - fixed refusal, never an unpriced free pass
+        raise ProviderAuthorityHeldError("source budget authority is unavailable") from exc
 
 
 def metered_free_source(context, selection, *, owner):

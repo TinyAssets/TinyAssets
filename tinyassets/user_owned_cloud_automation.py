@@ -26,10 +26,8 @@ from tinyassets.broker.connection_authority import (
     read_authority,
     require_connection_authority,
 )
-from tinyassets.broker.supervisor import broker_selected
 from tinyassets.evaluation.scenario_runner import AcceptanceScenario
 from tinyassets.provider_work_authority import ProviderWorkBindingState
-from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
@@ -394,11 +392,7 @@ def resolve_inactive_cloud_authority(
         raise ValueError("definition must be a RepositorySpecWorkDefinition")
     if not isinstance(provider_store, SQLiteProviderWorkAuthorityStore):
         raise ValueError("provider_store must be a SQLiteProviderWorkAuthorityStore")
-    selected = broker_selected()
-    if selected:
-        require_connection_authority(connection_ledger)
-    elif not isinstance(connection_ledger, ConnectionLedger):
-        raise ValueError("connection_ledger must be a ConnectionLedger")
+    require_connection_authority(connection_ledger)
 
     try:
         binding = provider_store.get(definition.provider_binding_id)
@@ -433,15 +427,8 @@ def resolve_inactive_cloud_authority(
         ) from exc
 
     try:
-        if selected:
-            principal_id, grant, connection = read_authority(
-                connection_ledger, definition.destination_grant_id)
-        else:
-            principal_id = connection_ledger.require_authenticated_principal_id()
-            grant = connection_ledger.require_active_grant(
-                definition.destination_grant_id
-            )
-            connection = connection_ledger.get_connection(grant.connection_id)
+        principal_id, grant, connection = read_authority(
+            connection_ledger, definition.destination_grant_id)
         expected_destination = definition.repository.strip().lower()
         actual_destination = (
             connection.destination.strip().lower()

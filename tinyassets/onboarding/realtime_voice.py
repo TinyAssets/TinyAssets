@@ -92,7 +92,6 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
         resolve_current_serving_provider_authority,
     )
     from tinyassets.storage.outbound_connections import (
-        ConnectionLedger,
         _enforce_endpoint_allowlist,
         _parse_canonical_https_url,
     )
@@ -120,29 +119,18 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
     if authority.access_method != "api_key_http":
         raise RealtimeVoiceError("provider_voice_unsupported", 409)
 
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.capabilities import capability_operation
+    from tinyassets.broker.ledger_queries import authorized_connection
+    from tinyassets.storage.outbound_connections import ProxyRequestError
 
-    selected = broker_selected()
-    if selected:
-        from tinyassets.broker.capabilities import capability_operation
-        from tinyassets.broker.ledger_queries import authorized_connection
-        from tinyassets.storage.outbound_connections import ProxyRequestError
-
-        try:
-            grant, view, _ = authorized_connection(
-                base, principal=owner_user_id, command_center=universe_id,
-                grant_id=authority.grant_id, connection_id=authority.connection_id)
-        except ProxyRequestError as exc:
-            raise RealtimeVoiceError("voice_broker_unavailable", 503) from exc
-        except Exception as exc:
-            raise RealtimeVoiceError("voice_authority_invalid", 409) from exc
-    else:
-        db_path = base / "outbound.db"
-        if db_path.is_symlink() or not db_path.is_file():
-            raise RealtimeVoiceError("voice_authority_invalid", 409)
-        ledger = ConnectionLedger(db_path)
-        grant = ledger.get_grant(authority.grant_id)
-        view = ledger.get_connection_view(authority.connection_id)
+    try:
+        grant, view, _ = authorized_connection(
+            base, principal=owner_user_id, command_center=universe_id,
+            grant_id=authority.grant_id, connection_id=authority.connection_id)
+    except ProxyRequestError as exc:
+        raise RealtimeVoiceError("voice_broker_unavailable", 503) from exc
+    except Exception as exc:
+        raise RealtimeVoiceError("voice_authority_invalid", 409) from exc
     authorized = bool(
         grant is not None
         and view is not None
@@ -158,19 +146,14 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
     if not authorized:
         raise RealtimeVoiceError("voice_authority_invalid", 409)
     try:
-        if selected:
-            try:
-                capability = capability_operation(
-                    base, principal=owner_user_id, command_center=universe_id,
-                    grant_id=authority.grant_id, connection_id=authority.connection_id,
-                    capability_kind="realtime_voice",
-                )
-            except ProxyRequestError as exc:
-                raise RealtimeVoiceError("voice_broker_unavailable", 503) from exc
-        else:
-            capability = ledger.get_connection_capability(
-                authority.connection_id, "realtime_voice"
+        try:
+            capability = capability_operation(
+                base, principal=owner_user_id, command_center=universe_id,
+                grant_id=authority.grant_id, connection_id=authority.connection_id,
+                capability_kind="realtime_voice",
             )
+        except ProxyRequestError as exc:
+            raise RealtimeVoiceError("voice_broker_unavailable", 503) from exc
     except RealtimeVoiceError:
         raise
     except Exception as exc:
@@ -318,23 +301,10 @@ def session_request(offer_sdp: str) -> dict[str, Any]:
 def _default_proxy_factory(
     universe_dir: Path, owner_user_id: str, binding: VoiceBinding
 ) -> Any:
-    from tinyassets.broker.supervisor import broker_selected
-    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.effectors.authenticated_external_call import _open_connection_proxy
 
-    if broker_selected():
-        from tinyassets.effectors.authenticated_external_call import _open_connection_proxy
-
-        return _open_connection_proxy(
-            db_path=universe_dir.parent / "outbound.db", owner_user_id=owner_user_id,
-            universe_id=universe_dir.name,
-            grant_id=binding.grant_id,
-            connection_id=binding.connection_id,
-        )
-    ledger = ConnectionLedger(
-        universe_dir.parent / "outbound.db",
-        verify_authenticated_principal=lambda: owner_user_id,
-    )
-    return ledger.resolve_exact_scoped_proxy(
+    return _open_connection_proxy(
+        data_root=universe_dir.parent, owner_user_id=owner_user_id,
         universe_id=universe_dir.name,
         grant_id=binding.grant_id,
         connection_id=binding.connection_id,
