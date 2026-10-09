@@ -103,29 +103,36 @@ def _packet(**over: Any) -> dict[str, Any]:
 
 
 class FakeWorker:
-    """Stands in for the spawned worker. Records every request it was given."""
+    """Stands in for the owner cell. Records every request it was given.
 
-    def __init__(self, answer: dict[str, Any] | None = None, staging_holder: list | None = None):
+    The CELL creates the lease and its repository now -- the daemon cannot
+    make a directory the owner owns -- so this double does the same, through
+    the relative name the request carries. A test that asserts a workspace was
+    published therefore has a workspace on disk to publish, and one that
+    asserts a refusal has none.
+    """
+
+    def __init__(self, answer: dict[str, Any] | None = None):
         self.answer = answer if answer is not None else {
             "ok": True,
             "resolved_sha": SHA,
             "bytes": 4096,
-            "bundle_name": "out.bundle",
             "ref_name": "refs/tiny/export",
         }
         self.requests: list[dict] = []
-        self.staging_existed: list[bool] = []
-        self.staging_holder = staging_holder
+
+    def lease_path(self, request: dict[str, Any]) -> Path:
+        return Path(request["universe_dir"], *request["lease_parent"], request["lease_name"])
 
     def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
         self.requests.append(request)
-        # staging must exist WHILE the worker runs and be gone afterwards
-        self.staging_existed.append(Path(request["staging_dir"]).is_dir())
-        # a real worker writes the bundle into the staging dir the parent made
-        staging = Path(request["staging_dir"])
-        if request["op"] == "checkout" and self.answer.get("ok"):
-            (staging / str(self.answer.get("bundle_name") or "out.bundle")).write_bytes(b"PACK")
-        return self.answer
+        answer = dict({"ok": True} if request["op"] == "create" else self.answer)
+        if request["op"] in ("checkout", "create") and answer.get("ok"):
+            (self.lease_path(request) / "repo").mkdir(parents=True, exist_ok=True)
+            answer.setdefault(
+                "lease", "/".join((*request["lease_parent"], request["lease_name"])))
+            answer.setdefault("content", "repo")
+        return answer
 
 
 def test_checkout_receives_only_server_owned_cancel_predicate(tmp_path, monkeypatch):
@@ -149,111 +156,61 @@ def test_checkout_receives_only_server_owned_cancel_predicate(tmp_path, monkeypa
 
 @pytest.fixture()
 def fs_spy(monkeypatch: pytest.MonkeyPatch):
-    """Inject the pool lane's directory-handle helpers.
+    """Double the no-follow directory openers the DAEMON side still uses.
 
-    They are unmerged (``claude/workspace-pool``); the adapter imports them
-    lazily and this is the seam. Asserting THESE were called is what proves the
-    lease directory is created under a no-follow handle rather than with mkdir.
+    Since the owner split the daemon creates nothing: the cell makes the lease
+    and its repository, and the daemon only OPENS them to hold the capability
+    (``_open_cell_lease``). So the two openers are all that is doubled, and
+    asserting they were called is what proves the lease is picked up through a
+    no-follow handle rather than re-resolved by path. They are POSIX-only in
+    production, which is why the double exists at all.
     """
     from tinyassets import workspace_fs
 
-    calls: dict[str, list] = {"open_dir_nofollow": [], "create_lease_dir": [], "copy": []}
+    calls: dict[str, list] = {"open_dir_nofollow": [], "open_subdir_nofollow": []}
 
     def open_dir_nofollow(path):
         calls["open_dir_nofollow"].append(str(path))
         # The REAL helper refuses a missing directory -- it opens, it does not
-        # create. The old fake called `mkdir(parents=True)` here, which
-        # conjured `workspaces/<repo-key>` and hid the fact that a universe's
-        # first permanent checkout could not create them (Codex round 3, P0
-        # #3). A fake that is more permissive than the thing it stands in for
-        # is a fake that hides the bug it is standing in front of.
+        # create. A fake that is more permissive than the thing it stands in
+        # for is a fake that hides the bug it is standing in front of.
         if not Path(path).is_dir():
             raise FileNotFoundError(f"no such directory: {path}")
         return f"fd:{path}"
 
-    def create_lease_dir(parent_fd, name):
-        calls["create_lease_dir"].append((parent_fd, name))
-        parent = Path(str(parent_fd).removeprefix("fd:"))
-        if not parent.is_dir():
-            raise FileNotFoundError(f"no such parent: {parent}")
-        # The REAL helper refuses a name that is not >=16 random hex characters
-        # -- that rule is what makes a name in the SHARED pool root untargetable.
-        # A double without it let the permanent GENERATION directory ('1') go
-        # through here and pass on Windows while Ubuntu CI failed the same test
-        # (run 33355481278). A permissive double is a double that hides the bug.
-        if len(name) < workspace_fs.MIN_LEASE_NAME_CHARS or any(
-            char not in "0123456789abcdef" for char in name
-        ):
-            raise workspace_fs.UnsafePoolPath(
-                f"a lease directory name must be at least "
-                f"{workspace_fs.MIN_LEASE_NAME_CHARS} random hex characters, got {name!r}"
-            )
-        (parent / name).mkdir(exist_ok=True)  # ONE component, never parents
-        return f"fd:{parent}/{name}"
-
-    def create_workspace_subdir(parent_fd, name):
-        calls.setdefault("create_workspace_subdir", []).append((parent_fd, name))
-        parent = Path(str(parent_fd).removeprefix("fd:"))
-        if not parent.is_dir():
-            raise FileNotFoundError(f"no such parent: {parent}")
-        target = parent / name
-        if target.exists():
-            raise FileExistsError(str(target))
-        target.mkdir()
-        return f"fd:{target}"
-
     def open_subdir_nofollow(parent_fd, name):
+        calls["open_subdir_nofollow"].append((parent_fd, name))
         parent = Path(str(parent_fd).removeprefix("fd:"))
         target = parent / name
         if not target.is_dir():
             raise FileNotFoundError(f"no such directory: {target}")
         return f"fd:{target}"
 
-    def copy_regular_file_beneath(dir_fd, relpath, dest_path, *, max_bytes):
-        calls["copy"].append((dir_fd, relpath, str(dest_path), max_bytes))
-        source = Path(str(dir_fd).removeprefix("fd:")) / relpath
-        if not source.is_file():
-            raise FileNotFoundError(relpath)
-        data = source.read_bytes()
-        if len(data) > max_bytes:
-            raise ValueError("bundle exceeds max_bytes")
-        Path(dest_path).write_bytes(data)
-        return len(data)
-
     monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow, raising=False)
-    monkeypatch.setattr(workspace_fs, "create_lease_dir", create_lease_dir, raising=False)
-    # <lease>/repo goes through the SUBDIR helper, not create_lease_dir: the
-    # entropy rule that protects a name in the shared pool root would refuse
-    # "repo". A double for one and not the other lets the real one run here and
-    # refuse on Windows.
-    monkeypatch.setattr(
-        workspace_fs, "create_workspace_subdir", create_workspace_subdir, raising=False
-    )
     monkeypatch.setattr(
         workspace_fs, "open_subdir_nofollow", open_subdir_nofollow, raising=False
-    )
-    monkeypatch.setattr(
-        workspace_fs, "copy_regular_file_beneath", copy_regular_file_beneath, raising=False
     )
     return calls
 
 
 @pytest.fixture()
 def no_real_git(monkeypatch: pytest.MonkeyPatch):
-    """The host-side population is workspace_git's job and is tested there."""
-    populated: list[tuple] = []
+    """Prove the DAEMON side runs no git at all.
 
-    def populate(bundle, dest, ref_name, checkout_ref, *, home_dir, path, **kwargs):
-        populated.append((str(bundle), str(dest), ref_name, checkout_ref))
-        Path(dest).mkdir(parents=True, exist_ok=True)
-        (Path(dest) / ".git").mkdir(exist_ok=True)
-        return SHA
-
-    monkeypatch.setattr(wse, "_git_path", lambda: "/usr/bin")
+    It used to populate the workspace itself from the worker's bundle. Every
+    git step is the cell's now, so any git reached from here is a daemon-uid
+    git that the cutover does not have -- and this fixture makes that a loud
+    failure instead of a quiet one.
+    """
     import tinyassets.workspace_git as wg
 
-    monkeypatch.setattr(wg, "populate_workspace_from_bundle", populate)
-    return populated
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the daemon side must not run git; the owner cell does")
+
+    for name in ("run_git", "run_git_in_cell", "populate_workspace_from_bundle",
+                 "create_bundle", "verify_bundle", "unbundle_into_fresh_repo"):
+        monkeypatch.setattr(wg, name, refuse)
+    return []
 
 
 def _run(
