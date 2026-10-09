@@ -68,6 +68,9 @@ class FakeFs:
         self.present.add(str(dst))
         self.ops.append(("rename", str(src), str(dst)))
 
+    def owner_scoped(self, path: Path) -> bool:
+        return False
+
     def remove_tree_no_follow(self, path: Path) -> None:
         if self.fail_remove is not None and str(path) == self.fail_remove:
             self.ops.append(("remove_failed", str(path)))

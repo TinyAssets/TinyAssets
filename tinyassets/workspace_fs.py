@@ -977,14 +977,41 @@ class RealPoolFilesystem:
         finally:
             os.close(src_fd)
 
+    def owner_scoped(self, path: Path) -> bool:
+        """``path`` lies inside a command center, so its owner wrote entries the
+        daemon cannot remove or move: delete it in place, in two passes."""
+        if not self._posix:
+            return False
+        from tinyassets.storage import data_dir
+
+        try:
+            relative = Path(path).relative_to(data_dir().resolve())
+        except ValueError:
+            return False
+        return (len(relative.parts) >= 2 and not relative.parts[0].startswith(".")
+                and relative.parts[0] != "scratch")
+
     def remove_tree_no_follow(self, path: Path) -> None:
         """Delete a tree bottom-up, never descending into a link or junction.
 
         A path that is already gone is not an error: the processor is
         at-least-once, so a repeat has to be a no-op. Anything else propagates as
         ``OSError`` and the lease becomes ``LOST`` with its bytes still charged.
+        Inside a command center the owner-delete cell runs pass one and the
+        daemon pass two (D10); there is no daemon-only route there.
         """
         target = Path(path)
+        if self.owner_scoped(target):
+            from tinyassets.role_owner_delete import remove_subtree
+            from tinyassets.storage import data_dir
+            from tinyassets.universe_owner import owner_of
+
+            root = data_dir().resolve()
+            owner = owner_of(root, target.relative_to(root).parts[0])
+            if not owner:
+                raise UnsafePoolPath("an unowned command center admits no deletion")
+            remove_subtree(target, principal=owner)
+            return
         if not self._posix:
             _remove_tree_windows(
                 str(target),

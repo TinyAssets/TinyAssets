@@ -20,10 +20,11 @@ from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.providers import call as _provider_call
 
-# The owner-split runtime's test doubles: the in-process broker and the
-# bounded launcher. Production has no fallback; tests opt out of a double
+# The owner-split runtime's test doubles: the in-process broker, the bounded
+# launcher, and center admission/deletion. Production has no fallback; tests opt out of a double
 # with the ``role_split`` marker when they exercise the real one.
-pytest_plugins = ("tests.support.broker_double", "tests.support.cell_double")
+pytest_plugins = ("tests.support.broker_double", "tests.support.cell_double",
+                  "tests.support.admission_double")
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 

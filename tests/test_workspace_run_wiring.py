@@ -32,6 +32,9 @@ class _NoopFs:
     def rename(self, src: Path, dst: Path) -> None:
         raise AssertionError("nothing exists, nothing to rename")
 
+    def owner_scoped(self, path: Path) -> bool:
+        return False
+
     def remove_tree_no_follow(self, path: Path) -> None:
         raise AssertionError("nothing exists, nothing to remove")
 

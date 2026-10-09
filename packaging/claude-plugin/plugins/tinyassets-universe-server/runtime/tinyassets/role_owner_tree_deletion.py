@@ -158,58 +158,76 @@ def daemon_pass(root: str | Path, center: str, *, machine: int) -> dict[str, int
     removals and the intent in place for resume.
     """
     center = _center_name(center)
-    removed = 0
     root_fd = os.open(os.fspath(root), _DIRECTORY)
     try:
-        device = os.fstat(root_fd).st_dev
-
-        def check(info: os.stat_result, relative: str, *, directory: bool,
-                  daemon_parent: bool) -> None:
-            if info.st_dev != device:
-                raise OwnerTreeDeletionRefused("deletion crosses filesystem: " + relative)
-            allowed = {DAEMON_UID, machine} if directory or daemon_parent else {DAEMON_UID}
-            if info.st_uid not in allowed:
-                raise OwnerTreeDeletionRefused("foreign or undeleted entry: " + relative)
-
-        def walk(parent: int, name: str, relative: str, depth: int) -> None:
-            nonlocal removed
-            if depth > _MAX_DEPTH:
-                raise OwnerTreeDeletionRefused("deletion depth bound: " + relative[:1024])
-            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            directory = stat.S_ISDIR(info.st_mode)
-            check(info, relative, directory=directory,
-                  daemon_parent=os.fstat(parent).st_uid == DAEMON_UID and depth > 0)
-            try:
-                if directory:
-                    fd = os.open(name, _DIRECTORY, dir_fd=parent)
-                    try:
-                        if not os.path.samestat(os.fstat(fd), info):
-                            raise OwnerTreeDeletionRefused("entry replaced: " + relative)
-                        for child in sorted(os.listdir(fd)):
-                            walk(fd, child, relative + "/" + child, depth + 1)
-                        os.fsync(fd)
-                    finally:
-                        os.close(fd)
-                    os.rmdir(name, dir_fd=parent)
-                else:
-                    # Unlinking a symlink or hardlink name never touches its target.
-                    os.unlink(name, dir_fd=parent)
-            except OSError as exc:
-                raise OwnerTreeDeletionRefused(
-                    "owner tree deletion failed: " + relative[:1024]) from exc
-            removed += 1
-
         try:
             info = os.stat(center, dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
             return {"removed": 0}
         if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (DAEMON_UID, machine):
             raise OwnerTreeDeletionRefused("center root is not this owner's migrated root")
-        walk(root_fd, center, center, 0)
-        os.fsync(root_fd)
-        return {"removed": removed}
+        return {"removed": _daemon_walk(root_fd, center, machine=machine)}
     finally:
         os.close(root_fd)
+
+
+def daemon_subtree_pass(path: str | Path, *, machine: int) -> dict[str, int]:
+    """Pass two over one subtree (pool reclamation), ``path`` itself included."""
+    path = Path(path)
+    parent_fd = os.open(os.fspath(path.parent), _DIRECTORY)
+    try:
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return {"removed": 0}
+        return {"removed": _daemon_walk(parent_fd, path.name, machine=machine)}
+    finally:
+        os.close(parent_fd)
+
+
+def _daemon_walk(parent_fd: int, top: str, *, machine: int) -> int:
+    removed = 0
+    device = os.fstat(parent_fd).st_dev
+
+    def check(info: os.stat_result, relative: str, *, directory: bool,
+              daemon_parent: bool) -> None:
+        if info.st_dev != device:
+            raise OwnerTreeDeletionRefused("deletion crosses filesystem: " + relative)
+        allowed = {DAEMON_UID, machine} if directory or daemon_parent else {DAEMON_UID}
+        if info.st_uid not in allowed:
+            raise OwnerTreeDeletionRefused("foreign or undeleted entry: " + relative)
+
+    def walk(parent: int, name: str, relative: str, depth: int) -> None:
+        nonlocal removed
+        if depth > _MAX_DEPTH:
+            raise OwnerTreeDeletionRefused("deletion depth bound: " + relative[:1024])
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        directory = stat.S_ISDIR(info.st_mode)
+        check(info, relative, directory=directory,
+              daemon_parent=os.fstat(parent).st_uid == DAEMON_UID and depth > 0)
+        try:
+            if directory:
+                fd = os.open(name, _DIRECTORY, dir_fd=parent)
+                try:
+                    if not os.path.samestat(os.fstat(fd), info):
+                        raise OwnerTreeDeletionRefused("entry replaced: " + relative)
+                    for child in sorted(os.listdir(fd)):
+                        walk(fd, child, relative + "/" + child, depth + 1)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.rmdir(name, dir_fd=parent)
+            else:
+                # Unlinking a symlink or hardlink name never touches its target.
+                os.unlink(name, dir_fd=parent)
+        except OSError as exc:
+            raise OwnerTreeDeletionRefused(
+                "owner tree deletion failed: " + relative[:1024]) from exc
+        removed += 1
+
+    walk(parent_fd, top, top, 0)
+    os.fsync(parent_fd)
+    return removed
 
 
 # --------------------------------------------------------------------------- #

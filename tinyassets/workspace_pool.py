@@ -223,6 +223,8 @@ class PoolFilesystem(Protocol):
 
     def remove_tree_no_follow(self, path: Path) -> None: ...
 
+    def owner_scoped(self, path: Path) -> bool: ...
+
 
 # --------------------------------------------------------------------------
 # schema
@@ -1683,13 +1685,18 @@ def _reconcile_filesystem(fs: PoolFilesystem, src: Path, quarantine: Path) -> No
 
     present/absent -> rename then delete; absent/present -> delete; absent/absent
     -> done; present/present -> delete the stale quarantine first, then rename
-    and delete. Deletion never follows links.
+    and delete. Deletion never follows links. Inside a command center the
+    source is deleted in place (two passes), never renamed.
     """
     src_present = fs.exists(src)
     quarantine_present = fs.exists(quarantine)
     if quarantine_present:
         fs.remove_tree_no_follow(quarantine)
-    if src_present:
+    if src_present and fs.owner_scoped(src):
+        # The daemon cannot move an owner's directory; the two-pass deletion
+        # is resumable in place, and the lease row already names it reclaiming.
+        fs.remove_tree_no_follow(src)
+    elif src_present:
         fs.rename(src, quarantine)
         fs.remove_tree_no_follow(quarantine)
 
