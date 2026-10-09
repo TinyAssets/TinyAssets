@@ -700,11 +700,13 @@ def _root_databases(root: Path) -> list[Path]:
     Per-universe stores go with the universe directory. The shared package
     store is nested outside those directories and must be visited explicitly.
     """
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.command_center_packages import database_path
     from tinyassets.storage import DB_FILENAME
 
     stores = [
         p for p in root.glob("*.db") if p.is_file() and p.name != DB_FILENAME
+        and not (broker_selected() and p.name == "outbound.db")
     ]
     if database_path(root).is_file():
         stores.append(database_path(root))
@@ -744,6 +746,9 @@ def _delivery_deletion_targets(conn, *, principal: str, home: str):
                 # through the receiver's own run bindings and receiver-owned objects,
                 # which this deletion never touches for the other party.
                 targets.append(("graph_delivery_files", child_where, params))
+            if "graph_delivery_answers" in live:
+                # The receiving owner's answer is part of the two-party receipt.
+                targets.append(("graph_delivery_answers", child_where, params))
             targets.append(("graph_deliveries", delivery_where, params))
         targets.extend([
             ("graph_output_links", f"link_id IN ({link_sql})", (home, home)),
@@ -1057,6 +1062,17 @@ def delete_account(
     def _root_rows() -> None:
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
+
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        def _broker_rows() -> None:
+            from tinyassets.broker.account_erasure import erase_account
+
+            removed = erase_account(root, principal=principal)
+            counts.update({f"outbound:{table}": n for table, n in removed.items()})
+
+        _phase("broker_egress", _broker_rows)
 
     staged = _phase("home_staging", lambda: _stage_home(root, home)) if home else None
     staging_failed = "home_staging" in failures

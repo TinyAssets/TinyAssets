@@ -84,6 +84,10 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
             or definition.access_method != "api_key_http"
         ):
             raise ModelDiscoveryUnavailable("source_revoked")
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            return _broker_context(base, owner, uid, definition)
         ledger = ConnectionLedger(base / "outbound.db")
         with ledger._connect() as conn:
             conn.execute("BEGIN")
@@ -175,6 +179,72 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
             ).hexdigest()
             return _Context(definition, profile, digest, resource.auth_scheme)
     except (LookupError, OSError, TypeError, ValueError):
+        raise ModelDiscoveryUnavailable("discovery_unavailable") from None
+
+
+def _broker_context(base: Path, owner: str, uid: str, definition) -> _Context:
+    """The selected broker's discovery facts, read in one broker transaction."""
+    from tinyassets.broker.ledger_queries import DISCOVERY_FACTS, query_ledger
+    from tinyassets.credential_vault import _connection_grant_record_digest
+    from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
+
+    try:
+        facts = query_ledger(base, query=DISCOVERY_FACTS, principal=owner,
+                             command_center=uid, grant_id=definition.ref)
+        resource = _resource_from_row(facts["resource"])
+        if (resource.revoked_at is not None or resource.owner_user_id != owner
+                or resource.connection_type != "http"):
+            raise ModelDiscoveryUnavailable("source_revoked")
+        # The broker chooses the priced catalogue over a declared list within
+        # the same transaction that validates the live grant and connection.
+        use_row = facts["profile"] if facts["profile_kind"] == "model_use" else None
+        if use_row is not None:
+            profile = _validate_connection_capability(
+                resource.connection_id, "model_use", use_row
+            )
+            if not isinstance(profile, ModelUseCapability):
+                raise ValueError("wrong profile kind")
+            if not _verb_within_scopes("POST", resource.scopes, resource.access_mode):
+                raise ModelDiscoveryUnavailable("missing_discovery_scope")
+            if not same_dialect(definition.protocol, profile.wire):
+                raise ModelDiscoveryUnavailable("protocol_mismatch")
+        else:
+            if not _verb_within_scopes("GET", resource.scopes, resource.access_mode):
+                raise ModelDiscoveryUnavailable("missing_discovery_scope")
+            profile_row = facts["profile"]
+            if profile_row is None:
+                raise ModelDiscoveryUnavailable("missing_discovery_scope")
+            profile = _validate_connection_capability(
+                resource.connection_id, "model_discovery", profile_row
+            )
+            if not isinstance(profile, ModelDiscoveryCapability):
+                raise ValueError("wrong profile kind")
+            if resource.auth_scheme != profile.execution_contract().auth_scheme:
+                raise ModelDiscoveryUnavailable("protocol_mismatch")
+        # Existing custody identity, not a new secret hash or permission.
+        identity = _connection_grant_record_digest(
+            grant_id=definition.ref,
+            connection_id=resource.connection_id,
+            credential_ref=resource.credential_ref,
+            owner_user_id=owner,
+            universe_id=uid,
+        )
+        material = {
+            "definition_id": definition.id,
+            "grant_identity": identity,
+            "granted_at": facts["granted_at"],
+            "view": resource.to_view().as_dict(),
+            "profile": profile.descriptor(),
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                material, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        ).hexdigest()
+        return _Context(definition, profile, digest, resource.auth_scheme)
+    except GrantResolutionError:
+        raise ModelDiscoveryUnavailable("source_revoked") from None
+    except (LookupError, OSError, TypeError, ValueError, ProxyRequestError):
         raise ModelDiscoveryUnavailable("discovery_unavailable") from None
 
 

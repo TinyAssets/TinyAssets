@@ -815,6 +815,7 @@
         </div>
         <button id="btn-memory-undo" class="btn btn--link" type="button" disabled>Undo latest change</button>
         <div id="memory-status" class="notice" role="status"></div>
+        <div id="starter-updates" aria-label="Starter file updates"></div>
         <h3>Your agent's rules</h3>
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
@@ -6308,6 +6309,7 @@
     if(editors){ clearTypedValues(editors); editors.textContent=""; }
     const soulStatus=$("soul-status"); if(soulStatus) soulStatus.textContent="";
     const soulSignIn=$("soul-owner-sign-in"); if(soulSignIn) soulSignIn.hidden=true;
+    const updates=$("starter-updates"); if(updates) updates.textContent="";
     const list=$("memory-list");
     if(list){ clearTypedValues(list); list.textContent=""; }
     const draft=$("memory-new"); if(draft) draft.value="";
@@ -7712,11 +7714,52 @@
       undo.disabled=!latest||latest.prior_state==="too large";
       undo.textContent=latest?"Undo latest change to "+latest.path:"Undo latest change";
       undo.onclick=latest?()=>saveMemory({undo:latest.id},context):null;
+      const updates=$("starter-updates"); updates.textContent="";
+      (doc.starter_updates||[]).forEach(update=>{
+        const section=document.createElement("section");
+        const title=document.createElement("h4"); title.textContent="Starter files "+update.version;
+        section.appendChild(title);
+        const payload=update.payload;
+        (payload.diagnostics||[]).forEach(message=>{
+          const text=document.createElement("p"); text.textContent=message; section.appendChild(text);
+        });
+        if(payload.operation!=="undo"){
+          const undoSeed=document.createElement("button"); undoSeed.type="button";
+          undoSeed.className="btn btn--link"; undoSeed.textContent="Undo this file update";
+          undoSeed.onclick=()=>saveMemory({starter_undo:payload.transaction_id,
+            request_key:crypto.randomUUID()},context);
+          section.appendChild(undoSeed);
+        }
+        (payload.choices||[]).filter(choice=>choice.operation==="adopt").forEach(choice=>{
+          const undoChoice=document.createElement("button"); undoChoice.type="button";
+          undoChoice.className="btn btn--link";
+          undoChoice.textContent="Undo adoption of "+choice.paths.map(item=>item.path).join(", ");
+          undoChoice.onclick=()=>saveMemory({starter_undo:choice.transaction_id,
+            request_key:crypto.randomUUID()},context);
+          section.appendChild(undoChoice);
+        });
+        (payload.paths||[]).forEach(item=>{
+          const detail=document.createElement("details"), summary=document.createElement("summary");
+          summary.textContent=item.path+": "+(item.current_outcome||item.outcome); detail.appendChild(summary);
+          const candidate=document.createElement("pre"); candidate.textContent=item.candidate_text||"";
+          detail.appendChild(candidate);
+          if(item.adoptable){
+            const adopt=document.createElement("button"); adopt.type="button";
+            adopt.className="btn btn--link"; adopt.textContent="Use this version";
+            adopt.onclick=()=>saveMemory({starter_adopt:payload.transaction_id,path:item.path,
+              expected_hash:item.current_hash,request_key:crypto.randomUUID()},context);
+            detail.appendChild(adopt);
+          }
+          section.appendChild(detail);
+        });
+        updates.appendChild(section);
+      });
     }
     async function loadMemory(){
       const context=memoryContext();
       $("memory-status").textContent="";
       clearTypedValues($("memory-list")); $("memory-list").textContent="";
+      $("starter-updates").textContent="";
       const undo=$("btn-memory-undo");
       undo.disabled=true; undo.onclick=null; undo.textContent="Undo latest change";
       if(!ownsMemory(context)) return;

@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from tests.owner_answer import connect_owner_provider
 from tests.test_converse_addressed_agent import (  # noqa: F401
     OWNER,
     _agent,
@@ -442,7 +443,11 @@ def test_retirement_restore_cannot_resume_or_ack_an_old_request_wake(
             retire_restore()
         return result
 
+    # The wake runs under the owner's provider authority, so the owner needs one.
+    connect_owner_provider(home, OWNER)
     monkeypatch.setattr(intelligence, "call_provider", inference)
+    monkeypatch.setattr(intelligence, "_call_writer",
+                        lambda turn_input, *, system, **_: inference(turn_input, system))
     results = []
 
     def run(home, payload):

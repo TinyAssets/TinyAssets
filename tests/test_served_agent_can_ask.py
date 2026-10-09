@@ -25,19 +25,6 @@ def _write_graph_source() -> str:
     return inspect.getsource(fn)
 
 
-def _write_graph_guidance() -> str:
-    """Everything the agent can READ about write_graph, resident or fetched.
-
-    Distinct from ``_write_graph_source`` on purpose: that asserts what the
-    IMPLEMENTATION does, this asserts what the AGENT is told. Since 2026-09-26 the
-    long-form half of that is a handbook chapter rather than function source
-    (`openspec/changes/archive/2026-09-26-engine-tool-manual-on-demand/`).
-    """
-    from tinyassets import engine_mcp_server as e
-
-    return e.served_tool_guidance("write_graph")
-
-
 def test_the_agent_can_read_what_it_asked_for():
     from tinyassets import engine_mcp_server as e
 
@@ -79,40 +66,3 @@ def test_an_unknown_pending_request_operation_is_refused(monkeypatch):
                         payload_json="{}"))
     assert "error" in out
     assert "not to you" in out["error"]
-
-
-def test_the_served_guidance_tells_it_to_ask_rather_than_point_at_a_button():
-    """The old text sent the user hunting for a form. That is the behaviour the
-    whole primitive replaces, so the guidance had to change with it."""
-    # REACHABLE, not resident (2026-09-26): the ask guidance is the `connections`
-    # handbook chapter, which the resident index names as covering raising a
-    # credential ask.
-    text = _write_graph_guidance()
-    assert "ASK THEM FOR IT" in text
-    assert 'target="pending_request"' in text
-    assert "You cannot answer your own ask" in text
-
-
-def test_the_guidance_says_a_credential_is_durable_not_one_shot():
-    """Founder, 2026-08-28, watching the universe ask for its first key:
-
-        "it implied it would only keep it for this one shot, which was not the
-        flow i wanted, for credentials unless spasifically told to clear them
-        they are to be in the vault for future use"
-
-    The universe wrote "I will use this GitHub token only to make one bounded UI
-    change ... I will not use it for broader repository changes." Factually the
-    key persists — vault records carry no expiry and nothing clears them — so the
-    sentence was a scope promise that READS as a lifetime one, and nothing in the
-    guidance told it the difference. An owner who believes a key is discarded
-    expects to paste again.
-    """
-    # REACHABLE, not resident (2026-09-26): the durability wording lives in the
-    # `connections` chapter, next to the ask it governs.
-    text = _write_graph_guidance()
-    assert "DURABLE" in text
-    assert "ONGOING ACCESS" in text
-    # It must be told not to make the promise that misleads.
-    assert "only this once" in text
-    # …and pointed at the bound that IS real.
-    assert "the endpoint list already bounds it" in text

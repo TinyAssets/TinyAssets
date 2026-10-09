@@ -24,109 +24,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────
-
-
-def _init_git_repo(repo: Path) -> None:
-    """Initialize a bare git repo at ``repo`` with one empty commit
-    so `git_bridge` treats it as enabled.
-    """
-    subprocess.run(
-        ["git", "init", "-b", "main"], cwd=repo, check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"],
-        cwd=repo, check=True, capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test"],
-        cwd=repo, check=True, capture_output=True,
-    )
-    (repo / "README.md").write_text("seed\n")
-    subprocess.run(
-        ["git", "add", "README.md"], cwd=repo, check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=repo, check=True,
-        capture_output=True,
-    )
-
-
-def _become(user_id: str) -> None:
-    """Sign in as ``user_id``.
-
-    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
-    environment variable -- authority from a string anybody can set. The
-    autouse operator fixture rebinds between tests, so this does not leak.
-    """
-    from tinyassets.auth import middleware as _mw
-    from tinyassets.auth.provider import Identity
-
-    _mw._current_identity.set(
-        Identity(
-            user_id=user_id,
-            username=user_id,
-            display_name=user_id,
-            capabilities=[
-                "tinyassets.universe.read",
-                "tinyassets.universe.write",
-                "tinyassets.universe.admin",
-                "tinyassets.extensions.read",
-                "tinyassets.extensions.write",
-            ],
-        )
-    )
-
-
-@pytest.fixture
-def cached_gates_env(tmp_path, monkeypatch, authenticate_request):
-    """A temp git repo with GATES_ENABLED + sqlite_cached backend."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    base = repo / "output"
-    base.mkdir()
-    monkeypatch.chdir(repo)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    _become("alice")
-    monkeypatch.setenv("GATES_ENABLED", "1")
-    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
-    # Branch mutation requires a credential-derived subject. Without one the
-    # extensions surface returns
-    # `{"error": "Authenticated branch subject required."}` and these tests
-    # die before reaching their own concern. The conftest default grants
-    # extensions read/write/admin only, and the scope check is per-family.
-    # This file drives `gates` and `goals`: `claim` is `gates.costly`,
-    # `define_ladder` / `retract` are `gates.admin`. Nothing here asserts a
-    # scope refusal, so granting them costs no assertion strength.
-    authenticate_request("alice", capabilities=[
-        "tinyassets.extensions.read",
-        "tinyassets.extensions.write",
-        "tinyassets.extensions.admin",
-        "tinyassets.gates.read",
-        "tinyassets.gates.write",
-        "tinyassets.gates.costly",
-        "tinyassets.gates.admin",
-        "tinyassets.goals.read",
-        "tinyassets.goals.write",
-    ])
-    from tinyassets.catalog import backend as backend_mod
-    backend_mod.invalidate_backend_cache()
-    from tinyassets import universe_server as us
-    importlib.reload(us)
-    yield us, base, repo, monkeypatch
-    backend_mod.invalidate_backend_cache()
-    importlib.reload(us)
-
-
-def _call(us, tool, action, **kwargs):
-    return json.loads(getattr(us, tool)(action=action, **kwargs))
 
 
 _LADDER = [
@@ -135,23 +36,6 @@ _LADDER = [
     {"rung_key": "peer_reviewed", "name": "Peer reviewed",
      "description": "At least 2 reviewers."},
 ]
-
-
-def _seed(us):
-    g = _call(us, "goals", "propose", name="Research paper", description="x")
-    gid = g["goal"]["goal_id"]
-    b = _call(us, "extensions", "create_branch", name="LoRA v3")
-    bid = b["branch_def_id"]
-    _call(us, "goals", "bind", goal_id=gid, branch_def_id=bid)
-    return gid, bid
-
-
-def _last_commit_message(repo: Path) -> str:
-    out = subprocess.run(
-        ["git", "log", "-1", "--pretty=%s"], cwd=repo, check=True,
-        capture_output=True, text=True,
-    )
-    return out.stdout.strip()
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -309,250 +193,161 @@ def test_sqlite_only_save_gate_claim_returns_none_commit(tmp_path):
 
 
 # ───────────────────────────────────────────────────────────────────────
-# SqliteCached backend: commits + YAML + force
+# SqliteCached backend: reads do not commit
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_define_ladder_commits_and_writes_goal_yaml(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, _bid = _seed(us)
-    result = _call(us, "gates", "define_ladder",
-                   goal_id=gid, ladder=json.dumps(_LADDER))
-    assert result["status"] == "defined"
-    # YAML written under goals/<slug>.yaml with gate_ladder key.
-    yaml_files = list((repo / "goals").glob("*.yaml"))
-    assert len(yaml_files) == 1
-    content = yaml.safe_load(yaml_files[0].read_text(encoding="utf-8"))
-    assert "gate_ladder" in content
-    assert [r["rung_key"] for r in content["gate_ladder"]] == [
-        "draft_complete", "peer_reviewed",
-    ]
-    # Commit namespace per spec: goals.define_ladder.
-    assert _last_commit_message(repo).startswith("goals.define_ladder: ")
-
-
-def test_claim_commits_and_writes_gate_yaml(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    result = _call(us, "gates", "claim",
-                   branch_def_id=bid, rung_key="draft_complete",
-                   evidence_url="https://example.com/x")
-    assert result["status"] == "claimed"
-    gate_files = list((repo / "gates").rglob("*.yaml"))
-    assert len(gate_files) == 1
-    content = yaml.safe_load(gate_files[0].read_text(encoding="utf-8"))
-    assert content["rung_key"] == "draft_complete"
-    assert content["evidence_url"] == "https://example.com/x"
-    assert content["retracted_at"] is None
-    assert _last_commit_message(repo).startswith("gates.claim: ")
-
-
-def test_retract_rewrites_same_yaml_with_retracted_at(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/x")
-    path_before = next((repo / "gates").rglob("*.yaml"))
-    result = _call(us, "gates", "retract",
-                   branch_def_id=bid, rung_key="draft_complete",
-                   reason="evidence 404")
-    assert result["status"] == "retracted"
-    gate_files = list((repo / "gates").rglob("*.yaml"))
-    assert len(gate_files) == 1  # same file, not deleted
-    assert gate_files[0] == path_before
-    content = yaml.safe_load(gate_files[0].read_text(encoding="utf-8"))
-    assert content["retracted_at"] is not None
-    assert content["retracted_reason"] == "evidence 404"
-    assert _last_commit_message(repo).startswith("gates.retract: ")
-
-
-def test_claim_dirty_file_returns_local_edit_conflict(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    # First claim writes the file.
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/first")
-    # Simulate a local edit — append a comment, don't commit.
-    gate_file = next((repo / "gates").rglob("*.yaml"))
-    gate_file.write_text(
-        gate_file.read_text(encoding="utf-8") + "# local edit\n",
-        encoding="utf-8",
+def _init_git_repo(repo: Path) -> None:
+    """Initialize a bare git repo at ``repo`` with one empty commit
+    so `git_bridge` treats it as enabled.
+    """
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo, check=True,
+        capture_output=True,
     )
-    # Second claim should surface local_edit_conflict.
-    result = _call(us, "gates", "claim",
-                   branch_def_id=bid, rung_key="draft_complete",
-                   evidence_url="https://example.com/second")
-    assert result["status"] == "local_edit_conflict"
-    assert "gates" in result["conflicting_path"]
-    assert result["all_conflicts"] == [result["conflicting_path"]]
-    assert any("force=True" in o for o in result["options"])
-
-
-def test_claim_force_overrides_dirty_file(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/first")
-    gate_file = next((repo / "gates").rglob("*.yaml"))
-    gate_file.write_text(
-        gate_file.read_text(encoding="utf-8") + "# local edit\n",
-        encoding="utf-8",
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo, check=True, capture_output=True,
     )
-    result = _call(us, "gates", "claim",
-                   branch_def_id=bid, rung_key="draft_complete",
-                   evidence_url="https://example.com/second",
-                   force=True)
-    assert result["status"] == "claimed"
-    # File was overwritten.
-    content = yaml.safe_load(gate_file.read_text(encoding="utf-8"))
-    assert content["evidence_url"] == "https://example.com/second"
-
-
-def test_retract_dirty_file_returns_local_edit_conflict(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/x")
-    gate_file = next((repo / "gates").rglob("*.yaml"))
-    gate_file.write_text(
-        gate_file.read_text(encoding="utf-8") + "# local edit\n",
-        encoding="utf-8",
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, check=True, capture_output=True,
     )
-    result = _call(us, "gates", "retract",
-                   branch_def_id=bid, rung_key="draft_complete",
-                   reason="nope")
-    assert result["status"] == "local_edit_conflict"
-
-
-def test_define_ladder_dirty_file_returns_local_edit_conflict(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, _bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    goal_file = next((repo / "goals").glob("*.yaml"))
-    goal_file.write_text(
-        goal_file.read_text(encoding="utf-8") + "# local edit\n",
-        encoding="utf-8",
+    (repo / "README.md").write_text("seed\n")
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=repo, check=True,
+        capture_output=True,
     )
-    result = _call(us, "gates", "define_ladder",
-                   goal_id=gid, ladder=json.dumps(_LADDER))
-    assert result["status"] == "local_edit_conflict"
-    assert "goals" in result["conflicting_path"]
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True,
+        capture_output=True,
+    )
 
 
-def test_claim_commit_message_format(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/x")
-    msg = _last_commit_message(repo)
-    # Pattern: "gates.claim: <goal_slug>/<branch_slug>@<rung_key>"
-    assert msg.startswith("gates.claim: ")
-    assert "@draft_complete" in msg
-    assert "/" in msg  # goal_slug/branch_slug separator
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
 
 
-def test_retract_commit_message_format(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/x")
-    _call(us, "gates", "retract",
-          branch_def_id=bid, rung_key="draft_complete",
-          reason="bogus")
-    msg = _last_commit_message(repo)
-    assert msg.startswith("gates.retract: ")
-    assert "@draft_complete" in msg
+@pytest.fixture
+def cached_gates_env(tmp_path, monkeypatch, authenticate_request):
+    """A temp git repo with GATES_ENABLED + sqlite_cached backend."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    base = repo / "output"
+    base.mkdir()
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    _become("alice")
+    monkeypatch.setenv("GATES_ENABLED", "1")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin only, and the scope check is per-family.
+    # This file drives `gates` and `goals`: `claim` is `gates.costly`,
+    # `define_ladder` / `retract` are `gates.admin`. Nothing here asserts a
+    # scope refusal, so granting them costs no assertion strength.
+    authenticate_request("alice", capabilities=[
+        "tinyassets.extensions.read",
+        "tinyassets.extensions.write",
+        "tinyassets.extensions.admin",
+        "tinyassets.gates.read",
+        "tinyassets.gates.write",
+        "tinyassets.gates.costly",
+        "tinyassets.gates.admin",
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+    ])
+    from tinyassets.catalog import backend as backend_mod
+    backend_mod.invalidate_backend_cache()
+    from tinyassets import universe_server as us
+    importlib.reload(us)
+    yield us, base, repo, monkeypatch
+    backend_mod.invalidate_backend_cache()
+    importlib.reload(us)
+
+
+def _call(us, tool, action, **kwargs):
+    if tool == "gates":
+        from tinyassets.api.market import gates as fn
+    else:
+        fn = getattr(us, f"_{tool}_impl")
+    return json.loads(fn(action=action, **kwargs))
+
+
+def _seed(us, base):
+    """A Goal with ``_LADDER`` and one bound branch. ``build_branch`` binds
+    via ``goal_id``; the ladder goes through storage (``define_ladder`` is
+    gone)."""
+    from tinyassets.daemon_server import set_goal_ladder
+
+    g = _call(us, "goals", "propose", name="Research paper", description="x")
+    gid = g["goal"]["goal_id"]
+    b = _call(us, "extensions", "build_branch", spec_json=json.dumps({
+        "name": "LoRA v3",
+        "goal_id": gid,
+        "entry_point": "draft",
+        "node_defs": [{"node_id": "draft", "display_name": "Draft",
+                       "prompt_template": "draft: {topic}"}],
+        "edges": [{"from": "START", "to": "draft"},
+                  {"from": "draft", "to": "END"}],
+        "state_schema": [{"name": "topic", "type": "str"}],
+    }))
+    assert b["status"] == "built", b
+    set_goal_ladder(base, goal_id=gid, ladder=_LADDER)
+    return gid, b["branch_def_id"]
+
+
+def _last_commit_message(repo: Path) -> str:
+    out = subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    )
+    return out.stdout.strip()
+
 
 
 def test_get_ladder_no_commit(cached_gates_env):
     """Read-only action MUST NOT emit a commit."""
-    us, _base, repo, _ = cached_gates_env
-    gid, _bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
+    us, base, repo, _ = cached_gates_env
+    gid, _bid = _seed(us, base)
     msg_before = _last_commit_message(repo)
     _call(us, "gates", "get_ladder", goal_id=gid)
     msg_after = _last_commit_message(repo)
     assert msg_before == msg_after
 
 
-def test_list_claims_no_commit(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/x")
-    msg_before = _last_commit_message(repo)
-    _call(us, "gates", "list_claims", branch_def_id=bid)
-    assert _last_commit_message(repo) == msg_before
-
-
 def test_leaderboard_no_commit(cached_gates_env):
-    us, _base, repo, _ = cached_gates_env
-    gid, bid = _seed(us)
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/x")
+    from tinyassets.daemon_server import claim_gate
+
+    us, base, repo, _ = cached_gates_env
+    gid, bid = _seed(us, base)
+    claim_gate(base, branch_def_id=bid, goal_id=gid, rung_key="draft_complete",
+               evidence_url="https://example.com/x", claimed_by="alice")
     msg_before = _last_commit_message(repo)
     _call(us, "gates", "leaderboard", goal_id=gid)
     assert _last_commit_message(repo) == msg_before
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Integration: define_ladder → claim → retract → re-claim flow
-# ───────────────────────────────────────────────────────────────────────
-
-
-def test_full_round_trip_commits_four_times(cached_gates_env):
-    """define_ladder + claim + retract + re-claim = 4 new commits
-    (plus whatever `goals propose` / `bind` / `create_branch` emit).
-    """
-    us, _base, repo, _ = cached_gates_env
-
-    def _count_commits() -> int:
-        out = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD"], cwd=repo,
-            check=True, capture_output=True, text=True,
-        )
-        return int(out.stdout.strip())
-
-    gid, bid = _seed(us)
-    pre = _count_commits()
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_LADDER))
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/a")
-    _call(us, "gates", "retract",
-          branch_def_id=bid, rung_key="draft_complete",
-          reason="typo")
-    _call(us, "gates", "claim",
-          branch_def_id=bid, rung_key="draft_complete",
-          evidence_url="https://example.com/b")
-    post = _count_commits()
-    assert post - pre == 4

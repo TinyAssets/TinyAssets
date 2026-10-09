@@ -52,3 +52,14 @@ A protected approval or bound connection SHALL wake its asker once through its o
 #### Scenario: Interrupted delivery
 - **WHEN** a delivery turn ends unacknowledged
 - **THEN** it is sent again later and never after it is acknowledged
+
+### Requirement: The woken turn runs on the owner's own provider
+A delivery or continuation turn SHALL run the asking agent under its owner's provider authority, issued for that one turn on the server as an MCP call issues it, and served only by the owner's own connected source; it SHALL NOT need an open page or request, and SHALL NOT borrow a platform credential.
+
+#### Scenario: Answer with a connected provider
+- **WHEN** the owner answers in the app while their provider serves their chat
+- **THEN** the asking agent's turn is served by that provider, not refused "Connect your provider"
+
+#### Scenario: Refused delivery turn
+- **WHEN** the delivery turn is refused or fails
+- **THEN** the answer stays undelivered and is sent again later

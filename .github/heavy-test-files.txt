@@ -32,7 +32,6 @@ tests/test_cross_run_state_query.py
 tests/test_daemon_dashboard.py
 tests/test_deploy_prod_workflow.py
 tests/test_first_contact.py
-tests/test_gates_claim_from_branch_run.py
 tests/test_goals_surface.py
 tests/test_handoff_concurrency.py
 tests/test_host_uptime_installers.py
@@ -46,16 +45,13 @@ tests/test_node_reuse_discovery.py
 tests/test_nodes_real.py
 tests/test_outcome_gate_claims.py
 tests/test_outcome_gates.py
-tests/test_outcome_mcp.py
 tests/test_patch_branch_metadata.py
 tests/test_patch_branch_node_keys.py
-tests/test_patch_nodes.py
 tests/test_payments_escrow_mcp.py
 tests/test_provider_retry.py
 tests/test_provider_work_authority.py
 tests/test_public_goal_visibility.py
 tests/test_retire_cheat_loop_deploy_fence.py
-tests/test_routing_evidence.py
 tests/test_scoped_identity_reset.py
 tests/test_stability.py
 tests/test_universe_cycle_noop_guardrail.py

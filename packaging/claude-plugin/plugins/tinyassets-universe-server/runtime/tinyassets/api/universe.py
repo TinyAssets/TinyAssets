@@ -5625,6 +5625,9 @@ def _action_create_universe(
     if udir.exists():
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
+    seed_sidecar_preexisted = (udir.parent / UNIVERSE_SIDECARS_DIR / udir.name).exists()
     founder = ""
     try:
         # THE OWNER IS CLAIMED BEFORE THE DIRECTORY EXISTS. Creation used to
@@ -5669,6 +5672,7 @@ def _action_create_universe(
             udir,
             purpose=normalized_text,
             loop_branch_def_id=loop_branch_def_id,
+            owner_id=founder,
         )
         # Write premise mirror if provided
         if normalized_text.strip():
@@ -5765,6 +5769,10 @@ def _action_create_universe(
         # anything else re-raises (after the partial dir is cleaned up).
         import shutil
 
+        if founder and not seed_sidecar_preexisted:
+            from tinyassets.starter_release import abandon_new_provision
+
+            abandon_new_provision(udir, owner_id=founder)
         try:
             if udir.is_dir():
                 shutil.rmtree(udir)

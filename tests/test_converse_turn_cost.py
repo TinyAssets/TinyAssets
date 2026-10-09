@@ -85,7 +85,100 @@ FINAL_REPLY = "Nebula is a good cat name."
 #: exists, and chapter `systems` has the payload. Cost: ~41 tokens per
 #: round-trip; ~124 if a two-tool turn takes three model rounds. A token
 #: estimate, not measured latency.
-MAX_SERVED_TOOL_DESCRIPTION_CHARS = 30_100
+# K2: four descriptions measure 490 characters; backend manuals are on demand.
+MAX_SERVED_TOOL_DESCRIPTION_CHARS = 500
+
+# Whole stock resident payload: Unicode characters / 4 is the stated token
+# estimate, not a vendor tokenizer or a billing measure. Includes real schemas,
+# shipped instructions, skill metadata, empty stock inventory and transport context.
+# Native rows measure the platform-supplied payload using real MCP schemas, not
+# opaque CLI-added system instructions or native tools. Those release blockers
+# are recorded in docs/concerns/2026-10-06-k2-native-and-box-inventories.md.
+# 2026-10-06: 4,000 -> 4,600. #4520 (Muse package) added seven starter skills
+# whose index lines are resident: system 2,972 chars, totals 4,546 (http) /
+# 4,482 (claude) / 4,414 (codex), about +137 tokens per round-trip by the
+# chars/4 estimate. The skills are the shipped stock; trimming their
+# descriptions is that package's call.
+# 2026-10-06: 4,600 -> 5,250. The persona prompt had dropped the first-person
+# line and honesty floor and cut the untrusted-envelope rule to one clause; the
+# starter-agent-out-of-plumbing design keeps all three in plumbing (a voice fork
+# must not dissolve the floor; envelope content is never the founder speaking or
+# brain-worthy). Restored verbatim: system 3,628 chars, totals 5,202 (http) /
+# 5,138 (claude) / 5,070 (codex), about +164 tokens per round-trip by chars/4.
+MAX_STOCK_RESIDENT_CHARS = 5_250
+
+
+@pytest.mark.parametrize("adapter", ["http", "claude", "codex"])
+def test_whole_stock_resident_payload_per_adapter(
+    tmp_path, monkeypatch, record_property, adapter, signed_in,
+):
+    import asyncio
+
+    from tests.conftest import own_universe
+    from tinyassets import engine_mcp_server, universe_tools
+    from tinyassets.api import visibility
+    from tinyassets.providers.agent_wire_codec import agent_wire_for
+    from tinyassets.served_tools import FOUR_MODEL_TOOLS
+    from tinyassets.starter_release import starter_manifest
+    from tinyassets.starter_seeds import seed_store
+    from tinyassets.universe_bundle import seed_okf_bundle
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    root = tmp_path / "stock"
+    root.mkdir()
+    own_universe(tmp_path, "stock")
+    daemon_server.grant_universe_ownership(
+        tmp_path, universe_id="stock", owner_id="test-owner::stock",
+    )
+    signed_in("test-owner::stock")
+    daemon_server.ensure_universe_registered(tmp_path, universe_id="stock", universe_path=root)
+    visibility.set_universe_visibility("stock", "private", source="owner")
+    seed_okf_bundle(root)
+    with seed_store(root, owner_id="test-owner::stock", center_id="stock") as seeds:
+        seeds.install(starter_manifest(), fresh=True)
+
+    def resident():
+        return (
+            _prompt(root, "stock") + "\n\n" + universe_tools.harness_prompt(root)
+            + universe_tools.command_center_summary(root, "test-owner::stock")
+            + "\n\n" + universe_intelligence._turn_input_method_context("typed")
+        )
+
+    system = resident()
+    registered = asyncio.run(engine_mcp_server.mcp.list_tools(run_middleware=False))
+    tools = tuple(Tool(name=t.name, description=t.description, inputSchema=t.parameters)
+                  for t in registered if t.name in FOUR_MODEL_TOOLS)
+    assert {t.name for t in tools} == set(FOUR_MODEL_TOOLS) == set(SERVED_ENGINE_MCP_TOOLS)
+    if adapter == "http":
+        from tinyassets.providers.agent_chat_codec import tool_definitions
+
+        _, body = agent_wire_for("chat_messages").encode(
+            prompt="Do my task", system=system, source_ref="stock", model="stock",
+            tools=tool_definitions(tools),
+        )
+        definitions = json.dumps(body["tools"], ensure_ascii=False)
+    else:
+        definitions = json.dumps([
+            t.model_copy(update={"name": "mcp__tinyassets__" + t.name}).model_dump(
+                exclude_none=True)
+            if adapter == "claude" else t.model_dump(exclude_none=True)
+            for t in tools
+        ], ensure_ascii=False)
+    total = len(system) + len(definitions)
+    record_property(f"{adapter}_stock_system_chars", len(system))
+    record_property(f"{adapter}_stock_schema_chars", len(definitions))
+    record_property(f"{adapter}_stock_chars_per_4_tokens", total / 4)
+    assert total <= MAX_STOCK_RESIDENT_CHARS, (adapter, len(system), len(definitions), total)
+
+    owner_text = "My owner prefers cobalt and works on orchard forecasts. " * 20
+    (root / "founder.md").write_text(owner_text, encoding="utf-8")
+    expanded = resident()
+    assert owner_text.strip() in expanded
+    dynamic = len(expanded) - len(system)
+    assert dynamic >= len(owner_text.strip())
+    record_property(f"{adapter}_dynamic_owner_context_chars", dynamic)
+    # Dynamic context is reported separately, never sliced to make a budget pass.
+    assert len(expanded) + len(definitions) == total + dynamic
 
 
 def _learning_call(system: str) -> bool:
@@ -132,11 +225,10 @@ def turn(agent, monkeypatch, signed_in):
             ])
 
         async def call_tool_mcp(self, name, arguments):
-            return CallToolResult(content=[TextContent(
-                type="text",
-                text=json.dumps({"ok": True, "written": {"updated_files": ["founder.md"]}})
-                if name == "write_brain" else "exact result",
-            )])
+            assert name == "bash"
+            return CallToolResult(content=[TextContent(type="text", text="exact result")],
+                structuredContent={"completed_capabilities":
+                    ["write_brain"] if state.tool_name == "write_brain" else []})
 
     monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
 
@@ -179,8 +271,9 @@ def turn(agent, monkeypatch, signed_in):
                             # the turn recorded its lesson, so the extraction
                             # still runs. A test that wants the recorded case sets
                             # `turn.tool_name = "write_brain"`.
-                            "name": state.tool_name,
-                            "arguments": '{"section": "founder.md"}',
+                            "name": "bash",
+                            "arguments": json.dumps({"command":
+                                f"ta call {state.tool_name} --json '{{}}'"}),
                         },
                     }],
                 }
@@ -326,7 +419,7 @@ def test_static_folder_harness_budget_does_not_grow():
     """New request-economy guidance pays for itself in the existing harness."""
     from tinyassets.universe_tools import _HARNESS_HEAD
 
-    assert len(_HARNESS_HEAD) <= 1263
+    assert len(_HARNESS_HEAD) <= 220
 
 
 # ---------------------------------------------------------------------------

@@ -363,7 +363,8 @@ def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired, nested):
     with provider_launch_scope(universe):
         launch = (confine_launch(["cli"], nested_sandbox=True) if nested
                   else confine_launch(["cli"]))
-    (fd,) = launch.pass_fds
+    fd, seed_fd = launch.pass_fds
+    assert launch.argv[launch.argv.index("--sync-fd") + 1] == str(seed_fd)
     assert launch.argv[launch.argv.index("--seccomp") + 1] == str(fd)
     from tinyassets.providers.jail_seccomp import deny_program
 
@@ -371,6 +372,8 @@ def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired, nested):
     launch.close()
     with pytest.raises(OSError):
         os.fstat(fd)
+    with pytest.raises(OSError):
+        os.fstat(seed_fd)
 
 
 @posix_paths
@@ -430,8 +433,8 @@ def test_the_spawn_point_passes_the_filter_and_closes_its_copy(wired, monkeypatc
 
     with pytest.raises(RuntimeError, match="spawn failed"):
         asyncio.run(drive())
-    assert seen["open_during_spawn"] == [True]
-    assert [_is_open(fd) for fd in seen["fds"]] == [False], "the filter fd leaked"
+    assert seen["open_during_spawn"] == [True, True]
+    assert [_is_open(fd) for fd in seen["fds"]] == [False, False], "a launch fd leaked"
 
 
 def _is_open(fd: int) -> bool:

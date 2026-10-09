@@ -905,17 +905,17 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
         "state_schema": [{"name": "x", "type": "str"}],
         "visibility": "public",
     }
-    origin = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(spec)))
+    origin = json.loads(us._extensions_impl(action="build_branch", spec_json=json.dumps(spec)))
     assert origin.get("branch_def_id"), origin
     published = json.loads(
-        us.extensions(action="publish_version", branch_def_id=origin["branch_def_id"])
+        us._extensions_impl(action="publish_version", branch_def_id=origin["branch_def_id"])
     )
     assert published.get("branch_version_id"), published
 
     _login("bob")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
     remixed = json.loads(
-        us.extensions(
+        us._extensions_impl(
             action="build_branch",
             spec_json=json.dumps(
                 {**spec, "fork_from": published["branch_version_id"]}

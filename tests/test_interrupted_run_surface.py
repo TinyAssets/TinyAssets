@@ -37,7 +37,7 @@ def run_env(tmp_path, monkeypatch):
 
 
 def _call(us, action, **kwargs):
-    return json.loads(us.extensions(action=action, **kwargs))
+    return json.loads(us._extensions_impl(action=action, **kwargs))
 
 
 def _create_running_run(tmp_path: Path, us, branch_def_id: str = "b1") -> str:
@@ -45,7 +45,9 @@ def _create_running_run(tmp_path: Path, us, branch_def_id: str = "b1") -> str:
     # ``_compose_run_snapshot``'s ``get_branch_definition`` call hits a
     # real table (it handles missing-row KeyError but OperationalError
     # for a missing table would bubble).
-    _call(us, "create_branch", name="throwaway")
+    from tinyassets.daemon_server import initialize_author_server
+
+    initialize_author_server(tmp_path)
     from tinyassets.runs import (
         RUN_STATUS_RUNNING,
         create_run,
@@ -81,7 +83,7 @@ def test_interrupted_run_get_run_surfaces_resumable_false(run_env):
 
 def test_non_interrupted_run_does_not_carry_resumable_field(run_env):
     us, base = run_env
-    _call(us, "create_branch", name="throwaway")
+    from tinyassets.daemon_server import initialize_author_server
     from tinyassets.runs import (
         RUN_STATUS_COMPLETED,
         create_run,
@@ -89,6 +91,7 @@ def test_non_interrupted_run_does_not_carry_resumable_field(run_env):
         update_run_status,
     )
 
+    initialize_author_server(base)
     initialize_runs_db(base)
     rid = create_run(
         base, branch_def_id="b1", thread_id="",

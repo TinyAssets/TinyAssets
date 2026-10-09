@@ -124,6 +124,6 @@ def test_the_old_identity_boilerplate_is_still_not_learned():
 
 def test_a_new_agent_opens_its_first_reply_by_welcoming_its_commander():
     """Seeded operating instructions: the first reply opens "Welcome, commander."."""
-    from tinyassets.universe_intelligence import DEFAULT_OPERATING_INSTRUCTIONS
+    from tinyassets.starter_skills import starter_agent_files
 
-    assert 'my reply opens with "Welcome, commander."' in DEFAULT_OPERATING_INSTRUCTIONS
+    assert 'my reply opens with "Welcome, commander."' in starter_agent_files()["AGENTS.md"]

@@ -521,9 +521,13 @@ def _run_with_timeout(
         # The future owns the release: a call still running past its timeout
         # keeps what it holds until it actually ends.
         future.add_done_callback(lambda _future: on_done())
-    try:
-        return future.result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError as exc:
+    # Wait on the future, never on ``future.result(timeout=)``: since 3.11
+    # ``concurrent.futures.TimeoutError`` IS the builtin ``TimeoutError``, so a
+    # lock or socket timeout raised BY the work would be caught as this node's
+    # own deadline. Live 2026-10-09: a 5s starter-lock wait failed agent runs
+    # as "exceeded 2592000s timeout" after nine seconds.
+    done, _ = concurrent.futures.wait((future,), timeout=timeout_s)
+    if not done:
         # Returns False once the worker picked it up. That case is not left to
         # chance: the worker-entry check refuses the pickup if the deadline has
         # passed, and a call that got past the check settles normally and is
@@ -534,7 +538,8 @@ def _run_with_timeout(
             "The provider call may still be running in the background; "
             "its own subprocess/HTTP timeout is the backstop.",
             node_id=node_id,
-        ) from exc
+        )
+    return future.result()
 
 
 def _call_policy_router_with_retry(
@@ -788,7 +793,7 @@ def _wrap_provider_failure(node_id: str, exc: BaseException) -> "CompilerError":
     """
     chain_state = getattr(exc, "chain_state", None)
     attempts = getattr(exc, "attempts", None)
-    base_msg = f"Provider call failed in node '{node_id}': {exc}"
+    base_msg = f"Provider call failed in node '{node_id}': {str(exc) or type(exc).__name__}"
     if chain_state is not None:
         try:
             suffix = json.dumps(chain_state, default=str, separators=(",", ":"))
@@ -2124,9 +2129,9 @@ def _node_served_tool_call(
     """
     import asyncio
 
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
-    granted = allowed & set(SERVED_ENGINE_MCP_TOOLS)
+    granted = allowed & set(BACKEND_ENGINE_CAPABILITIES)
     if granted and name not in granted:
         raise CompilerError(
             f"Node '{node.node_id}' is not granted the served tool '{name}'; "
@@ -2231,9 +2236,9 @@ def _build_node_mcp_invoker(
             raise CompilerError(
                 f"Node '{node.node_id}' invoke_mcp_action requires action_name."
             )
-        from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+        from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
-        if requested in SERVED_ENGINE_MCP_TOOLS:
+        if requested in BACKEND_ENGINE_CAPABILITIES:
             return _node_served_tool_call(
                 node, requested, kwargs, allowed=allowed,
                 execution_context=execution_context, should_cancel=should_cancel,
@@ -3793,6 +3798,7 @@ def _wrap_with_effects(
     ancestors: set[str] | None = None,
     chain_key: str = "",
     should_cancel: Callable[[], bool] | None = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Fire the node's declared ``effects`` the moment the node returns
     (design D1, change `sandboxed-code-node`): against the state merged with
@@ -3832,6 +3838,7 @@ def _wrap_with_effects(
                 effect_chain, node, view, state_schema=schema, ancestors=ancestors,
                 node_key=chain_key or node_id,
                 should_cancel=should_cancel,
+                execution_context=execution_context,
             )
         except EffectFailedError as exc:
             # Workspace stages return typed failure evidence after stopping
@@ -3929,6 +3936,7 @@ def _build_node(
         inner, node, effect_chain, state_schema, event_sink, ancestors=ancestors,
         chain_key=graph_node_id or node.node_id,
         should_cancel=should_cancel,
+        execution_context=execution_context,
     )
     if not graph_node_id or graph_node_id == node.node_id:
         return wrapped

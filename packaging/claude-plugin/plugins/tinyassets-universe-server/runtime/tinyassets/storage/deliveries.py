@@ -68,6 +68,16 @@ _SCHEMA = (
         size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
         PRIMARY KEY(delivery_id, field_name, ordinal)
     )""",
+    # The receiving owner's answer to one delivery: what came of it. Only the
+    # receiver side writes it; the sender reads it back with its receipt, and its
+    # agent is told once (``noticed_at``) so a belief built on the gap can die.
+    """CREATE TABLE IF NOT EXISTS graph_delivery_answers (
+        delivery_id TEXT PRIMARY KEY REFERENCES graph_deliveries(delivery_id),
+        outcome TEXT NOT NULL CHECK(outcome IN ('resolved', 'declined')),
+        note TEXT NOT NULL DEFAULT '',
+        answered_at REAL NOT NULL,
+        noticed_at REAL
+    )""",
     "CREATE INDEX IF NOT EXISTS graph_delivery_files_delivery "
     "ON graph_delivery_files(delivery_id)",
     "CREATE INDEX IF NOT EXISTS graph_deliveries_sender "
@@ -172,7 +182,16 @@ def _receipt(conn, row, *, receiver_view=False):
         "execution_started_at": attempt["execution_started_at"],
         "finished_at": attempt["finished_at"],
         "reason": attempt["safe_reason"],
+        "outcome": "pending",
     }
+    answer = conn.execute(
+        "SELECT outcome, note, answered_at FROM graph_delivery_answers WHERE delivery_id=?",
+        (row["delivery_id"],),
+    ).fetchone()
+    if answer is not None:
+        # ``note`` is the receiving owner's words; the API layer envelopes it.
+        result["outcome"] = answer["outcome"]
+        result["answer"] = {"answered_at": answer["answered_at"], "note": answer["note"]}
     if receiver_view:
         result["run_id"] = attempt["run_id"]
         # Who sent this. The record always carried it; until now nothing returned
@@ -387,6 +406,70 @@ def read_receipt_in_transaction(conn, *, delivery_id, principal_id, universe_id)
         universe_id,
     )
     return _receipt(conn, row, receiver_view=receiver_view)
+
+
+ANSWER_OUTCOMES = ("resolved", "declined")
+MAX_ANSWER_NOTE_CHARS = 4000
+
+
+def answer_in_transaction(conn, *, delivery_id, principal_id, universe_id, outcome, note):
+    """The RECEIVING owner records what came of a delivery; a re-answer replaces it.
+
+    A new answer clears ``noticed_at``, so the sender's agent hears the latest one.
+    """
+    _require_transaction(conn)
+    links._name(principal_id)
+    if outcome not in ANSWER_OUTCOMES:
+        raise ValueError(f"outcome must be one of {', '.join(ANSWER_OUTCOMES)}")
+    if not isinstance(note, str) or len(note) > MAX_ANSWER_NOTE_CHARS:
+        raise ValueError(f"note must be text of at most {MAX_ANSWER_NOTE_CHARS} characters")
+    row = conn.execute(
+        "SELECT * FROM graph_deliveries WHERE delivery_id=? AND receiver_owner_id=? "
+        "AND receiver_universe_id=?",
+        (delivery_id, principal_id, universe_id),
+    ).fetchone()
+    if row is None:
+        raise links.ReceiverAccessDenied()
+    conn.execute(
+        "INSERT INTO graph_delivery_answers(delivery_id, outcome, note, answered_at, noticed_at) "
+        "VALUES (?, ?, ?, ?, NULL) ON CONFLICT(delivery_id) DO UPDATE SET "
+        "outcome=excluded.outcome, note=excluded.note, answered_at=excluded.answered_at, "
+        "noticed_at=NULL",
+        (delivery_id, outcome, note.strip(), time.time()),
+    )
+    return _receipt(conn, row, receiver_view=True)
+
+
+def list_sent_in_transaction(conn, *, principal_id, universe_id, limit=20):
+    """The sender's own deliveries from this universe, newest first."""
+    links._name(principal_id)
+    rows = conn.execute(
+        "SELECT * FROM graph_deliveries WHERE sender_id=? AND sender_universe_id=? "
+        "ORDER BY accepted_at DESC LIMIT ?",
+        (principal_id, universe_id, max(1, min(int(limit), 100))),
+    ).fetchall()
+    return [_receipt(conn, row) for row in rows]
+
+
+def take_new_answers_in_transaction(conn, *, principal_id, universe_id):
+    """Answers to this sender's deliveries not yet told to it, marked told.
+
+    Exactly once: the select and the mark share the caller's transaction.
+    """
+    _require_transaction(conn)
+    links._name(principal_id)
+    rows = conn.execute(
+        "SELECT d.* FROM graph_deliveries d JOIN graph_delivery_answers a "
+        "ON a.delivery_id = d.delivery_id WHERE d.sender_id=? AND d.sender_universe_id=? "
+        "AND a.noticed_at IS NULL ORDER BY a.answered_at",
+        (principal_id, universe_id),
+    ).fetchall()
+    if rows:
+        conn.executemany(
+            "UPDATE graph_delivery_answers SET noticed_at=? WHERE delivery_id=?",
+            [(time.time(), row["delivery_id"]) for row in rows],
+        )
+    return [_receipt(conn, row) for row in rows]
 
 
 def _locked_attempt(conn, guard):

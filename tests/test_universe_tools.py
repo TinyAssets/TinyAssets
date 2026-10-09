@@ -58,16 +58,18 @@ def _ok(output: bytes = b"") -> ToolRun:
 
 def test_exactly_four_tools_are_served_to_the_universe_agent_on_every_adapter():
     from tinyassets import engine_mcp_server as s
-    from tinyassets.providers.codex_provider import _ENGINE_MCP_ENABLED_TOOLS
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, model_tools
     from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED
 
     assert universe_tools.TOOL_NAMES == FOUR
     registered = {tool.name for tool in asyncio.run(s.mcp.list_tools())}
+    # Codex declares the turn's model tools as app-server dynamicTools.
+    codex = model_tools(ModelConfig(engine_mcp_enabled=True))
     for name in FOUR:
         assert name in registered
         assert name in SERVED_ENGINE_MCP_TOOLS  # the HTTP loop discovers from this
-        assert name in _ENGINE_MCP_ENABLED_TOOLS  # codex
+        assert name in codex  # codex
         assert f"mcp__tinyassets__{name}" in _ENGINE_MCP_ALLOWED  # claude
 
 
@@ -739,7 +741,7 @@ def test_only_a_founder_turn_with_the_tools_is_shown_the_folder_and_skills(
     seed_engine_authority(root, actor="actor-a", graph="u-a")
 
     founder = _founder_turn(monkeypatch, root, "u-a", "hi", founder=True)
-    assert "# My folder and my four tools" in founder
+    assert "/u is the workspace. Use read/write/edit/bash." in founder
     assert "- `standup`:" in founder
 
     visitor = _founder_turn(monkeypatch, root, "u-a", "hi again", founder=False)

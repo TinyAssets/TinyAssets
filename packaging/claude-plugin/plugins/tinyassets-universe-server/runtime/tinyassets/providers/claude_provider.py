@@ -442,7 +442,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
 
     FAIL-CLOSED: the engine MCP is wired only when the founder actor_id AND the
     universe graph_id are both present; a missing either returns no flags so the
-    turn stays WebFetch-only rather than exposing tools with an unbound identity.
+    turn stays tool-free rather than exposing tools with an unbound identity.
     The server itself binds ``_current_identity`` to the founder and pins every
     handler to ``engine_mcp_graph_id`` (see ``tinyassets.engine_mcp_server``).
     """
@@ -506,19 +506,33 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     # holds internally — never surfaced to the LLM), not the prompt.
     route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
     if route is not None:
+        model_url = route_with_session(
+            route.url, session_key, turn_of(),
+            grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config),
+        )
+        model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
                     "type": "http",
                     # Names this launch's session for owner steering (S2).
-                    "url": route_with_session(
-                        route.url, session_key, turn_of(),
-                        grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config)),
+                    "url": model_url,
                     "headers": {"Authorization": "Bearer " + route.secret},
                 }
             }
         }
     else:
+        import secrets
+
+        from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV, launch_grant
+
+        # The platform owns the subprocess environment; none of this enters /u.
+        key = secrets.token_hex(32)
+        server_env[LAUNCH_GRANT_KEY_ENV] = key
+        server_env["TINYASSETS_ENGINE_STDIO_GRANT"] = launch_grant(
+            key, "", "", granted_tools(config),
+        )
+        server_env["TINYASSETS_ENGINE_MODEL_INVENTORY"] = "four"
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
@@ -534,7 +548,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
         if legacy_path.is_file() and not legacy_path.is_symlink():
             legacy_path.unlink()
     except OSError:
-        # If we cannot write the config, fail closed to WebFetch-only rather than
+        # If we cannot write the config, fail closed to tool-free rather than
         # passing --mcp-config a missing path (which would error the whole turn).
         return []
     return ["--mcp-config", str(config_path), "--strict-mcp-config"]
@@ -601,6 +615,10 @@ def _sandbox_cli_args(
     if config.workflow_node:
         config = _confine_workflow_node(config)
     if config.sandbox_workspace:
+        if config.sandbox_chat or config.engine_mcp_enabled:
+            # No native tools or deferred ToolSearch handle in a served turn.
+            # MCP discovery is projected by the bound private engine route.
+            flags += ["--tools", ""]
         # Load NO setting source. Excluding the USER tier matters because its
         # global settings carry MCP servers and `bypassPermissions` (verified
         # 2026-07-03: the sandboxed engine saw `mcp__codex__codex`, so a
@@ -617,7 +635,7 @@ def _sandbox_cli_args(
         # auto-approving tools this turn never pre-approved. `default` (accepted
         # alongside its newer name `manual`) approves NOTHING implicitly: the
         # only callable tools are the ones `--allowedTools` pre-approves --
-        # WebFetch plus, when engine MCP is on, the declared
+        # when engine MCP is on, the declared
         # `mcp__tinyassets__*` handles. A headless turn cannot answer a prompt,
         # so anything else is refused rather than waiting. This pins the
         # behaviour this provider already had with first-party OAuth; it is
@@ -789,6 +807,8 @@ class ClaudeProvider(BaseProvider):
             universe_dir=universe_dir,
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
+        if config.engine_mcp_enabled:
+            proc_env["ENABLE_TOOL_SEARCH"] = "false"
         # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
         # so teardown reaches what the CLI starts without ever naming a group
         # integer that could have been recycled. Fails closed if it cannot.
@@ -1292,6 +1312,8 @@ class ClaudeProvider(BaseProvider):
             universe_dir=universe_dir,
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
+        if config.engine_mcp_enabled:
+            proc_env["ENABLE_TOOL_SEARCH"] = "false"
         # Same owned-family spawn as the streamed path.
         proc = await aspawn_owned(
             cmd,

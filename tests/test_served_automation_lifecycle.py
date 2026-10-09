@@ -45,11 +45,11 @@ def create():
 
 
 def test_advertised_schema_has_selectors_without_caller_authority():
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
     tools = {tool.name: tool for tool in asyncio.run(engine.mcp.list_tools())}
     for handle in ("read_graph", "write_graph"):
-        assert handle in SERVED_ENGINE_MCP_TOOLS
+        assert handle in BACKEND_ENGINE_CAPABILITIES
         properties = tools[handle].parameters["properties"]
         assert "automation_id" in properties
         assert not {"graph_id", "universe_id", "actor_id", "owner_principal_id"} & properties.keys()
@@ -243,3 +243,21 @@ def test_unknown_operation_and_control_payload_do_not_fall_through(bound):
     assert control(row, "rebind")["error"] == "unknown_automation_action"
     assert "error" in control(row, "delete", payload_json='{"universe_id":"other"}')
     assert not AutomationStore(bound).get(row["automation_id"]).retired_at
+
+
+def test_ta_check_my_board_each_morning_and_stop_when_asked(bound, monkeypatch):
+    from tests.ta_task_helpers import call
+    from tests.test_ta_capabilities import signed_launch
+
+    signed_launch(monkeypatch)
+    created = call(engine, "write_graph", target="automation", operation="create",
+                   payload_json=CREATE_PAYLOAD)
+    assert created["status"] == "automation_created", created
+    row = created["automation"]
+    read_back = call(engine, "read_graph", target="automation", automation_id=row["automation_id"])
+    assert read_back["automation"] == row
+    paused = call(engine, "write_graph", target="automation", operation="pause",
+                  automation_id=row["automation_id"], expected_revision=row["revision"])
+    assert paused["automation"]["revision"] == row["revision"] + 1
+    assert paused["automation"]["desired_state"] == "paused"
+    assert AutomationStore(bound).get(row["automation_id"]).desired_state == "paused"

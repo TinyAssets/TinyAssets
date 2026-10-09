@@ -22,6 +22,11 @@ from tinyassets.providers.protocol_encoders import ProtocolDecodeError
 
 ARGS = {"target": "status"}
 NAMES = frozenset({"read_graph"})
+# The model's inventory is read/write/edit/bash (an engine tool is reached with
+# ``ta`` in bash). Each wire spelling below carries this one bash call, and the
+# engine must receive it with the decoded arguments: the spelling ran the tool.
+TOOL = "bash"
+COMMAND = {"command": "ta call read_graph --json " + "'" + json.dumps(ARGS) + "'"}
 
 # The real writer/router/provider/journal/engine-client composition.
 rig = composed.rig
@@ -33,13 +38,13 @@ run = composed.run
 
 def _call(**overrides):
     item = {"id": "wire-1", "type": "function",
-            "function": {"name": "read_graph", "arguments": json.dumps(ARGS)}}
+            "function": {"name": TOOL, "arguments": json.dumps(COMMAND)}}
     item.update(overrides)
     return item
 
 
 def _fn(**overrides):
-    return {"name": "read_graph", "arguments": json.dumps(ARGS), **overrides}
+    return {"name": TOOL, "arguments": json.dumps(COMMAND), **overrides}
 
 
 def _body(message, finish="tool_calls"):
@@ -60,35 +65,36 @@ def _delta(delta, finish=None):
     return {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
 
+_SPLIT = json.dumps(COMMAND)
 STREAMED = _sse(
     _delta({"role": "assistant", "content": ""}),
     _delta({"tool_calls": [{"index": 0, "id": "stream-1", "type": "function",
-                            "function": {"name": "read_graph", "arguments": ""}}]}),
-    _delta({"tool_calls": [{"index": 0, "function": {"arguments": '{"tar'}}]}),
-    _delta({"tool_calls": [{"index": 0, "function": {"arguments": 'get": "status"}'}}]}),
+                            "function": {"name": TOOL, "arguments": ""}}]}),
+    _delta({"tool_calls": [{"index": 0, "function": {"arguments": _SPLIT[:7]}}]}),
+    _delta({"tool_calls": [{"index": 0, "function": {"arguments": _SPLIT[7:]}}]}),
     _delta({}, finish="tool_calls"),
 )
 
-#: name -> (first wire body, arguments the engine tool must receive)
+#: name -> (first wire body, arguments the decoded call must carry)
 VARIANTS = {
-    "arguments_as_json_string": (_body({"tool_calls": [_call()]}), ARGS),
+    "arguments_as_json_string": (_body({"tool_calls": [_call()]}), COMMAND),
     "arguments_as_object": (
-        _body({"tool_calls": [_call(function=_fn(arguments=ARGS))]}), ARGS),
+        _body({"tool_calls": [_call(function=_fn(arguments=COMMAND))]}), COMMAND),
     "arguments_empty_string": (_body({"tool_calls": [_call(function=_fn(arguments=""))]}), {}),
-    "arguments_missing": (_body({"tool_calls": [_call(function={"name": "read_graph"})]}), {}),
+    "arguments_missing": (_body({"tool_calls": [_call(function={"name": TOOL})]}), {}),
     "id_missing": (_body({"tool_calls": [
-        {"type": "function", "function": _fn()}]}), ARGS),
-    "id_empty": (_body({"tool_calls": [_call(id="")]}), ARGS),
-    "type_missing": (_body({"tool_calls": [{"id": "wire-1", "function": _fn()}]}), ARGS),
-    "index_key_present": (_body({"tool_calls": [_call(index=0)]}), ARGS),
+        {"type": "function", "function": _fn()}]}), COMMAND),
+    "id_empty": (_body({"tool_calls": [_call(id="")]}), COMMAND),
+    "type_missing": (_body({"tool_calls": [{"id": "wire-1", "function": _fn()}]}), COMMAND),
+    "index_key_present": (_body({"tool_calls": [_call(index=0)]}), COMMAND),
     "content_beside_tool_calls": (
-        _body({"content": "Let me look that up.", "tool_calls": [_call()]}), ARGS),
-    "streamed_deltas_by_index": (STREAMED, ARGS),
-    "finish_tool_calls": (_body({"tool_calls": [_call()]}, finish="tool_calls"), ARGS),
-    "finish_stop": (_body({"tool_calls": [_call()]}, finish="stop"), ARGS),
-    "finish_null": (_body({"tool_calls": [_call()]}, finish=None), ARGS),
+        _body({"content": "Let me look that up.", "tool_calls": [_call()]}), COMMAND),
+    "streamed_deltas_by_index": (STREAMED, COMMAND),
+    "finish_tool_calls": (_body({"tool_calls": [_call()]}, finish="tool_calls"), COMMAND),
+    "finish_stop": (_body({"tool_calls": [_call()]}, finish="stop"), COMMAND),
+    "finish_null": (_body({"tool_calls": [_call()]}, finish=None), COMMAND),
     "legacy_function_call": (
-        _body({"function_call": _fn()}, finish="function_call"), ARGS),
+        _body({"function_call": _fn()}, finish="function_call"), COMMAND),
 }
 
 FINAL = _body({"content": "finished exact answer"}, finish="stop")
@@ -118,7 +124,7 @@ def test_each_standard_spelling_runs_the_tool_and_continues(agent, monkeypatch, 
     first, expected_args = VARIANTS[variant]
     _wire(agent, monkeypatch, first)
     assert run(agent) == "finished exact answer"
-    assert agent.tools == [("read_graph", expected_args)]
+    assert agent.tools == [(TOOL, expected_args)]
     assert agent.latest().state == "completed"
     # The continuation replays ONE canonical call whose id the result answers.
     messages = agent.wires[-1][1]["body"]["messages"]

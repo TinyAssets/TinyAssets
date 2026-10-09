@@ -192,3 +192,29 @@ await retainedUndo();
 await saveMemory({text:"signed out"});
 assert.equal(calls.length,1);
 ''')
+
+
+def test_starter_adoption_after_undo_uses_original_offer_and_stale_owner_is_fenced(tmp_path):
+    _run_memory(tmp_path, r'''
+globalThis.crypto=require("node:crypto").webcrypto;
+const offer={version:"1",payload:{transaction_id:"install-1",operation:"upgrade",
+  diagnostics:[],choices:[{transaction_id:"undo-1",operation:"undo",paths:[]}],
+  paths:[{path:"starter/hooks.md",outcome:"installed",current_outcome:"removed",
+          candidate_text:"<script>text only</script>",current_hash:null,adoptable:true}]}};
+renderMemory({...doc("A"),starter_updates:[offer]},memoryContext());
+const section=$("starter-updates").children[0];
+const details=section.children[2];
+assert.equal(details.children[0].textContent,"starter/hooks.md: removed");
+assert.equal(details.children[1].textContent,"<script>text only</script>");
+const adopt=details.children[2].onclick;
+await adopt();
+const body=JSON.parse(calls[0].body);
+assert.equal(body.starter_adopt,"install-1");
+assert.equal(body.path,"starter/hooks.md");
+assert.equal(body.expected_hash,null);
+assert.equal(typeof body.request_key,"string");
+switchAccount();
+assert.equal($("starter-updates").children.length,0);
+await adopt();
+assert.equal(calls.length,1);
+''')

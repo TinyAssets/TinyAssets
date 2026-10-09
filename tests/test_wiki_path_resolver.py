@@ -254,7 +254,7 @@ def test_wiki_tool_returns_clear_error_for_windows_leakage(clean_env, monkeypatc
     import tinyassets.universe_server as us
     importlib.reload(us)
 
-    result_json = us.wiki(action="read")
+    result_json = us._wiki_impl(action="read")
     payload = _json.loads(result_json)
     assert "error" in payload
     # Error should name the env var so deploy fixer knows which to unset.

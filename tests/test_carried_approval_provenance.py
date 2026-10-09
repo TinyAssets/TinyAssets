@@ -28,7 +28,6 @@ not author it (section 1).
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 from pathlib import Path
 
@@ -264,100 +263,6 @@ class TestForkCopyReconcilesCarriedApproval:
 # ─────────────────────────────────────────────────────────────────────────────
 # 2b. Carried snapshot via rollback_node (raw audit body restore)
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestRollbackReconcilesCarriedApproval:
-    """rollback_node restores a raw audit body. A v1 snapshot that carried an
-    empty-hash approval must be demoted to unapproved on restore.
-    """
-
-    def test_rollback_clears_stale_empty_hash_approval(self, tmp_path, monkeypatch):
-        base = tmp_path / "output"
-        base.mkdir()
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-        monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-
-        from tinyassets.branches import (
-            BranchDefinition,
-            EdgeDefinition,
-            GraphNodeRef,
-            NodeDefinition,
-        )
-        from tinyassets.daemon_server import (
-            get_branch_definition,
-            initialize_author_server,
-            save_branch_definition,
-        )
-        from tinyassets.runs import record_node_edit_audit
-
-        initialize_author_server(base)
-
-        # v1 body (poisoned legacy snapshot): approved=True, EMPTY hash.
-        v1_src = "def run(state): return {'out': 'v1-legacy'}\n"
-        v1_body = NodeDefinition(
-            node_id="n", display_name="N", source_code=v1_src,
-            output_keys=["out"],
-        ).to_dict()
-        v1_body["approved"] = True
-        v1_body["approved_by"] = "legacy-host"
-        v1_body["approved_source_hash"] = ""
-
-        # Current (v2) body: a genuinely-approved, hash-matched node.
-        v2_node = NodeDefinition(
-            node_id="n", display_name="N",
-            source_code="def run(state): return {'out': 'v2'}\n",
-            output_keys=["out"],
-        ).mark_approved(approved_by="tester")
-        branch = BranchDefinition(
-            branch_def_id="rb1",
-            name="rollback-target",
-            version=2,
-            entry_point="n",
-            node_defs=[v2_node],
-            graph_nodes=[GraphNodeRef(id="n", node_def_id="n")],
-            edges=[
-                EdgeDefinition(from_node="START", to_node="n"),
-                EdgeDefinition(from_node="n", to_node="END"),
-            ],
-            state_schema=[{"name": "out", "type": "str"}],
-        )
-        save_branch_definition(base, branch_def=branch.to_dict())
-
-        # Audit row: version_before=1 carries the poisoned v1 body; the current
-        # version (version_after) matches the persisted branch version.
-        current = get_branch_definition(base, branch_def_id="rb1")
-        current_version = int(current.get("version", 1))
-        record_node_edit_audit(
-            base,
-            branch_def_id="rb1",
-            version_before=1,
-            version_after=current_version,
-            nodes_changed=["n"],
-            node_before=v1_body,
-            node_after=v2_node.to_dict(),
-            edit_kind="update",
-        )
-
-        # Reload universe_server against this data dir so the MCP action runs.
-        from tinyassets import universe_server as us
-        importlib.reload(us)
-        try:
-            result = json.loads(us.extensions(
-                action="rollback_node",
-                branch_def_id="rb1",
-                node_id="n",
-            ))
-            assert result["status"] == "rolled_back", result
-
-            rolled = get_branch_definition(base, branch_def_id="rb1")
-            nd = next(n for n in rolled["node_defs"] if n["node_id"] == "n")
-            # Restored the v1 source...
-            assert nd["source_code"] == v1_src, nd
-            # ...but the empty-hash approval must NOT survive the restore.
-            assert nd["approved"] is False, nd
-            assert not nd.get("approved_source_hash"), nd
-        finally:
-            importlib.reload(us)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

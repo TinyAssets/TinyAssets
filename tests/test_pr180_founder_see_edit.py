@@ -116,7 +116,9 @@ def test_founder_edits_own_branch_round_trip(server_env):
     the founder (author == UNIVERSE_SERVER_USER), and confirm the edit lands.
     """
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_BASIC_SPEC),
+    ))
     bid = built["branch_def_id"]
 
     patched = json.loads(us.write_graph(
@@ -128,7 +130,7 @@ def test_founder_edits_own_branch_round_trip(server_env):
     assert patched.get("status") != "rejected", patched
 
     # The edit persisted on the founder's own branch.
-    listing = json.loads(us.extensions(action="list_branches", scope="all"))
+    listing = json.loads(us._extensions_impl(action="list_branches", scope="all"))
     summary = next(b for b in listing["branches"] if b["branch_def_id"] == bid)
     assert summary["published"] is True
 
@@ -138,7 +140,9 @@ def test_patch_branch_is_author_gated_via_connector(server_env, monkeypatch, aut
     (inherits patch_branch's BUG-081 author gate). force=true is required to
     bypass, so the default connector path stays safe."""
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_BASIC_SPEC),
+    ))
     bid = built["branch_def_id"]
 
     # Switch identity to a different user. The env var does NOT do this:

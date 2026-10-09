@@ -1,4 +1,4 @@
-Implementation in progress on feat/starter-agent-out-of-plumbing (wf-L14).
+Absorbed into feat/four-tool-starter-cutover (wf-K2), draft PR #4517.
 D7 owns extraction retirement; starter-seed-lifecycle owns D10 seed machinery.
 Preparation evidence and remaining prerequisites are in implementation-evidence.md.
 Checkboxes below represent whole tasks, not completed preparation substeps.
@@ -11,8 +11,8 @@ Checkboxes below represent whole tasks, not completed preparation substeps.
 
 ## 2. Move policy
 
-- [ ] 2.1 Remove read_operating_instructions per-turn seeding and DEFAULT_OPERATING_INSTRUCTIONS runtime fallback; verify empty, deleted, linked and unreadable files are never replaced or substituted.
-- [ ] 2.2 Move all mapped resident advice, retaining factual clock and configuration-derived no-tools lines, identity, disclosure, founder-only exposure, nonce history framing and input-method provenance; verify tool-less/tool-enabled cases across default/custom/blank/replacement instructions and leave D7's learning path unchanged.
+- [x] 2.1 Remove read_operating_instructions per-turn seeding and DEFAULT_OPERATING_INSTRUCTIONS runtime fallback; verify empty, deleted, linked and unreadable files are never replaced or substituted.
+- [x] 2.2 Move all mapped resident advice, retaining factual clock and configuration-derived no-tools lines, identity, disclosure, founder-only exposure, nonce history framing and input-method provenance; verify tool-less/tool-enabled cases across default/custom/blank/replacement instructions and leave D7's learning path unchanged.
 - [ ] 2.3 Solely own starter-seed-lifecycle consumer wiring at the single all-center release boundary; verify stock upgrades, custom/deleted preservation with new hooks/skills, visible offers and dormant-center activation without owner review or a legacy renderer. Depend on seed-lifecycle's completed transaction API; no other change owns this integration/proof.
 
 ## 3. Prove and close

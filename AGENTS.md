@@ -10,7 +10,7 @@ The founder owns this section. To re-steer, replace a line; never add one beside
 2. Plumbing: the model sees 4 tools (read/write/edit/bash) plus `ta`; one extension unit; one agent definition for every model provider; no provider-specific code.
 3. The agent's abilities are editable files, skills and packages. The platform does not build feature editors or pre-built features.
 4. Users connect any model source; default to their strongest connected source.
-5. Foundational patches are brought FORWARD, so pre-migration band-aids never delay positive architectural moves. Weigh the totality of pending work, so each module is always pursuing or maintaining its best architecture, and refactor and reorder the remaining work to get there. (Today that foundation is per-owner isolation, landed in small slices.)
+5. Foundational patches are brought FORWARD, so pre-migration band-aids never delay positive architectural moves. Weigh the totality of pending work, so each module is always pursuing or maintaining its best architecture, and refactor and reorder the remaining work to get there. (Today that foundation is per-owner isolation, as one clean cutover: the isolated path is the only path, one migration in a short maintenance window after a full backup, and cross-owner app checks the OS now enforces are deleted in the same change.)
 6. Ship live fast and verify live. LESS process: delete stale docs, tests and notes rather than adding more.
 7. Long-term goal: in both the Google Play and Apple App Store, with growing downloads and positive reviews.
 8. 24/7 uptime with zero hosts online: every surface works with no host machine on.

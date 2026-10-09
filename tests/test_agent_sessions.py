@@ -12,34 +12,20 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
 import tinyassets.api.interlocutor as interlocutor
 import tinyassets.universe_intelligence as ui
-from tests.support.owned_spawn import install_fake_owned_spawn
+from tests.test_codex_app_server import served  # noqa: F401 - the shared fixture
 from tinyassets import agent_sessions
 from tinyassets.conversation_memory import Msg
 from tinyassets.exceptions import ProviderError
-from tinyassets.providers.base import ModelConfig
 from tinyassets.universe_bundle import seed_okf_bundle
 
 posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="native sessions are held with flock (Linux hosts)",
 )
-
-
-def _event(kind, **fields):
-    return (json.dumps({"type": kind, **fields}) + "\n").encode()
-
-
-def _stream(thread_id="0a1b2c3d-0000-4000-8000-000000000001", text="done"):
-    return (
-        _event("thread.started", thread_id=thread_id)
-        + _event("item.completed", item={"type": "agent_message", "text": text})
-        + _event("turn.completed", usage={"input_tokens": 5, "output_tokens": 2})
-    )
 
 
 def _ref(udir: Path, *, prompt="fresh prompt", resume="new message", key="thread:principal:o"):
@@ -50,39 +36,17 @@ def _ref(udir: Path, *, prompt="fresh prompt", resume="new message", key="thread
     )
 
 
-@pytest.fixture
-def served(monkeypatch, tmp_path):
-    """A served codex launch with the spawn, sandbox and stream replaced."""
-    from tinyassets.providers import codex_provider as provider
+def _session_model(system="system") -> str:
+    """What the codex adapter records a thread under: its model and tool set."""
+    from tests.test_codex_app_server import _engine_tools
+    from tinyassets.agent_definition import agent_definition
+    from tinyassets.providers.codex_app_server import tools_digest
 
-    monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
-    auth_dir = tmp_path / "auth"
-    auth_dir.mkdir()
-    proc = AsyncMock()
-    proc.returncode = 0
-    launch = install_fake_owned_spawn(monkeypatch, provider.__name__, return_value=proc)
-    monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
-    monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
-        "bwrap_available": True, "bwrap_path": "fake-bwrap",
-    })
-    monkeypatch.setattr(provider, "subprocess_env_for_provider", lambda *a, **kw: {
-        "CODEX_HOME": str(auth_dir),
-    })
-    monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
-    monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
-    stream = AsyncMock(return_value=(_stream(), b""))
-    monkeypatch.setattr(provider, "_stream_codex_exec", stream)
-
-    async def run(config, prompt="fresh prompt", system="system"):
-        return await provider.CodexProvider().complete(
-            prompt, system, config, universe_dir=tmp_path,
-        )
-
-    return run, launch, stream, tmp_path
+    return "#tools:" + tools_digest(agent_definition(_engine_tools(), system))
 
 
-def _sent(stream) -> str:
-    return stream.call_args.args[1].decode("utf-8")
+def _sent(server) -> str:
+    return server.requests("turn/start")[0]["params"]["input"][0]["text"]
 
 
 # --- the record ---------------------------------------------------------------
@@ -138,15 +102,6 @@ def test_the_native_file_check_never_follows_a_link(tmp_path):
     assert agent_sessions.native_file_exists(store, "abc.jsonl")
 
 
-def test_resumed_input_resends_instructions_only_when_they_changed(tmp_path):
-    ref = _ref(tmp_path, resume="hello again")
-    agent_sessions.save(ref, adapter="codex", model="", handle="h", system="old system")
-    record = agent_sessions.load(tmp_path, ref.key)
-    assert agent_sessions.resume_input(ref, record, "old system") == "hello again"
-    changed = agent_sessions.resume_input(ref, record, "new system")
-    assert "new system" in changed and changed.endswith("hello again")
-
-
 def test_unseen_keeps_only_later_messages_of_the_named_speakers():
     history = [
         Msg(speaker="founder", text="old", ts=50.0),
@@ -158,91 +113,116 @@ def test_unseen_keeps_only_later_messages_of_the_named_speakers():
         history, 100.0, speakers=frozenset({"platform"}))] == ["notice"]
 
 
-# --- the codex adapter --------------------------------------------------------
+# --- the codex adapter (app-server threads) -----------------------------------
 
 
 @posix_only
 @pytest.mark.asyncio
-async def test_first_turn_keeps_its_native_session_and_records_it(served):
-    run, launch, stream, udir = served
+async def test_first_turn_keeps_its_native_session_and_records_it(served):  # noqa: F811
+    run, launch, _state, config, udir = served
     ref = _ref(udir)
-    await run(ModelConfig(sandbox_workspace=True, agent_session=ref))
-    argv = launch.call_args.args
-    assert "--ephemeral" not in argv and "resume" not in argv
+    _, server = await run(cfg=config(agent_session=ref))
+    assert server.requests("thread/start")[0]["params"]["ephemeral"] is False
+    assert server.requests("thread/resume") == []
     mounts = launch.call_args.kwargs["universe_view"].mounts
     store = agent_sessions.native_store(udir, "codex")
     assert any(m.op == "bind" and m.dest == "/codex-home/sessions" and m.source == store
                for m in mounts)
     record = agent_sessions.load(udir, ref.key)
-    assert record["handle"] == "0a1b2c3d-0000-4000-8000-000000000001"
-    assert _sent(stream) == "system\n\nfresh prompt"
+    assert record["handle"] == "thr-1"
+    # Instructions travel as the thread's own; the turn carries only the prompt.
+    assert _sent(server) == "fresh prompt"
 
 
 @posix_only
 @pytest.mark.asyncio
-async def test_next_turn_resumes_and_sends_only_what_is_new(served):
-    run, launch, stream, udir = served
+async def test_next_turn_resumes_and_sends_only_what_is_new(served):  # noqa: F811
+    run, _launch, _state, config, udir = served
     ref = _ref(udir, resume="[now]\nwhat did that command print?")
     handle = "0a1b2c3d-0000-4000-8000-000000000001"
-    agent_sessions.save(ref, adapter="codex", model="", handle=handle, system="system")
+    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
+                        system="system")
     store = agent_sessions.native_store(udir, "codex")
     (store / "2026" / "10" / "01").mkdir(parents=True)
     (store / "2026" / "10" / "01" / f"rollout-2026-10-01T00-00-00-{handle}.jsonl").write_text("{}")
 
-    await run(ModelConfig(sandbox_workspace=True, agent_session=ref))
+    _, server = await run(cfg=config(agent_session=ref))
 
-    argv = list(launch.call_args.args)
-    assert argv[-3:] == ["resume", handle, "-"]
-    assert "--ephemeral" not in argv
-    assert _sent(stream) == "[now]\nwhat did that command print?"
-
-
-@posix_only
-@pytest.mark.asyncio
-async def test_a_vanished_native_session_starts_a_new_one(served):
-    run, launch, stream, udir = served
-    ref = _ref(udir)
-    agent_sessions.save(ref, adapter="codex", model="", handle="0a1b2c3d-dead", system="system")
-    await run(ModelConfig(sandbox_workspace=True, agent_session=ref))
-    assert "resume" not in launch.call_args.args
-    assert _sent(stream) == "system\n\nfresh prompt"
+    assert server.requests("thread/start") == []
+    # The thread's own instructions are replaced with the current ones; the
+    # turn carries only what is new.
+    assert server.requests("thread/resume")[0]["params"] == {
+        "threadId": handle, "baseInstructions": "system"}
+    assert _sent(server) == "[now]\nwhat did that command print?"
 
 
 @posix_only
 @pytest.mark.asyncio
-async def test_a_failed_resume_is_forgotten_so_the_next_turn_starts_fresh(served, monkeypatch):
-    from tinyassets.providers import codex_provider as provider
-
-    run, launch, stream, udir = served
-    ref = _ref(udir)
-    handle = "0a1b2c3d-0000-4000-8000-000000000002"
-    agent_sessions.save(ref, adapter="codex", model="", handle=handle, system="system")
+async def test_changed_instructions_replace_the_resumed_threads_own(served):  # noqa: F811
+    """A resumed thread otherwise keeps the instructions it started with
+    (codex-cli 0.160.0 request capture, K2 evidence): the current ones are
+    sent as its own, and never folded into the user's input."""
+    run, _launch, _state, config, udir = served
+    ref = _ref(udir, resume="next message")
+    handle = "0a1b2c3d-0000-4000-8000-000000000003"
+    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
+                        system="old system")
     store = agent_sessions.native_store(udir, "codex")
     (store / f"rollout-x-{handle}.jsonl").write_text("{}")
-    monkeypatch.setattr(provider, "_stream_codex_exec", AsyncMock(return_value=(b"", b"")))
+    _, server = await run(cfg=config(agent_session=ref), system="new system")
+    (resume,) = server.requests("thread/resume")
+    assert resume["params"]["baseInstructions"] == "new system"
+    assert _sent(server) == "next message"
+    assert "old system" not in json.dumps(server.received)
+
+
+@posix_only
+@pytest.mark.asyncio
+async def test_a_vanished_native_session_starts_a_new_one(served):  # noqa: F811
+    run, _launch, _state, config, udir = served
+    ref = _ref(udir)
+    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle="0a1b2c3d-dead",
+                        system="system")
+    _, server = await run(cfg=config(agent_session=ref))
+    assert server.requests("thread/resume") == []
+    assert _sent(server) == "fresh prompt"
+
+
+@posix_only
+@pytest.mark.asyncio
+async def test_a_failed_resume_is_forgotten_so_the_next_turn_starts_fresh(served):  # noqa: F811
+    from tests.support.fake_codex_app_server import Turn
+
+    run, _launch, _state, config, udir = served
+    ref = _ref(udir)
+    handle = "0a1b2c3d-0000-4000-8000-000000000002"
+    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
+                        system="system")
+    store = agent_sessions.native_store(udir, "codex")
+    (store / f"rollout-x-{handle}.jsonl").write_text("{}")
     with pytest.raises(ProviderError):
-        await run(ModelConfig(sandbox_workspace=True, agent_session=ref))
+        await run(Turn(reply=""), cfg=config(agent_session=ref))
     assert agent_sessions.load(udir, ref.key) is None
 
 
 @posix_only
 @pytest.mark.asyncio
-async def test_a_session_held_by_another_launch_runs_unrecorded(served):
-    run, launch, stream, udir = served
+async def test_a_session_held_by_another_launch_runs_unrecorded(served):  # noqa: F811
+    run, _launch, _state, config, udir = served
     ref = _ref(udir)
     with agent_sessions.exclusive(ref) as held:
         assert held
-        await run(ModelConfig(sandbox_workspace=True, agent_session=ref))
-    assert "--ephemeral" in launch.call_args.args
+        _, server = await run(cfg=config(agent_session=ref))
+    assert server.requests("thread/start")[0]["params"]["ephemeral"] is True
     assert agent_sessions.load(udir, ref.key) is None
 
 
 @pytest.mark.asyncio
-async def test_a_turn_without_a_session_stays_ephemeral(served):
-    run, launch, stream, udir = served
-    await run(ModelConfig(sandbox_workspace=True))
-    assert "--ephemeral" in launch.call_args.args
-    assert not (udir / ".runtime").exists()
+async def test_a_turn_without_a_session_stays_ephemeral(served):  # noqa: F811
+    run, _launch, _state, config, udir = served
+    _, server = await run(cfg=config())
+    assert server.requests("thread/start")[0]["params"]["ephemeral"] is True
+    assert not (udir / ".runtime" / "agent-sessions").exists()
 
 
 # --- converse builds the reference ----------------------------------------------
@@ -301,7 +281,13 @@ def data_dir(tmp_path, monkeypatch):
 def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
     udir = _seed(data_dir)
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
-    assert "Inside my command center I act without asking" in prompt
+    from tinyassets.starter_release import starter_manifest
+    from tinyassets.starter_seeds import seed_store
+
+    with seed_store(udir, owner_id="test-owner::u-test", center_id="u-test") as seeds:
+        seeds.install(starter_manifest(), fresh=True)
+    prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
+    assert "Finish authorized work" in prompt
     assert "the result first" in prompt
     for teaches_hedging in ("warmly", "genuinely curious", "being raised", "raising",
                             "getting to know", "ask to clarify"):
@@ -311,8 +297,15 @@ def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
 def test_operating_instructions_are_seeded_once_and_then_the_universes_own(data_dir):
     udir = _seed(data_dir)
     ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
+    assert not (udir / "AGENTS.md").exists()  # Rendering never provisions.
+    from tinyassets.starter_release import starter_manifest
+    from tinyassets.starter_seeds import seed_store
+    from tinyassets.starter_skills import starter_agent_files
+
+    with seed_store(udir, owner_id="test-owner::u-test", center_id="u-test") as seeds:
+        seeds.install(starter_manifest(), fresh=True)
     seeded = (udir / "AGENTS.md").read_text(encoding="utf-8")
-    assert seeded.strip() == ui.DEFAULT_OPERATING_INSTRUCTIONS
+    assert seeded == starter_agent_files()["AGENTS.md"]
     (udir / "AGENTS.md").write_text("Answer in one sentence.\n", encoding="utf-8")
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
     assert "Answer in one sentence." in prompt
@@ -335,7 +328,8 @@ def test_a_linked_instructions_file_is_never_followed_or_overwritten(data_dir, t
     (udir / "AGENTS.md").symlink_to(outside)
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
     assert "FOREIGN RULES" not in prompt
-    assert ui.DEFAULT_OPERATING_INSTRUCTIONS in prompt
+    assert "no substitute instructions loaded" in prompt
+    assert "Finish authorized work" not in prompt
     assert outside.read_text(encoding="utf-8") == "FOREIGN RULES\n"
 
 

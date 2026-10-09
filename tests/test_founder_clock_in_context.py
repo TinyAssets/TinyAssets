@@ -48,9 +48,7 @@ def test_the_founder_turn_carries_the_stored_timezone(tmp_path: Path) -> None:
     prompt = ui._build_persona_system_prompt(
         udir, universe_id=UID, tier=interlocutor.FOUNDER,
     )
-    assert "# My founder's clock" in prompt
     assert "America/Los_Angeles" in prompt
-    assert "never ask them for their timezone" in prompt
 
 
 def test_a_visitor_turn_does_not_learn_the_founders_clock(tmp_path: Path) -> None:

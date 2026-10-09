@@ -281,19 +281,6 @@ def test_gates_enabled_truthy_values(monkeypatch):
         assert _gates_enabled() is True, f"expected True for GATES_ENABLED={v!r}"
 
 
-# ── universe_server.goals/gates wrapper sanity ──────────────────────────────
-
-
-def test_universe_server_goals_and_gates_are_decorated_wrappers():
-    """The us.goals + us.gates are NEW callables (decorated) wrapping
-    market.goals + market.gates. They are NOT the same object as the
-    market plain callables (because @mcp.tool wraps them)."""
-    from tinyassets import universe_server as us
-    # FastMCP wraps the function; just verify they're callable.
-    assert callable(us.goals)
-    assert callable(us.gates)
-
-
 # Arc A re-export shims removed in Task #18 retarget sweep — the parametrized
 # `test_universe_server_reexport_identity` covering 40+ market symbols is gone
 # alongside the shim block.

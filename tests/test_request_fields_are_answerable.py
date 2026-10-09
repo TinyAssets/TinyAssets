@@ -166,54 +166,6 @@ def test_a_secret_field_is_still_only_for_a_credential_ask() -> None:
     assert "secret field is only allowed" in str(caught.value)
 
 
-def test_the_served_docs_teach_the_labelled_shape() -> None:
-    """A capability the agent is not told about is one that does not exist —
-    which is how the last six gates happened."""
-    import tinyassets.engine_mcp_server as engine
-
-    # REACHABLE, not resident (2026-09-26): the labelled-field shape is in the
-    # `connections` chapter. The agent is pointed at it before it composes an ask.
-    doc = engine.served_tool_guidance("write_graph")
-    assert "ONE FIELD PER CREDENTIAL" in doc
-    assert '"help"' in doc and '"url"' in doc
-    # And the instruction that keeps it agnostic.
-    assert "no built-in list of services" in doc
-
-
-def test_the_agent_is_told_to_research_the_service_not_recall_it() -> None:
-    """The ask is built by GOING AND READING, not from what the model remembers.
-
-    Founder, 2026-08-31: "more like a skill the users agent uses just to build to
-    what ever the user points them at then the agent researches online to figure
-    out what the request needs to be, how it should lable credentials and what it
-    does and doesnt need and the link for the user to get it".
-
-    The capability was already there and unused: the agent runtime grants
-    WebFetch and WebSearch. Nothing told the agent to use them before asking, so
-    labels and click paths came from recall — and a portal reorganises, which
-    makes a remembered click path a link to somewhere that no longer exists.
-
-    This is the difference between a platform that knows about services and an
-    agent with a research skill. Only the second one works for the service
-    nobody has enumerated.
-    """
-    import tinyassets.engine_mcp_server as engine
-
-    # REACHABLE, not resident (2026-09-26): "look it up first" is in the
-    # `connections` chapter, and the resident index says that chapter covers
-    # looking the service up rather than asking from memory.
-    doc = engine.served_tool_guidance("write_graph")
-    assert "LOOK IT UP FIRST" in doc
-    assert "WebFetch" in doc and "WebSearch" in doc
-    # What the research is FOR, all four parts.
-    assert "which it does not" in doc          # do not ask for unused values
-    assert "in its own words" in doc           # the site's own labels
-    assert "click path" in doc                 # where to find each one
-    assert "THE LINK" in doc                   # and how to get there
-    # And honesty over confident guessing.
-    assert "confidently wrong label is worse" in doc
-
-
 def test_a_credential_ask_may_not_carry_a_plain_text_field() -> None:
     """A non-secret answer is recorded and relayed back into chat, so a field
     typed `text` on a credential ask persists that value in the clear.
@@ -263,17 +215,3 @@ def test_request_link_shape_bound_is_enforced() -> None:
     prefix = "https://x.com/intent/post?text="
     with pytest.raises(ValueError):
         _validated_fields([_field(url=prefix + "a" * (8193 - len(prefix)))], _CONNECT)
-
-
-def test_the_control_station_prompt_teaches_fields_too() -> None:
-    """The served docstring is not the only place an agent is instructed.
-
-    The Control Station prompt still told agents to raise a `connect_http` ask
-    with no `fields`. Following it exactly now returns `request_invalid` and
-    creates no tab, so the very first live credential ask would have stranded
-    (Codex, Q5). Two instruction surfaces, one instruction.
-    """
-    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT as text
-    assert "fields" in text
-    assert "secret" in text
-    assert "LOOK IT UP FIRST" in text

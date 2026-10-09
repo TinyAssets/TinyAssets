@@ -129,7 +129,7 @@ def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
     """The engine MCP route this call's provider jail may reach, if any.
 
     The same three fields every adapter checks before wiring the engine server
-    (``claude_provider._engine_mcp_flags``, ``codex_provider._codex_engine_mcp_args``);
+    (``claude_provider._engine_mcp_flags``, ``codex_provider._served_engine_tools``);
     the route itself is re-read, owner-checked, by the jail's relay.
     """
     actor_id = (cfg.engine_mcp_actor_id or "").strip()
@@ -891,7 +891,8 @@ class ProviderRouter:
             or parent_budget is not None and parent_budget is not request_budget
         ):
             raise ProviderAuthorityHeldError("invalid parent request budget")
-        cfg = replace(cfg, request_budget=request_budget, request_attempt=None)
+        cfg = replace(cfg, request_budget=request_budget, request_attempt=None,
+                      invocation_owner_user_id="")
         if _work_agent_observer is not None:
             if (type(invocation_carrier) is not ProviderInvocationCarrier
                     or not callable(_work_agent_observer) or _agent_execution_kind is None):
@@ -1356,6 +1357,12 @@ class ProviderRouter:
                         # The owning universe for every process this call
                         # launches; the shared spawn point jails to it, or
                         # refuses a launch with none (provider_jail).
+                        # Inert routing context: only the selected broker reads it.
+                        cfg = replace(cfg, invocation_owner_user_id=(
+                            served_authority.owner_user_id if served_authority is not None
+                            else invocation_carrier._receipt.principal_id
+                            if invocation_carrier is not None else ""
+                        ))
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
                             engine_route=_engine_route(cfg),
@@ -1491,9 +1498,8 @@ class ProviderRouter:
                 # ProviderResponse by design -- "every existing construction site
                 # and non-streaming provider stays a valid terminal
                 # ProviderResponse" (providers/base.py) -- and codex_provider only
-                # populates it when machine accounting is on
-                # (`machine_accounting = bool(config.sandbox_workspace)`,
-                # codex_provider.py:350). A plain prompt-template node has no
+                # populates it on a served agent turn (`config.sandbox_workspace`,
+                # the app-server path). A plain prompt-template node has no
                 # sandbox workspace, so a perfectly successful call arrived here
                 # with all three fields None and the settlement destroyed it:
                 # every prompt-template run in the founder's universe failed with
@@ -1752,7 +1758,7 @@ class ProviderRouter:
                               owner=quota_owner, reason="provider_error"):
                     logger.warning(
                         "Provider %s error, cooldown %ds: %s",
-                        provider_name, COOLDOWN_OTHER, exc,
+                        provider_name, COOLDOWN_OTHER, redacted_failure_detail(str(exc)),
                     )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",

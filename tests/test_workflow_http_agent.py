@@ -30,9 +30,8 @@ def work_agent(tmp_path, monkeypatch, http_wire):
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     # _run_branch establishes the real serving binding; do not invent a second
     # binding before that setup. Tool admission needs the same owner's admin ACL.
-    from tinyassets.daemon_server import grant_universe_access
-    grant_universe_access(tmp_path, universe_id="universe_alice", actor_id="acct_alice",
-                          permission="admin", granted_by="acct_alice")
+    from tinyassets.daemon_server import grant_universe_ownership
+    grant_universe_ownership(tmp_path, universe_id="universe_alice", owner_id="acct_alice")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("tinyassets.providers.call._force_mock", False)
     engine_mcp_http._write_routes(tmp_path, [SimpleNamespace(
@@ -112,7 +111,8 @@ def work_agent(tmp_path, monkeypatch, http_wire):
             message = {"role": "assistant", "content": None if tools else "work completed"}
             if tools:
                 message["tool_calls"] = [{"id": "tool-1", "type": "function", "function": {
-                    "name": "read_graph", "arguments": '{"target":"status"}',
+                    "name": "bash", "arguments": json.dumps({
+                        "command": "ta call read_graph --json '{\"target\":\"status\"}'"}),
                 }}]
                 if state.before_tool:
                     state.before_tool()

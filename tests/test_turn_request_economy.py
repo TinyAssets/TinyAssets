@@ -126,17 +126,22 @@ def test_unreadable_directory_omits_entire_section(tmp_path, monkeypatch):
 
 
 def test_resident_batching_and_direct_ui_install(tmp_path):
-    text = universe_tools.harness_prompt(tmp_path)
+    from tinyassets.starter_skills import starter_agent_files
+
+    text = starter_agent_files()["skills/starter-workspace/SKILL.md"]
+    text = " ".join(text.split())
     assert "independent reads or checks" in text
     assert "together in one reply, not one per reply" in text
-    assert 'write_graph target="app_ui" operation="add_ui"' in text
+    assert 'target="app_ui" operation="add_ui"' in text
     assert 'payload_json={"component": {...}}' in text
     assert "write_graph.interfaces" in text
     assert "rather than staging pieces in /u files and reading them back" in text
 
 
 def test_continuity_greeting_announces_then_resumes_unfinished_work():
-    text = universe_intelligence._CROSS_SURFACE_CONTINUITY
+    from tinyassets.starter_skills import starter_agent_files
+
+    text = " ".join(starter_agent_files()["skills/starter-workspace/SKILL.md"].split())
     assert "one thread" in text
     assert "my FIRST reply says in one short message" in text
     assert "where it stands and that I am continuing; then I continue in the same turn" in text
@@ -202,7 +207,9 @@ def test_resume_pipeline_delivers_round_one_text_with_tools_and_resident_context
     assert "## My command center now" in system
     assert 'Connections: ["compute:models"]' in system
     assert "vault://" not in system and "credential_ref" not in system
-    assert 'write_graph target="app_ui" operation="add_ui"' in system
+    assert "starter-workspace" in system
+    skill = (root / "skills/starter-workspace/SKILL.md").read_text()
+    assert 'target="app_ui" operation="add_ui"' in skill
 
 
 def seed_budget(agent, monkeypatch, remaining):

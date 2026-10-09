@@ -266,7 +266,7 @@ class ToolRun:
     exit_code: int | None
     output: bytes
     #: ``timeout``, ``output_limit``, ``memory_limit``, ``process_limit``,
-    #: ``disk_limit``, ``storage_limit`` or None.
+    #: ``disk_limit``, ``storage_limit``, ``activity_stopped`` or None.
     killed: str | None
     elapsed: float
     #: Seconds this call spent QUEUED for a host tool slot before it started.
@@ -652,13 +652,16 @@ def run_jailed(
     on_wait: Callable[[float], None] | None = None,
     egress_socket: Path | None = None,
     ta_socket: Path | None = None,
+    stop: Callable[[], str | None] | None = None,
     extension_root: Path | None = None,
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
     If every host slot is taken the call WAITS for one; it is not refused for the
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
-    with a user in front of it can surface a waiting state.
+    with a user in front of it can surface a waiting state. ``stop`` is polled
+    while the jail runs; once it names a reason the jail is killed
+    (``activity_stopped``): an activity that yielded, paused or stopped.
     """
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
@@ -686,7 +689,9 @@ def run_jailed(
         if extension_root is not None:
             egress["extension_root"] = extension_root
         argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
-        with _slot(root, on_wait=on_wait, waited=queued):
+        from tinyassets.starter_seeds import seed_boundary
+
+        with seed_boundary(root), _slot(root, on_wait=on_wait, waited=queued):
             try:
                 budget = jail_disk.open_budget(
                     root, min_free_bytes=limits.min_free_disk_bytes,
@@ -706,7 +711,7 @@ def run_jailed(
                                 str(cgroup / "cgroup.procs"), *argv]
                     run = _supervise(
                         argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
-                        cap=cap, process_cap=process_cap, budget=budget,
+                        cap=cap, process_cap=process_cap, budget=budget, stop=stop,
                     )
             finally:
                 budget.settle()
@@ -801,7 +806,7 @@ def _remove_cgroup(path: Path) -> None:
 def _supervise(
     argv: list[str], root: Path, filter_fd: int, *, stdin: bytes | None,
     limits: ToolLimits, wall: float, cap: int, process_cap: int,
-    budget: jail_disk.DiskBudget,
+    budget: jail_disk.DiskBudget, stop: Callable[[], str | None] | None = None,
 ) -> ToolRun:
     """Start the jail and watch it until it ends or a limit kills it."""
     started = time.monotonic()
@@ -832,7 +837,7 @@ def _supervise(
     killed = None
     try:
         killed = _watch(proc, out, budget, limits=limits, wall=wall,
-                        process_cap=process_cap, started=started)
+                        process_cap=process_cap, started=started, stop=stop)
     finally:
         try:
             proc.wait(timeout=_KILL_GRACE_SECONDS)
@@ -868,6 +873,7 @@ def _supervise(
 def _watch(
     proc: subprocess.Popen, out: _Drain, budget: jail_disk.DiskBudget, *,
     limits: ToolLimits, wall: float, process_cap: int, started: float,
+    stop: Callable[[], str | None] | None = None,
 ) -> str | None:
     """Poll the running jail; kill it and name the limit the moment one breaks."""
     next_tree = 0.0
@@ -885,6 +891,8 @@ def _watch(
                 killed = "process_limit"
             elif rss > limits.tree_memory_bytes:
                 killed = "memory_limit"
+            elif stop is not None and stop() is not None:
+                killed = "activity_stopped"
             else:
                 killed = budget.breach()
         if killed:
@@ -942,6 +950,8 @@ def _waited_note(run: ToolRun) -> str:
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
     if run.killed == "timeout":
         return f"[killed: ran longer than {wall:g}s]"
+    if run.killed == "activity_stopped":
+        return "[killed: the activity stopped running (waiting on the owner, paused or stopped)]"
     if run.killed == "output_limit":
         return f"[killed: output passed {limits.output_bytes} bytes]"
     if run.killed == "memory_limit":
@@ -1113,8 +1123,13 @@ def _egress_socket(universe_dir: Path) -> Path | None:
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS, ta_dispatch=None,
+    stop: Callable[[], str | None] | None = None,
 ) -> str:
-    """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome.
+
+    ``stop`` (an activity's :func:`tinyassets.activity_fence.stop_check`) ends
+    the command once the activity stops running.
+    """
     from tinyassets.research_capability import research_refusal
 
     # D3a refuses all bash, stricter than a read-only mount: no shell or egress
@@ -1137,6 +1152,8 @@ def bash(
 
         inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
+    if stop is not None:
+        egress["stop"] = stop
     if ta_dispatch is None:
         run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                      wall_seconds=wall, **egress)
@@ -1144,7 +1161,8 @@ def bash(
         from tinyassets.extension_git import for_launch
         from tinyassets.ta_capabilities import JailBridge
 
-        with JailBridge(ta_dispatch) as bridge, for_launch(
+        ended = threading.Event()
+        with JailBridge(_halting(ta_dispatch, stop, ended)) as bridge, for_launch(
             getattr(ta_dispatch, "extension_backend", None)
         ) as git_prefix:
             if bridge.extension_root is not None:
@@ -1153,12 +1171,39 @@ def bash(
                 inner = [shell, "-c", git_prefix + command]
                 if socket_path is not None and python:
                     inner = universe_egress.forwarder_argv(python, inner)
-            run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
-                         wall_seconds=wall, ta_socket=bridge.path, **egress)
+            try:
+                run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
+                             wall_seconds=wall, ta_socket=bridge.path, **egress)
+            finally:
+                ended.set()
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
     return _waited_note(run) + body + _trailer(run, limits, wall)
+
+
+def _halting(ta_dispatch, stop: Callable[[], str | None] | None, ended: threading.Event):
+    """``ta_dispatch``, except a request that stops the activity is never answered.
+
+    The command is blocked in that ``ta`` call until it gets an answer, so
+    withholding it until the supervisor's ``stop`` poll has killed the jail
+    (``ended``) means nothing after an activity's own yield in the same command
+    runs. Without ``stop`` (not an activity) it is ``ta_dispatch`` unchanged.
+    """
+    if stop is None:
+        return ta_dispatch
+
+    def dispatch(message):
+        answer = ta_dispatch(message)
+        reason = stop()
+        if reason is None:
+            return answer
+        ended.wait(MAX_BASH_SECONDS + _KILL_GRACE_SECONDS)
+        return {"error": reason}
+
+    # The bridge mounts the launch's extensions from the dispatch it is given.
+    dispatch.extension_backend = getattr(ta_dispatch, "extension_backend", None)
+    return dispatch
 
 
 # ── the skill index (progressive disclosure) ────────────────────────────────
@@ -1232,25 +1277,9 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 
 _HARNESS_HEAD = (
-    "# My folder and my four tools\n"
-    "/u is my workspace: `read` reads files/lines, `write` creates/replaces files, "
-    "`edit` replaces an exact passage, `bash` runs a shell with public internet via "
-    "HTTP(S)_PROXY (pip, npm, git, urllib) and bounded memory, processes and time. "
-    "Long-running work is workflows and automations in this command center, never "
-    "a service hosted elsewhere (write_graph.systems). Relative paths: /u. I can "
-    "create, change and delete files/folders; platform soul.md and config.yaml are read-only.\n"
-    "In bash, `ta search <words>` discovers capabilities, `ta describe <name>` "
-    "lists args; `ta <name> --json '<args>'` calls them.\n"
-    "Earlier turns and missing files: handbook write_graph.systems.\n"
-    "Skills: `skills/<name>/SKILL.md`, frontmatter `name:` and one-line `description:`. "
-    "I follow matching skills; editing them changes the next turn.\n"
-    "I call independent reads or checks together in one reply, not one per reply.\n"
-    "Downloads: a fenced file block {\"path\":\"exports/a.csv\"} (a /u file, max 8 MiB) "
-    "gives the owner a private Download chip.\n"
-    "App UI: one component via `write_graph target=\"app_ui\" "
-    "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
-    "write_graph.interfaces), rather than staging pieces in /u files and reading them back.\n"
-    "## My skills\n"
+    "/u is the workspace. Use read/write/edit/bash. In bash: `ta search <words>`, "
+    "`ta describe <name>`, `ta call <name> --json '<args>'`. "
+    "Read matching skills at skills/<name>/SKILL.md; owner files are editable.\nSkills:\n"
 )
 
 
@@ -1329,11 +1358,21 @@ def command_center_summary(universe_dir: Path, owner: str) -> str:
         if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
             return ""
         branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
-        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.broker.catalog import connections
+
+            inventory = (connection for _grant, connection, _ in connections(
+                universe_dir.parent, principal=owner, command_center=universe_dir.name,
+                limit=21))
+        else:
+            ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+            inventory = (ledger.get_connection_view(grant.connection_id)
+                         for grant in ledger.list_grants(owner_user_id=owner,
+                                                         universe_id=universe_dir.name, limit=21))
         names = []
-        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
-                                        limit=21):
-            connection = ledger.get_connection_view(grant.connection_id)
+        for connection in inventory:
             if connection and connection.owner_user_id == owner and connection.revoked_at is None:
                 names.append(connection.destination)
         active = _universe_active_turn(universe_dir)
@@ -1364,16 +1403,13 @@ def harness_prompt(universe_dir: Path) -> str:
     Runs in the shared daemon on every founder turn, so a bad skill folder
     never breaks the turn; an unreadable inventory is omitted.
     """
-    from tinyassets.onboarding_note import onboarding_note
-
-    note = onboarding_note(universe_dir)
     try:
         skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
     lines = [
-        f"- `{name}`: {description} ({SKILLS_DIR}/{name}/SKILL.md)"
+        f"- `{name}`: {description}"
         for name, description in skills
     ]
     return (_HARNESS_HEAD + "\n".join(lines or ["(none yet)"])
-            + _folder_section(universe_dir) + note)
+            + _folder_section(universe_dir))

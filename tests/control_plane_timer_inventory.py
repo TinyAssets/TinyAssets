@@ -75,6 +75,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
     # -- bounded waits inside one call -----------------------------------------
+    "tinyassets/mcp_protocol.py::continue_call": (
+        CALL_SCOPED,
+        "bounded MRTR continuation of one host-consented remote call; stops with "
+        "the caller, timeout, revocation or an uncertain response",
+    ),
     "tinyassets/ui_preview.py::_supervised": (
         CALL_SCOPED,
         "one requested preview polls its child tree until exit, wall deadline "
@@ -174,7 +179,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
     ),
-    "tinyassets/providers/codex_provider.py::_stream_codex_exec": (CALL_SCOPED, "stream poll"),
+    "tinyassets/providers/codex_app_server.py::AppServerTurn.read": (
+        CALL_SCOPED,
+        "reads ONE codex app-server turn's stdout under its idle/tool/absolute "
+        "budgets; ends with the turn's terminal notification, EOF or timeout",
+    ),
     "tinyassets/providers/owned_process.py::_watch_disk.watch": (
         CALL_SCOPED,
         "host-side disk-budget watch for one jailed provider launch; ends with "
@@ -189,6 +198,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/singleton_lock.py::_lock_fd_within": (
         CALL_SCOPED, "owner-control lock acquisition, bounded by the caller's wait",
     ),
+    "tinyassets/starter_seeds.py::open_seed_boundary": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/storage/conversation_custody.py::_checkpoint_truncate": (
         CALL_SCOPED, "WAL checkpoint retry",
     ),
@@ -210,6 +220,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/universe_tools.py::_slot": (CALL_SCOPED, "tool slot wait"),
     "tinyassets/universe_tools.py::_watch": (
         CALL_SCOPED, "watches ONE jailed tool call from outside the jail",
+    ),
+    "tinyassets/workflow_agent.py::WorkAgentAdapter._until_activity_stops": (
+        CALL_SCOPED,
+        "polls ONE native activity call's activity status; ends when the call "
+        "returns or is cancelled because the activity stopped",
     ),
     "tinyassets/workspace_family.py::family_fence": (CALL_SCOPED, "fence wait"),
     "tinyassets/workspace_fs.py::_retry_transient_windows": (CALL_SCOPED, "Windows retry"),

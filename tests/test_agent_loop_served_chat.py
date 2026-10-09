@@ -42,6 +42,13 @@ def _last_tool_text(agent):
     return json.loads(messages[-1]["content"])["content"][0]["text"]
 
 
+def test_thin_loop_model_inventory_is_exactly_four(agent):
+    agent.tool_call = ("bash", '{"command": "true"}')
+    assert run(agent) == "finished exact answer"
+    offered = [t["function"]["name"] for t in agent.wires[0][1]["body"]["tools"]]
+    assert offered == ["read", "write", "edit", "bash"]
+
+
 def test_box_tool_runs_in_the_bound_box_by_journal_op_id(agent):
     agent.tool_call = ("bash", '{"command": "echo hi"}')
     assert run(agent) == "finished exact answer"
@@ -71,17 +78,65 @@ def test_unknown_box_outcome_holds_the_turn_and_nothing_replays(agent):
     assert set(agent.box.starts) == {f"{turn.turn_id}:1:1"}
 
 
-def test_owner_read_is_answered_by_the_loop_and_never_reaches_the_box(agent):
-    agent.tool_call = ("activity", "{}")
+@pytest.mark.parametrize("name", ["history", "activity"])
+def test_direct_owner_reads_are_not_model_tools(agent, name):
+    agent.tool_call = (name, "{}")
     assert run(agent) == "finished exact answer"
     assert agent.box.starts == [] and agent.tools == []
-    assert "activity" in json.loads(_last_tool_text(agent))
+    assert all(not round_.tools for round_ in agent.latest().rounds)
 
 
-def test_engine_tools_keep_their_engine_route(agent):
+@pytest.mark.parametrize("target", ["status", "conversation", "runs"])
+def test_engine_tools_keep_their_engine_route(agent, monkeypatch, target):
+    """Four model tools: engine capabilities are reached by ``ta`` in the box,
+    over the turn's own signed engine session, never as a model tool."""
+    from types import SimpleNamespace
+
+    from tinyassets import engine_tool_client
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+    message = {"op": "call", "name": "read_graph", "arguments": {"target": target}}
+    request, delivery = "a" * 32, "b" * 32
+    agent.box.script = lambda argv, stdin: (
+        b'\x1eTA1 {"ready":true}\n\x1eTA1 '
+        + json.dumps({"request": request, "message": message, "delivery": delivery}).encode()
+        + b'\n\x1eTA1 '
+        + json.dumps({"output": base64.b64encode(b"read it").decode()}).encode() + b'\n', 0)
+    opened, asked = [], []
+    real_open, real_client = engine_tool_client.open_engine_tools, engine_tool_client._make_client
+
+    def open_engine_tools(**kwargs):
+        opened.append(kwargs)
+        return real_open(**kwargs)
+
+    def make_client(*args):
+        client = real_client(*args)
+
+        async def read_resource(uri):
+            payload = uri.removeprefix("ta-bridge://request/")
+            asked.append(json.loads(base64.urlsafe_b64decode(payload)))
+            return [SimpleNamespace(text=json.dumps({"result": "status"}))]
+
+        client.read_resource = read_resource
+        return client
+
+    monkeypatch.setattr("tinyassets.agent_loop.tool_session.open_engine_tools", open_engine_tools)
+    monkeypatch.setattr(engine_tool_client, "_make_client", make_client)
+    agent.tool_call = ("bash", json.dumps({"command": "ta call read_graph"}))
     assert run(agent) == "finished exact answer"
-    assert agent.tools == [("read_graph", {"target": "status"})]
-    assert agent.box.starts == []
+    # The model saw only the four box tools.
+    offered = {t["function"]["name"] for t in agent.wires[0][1]["body"]["tools"]}
+    assert offered == {"read", "write", "edit", "bash"}
+    # The engine session displays bash alone but carries the turn's backend grant.
+    assert [(o["enabled_tools"], o["capability_grant"]) for o in opened] == [
+        (("bash",), BACKEND_ENGINE_CAPABILITIES)]
+    # The box's ta request went to the engine route, verbatim, not as a tool call.
+    assert asked == [message] and agent.tools == []
+    turn = agent.latest()
+    (sent,) = agent.box.stdin_sent
+    assert sent[:2] == (f"{turn.turn_id}:1:1", delivery)
+    assert json.loads(sent[2]) == {"request": request, "answer": {"result": "status"}}
+    assert _last_tool_text(agent) == "read it\n[exit code 0]"
 
 
 def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):

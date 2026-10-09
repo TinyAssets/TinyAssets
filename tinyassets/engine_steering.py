@@ -108,8 +108,11 @@ def launch_tools() -> tuple[str, ...] | None:
         from fastmcp.server.dependencies import get_http_request
 
         grant = str(get_http_request().query_params.get(GRANT_PARAM) or "")
-    except Exception:  # noqa: BLE001 - stdio, or no request: no grant
-        return None
+    except Exception:  # noqa: BLE001 - only an explicitly pinned stdio launch has a grant
+        return verified_launch_grant(
+            (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip(), "", "",
+            os.environ.get("TINYASSETS_ENGINE_STDIO_GRANT", ""),
+        )
     session_key, turn = _route_params()
     return verified_launch_grant(
         (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip(), session_key, turn, grant)

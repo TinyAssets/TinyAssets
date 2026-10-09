@@ -68,6 +68,8 @@ def served(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_GRAPH_ID", HOME)
     (tmp_path / HOME).mkdir()
     seed_bound_engine(monkeypatch)
+    from tests.test_ta_capabilities import signed_launch
+    signed_launch(monkeypatch)
     save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME, expected_revision=0,
                 changes={"ui_library": _large_library()})
     return engine
@@ -407,3 +409,19 @@ def test_every_finished_turn_asks_the_ui_controller() -> None:
     delivered = app.index("renderConverse(answer);")
     settled = app.index("}catch(err)", delivered)
     assert "AppUI.turnSettled()" in app[delivered:settled]
+
+
+def test_ta_build_and_activate_my_dashboard_reaches_real_owner_ui(served, tmp_path):
+    from tests.ta_task_helpers import call
+
+    before = _row(tmp_path)
+    installed = call(served, "write_graph", target="app_ui", operation="add_ui",
+                     payload_json=json.dumps({"component": _ui("orchard")}))
+    assert installed["status"] == "saved", installed
+    activated = call(served, "write_graph", target="app_ui", operation="activate",
+                     payload_json=json.dumps({"ui_id": "orchard"}))
+    assert activated["status"] == "saved", activated
+    after = _row(tmp_path)
+    assert after["revision"] == before["revision"] + 2
+    assert after["ui_selection"]["ui_id"] == "orchard"
+    assert after["ui_library"] == [*before["ui_library"], _ui("orchard")]

@@ -438,7 +438,8 @@ def reserve_served_provider_budget(
                 owner_user_id=authority.owner_user_id,
                 universe_id=authority.universe_id,
                 connection_id=_open_connection_id(
-                    Path(base_path), authority.universe_id, authority.provider
+                    Path(base_path), authority.universe_id, authority.provider,
+                    owner_user_id=authority.owner_user_id,
                 ),
             )
             verify_open_grant_custody(
@@ -1288,9 +1289,11 @@ def _served_request_agent(base_path, universe, request_carrier, role, operation)
         request_carrier, universe_id=uid, agent_binding_id=binding_id,
         binding_revision=revision, operation=operation,
     )
+    from tinyassets.request_answers import OWNER_ANSWER_SOURCE
+
     accepted_sources = {
         ("tinyassets.authenticated-request.v1", "tinyassets.auth.middleware", "converse"),
-        ("tinyassets.authenticated-app-event.v1", "tinyassets.app_ingress_http", "slack_event"),
+        OWNER_ANSWER_SOURCE,
     }
     if (capability.mechanism, capability.issuer, capability.tool_name) not in accepted_sources:
         raise PermissionError("provider request source is not trusted")

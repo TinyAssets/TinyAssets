@@ -64,7 +64,7 @@ def test_turn_event_runner_uses_existing_signed_tool_surface(world, monkeypatch)
     from tinyassets import agent_turn_coordinator
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.extension_hooks import turn_event
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
     server = _engine(monkeypatch, world)
     root = _universe_dir(server._GRAPH_ID)
@@ -89,7 +89,8 @@ def test_turn_event_runner_uses_existing_signed_tool_surface(world, monkeypatch)
     @asynccontextmanager
     async def open_tools(**kwargs):
         assert kwargs["actor_id"] == server._ACTOR_ID
-        assert kwargs["enabled_tools"] == SERVED_ENGINE_MCP_TOOLS
+        # The turn's signed backend grant (hooks run ta), not the four model tools.
+        assert kwargs["enabled_tools"] == BACKEND_ENGINE_CAPABILITIES
         yield Session()
     monkeypatch.setattr(agent_turn_coordinator, "open_engine_tools", open_tools)
     coordinator = SimpleNamespace(

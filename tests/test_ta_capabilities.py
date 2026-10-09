@@ -170,7 +170,8 @@ def test_bad_extension_is_reported_without_breaking_other_capabilities(
 def backend(root, *, agent="worker", owner="user-1", platform=(), call=None,
             authority=lambda: None):
     return Capabilities(root, ExecutionContext(root.name, owner, agent),
-                        list(platform), call, authority)
+                        list(platform), call, authority,
+                        capability_grant=("write_graph", "run_graph"))
 
 
 def invoke(service, **message):
@@ -339,13 +340,13 @@ def signed_launch(monkeypatch, tools=None, *, session="", turn="", key=GRANT_KEY
     from starlette.requests import Request
 
     from tinyassets.engine_steering import route_with_session
-    from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV, SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, LAUNCH_GRANT_KEY_ENV
 
     monkeypatch.setenv(LAUNCH_GRANT_KEY_ENV, GRANT_KEY)
     if url is None:
         url = route_with_session(
             "http://127.0.0.1:8790/mcp", session, turn, grant_key=key,
-            tools=SERVED_ENGINE_MCP_TOOLS if tools is None else tools)
+            tools=BACKEND_ENGINE_CAPABILITIES if tools is None else tools)
     request = Request({"type": "http", "method": "POST", "path": "/mcp",
                        "query_string": urlsplit(url).query.encode(), "headers": []})
     monkeypatch.setattr(dependencies, "get_http_request", lambda: request)
@@ -356,11 +357,12 @@ def grant_engine(monkeypatch, root, calls):
     from types import SimpleNamespace
 
     from tinyassets.api import helpers
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
-    async def list_tools():
+    async def list_tools(*, run_middleware=True):
+        assert run_middleware is False  # ta bypasses only the model inventory projection
         return [SimpleNamespace(name=name, description=name, parameters={"type": "object"})
-                for name in SERVED_ENGINE_MCP_TOOLS]
+                for name in BACKEND_ENGINE_CAPABILITIES]
 
     async def call_tool(name, arguments):
         calls.append(name)
@@ -397,11 +399,57 @@ def platform_call(name):
     return {"op": "call", "name": name, "arguments": {}}
 
 
+@pytest.mark.parametrize("action", ["install", "activate", "revoke"])
+def test_status_only_signed_turn_cannot_mutate_extensions(tmp_path, monkeypatch, action):
+    import base64
+
+    from tinyassets.extension_state import ExtensionStore
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.served_tools import granted_tools
+    from tinyassets.shared_self import _granted_config
+
+    root = tmp_path / "home"
+    root.mkdir()
+    store = ExtensionStore(tmp_path, owner="user-1", universe="home", agent="worker")
+    files = {"extension.json": b'{"schema_version":2,"name":"sample"}'}
+    installed = store.install(files)
+    generation = 0
+    if action == "revoke":
+        state = store.transition("sample", installed["revision"], expected_generation=0,
+                                 active=True)
+        generation = state["generation"]
+    before = store.list()
+    files["new.txt"] = b"must not be installed by a read-only turn"
+    arguments = ({"files": {p: base64.b64encode(v).decode() for p, v in files.items()}}
+                 if action == "install" else {"name": "sample",
+                 "revision": installed["revision"], "expected_generation": generation})
+    config = _granted_config(ModelConfig(), {"tools_allowed": ["agent", "get_status"]})
+    signed_launch(monkeypatch, granted_tools(config), session="node:b:worker", turn="t1")
+    calls = []
+    status, answer, listing, help_result, events = through_ta(
+        grant_engine(monkeypatch, root, calls), platform_call("get_status"),
+        {"op": "call", "name": f"extension:{action}", "arguments": arguments},
+        platform_call("extension:list"), platform_call("extension:help"),
+        platform_call("extension:events"))
+    assert answer == {"error": "mutation capability not granted"}
+    assert store.list() == before
+    assert listing == {"result": {"extensions": before}}
+    assert "handbook" in help_result["result"] and "result" in events
+    assert status == {"result": {"called": "get_status"}} and calls == ["get_status"]
+    # The same real dispatcher permits the effect only after a signed mutation grant.
+    signed_launch(monkeypatch, ["write"], session="node:b:worker", turn="t2")
+    (allowed,) = through_ta(grant_engine(monkeypatch, root, calls),
+                           {"op": "call", "name": f"extension:{action}",
+                            "arguments": arguments})
+    assert "result" in allowed
+    assert store.list() != before
+
+
 def test_unrestricted_launch_keeps_every_served_capability_and_connections(
     tmp_path, monkeypatch,
 ):
     from tinyassets.providers.base import ModelConfig
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, granted_tools
 
     _, root, _ = _setup(tmp_path)
     calls = []
@@ -410,7 +458,7 @@ def test_unrestricted_launch_keeps_every_served_capability_and_connections(
     catalog, wrote, ran = through_ta(grant_engine(monkeypatch, root, calls), CATALOG,
                                      platform_call("write_graph"), platform_call("run_graph"))
     assert [item["name"] for item in catalog["capabilities"]] == [
-        t for t in SERVED_ENGINE_MCP_TOOLS if t not in FILE_TOOLS
+        t for t in BACKEND_ENGINE_CAPABILITIES if t not in FILE_TOOLS
     ] + ["connection:conn-http:POST"]
     assert wrote == {"result": {"called": "write_graph"}}
     assert ran == {"result": {"called": "run_graph"}} and calls == ["write_graph", "run_graph"]
@@ -424,14 +472,15 @@ def test_unrestricted_launch_keeps_every_served_capability_and_connections(
 ])
 def test_node_grant_is_the_whole_reach_of_ta(tmp_path, monkeypatch, tools_allowed, reachable):
     from tinyassets.providers.base import ModelConfig
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, granted_tools
     from tinyassets.shared_self import _granted_config
 
     _, root, _ = _setup(tmp_path)
     calls = []
     config = _granted_config(ModelConfig(), {"tools_allowed": tools_allowed})
     signed_launch(monkeypatch, granted_tools(config), session="node:branch-1:worker")
-    withheld = [t for t in SERVED_ENGINE_MCP_TOOLS if t not in reachable and t not in FILE_TOOLS]
+    withheld = [t for t in BACKEND_ENGINE_CAPABILITIES
+                if t not in reachable and t not in FILE_TOOLS]
     server = grant_engine(monkeypatch, root, calls)
     catalog, *answers = through_ta(
         server, CATALOG, CONNECTION, *map(platform_call, reachable + withheld))
@@ -454,7 +503,7 @@ def test_grant_holding_build_and_run_reaches_connections_as_before(tmp_path, mon
 
 def test_unsigned_forged_or_foreign_grant_never_widens(tmp_path, monkeypatch):
     from tinyassets.engine_mcp_http import _EngineServer
-    from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV, SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, LAUNCH_GRANT_KEY_ENV
 
     _, root, _ = _setup(tmp_path)
     calls = []
@@ -463,7 +512,7 @@ def test_unsigned_forged_or_foreign_grant_never_widens(tmp_path, monkeypatch):
     narrow = signed_launch(monkeypatch, ["read", "bash"], session="node:b:n", turn="t1")
     assert GRANT_KEY not in narrow and "grant=read%2Cbash." in narrow
     assert through_ta(server, *probe) == [{"error": "unknown capability"}] * 2
-    full = "%2C".join(SERVED_ENGINE_MCP_TOOLS)
+    full = "%2C".join(BACKEND_ENGINE_CAPABILITIES)
     wide = signed_launch(monkeypatch, None, session="node:b:other", turn="t1")
     forgeries = [
         "http://h/mcp?session=node%3Ab%3An&turn=t1",                # no grant
@@ -486,13 +535,14 @@ def test_unsigned_forged_or_foreign_grant_never_widens(tmp_path, monkeypatch):
     signed_launch(monkeypatch, None)
     monkeypatch.delenv(LAUNCH_GRANT_KEY_ENV)
     assert through_ta(server, *probe) is None
-    # A launch never granted bash holds no ta, whatever else it was granted.
-    signed_launch(monkeypatch, ["read_graph", "write_graph", "run_graph"])
-    assert through_ta(server, *probe) is None
+    # A backend-only grant keeps discovery; shell execution remains withheld.
+    signed_launch(monkeypatch, ["read_graph"])
+    assert through_ta(server, *probe) == [{"error": "unknown capability"}] * 2
     # The request body is never a grant.
     signed_launch(monkeypatch, ["read", "bash"])
     assert through_ta(server, {"op": "catalog", "grant": "*"},
-                      dict(platform_call("write_graph"), grant=list(SERVED_ENGINE_MCP_TOOLS))) == [
+                      dict(platform_call("write_graph"),
+                           grant=list(BACKEND_ENGINE_CAPABILITIES))) == [
         {"error": "invalid ta request"}] * 2
     assert calls == []
 

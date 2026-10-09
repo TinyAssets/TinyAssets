@@ -107,7 +107,9 @@ def test_stop_during_a_tool_call_lets_it_finish_and_starts_nothing_after(agent, 
     # Quiescent after a completed tool: closed with everything it did kept.
     assert turn.state == "abandoned"
     assert stopped.value.turn_effects == "some"
-    assert stopped.value.completed_tools == ("read_graph",)
+    # The model's one tool call: bash running `ta call read_graph` (four tools).
+    assert stopped.value.completed_tools == ("bash",)
+    assert "ta call read_graph" in agent.tools[0][1]["command"]
     _not_thinking(agent, turn)
 
 
@@ -188,11 +190,13 @@ class _NativeAdapter:
 
 
 def _native_coordinator(base: Path, live):
-    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
 
     uid = "u-native"
     (base / uid).mkdir(parents=True)
     set_founder_home(base, founder_sub="owner", universe_id=uid, platform_generated=True)
+    # The first owner check installs the starter, which needs the owner binding.
+    grant_universe_ownership(base, universe_id=uid, owner_id="owner")
     router = SimpleNamespace(selected_agent_execution_kind=lambda selection: "native_agent")
     context = SimpleNamespace(
         universe_dir=base / uid, agent_model_plan=None,
@@ -240,6 +244,65 @@ def test_stop_kills_a_native_cli_turn_and_releases_it(tmp_path, probe):
     assert turn.rounds[-1].reply.status == "indeterminate"
     assert turn_effects(turn)[0] == "unknown" and stopped.turn_effects == "unknown"
     assert ("u-native", turn.turn_id) not in BOOT._claimed
+
+
+class _ActivityNativeAdapter(_NativeAdapter):
+    """The native call run for an activity, through the work adapter's own gate."""
+
+    def __init__(self, binding):
+        self.activity_binding = binding
+
+    async def infer(self, **kwargs):
+        from tinyassets.workflow_agent import WorkAgentAdapter
+
+        return await WorkAgentAdapter._until_activity_stops(self, super().infer(**kwargs))
+
+
+def test_an_activity_yield_kills_a_native_cli_turn_and_releases_it(tmp_path, probe):
+    """The activity twin of the owner's stop: once the activity yields to an
+    owner request, the native CLI's process tree is ended and its claim is
+    released -- no further native tool loop, no held seat."""
+    from tinyassets import activity_runner, agent_activities
+    from tinyassets.providers import claude_provider as claude_mod
+
+    probe.install(claude_mod, frame="claude", cmd_resolver="_resolve_claude_cmd",
+                  env_builder="subprocess_env_for_provider")
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(claude_mod, "_sandbox_cli_args", lambda *a, **k: ([], None))
+    base = tmp_path / "data"
+    try:
+        coordinator = _native_coordinator(base, None)
+        universe = base / "u-native"
+        record = agent_activities.create(universe, owner_principal="owner", title="t",
+                                         brief="b", origin_kind="ask")
+        aid = record["activity_id"]
+        generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
+        assert agent_activities.bind_run(universe, aid, generation, "run-1")
+        coordinator.adapter = _ActivityNativeAdapter(
+            activity_runner.ActivityRunBinding(universe, aid, generation, "run-1"))
+
+        async def drive():
+            task = asyncio.ensure_future(coordinator.run())
+            await _await_descendant_pid(probe.pid_file)
+            assert coordinator.turn.state == "native_started"
+            started = time.monotonic()
+            # The agent's own ask, as the engine route records it.
+            threading.Thread(target=agent_activities.wait_on,
+                             args=(universe, aid, "req-1", "asked")).start()
+            with pytest.raises(activity_runner.ActivityYielded):
+                await task
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(drive())
+    finally:
+        monkey.undo()
+    assert elapsed < 15, f"the yield took {elapsed:.1f}s to end the native turn"
+    _assert_tree_is_gone(probe, probe.procs[-1].pid)
+    turn = AgentTurnJournal(base).get("owner", "u-native", coordinator.turn.turn_id)
+    # The agent acted before its ask: recorded as indeterminate, never as done.
+    assert turn.state == "held_native_unknown"
+    assert ("u-native", turn.turn_id) not in BOOT._claimed
+    assert agent_activities.get(universe, aid)["status"] == agent_activities.WAITING_ON_YOU
 
 
 # ---------------------------------------------------------------------------

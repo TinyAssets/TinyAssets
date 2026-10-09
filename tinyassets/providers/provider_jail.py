@@ -856,12 +856,19 @@ def confine_launch(
     # served codex turn keeps its own sandbox (apply_patch needs it); its link
     # residual is the daemon-side link-refusing reader/writer's (#4254).
     filter_fd = program_fd(nested_sandbox=nested_sandbox)
+    seed_fd = None
     try:
+        from tinyassets.starter_seeds import open_seed_boundary
+
+        _, seed_fd = open_seed_boundary(view.universe_dir)
         jailed = jail_argv(
             inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,
             seccomp_fd=filter_fd, platform_sources=platform_sources,
         )
+        jailed[1:1] = ["--sync-fd", str(seed_fd)]
     except BaseException:
         os.close(filter_fd)
+        if seed_fd is not None:
+            os.close(seed_fd)
         raise
-    return ConfinedLaunch(jailed, (filter_fd,), view.universe_dir.resolve(strict=False))
+    return ConfinedLaunch(jailed, (filter_fd, seed_fd), view.universe_dir.resolve(strict=False))

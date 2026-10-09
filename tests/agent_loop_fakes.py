@@ -41,6 +41,7 @@ class FakeBox:
         self.starts: list[str] = []
         self.cancels: list[str] = []
         self.binds: list[tuple[str, str, str | None]] = []
+        self.stdin_sent: list[tuple[str, str, bytes]] = []
         self.fail_start: int = 0
         self.fail_stream: int = 0
         self.hang = False
@@ -84,6 +85,9 @@ class FakeBox:
             yield exit_event(137)
             return
         yield from record.events
+
+    def send_stdin(self, h, exec_id, delivery, data):
+        self.stdin_sent.append((exec_id, delivery, data))
 
     def cancel(self, h, exec_id):
         self.cancels.append(exec_id)

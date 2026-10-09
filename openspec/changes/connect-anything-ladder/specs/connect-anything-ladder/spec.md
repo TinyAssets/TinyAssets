@@ -1,5 +1,29 @@
 ## ADDED Requirements
 
+### Requirement: Current remote MCP is compatible without effect replay
+The adapter SHALL support 2026-07-28 per-request metadata, mirrored headers,
+JSON and request-scoped SSE through the existing broker, and legacy negotiated
+2025-11-25, 2025-06-18 and 2025-03-26 sessions. It SHALL propagate bounded
+broker-scanned authentication challenges as structured host-only failure data.
+Modern HTTP cancellation SHALL close the response stream; legacy cancellation
+SHALL retain its best-effort notification. HTTP or transport failures SHALL NOT
+cause automatic tool replay.
+
+#### Scenario: A modern endpoint requires URL input
+- **WHEN** a tools/call returns a valid input_required URL request
+- **THEN** the trusted host receives the full URL, server binding and pending operation
+- **AND** after host consent the adapter continues that same operation with exact opaque requestState and matching inputResponses, using fresh request IDs without a chat continue message
+- **AND** changed authority, host cancellation, changed URL or uncertain delivery cannot reuse prior consent for another operation
+
+#### Scenario: A legacy endpoint rejects the modern discovery probe
+- **WHEN** a read-only modern probe receives a non-modern 400 rejection
+- **THEN** the client initializes a supported legacy version and binds its session to that instance
+- **AND** recognized modern version or header errors are surfaced or negotiated without an indiscriminate legacy fallback
+
+#### Scenario: A round is lost after transmission
+- **WHEN** a continuation POST has an uncertain result
+- **THEN** it is not resent, and its opaque state does not appear in model-visible errors
+
 ### Requirement: Connection routes are general shapes inline in chat
 The system SHALL support MCP attachment shapes through the existing bound inline connection request and continuation mechanism, alongside generic OAuth/HTTP. It SHALL NOT require per-platform code, a directory entry or a platform LLM. The owner SHALL control route and approval policy; cross-user isolation SHALL remain the sole immutable platform behavioral invariant. Credentials SHALL remain daemon-side by default, with only explicit owner-approved stdio injection into that server's separate owner-bound sandbox permitted.
 
@@ -65,6 +89,33 @@ New connection shapes SHALL reuse the existing coordinator, request idempotency,
 
 ### Requirement: Standard MCP OAuth uses existing connection authority
 Remote MCP SHALL support protected-resource and authorization-server metadata discovery, PKCE S256, DCR, HTTPS client metadata documents and explicit static-client fallback according to server support. Tokens SHALL bind the intended resource/audience, redirect URI and initiating owner session. The registered provider directory and platform Google client SHALL remain optional data, never a required registration or per-platform code path.
+
+Discovery SHALL use an actual Bearer challenge, then endpoint-path and root
+well-known metadata, validate resource identity and exact issuer equality, and
+apply SSRF checks to every target. Registration SHALL prefer an accepted existing
+client, then advertised CIMD, then DCR with application_type web. Public client
+registrations created by the platform SHALL persist by exact issuer and redirect
+URI in the OAuth flow store, without owner tokens. Requester-supplied client IDs
+SHALL NOT enter that shared cache. DCR entries SHALL expire within one hour;
+an expired entry on a pending card SHALL trigger fresh registration or an
+actionable registration_required failure. Token-endpoint client rejection SHALL
+evict the cached identity; no callback is assumed for authorization-page refusal. GET /app/oauth/client-metadata.json SHALL publish the
+stable HTTPS TinyAssets client identity and exact callback with public auth none.
+The token bundle SHALL retain optional resource and issuer without breaking old
+bundles. Authorize, exchange and refresh SHALL send that resource. Requested or
+challenge scopes absent from AS metadata SHALL NOT be rejected for that absence.
+
+#### Scenario: Unknown path endpoint advertises CIMD
+- **WHEN** an unlisted endpoint challenges with protected-resource metadata and its AS advertises CIMD
+- **THEN** the existing connect card uses the published client identity before DCR, and tokens retain the exact resource through refresh
+
+#### Scenario: Registration and grant failures need different recovery
+- **WHEN** registration is unavailable or rejected, or a token grant is revoked
+- **THEN** registration_required and reconnect_required respectively identify the recoverable failure without exposing credentials
+
+#### Scenario: Resource or issuer identity differs
+- **WHEN** metadata names a different resource or an issuer differing even by a trailing slash
+- **THEN** discovery rejects it before registration or authorization
 
 #### Scenario: A server is absent from the provider directory
 - **WHEN** its metadata offers DCR, client metadata documents or configured static registration

@@ -56,6 +56,10 @@ def _seed(tmp_path: Path) -> Path:
     # A universe needs an OWNER to be readable at all (2026-09-02).
     own_universe(udir.parent, udir.name)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
+    from tinyassets.starter_release import starter_manifest
+    from tinyassets.starter_seeds import seed_store
+    with seed_store(udir, owner_id="test-owner::u-test", center_id="u-test") as seeds:
+        seeds.install(starter_manifest(), fresh=True)
     # Register + declare so disclosure is evaluable. Declared `public`, so an
     # unauthenticated in-process caller (T0) is served the universe's public
     # grounding; founder-private grounding stays excluded by the filter itself.
@@ -145,7 +149,7 @@ def test_system_prompt_is_first_person_and_grounded(tmp_path, monkeypatch):
 
     assert "first person" in prompt.lower()
     # never a neutral assistant
-    assert "assistant" in prompt.lower()
+    assert "owner's agent" in prompt.lower()
     # honesty/safety floor
     assert "honest" in prompt.lower()
     # grounded in the founder file
@@ -162,9 +166,11 @@ def test_founder_prompt_instructs_proactive_brain_persistence(tmp_path):
     founder_prompt = ui._build_persona_system_prompt(
         udir, universe_id="u-test", tier=interlocutor.FOUNDER
     )
-    assert "write_brain" in founder_prompt
-    assert "how i remember" in founder_prompt.lower()
-    assert "ask permission" in founder_prompt.lower()
+    skill = (udir / "skills/starter-memory/SKILL.md").read_text(encoding="utf-8")
+    assert "write_brain" in skill
+    assert "starter-memory" in founder_prompt
+    assert "Persist" in skill and "in this turn" in skill
+    assert "write_brain" not in founder_prompt
 
     # A lower-tier visitor never sees the brain-write instruction (and may be
     # refused content entirely by the disclosure filter).
@@ -205,7 +211,7 @@ def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
     assert ctx is not None
     assert ctx.universe_dir == udir
     assert ctx.config.preferred_writer == "codex"  # the assigned engine
-    assert "first person" in captured["system"].lower()
+    assert "learning who you are" in captured["system"].lower()
 
 
 def test_converse_receipt_observer_is_not_passed_to_later_learning(tmp_path, monkeypatch):
@@ -440,7 +446,7 @@ def test_sandboxed_config_locks_down_the_engine(tmp_path):
     cfg = ui._sandboxed_config(ctx)
 
     assert cfg.sandbox_workspace is True
-    assert cfg.allowed_tools == ("WebFetch",)
+    assert cfg.allowed_tools == ()
     for denied in ("Bash", "Read", "Write", "WebSearch", "Task"):
         assert denied in cfg.disallowed_tools
 
@@ -470,7 +476,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
     assert len(configs) >= 2
     assert all(c is not None and c.sandbox_workspace for c in configs)
     assert all("Bash" in (c.disallowed_tools or ()) for c in configs)
-    assert all(c.allowed_tools == ("WebFetch",) for c in configs)
+    assert all(c.allowed_tools == () for c in configs)
 
 
 def test_generic_identity_detector():
@@ -656,8 +662,10 @@ def test_continuity_directive_rides_founder_turn_with_history(tmp_path, monkeypa
                ("Universe", "yes — open the web app first")]
     ui.converse("u-test", "Continue the website", tier=interlocutor.FOUNDER,
                 conversation_history=history)
-    # Directive is appended to the TRUSTED system prompt...
-    assert _CONTINUITY_MARKER in cap["system"]
+    # Advice lives in the on-demand skill; actual history still reaches this turn.
+    skill = (udir / "skills/starter-workspace/SKILL.md").read_text(encoding="utf-8")
+    assert "one thread across surfaces" in skill
+    assert _CONTINUITY_MARKER not in cap["system"]
     # ...while the actual (untrusted) history rides in the user turn, NOT the system.
     assert "reshaping the website" in cap["prompt"]
     assert "reshaping the website" not in cap["system"]

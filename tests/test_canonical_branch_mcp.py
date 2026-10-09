@@ -58,7 +58,7 @@ def env(tmp_path, monkeypatch):
 
 
 def _call(us, tool, action, **kwargs):
-    fn = getattr(us, tool)
+    fn = getattr(us, f"_{tool}_impl")
     return json.loads(fn(action=action, **kwargs))
 
 
@@ -122,27 +122,6 @@ class TestSetCanonicalResponseShape:
         )
         assert "set_canonical" in _GOAL_ACTIONS
         assert "set_canonical" in _GOAL_WRITE_ACTIONS
-
-    def test_goals_signature_accepts_branch_version_id(self):
-        """Task #21 — `branch_version_id` must be a real `goals()`
-        function-arg, not a kwarg silently dropped by the MCP layer.
-        Pre-Task-#21 the arg was missing from the signature, the MCP
-        framework dropped it before reaching `goal_kwargs`, and the
-        `set_canonical` handler always saw `branch_version_id=None`.
-        """
-        from tinyassets.universe_server import goals
-        params = inspect.signature(goals).parameters
-        assert "branch_version_id" in params, (
-            "goals() must accept branch_version_id; otherwise "
-            "set_canonical can never receive a real version id."
-        )
-        # And it must default to "" so chatbots that don't pass it
-        # (e.g. for unset semantics on set_canonical) get sensible
-        # behavior instead of a TypeError.
-        assert params["branch_version_id"].default == "", (
-            "branch_version_id should default to empty string; "
-            "the handler interprets '' as 'unset' (None)."
-        )
 
     def test_canonical_handles_advertise_goal_routing_parameters(self):
         from tinyassets.universe_server import run_graph, write_graph

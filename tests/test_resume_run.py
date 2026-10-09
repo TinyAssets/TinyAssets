@@ -11,8 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import importlib
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -111,43 +109,6 @@ class TestIdempotentByStep:
 # ---------------------------------------------------------------------------
 # Helpers shared across run-level tests
 # ---------------------------------------------------------------------------
-
-
-def _become(user_id: str) -> None:
-    """Sign in as ``user_id``.
-
-    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
-    environment variable -- authority from a string anybody can set. The
-    autouse operator fixture rebinds between tests, so this does not leak.
-    """
-    from tinyassets.auth import middleware as _mw
-    from tinyassets.auth.provider import Identity
-
-    _mw._current_identity.set(
-        Identity(
-            user_id=user_id,
-            username=user_id,
-            display_name=user_id,
-            capabilities=[
-                "tinyassets.universe.read",
-                "tinyassets.universe.write",
-                "tinyassets.universe.admin",
-                "tinyassets.extensions.read",
-                "tinyassets.extensions.write",
-            ],
-        )
-    )
-
-
-@pytest.fixture
-def run_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    _become("tester")
-
-    from tinyassets import universe_server as us
-    importlib.reload(us)
-    yield us, tmp_path
-    importlib.reload(us)
 
 
 def _setup_interrupted_run(tmp_path: Path, *, actor: str = "tester") -> str:
@@ -354,80 +315,3 @@ class TestResumeRunFunction:
 # ---------------------------------------------------------------------------
 # _action_resume_run() via extensions tool (universe_server.py)
 # ---------------------------------------------------------------------------
-
-
-class TestActionResumeRun:
-    def _call(self, us, action, **kwargs):
-        return json.loads(us.extensions(action=action, **kwargs))
-
-    def _setup_run(self, tmp_path, us):
-        self._call(us, "create_branch", name="throwaway")
-        return _setup_interrupted_run(tmp_path)
-
-    def test_missing_run_id_returns_error(self, run_env):
-        us, _ = run_env
-        result = self._call(us, "resume_run", run_id="")
-        assert "error" in result
-
-    def test_nonexistent_run_id_returns_error(self, run_env):
-        us, _ = run_env
-        result = self._call(us, "resume_run", run_id="does-not-exist")
-        assert "error" in result
-        assert "reason" in result
-
-    def test_completed_run_returns_status_error(self, run_env):
-        us, base = run_env
-        self._call(us, "create_branch", name="throwaway")
-        from tinyassets.runs import (
-            RUN_STATUS_COMPLETED,
-            create_run,
-            initialize_runs_db,
-            update_run_status,
-        )
-
-        initialize_runs_db(base)
-        rid = create_run(base, branch_def_id="b1", thread_id="", inputs={}, actor="tester")
-        update_run_status(base, rid, status=RUN_STATUS_COMPLETED)
-
-        result = self._call(us, "resume_run", run_id=rid)
-        assert "error" in result
-        assert result.get("reason") == "not_interrupted"
-
-    def test_missing_checkpoint_returns_error(self, run_env):
-        us, base = run_env
-        rid = self._setup_run(base, us)
-        result = self._call(us, "resume_run", run_id=rid)
-        assert "error" in result
-        assert result.get("reason") == "no_checkpoint"
-
-    def test_happy_path_returns_run_id_and_resumed_status(self, run_env):
-        us, base = run_env
-        rid = self._setup_run(base, us)
-
-        from tinyassets.runs import RUN_STATUS_RESUMED, RunOutcome
-
-        dummy_outcome = RunOutcome(run_id=rid, status=RUN_STATUS_RESUMED, output={}, error="")
-
-        with patch("tinyassets.runs.resume_run", return_value=dummy_outcome):
-            result = self._call(us, "resume_run", run_id=rid)
-
-        assert result.get("run_id") == rid
-        assert result.get("status") == RUN_STATUS_RESUMED
-
-    def test_already_resumed_idempotent(self, run_env):
-        us, base = run_env
-        self._call(us, "create_branch", name="throwaway")
-        from tinyassets.runs import (
-            RUN_STATUS_RESUMED,
-            create_run,
-            initialize_runs_db,
-            update_run_status,
-        )
-
-        initialize_runs_db(base)
-        rid = create_run(base, branch_def_id="b1", thread_id="", inputs={}, actor="tester")
-        update_run_status(base, rid, status=RUN_STATUS_RESUMED)
-
-        result = self._call(us, "resume_run", run_id=rid)
-        assert result.get("run_id") == rid
-        assert result.get("status") == RUN_STATUS_RESUMED

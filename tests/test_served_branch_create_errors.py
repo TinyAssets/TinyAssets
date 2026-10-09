@@ -839,14 +839,6 @@ def test_every_branches_chapter_example_round_trips_through_the_real_create(serv
         assert _landed(out), (spec.get("name"), out)
 
 
-def test_the_chapter_shows_how_to_schedule_the_branch():
-    from tinyassets import engine_mcp_server as s
-
-    text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
-    assert 'target="automation"' in text
-    assert "cron" in text or "schedule" in text
-
-
 def _chapter_cron_payload() -> dict:
     """The chapter's automation example, parsed out of the served text."""
     from tinyassets import engine_mcp_server as s
@@ -946,31 +938,6 @@ def test_the_chapter_names_the_revision_field_a_read_actually_returns():
     text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
     assert "``revision``" in text
     assert "beside the ``expected_revision``" not in text
-
-
-def test_the_chapter_promises_the_timezone_the_scheduler_now_honours():
-    """CONTRACT CHANGED 2026-09-30 (`automation-schedule-timezone`).
-
-    This test asserted the OPPOSITE until then -- that the chapter must say
-    there is no per-owner timezone -- because there was not one, and promising
-    an owner "7am your time" for a cron the scheduler ran in UTC was the live
-    defect. Now a cron automation carries an IANA `timezone` defaulting to the
-    owner's own, so the chapter has to say THAT instead; a chapter still
-    claiming server time would be the wrong answer in the other direction.
-    """
-    from tinyassets import engine_mcp_server as s
-
-    text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
-    assert "no per-owner timezone" not in text
-    assert "server's local clock" not in text.lower()
-    assert "timezone" in text and "IANA" in text
-    # The zone is offered as a field AND as the default, so neither reads as
-    # something the agent must always supply.
-    assert "America/Los_Angeles" in text
-    assert "owner's own zone" in text
-    # And it still points at the fields that give the real answer.
-    assert "next_due_at" in text
-    assert "schedule_local" in text
 
 
 def test_the_chapter_is_named_in_the_resident_index():

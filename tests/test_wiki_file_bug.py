@@ -24,8 +24,8 @@ from tinyassets.api.wiki import (
     _render_bug_markdown,
     _slugify_title,
     _wiki_file_bug,
+    wiki,
 )
-from tinyassets.universe_server import wiki
 
 
 @pytest.fixture
@@ -589,50 +589,3 @@ class TestFileBugKindRouting:
         )
         assert "error" in out
         assert "banana" in out["error"]
-
-    def test_cosign_feature_routes_to_feature_requests_dir(self, wiki_dir):
-        """cosign_bug must derive dir from the bug_id prefix (FEAT- → feature-requests)."""
-        from tinyassets.universe_server import wiki
-        f = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="add feature Q", kind="feature",
-        ))
-        feat_id = f["bug_id"]
-        cos = json.loads(
-            wiki("cosign_bug", bug_id=feat_id, reporter_context="me too — important")
-        )
-        assert cos["status"] == "cosigned"
-        assert cos["bug_id"] == feat_id.upper()
-        assert cos["path"].startswith("pages/feature-requests/")
-        # Verify the file actually has a Cosigns section
-        feat_dir = wiki_dir / "pages" / "feature-requests"
-        bug_files = list(feat_dir.glob(f"{feat_id.lower()}-*.md"))
-        assert len(bug_files) == 1
-        body = bug_files[0].read_text(encoding="utf-8")
-        assert "## Cosigns" in body
-        assert "me too — important" in body
-
-    def test_cosign_design_routes_to_design_proposals_dir(self, wiki_dir):
-        from tinyassets.universe_server import wiki
-        d = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="design prop K", kind="design",
-        ))
-        design_id = d["bug_id"]
-        cos = json.loads(
-            wiki("cosign_bug", bug_id=design_id, reporter_context="agree with this")
-        )
-        assert cos["status"] == "cosigned"
-        assert cos["path"].startswith("pages/design-proposals/")
-
-    def test_cosign_bug_unknown_prefix_falls_back_to_bugs_dir(self, wiki_dir):
-        """Unrecognized prefix → bugs/ fallback (backward compat)."""
-        from tinyassets.universe_server import (
-            wiki,  # File a regular bug to give cosign something to find
-        )
-        b = json.loads(_wiki_file_bug(
-            component="x", severity="minor", title="legit bug",
-        ))
-        cos = json.loads(
-            wiki("cosign_bug", bug_id=b["bug_id"], reporter_context="seen it too")
-        )
-        assert cos["status"] == "cosigned"
-        assert cos["path"].startswith("pages/bugs/")
