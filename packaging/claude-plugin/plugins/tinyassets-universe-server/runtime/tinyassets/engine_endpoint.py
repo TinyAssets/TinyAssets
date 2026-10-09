@@ -8,6 +8,32 @@ import sys
 from contextvars import ContextVar
 from pathlib import Path
 
+_model_context: ContextVar[int | None] = ContextVar("engine_model_context", default=None)
+
+
+def _context_from_query(query: bytes) -> int | None:
+    from urllib.parse import parse_qs
+
+    params = parse_qs(query.decode("ascii", errors="replace"))
+    values = params.get("context_tokens", [])
+    if (len(values) == 1 and values[0].isascii() and values[0].isdigit()
+            and len(values[0]) <= 10):
+        return int(values[0]) or None
+    return None
+
+
+def model_context() -> int | None:
+    # MCP session work can run in the lifespan task group rather than the
+    # ASGI request task. Its request dependency retains the actual call URL.
+    try:
+        from fastmcp.server.dependencies import get_http_request
+
+        request = get_http_request()
+    except RuntimeError:
+        return _model_context.get()
+    return _context_from_query(request.scope.get("query_string", b""))
+
+
 _endpoint: ContextVar[tuple | None] = ContextVar("engine_endpoint", default=None)
 
 
@@ -64,8 +90,11 @@ class EngineEndpoint:
                 return
         elif kind != "lifespan":
             return
+        context_token = _model_context.set(
+            _context_from_query(scope.get("query_string", b"")))
         token = _endpoint.set((self.module, self.key))
         try:
             await self.app(scope, receive, send)
         finally:
             _endpoint.reset(token)
+            _model_context.reset(context_token)

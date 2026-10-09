@@ -1,10 +1,8 @@
-"""Long-lived agent sessions (change `universe-agent-harness`, slice S1).
+"""Session references and ephemeral native turns in isolated provider cells.
 
-Before this every served turn was a fresh ``--ephemeral`` process that saw a
-text summary of recent messages and none of its own tool work; every
-background wake rebuilt that context from scratch. A session key now names the
-thread or agent node a turn continues, and a resume-capable adapter continues
-the same native session with only the input it has not seen.
+References retain conversation and steering identity. A Codex owner cell has
+only a private temporary HOME, so it starts an ephemeral thread with the full
+prompt and never resumes a record left by the previous launch architecture.
 """
 
 from __future__ import annotations
@@ -116,90 +114,34 @@ def test_unseen_keeps_only_later_messages_of_the_named_speakers():
 # --- the codex adapter (app-server threads) -----------------------------------
 
 
-@posix_only
 @pytest.mark.asyncio
-async def test_first_turn_keeps_its_native_session_and_records_it(served):  # noqa: F811
+@pytest.mark.parametrize("stale_handle", [None, "0a1b2c3d-0000-4000-8000-000000000001"])
+async def test_owner_cells_start_ephemeral_with_full_context(served, stale_handle):  # noqa: F811
     run, launch, _state, config, udir = served
-    ref = _ref(udir)
-    _, server = await run(cfg=config(agent_session=ref))
-    assert server.requests("thread/start")[0]["params"]["ephemeral"] is False
-    assert server.requests("thread/resume") == []
-    mounts = launch.call_args.kwargs["universe_view"].mounts
-    store = agent_sessions.native_store(udir, "codex")
-    assert any(m.op == "bind" and m.dest == "/codex-home/sessions" and m.source == store
-               for m in mounts)
-    record = agent_sessions.load(udir, ref.key)
-    assert record["handle"] == "thr-1"
-    # Instructions travel as the thread's own; the turn carries only the prompt.
-    assert _sent(server) == "fresh prompt"
-
-
-@posix_only
-@pytest.mark.asyncio
-async def test_next_turn_resumes_and_sends_only_what_is_new(served):  # noqa: F811
-    run, _launch, _state, config, udir = served
-    ref = _ref(udir, resume="[now]\nwhat did that command print?")
-    handle = "0a1b2c3d-0000-4000-8000-000000000001"
-    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
-                        system="system")
-    store = agent_sessions.native_store(udir, "codex")
-    (store / "2026" / "10" / "01").mkdir(parents=True)
-    (store / "2026" / "10" / "01" / f"rollout-2026-10-01T00-00-00-{handle}.jsonl").write_text("{}")
-
-    _, server = await run(cfg=config(agent_session=ref))
-
-    assert server.requests("thread/start") == []
-    # The thread's own instructions are replaced with the current ones; the
-    # turn carries only what is new.
-    assert server.requests("thread/resume")[0]["params"] == {
-        "threadId": handle, "baseInstructions": "system"}
-    assert _sent(server) == "[now]\nwhat did that command print?"
-
-
-@posix_only
-@pytest.mark.asyncio
-async def test_changed_instructions_replace_the_resumed_threads_own(served):  # noqa: F811
-    """A resumed thread otherwise keeps the instructions it started with
-    (codex-cli 0.160.0 request capture, K2 evidence): the current ones are
-    sent as its own, and never folded into the user's input."""
-    run, _launch, _state, config, udir = served
-    ref = _ref(udir, resume="next message")
-    handle = "0a1b2c3d-0000-4000-8000-000000000003"
-    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
-                        system="old system")
-    store = agent_sessions.native_store(udir, "codex")
-    (store / f"rollout-x-{handle}.jsonl").write_text("{}")
-    _, server = await run(cfg=config(agent_session=ref), system="new system")
-    (resume,) = server.requests("thread/resume")
-    assert resume["params"]["baseInstructions"] == "new system"
-    assert _sent(server) == "next message"
-    assert "old system" not in json.dumps(server.received)
-
-
-@posix_only
-@pytest.mark.asyncio
-async def test_a_vanished_native_session_starts_a_new_one(served):  # noqa: F811
-    run, _launch, _state, config, udir = served
-    ref = _ref(udir)
-    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle="0a1b2c3d-dead",
-                        system="system")
-    _, server = await run(cfg=config(agent_session=ref))
+    ref = _ref(udir, resume="only the new message")
+    if stale_handle:
+        agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=stale_handle,
+                            system="old system")
+        store = agent_sessions.native_store(udir, "codex")
+        (store / f"rollout-x-{stale_handle}.jsonl").write_text("{}")
+    prior = agent_sessions.load(udir, ref.key)
+    _, server = await run(cfg=config(agent_session=ref), system="current system")
+    start = server.requests("thread/start")[0]["params"]
+    assert start["ephemeral"] is True
+    assert start["baseInstructions"] == "current system"
     assert server.requests("thread/resume") == []
     assert _sent(server) == "fresh prompt"
+    assert "only the new message" not in json.dumps(server.received)
+    assert "universe_view" not in launch.call_args.kwargs
+    assert agent_sessions.load(udir, ref.key) == prior
 
 
-@posix_only
 @pytest.mark.asyncio
-async def test_a_failed_resume_is_forgotten_so_the_next_turn_starts_fresh(served):  # noqa: F811
+async def test_failed_ephemeral_turn_does_not_record_a_native_session(served):  # noqa: F811
     from tests.support.fake_codex_app_server import Turn
 
     run, _launch, _state, config, udir = served
     ref = _ref(udir)
-    handle = "0a1b2c3d-0000-4000-8000-000000000002"
-    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
-                        system="system")
-    store = agent_sessions.native_store(udir, "codex")
-    (store / f"rollout-x-{handle}.jsonl").write_text("{}")
     with pytest.raises(ProviderError):
         await run(Turn(reply=""), cfg=config(agent_session=ref))
     assert agent_sessions.load(udir, ref.key) is None

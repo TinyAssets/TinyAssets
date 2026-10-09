@@ -316,3 +316,8 @@ brain names; it never creates root entries. After maintenance exits, the daemon
 reads a bounded pinned single-link owner source and uses the same owner-content
 publication operation with NOREPLACE. The source workspace bytes remain intact.
 Strict tool mount and daemon-reader ownership/link checks remain unchanged.
+
+Selected-model result ceilings travel on the authenticated engine HTTP route.
+Handlers read the current MCP request (with request-context fallback) rather than
+mutating process environment; the fixed maximum and deployment override still win.
+Concurrent endpoint requests retain independent ceilings.

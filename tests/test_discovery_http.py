@@ -155,6 +155,8 @@ def rig(tmp_path, monkeypatch):
         return {"resource": None if row is None else dict(row)}
 
     def broker_channel(base, *, principal, command_center, grant_id, connection_id):
+        ledger.authorize_exact(universe_id=command_center, grant_id=grant_id,
+                               connection_id=connection_id)
         state.starts.append({"owner_user_id": principal, "universe_id": command_center,
                              "grant_id": grant_id, "connection_id": connection_id})
         view = ledger.get_connection_view(connection_id)
@@ -294,14 +296,14 @@ def test_unauthorized_or_noncanonical_url_opens_no_proxy(rig, url):
     assert not rig.starts
 
 
-def test_same_context_is_checked_again_by_real_proxy_resolver(rig, monkeypatch):
-    original = ConnectionLedger.resolve_exact_scoped_proxy
+def test_same_context_is_checked_again_by_real_broker_admission(rig, monkeypatch):
+    original = ConnectionLedger.authorize_exact
 
     def revoke_then_resolve(self, **kwargs):
         rig.ledger.revoke_grant("grant-discovery")
         return original(self, **kwargs)
 
-    monkeypatch.setattr(ConnectionLedger, "resolve_exact_scoped_proxy", revoke_then_resolve)
+    monkeypatch.setattr(ConnectionLedger, "authorize_exact", revoke_then_resolve)
     with pytest.raises(ProviderUnavailableError, match="transport failed"):
         rig.read()
     assert not rig.starts and not rig.calls

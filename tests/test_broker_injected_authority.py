@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def cloud(discovery):
     definition, provider, ledger = _cloud_authority_fixture(discovery.root / "private-cloud")
-    path = discovery.root / "private-cloud/outbound.db"
+    path = discovery.root / "private-cloud/.broker/outbound.db"
     daemon = threading.get_ident()
 
     def ledger_for(principal):

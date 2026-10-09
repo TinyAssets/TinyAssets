@@ -34,7 +34,7 @@ STEERED_PREFIX = "thread:"
 
 
 def route_with_session(url: str, session_key: str, turn: str = "", *,
-                       grant_key: str = "", tools=None) -> str:
+                       grant_key: str = "", tools=None, context_tokens: int | None = None) -> str:
     """``url`` naming ``session_key`` (and the live ``turn``) for one launch.
 
     ``tools`` (``served_tools.granted_tools(config)``) adds the launch's grant,
@@ -47,6 +47,8 @@ def route_with_session(url: str, session_key: str, turn: str = "", *,
     key = str(session_key or "").strip()
     live = str(turn or "").strip() if key else ""
     params = []
+    if type(context_tokens) is int and context_tokens > 0:
+        params.append(f"context_tokens={context_tokens}")
     if key:
         params.append(f"{SESSION_PARAM}={quote(key, safe='')}")
     if live:

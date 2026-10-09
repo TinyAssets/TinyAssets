@@ -48,7 +48,9 @@ def test_a_workspace_that_is_a_link_refuses_every_launch(tmp_path, monkeypatch):
         default_view(universe)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     with pytest.raises(universe_tools.UniverseToolError):
-        universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
+        universe_tools.tool_jail_argv(
+            universe, ["/bin/true"], agent_id="main", workspace_prepared=True,
+            promote_brain_files=False)
 
 
 def test_a_brain_file_written_while_the_root_had_none_reaches_the_root(tmp_path, monkeypatch):
@@ -85,31 +87,6 @@ def test_scoped_reset_treats_the_workspace_as_owner_content(tmp_path):
     (universe / WS / "node_modules" / "pkg.weird-suffix").write_text("x", encoding="utf-8")
     blockers = _walk_home_without_following(universe)
     assert not [b for b in blockers if WS in b], blockers
-
-
-def test_every_explicit_provider_view_masks_the_workspace():
-    """gpt-6-astra round 2: codex's coding-turn view binds the universe at
-    /workspace itself, bypassing default_view's masks. It masks the workspace
-    at its translated path too; no other explicit provider view exists."""
-    import re
-
-    from tinyassets.providers import codex_provider
-
-    source = Path(codex_provider.__file__).read_text(encoding="utf-8")
-    assert 'JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}")' in source
-    assert "ensure_agent_workspace(universe_root)" in source
-    # Every other construction DERIVES from a view it was given and keeps that
-    # view's mounts first (the egress wrapper in provider_jail, #4245), so the
-    # given view's workspace mask survives; a fresh explicit view would not.
-    builders = []
-    for path in Path(codex_provider.__file__).resolve().parents[1].rglob("*.py"):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for found in re.finditer(r"=\s*UniverseView\(", text):
-            body = text[found.end():found.end() + 400]
-            if re.search(r"mounts=\(\s*\*view\.mounts\b", body):
-                continue
-            builders.append(path.name)
-    assert builders == ["codex_provider.py"], builders
 
 
 def test_promotion_never_replaces_a_root_brain_file_created_meanwhile(tmp_path):

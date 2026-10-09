@@ -600,6 +600,7 @@ async def _served_engine_tools(stack: contextlib.AsyncExitStack, config: ModelCo
             actor_id=actor_id, graph_id=graph_id, enabled_tools=enabled,
             capability_grant=granted_tools(config), timeout=timeout,
             session_key=session_of(config), turn=turn_of(),
+            context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
         ))
     except EngineToolError as exc:
         raise ProviderUnavailableError(
