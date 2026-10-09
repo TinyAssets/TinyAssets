@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 import time
@@ -177,7 +178,12 @@ async def callback(request):
     from tinyassets.onboarding import app_config
     from tinyassets.onboarding.session_store import seal_key
 
-    def refused():
+    def refused(reason, *, upstream_status=None):
+        # Never log URLs, codes, cookies, tokens, state, or exception strings.
+        logging.getLogger(__name__).warning(
+            "owner_sign_in_refused reason=%s upstream_status=%s", reason, upstream_status,
+            extra={"refusal_reason": reason, "upstream_status": upstream_status},
+        )
         response = HTMLResponse(
             "Sign-in could not finish. Close this window and try again.",
             status_code=403,
@@ -190,14 +196,18 @@ async def callback(request):
     # Purpose is part of the server-minted, persisted state, not a callback flag.
     app_login = state.startswith("oa_app_")
     cookie = request.cookies.get(FLOW_COOKIE, "")
+    if not cookie:
+        return refused("missing_flow_cookie")
     with store() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT * FROM owner_login_flows WHERE state_hash=? AND cookie_hash=? AND expires_at>?",
             (hashed(state), hashed(cookie), time.time()),
         ).fetchone()
-        if row is None or not request.query_params.get("code"):
-            return refused()
+        if row is None:
+            return refused("flow_not_found_cookie_mismatch_or_expired")
+        if not request.query_params.get("code"):
+            return refused("missing_authorization_code")
         conn.execute("DELETE FROM owner_login_flows WHERE state_hash=?", (hashed(state),))
     cfg = app_config()
     try:
@@ -219,12 +229,18 @@ async def callback(request):
         tokens = result.json()
         identity = await run_in_threadpool(_get_provider().resolve_token, tokens["access_token"])
         if identity is None or not identity.user_id:
-            return refused()
+            return refused("identity_unresolved")
         refresh = tokens.get("refresh_token")
         if app_login and (not isinstance(refresh, str) or not 0 < len(refresh) <= 4096):
-            return refused()
-    except (httpx.HTTPError, ValueError, KeyError, InvalidTag):
-        return refused()
+            return refused("app_refresh_missing_or_invalid")
+    except httpx.HTTPStatusError as exc:
+        return refused("token_http_error", upstream_status=exc.response.status_code)
+    except httpx.HTTPError:
+        return refused("token_transport_error")
+    except InvalidTag:
+        return refused("verifier_decryption_failed")
+    except (ValueError, KeyError, TypeError):
+        return refused("invalid_token_response")
     revoke(request.cookies.get(COOKIE, ""))
     session_cookie = secrets.token_urlsafe(32)
     with store() as conn:
@@ -236,6 +252,11 @@ async def callback(request):
     from tinyassets.onboarding.inline_model_connect import RETURN_COOKIE, return_path
 
     destination = "/app?owner_login=1" if app_login else return_path(request, identity.user_id)
+    from tinyassets.onboarding import approval_handoff
+
+    handoff = approval_handoff.return_path(request, identity.user_id)
+    if handoff:
+        destination = handoff
     response = RedirectResponse(destination, status_code=303,
                                 headers=HEADERS)
     if app_login:
@@ -250,6 +271,8 @@ async def callback(request):
             path=_REFRESH_COOKIE_PATH, secure=True, httponly=True, samesite="strict",
         )
     response.delete_cookie(RETURN_COOKIE, secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(approval_handoff.RETURN_COOKIE, secure=True, httponly=True,
+                           samesite="lax")
     response.delete_cookie(FLOW_COOKIE, secure=True, httponly=True, samesite="lax")
     response.set_cookie(
         COOKIE, session_cookie, max_age=28800, secure=True, httponly=True, samesite="lax"

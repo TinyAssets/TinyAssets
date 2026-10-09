@@ -76,11 +76,30 @@ const FORBIDDEN_RESPONSE_HEADERS = new Set([
     'set-cookie',
 ]);
 
+// Access's tunnel cookie must never become a public-origin credential. Only
+// app-owned, host-only cookies cross this boundary, on app routes only.
+function appCookieAllowed(cookie, pathname) {
+    if (!(pathname === '/app' || pathname.startsWith('/app/'))) return false;
+    const [pair, ...attributes] = cookie.split(';').map(part => part.trim());
+    const name = pair.split('=', 1)[0];
+    const paths = new Map([
+        ['__Host-ta-owner', '/'], ['__Host-ta-owner-login', '/'],
+        ['__Host-ta-model-return', '/'], ['__Host-ta-approval-return', '/'],
+        ['ta_rt', '/app/token'],
+    ]);
+    if (!paths.has(name)) return false;
+    const attrs = attributes.map(value => value.toLowerCase());
+    return attrs.includes('secure') && attrs.includes('httponly')
+        && attrs.filter(value => value.startsWith('path=')).join() === 'path=' + paths.get(name)
+        && !attrs.some(value => value.startsWith('domain='))
+        && attrs.some(value => value === 'samesite=lax' || value === 'samesite=strict');
+}
+
 /**
  * Proxy one request to the tunnel origin.
  *
  * Preserves method, body stream, and allowed non-hop-by-hop headers.
- * Upstream response cookies never cross the public boundary.
+ * Only explicitly allowed app cookies cross the public boundary.
  * Rewrites Host to `mcp.tinyassets.io` (Cloudflare's edge routes the
  * subrequest to the tunnel based on hostname, so this is load-bearing).
  *
@@ -212,6 +231,12 @@ async function proxyToTunnel(request, env) {
         if (!FORBIDDEN_RESPONSE_HEADERS.has(name.toLowerCase())) {
             responseHeaders.set(name, value);
         }
+    }
+    // Workers also exposes getAll('Set-Cookie'); never comma-split Expires.
+    const cookies = typeof upstreamResponse.headers.getSetCookie === 'function'
+        ? upstreamResponse.headers.getSetCookie() : upstreamResponse.headers.getAll('Set-Cookie');
+    for (const cookie of cookies) {
+        if (appCookieAllowed(cookie, incoming.pathname)) responseHeaders.append('Set-Cookie', cookie);
     }
     // A 5xx reaching here is one the origin authored. Mark it, so "the app said
     // 500" stays distinguishable from "the tunnel is sick" without having to

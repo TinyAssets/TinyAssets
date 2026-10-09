@@ -202,14 +202,31 @@ app.on('web-contents-created', (_e, contents) => {
   applyNavigationPolicy(contents);
 });
 
-app.on('second-instance', () => {
+function focusApp() {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   }
+}
+
+// A return is only a focus/refresh signal. Never navigate to or execute input.
+function isApprovalReturn(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'tinyassets-desktop:' && url.host === 'auth'
+      && !url.username && !url.password && !url.hash
+      && [...url.searchParams.keys()].length === 1
+      && /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('completion') || '');
+  } catch { return false; }
+}
+app.on('second-instance', () => focusApp());
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  if (isApprovalReturn(url)) focusApp();
 });
 
 app.whenReady().then(() => {
+  if (app.isPackaged) app.setAsDefaultProtocolClient('tinyassets-desktop');
   lockDownPermissions(session.defaultSession);
   createWindow();
   app.on('activate', () => {

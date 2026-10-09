@@ -1045,6 +1045,11 @@
   async function handleAppReturn(url){
     let u; try{ u = new URL(url); }catch(_e){ return false; }
     if(!(u.protocol === "tinyassets:" && (u.host === "auth" || u.pathname.replace(/^\/+/,"") === "auth"))) return false;
+    if(/^[A-Za-z0-9_-]{43}$/.test(u.searchParams.get('completion')||'')){
+      await closeExternal();
+      if(token()) await refreshRail();
+      return true; // Observation only. Cold boot also refreshes after restoring sign-in.
+    }
     // A provider-tagged link belonged to a vendor sign-in card that no longer
     // exists (vendor-neutral slice 6). It is never an app sign-in.
     if(u.searchParams.get("provider")) return false;
@@ -9197,6 +9202,45 @@
   }
 
   // Begin protected inline approval cards.
+  const ApprovalHandoff = {
+    ref:new URLSearchParams(location.search).get('approval'), requestId:null, returnUrl:null,
+    async start(id){
+      const epoch=MCP._loginEpoch;
+      let client=DESKTOP_SHELL?'desktop':'web';
+      if(NATIVE){
+        const info=await nativePlugin('App').getInfo();
+        client=window.Capacitor.getPlatform()==='ios'?'ios':
+          info.id==='io.tinyassets.app.debug'?'android-debug':'android';
+      }
+      const response=await fetch('/app/approval-handoff',{
+        method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},
+        body:JSON.stringify({request_id:id,client})
+      });
+      const value=await response.json();
+      if(epoch!==MCP._loginEpoch)throw new Error('Account changed.');
+      if(!response.ok)throw new Error(value.error||'Could not open the browser.');
+      await openExternal(new URL(value.launch_path,location.origin).href);
+    },
+    async restore(){
+      if(!this.ref)return true;
+      const response=await fetch('/app/approval-handoff?ref='+encodeURIComponent(this.ref),{
+        method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:'{}'
+      });
+      const value=await response.json();
+      if(!response.ok)throw new Error(value.error||'This request link expired.');
+      this.requestId=value.request_id;this.returnUrl=value.return_url;railLink=value.request_id;
+      return true;
+    },
+    completed(payload){
+      if(!this.returnUrl||payload.request_id!==this.requestId)return;
+      let link=$('approval-return');
+      if(!link){link=document.createElement('a');link.id='approval-return';link.className='btn btn--primary';
+        $('request-rail').appendChild(link);}
+      link.href=this.returnUrl;link.textContent='Return to TinyAssets';
+      // A user gesture fallback stays visible if the OS refuses automatic launch.
+      window.location.href=this.returnUrl;
+    }
+  };
   const InlineApprovals = {
     async post(operation, payload){
       const epoch=MCP._loginEpoch;
@@ -9216,6 +9260,9 @@
         const error=new Error(result.detail||result.error||'The request could not finish.');
         error.authRequired=response.status===401;
         error.signIn=result.error==='interactive_approval_required'; throw error;
+      }
+      if(operation==='answer'||operation==='decide'){
+        if(!result.error)ApprovalHandoff.completed(payload);
       }
       return result;
     },
@@ -9396,7 +9443,12 @@
   };
   const RequestSheets = {
     seen:new Set(), selected:null,
-    open(id){
+    open(id,interactive=true){
+      if(((typeof NATIVE!=='undefined'&&NATIVE)||
+          (typeof DESKTOP_SHELL!=='undefined'&&DESKTOP_SHELL))&&!ApprovalHandoff.ref){
+        if(interactive)ApprovalHandoff.start(id).catch(error=>railFailed(error.message));
+        return;
+      }
       this.selected=id; railOpen=id;
       const req=railCache.find(row=>row.request_id===id);
       if(!req)return;
@@ -9495,9 +9547,9 @@
       const foreground=arriving.find(row=>(row.action?.envelope?.subject?.turn || row.action?.type==='connect') &&
         ((typeof readInflight==='function' && readInflight()) || options.foregroundAgent===row.agent) &&
         (!row.agent||row.agent===addressedAgentId()) && document.visibilityState==='visible');
-      if(railOpen&&current.has(railOpen))this.open(railOpen);
-      else if(foreground&&!$('request-rail').open)this.open(foreground.request_id);
-      else if(arriving.some(row=>row.sticky)&&!$('request-rail').open)this.open(arriving.find(row=>row.sticky).request_id);
+      if(railOpen&&current.has(railOpen))this.open(railOpen,false);
+      else if(foreground&&!$('request-rail').open)this.open(foreground.request_id,false);
+      else if(arriving.some(row=>row.sticky)&&!$('request-rail').open)this.open(arriving.find(row=>row.sticky).request_id,false);
       if($('needs-you').open)this.inbox();
     }
   };
@@ -10605,12 +10657,32 @@
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
+    // Native shells return from approvals in an external browser. In a web tab,
+    // focus also returns from our embedded screens: refreshing here can open a
+    // setup request over the command-center dialog the owner is already using.
+    if((typeof NATIVE!=='undefined'&&NATIVE)||(typeof DESKTOP_SHELL!=='undefined'&&DESKTOP_SHELL)){
+      window.addEventListener('focus',()=>{if(token())refreshRail();});
+      document.addEventListener('visibilitychange',()=>{if(!document.hidden&&token())refreshRail();});
+    }
     if(typeof AppUI!=="undefined") AppUI.init();
     HostedModelConnect.wire();
     wireNativeReturn();
     // A vendor sign-in card once kept a verifier here; nothing reads it now.
     try{ localStorage.removeItem("ta_openai_flow"); }catch(_e){}
     const signedInNow = modelCallback ? false : await completeSignInIfCallback();
+    if(ApprovalHandoff.ref){
+      // Browser renewal must match the newly authenticated browser account,
+      // not an old tab's sessionStorage token. The reference grants no identity.
+      sessionStorage.removeItem(TOKEN_KEY);sessionStorage.removeItem(EXP_KEY);clearSessionRef();
+      await refreshAccessToken(true);
+      try{await ApprovalHandoff.restore();}
+      catch(error){
+        enterSignedOut();$('signin-notice').textContent=error.message+' ';
+        const link=document.createElement('a');
+        link.href='/app/approval-handoff/'+encodeURIComponent(ApprovalHandoff.ref)+'?signin=1';
+        link.textContent='Sign in to this request';$('signin-notice').appendChild(link);return;
+      }
+    }
     if(!token() && !signedInNow){ await refreshAccessToken(); }   // silent sign-in from the stored handle / refresh cookie
     if(token() || signedInNow){
       await enterSignedIn();

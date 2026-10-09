@@ -556,6 +556,52 @@ describe('proxyToTunnel — response pass-through', () => {
         assert.equal(await res.text(), 'stream-safe-body');
     });
 
+    it('preserves separate app session cookies across sign-in, callback and logout', async () => {
+        const cookies = [
+            '__Host-ta-owner-login=flow; Path=/; Secure; HttpOnly; SameSite=lax',
+            '__Host-ta-owner=proof; Path=/; Secure; HttpOnly; SameSite=lax',
+            '__Host-ta-approval-return=ref; Path=/; Secure; HttpOnly; SameSite=lax',
+            '__Host-ta-model-return=ref; Path=/; Secure; HttpOnly; SameSite=lax',
+            'ta_rt=renewal; Path=/app/token; Secure; HttpOnly; SameSite=strict',
+            'ta_rt=""; Path=/app/token; Secure; HttpOnly; SameSite=strict; Max-Age=0',
+            '__Host-ta-owner-login=""; Path=/; Secure; HttpOnly; SameSite=lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+        ];
+        for (const path of ['/app/owner-sign-in', '/app?state=oa_state&code=code',
+                           '/app/token', '/app/account/delete']) {
+            const headers = new Headers({location: '/app'});
+            for (const cookie of cookies) headers.append('Set-Cookie', cookie);
+            headers.append('Set-Cookie', 'CF_Authorization=private; Secure; HttpOnly; Path=/; SameSite=lax');
+            headers.append('Set-Cookie', 'application_session=unknown; Secure; HttpOnly; Path=/; SameSite=lax');
+            nextUpstreamResponse = new Response(null, {status: 303, headers});
+            if (path.startsWith('/app?')) {
+                const getCookies = nextUpstreamResponse.headers.getSetCookie.bind(nextUpstreamResponse.headers);
+                nextUpstreamResponse.headers.getAll = name => {
+                    assert.equal(name, 'Set-Cookie');
+                    return getCookies();
+                };
+                nextUpstreamResponse.headers.getSetCookie = undefined;
+            }
+            const res = await proxyToTunnel(new Request('https://tinyassets.io' + path));
+            assert.deepEqual(res.headers.getSetCookie(), cookies);
+            assert.equal(res.status, 303);
+            assert.equal(res.headers.get('location'), '/app');
+        }
+    });
+
+    it('rejects app cookies outside app routes and with unsafe attributes', async () => {
+        const valid = '__Host-ta-owner=proof; Path=/; Secure; HttpOnly; SameSite=lax';
+        const bad = [valid.replace('; Secure', ''), valid.replace('; HttpOnly', ''),
+            valid + '; Domain=tinyassets.io', valid.replace('Path=/', 'Path=/app'),
+            valid.replace('SameSite=lax', 'SameSite=None')];
+        for (const [path, cookies] of [['/mcp', [valid]], ['/app/owner-sign-in', bad]]) {
+            const headers = new Headers();
+            for (const cookie of cookies) headers.append('Set-Cookie', cookie);
+            nextUpstreamResponse = new Response(null, {headers});
+            const res = await proxyToTunnel(new Request('https://tinyassets.io' + path));
+            assert.equal(res.headers.get('set-cookie'), null);
+        }
+    });
+
     it('preserves SSE streaming Content-Type', async () => {
         nextUpstreamResponse = new Response('event: message\ndata: {"x":1}\n\n', {
             status: 200,

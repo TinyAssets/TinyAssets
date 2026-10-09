@@ -578,6 +578,10 @@ def _auth_challenge_path(path: str) -> bool:
 
     if public_path(path):
         return False
+    from tinyassets.onboarding.approval_handoff import HANDLE, PREFIX
+
+    if path.startswith(PREFIX) and HANDLE.fullmatch(path[len(PREFIX):]):
+        return False  # Navigation only; owner cookie and account checked by the handler.
     if path.startswith("/app/model-callback/"):
         from tinyassets.onboarding.hosted_model_auth import is_callback_path
 

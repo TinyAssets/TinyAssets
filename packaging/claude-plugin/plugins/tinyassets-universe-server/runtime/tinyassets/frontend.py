@@ -48,7 +48,8 @@ class Frontend:
         # The shell is served here only where the owner would serve it; with the
         # onboarding flag off the owner answers 404, so the request is proxied.
         if (request.method in {"GET", "HEAD"} and request.url.path == "/app"
-                and onboarding_enabled()):
+                and onboarding_enabled()
+                and not request.query_params.get("state", "").startswith("oa_")):
             response = app_response(build=self.build)
         elif request.method == "GET" and request.url.path == "/healthz":
             response = PlainTextResponse("ok")
