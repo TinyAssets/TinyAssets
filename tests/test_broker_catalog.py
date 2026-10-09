@@ -11,19 +11,19 @@ def test_catalog_pages_are_scoped_redacted_and_complete(ledger):  # noqa: F811
                                 owner_user_id="alice", universe_id="cc-alice")
     ledger.grant_connection(grant_id="foreign-center", connection_id="conn-a",
                             owner_user_id="alice", universe_id="cc-bob")
-    rows = list(connections(ledger._db_path.parent, principal="alice", command_center="cc-alice"))
+    rows = list(connections(ledger._data_root, principal="alice", command_center="cc-alice"))
     assert len(rows) == 131
     assert len({grant.grant_id for grant, _, _ in rows}) == 131
     assert all(not hasattr(view, "credential_ref") for _, view, _ in rows)
-    assert len(list(connections(ledger._db_path.parent, principal="alice",
+    assert len(list(connections(ledger._data_root, principal="alice",
                                 command_center="cc-alice", limit=65))) == 65
-    assert list(connections(ledger._db_path.parent, principal="bob",
+    assert list(connections(ledger._data_root, principal="bob",
                             command_center="cc-alice")) == []
     ledger.revoke_grant("grant-a")
-    assert len(list(connections(ledger._db_path.parent, principal="alice",
+    assert len(list(connections(ledger._data_root, principal="alice",
                                 command_center="cc-alice"))) == 130
     ledger.revoke_connection("conn-a")
-    assert list(connections(ledger._db_path.parent, principal="alice",
+    assert list(connections(ledger._data_root, principal="alice",
                             command_center="cc-alice")) == []
 
 

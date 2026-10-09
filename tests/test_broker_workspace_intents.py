@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_broker_workspace_consumers import rig  # noqa: F401
 from tinyassets import runs
