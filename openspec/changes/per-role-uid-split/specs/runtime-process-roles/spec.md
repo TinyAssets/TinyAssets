@@ -26,9 +26,18 @@ set equality with that set. Startup SHALL refuse to serve unless `/data/.layout.
 the `owner-split` layout. It SHALL NOT migrate, reconcile a journal or check a principal set.
 PID1 SHALL reap adopted orphan zombies after a grace period, never the broker or the mapper.
 
+#### Scenario: Fresh volume initializes directly
+- **WHEN** the image starts on an empty data directory with the image's label (1001:1001,
+  0755, no ACLs), with no entries at all
+- **THEN** retired daemon and broker children create the platform layout and empty broker
+  identity ledger under their own identities, then publish the owner-split marker last
+- **AND** startup continues through the normal isolation and runtime-admission checks without
+  migration authority; an interrupted initialization is ambiguous and refuses on restart
+
 #### Scenario: Unmigrated volume refuses
-- **WHEN** the cutover image starts on a volume without the `owner-split` marker
-- **THEN** startup exits non-zero with a message naming the missing marker and serves nothing
+- **WHEN** the cutover image starts on a nonempty volume without the `owner-split` marker,
+  including any center, `.agent-sessions`, broker ledger, layout marker or unknown entry
+- **THEN** startup exits 78 with an actionable `run ta-migrate` reason and serves nothing
 
 ### Requirement: No owner-writable path lies on a privileged chain
 Every file that root executes or imports during bootstrap SHALL be root-owned and outside

@@ -4,8 +4,8 @@ Installed root-owned 0555 at /usr/local/libexec/ta-launch.py and run as the
 image CMD under ``compose.yml``'s ``user: "0:0"`` with only the bootstrap's
 capabilities. In order:
 
-1. refuse unless ``/data/.layout.json`` carries ``"split": "owner-split"``,
-   which only ``deploy/role_migrate.py`` writes (nothing here migrates);
+1. initialize a strictly empty image data directory, otherwise require the
+   ``owner-split`` marker (nothing here migrates existing data);
 2. read the startup admissions from the broker's append-only log through a
    child fully retired to the broker identity;
 3. D60's bootstrap: fork the broker and the bounded mapper, then retire PID1
@@ -17,10 +17,12 @@ Any failure before retirement exits 78 without serving.
 from __future__ import annotations
 
 import ctypes
+import errno
 import json
 import os
 import runpy
 import stat
+import struct
 import sys
 from pathlib import Path
 
@@ -162,11 +164,111 @@ def require_split(data_root=DATA_ROOT):
     try:
         document = json.loads((Path(data_root) / ".layout.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise Refused(f"no readable layout marker: {exc}") from None
+        raise Refused(f"no readable layout marker: {exc}; run ta-migrate "
+                      "(docs/ops/owner-split-cutover-runbook.md)") from None
     if not isinstance(document, dict) or document.get("split") != SPLIT:
         raise Refused("the data volume is not migrated to owner-split; run "
-                      "deploy/role_migrate.py (docs/ops/owner-split-cutover-runbook.md)")
+                      "ta-migrate (docs/ops/owner-split-cutover-runbook.md)")
     return document
+
+
+def empty_volume(data_root):
+    """No application remnants are empty, including empty named directories.
+
+    Docker copies the image's empty /data directory and creates no entries in
+    it. Do not allow locks, lost+found, partial initialization, links or files.
+    """
+    path = Path(data_root)
+    return stat.S_ISDIR(path.lstat().st_mode) and not any(path.iterdir())
+
+
+def _fresh_child(root, action):
+    child = os.fork()
+    if child == 0:
+        try:
+            close_descriptors({root})
+            # The broker needs its file group only while creating its tree.
+            _retire_identity(1002, (1101, 1102)) if action == "broker" else retire_child("daemon")
+            if action == "prepare":
+                if os.listdir(root):
+                    raise Refused("fresh volume changed during initialization")
+                lock = os.open(".layout.lock", os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                               | os.O_NOFOLLOW, 0o600, dir_fd=root)
+                os.fchmod(lock, 0o666)
+                os.fsync(lock)
+                os.close(lock)
+                # Only the broker may create its top-level directory. No world
+                # write and no CHOWN/DAC authority, even during initialization.
+                entries = [(1, 7, 0xffffffff), (2, 7, 1002), (4, 5, 0xffffffff),
+                           (16, 7, 0xffffffff), (32, 5, 0xffffffff)]
+                acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+                os.setxattr(root, "system.posix_acl_access", acl)
+            elif action == "broker":
+                os.mkdir(".broker", 0o700, dir_fd=root)
+                broker = os.open(".broker", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=root)
+                os.fchown(broker, -1, 1101)  # own inode, supplementary group
+                os.fchmod(broker, 0o2700)
+                os.mkdir("state", 0o700, dir_fd=broker)
+                os.chmod("state", 0o700, dir_fd=broker)
+                os.fsync(broker)
+                os.close(broker)
+                os.fsync(root)
+                os.close(root)
+                os.execve("/opt/venv/bin/python", ["/opt/venv/bin/python", "-I", "-B", "-c",
+                    "import os,sys; from pathlib import Path; sys.path.insert(0, '/app'); "
+                    "from tinyassets.broker.owner_identities import OwnerIdentities; "
+                    "path=Path('/data/.broker/state/owner-identities.db'); "
+                    "OwnerIdentities(path, initialize=True); "
+                    "fd=os.open(path, os.O_RDONLY | os.O_NOFOLLOW); "
+                    "os.fchown(fd, -1, 1101); os.fsync(fd); os.close(fd)"],
+                    broker_environment(DATA_ROOT))
+            elif action == "finish":
+                os.removexattr(root, "system.posix_acl_access")
+                os.fchmod(root, 0o755)
+                document = {"layout": 2, "state": "stable", "split": SPLIT,
+                            "moves": {"consents_outside_command_centers": "done"}}
+                fd = os.open(".layout.json.fresh.tmp", os.O_WRONLY | os.O_CREAT
+                             | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root)
+                with os.fdopen(fd, "w") as handle:
+                    json.dump(document, handle, sort_keys=True)
+                    handle.flush()
+                    os.fchmod(handle.fileno(), 0o644)
+                    os.fsync(handle.fileno())
+                os.rename(".layout.json.fresh.tmp", ".layout.json",
+                          src_dir_fd=root, dst_dir_fd=root)
+            os.fsync(root)
+            os._exit(0)
+        except BaseException:
+            os._exit(REFUSE)
+    _, result = os.waitpid(child, 0)
+    if result != 0:
+        raise Refused(f"fresh volume {action} failed; run ta-migrate "
+                      "(docs/ops/owner-split-cutover-runbook.md)")
+
+
+def initialize_empty_volume(data_root=DATA_ROOT):
+    """Create directly as the owning roles; never import the migration here."""
+    if not empty_volume(data_root):
+        return False
+    root = os.open(data_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(root)
+        if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (1001, 1001, 0o755):
+            raise Refused("ambiguous empty volume label; run ta-migrate")
+        for name in ("system.posix_acl_access", "system.posix_acl_default"):
+            try:
+                os.getxattr(root, name)
+            except OSError as exc:
+                if exc.errno != errno.ENODATA:
+                    raise
+            else:
+                raise Refused("ambiguous empty volume ACL; run ta-migrate")
+        for action in ("prepare", "broker", "finish"):
+            _fresh_child(root, action)
+    finally:
+        os.close(root)
+    return True
 
 
 def admissions(rows, data_root=DATA_ROOT):
@@ -205,6 +307,7 @@ def boot(launch):
         raise Refused("startup requires the root entry identity")
     _assert_caps(ENTRY_CAPS)
     verify_chain()
+    initialize_empty_volume()
     require_split()
     contract = _load("admission-contract")
     bindings, generation = admissions(contract["broker_log"](DATA_ROOT, launch), DATA_ROOT)

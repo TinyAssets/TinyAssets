@@ -82,6 +82,20 @@ def test_startup_refuses_a_volume_without_a_marker(tmp_path):
         LAUNCHER["require_split"](tmp_path)
 
 
+@pytest.mark.parametrize("entry", [None, "u-alice", ".agent-sessions", ".broker",
+                                 ".layout.json", ".layout.lock", "lost+found", "unknown"])
+def test_empty_volume_classifier_refuses_partial_and_ambiguous_data(tmp_path, entry):
+    if entry in {"u-alice", ".agent-sessions", ".broker", "lost+found"}:
+        (tmp_path / entry).mkdir()
+    elif entry:
+        (tmp_path / entry).touch()
+    assert LAUNCHER["empty_volume"](tmp_path) is (entry is None)
+    if entry:
+        assert LAUNCHER["initialize_empty_volume"](tmp_path) is False
+        with pytest.raises(LAUNCHER["Refused"], match="run ta-migrate"):
+            LAUNCHER["require_split"](tmp_path)
+
+
 def test_admissions_bind_live_trees_and_hold_missing_ones(tmp_path, capsys):
     (tmp_path / "u-a").mkdir()
     (tmp_path / "u-gone").mkdir()

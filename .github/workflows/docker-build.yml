@@ -104,10 +104,15 @@ jobs:
       - name: Unmodified image refuses unadmitted startup
         run: |
           # Production's posture (compose user 0, the bootstrap's four caps, NNP)
-          # on a volume the owner-split migration never ran on: PID1 must refuse
+          # on an existing layout-2 volume: PID1 must refuse
           # (Fact 8) before forking anything. No port, credentials or fixture.
           # Keep the exited container until logs and exit status are checked.
+          docker volume create tinyassets-daemon-layout2-ci
+          docker run --rm --network none -v tinyassets-daemon-layout2-ci:/data \
+              --entrypoint python tinyassets-daemon:ci -c \
+              'from pathlib import Path; Path("/data/.layout.json").write_text("{\"layout\":2,\"state\":\"stable\"}")'
           docker run -d --network none --user 0:0 --cap-drop ALL \
+              -v tinyassets-daemon-layout2-ci:/data \
               --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP \
               --security-opt no-new-privileges=true \
               --name tinyassets-daemon-unadmitted-ci \
@@ -118,7 +123,7 @@ jobs:
           docker logs tinyassets-daemon-unadmitted-ci > "$RUNNER_TEMP/unadmitted.log" 2>&1
           cat "$RUNNER_TEMP/unadmitted.log"
           test "$EXIT_CODE" = 78
-          grep -q 'startup refused: no readable layout marker' "$RUNNER_TEMP/unadmitted.log"
+          grep -q 'startup refused: the data volume is not migrated.*run ta-migrate' "$RUNNER_TEMP/unadmitted.log"
           if grep -q 'Uvicorn running on' "$RUNNER_TEMP/unadmitted.log"; then
             echo "::error::Unadmitted image started a listener"
             exit 1
@@ -136,6 +141,12 @@ jobs:
           echo "::add-mask::${CANARY_TOKEN}"
           echo "TINYASSETS_WIKI_CANARY_TOKEN=${CANARY_TOKEN}" >> "$GITHUB_ENV"
           docker run -d \
+              --user 0:0 --cap-drop ALL \
+              --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP \
+              --security-opt no-new-privileges=true \
+              --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+              --security-opt systempaths=unconfined \
+              -v tinyassets-daemon-fresh-ci:/data \
               --name tinyassets-daemon-ci \
               -p 127.0.0.1:8001:8001 \
               --mount "type=bind,src=${GITHUB_WORKSPACE}/tests/fixtures/docker_admitted_process.py,dst=/ci/admitted_process.py,readonly" \
@@ -143,7 +154,7 @@ jobs:
               -e UNIVERSE_SERVER_DEV_USER=ci-smoke \
               -e TINYASSETS_WIKI_CANARY_TOKEN="${CANARY_TOKEN}" \
               -e UNIVERSE_SERVER_URL=http://localhost:8001/mcp \
-              tinyassets-daemon:ci python /ci/admitted_process.py
+              tinyassets-daemon:ci python -I -B /ci/admitted_process.py
 
           # Give uvicorn + FastMCP a moment to bind. Poll rather than
           # sleep-blindly so slow cold-starts don't false-fail.
@@ -192,3 +203,4 @@ jobs:
         if: always()
         run: |
           docker rm -f tinyassets-daemon-ci tinyassets-daemon-unadmitted-ci || true
+          docker volume rm tinyassets-daemon-fresh-ci tinyassets-daemon-layout2-ci || true
