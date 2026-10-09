@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from tinyassets.starter_manifest import SeedFile, SeedManifest, digest
-from tinyassets.starter_seeds import seed_snapshot, seed_store
+from tinyassets.starter_seeds import seed_boundary, seed_snapshot, seed_store
 from tinyassets.starter_skills import starter_agent_files
 
 # Exact published DEFAULT_OPERATING_INSTRUCTIONS bytes at the cutover base,
@@ -37,11 +37,14 @@ def prepare_starter(root: Path, *, owner_id: str, center_id: str, fresh=False) -
     if not fresh:
         # Every native agent jail holds the seed boundary SHARED for its whole
         # life, so the exclusive store below waits on any running agent. An
-        # installed release needs no write: read it without the boundary. Live
-        # 2026-10-09: an agent that woke a workflow agent held it, and the woken
-        # turn failed after the store's 5s wait, every time.
+        # installed release needs no write: read it holding the boundary shared
+        # too, which a live jail allows and a migration in flight (an owner's
+        # Undo between file changes) excludes. Live 2026-10-09: an agent that
+        # woke a workflow agent held it, and the woken turn failed after the
+        # store's 5s exclusive wait, every time.
         try:
-            with seed_snapshot(root, owner_id=owner_id, center_id=center_id) as seeds:
+            with (seed_boundary(root),
+                  seed_snapshot(root, owner_id=owner_id, center_id=center_id) as seeds):
                 current = seeds.installed(manifest) if seeds is not None else None
         except sqlite3.Error:
             current = None  # unreadable read-only (e.g. no -shm yet): the store decides

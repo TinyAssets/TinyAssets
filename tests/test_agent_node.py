@@ -607,3 +607,23 @@ def test_an_agent_node_runs_while_another_agents_native_jail_is_live(
     finally:
         os.close(held)
     assert result["terminal_status"] == "completed", (result, engine.errors)
+
+
+def test_the_turn_start_fast_path_never_reads_past_a_migration_in_flight(tmp_path, engine):
+    """The read-only path holds the boundary shared: a seed transaction holding
+    it exclusively (an owner's Undo between file changes) is waited for, never
+    reported as the installed release (Codex review on #4561)."""
+    import os
+
+    from tinyassets.starter_release import prepare_center_starter
+    from tinyassets.starter_seeds import open_seed_boundary
+
+    udir = tmp_path / "universe_alice"
+    assert prepare_center_starter(udir) is not None
+    _, migrating = open_seed_boundary(udir, exclusive=True)
+    try:
+        with pytest.raises(TimeoutError, match="boundary is busy"):
+            prepare_center_starter(udir)
+    finally:
+        os.close(migrating)
+    assert prepare_center_starter(udir) is not None
