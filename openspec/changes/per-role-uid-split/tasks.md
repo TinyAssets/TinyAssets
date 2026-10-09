@@ -26,12 +26,12 @@ until that PR merges inside the maintenance window.
       `MASK` (SYS_ADMIN out, migration capabilities never present), `role_launcher.py` with
       `role_startup` folded in, `backup.sh`, the `docker-build.yml` chain check, and the
       marker refusal at startup.
-- [ ] 2.2 Every switch and dual path in design § 1 deleted. Every U1 cell and consumer landed
+- [x] 2.2 Every switch and dual path in design § 1 deleted. Every U1 cell and consumer landed
       with its broker/cell branch only.
-- [ ] 2.3 Providers through provider-exec: Codex and Claude adapters, the engine-MCP thin proxy,
+- [x] 2.3 Providers through provider-exec: Codex and Claude adapters, the engine-MCP thin proxy,
       workspace provision/registry/worker, discovery egress, and the K1 consumer. A class not
       celled is retired, never left unconfined.
-- [ ] 2.4 Center creation through runtime admission. Two-pass deletion everywhere, including
+- [x] 2.4 Center creation through runtime admission. Two-pass deletion everywhere, including
       the subtree cell for pool removal and `scoped_reset`.
 - [ ] 2.5 `role_image_oracle` on a PR1-migrated restored clone: every class, zero foreign bytes,
       signup → admit → cell without a restart, two-pass delete, zero capabilities, `ta-op
@@ -47,9 +47,22 @@ until that PR merges inside the maintenance window.
 
 Proof, 2026-10-09: `role_migrate_probe.py` passed all 356 interruption points,
 all preflight refusals, converged no-op, and numeric-owner/mode/ACL snapshot restore.
-The production-shaped migrated-volume image oracle passed serving, admission,
-provider CLIs, workspace/provision cells and deletion at `6f838d1761`; root role
-tests passed 45/45. The real engine HTTP-to-tool-cell write/read and read-only extension mount now
-pass on the diagnostic image; the final production rebuild and full-suite comparison
-remain pending. Nested prepared-workspace regression tests pass 8/8 on Linux.
 The production-backup rehearsal for 1.4 is recorded in the runbook (2026-10-08).
+The full production image `sha256:27af1c362c38bf5abfe66c88a952d1023a147ac4def39bec78e3f239688b8086`
+passed migration, actual serving, all ten then-current cell legs, and the shipped
+Claude/Codex CLI execution and discovery probes. This includes engine HTTP tool
+write/read, real dependency download/offline installation, workspace leases,
+owner storage measurement, admission without restart, two-pass deletion, and
+foreign-byte/capability refusals. Preview additionally passed on an image overlay:
+a timed-out cell was reaped and its successor rendered the expected PNG.
+Root role tests passed 45/45. Required-CI baseline at merge base `eeacf82354`
+completed all six shards: 26,867 passed, 99 skipped, no failures. Final cutover
+suite and production-image rebuild remain pending. Heavy selection has the same
+47 failures on both branches; both also fail the existing 2,000-test floor
+(1,813 selected). Neither floor nor quarantine was relaxed.
+
+Task 2.5 remains incomplete: the current full image proof uses a freshly migrated
+production-shaped fixture volume, not the restored production-backup clone, and
+CLI startup/discovery does not prove a real credentialed model turn. Tasks 2.6
+and 3.2 require the maintenance window, actual deployed SHA and founder app pass.
+Production-Verify-conditioned concern deletions in 3.1 remain pending that window.
