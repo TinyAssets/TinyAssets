@@ -55,11 +55,17 @@ write/read, real dependency download/offline installation, workspace leases,
 owner storage measurement, admission without restart, two-pass deletion, and
 foreign-byte/capability refusals. Preview passed in this same production image:
 a timed-out cell was reaped and its successor rendered the expected PNG.
-Root role tests passed 45/45. Required-CI baseline at merge base `eeacf82354`
-completed all six shards: 26,867 passed, 99 skipped, no failures. Final cutover
-suite remains pending; structural guards passed 584/584. Heavy selection has the same
-47 failures on both branches; both also fail the existing 2,000-test floor
-(1,813 selected). Neither floor nor quarantine was relaxed.
+Root role tests passed 45/45. The resumed full required-CI Linux selection passed
+all six cutover shards: 27,064 passed, 96 skipped, zero failures; the aggregate gate
+passed. The merge-base/main baseline `b5bc266a92` ran all six shards: 26,935 passed,
+99 skipped, one failure in
+`test_provider_served_router::test_served_turn_spawns_fake_codex_through_full_os_sandbox_command`
+(the fake Codex app-server exited). That test passed on the cutover. Comparing
+test identities gives zero new failures and zero new skips. Slow tests passed
+10/10 on both revisions. Heavy selection has identical failure messages for all
+47 failures on both revisions, with 1,766 passes and zero skips each; both fail
+the existing 2,000-test floor (1,813 selected). Neither floor nor quarantine was
+relaxed. The previous structural proof passed 584/584; its final rerun is pending.
 
 Task 2.5 remains incomplete: the current full image proof uses a freshly migrated
 production-shaped fixture volume, not the restored production-backup clone, and
