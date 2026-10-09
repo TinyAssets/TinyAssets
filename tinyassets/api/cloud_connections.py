@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
-from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.workspace_authority import (
     WORKSPACE_SINK,
     connection_access_mode,
@@ -106,13 +105,6 @@ def _workspace_consents(uid: str) -> list[dict[str, Any]]:
     )
 
 
-def _ledger(actor: str) -> ConnectionLedger:
-    return ConnectionLedger(
-        Path(_base_path()) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    )
-
-
 def cloud_connections(
     *,
     action: str,
@@ -137,12 +129,9 @@ def cloud_connections(
         # build an authenticated_external_call node WITHOUT the owner pasting them
         # back by hand. Redacted views only (no credential_ref), scoped to the
         # owner's grants for THIS universe.
-        from tinyassets.broker.supervisor import broker_selected
-
-        selected = broker_selected()
-        ledger = None if selected else _ledger(actor)
         rows = []
         from tinyassets.api.connection_uses import connection_uses_view
+        from tinyassets.broker.catalog import connections
         from tinyassets.extension_state import remote_mcp_by_connection
 
         # Remote MCP servers ride a connection through an active extension, so
@@ -150,23 +139,18 @@ def cloud_connections(
         # in one turn is invisible where the owner and agent look in the next.
         base = Path(_base_path())
         mcp = remote_mcp_by_connection(base, owner=actor, universe=uid)
-        if selected:
-            from tinyassets.broker.catalog import connections
-
-            inventory = ((grant, resource) for grant, resource, _ in connections(
-                base, principal=actor, command_center=uid))
-        else:
-            inventory = ((grant, ledger.get_connection(grant.connection_id))
-                         for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid))
+        inventory = ((grant, resource) for grant, resource, _ in connections(
+            base, principal=actor, command_center=uid))
         for grant, resource in inventory:
             if resource is not None:
                 # What the connection is used for (call / model) and its
                 # constant headers: the same connector reads the same way
                 # whether it reaches a platform or a model.
-                scope = (dict(data_root=base, principal=actor, command_center=uid,
-                              grant_id=grant.grant_id) if selected else {})
                 rows.append({**_project(resource, grant),
-                             **connection_uses_view(ledger, resource.connection_id, **scope),
+                             **connection_uses_view(
+                                 data_root=base, principal=actor, command_center=uid,
+                                 grant_id=grant.grant_id,
+                                 connection_id=resource.connection_id),
                              "mcp_servers": mcp.get(resource.connection_id, [])})
         return {
             "universe_id": uid,

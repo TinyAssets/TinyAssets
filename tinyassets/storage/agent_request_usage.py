@@ -205,11 +205,11 @@ class UsageStore:
     """One trusted data root. No database path is ever read from a wire envelope."""
 
     def __init__(self, base_path, *, broker_ledger=None):
-        from tinyassets.broker.supervisor import broker_selected
-
         self.base = Path(base_path).resolve()
         self._ledger = broker_ledger
-        self._remote = broker_ledger is None and broker_selected()
+        # Inside the broker a ledger is injected and the store is local; the
+        # daemon has no accounting database of its own and must use broker IPC.
+        self._remote = broker_ledger is None
         self.path = broker_ledger._db_path if broker_ledger is not None else self.base / DB_FILENAME
 
     def _rpc(self, scope, action, **fields):
@@ -406,37 +406,21 @@ class UsageStore:
             ) from exc
 
     def _validate_source_grant(self, scope, grant_id, connection_id):
-        from tinyassets.broker.supervisor import broker_selected
-
         if self._ledger is not None:
             from tinyassets.broker.ledger_queries import GRANTED_RESOURCE, local_query
 
             local_query(self._ledger, query=GRANTED_RESOURCE, principal=scope[0],
                         command_center=scope[1], grant_id=grant_id, connection_id=connection_id)
             return
-        if broker_selected():
-            from tinyassets.broker.ledger_queries import granted_resource_row
+        from tinyassets.broker.ledger_queries import granted_resource_row
 
-            try:
-                row = granted_resource_row(self.base, principal=scope[0],
-                                           command_center=scope[1], grant_id=grant_id)
-                if row["connection_id"] != connection_id:
-                    raise ValueError("source connection changed")
-            except (RuntimeError, PermissionError, ValueError, KeyError) as exc:
-                raise ProviderAuthorityHeldError("source grant unavailable") from exc
-            return
-        uri = (self.base / "outbound.db").as_uri() + "?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as ledger:
-            grant = ledger.execute(
-                "SELECT 1 FROM outbound_connection_grants g "
-                "JOIN outbound_connections c ON g.connection_id=c.connection_id "
-                "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
-                "AND c.owner_user_id=? AND g.universe_id=? "
-                "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
-                (grant_id, connection_id, scope[0], scope[0], scope[1]),
-            ).fetchone()
-        if grant is None:
-            raise ValueError("source grant unavailable")
+        try:
+            row = granted_resource_row(self.base, principal=scope[0],
+                                       command_center=scope[1], grant_id=grant_id)
+            if row["connection_id"] != connection_id:
+                raise ValueError("source connection changed")
+        except (RuntimeError, PermissionError, ValueError, KeyError) as exc:
+            raise ProviderAuthorityHeldError("source grant unavailable") from exc
 
     def issue_reference(self, scope, ordinal, *, grant_id, connection_id, verb, request,
                         operation_id):

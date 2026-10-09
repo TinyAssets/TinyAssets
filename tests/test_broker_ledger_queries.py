@@ -109,11 +109,10 @@ def test_snapshot_does_not_mix_concurrent_authority_and_profile_versions(ledger,
         _query(ledger)
 
 
-def test_selected_broker_never_constructs_a_local_ledger(ledger, monkeypatch, tmp_path):
+def test_an_unavailable_broker_never_constructs_a_local_ledger(ledger, monkeypatch, tmp_path):
     from tinyassets.broker import supervisor
     from tinyassets.storage.outbound_connections import ProxyRequestError
 
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
     monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: pytest.fail("local database opened"))
     with pytest.raises(ProxyRequestError, match="not running"):

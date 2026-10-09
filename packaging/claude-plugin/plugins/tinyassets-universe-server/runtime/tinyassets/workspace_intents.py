@@ -220,7 +220,6 @@ def reconcile_push_intents(
     base_path: str | Path,
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    credential_ref_for: Callable[[str], str] | None = None,
     revalidate: Callable[[PushIntent], bool] | None = None,
     host: str = "",
     staging_root: str | Path | None = None,
@@ -253,7 +252,7 @@ def reconcile_push_intents(
         ) as staging:
             _reconcile_one(
                 base_path, intent, staging, settled,
-                execute=execute, credential_ref_for=credential_ref_for,
+                execute=execute,
                 revalidate=revalidate, host=host,
             )
     return settled
@@ -266,7 +265,6 @@ def _reconcile_one(
     settled: list[tuple[str, str]],
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]],
-    credential_ref_for: Callable[[str], str] | None,
     revalidate: Callable[[PushIntent], bool] | None,
     host: str,
 ) -> None:
@@ -286,24 +284,13 @@ def _reconcile_one(
             settled.append((intent.intent_id, "sent"))
             return
 
-    from tinyassets.broker.supervisor import broker_selected
-
-    credential_ref = ""
-    if broker_selected():
-        try:
-            credential_ref = _broker_credential_ref(base_path, intent)
-        except Exception:
-            # No unknown authority may reach even a read-only remote probe.
-            _defer(base_path, intent, reason="broker authority unavailable")
-            settled.append((intent.intent_id, "sent"))
-            return
-    elif credential_ref_for is not None:
-        try:
-            credential_ref = credential_ref_for(intent.connection_id)
-        except Exception:
-            credential_ref = ""
-    if not credential_ref and not broker_selected():
-        credential_ref = _credential_ref(base_path, intent.connection_id)
+    try:
+        credential_ref = _broker_credential_ref(base_path, intent)
+    except Exception:
+        # No unknown authority may reach even a read-only remote probe.
+        _defer(base_path, intent, reason="broker authority unavailable")
+        settled.append((intent.intent_id, "sent"))
+        return
 
     # The intent's OWN host, never a module default: defaulting to
     # github.com would contact a host this push never used (round 3 P0 #1).
@@ -368,24 +355,6 @@ def _defer(base_path: str | Path, intent: PushIntent, *, reason: str) -> None:
     logging.getLogger(__name__).info(
         "push intent %s deferred (%s), attempt %d", intent.intent_id, reason, intent.attempts + 1
     )
-
-
-def _credential_ref(base_path: str | Path, connection_id: str) -> str:
-    """The connection's credential REFERENCE (never a secret), or empty."""
-    if not connection_id:
-        return ""
-    from tinyassets.broker.supervisor import broker_selected
-
-    if broker_selected():
-        raise RuntimeError("broker custody lookup requires admitted intent scope")
-    try:
-        from tinyassets.storage.outbound_connections import ConnectionLedger
-
-        ledger = ConnectionLedger(Path(base_path).parent / "outbound.db")
-        resource = ledger._get_connection_resource(connection_id)
-        return str(getattr(resource, "credential_ref", "") or "")
-    except Exception:
-        return ""
 
 
 def _broker_credential_ref(base_path: str | Path, intent: PushIntent) -> str:

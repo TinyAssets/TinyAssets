@@ -205,7 +205,6 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
         access_method="api_key_http", protocol="chat_messages", model="fixture",
         ref="grant-a", visibility="private", created_at="2026-10-04T00:00:00Z")
     compute = ApiKeyHttpProvider(definition)
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: None)
     released, abandoned = [], []
     original = provider_assignment.release_served_provider_budget

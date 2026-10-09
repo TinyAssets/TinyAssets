@@ -247,11 +247,12 @@ def _universe_id(base_path: str | Path | None) -> str:
         return ""
 
 
-def _ledger_db_path(base_path: str | Path | None) -> Path | None:
+def _data_root(base_path: str | Path | None) -> Path | None:
+    """The data root (``base_path.parent``); the broker's tree lives under it."""
     if base_path is None:
         return None
     try:
-        return Path(base_path).parent / "outbound.db"
+        return Path(base_path).parent
     except (TypeError, ValueError):
         return None
 
@@ -263,61 +264,36 @@ def _universe_short(universe_id: str) -> str:
 
 
 def _read_connection(
-    *, db_path: Path, connection_id: str, universe_id: str, grant_id: str,
+    *, data_root: Path, connection_id: str, universe_id: str, grant_id: str,
     principal: str = "",
 ) -> tuple[Any, Any]:
     """The grant and the trusted connection resource, or a refusal.
 
-    Mirrors ``authenticated_external_call``'s isolation gate exactly: the grant
-    must exist, be live, and be bound to the RUNNING universe. The resource
-    (not the redacted view) is needed for the credential REFERENCE -- never the
-    secret, which only the worker child resolves.
+    Mirrors ``authenticated_external_call``'s isolation gate exactly, because it
+    is the same broker transaction: the grant must exist, be live, be owned by
+    ``principal`` and be bound to the RUNNING universe. The resource (not the
+    redacted view) is needed for the credential REFERENCE -- never the secret,
+    which only the broker process resolves.
     """
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.ledger_queries import authorized_connection
     from tinyassets.storage.outbound_connections import (
-        ConnectionLedger,
         GrantResolutionError,
         ProxyRequestError,
     )
 
-    if broker_selected():
-        from tinyassets.broker.ledger_queries import authorized_connection
-
-        if not principal:
-            raise _Refused("no_universe_authority", "workspace requires an admitted owner")
-        try:
-            grant, resource, _ = authorized_connection(
-                db_path.parent, principal=principal, command_center=universe_id,
-                grant_id=grant_id, connection_id=connection_id,
-            )
-        except GrantResolutionError:
-            raise _Refused(
-                "connection_authority_unavailable", "connection authority refused",
-            ) from None
-        except ProxyRequestError:
-            raise _Refused("broker_unavailable", "credential broker unavailable") from None
-        return grant, resource
-
-    ledger = ConnectionLedger(db_path)
-    grant = ledger.get_grant(grant_id)
-    if grant is None:
-        raise _Refused("unknown_grant", "connection authority refused: unknown_grant")
-    if getattr(grant, "revoked_at", None) is not None:
-        raise _Refused("revoked_grant", "connection authority refused: revoked_grant")
-    if getattr(grant, "universe_id", "") != universe_id:
-        raise _Refused(
-            "grant_not_for_universe", "connection authority refused: grant_not_for_universe"
+    if not principal:
+        raise _Refused("no_universe_authority", "workspace requires an admitted owner")
+    try:
+        grant, resource, _ = authorized_connection(
+            Path(data_root), principal=principal, command_center=universe_id,
+            grant_id=grant_id, connection_id=connection_id,
         )
-    if getattr(grant, "connection_id", "") != connection_id:
+    except GrantResolutionError:
         raise _Refused(
-            "grant_connection_mismatch",
-            "connection authority refused: grant_connection_mismatch",
-        )
-    resource = ledger._get_connection_resource(connection_id)
-    if resource is None:
-        raise _Refused("unknown_connection", "connection authority refused: unknown_connection")
-    if getattr(resource, "revoked_at", None) is not None:
-        raise _Refused("revoked_connection", "connection authority refused: revoked_connection")
+            "connection_authority_unavailable", "connection authority refused",
+        ) from None
+    except ProxyRequestError:
+        raise _Refused("broker_unavailable", "credential broker unavailable") from None
     return grant, resource
 
 
@@ -1716,11 +1692,11 @@ def _connection_for_mount(
     """
     if not mount.connection_id or not mount.grant_id:
         return fallback
-    db_path = _ledger_db_path(base_path)
-    if db_path is None:
+    data_root = _data_root(base_path)
+    if data_root is None:
         return fallback
     _grant, resource = _read_connection(
-        db_path=db_path,
+        data_root=data_root,
         connection_id=mount.connection_id,
         universe_id=_universe_id(base_path),
         grant_id=mount.grant_id,
@@ -1931,8 +1907,8 @@ def _run(
 
     repo = _str_field(packet, "repo")
     universe_id = _universe_id(base_path)
-    db_path = _ledger_db_path(base_path)
-    if not universe_id or db_path is None or base_path is None:
+    data_root = _data_root(base_path)
+    if not universe_id or data_root is None or base_path is None:
         return {
             "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
@@ -1940,21 +1916,17 @@ def _run(
         }
     universe_dir = Path(base_path)
     host = ""
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.auth.middleware import current_identity_or_none
 
-    # The admitted owner only routes the selected broker's authority reads.
-    principal = ""
-    if broker_selected():
-        from tinyassets.auth.middleware import current_identity_or_none
-
-        identity = current_identity_or_none()
-        if execution_context is not None:
-            if (execution_context.universe_id != universe_id
-                    or not execution_context.owner_user_id):
-                raise _Refused("execution_context_mismatch", "workspace execution scope mismatch")
-            principal = execution_context.owner_user_id
-        else:
-            principal = identity.user_id if identity is not None else ""
+    # The admitted owner routes every broker authority read.
+    identity = current_identity_or_none()
+    if execution_context is not None:
+        if (execution_context.universe_id != universe_id
+                or not execution_context.owner_user_id):
+            raise _Refused("execution_context_mismatch", "workspace execution scope mismatch")
+        principal = execution_context.owner_user_id
+    else:
+        principal = identity.user_id if identity is not None else ""
 
     if chain is None:
         from tinyassets.effectors import active_effect_chain
@@ -2029,7 +2001,7 @@ def _run(
         raise _Refused("invalid_packet", "packet.grant_id is required")
 
     _grant, resource = _read_connection(
-        db_path=db_path,
+        data_root=data_root,
         connection_id=connection_id,
         universe_id=universe_id,
         grant_id=grant_id,

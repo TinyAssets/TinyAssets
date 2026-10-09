@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from tests.test_broker_disconnect import removal  # noqa: F401
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity

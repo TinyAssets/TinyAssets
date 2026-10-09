@@ -16,8 +16,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from tinyassets.storage.outbound_connections import ConnectionLedger
-
 JAIL_SOCKET = "/tmp/ta.sock"
 JAIL_CLIENT = "/ta/bin/ta"
 CLIENT_SOURCE = Path(__file__).with_name("ta_cli.py")
@@ -60,21 +58,12 @@ class Capabilities:
         # A launch whose grant withholds connections neither lists nor calls one.
         if not self.connections_granted:
             return {}
-        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.broker.catalog import connections
 
-        if broker_selected():
-            from tinyassets.broker.catalog import connections
-
-            inventory = ((grant, view) for grant, view, _ in connections(
-                self.root.parent, principal=self.context.owner,
-                command_center=self.context.universe))
-        else:
-            ledger = ConnectionLedger(self.root.parent / "outbound.db")
-            # No catalogue truncation. Existing ledger API has no cursor.
-            inventory = ((grant, ledger.get_connection_view(grant.connection_id))
-                         for grant in ledger.list_grants(owner_user_id=self.context.owner,
-                                                         universe_id=self.context.universe,
-                                                         limit=2**31 - 1))
+        # No catalogue truncation: the broker's catalog pages to exhaustion.
+        inventory = ((grant, view) for grant, view, _ in connections(
+            self.root.parent, principal=self.context.owner,
+            command_center=self.context.universe))
         found = {}
         for grant, view in inventory:
             if (view is None or view.owner_user_id != self.context.owner

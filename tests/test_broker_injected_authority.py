@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_user_owned_cloud_automation import _cloud_authority_fixture
 from tinyassets.broker.connection_authority import (
