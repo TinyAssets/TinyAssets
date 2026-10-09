@@ -48,16 +48,16 @@ until that PR merges inside the maintenance window.
 Proof, 2026-10-09: `role_migrate_probe.py` passed all 356 interruption points,
 all preflight refusals, converged no-op, and numeric-owner/mode/ACL snapshot restore.
 The production-backup rehearsal for 1.4 is recorded in the runbook (2026-10-08).
-The full production image `sha256:27af1c362c38bf5abfe66c88a952d1023a147ac4def39bec78e3f239688b8086`
-passed migration, actual serving, all ten then-current cell legs, and the shipped
+The full production image `sha256:aa398034015ec0a27c86dd9e362db87c9888a3fb781b86f627a3a114c86fdf7f`
+passed migration, actual serving, all eleven cell legs, and the shipped
 Claude/Codex CLI execution and discovery probes. This includes engine HTTP tool
 write/read, real dependency download/offline installation, workspace leases,
 owner storage measurement, admission without restart, two-pass deletion, and
-foreign-byte/capability refusals. Preview additionally passed on an image overlay:
+foreign-byte/capability refusals. Preview passed in this same production image:
 a timed-out cell was reaped and its successor rendered the expected PNG.
 Root role tests passed 45/45. Required-CI baseline at merge base `eeacf82354`
 completed all six shards: 26,867 passed, 99 skipped, no failures. Final cutover
-suite and production-image rebuild remain pending. Heavy selection has the same
+suite remains pending; structural guards passed 584/584. Heavy selection has the same
 47 failures on both branches; both also fail the existing 2,000-test floor
 (1,813 selected). Neither floor nor quarantine was relaxed.
 
