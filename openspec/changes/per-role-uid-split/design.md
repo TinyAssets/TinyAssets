@@ -127,8 +127,9 @@ only. The service image never holds those three capabilities. The compose `cap_a
 3. **Labels.** Walk with pinned no-follow descriptors. Set uid, gid, mode and ACL on each entry
    to the role_modes target, and change only the fields that differ. Workspace symlinks are
    skipped and their targets are left alone.
-4. **Marker.** Atomically write `/data/.layout.json`:
-   `{"layout": "owner-split", "snapshot": "<id>", "at": "<utc>"}`. This is always the last write.
+4. **Marker.** Atomically extend the stable layout-2 `/data/.layout.json` with
+   `{"split": "owner-split", "snapshot": "<id>", "at": "<utc>"}`, preserving its
+   `layout`, `state` and completed storage moves. This is always the last write.
 
 `--check` is read-only. It reports every entry not at its target and every precondition. It
 runs before the apply, and again after it, when it must print zero diffs.

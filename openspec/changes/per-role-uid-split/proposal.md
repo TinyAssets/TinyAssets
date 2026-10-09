@@ -45,8 +45,8 @@ security boundary and the memory headroom. It unblocks outbound MCP attach
 
 ## Impact
 
-- Three PRs (`design.md` § 6): the migration with its runbook (inert), the cutover (merged
-  inside the window), then the deletions.
+- One PR (`design.md` § 6), per the founder's final integration instruction: the migration
+  and runbook, cutover, and code deletions merge together inside the maintenance window.
 - These are superseded (listed, not closed):
   - U1 #4523 `feat/per-role-uid-split`
   - U2 #4509/#4510 `feat/per-role-uid-split-migration`
