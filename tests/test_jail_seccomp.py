@@ -3,7 +3,7 @@
 The program is run through a small cBPF interpreter here, so each assertion is
 about the DECISION a syscall gets, not about instruction layout: a rule moved,
 merged or dropped is caught by what it stops refusing. The real-kernel proof is
-in ``tests/test_provider_jail_network.py`` (provider jail) and
+in ``tests/test_jail_seccomp_profiles.py`` (owner cells) and
 ``tests/test_universe_tools_jail.py`` (tool jail).
 """
 

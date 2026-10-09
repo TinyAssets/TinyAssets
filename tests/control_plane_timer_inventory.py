@@ -179,11 +179,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "reads ONE codex app-server turn's stdout under its idle/tool/absolute "
         "budgets; ends with the turn's terminal notification, EOF or timeout",
     ),
-    "tinyassets/providers/owned_process.py::_watch_disk.watch": (
-        CALL_SCOPED,
-        "host-side disk-budget watch for one jailed provider launch; ends with "
-        "proc.wait or budget-breach family teardown and settles that launch's budget",
-    ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
     "tinyassets/runs.py::await_run_events": (CALL_SCOPED, "caller waits on a run"),

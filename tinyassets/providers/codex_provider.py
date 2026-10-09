@@ -491,6 +491,9 @@ class CodexProvider(BaseProvider):
         proc_env = subprocess_env_for_provider(
             self.name, universe_dir=universe_dir, credential_snapshot_dir=snapshot,
         )
+        # The engine route is dialled from this process; no route secret
+        # belongs in the cell, whatever the daemon's environment carries.
+        proc_env.pop("TINYASSETS_ENGINE_MCP_BEARER", None)
         codex_home = Path(proc_env.get("CODEX_HOME", "")).resolve(strict=False)
         if codex_home != Path(snapshot).resolve(strict=False) or not codex_home.is_dir():
             raise ProviderError("codex served turns require their sealed launch credentials")

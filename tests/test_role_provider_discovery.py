@@ -107,11 +107,36 @@ def test_cell_fixes_disposable_environment(monkeypatch):
     monkeypatch.setattr(role_provider_cell.os.path, 'realpath', lambda value: value)
     monkeypatch.setattr(role_provider_cell.os, 'stat',
                         lambda value: SimpleNamespace(st_mode=0o100755, st_uid=65534))
-    argv, env = role_provider_cell.validate(json.dumps(
+    argv, env, engine_port = role_provider_cell.validate(json.dumps(
         {'argv': ['/opt/claude-code-install/node_modules/.bin/claude'],
          'env': {'HOME': '/elsewhere', 'PATH': '/evil', 'CODEX_HOME': '/snapshot'}}), '/data')
     assert env['HOME'] == '/tmp' and env['PATH'] == '/usr/bin:/bin'
-    assert env['CODEX_HOME'] == '/snapshot'
+    assert env['CODEX_HOME'] == '/snapshot' and engine_port is None
+
+
+@pytest.mark.parametrize('port, execution, admitted', [
+    (8790, True, True), (8790, False, False), (3128, True, False), (80, True, False),
+    ('8790', True, False),
+])
+def test_engine_port_is_execution_only_and_never_the_egress_port(
+        monkeypatch, port, execution, admitted):
+    monkeypatch.setattr(role_provider_cell.os.path, 'realpath', lambda value: value)
+    monkeypatch.setattr(role_provider_cell.os, 'stat',
+                        lambda value: SimpleNamespace(st_mode=0o100755, st_uid=65534))
+    raw = json.dumps({'argv': ['/opt/claude-code-install/node_modules/.bin/claude'],
+                      'env': {}, 'engine_port': port})
+    if admitted:
+        assert role_provider_cell.validate(raw, '/data', execution=execution)[2] == port
+    else:
+        with pytest.raises(ValueError, match='engine'):
+            role_provider_cell.validate(raw, '/data', execution=execution)
+
+
+def test_owner_values_cross_only_when_sealed_in_the_snapshot():
+    env = {'TOKEN': 'sealed-owner-value', 'DAEMON_SECRET': 'ambient', 'OFF': 'FALSE',
+           'TINYASSETS_X': 'sealed-owner-value', 'LD_PRELOAD': 'sealed-owner-value'}
+    assert role_provider_cell.safe_environment(env, frozenset({'sealed-owner-value'})) == {
+        'TOKEN': 'sealed-owner-value', 'OFF': 'FALSE'}
 
 
 def test_private_snapshot_copy_preserves_sealed_source(tmp_path):
@@ -160,14 +185,9 @@ def test_proof_refuses_inherited_fd_nested_userns_foreign_snapshot_and_socket(ov
         role_provider_discovery.check_proof(_proof(**override), identity, [7, 9])
 
 
-def test_selected_metadata_without_client_refuses_without_daemon_fallback(monkeypatch, tmp_path):
+def test_metadata_without_client_refuses_without_daemon_fallback(monkeypatch, tmp_path):
     root, snapshot = _snapshot(tmp_path)
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     monkeypatch.setattr(role_decoder, '_bounded_client', None)
-
-    async def forbidden(*args, **kwargs):
-        pytest.fail('selected metadata spawned a daemon subprocess')
-    monkeypatch.setattr(discovery, 'aspawn_owned', forbidden)
     with pytest.raises(ProviderError, match='unavailable'):
         asyncio.run(discovery.read_native_catalogue(
             ['/opt/codex-install/node_modules/.bin/codex', 'app-server'], protocol=PROTOCOL,
@@ -206,7 +226,6 @@ def test_cell_stream_shim_preserves_metadata_protocol_and_revokes(monkeypatch, t
     import threading
 
     root, snapshot = _snapshot(tmp_path)
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
     ours, peer = socket.socketpair()
     cell = _FakeCell(ours)
     pages = [{'data': [{'id': 'm1', 'isDefault': True, 'inputModalities': ['text']}],

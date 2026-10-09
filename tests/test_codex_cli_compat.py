@@ -13,53 +13,30 @@ from tinyassets.providers.base import ModelConfig
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("confined", [True, False])
-async def test_a_non_served_codex_node_drops_its_own_sandbox_only_inside_our_jail(
-    monkeypatch, tmp_path, confined,
+async def test_a_non_served_codex_node_runs_without_its_own_sandbox_in_the_cell(
+    monkeypatch, tmp_path,
 ):
-    """A workflow-node (non-served) codex call runs codex's shell. Inside our
-    provider jail it uses --dangerously-bypass-approvals-and-sandbox so codex
-    does not nest its own bubblewrap (which would need user namespaces the jail
-    now denies); off the jail it keeps --sandbox workspace-write."""
+    """A workflow-node (non-served) codex call runs codex's shell inside its
+    owner's cell, so codex never nests its own bubblewrap (which would need the
+    user namespaces the cell denies) and works in the cell's empty workspace."""
     from tinyassets.providers import codex_provider as provider
-    from tinyassets.providers.provider_jail import provider_launch_scope
 
     proc = AsyncMock()
     proc.returncode = 0
-    # A non-served node reads plain stdout through proc.communicate (no event
-    # stream), so give the fake process a simple reply.
     proc.communicate = AsyncMock(return_value=(b"ok", b""))
     launch = install_fake_owned_spawn(monkeypatch, provider.__name__, return_value=proc)
     monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
-    monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
-        "bwrap_available": True, "bwrap_path": "fake-bwrap",
-    })
     monkeypatch.setattr(provider, "subprocess_env_for_provider", lambda *a, **kw: {})
-    monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
-
-    async def drive():
-        return await provider.CodexProvider().complete(
-            "prompt", "system", ModelConfig(sandbox_workspace=False), universe_dir=tmp_path,
-        )
-
-    if confined:
-        with provider_launch_scope(tmp_path):
-            await drive()
-    else:
-        await drive()
-
+    await provider.CodexProvider().complete(
+        "prompt", "system", ModelConfig(sandbox_workspace=False), universe_dir=tmp_path,
+    )
     inner = launch.call_args.args
     pairs = list(zip(inner, inner[1:]))
-    if confined:
-        assert "--dangerously-bypass-approvals-and-sandbox" in inner
-        assert ("--sandbox", "workspace-write") not in pairs
-    else:
-        assert ("--sandbox", "workspace-write") in pairs
-        assert "--dangerously-bypass-approvals-and-sandbox" not in inner
+    assert "--dangerously-bypass-approvals-and-sandbox" in inner
+    assert ("--sandbox", "workspace-write") not in pairs
+    assert ("-C", "/tmp/workspace") in pairs
     # A non-served node never disables the shell tool -- it is a coding turn.
     assert ("--disable", "shell_tool") not in pairs
-    # It never declares a nested sandbox, so a confined one gets the jail's full
-    # deny profile (no new user namespaces, no symlinks).
     assert not launch.call_args.kwargs.get("nested_sandbox")
 
 

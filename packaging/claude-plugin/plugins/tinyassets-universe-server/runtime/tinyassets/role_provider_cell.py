@@ -36,6 +36,8 @@ FIXED_ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp', 'USERPROFILE': '/tmp',
 def file_values(directory):
     """Stripped text of each small top-level regular file in ``directory``."""
     values = set()
+    if not os.path.isdir(directory):
+        return frozenset()
     with os.scandir(directory) as entries:
         for entry in entries:
             if entry.is_symlink() or not entry.is_file(follow_symlinks=False):

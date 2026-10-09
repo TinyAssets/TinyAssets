@@ -42,7 +42,6 @@ import pytest
 
 from tinyassets.branches import NodeDefinition
 from tinyassets.graph_compiler import NodeTimeoutError, _build_prompt_template_node
-from tinyassets.providers import owned_process
 
 # A node budget small enough to keep the suite fast. The mechanism is
 # scale-free: 0.4s here is 300s in production, and the assertions below are
@@ -342,45 +341,21 @@ def test_provider_spawn_sites_own_their_family_through_one_module():
         )
         assert "killpg" not in source and "taskkill" not in source, (
             f"{provider} signals a process group directly; only a live member "
-            "of that group may do so -- see owned_process._ANCHOR_WRAPPER_SRC"
+            "of that group may do so"
         )
 
     owned = (root / "providers/owned_process.py").read_text(
         encoding="utf-8", errors="replace",
     )
-    assert "start_new_session" in owned, "owned_process stopped creating the group"
-    # Parsed, not grepped: the module's prose discusses killpg at length, and a
-    # substring count cannot tell a comment from a call. The daemon side must
-    # contain NO killpg call -- teardown is a pipe write. The anchor's call
-    # lives inside a string literal, so it is parsed separately below.
-    daemon_calls = [
+    # The spawn point signals nothing: a provider runs in its owner's cell and
+    # teardown is revocation through the mapper's lifetime channel.
+    signals = [
         node for node in ast.walk(ast.parse(owned))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "killpg"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("killpg", "kill", "send_signal")
+        and getattr(node.func.value, "id", "") == "os"
     ]
-    assert daemon_calls == [], (
-        "the daemon gained a killpg call; a recorded group integer can "
-        "already name another user's session -- only a live member of the "
-        "group may signal it"
-    )
-    anchor_calls = [
-        node for node in ast.walk(ast.parse(owned_process._ANCHOR_WRAPPER_SRC))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "killpg"
-    ]
-    assert len(anchor_calls) == 1, (
-        f"expected exactly one killpg in the anchor, found {len(anchor_calls)}"
-    )
-    # Its argument is os.getpgrp() -- the caller's OWN group, resolved at the
-    # moment of the signal, not an integer recorded at spawn.
-    target = anchor_calls[0].args[0]
-    assert (
-        isinstance(target, ast.Call)
-        and isinstance(target.func, ast.Attribute)
-        and target.func.attr == "getpgrp"
-    ), "the anchor now signals a recorded id instead of its own live group"
+    assert signals == [], "owned_process gained a direct signal"
 
     # The contrast that made the original omission a defect, kept as evidence.
     for owner in ("node_sandbox.py", "workspace_git.py"):

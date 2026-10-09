@@ -39,12 +39,12 @@ def test_all_adapters_share_the_same_selected_dispatch(monkeypatch, tmp_path):
     assert all(item[1]['execution'] and item[1]['snapshot_dir'] == snapshot for item in seen)
 
 
-@pytest.mark.parametrize('change', ['engine', 'view', 'shell', 'nested', 'cwd',
+@pytest.mark.parametrize('change', ['view', 'shell', 'nested', 'cwd',
                                     'center-cwd', 'snapshot-cwd', 'host-argv', 'extra'])
 def test_unsupported_execution_view_never_reaches_cell(tmp_path, monkeypatch, change):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
     scope = SimpleNamespace(universe_dir=tmp_path, credential_dir=tmp_path / 'snapshot',
-                            engine_route=('alice', 'center') if change == 'engine' else None)
+                            engine_route=None)
     kwargs = dict(scope=scope, shell=change == 'shell', view=object() if change == 'view' else None,
                   nested_sandbox=change == 'nested', options=dict(
                       stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -62,15 +62,38 @@ def test_unsupported_execution_view_never_reaches_cell(tmp_path, monkeypatch, ch
         asyncio.run(role_provider_execution.spawn(argv, **kwargs))
 
 
+def test_served_turn_carries_its_engine_route_into_the_cell(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
+
+    async def launch(argv, **kwargs):
+        seen.append(kwargs)
+        return 'owner-process'
+    monkeypatch.setattr(role_provider_discovery, 'aspawn_cell', launch)
+    scope = SimpleNamespace(universe_dir=tmp_path, credential_dir=tmp_path / 'snapshot',
+                            engine_route=('alice', tmp_path.name))
+    assert asyncio.run(role_provider_execution.spawn(
+        ['/installed/cli'], scope=scope, shell=False, view=None, nested_sandbox=False,
+        options=dict(env={}, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                     stderr=asyncio.subprocess.PIPE))) == 'owner-process'
+    assert seen[0]['engine_route'] == ('alice', tmp_path.name) and seen[0]['execution']
+
+
 def test_execution_only_relocates_the_snapshot_not_a_persistent_workspace(tmp_path):
     center = tmp_path / 'alice'
     snapshot = center / '.runtime/provider-launch-credentials/one'
+    snapshot.mkdir(parents=True)
+    (snapshot / 'auth.json').write_text('owner-token' + chr(10))
     result = json.loads(role_provider_discovery.cell_config(
         ['/installed/cli', '-C', '/tmp/workspace', str(snapshot / 'config')],
-        {'AUTH_HOME': str(snapshot), 'HOST_SECRET': 'never', 'LD_PRELOAD': '/tmp/evil'},
-        (), snapshot, tmp_path))
+        {'AUTH_HOME': str(snapshot), 'HOST_SECRET': 'never', 'LD_PRELOAD': '/tmp/evil',
+         'OWNER_TOKEN': 'owner-token', 'FEATURE_OFF': 'false', 'NAME': 'free text'},
+        (), snapshot, tmp_path, engine_port=8790))
     assert result['argv'] == ['/installed/cli', '-C', '/tmp/workspace', '/snapshot/config']
-    assert result['env'] == {'AUTH_HOME': '/snapshot'}
+    # The owner's own sealed value and a switch cross; ambient values never do.
+    assert result['env'] == {'AUTH_HOME': '/snapshot', 'OWNER_TOKEN': 'owner-token',
+                             'FEATURE_OFF': 'false'}
+    assert result['engine_port'] == 8790
 
 
 def test_execution_communicate_preserves_stdout_stderr_and_authenticated_reap():
@@ -116,6 +139,6 @@ def test_exec_mapper_requires_the_independent_stderr_descriptor():
                               / 'deploy/role_owner_launcher.py'))
     mapper = object.__new__(scope['OwnerLauncher'])
     request = dict(op='START', kind='provider-exec', principal='alice',
-                   command_center='alice', egress=True)
+                   command_center='alice', egress=True, engine=False)
     with pytest.raises(ValueError, match='unsupported'):
         mapper._decoder(request, [0, 1, 2, 3])

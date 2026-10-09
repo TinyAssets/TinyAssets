@@ -10,29 +10,12 @@ name: linux-jail-proof
 #   * tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
 #     runs the file-delivery RPC through the real jail
 #     (tinyassets/node_sandbox.py BwrapLauncher);
-#   * tests/test_native_refresh_jail.py runs the argv the shipping codex
-#     provider builds for a coding turn (tinyassets/providers/codex_provider.py)
-#     and proves the launch-credential mask holds, with a detection control;
+#   * tests/test_jail_seccomp_profiles.py loads each named owner-cell seccomp
+#     profile into real bubblewrap and checks its syscall answers;
 #   * tests/test_native_metadata_jail.py runs native model discovery
 #     (tinyassets/providers/native_jsonrpc_discovery.py) in the real jail and
 #     proves its metadata child reads only its own launch credential snapshot --
 #     not a sibling launch's, and not the platform's own state;
-#   * tests/test_provider_jail_root_masks.py proves a provider cannot read,
-#     write or re-link the per-universe platform state kept in hidden root files
-#     (the credential vault, the run/consent/usage databases);
-#   * tests/test_provider_jail_codex_nested.py proves a real codex command runs
-#     with its own sandbox off inside our jail and that the jail then refuses a
-#     planted symlink, with a detection control on the permissive profile;
-#   * tests/test_provider_universe_jail.py runs the shipping claude and codex
-#     adapters, and a jail-unaware command adapter through the router, inside
-#     the shared provider jail (tinyassets/providers/provider_jail.py) and
-#     proves a launch for universe A reads A but not universe B, the platform
-#     source, another launch's credential or any outside process environment;
-#   * tests/test_provider_jail_network.py proves a provider launch has no host
-#     network: its API only through the universe's checking egress proxy, its
-#     own engine MCP server only through the pinned relay, and never the
-#     daemon's loopback, another universe's engine port, the metadata address
-#     or the host; plus the seccomp filter and rlimits inside the jail;
 #   * tests/test_universe_tools_jail.py drives the universe agent's four tools
 #     (tinyassets/universe_tools.py, served by tinyassets/engine_mcp_server.py)
 #     through the real tool jail and proves: only its own universe at /u, no
@@ -112,19 +95,13 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      # The codex coding-turn jail proof and the provider whose argv it runs.
-      - "tests/test_native_refresh_jail.py"
       - "tinyassets/providers/codex_provider.py"
       # Native metadata discovery's own snapshot confinement.
       - "tests/test_native_metadata_jail.py"
       - "tinyassets/providers/native_jsonrpc_discovery.py"
-      # The provider universe jail, the shared spawn point that applies it, the
-      # router that binds the owning universe, the adapters it launches and the
-      # environment builder whose paths must resolve inside it.
-      - "tests/test_provider_universe_jail.py"
-      - "tests/test_provider_jail_network.py"
-      - "tests/test_provider_jail_root_masks.py"
-      - "tests/test_provider_jail_codex_nested.py"
+      # The shared jail pieces, the cell seccomp profiles, the spawn point,
+      # the router that binds the owning universe and the adapters.
+      - "tests/test_jail_seccomp_profiles.py"
       - "tinyassets/providers/provider_jail.py"
       - "tinyassets/providers/jail_seccomp.py"
       - "tinyassets/providers/owned_process.py"
