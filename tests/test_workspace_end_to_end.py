@@ -44,7 +44,7 @@ from tinyassets.node_sandbox import NodeSandbox, PlainSubprocessLauncher
 from tinyassets.storage.effector_consents import grant_consent
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.workspace_authority import workspace_consent_destination
-from tinyassets.workspace_git import verify_bundle
+from tinyassets.workspace_git import run_git_in_cell, verify_bundle
 
 GIT = shutil.which("git")
 PY = sys.executable
@@ -118,22 +118,27 @@ def _make_universe(
     scopes: tuple[str, ...] = (f"git_read:{REPO}", f"git_write:{REPO}"),
     consents: tuple[str, ...] = ("checkout", "push", "provision"),
 ) -> Universe:
+    from tinyassets.auth.middleware import current_identity
+
+    principal = current_identity().user_id
     data_root = tmp_path / "data"
     universe_dir = data_root / UNIVERSE
     universe_dir.mkdir(parents=True)
-    # The scratch pool root is the DAEMON's to create: the pool module creates
-    # no directories and the real open_dir_nofollow refuses a missing parent.
-    pool_root = data_root / "scratch"
+    # The pool directory above a lease is the DAEMON's: it owns it and labels
+    # it for exactly this owner (``workspace_owner_pool.prepare``), and the
+    # owner's cell creates the lease inside it. It lives in the command center
+    # because a cell is bound to one and a node mounts only owner directories.
+    pool_root = universe_dir / "workspaces" / "scratch"
     pool_root.mkdir(parents=True)
-    os.chmod(pool_root, 0o700)
+    os.chmod(pool_root, 0o770)
 
     ledger = ConnectionLedger(
         data_root / ".broker" / "outbound.db", data_root=data_root,
-        verify_authenticated_principal=lambda: "user-1"
+        verify_authenticated_principal=lambda: principal
     )
     ledger.create_connection(
         connection_id="conn-git",
-        owner_user_id="user-1",
+        owner_user_id=principal,
         connection_class="outbound-http",
         scopes=scopes,
         provider="http",
@@ -148,7 +153,7 @@ def _make_universe(
     ledger.grant_connection(
         grant_id="grant-git",
         connection_id="conn-git",
-        owner_user_id="user-1",
+        owner_user_id=principal,
         universe_id=UNIVERSE,
     )
     for op in consents:
@@ -206,21 +211,23 @@ def universe(tmp_path: Path) -> Universe:
 
 
 @pytest.fixture(autouse=True)
-def vault(monkeypatch: pytest.MonkeyPatch):
-    """The credential the worker resolves. Real resolution path, one token."""
+def no_credential_anywhere(monkeypatch: pytest.MonkeyPatch):
+    """There is no credential to resolve on this path any more.
+
+    The worker used to read the vault itself; since the owner split the token
+    exists only inside the broker, which this chain never asks for one. A
+    resolver reached from here would mean a credential had come back, so it
+    refuses loudly instead of handing one out.
+    """
     from tinyassets.storage import outbound_connections
 
-    class Resolver:
-        def __init__(self, *, universe_dir: str) -> None:
-            self.universe_dir = universe_dir
-
-        def __call__(self, credential_ref: str) -> str:
-            if credential_ref != "vault://http/github":
-                raise RuntimeError("no such credential")
-            return TOKEN
+    class Refuse:
+        def __init__(self, **_kwargs) -> None:
+            raise AssertionError(
+                "the workspace chain resolved a credential; only the broker may")
 
     monkeypatch.setattr(
-        outbound_connections, "_GeneralVaultCredentialResolver", Resolver
+        outbound_connections, "_GeneralVaultCredentialResolver", Refuse
     )
 
 
@@ -346,61 +353,32 @@ def fs_bridge(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
 
 
 class WireWorker:
-    """The worker's network legs, faked; everything else about it is real.
+    """The ONE faked leg: where the remote lives.
 
-    ``checkout`` produces a genuine prerequisite-free bundle with real git from
-    the local origin, which is what makes the host-side populate a real test
-    rather than a fixture. ``push`` records the request so the test can verify
-    the bundle the way the worker would before sending it.
+    Everything else is the shipping path. The daemon reads its authority from
+    the broker, opens a route on the command center's real checking proxy and
+    hands the owner's cell the rewrite as git options; the cell clones,
+    bundles, verifies, populates and pushes with real git. Only the route's
+    far side is local here -- the cell double points it at the origin
+    repository instead of the broker's HTTPS session -- because a test process
+    serves no HTTP.
+
+    It records every request the DAEMON made, which is the boundary the
+    cutover is about.
     """
 
     def __init__(self, origin: Origin) -> None:
+        from tests.support import cell_double
+
+        cell_double.REMOTE_REPOS[REPO] = str(origin.path)
         self.origin = origin
         self.requests: list[dict[str, Any]] = []
-        self.secrets_seen: list[str] = []
-        self.push_refusal: dict[str, Any] | None = None
-        self.checkout_sha_override: str | None = None
 
     def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.workspace_worker import _resolve_secret
+        from tinyassets.workspace_worker import execute_workspace_operation
 
         self.requests.append(dict(request))
-        # The real resolution path: a leak of this token anywhere downstream is
-        # what scenario 6 hunts for.
-        self.secrets_seen.append(_resolve_secret(request))
-
-        staging = Path(request["staging_dir"])
-        if request["op"] == "checkout":
-            bundle = staging / "out.bundle"
-            subprocess.run(
-                [GIT, "bundle", "create", str(bundle), "refs/heads/main"],
-                cwd=str(self.origin.path),
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            return {
-                "ok": True,
-                "resolved_sha": self.checkout_sha_override or self.origin.head,
-                "bytes": bundle.stat().st_size,
-                "bundle_name": "out.bundle",
-                "ref_name": "refs/heads/main",
-            }
-        if request["op"] == "push":
-            # Snapshot the bundle AS THE WORKER SAW IT: staging is removed when
-            # the push returns (it used to leak on every path), so a test that
-            # verifies the bundle afterwards verifies this copy.
-            snapshot = self.origin.path.parent / f"pushed-{len(self.requests)}.bundle"
-            shutil.copyfile(request["bundle_path"], snapshot)
-            self.requests[-1]["bundle_snapshot"] = str(snapshot)
-            if self.push_refusal is not None:
-                return self.push_refusal
-            return {
-                "ok": True,
-                "bytes": Path(request["bundle_path"]).stat().st_size,
-                "reconciled": False,
-            }
-        raise AssertionError(f"unexpected op {request['op']!r}")
+        return execute_workspace_operation(request)
 
 
 def _packet(**over: Any) -> dict[str, Any]:
@@ -688,32 +666,37 @@ def test_a_node_commit_becomes_a_bundle_the_push_leg_can_verify(
     request = worker.requests[-1]
     assert request["op"] == "push"
     assert request["commit_sha"] == new_sha
+    # The cell reads the bundle out of the lease itself, so the request names
+    # the lease and the sha and nothing about that file or any host path.
+    assert "bundle_path" not in request
+    assert request["lease_name"] == Path(mount.lease.path).name
 
-    # What the worker would do before sending: verify it credential-free, in a
-    # fresh empty scratch, and refuse prerequisites.
+    # The commit really landed on the remote, at exactly the ref the branch
+    # slug names and nowhere else.
+    listed = subprocess.run(
+        [GIT, "ls-remote", str(origin.path), push["remote_ref"]],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert new_sha in listed, listed
+
+    # And the bundle the jail left in the lease is one a credential-free
+    # verification accepts, in a fresh empty scratch, prerequisites refused --
+    # which is what the cell does before a remote is reachable at all.
     scratch = tmp_path / "verify-scratch"
     scratch.mkdir()
     home = tmp_path / "verify-home"
     home.mkdir()
-    # The staging copy is gone with its staging; nothing may linger there.
-    assert not Path(request["bundle_path"]).exists()
+    bundle = Path(mount.lease.path) / "repo" / ".tiny-export" / f"{new_sha}.bundle"
     refs = verify_bundle(
-        Path(request["bundle_snapshot"]),
+        bundle,
         max_bytes=512 * 1024 * 1024,
         scratch_dir=scratch,
         home_dir=home,
         path=str(Path(GIT).parent),
+        runner=run_git_in_cell,
     )
     assert refs, "verify_bundle returned no refs"
-    text = " ".join(str(ref) for ref in refs)
-    assert "refs/tiny/export" in text
-    listed = subprocess.run(
-        [GIT, "bundle", "list-heads", str(request["bundle_snapshot"])],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert new_sha in listed, listed
+    assert "refs/tiny/export" in " ".join(str(ref) for ref in refs)
 
 
 # --------------------------------------------------------------------------
@@ -1086,7 +1069,7 @@ def test_a_created_workspace_runs_a_code_node_with_no_connection_in_the_run(
         base_path=universe.universe_dir,
         run_id=RUN_ID,
         chain=chain,
-        execute=_no_worker,
+        execute=_unconnected_cell,
     )
     assert made.get("error_kind") is None, made
 
@@ -1124,9 +1107,20 @@ def test_a_created_workspace_runs_a_code_node_with_no_connection_in_the_run(
     assert (_repo_path(mount) / "shotlist.txt").read_text(encoding="utf-8") == "scene one"
 
 
-def _no_worker(request: dict[str, Any]) -> dict[str, Any]:
-    """A worker that must never be called: a create reaches nothing."""
-    raise AssertionError(f"a create spawned a worker: {request}")
+def _unconnected_cell(request: dict[str, Any]) -> dict[str, Any]:
+    """A create goes through the owner's cell, and reaches nothing else.
+
+    Only the owner can make the directory a node will mount, so even an empty
+    workspace is created there -- with no connection, no grant, no route and
+    no socket. Anything else in the request would be authority a create has
+    no business carrying.
+    """
+    from tinyassets.workspace_worker import execute_workspace_operation
+
+    assert request["op"] == "create", request
+    assert set(request) == {
+        "op", "universe_dir", "principal", "storage", "lease_parent", "lease_name"}, request
+    return execute_workspace_operation(request)
 
 
 def test_a_checkout_without_its_consent_creates_no_lease(
@@ -1188,8 +1182,13 @@ def test_the_token_appears_in_no_evidence_no_log_and_no_file(
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
-    """The credential is resolved for real on the worker leg, so this is the
-    live question: does any surface between there and the caller carry it?"""
+    """Nothing on this chain holds a credential, so this is now TWO questions.
+
+    Does any surface between the remote and the caller carry a secret -- and
+    does the one thing that could still reach one, the request handed to the
+    owner's cell, name a credential at all? The token below is a credential
+    shape nobody on this path may produce.
+    """
     caplog.set_level(logging.DEBUG)
     worker = WireWorker(origin)
     checkout = _fire(_packet(), universe=universe, chain=chain, worker=worker)
@@ -1216,9 +1215,13 @@ def test_the_token_appears_in_no_evidence_no_log_and_no_file(
         node_id="push-node",
     )
 
-    assert worker.secrets_seen == [TOKEN, TOKEN], "the worker never saw the token"
+    assert push.get("error_kind") is None, push
+    for request in worker.requests:
+        assert "credential_ref" not in request, "a credential reference is a credential"
+        assert "vault://" not in json.dumps(request)
 
     surfaces = {
+        "cell requests": json.dumps(worker.requests),
         "checkout evidence": json.dumps(checkout),
         "push evidence": json.dumps(push),
         "node output": json.dumps(result.output_state),
@@ -1263,32 +1266,24 @@ def test_the_path_guard_still_lets_the_recommended_root_run() -> None:
     )
 
 
-def test_the_startup_reconciler_creates_the_pool_root_a_fresh_host_lacks(
+def test_the_first_checkout_on_a_fresh_host_prepares_its_own_pool(
     origin: Origin, tmp_path: Path, fs_bridge, short_paths
 ) -> None:
-    """Inverted once ``ensure_workspace_reconciled`` gained the creator.
+    """The pool module creates no directories, and nothing creates them at
+    startup any more.
 
-    The pool module creates no directories and the real ``open_dir_nofollow``
-    refuses a missing parent, so on a fresh host the FIRST checkout used to
-    fail - and the adapter's own suite could not see it, because its injected
-    helper makes the directory itself. The reconciler now creates
-    ``<data>/scratch`` (``base_path.parent / "scratch"``) at 0o700, and a
-    checkout on a host that has never had one succeeds.
+    The pool directory is per-owner and labelled for exactly one owner, and
+    only a request carries an owner -- so it is prepared per operation
+    (``workspace_owner_pool.prepare``, inside the cell hand-off) rather than
+    once from a startup path that has nobody to name. The sweep and the
+    admission still agree on ONE spelling of it.
     """
     universe = _make_universe(tmp_path)
     shutil.rmtree(universe.pool_root)
     assert not universe.pool_root.exists()
+    assert runs_module._ensure_scratch_root(universe.universe_dir) == universe.pool_root
+    assert not universe.pool_root.exists(), "startup does not create an owner directory"
 
-    created = runs_module._ensure_scratch_root(universe.universe_dir)
-    assert created == universe.pool_root
-    assert universe.pool_root.is_dir()
-    if POSIX:
-        mode = stat.S_IMODE(os.stat(universe.pool_root).st_mode)
-        assert mode == 0o700, f"{mode:#o}"
-
-    # And the checkout that used to fail on a fresh host now completes - the
-    # adapter reaches the reconciler before it admits anything.
-    shutil.rmtree(universe.pool_root)
     chain = EffectChain(
         run_id=RUN_ID, base_path=str(universe.data_root), universe_id=UNIVERSE
     )
@@ -1298,11 +1293,16 @@ def test_the_startup_reconciler_creates_the_pool_root_a_fresh_host_lacks(
 
 
 @pytest.mark.skipif(not POSIX, reason="the real handles are POSIX-only")
-def test_the_lease_directory_is_private_to_this_user(
+def test_the_lease_directory_is_private_to_this_owner(
     origin: Origin, universe: Universe, chain: EffectChain
 ) -> None:
-    """The real create_lease_dir makes it 0o700 under a no-follow handle; the
-    injected helper in the adapter's suite makes it with the umask."""
+    """Owner-owned, nothing for anyone else, and an unguessable name.
+
+    The cell makes it ``0o770``: the owner is alone in its own group, and the
+    group bits are where an inherited ACL mask lives, which is what keeps the
+    daemon's named rwx effective so it can still open, measure and reclaim the
+    lease. What must be zero is OTHER.
+    """
     _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
     mount = chain.workspace_mount(CHECKOUT_NODE)
     assert mount is not None
@@ -1310,8 +1310,10 @@ def test_the_lease_directory_is_private_to_this_user(
     # that inspects /proc/self/fd and passes for the wrong reason. The lease
     # object is the only thing that names the directory (Codex R3, P1 #9).
     lease_dir = Path(mount.lease.path)
-    mode = stat.S_IMODE(os.stat(lease_dir).st_mode)
-    assert mode & 0o077 == 0, f"lease directory is {mode:#o}"
+    info = os.stat(lease_dir)
+    mode = stat.S_IMODE(info.st_mode)
+    assert mode & 0o007 == 0, f"lease directory is {mode:#o}"
+    assert info.st_uid == os.getuid(), "the lease is the owner cell's own"
     assert len(lease_dir.name) >= 16, "the lease name must be unguessable"
 
 

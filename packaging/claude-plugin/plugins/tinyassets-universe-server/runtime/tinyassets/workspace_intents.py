@@ -221,6 +221,7 @@ def reconcile_push_intents(
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     revalidate: Callable[[PushIntent], bool] | None = None,
+    principal_for: Callable[[PushIntent], str] | None = None,
     host: str = "",
     staging_root: str | Path | None = None,
 ) -> list[tuple[str, str]]:
@@ -230,6 +231,12 @@ def reconcile_push_intents(
     the same commit is success, not a failure. Anything else is ``failed`` with
     the observed ref recorded. An intent the remote could not be asked about
     becomes ``unknown`` and stays owed -- never guessed in either direction.
+
+    ``principal_for`` is how the owner is recovered for one intent; it defaults
+    to :func:`_intent_principal`, which revalidates the whole chain against
+    the daemon's persisted run. It is a seam because this runs at STARTUP,
+    where there is no request identity to read and a caller may already hold
+    the admitted owner.
     """
     intents = open_intents(base_path)
     if not intents:
@@ -245,10 +252,14 @@ def reconcile_push_intents(
     settled: list[tuple[str, str]] = []
     for intent in intents:
         _reconcile_one(
-            base_path, intent, settled,
-            execute=execute, revalidate=revalidate, host=host,
+            base_path, intent, settled, execute=execute, revalidate=revalidate,
+            principal_for=principal_for or _intent_principal_for(base_path), host=host,
         )
     return settled
+
+
+def _intent_principal_for(base_path: str | Path) -> Callable[[PushIntent], str]:
+    return lambda intent: _intent_principal(base_path, intent)
 
 
 def _reconcile_one(
@@ -258,6 +269,7 @@ def _reconcile_one(
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]],
     revalidate: Callable[[PushIntent], bool] | None,
+    principal_for: Callable[[PushIntent], str],
     host: str,
 ) -> None:
     """Settle one intent. Appends its (intent_id, state) to ``settled``."""
@@ -277,7 +289,9 @@ def _reconcile_one(
             return
 
     try:
-        principal = _intent_principal(base_path, intent)
+        principal = principal_for(intent)
+        if not principal:
+            raise PermissionError("intent has no admitted owner")
     except Exception:
         # No unknown authority may reach even a read-only remote probe.
         _defer(base_path, intent, reason="broker authority unavailable")
