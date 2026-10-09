@@ -1,33 +1,4 @@
-"""Whether a provider offers OAuth for a connection, found from standards, not code.
-
-Founder, 2026-09-24: "Our generic connector should prefer OAuth when the
-provider allows for what the request is trying to accomplish, as that is less
-actions for the user." There is no table of providers here.
-
-Trust roots are the daemon-owned provider directory and standards discovery
-rooted at the connection's declared hosts. An active directory entry wins;
-otherwise endpoints come from standard discovery:
-
-* RFC 9728 protected-resource metadata on a connection host
-  (``/.well-known/oauth-protected-resource``, whose ``resource`` must be that
-  host) names the authorization server(s); failing that, the host itself is
-  tried as the issuer;
-* RFC 8414 authorization-server metadata, then OpenID Connect discovery, on the
-  issuer so named, whose ``issuer`` must equal it.
-
-The requester (an agent, possibly steered by remixed or injected content) may
-say only WHAT the use needs: its ``scopes``, and optionally a public
-``client_id``. It can never name an authorize, token or registration URL or an
-issuer: that would let it pair a real sign-in page with its own token endpoint
-and collect the code, the verifier and the refresh tokens (Tier 2 review
-round 1, BLOCK).
-
-An offer exists only when the server covers the request: the authorization-code
-grant with PKCE S256 for a public client, every requested scope (when the server
-lists its scopes), and a client (the supplied id, or RFC 7591 dynamic
-registration). Anything short of that is a reason, and the ask falls back to
-key paste.
-"""
+"""Standards-only OAuth discovery rooted at the connection destination."""
 
 from __future__ import annotations
 
@@ -68,6 +39,7 @@ class ServerMetadata:
     code_challenge_methods: tuple[str, ...]
     grant_types: tuple[str, ...]
     response_types: tuple[str, ...]
+    cimd_supported: bool = False
 
 
 def _strings(value: Any) -> tuple[str, ...] | None:
@@ -138,6 +110,7 @@ def _metadata_urls(issuer: str) -> list[str]:
     origin = (parts.scheme, parts.netloc)
     return [
         urlunsplit((*origin, "/.well-known/oauth-authorization-server" + path, "", "")),
+        urlunsplit((*origin, "/.well-known/openid-configuration" + path, "", "")),
         urlunsplit((*origin, path + "/.well-known/openid-configuration", "", "")),
     ]
 
@@ -150,7 +123,7 @@ def fetch_server_metadata(issuer: str) -> ServerMetadata:
             continue
         # RFC 8414 §3.3 / OIDC Discovery §4.3: the document must name the very
         # issuer it was fetched for, or it is someone else's metadata.
-        if doc.get("issuer") != issuer and doc.get("issuer") != issuer.rstrip("/"):
+        if doc.get("issuer") != issuer:
             raise OAuthError("authorization_server_issuer_mismatch")
         try:
             authorize = validate_https_url(doc.get("authorization_endpoint"))
@@ -165,6 +138,7 @@ def fetch_server_metadata(issuer: str) -> ServerMetadata:
                 registration = ""
         return ServerMetadata(
             issuer=issuer, authorization_endpoint=authorize, token_endpoint=token,
+            cimd_supported=doc.get("client_id_metadata_document_supported") is True,
             registration_endpoint=registration,
             iss_parameter_supported=doc.get("authorization_response_iss_parameter_supported")
             is True,
@@ -178,36 +152,113 @@ def fetch_server_metadata(issuer: str) -> ServerMetadata:
     raise OAuthError("no_authorization_server_metadata")
 
 
-def protected_resource_issuers(host: str) -> list[str]:
-    """RFC 9728: the authorization servers an API names for itself."""
-    resource = f"https://{host}"
-    status, doc = request_json("GET", resource + "/.well-known/oauth-protected-resource")
-    if status != 200 or not isinstance(doc, dict):
-        return []
-    # §3.3: the metadata must be about the resource it was fetched from.
-    named = doc.get("resource")
-    if not isinstance(named, str) or urlsplit(named).netloc.lower() != host.lower():
-        return []
-    servers = doc.get("authorization_servers")
-    if not isinstance(servers, list):
-        return []
-    out = []
-    for server in servers[:_MAX_ISSUERS]:
-        try:
-            out.append(validate_https_url(server))
-        except OAuthError:
+def bearer_challenge(header: str) -> dict[str, str]:
+    """Parse RFC 9110 challenges without splitting commas inside quoted strings."""
+    from urllib.request import parse_http_list
+
+    selected: dict[str, str] = {}
+    bearer = False
+    for part in parse_http_list(header):
+        match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*) +(?!=)(.*)$", part.strip())
+        if match:
+            if bearer:
+                return selected
+            bearer = match[1].lower() == "bearer"
+            part = match[2]
+        if not bearer:
             continue
-    return out
+        param = re.fullmatch(
+            r'([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*("(?:[^"\\]|\\.)*"|[^ ,]+)', part.strip())
+        if not param:
+            raise OAuthError("invalid_resource_challenge")
+        key, value = param.groups()
+        key = key.lower()
+        if key in selected:
+            raise OAuthError("invalid_resource_challenge")
+        selected[key] = re.sub(r"\\(.)", r"\1", value[1:-1]) if value.startswith('"') else value
+    return selected
 
 
-def _metadata_for(hosts: list[str]) -> ServerMetadata:
-    """Discovery rooted ONLY at the connection's declared hosts."""
-    last: OAuthError = OAuthError("no_authorization_server_metadata")
+def _resource_metadata(resource: str, *, probe: bool) -> tuple[list[str], list[str], str]:
+    from tinyassets.connection_oauth.transport import request_json_with_headers
+
+    resource = validate_https_url(resource)
+    parts = urlsplit(resource)
+    origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+    challenge: dict[str, str] = {}
+    if probe:
+        status, _, headers = request_json_with_headers("GET", resource)
+        if status in (401, 403):
+            challenge = bearer_challenge(headers.get("www-authenticate", ""))
+    urls = []
+    if challenge.get("resource_metadata"):
+        urls.append((validate_https_url(challenge["resource_metadata"]), resource))
+    well_known = origin + "/.well-known/oauth-protected-resource"
+    urls.extend([(well_known + parts.path.rstrip("/"), resource),
+                 (origin + "/.well-known/oauth-protected-resource", origin)])
+    last = None
+    for url, expected_resource in dict.fromkeys(urls):
+        status, doc = request_json("GET", url)
+        if status != 200 or not isinstance(doc, dict):
+            continue
+        named = doc.get("resource")
+        # A challenge can name a parent protected resource (including the
+        # origin). Bind that canonical identifier, never a sibling or host.
+        named_parts = urlsplit(named) if isinstance(named, str) else None
+        parent = bool(named_parts and named_parts.scheme == parts.scheme
+                      and named_parts.netloc == parts.netloc
+                      and not named_parts.query and not named_parts.fragment
+                      and (parts.path or "/").startswith(named_parts.path.rstrip("/") + "/"))
+        challenged = url == challenge.get("resource_metadata")
+        root = url == origin + "/.well-known/oauth-protected-resource"
+        compatible = (challenged or root) and (parent or named == resource)
+        if named != expected_resource and not compatible:
+            last = OAuthError("protected_resource_mismatch")
+            continue
+        servers = _strings(doc.get("authorization_servers")) or ()
+        scopes = challenge.get("scope")
+        try:
+            wanted = validate_scopes(scopes if scopes is not None else doc.get("scopes_supported"))
+        except ValueError:
+            raise OAuthError("invalid_resource_metadata") from None
+        return [validate_https_url(v) for v in servers[:_MAX_ISSUERS]], wanted, named
+    if last:
+        raise last
+    return [], [], ""
+
+
+def protected_resource_issuers(host: str) -> list[str]:
+    return _resource_metadata(f"https://{host}", probe=False)[0]
+
+
+def _metadata_for(hosts: list[str]) -> tuple[ServerMetadata, str, list[str]]:
+    """Concrete endpoint URLs preserve resource identity; bare hosts are legacy."""
+    last = OAuthError("no_authorization_server_metadata")
     for host in hosts[:_MAX_ISSUERS]:
-        candidates = protected_resource_issuers(host) or [f"https://{host}"]
-        for candidate in candidates:
+        resource = host if host.startswith("https://") else f"https://{host}"
+        parts = urlsplit(resource)
+        origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+        try:
+            candidates, scopes, identified = _resource_metadata(
+                resource, probe=host.startswith("https://"))
+        except OAuthError as exc:
+            last = exc
+            if exc.code == "protected_resource_mismatch":
+                continue
+            candidates, scopes, identified = [], [], ""
+            if host.startswith("https://"):
+                # A failed endpoint probe/challenge must not hide legacy root
+                # metadata. Retry without probing, just as for a bare host.
+                try:
+                    candidates, scopes, identified = _resource_metadata(origin, probe=False)
+                except OAuthError as root_exc:
+                    last = root_exc
+                    if root_exc.code == "protected_resource_mismatch":
+                        continue
+        for candidate in candidates or [origin]:
             try:
-                return fetch_server_metadata(candidate)
+                selected = identified if candidates else resource
+                return fetch_server_metadata(candidate), selected, scopes
             except OAuthError as exc:
                 last = exc
     raise last
@@ -221,8 +272,6 @@ def _covers(metadata: ServerMetadata, scopes: list[str]) -> str:
         return "authorization_code_not_offered"
     if "authorization_code" not in metadata.grant_types:
         return "authorization_code_not_offered"
-    if metadata.scopes_supported is not None and not set(scopes) <= set(metadata.scopes_supported):
-        return "scopes_not_offered"
     return ""
 
 
@@ -234,16 +283,17 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     shown (every endpoint host) is exactly what the sign-in uses.
     """
     scopes = list(requested.get("scopes") or [])
+    directory_hosts = [urlsplit(h).hostname if h.startswith("https://") else h for h in hosts]
     from tinyassets.connection_oauth import directory, service
 
     try:
         remote = service.inherited_config()
         if remote:
             offer = service.call(remote, {
-                "op": "resolve", "requested": requested, "hosts": hosts,
+                "op": "resolve", "requested": requested, "hosts": directory_hosts,
             }).get("offer")
         else:
-            offer = directory.resolve(requested, hosts)
+            offer = directory.resolve(requested, directory_hosts)
         if offer:
             return offer, ""
     except OAuthError as exc:
@@ -256,16 +306,37 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
     if not DISCOVERY_ENABLED:
         return None, "discovery_unavailable"
     try:
-        metadata = _metadata_for(hosts)
+        metadata, resource, resource_scopes = _metadata_for(hosts)
+        scopes = scopes or resource_scopes
     except OAuthError as exc:
         return None, exc.code
     reason = _covers(metadata, scopes)
     if reason:
         return None, reason
     client_id = requested.get("client_id", "")
-    registration = "" if client_id else metadata.registration_endpoint
+    from tinyassets.connection_oauth.flow import callback_origin, configured_redirect_uri
+    from tinyassets.connection_oauth.pkce import cached_client
+
+    callback = configured_redirect_uri()
+    method = "existing"
+    if not client_id:
+        try:
+            client_id = cached_client(metadata.issuer, callback)
+        except OAuthError as exc:
+            return None, exc.code
+        if client_id:
+            method = "cached"
+    cimd = ""
+    if metadata.cimd_supported and callback:
+        from tinyassets.onboarding.source_connect import CLIENT_METADATA_PATH
+
+        cimd = callback_origin(callback) + CLIENT_METADATA_PATH
+    if not client_id and cimd:
+        client_id = cimd
+        method = "cimd"
+    registration = metadata.registration_endpoint if not client_id or method == "cached" else ""
     if not client_id and not registration:
-        return None, "no_public_client"
+        return None, "registration_required"
     return {
         "issuer": metadata.issuer,
         "authorize_url": metadata.authorization_endpoint,
@@ -275,6 +346,9 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
         "iss_parameter_supported": metadata.iss_parameter_supported,
         "scopes": scopes,
         "source": "discovered",
+        "resource": resource,
+        "registration_method": method if client_id else "dcr",
+        **({"fallback_client_id": cimd} if method == "cached" and cimd else {}),
     }, ""
 
 
@@ -288,8 +362,7 @@ def offer_hosts(offer: dict[str, Any]) -> list[str]:
     return hosts
 
 
-def register_public_client(registration_url: str, *, redirect_uri: str,
-                           scopes: list[str]) -> str:
+def register_public_client(registration_url: str, *, redirect_uri: str) -> str:
     """RFC 7591 dynamic registration of a PUBLIC client; returns its id.
 
     A server that insists on a confidential client (issues a secret) is
@@ -301,15 +374,17 @@ def register_public_client(registration_url: str, *, redirect_uri: str,
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "client_name": "TinyAssets",
+        "application_type": "web",
     }
-    if scopes:
-        body["scope"] = " ".join(scopes)
+    # This client is shared by issuer/callback; owner scopes belong only on
+    # each authorization request, never on the shared registration.
     status, doc = request_json("POST", registration_url, json_body=body)
     if status not in (200, 201) or not isinstance(doc, dict):
         from tinyassets.connection_oauth.transport import server_error_detail
 
-        raise OAuthError("client_registration_failed", server_error_detail(status, doc),
-                         status=status)
+        code = ("registration_required" if status in (400, 401, 403)
+                else "client_registration_failed")
+        raise OAuthError(code, server_error_detail(status, doc), status=status)
     client_id = doc.get("client_id")
     if not isinstance(client_id, str) or not _CLIENT_ID_RE.match(client_id):
         raise OAuthError("client_registration_failed", "no client_id in the response")

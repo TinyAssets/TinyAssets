@@ -160,6 +160,11 @@ def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, 
             request = json.loads(raw)
             seen.append((dict(self.headers), raw, self.path))
             method = request["method"]
+            if self.headers.get("MCP-Protocol-Version") == "2026-07-28":
+                self.send_response(400)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             result = {
                 "initialize": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}},
                 "tools/list": {"tools": [{"name": "hello", "inputSchema": {"type": "object"}}]},
@@ -226,7 +231,7 @@ def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, 
             assert result["error"] == "mcp_outcome_unknown"
         else:
             assert result["content"] == [{"type": "text", "text": "done"}]
-        assert len(seen) == 7  # two handshakes/catalogs, exactly one tool effect; no replay
+        assert len(seen) == 9  # two probes/handshakes/catalogs, one effect; no replay
         assert all(value is identity for value in identities)
         headers, raw, path = seen[-1]
         assert path == "/v1/messages"
@@ -235,13 +240,13 @@ def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, 
         assert headers["Accept"] == "application/json, text/event-stream"
         assert headers["Authorization"] == "Bearer real-vault-http-token"
         assert raw == json.dumps({"jsonrpc": "2.0", "method": "tools/call",
-            "params": {"name": "hello", "arguments": arguments}, "id": 4},
+            "params": {"name": "hello", "arguments": arguments}, "id": 5},
             separators=(",", ":")).encode()
         assert bool(responses[-1].get("stalled")) == reply_kind.startswith("stalled")
         assert "private-session" not in json.dumps(result)
         with store.db() as conn:
             assert conn.execute("SELECT count(*) FROM outside_effects WHERE "
-                                "client='outside' AND state='finished'").fetchone()[0] == 7
+                                "client='outside' AND state='finished'").fetchone()[0] == 9
     finally:
         release.set()
         http.shutdown()

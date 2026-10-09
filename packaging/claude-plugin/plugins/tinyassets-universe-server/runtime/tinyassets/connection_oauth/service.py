@@ -55,6 +55,12 @@ def _dispatch(binding: tuple[Path, str], doc: dict[str, Any]) -> dict[str, Any]:
         ) == "admin"
     ):
         raise OAuthError("platform_client_unavailable")
+    if doc.get("op") == "public_client":
+        from tinyassets.connection_oauth.pkce import cached_client
+        from tinyassets.connection_oauth.transport import validate_https_url
+
+        return {"client_id": cached_client(validate_https_url(doc.get("issuer")),
+                                           validate_https_url(doc.get("redirect_uri")))}
     if doc.get("op") == "resolve":
         hosts = doc.get("hosts")
         if (not isinstance(hosts, list) or len(hosts) > 8

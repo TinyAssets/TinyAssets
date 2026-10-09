@@ -84,6 +84,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
     # -- bounded waits inside one call -----------------------------------------
+    "tinyassets/mcp_protocol.py::continue_call": (
+        CALL_SCOPED,
+        "bounded MRTR continuation of one host-consented remote call; stops with "
+        "the caller, timeout, revocation or an uncertain response",
+    ),
     "tinyassets/owner_lease.py::_lock_blocking": (
         CALL_SCOPED, "one owner-tree gate acquisition retries until timeout_s",
     ),
