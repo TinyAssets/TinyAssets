@@ -212,7 +212,7 @@ def test_current_serving_authority_refuses_credential_reference_rotation(
     )
 
     universe_dir, _serving, _definition = _bound_and_serving(tmp_path, monkeypatch)
-    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
             ("vault://http/rotated", _CONN_ID),

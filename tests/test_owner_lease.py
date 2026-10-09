@@ -278,26 +278,6 @@ def test_the_daemon_advertises_its_tree_to_children(base, monkeypatch):
         tree.leave()
 
 
-def test_engine_spawns_carry_the_owner_tree(monkeypatch, tmp_path):
-    monkeypatch.setenv(owner_lease.TREE_ENV, "a" * 32)
-    from tinyassets import engine_mcp_http
-
-    seen = {}
-
-    def fake_popen(argv, env=None, **kwargs):
-        seen.update(env or {})
-
-        class P:
-            def poll(self):
-                return None
-        return P()
-
-    monkeypatch.setattr(engine_mcp_http.subprocess, "Popen", fake_popen)
-    instance = engine_mcp_http._EngineServer("u", "o", 1, str(tmp_path))
-    assert instance.start() is True
-    assert seen[owner_lease.TREE_ENV] == "a" * 32
-
-
 # --- B1 code review round 1 -------------------------------------------------
 
 

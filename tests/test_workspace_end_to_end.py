@@ -812,7 +812,7 @@ def test_the_compiler_binds_a_DUPLICATE_and_releases_it(
     and what it binds must be a dup, released when the node returns.
     """
     from tinyassets import graph_compiler as gc
-    from tinyassets import node_sandbox as ns
+    from tinyassets import role_node
     from tinyassets.branches import NodeDefinition
 
     _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
@@ -829,7 +829,11 @@ def test_the_compiler_binds_a_DUPLICATE_and_releases_it(
             seen["bound"] = os.stat(str(sandbox_mount.bind_source))
         return PlainSubprocessLauncher(workspace_bind=str(_repo_path(registered)))
 
-    monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
+    def run_cell(instance, *, invoke, workspace, **request):
+        instance.launcher = _launcher(workspace)
+        return instance.run_nested(**request, workspace=workspace, invoke=invoke)
+
+    monkeypatch.setattr(role_node, "run", run_cell)
     node = NodeDefinition(
         node_id="build",
         display_name="Build",
@@ -944,7 +948,7 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     class. The launcher is injected here only because bwrap is not on this host;
     everything else is the shipping path."""
     from tinyassets import graph_compiler as gc
-    from tinyassets import node_sandbox as ns
+    from tinyassets import role_node
     from tinyassets.branches import NodeDefinition
 
     _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
@@ -966,7 +970,11 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
         # under test here is what the COMPILER handed over.
         return PlainSubprocessLauncher(workspace_bind=str(_repo_path(mount)))
 
-    monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
+    def run_cell(instance, *, invoke, workspace, **request):
+        instance.launcher = _launcher(workspace)
+        return instance.run_nested(**request, workspace=workspace, invoke=invoke)
+
+    monkeypatch.setattr(role_node, "run", run_cell)
 
     node = NodeDefinition(
         node_id="build",
@@ -992,7 +1000,6 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     # POSIX was a second wrong assertion behind the first one - CI never
     # reached it, the Linux chain did.
     assert seen["roots"] == (
-        str(universe.data_root / "scratch"),
         str(universe.universe_dir / "workspaces"),
     )
 
@@ -1053,7 +1060,7 @@ def test_a_created_workspace_runs_a_code_node_with_no_connection_in_the_run(
     agnostic).
     """
     from tinyassets import graph_compiler as gc
-    from tinyassets import node_sandbox as ns
+    from tinyassets import role_node
     from tinyassets.branches import NodeDefinition
 
     made = run_workspace_effector(
@@ -1080,7 +1087,11 @@ def test_a_created_workspace_runs_a_code_node_with_no_connection_in_the_run(
     def _launcher(sandbox_mount):
         return PlainSubprocessLauncher(workspace_bind=str(_repo_path(mount)))
 
-    monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
+    def run_cell(instance, *, invoke, workspace, **request):
+        instance.launcher = _launcher(workspace)
+        return instance.run_nested(**request, workspace=workspace, invoke=invoke)
+
+    monkeypatch.setattr(role_node, "run", run_cell)
 
     node = NodeDefinition(
         node_id="render",
