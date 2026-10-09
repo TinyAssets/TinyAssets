@@ -47,11 +47,20 @@ def handoff(variant):
             os.fchmod(fd, 0o777)
             info = os.fstat(fd)
             os.close(fd)
-            return [info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)]
-        made = decoder["center_root_handoff"](staging)
+            return [info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)], {}
+        made, seeds = decoder["center_root_handoff"](staging)
         if variant == "foreign-entry":
             os.mkdir("planted", 0o700, dir_fd=staging)
-        return made
+        if variant == "missing-seed":
+            fd = os.open("g", os.O_RDONLY | os.O_DIRECTORY, dir_fd=staging)
+            os.rmdir("wiki", dir_fd=fd)
+            os.close(fd)
+            del seeds["wiki"]
+        if variant == "filled-seed":
+            fd = os.open("g", os.O_RDONLY | os.O_DIRECTORY, dir_fd=staging)
+            os.mkdir("notes/planted", 0o700, dir_fd=fd)
+            os.close(fd)
+        return made, seeds
     return run
 
 
@@ -76,10 +85,14 @@ def launcher(channel, variant):
                              caps="zero" if caps() == [0, 0, 0, 0] else "held", nnp=1,
                              profile="cell-deny")
                 os.write(stream, json.dumps({"cell": proof}).encode() + b"\n")
-                made = handoff(variant)(staging)
-                # The real cell reports g in its own namespace view (inner ids).
-                made = [made[0] - 300000, made[1] - 300000, made[2]]
-                os.write(stream, json.dumps({"g": made}).encode() + b"\n")
+                made, seeds = handoff(variant)(staging)
+
+                def inner_view(label):
+                    # The real cell reports in its own namespace view (inner ids).
+                    return [label[0] - 300000, label[1] - 300000, label[2]]
+                os.write(stream, json.dumps({"g": inner_view(made), "seeds": {
+                    name: inner_view(label) for name, label in seeds.items()}}).encode()
+                    + b"\n")
                 os._exit(0)
             except BaseException:
                 traceback.print_exc()
@@ -169,7 +182,12 @@ def admit_as_daemon(tmp_path, variant="canonical", center="alice-home"):
 
 @needs_root
 def test_handoff_publishes_the_canonical_migrated_label_with_zero_capabilities(tmp_path):
-    from tinyassets.role_center_admission import canonical_label, read_label
+    from tinyassets.role_center_admission import (
+        SEED_ENTRIES,
+        canonical_label,
+        read_label,
+        seed_label,
+    )
 
     data, result = admit_as_daemon(tmp_path)
     assert "refused" not in result, result
@@ -183,17 +201,22 @@ def test_handoff_publishes_the_canonical_migrated_label_with_zero_capabilities(t
         assert not info.st_mode & stat.S_ISGID
     finally:
         os.close(fd)
-    fd = os.open(data / "alice-home" / "previews", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        assert read_label(fd) == (1001, 1001, 0o700, None, None)  # explicit, not setgid
-    finally:
-        os.close(fd)
+    # The owner owns every seed (no setgid), and the daemon's inherited named
+    # entry is what let it rename them in and lets it reach their contents.
+    assert sorted(os.listdir(data / "alice-home")) == sorted(SEED_ENTRIES)
+    for name in SEED_ENTRIES:
+        fd = os.open(data / "alice-home" / name, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            assert read_label(fd) == seed_label(MACHINE), name
+        finally:
+            os.close(fd)
     assert os.listdir(data / ".role-admission") == []
     assert sorted(os.listdir(data)) == [".role-admission", "alice-home"]
 
 
 @needs_root
-@pytest.mark.parametrize("variant", ["lost-setgid", "foreign-entry"])
+@pytest.mark.parametrize("variant", ["lost-setgid", "foreign-entry", "missing-seed",
+                                     "filled-seed"])
 def test_a_wrong_handoff_refuses_and_publishes_nothing(tmp_path, variant):
     data, result = admit_as_daemon(tmp_path, variant)
     assert result["refused"] == "AdmissionRefused", result
@@ -213,6 +236,18 @@ def test_an_existing_name_is_never_replaced(tmp_path):
     assert result["refused"] == "FileExistsError", result
     assert (data / "alice-home" / "keep").read_text() == "existing"
     assert os.listdir(data / ".role-admission") == []
+
+
+def test_the_seed_set_is_one_list_and_its_acl_is_the_migration_default():
+    from tinyassets import role_center_admission as admission
+    from tinyassets.universe_tools import AGENT_HARNESS_DIRS
+
+    decoder = runpy.run_path(str(ROOT / "deploy/role_decoder.py"))
+    migrate = runpy.run_path(str(ROOT / "deploy/role_migrate.py"))
+    assert decoder["SEED_ENTRIES"] == admission.SEED_ENTRIES
+    assert set(admission.SEED_ENTRIES) == {".agent-workspace", "previews", *AGENT_HARNESS_DIRS}
+    assert tuple(migrate["SEED_ENTRIES"]) == admission.SEED_ENTRIES
+    assert admission.seed_default_acl() == migrate["_acl"](7, {1001: 7})
 
 
 def test_canonical_acl_bytes_match_the_migration_encoding():

@@ -4,8 +4,14 @@ Every center is created here, through the bounded mapper client. A new center ro
 canonical migrated label ``1001:<machine>``, mode 0750, the canonical access
 ACL and no default ACL, without any process gaining a capability: a fixed
 ``center-root`` owner cell makes a setgid directory ``g`` inside daemon-private
-staging S, the daemon creates the root inside it (inheriting the owner GID and
-the ACL), clears the default ACL and S_ISGID, and renames it into place.
+staging S, plus the owner-owned seed entries inside ``g``; the daemon creates
+the root inside ``g`` (inheriting the owner GID), sets its canonical ACL, clears
+the default ACL and S_ISGID, renames the seeds into it and renames it into place.
+
+The root grants the owner r-x only, so the seeds are the entries an owner cell
+may write (``role_tools.maintain``, the preview writer). Each seed inherits S's
+default ACL, which is the migration's default for owner content: the daemon's
+named rwx, so it can rename the seed and reach what is later written inside.
 """
 from __future__ import annotations
 
@@ -22,6 +28,13 @@ STAGING = '.role-admission'
 ACCESS, DEFAULT = 'system.posix_acl_access', 'system.posix_acl_default'
 _UNDEFINED = 0xFFFFFFFF
 _RENAME_NOREPLACE = 1
+DAEMON_UID = 1001
+
+#: Owner-owned 0770 directories in every center root: the tool workspace, the
+#: preview output and ``universe_tools.AGENT_HARNESS_DIRS``. The center-root
+#: cell (``deploy/role_decoder.SEED_ENTRIES``) makes exactly these.
+SEED_ENTRIES = ('.agent-workspace', 'previews', 'skills', 'prompts', 'extensions',
+                'workflows', 'bin', 'notes', 'wiki')
 
 
 class AdmissionRefused(RuntimeError):
@@ -44,6 +57,17 @@ def canonical_root_acl(machine: int) -> bytes:
 
 def canonical_label(machine: int) -> tuple:
     return (1001, machine, 0o750, canonical_root_acl(machine), None)
+
+
+def seed_default_acl() -> bytes:
+    """``user::rwx user:1001:rwx group::--- mask::rwx other::---``: the migration's
+    default ACL for owner content (``deploy/role_migrate._acl(7, {1001: 7})``)."""
+    return _acl(7, {DAEMON_UID: 7}, mask=7)
+
+
+def seed_label(machine: int) -> tuple:
+    """A seed as the cell leaves it: inherited from S's default ACL, mode 0770."""
+    return (machine, machine, 0o770, seed_default_acl(), seed_default_acl())
 
 
 def _xattr(fd, name):
@@ -144,7 +168,8 @@ def _handoff(client, staging_fd, *, principal, center, identity):
                 or proof.get('profile') != 'cell-deny'):
             raise AdmissionRefused('center-root cell proof is absent')
         made = _read_line(cell.stream)  # the cell's own namespace view of g
-        if cell.wait(5) != 0 or made != {'g': [inner, inner, 0o2777]}:
+        if cell.wait(5) != 0 or made != {'g': [inner, inner, 0o2777], 'seeds': {
+                name: [inner, inner, 0o770] for name in SEED_ENTRIES}}:
             raise AdmissionRefused('center-root cell did not create its directory')
 
 
@@ -171,8 +196,8 @@ def label_root(root_fd, *, client, principal, center, identity):
             # The daemon owns S, so neither write needs a capability. machine
             # only shapes S; the mapper resolves the owner itself (DA2).
             os.setxattr(s_fd, ACCESS, _acl(7, {machine: 7}, mask=7))
-            os.setxattr(s_fd, DEFAULT, canonical_root_acl(machine))
-            if (_xattr(s_fd, DEFAULT) != canonical_root_acl(machine)
+            os.setxattr(s_fd, DEFAULT, seed_default_acl())
+            if (_xattr(s_fd, DEFAULT) != seed_default_acl()
                     or os.fstat(s_fd).st_mode & 0o007):
                 raise AdmissionRefused('staging ACL readback differs')
             _handoff(client, s_fd, principal=principal, center=center, identity=identity)
@@ -182,11 +207,22 @@ def label_root(root_fd, *, client, principal, center, identity):
             try:
                 info = os.fstat(g_fd)
                 if ((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (
-                        machine, machine, 0o2777) or os.listdir(g_fd)):
+                        machine, machine, 0o2777)
+                        or sorted(os.listdir(g_fd)) != sorted(SEED_ENTRIES)):
                     raise AdmissionRefused('setgid hand-off directory has the wrong shape')
+                for name in SEED_ENTRIES:
+                    seed = _open_dir(name, g_fd)
+                    try:
+                        if read_label(seed) != seed_label(machine) or os.listdir(seed):
+                            raise AdmissionRefused(f'seed {name!r} has the wrong shape')
+                    finally:
+                        os.close(seed)
                 os.mkdir('root', 0o750, dir_fd=g_fd)
                 new = _open_dir('root', g_fd)
                 try:
+                    # The daemon owns the new root, so it writes the canonical
+                    # ACL itself instead of inheriting the seeds' default.
+                    os.setxattr(new, ACCESS, canonical_root_acl(machine))
                     if _xattr(new, DEFAULT) is not None:
                         os.removexattr(new, DEFAULT)
                     # Requested mode has no S_ISGID: the inherited bit clears and
@@ -195,6 +231,8 @@ def label_root(root_fd, *, client, principal, center, identity):
                     if read_label(new) != canonical_label(machine):
                         raise AdmissionRefused('center root label differs from canonical')
                     key = os.fstat(new)
+                    for name in SEED_ENTRIES:
+                        _renameat2(g_fd, name, new, name)
                 finally:
                     os.close(new)
                 _renameat2(g_fd, 'root', root_fd, center)
@@ -214,29 +252,34 @@ def label_root(root_fd, *, client, principal, center, identity):
         raise
     finally:
         os.close(staging)
-    _seed_entries(root_fd, center, published)
+    _seed_entries(root_fd, center, published, machine)
     os.fsync(root_fd)
     return published
 
 
-def _seed_entries(root_fd, center, key):
-    """Every entry forward migration creates in a center, explicit owner and mode."""
+def _seed_entries(root_fd, center, key, machine):
+    """Every seed is in the published root and owned by its owner.
+
+    The seeds move in before the root is published, so a published root
+    without one was never made here: refuse rather than guess.
+    """
     fd = _open_dir(center, root_fd)
     try:
         info = os.fstat(fd)
         if (info.st_dev, info.st_ino) != key:
             raise AdmissionRefused('published root changed')
-        try:
-            os.mkdir('previews', 0o700, dir_fd=fd)
-        except FileExistsError:
-            pass
-        previews = _open_dir('previews', fd)
-        try:
-            if read_label(previews) != (1001, 1001, 0o700, None, None):
-                raise AdmissionRefused('previews readback differs')
-            os.fsync(previews)
-        finally:
-            os.close(previews)
+        for name in SEED_ENTRIES:
+            try:
+                seed = _open_dir(name, fd)
+            except FileNotFoundError:
+                raise AdmissionRefused(f'published root lacks seed {name!r}') from None
+            try:
+                found = os.fstat(seed)
+                if (found.st_uid, found.st_gid) != (machine, machine):
+                    raise AdmissionRefused(f'seed {name!r} is not owned by its owner')
+                os.fsync(seed)
+            finally:
+                os.close(seed)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -276,7 +319,7 @@ def admit_center(data_root, *, principal, center):
             key = label_root(root_fd, client=client, principal=principal, center=center,
                              identity=identity)
         else:
-            _seed_entries(root_fd, center, key)
+            _seed_entries(root_fd, center, key, identity.gid)
         generation, machine = center_admission(data_root, event='admit',
                                                principal=principal, center=center)
         if machine != identity.uid:

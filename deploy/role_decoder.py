@@ -326,20 +326,37 @@ def decode(mime, host, data_root, uid):
     return main()
 
 
+#: Owner-owned entries every center root carries; role_center_admission.SEED_ENTRIES.
+SEED_ENTRIES = ('.agent-workspace', 'previews', 'skills', 'prompts', 'extensions',
+                'workflows', 'bin', 'notes', 'wiki')
+
+
 def center_root_handoff(staging):
-    """DA3: exactly one setgid directory ``g`` under this owner's identity.
+    """DA3: one setgid directory ``g`` and the fixed seed entries inside it.
 
     No caller path, executable, environment, relay or credential. The owner is
-    in its own group, so S_ISGID survives the fchmod.
+    in its own group, so S_ISGID survives the fchmod. Each seed inherits the
+    staging default ACL (the daemon's named entry) and is 0770 without
+    S_ISGID, so the daemon can rename it into the root it publishes.
     """
     os.mkdir('g', 0o777, dir_fd=staging)
     handoff = os.open('g', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=staging)
     try:
         os.fchmod(handoff, 0o2777)
         made = os.fstat(handoff)
+        seeds = {}
+        for name in SEED_ENTRIES:
+            os.mkdir(name, 0o770, dir_fd=handoff)
+            seed = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=handoff)
+            try:
+                os.fchmod(seed, 0o770)
+                info = os.fstat(seed)
+            finally:
+                os.close(seed)
+            seeds[name] = [info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)]
     finally:
         os.close(handoff)
-    return [made.st_uid, made.st_gid, stat.S_IMODE(made.st_mode)]
+    return [made.st_uid, made.st_gid, stat.S_IMODE(made.st_mode)], seeds
 
 
 if __name__ == "__main__":
@@ -486,10 +503,10 @@ if __name__ == "__main__":
         sys.stdout.buffer.flush()
         staging = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            made = center_root_handoff(staging)
+            made, seeds = center_root_handoff(staging)
         finally:
             os.close(staging)
-        sys.stdout.buffer.write(json.dumps({'g': made}).encode() + b'\n')
+        sys.stdout.buffer.write(json.dumps({'g': made, 'seeds': seeds}).encode() + b'\n')
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
             and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)

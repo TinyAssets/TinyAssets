@@ -68,9 +68,7 @@ LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
 #: skipped: the oracle refuses to pretend an unproven thing is proven.
-BLOCKED_LEGS = {
-    "tool_files": "docs/concerns/2026-10-08-admitted-center-has-no-owner-owned-entries.md",
-}
+BLOCKED_LEGS: dict[str, str] = {}
 DEFAULT_LEGS = tuple(name for name in LEG_NAMES if name not in BLOCKED_LEGS)
 
 #: The daemon serves only on an admitted cloud runtime: the link-local metadata
@@ -337,12 +335,8 @@ def leg_new_center_cell():
 def leg_tool_files():
     """A tool-files cell on the center admitted after boot.
 
-    BLOCKED, and excluded from the default leg set: see
-    docs/concerns/2026-10-08-admitted-center-has-no-owner-owned-entries.md. A
-    center the migration relabelled already has an owner-owned
-    `.agent-workspace`; one admitted after the cutover has nothing the owner may
-    write, and `role_tools.maintain` mkdirs at the center root, where the
-    canonical ACL grants the owner r-x only.
+    The canonical root grants the owner r-x only, so `role_tools.maintain` can
+    work only in the owner-owned seed entries admission moved into the root.
     """
     principal, center = NEW_PRINCIPAL, NEW_CENTER
     identity = owner_identity(DATA, principal=principal)

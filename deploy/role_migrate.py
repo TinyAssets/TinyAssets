@@ -67,6 +67,11 @@ VAULT_NAMES = frozenset({".credentials", ".credential-vault.json", "provider_def
 # Hidden center entries are platform metadata (hidden_root_masks), except the
 # agent workspace, which the owner's tool cells mount as owner content.
 OWNER_HIDDEN = frozenset({".agent-workspace"})
+#: Owner-owned directories every center carries (tinyassets/role_center_admission
+#: SEED_ENTRIES): an owner cell may write only below these, so a missing one is
+#: created 0770 and then labelled as owner content.
+SEED_ENTRIES = (".agent-workspace", "previews", "skills", "prompts", "extensions",
+                "workflows", "bin", "notes", "wiki")
 SIDECAR_SOCKET = re.compile(r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12})\.sock")
 CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 ACCESS, DEFAULT = "system.posix_acl_access", "system.posix_acl_default"
@@ -631,8 +636,8 @@ def check(root, modes):
         diffs.append(f"remove: {STAGING}")
     for center in plan["bindings"]:
         with _directory(root, center) as directory:
-            if _stat(directory, "previews") is None:
-                diffs.append(f"create: {center}/previews")
+            diffs += [f"create: {center}/{name}" for name in SEED_ENTRIES
+                      if _stat(directory, name) is None]
     for path, info, wanted in _scan(root, plan["bindings"], modes):
         if wanted == "remove":
             diffs.append(f"remove: {path}")
@@ -710,9 +715,10 @@ IDENTITY_DDL = (
 )
 
 
-def _mkdir(parent, name):
+def _mkdir(parent, name, mode=0o700):
     if _stat(parent, name) is None:
-        os.mkdir(name, 0o700, dir_fd=parent)
+        os.mkdir(name, mode, dir_fd=parent)
+        os.chmod(name, mode, dir_fd=parent)  # the umask must not narrow an owner seed
         os.fsync(parent)
 
 
@@ -886,7 +892,8 @@ def step_labels(root, bindings, modes):
         os.fsync(root)
     for center in sorted(bindings):
         with _directory(root, center) as directory:
-            _mkdir(directory, "previews")
+            for name in SEED_ENTRIES:
+                _mkdir(directory, name, 0o770)
     roots = []
     changed = 0
     entries = [(path, info, target(path, info, bindings, modes))
