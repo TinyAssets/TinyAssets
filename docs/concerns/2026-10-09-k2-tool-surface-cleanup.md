@@ -1,3 +1,10 @@
+---
+severity: P3
+title: Stale WebFetch/WebSearch wording and an unused helper after the K2 tool fixes
+filed: '2026-10-09'
+summary: 'Served models have no native WebFetch/WebSearch, but engine_mcp_server.py, api/prompts.py and a universe_intelligence.py comment still mention them; non-blocking follow-ups from the #4563 review'
+---
+
 # Pre-existing tool-surface cleanup
 
 Claude's review of PR #4563 approved all three K2 fixes and noted two non-blocking
