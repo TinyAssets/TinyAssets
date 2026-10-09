@@ -5,18 +5,15 @@ daemon ACL masks; it cannot invent access after an ACL has been removed.
 """
 from __future__ import annotations
 
-import ctypes
-import errno
 import os
 import stat
 import time
-import uuid
 
 from tinyassets.universe_tools import AGENT_BRAIN_FILES, AGENT_HARNESS_DIRS
 
 
 def maintain(root, *, agent_id):
-    """Prepare fixed directories, restore owner modes, promote absent brains."""
+    """Prepare fixed directories, restore modes, report absent brain candidates."""
     uid = os.getuid()
     visited = 0
     truncated = False
@@ -74,8 +71,7 @@ def maintain(root, *, agent_id):
     workspace = os.open('.agent-workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                         dir_fd=root)
     try:
-        promoted = []
-        libc = ctypes.CDLL(None, use_errno=True)
+        pending = []
         for name in AGENT_BRAIN_FILES:
             if name == 'identity.md' and agent_id != 'main':
                 continue
@@ -110,30 +106,12 @@ def maintain(root, *, agent_id):
             if len(data) > 1024 * 1024:
                 skipped.append(name)
                 continue
-            # Copy from the pinned file; never rename an untrusted source name
-            # after checking it. Preserve workspace bytes for crash recovery.
-            temporary = '.tool-brain-' + uuid.uuid4().hex
-            out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                          0o660, dir_fd=root)
-            try:
-                with os.fdopen(out, 'wb') as stream:
-                    stream.write(data)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                if libc.renameat2(root, os.fsencode(temporary), root, os.fsencode(name), 1) != 0:
-                    code = ctypes.get_errno()
-                    if code != errno.EEXIST:
-                        raise OSError(code, os.strerror(code), name)
-                else:
-                    promoted.append(name)
-            finally:
-                try:
-                    os.unlink(temporary, dir_fd=root)
-                except FileNotFoundError:
-                    pass
+            # Root is daemon-owned r-x to the owner. The daemon publishes a
+            # separately owner-created copy after this maintenance cell exits.
+            pending.append(name)
         os.fsync(workspace)
         os.fsync(root)
-        return {'visited': visited, 'promoted': promoted, 'skipped': skipped,
+        return {'visited': visited, 'pending': pending, 'promoted': [], 'skipped': skipped,
                 'truncated': truncated}
     finally:
         os.close(workspace)

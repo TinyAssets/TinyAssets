@@ -38,8 +38,12 @@ def _files(client, *, principal, center, identity, fd, agent_id):
     from tinyassets import storage_accounting
 
     try:
-        return _files_exchange(client, principal=principal, center=center,
-                               identity=identity, fd=fd, agent_id=agent_id)
+        result = _files_exchange(client, principal=principal, center=center,
+                                 identity=identity, fd=fd, agent_id=agent_id)
+        from tinyassets.role_content import promote_brains
+
+        promote_brains(center, fd, identity, result, agent_id=agent_id)
+        return result
     finally:
         # Preparation can publish bytes before open_budget succeeds. Keep
         # those stores dirty even on a failed admission or lost receipt.

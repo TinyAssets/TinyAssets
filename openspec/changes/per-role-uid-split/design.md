@@ -281,3 +281,38 @@ bind it read-only and verify its inode. Because bubblewrap canonicalizes fd sour
 the private per-call temporary parent grants only that owner a traverse-only ACL.
 It stays unlistable; the sibling relay socket remains daemon-only. Nested tool cells
 reuse the explicitly prepared workspace and never call daemon preparation again.
+
+
+### Owner-content publication after admission
+
+Canonical center roots remain daemon-owned, with owner r-x only. Every daemon
+write of visible center content (including replacement files and missing parent
+directories) creates its output through a fixed owner-content cell. The daemon
+resolves the recorded center owner through the broker; the mapper requires its
+existing binding. No UID, executable, environment or host path comes from the
+payload. A private random directory under the existing `.role-admission` staging root
+admits only that owner and inherits the
+canonical daemon-reader ACL. Bounded bytes create only fixed numbered output
+entries. The daemon checks the completed cell, exact inventory, owner labels,
+ACLs, regular-file single-link counts, SHA-256 bytes and directory shapes before
+publication. Input arrives in fixed-size chunks with an exact declared length;
+fixed memory/time bounds and that file-size rlimit preserve verbatim bytes without
+adding a new generic-writer file-size ceiling. Crash leftovers stay unpublished
+under the existing admission staging namespace and are removed by the existing
+forward migration cleanup, never inventoried as center content.
+
+Only the daemon publishes names under the canonical root. Rename preserves
+atomic replace and exclusive creation (NOREPLACE); existing append targets use
+O_APPEND on a pinned, no-follow owner inode, while absent append targets are
+published exclusively and retry on a concurrent creator. Missing parents are
+published one empty owner directory at a time, never replacing an existing tree.
+Parent descriptors stay pinned throughout. Source bytes and old targets survive
+failed creation or publication. Hidden platform state, provider_definitions.json and owner.json retain daemon
+ownership; .agent-workspace remains owner content, matching migration. The central writer recognizes canonical owner roots structurally and
+fails on malformed owner labels rather than starting an unconfined writer.
+
+Tool maintenance repairs owner ACL masks and reports bounded eligible absent
+brain names; it never creates root entries. After maintenance exits, the daemon
+reads a bounded pinned single-link owner source and uses the same owner-content
+publication operation with NOREPLACE. The source workspace bytes remain intact.
+Strict tool mount and daemon-reader ownership/link checks remain unchanged.

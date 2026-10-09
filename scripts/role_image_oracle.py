@@ -253,9 +253,21 @@ def leg_admission():
     labels the new root as the new uid, the ``admit`` row and the mapper's bind
     all run against the live broker and mapper this process forked at boot.
     """
-    principal, center = NEW_PRINCIPAL, NEW_CENTER
+    global NEW_CENTER
+    from tinyassets.api.first_contact import ensure_founder_home, home_is_complete
+
+    principal = NEW_PRINCIPAL
+    # The isolated oracle uses the real dev-auth provider with a named operator;
+    # the authenticated request below still carries this new founder's identity.
+    os.environ['UNIVERSE_SERVER_DEV_USER'] = 'oracle-operator'
     before = sorted(f'{owner}/{name}' for owner, name in BINDINGS)
-    assert not any(name == center for _, name in BINDINGS), 'center was bound at boot'
+    assert not any(owner == principal for owner, _ in BINDINGS), 'owner was bound at boot'
+    with identity_context(Identity(principal, principal,
+            capabilities=['read', 'list', 'write', 'submit_request', 'costly'])):
+        center = ensure_founder_home(DATA, principal)
+        assert center and home_is_complete(DATA, center), 'first-contact home did not complete'
+        assert ensure_founder_home(DATA, principal) == center
+    NEW_CENTER = center
     generation = admit_center(DATA, principal=principal, center=center)
     identity = owner_identity(DATA, principal=principal)
     assert generation > 0 and identity.uid == identity.gid > 300000, (generation, identity)
@@ -269,7 +281,8 @@ def leg_admission():
     BINDINGS[(principal, center)] = identity.uid
     return dict(principal=principal, center=center, generation=generation,
                 machine=identity.uid, bindings_before=before,
-                root=[root.st_uid, root.st_gid, oct(stat.S_IMODE(root.st_mode))])
+                root=[root.st_uid, root.st_gid, oct(stat.S_IMODE(root.st_mode))],
+                authenticated_first_contact=True)
 
 
 def snapshot_dir(center):
@@ -349,6 +362,63 @@ def leg_tool_files():
         files = role_tools.prepare(DATA / center)
     workspace = (DATA / center / '.agent-workspace').stat()
     assert (workspace.st_uid, workspace.st_gid) == (identity.uid, identity.gid), workspace
+    from concurrent.futures import ThreadPoolExecutor
+    from tinyassets.universe_files import read_universe_file, write_universe_file
+    from tinyassets.universe_tools import run_jailed
+
+    root = DATA / center
+    before = root.stat()
+    write_universe_file(root, '.agent-workspace/daemon-publication', b'owned bytes')
+    owned = (root / '.agent-workspace/daemon-publication').stat()
+    assert (owned.st_uid, owned.st_gid) == (identity.uid, identity.gid)
+    # Visible vault metadata is platform state, just as in the migration.
+    write_universe_file(root, 'provider_definitions.json', b'{"private":"PLATFORM-ONLY"}')
+    definitions = (root / 'provider_definitions.json').stat()
+    assert definitions.st_uid == 1001
+    # The old generic writer had no 64-MiB ceiling. Preserve its byte contract.
+    large = b'v\x00\r\n' * (17 * 1024 * 1024)
+    write_universe_file(root, 'notes/large.bin', large)
+    assert read_universe_file(root, 'notes/large.bin', max_bytes=len(large)) == large
+    (root / 'notes/large.bin').unlink()
+    del large
+    path = 'notes/publication/nested/proof.txt'
+    write_universe_file(root, path, b'first', mode='exclusive')
+    refuses('exclusive publication replaces existing bytes',
+            lambda: write_universe_file(root, path, b'lost', mode='exclusive'))
+    assert read_universe_file(root, path) == b'first'
+    write_universe_file(root, path, b'replaced\n')
+    refuses('failed parent publication changes the prior file',
+            lambda: write_universe_file(root, path + '/child', b'lost'))
+    assert read_universe_file(root, path) == b'replaced\n'
+    foreign = root / 'notes/daemon-only'
+    foreign.write_bytes(b'private')
+    refuses('append accepts a daemon-owned content inode',
+            lambda: write_universe_file(root, 'notes/daemon-only', b'lost', mode='append'))
+    assert foreign.read_bytes() == b'private'
+    foreign.unlink()
+    def append(index):
+        write_universe_file(root, path, f'append-{index}\n'.encode(), mode='append')
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(append, range(4)))
+    lines = read_universe_file(root, path).splitlines()
+    assert lines[0] == b'replaced' and sorted(lines[1:]) == [
+        f'append-{i}'.encode() for i in range(4)], lines
+    for relative in ('notes/publication', 'notes/publication/nested', path):
+        item = (root / relative).stat()
+        assert (item.st_uid, item.st_gid) == (identity.uid, identity.gid), (relative, item)
+    with identity_context(Identity(principal, principal)):
+        result = run_jailed(root, ['/bin/sh', '-c',
+            'test ! -e /u/provider_definitions.json && printf BRAIN-PUBLISHED > /u/MEMORY.md'],
+            agent_id='main')
+        assert result.exit_code == 0, result
+        role_tools.prepare(root)
+    assert read_universe_file(root, 'MEMORY.md') == b'BRAIN-PUBLISHED'
+    assert read_universe_file(root, '.agent-workspace/MEMORY.md') == b'BRAIN-PUBLISHED'
+    brain = (root / 'MEMORY.md').stat()
+    assert (brain.st_uid, brain.st_gid, brain.st_nlink) == (identity.uid, identity.gid, 1)
+    after = root.stat()
+    assert (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) == (
+        after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) == (1001, identity.gid, 0o750)
     return dict(center=center, machine=identity.uid, files=files,
                 workspace=[workspace.st_uid, workspace.st_gid])
 

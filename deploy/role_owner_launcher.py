@@ -519,7 +519,7 @@ class OwnerLauncher:
                            'preview-write', 'tool-jail',
                            'tool-files', 'provider-discovery', 'provider-exec', 'package',
                            'owner-delete', 'owner-delete-subtree',
-                           'center-root'} or (
+                           'center-root', 'owner-content'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
@@ -528,8 +528,9 @@ class OwnerLauncher:
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
                                 'package', 'owner-delete', 'owner-delete-subtree',
-                                'center-root'}
-                or (kind in ('center-root', 'owner-delete-subtree', 'workspace-provision')
+                                'center-root', 'owner-content'}
+                or (kind in ('center-root', 'owner-content', 'owner-delete-subtree',
+                             'workspace-provision')
                     and not streaming)
                 # A workspace operation reaches a remote only through the
                 # center's own checking proxy. Making an empty workspace
@@ -615,6 +616,15 @@ class OwnerLauncher:
                         or not re.fullmatch(pattern, source[len(prefix):])):
                     raise ValueError('tool relay does not match admitted center')
                 index += 1
+        if kind == 'owner-content':
+            info = os.fstat(received[1])
+            source = os.readlink(f'/proc/self/fd/{received[1]}')
+            prefix = self.data_root + '/.role-admission/'
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                    or info.st_gid != self.overflow_gid or info.st_mode & 0o007
+                    or not source.startswith(prefix)
+                    or not re.fullmatch('[a-f0-9]{32}', source[len(prefix):])):
+                raise ValueError('owner content staging is not daemon-private')
         if extension_count:
             info = os.fstat(received[2 + socket_count])
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
@@ -766,6 +776,9 @@ class OwnerLauncher:
                 elif kind == 'center-root':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-center-root',
                                'root', self.data_root, str(inner)]
+                elif kind == 'owner-content':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-content',
+                               'content', self.data_root, str(inner)]
                 elif kind == 'tool-files':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
                                'files', self.data_root, str(inner)]

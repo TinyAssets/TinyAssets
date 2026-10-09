@@ -39,7 +39,8 @@ def tool_mounts(uid):
         raise ValueError('tool center has not been prepared')
     mounts = ['--tmpfs', '/center']
     for name in sorted(entries):
-        if (name.startswith('.') and name != '.agent-workspace') or name == 'owner.json':
+        if ((name.startswith('.') and name != '.agent-workspace')
+                or name in ('owner.json', 'provider_definitions.json')):
             continue
         fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=3)
         info = os.fstat(fd)
@@ -59,12 +60,12 @@ def tool_mounts(uid):
 
 def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=False,
           tool=False, video=False, provider=False, tool_files=False, package=False,
-          owner_delete=False, provider_exec=False, center_root=False):
+          owner_delete=False, provider_exec=False, center_root=False, content=False):
     identity(uid)
     host = namespaces()
     mounted = (preview_write or tool or provider or tool_files or package or owner_delete
-               or center_root or (node and mime == 'workspace'))
-    if center_root:
+               or center_root or content or (node and mime == 'workspace'))
+    if center_root or content:
         # DA3: daemon-private staging S; the mapper matched its exact path and
         # daemon owner. Its ACL, not its group, grants this owner rwx.
         info = os.fstat(3)
@@ -167,6 +168,7 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
                  'inside-owner-delete' if owner_delete else
+                 'inside-content' if content else
                  'inside-center-root' if center_root else
                  'inside-package' if package else 'inside-tool-files' if tool_files else
                  'inside-provider-exec' if provider_exec else
@@ -515,6 +517,30 @@ if __name__ == "__main__":
         finally:
             os.close(staging)
         sys.stdout.buffer.write(json.dumps({'g': made, 'seeds': seeds}).encode() + b'\n')
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-content'
+            and sys.argv[2] == 'content' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), content=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-content'
+            and sys.argv[2] == 'content' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('owner content staging differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 512 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 25), (resource.RLIMIT_NOFILE, 64),
+                            (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_content import cell_main
+
+        cell_main()
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
             and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)

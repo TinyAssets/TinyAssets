@@ -34,24 +34,25 @@ def test_first_use_and_restrictive_tree_recovery(tmp_path):
     assert (tmp_path / 'notes').is_dir()
 
 
-def test_promotion_preserves_source_and_never_replaces_canonical_file(tmp_path):
+def test_maintenance_reports_candidates_without_writing_canonical_root(tmp_path):
     call(tmp_path)
     source = tmp_path / '.agent-workspace/MEMORY.md'
     source.write_bytes(b'exact\x00bytes\r\n')
-    assert call(tmp_path)['promoted'] == ['MEMORY.md']
-    assert (tmp_path / 'MEMORY.md').read_bytes() == source.read_bytes()
-    source.write_bytes(b'later workspace copy')
-    assert call(tmp_path)['promoted'] == []
-    assert (tmp_path / 'MEMORY.md').read_bytes() == b'exact\x00bytes\r\n'
+    answer = call(tmp_path)
+    assert answer['pending'] == ['MEMORY.md'] and answer['promoted'] == []
+    assert not (tmp_path / 'MEMORY.md').exists()
+    assert source.read_bytes() == b'exact\x00bytes\r\n'
+    (tmp_path / 'MEMORY.md').write_bytes(b'canonical')
+    assert call(tmp_path)['pending'] == []
+    assert (tmp_path / 'MEMORY.md').read_bytes() == b'canonical'
 
 
-def test_secondary_agent_cannot_promote_main_identity(tmp_path):
+def test_secondary_agent_cannot_offer_main_identity_for_publication(tmp_path):
     call(tmp_path)
     (tmp_path / '.agent-workspace/identity.md').write_text('private identity')
-    call(tmp_path, 'secondary')
+    assert call(tmp_path, 'secondary')['pending'] == []
+    assert call(tmp_path)['pending'] == ['identity.md']
     assert not (tmp_path / 'identity.md').exists()
-    call(tmp_path)
-    assert (tmp_path / 'identity.md').read_text() == 'private identity'
 
 
 def test_foreign_and_hardlinked_inodes_are_never_remoded(tmp_path, monkeypatch):

@@ -319,6 +319,13 @@ def write_universe_file(
     root = Path(universe_dir)
     parts = _split(relpath)
     name = parts[-1]
+    if getattr(fs, "_POSIX", False):
+        from tinyassets import role_content
+
+        selected = role_content.locate(root, parts)
+        if selected is not None:
+            role_content.write(*selected, data, make_parents=make_parents, mode=mode)
+            return
     nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     if not getattr(fs, "_POSIX", False):
         parent = _windows_parent(root, parts, create=make_parents)
