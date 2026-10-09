@@ -28,10 +28,13 @@ def graph(discovery, monkeypatch):
         connection_id="conn-a", capability_kind="constant_headers", enabled=True,
         descriptor={"headers": {"X-Fixture": "scope"}})
 
-    def forbidden(*args):
+    def forbidden(*args, **kwargs):
         raise AssertionError("graph consumer opened daemon ledger")
 
-    monkeypatch.setattr(cloud_connections, "_ledger", forbidden)
+    # There is no ledger seam left in the consumer to patch: the whole class
+    # is unreachable from this uid, so the refusal is on its constructor.
+    monkeypatch.setattr(
+        "tinyassets.storage.outbound_connections.ConnectionLedger", forbidden)
 
     def read(owner="alice"):
         with identity_context(Identity(user_id=owner, username=owner, capabilities=["write"])):
