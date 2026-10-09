@@ -14,7 +14,9 @@ named Docker volume at /data, which is ext4 like production. Inside it:
    rename, mkdir, unlink, write-open, and each SQLite statement), rebuilds the
    fixture, kills the migration at N (``os._exit``, no cleanup), reruns it and
    requires the reference manifest byte for byte;
-4. every precondition refuses with exit 2 and leaves the volume unchanged.
+4. every precondition refuses with exit 2 and leaves the volume unchanged;
+5. in a second container as full root (like the host), the runbook's snapshot
+   tar and restore lines round-trip the migrated volume to the same manifest.
 
 No fault seam ships in the migration: the kill comes from a Python audit hook
 and a SQLite trace callback installed by this probe's child wrapper.
@@ -33,7 +35,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
-VOLUME = "ta-migrate-probe"
+VOLUME, OUT_VOLUME, OUT = "ta-migrate-probe", "ta-migrate-probe-out", "/out"
 CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 SNAPSHOT = ["--snapshot", "probe-snapshot", "--snapshot-bytes", "1"]
 
@@ -172,6 +174,11 @@ def manifest(script, app, data):
     return result.stdout
 
 
+def _difference(got, want):
+    got, want = set(got.splitlines()), set(want.splitlines())
+    return f"extra {sorted(got - want)[:4]} missing {sorted(want - got)[:4]}"
+
+
 def expect(condition, message):
     if not condition:
         raise SystemExit(f"FAIL: {message}")
@@ -223,6 +230,26 @@ def inside(data: Path, app: str):
                              f"  missing {sorted(want - got)[:5]}")
     expect(True, f"every kill point ({steps}) reran to the byte-identical manifest")
     refusals(script, app, data)
+    # Leave a migrated volume and its manifest for the restore round-trip.
+    build(data)
+    run(script, app, data, SNAPSHOT)
+    Path(OUT, "reference.tsv").write_text(manifest(script, app, data))
+
+
+def roundtrip(data: Path, app: str):
+    """The runbook's snapshot and restore lines, as the host runs them (full root)."""
+    script = str(Path(app) / "deploy" / "role_migrate.py")
+    reference = Path(OUT, "reference.tsv").read_text()
+    archive = "/tmp/probe-snapshot.tar.gz"
+    subprocess.run(["tar", "-czf", archive, "--numeric-owner", "--acls", "--xattrs",
+                    "-C", str(data), "."], check=True)
+    subprocess.run(["find", str(data), "-mindepth", "1", "-delete"], check=True)
+    subprocess.run(["tar", "-xzpf", archive, "-C", str(data), "--numeric-owner", "--acls",
+                    "--xattrs", "--same-owner"], check=True)
+    restored = manifest(script, app, data)
+    expect(restored == reference,
+           "snapshot restore round-trip keeps numeric owners, modes, setgid and ACLs"
+           + ("" if restored == reference else f": {_difference(restored, reference)}"))
 
 
 def refusals(script, app, data):
@@ -273,28 +300,35 @@ def outside():
     tag = linux_oracle._image_tag(root)
     if not linux_oracle._image_exists(tag):
         linux_oracle._build(root, tag)
-    subprocess.run(["docker", "volume", "rm", "-f", VOLUME], capture_output=True)
-    command = ["docker", "run", "--rm", "--user", "0", "--cap-drop", "ALL",
-               *[flag for cap in CAPS for flag in ("--cap-add", cap)],
-               "--network", "none", "-v", f"{VOLUME}:/data",
-               "-v", f"{linux_oracle._docker_path(root)}:/src:ro", tag,
-               "python", "-I", "-B", "/src/scripts/role_migrate_probe.py",
-               "--inside", "/data", "--app", "/src"]
+    volumes = (VOLUME, OUT_VOLUME)
+    subprocess.run(["docker", "volume", "rm", "-f", *volumes], capture_output=True)
+    common = ["--network", "none", "-v", f"{VOLUME}:/data", "-v", f"{OUT_VOLUME}:{OUT}",
+              "-v", f"{linux_oracle._docker_path(root)}:/src:ro", tag,
+              "python", "-I", "-B", "/src/scripts/role_migrate_probe.py", "--app", "/src"]
+    # The migration's own posture, then a host-like root for the restore.
+    migration = ["docker", "run", "--rm", "--user", "0", "--cap-drop", "ALL",
+                 *[flag for cap in CAPS for flag in ("--cap-add", cap)], *common,
+                 "--inside", "/data"]
+    restore = ["docker", "run", "--rm", "--user", "0", *common, "--roundtrip", "/data"]
     try:
-        return subprocess.run(command).returncode
+        return subprocess.run(migration).returncode or subprocess.run(restore).returncode
     finally:
-        subprocess.run(["docker", "volume", "rm", "-f", VOLUME], capture_output=True)
+        subprocess.run(["docker", "volume", "rm", "-f", *volumes], capture_output=True)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--inside")
+    parser.add_argument("--roundtrip")
     parser.add_argument("--app", default="/app")
     args = parser.parse_args()
+    if args.roundtrip:
+        roundtrip(Path(args.roundtrip), args.app)
+        print("role_migrate probe: PASS")
+        return 0
     if args.inside is None:
         return outside()
     inside(Path(args.inside), args.app)
-    print("role_migrate probe: PASS")
     return 0
 
 

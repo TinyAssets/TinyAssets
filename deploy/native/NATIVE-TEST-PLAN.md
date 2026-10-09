@@ -43,8 +43,8 @@ That ordering decides what each row can prove:
   They refuse before the identity branch, so any uid reaches them.
 - **Post-identity, NOT uid-independent:** malformed `printenv` NAME, and
   `env-summary`. At a uid that is neither 0 nor 1001 the wrapper answers
-  `TA_OP_REFUSED:unexpected-entry-uid`; at uid 0 without exactly the five caps
-  it answers `TA_OP_REFUSED:exact-five-caps`; at uid 1001 in a posture that
+  `TA_OP_REFUSED:unexpected-entry-uid`; at uid 0 without exactly the four bootstrap caps
+  it answers `TA_OP_REFUSED:exact-bootstrap-caps`; at uid 1001 in a posture that
   fails the verification it answers one of the `legacy-entry-*` tags. All of
   those are exit 78 too. **An identity refusal must never be recorded as a
   NAME result** — in either direction. The driver probes with `version` first
@@ -56,16 +56,16 @@ That ordering decides what each row can prove:
 |---|---|---|---|
 | 1 | unknown mode | any uid | exit 78, `TA_OP_REFUSED:unknown-mode`, no exec |
 | 2 | wrong arity (`pulse extra`, bare `printenv`) | any uid | exit 78, `TA_OP_REFUSED:arity` |
-| 3 | malformed NAME (`printenv 'a b'`, `printenv lower`, `printenv 9X`, `printenv ''`) | **post-identity** — uid 1001 in production posture, or uid 0 with exactly the five caps | exit 78, `TA_OP_REFUSED:env-name`. An identity tag here is NOT_PROVEN for this row, not a failure of it |
+| 3 | malformed NAME (`printenv 'a b'`, `printenv lower`, `printenv 9X`, `printenv ''`) | **post-identity** — uid 1001 in production posture, or uid 0 with exactly the four bootstrap caps | exit 78, `TA_OP_REFUSED:env-name`. An identity tag here is NOT_PROVEN for this row, not a failure of it |
 | 4 | no mode at all | any uid | exit 78, `TA_OP_REFUSED:no-mode` |
 | 5 | unexpected entry uid | Linux, run as a uid that is neither 0 nor 1001 | exit 78, `TA_OP_REFUSED:unexpected-entry-uid` |
 | 6 | **rootless exact groups** — uid/gid 1001, `Groups: 1001` | Linux container matching production posture (`--user 1001:1001`, `--cap-drop ALL`, `--security-opt no-new-privileges`) | `version` exits 0 and prints `ta-op 1 modes=6` |
 | 7 | rootless with a foreign supplementary group | same, plus `--group-add 65534` | exit 78, `TA_OP_REFUSED:legacy-entry-unexpected-group` |
 | 8 | **mutation control** — rootless entry into a container with caps | `--user 1001:1001 --cap-add SYS_ADMIN` | exit 78, `TA_OP_REFUSED:legacy-entry-caps-not-empty`. *Without this row the legacy branch is decorative.* |
 | 9 | rootless without NNP | `--user 1001:1001 --cap-drop ALL` and no `no-new-privileges` | exit 78 at `nnp-readback` |
-| 10 | **root + exactly five caps** | `--user 0 --cap-drop ALL --cap-add CHOWN --cap-add SETGID --cap-add SETUID --cap-add SETPCAP --cap-add SYS_ADMIN` | full drop runs; the child reports uid/gid 1001, `Groups:` empty, all five cap sets 0, `NoNewPrivs: 1` |
-| 11 | root with a sixth cap | row 10 plus `--cap-add NET_ADMIN` | exit 78, `TA_OP_REFUSED:exact-five-caps` |
-| 12 | root with four caps | row 10 minus `--cap-add CHOWN` | exit 78, `TA_OP_REFUSED:exact-five-caps` |
+| 10 | **root + exactly the bootstrap caps** | `--user 0 --cap-drop ALL --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP` | full drop runs; the child reports uid/gid 1001, `Groups:` empty, all five cap sets 0, `NoNewPrivs: 1` |
+| 11 | root with a fifth cap | row 10 plus `--cap-add NET_ADMIN` | exit 78, `TA_OP_REFUSED:exact-bootstrap-caps` |
+| 12 | root with three caps | row 10 minus `--cap-add KILL` | exit 78, `TA_OP_REFUSED:exact-bootstrap-caps` |
 | 13 | **post-drop target identity** | row 10 with a mode whose target prints `/proc/self/status` | the *target*, not the wrapper, reads uid/gid 1001 and all-zero caps |
 | 14 | **descriptor boundary** | Linux + `strace` (see below) | `close(9)` appears in the trace **before** the `execve`, and fd 9 is absent from the target's `/proc/<pid>/fd` |
 | 15 | **loader / env boundary** | any Linux + `strace` | `strace -f -e trace=openat` shows no `ld.so`, no `/etc/nsswitch.conf`, no `/etc/passwd`, no `/etc/group`, no `/app` or `/data` path opened before the `execve` |

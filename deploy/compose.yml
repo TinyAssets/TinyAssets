@@ -131,21 +131,28 @@ services:
       # Served codex turns run inside a bubblewrap sandbox that mounts a fresh
       # procfs in its own namespace; Docker's default masked/read-only /proc
       # paths make that mount EPERM ("bwrap: Can't mount proc", live
-      # 2026-08-21). Unconfined system paths let the inner sandbox exist; the
-      # container stays unprivileged (no cap_add, non-root).
+      # 2026-08-21). Unconfined system paths let the inner sandbox exist; every
+      # serving process is unprivileged once PID1 retires (below).
       - systempaths=unconfined
       # With system paths unconfined, keep the rest of the posture tight: no
-      # capabilities at all and no privilege escalation (bwrap uses
-      # unprivileged user namespaces, which need neither).
+      # privilege escalation (bwrap uses unprivileged user namespaces).
       - no-new-privileges=true
+    # Owner split: PID1 starts as root holding ONLY the D70 bootstrap's four
+    # capabilities. It refuses an unmigrated volume, forks the broker (uid 1002)
+    # and the bounded mapper (owner uids 300001-399999 in its user namespace),
+    # then retires to the capability-free daemon (uid 1001) before importing
+    # the application. deploy/role_launcher.py ENTRY_CAPS and ta_op.c MASK are
+    # the same set; nothing here ever holds SYS_ADMIN, CHOWN or DAC_OVERRIDE.
+    user: "0:0"
     cap_drop:
       - ALL
-    # Image CMD already runs `python -m tinyassets.serve` (the universe server).
+    cap_add: [KILL, SETGID, SETUID, SETPCAP]
+    # Image CMD runs /usr/local/libexec/ta-launch.py (the PID1 bootstrap).
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
       - "127.0.0.1:8001:8001"
     environment:
-      HOME: /app
+      HOME: /home/tinyassets
       TINYASSETS_DATA_DIR: /data
       # No model login or key lives at the platform level (AGENTS.md Hard Rule
       # 15). Each universe's provider child gets its own CLI home from that
@@ -201,8 +208,9 @@ services:
       # Liveness from release facts as the canary service principal. The token
       # is installed in /etc/tinyassets/env by deploy-prod before compose starts;
       # the tool surface is proved separately by the full authenticated probes.
-      # Drop-first: ta-op runs the identical canary argv, but only after
-      # verifying uid/gid 1001 with all five capability sets empty and NNP on
+      # Drop-first: the exec starts as root with the bootstrap's four caps;
+      # ta-op verifies exactly that set, retires to uid/gid 1001 with every
+      # capability set empty and NNP on, then runs the canary argv
       # (deploy/native/ta_op.c). ROLLBACK PAIRING: this probe needs the ta-op
       # binary, which arrives with the image. deploy_fail_safe.sh's bundle
       # transaction restores this file BEFORE rolling the image back, so the
@@ -355,7 +363,7 @@ services:
     entrypoint: ["/usr/bin/tini", "--"]
     command: ["python", "-m", "tinyassets.slack_agent_worker"]
     environment:
-      HOME: /app
+      HOME: /home/tinyassets
       # No TINYASSETS_DATA_DIR, deliberately. The `/data` mount below is
       # READ-ONLY, so a residual vault WRITE fails loudly at the kernel rather
       # than half-succeeding; leaving the resolver unset keeps this service from
