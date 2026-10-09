@@ -109,7 +109,13 @@ on:
       - "tests/test_universe_tools_jail.py"
       - "tests/test_ta_capabilities_jail.py"
       - "tests/test_remote_box_ta.py"
+      - "tests/test_remote_box_extensions.py"
       - "tinyassets/agent_loop/box_ta.py"
+      - "tinyassets/agent_loop/box_ta_worker.py"
+      - "tinyassets/agent_loop/box_tools.py"
+      - "tinyassets/agent_loop/tool_session.py"
+      - "tinyassets/extension_capabilities.py"
+      - "tinyassets/extension_hooks.py"
       - "tests/test_ta_capabilities.py"
       # Workspace mount jail proofs (real_jail-marked
       # 2026-10-01; before that no CI job ran them).

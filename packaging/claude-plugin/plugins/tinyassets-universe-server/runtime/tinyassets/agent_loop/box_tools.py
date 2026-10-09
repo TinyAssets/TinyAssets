@@ -615,7 +615,9 @@ class BoxTools:
         if self._exec.ta_bridge is not None:
             from tinyassets.agent_loop.box_ta import worker_argv
 
-            argv, stdin = worker_argv(command, root=self._root, execution=op_id)
+            extensions = await self._exec.ta_bridge.extensions(self._exec.handle, op_id)
+            argv, stdin = worker_argv(command, root=self._root, execution=op_id,
+                                      extensions=extensions)
             self._exec._ta_executions.add(op_id)
         outcome = await self._exec.run(op_id, argv, stdin=stdin, wall_seconds=wall)
         body = _text(outcome.output)
