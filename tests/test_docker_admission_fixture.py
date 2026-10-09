@@ -61,6 +61,10 @@ def test_docker_ci_preserves_unmodified_refusal_and_authenticated_protocol():
     assert "--cap-add SETPCAP" in refusal and "--user 0:0" in refusal
     assert "timeout 60 docker wait" in refusal
     positive = commands["Start isolated protocol fixture with simulated admission"]
+    profile = commands["Permit the smoke container's user namespace"]
+    assert "profile ta-smoke-userns flags=(unconfined)" in profile and "  userns," in profile
+    assert "sudo apparmor_parser -r" in profile and "sysctl" not in profile
+    assert 'apparmor=${TINYASSETS_SMOKE_APPARMOR}' in positive
     assert "127.0.0.1:8001:8001" in positive
     assert "docker_admitted_process.py,dst=/ci/admitted_process.py,readonly" in positive
     assert "tinyassets-daemon:ci python -I -B /ci/admitted_process.py" in positive

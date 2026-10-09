@@ -129,6 +129,24 @@ jobs:
             exit 1
           fi
 
+      - name: Permit the smoke container's user namespace
+        run: |
+          # Ubuntu's restricted-userns policy denies the mapper even with
+          # apparmor=unconfined. Match linux-jail-proof's container-only grant.
+          # Hosts without AppArmor (including Docker Desktop) need no profile.
+          if [ -d /sys/module/apparmor ]; then
+            printf '%s\n' \
+              'abi <abi/4.0>,' \
+              'include <tunables/global>' \
+              'profile ta-smoke-userns flags=(unconfined) {' \
+              '  userns,' \
+              '}' > "$RUNNER_TEMP/ta-smoke-userns"
+            sudo apparmor_parser -r "$RUNNER_TEMP/ta-smoke-userns"
+            echo 'TINYASSETS_SMOKE_APPARMOR=ta-smoke-userns' >> "$GITHUB_ENV"
+          else
+            echo 'TINYASSETS_SMOKE_APPARMOR=unconfined' >> "$GITHUB_ENV"
+          fi
+
       - name: Start isolated protocol fixture with simulated admission
         run: |
           # This is NOT cloud acceptance. The harness is test-only, excluded
@@ -144,7 +162,8 @@ jobs:
               --user 0:0 --cap-drop ALL \
               --cap-add KILL --cap-add SETGID --cap-add SETUID --cap-add SETPCAP \
               --security-opt no-new-privileges=true \
-              --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+              --security-opt seccomp=unconfined \
+              --security-opt "apparmor=${TINYASSETS_SMOKE_APPARMOR}" \
               --security-opt systempaths=unconfined \
               -v tinyassets-daemon-fresh-ci:/data \
               --name tinyassets-daemon-ci \
