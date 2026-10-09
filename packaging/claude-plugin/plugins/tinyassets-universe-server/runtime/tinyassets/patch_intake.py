@@ -495,7 +495,9 @@ def send_patch_request(universe_id: str, principal_id: str, title: Any, details:
         # A revocation between provisioning and acceptance still gets the same guidance.
         view = rail_entry(universe_id, universe_dir)
         return {"error": "patch_intake_consent_required", "how": view["how"]}
-    return {"sent": True, "delivery_id": receipt["delivery_id"], "to": intake["label"]}
+    return {"sent": True, "delivery_id": receipt["delivery_id"], "to": intake["label"],
+            "status": f'read_graph target="deliveries" (or target="delivery" '
+                      f'query="{receipt["delivery_id"]}"): pending until answered'}
 
 
 #: Declared input names that mean "the one-line summary".

@@ -680,7 +680,9 @@ def read_graph(
     target=receiver with query=receiver_id reads one contract you may see;
     target=output_links lists your graph_id's links;
     target=delivery with query=delivery_id reads your side's safe receipt, which
-    on the receiving side names the sending principal and command center.
+    on the receiving side names the sending principal and command center;
+    target=deliveries lists what you sent. outcome is pending, resolved or
+    declined; the receiving owner's answer note is enveloped untrusted data.
     target=run_file reads exact owned run-bound binary chunks; run_file_limits
     reports technical intake/read/retention limits. No sender paths are exposed.
     Files the user attached in the app arrive inside their message as a delimited
@@ -989,6 +991,8 @@ def write_graph(
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}, where mapping
     maps source output names to advertised receiver input names. Disconnect takes
     {link_id}. Accepted transfers cannot be retracted by disconnect/revoke.
+    target=receiver operation=answer takes {delivery_id,outcome,note}: the
+    receiving owner says resolved or declined, and the sender is told once.
     Exact file transfer is not implemented; use structured values only.
 
     Owned file custody: a file the user attached in the app is ALREADY an exact
@@ -1230,7 +1234,8 @@ def write_graph(
         return write_file(universe_id=graph_id, operation=operation, payload_json=payload_json)
     if normalized in {"receiver", "output_link"}:
         actions = ({"create": "create_receiver", "update": "update_receiver",
-                    "revoke": "revoke_receiver"} if normalized == "receiver"
+                    "revoke": "revoke_receiver", "answer": "answer_delivery"}
+                   if normalized == "receiver"
                    else {"connect": "connect_output", "disconnect": "disconnect_output"})
         action = actions.get(operation)
         if action is None:
@@ -3169,6 +3174,12 @@ def converse(
         conversation_history = _with_agent_activity(
             conversation_history, memory_universe_dir, uid, current_actor_id(),
         )
+        # Only where history reaches the model (founder turns), so a notice is
+        # never spent on a turn that drops it.
+        if turn.interlocutor.tier == interlocutor.FOUNDER:
+            conversation_history = _with_answered_requests(
+                conversation_history, uid, current_actor_id(),
+            )
 
     from tinyassets.providers.execution_receipt import WriterExecutionReceipt
 
@@ -3377,6 +3388,27 @@ def _with_agent_activity(history, universe_dir, universe_id, owner):
         remaining -= len(text)
         notices.append(Msg("platform", text, msg.ts))
     return sorted([*history, *notices], key=lambda m: m.ts or 0.0)
+
+
+def _with_answered_requests(history, universe_id, owner):
+    """The history plus a once-only ``platform`` notice per answered request.
+
+    Only this owner's own deliveries from this universe. Taken (marked told) here,
+    so a turn that then fails does not repeat it; ``read_graph target=delivery``
+    still returns the answer. Never fails the turn.
+    """
+    import time
+
+    from tinyassets.api.deliveries import take_answered_notices
+    from tinyassets.conversation_memory import Msg
+
+    try:
+        notices = take_answered_notices(universe_id=universe_id, principal_id=owner)
+    except Exception:  # noqa: BLE001 - a missed notice is never worth a failed turn
+        logger.warning("converse: answered requests unreadable", exc_info=True)
+        return history
+    now = time.time()
+    return [*history, *(Msg("platform", text, now) for text in notices)]
 
 
 def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id,

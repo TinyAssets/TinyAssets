@@ -1289,9 +1289,11 @@ def _served_request_agent(base_path, universe, request_carrier, role, operation)
         request_carrier, universe_id=uid, agent_binding_id=binding_id,
         binding_revision=revision, operation=operation,
     )
+    from tinyassets.request_answers import OWNER_ANSWER_SOURCE
+
     accepted_sources = {
         ("tinyassets.authenticated-request.v1", "tinyassets.auth.middleware", "converse"),
-        ("tinyassets.authenticated-app-event.v1", "tinyassets.app_ingress_http", "slack_event"),
+        OWNER_ANSWER_SOURCE,
     }
     if (capability.mechanism, capability.issuer, capability.tool_name) not in accepted_sources:
         raise PermissionError("provider request source is not trusted")

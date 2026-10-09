@@ -162,13 +162,14 @@ def read_graph(
             return file_limits(universe_id=graph_id)
         return read_file(universe_id=graph_id, run_id=run_id, file_id=file_id,
                          offset=file_offset, count=file_max_bytes)
-    if normalized in {"receiver", "receivers", "output_links", "delivery"}:
+    if normalized in {"receiver", "receivers", "output_links", "delivery", "deliveries"}:
         action = {"receiver": "inspect_receiver", "receivers": "discover_receivers",
                   "output_links": "list_output_links",
-                  "delivery": "get_delivery"}[normalized]
+                  "delivery": "get_delivery", "deliveries": "list_deliveries"}[normalized]
         payload = ({"receiver_id": query} if normalized == "receiver"
                    else {"delivery_id": query} if normalized == "delivery"
                    else {"query": query, "limit": limit} if normalized == "receivers"
+                   else {"limit": limit} if normalized == "deliveries"
                    else {})
         return _extensions_impl(action=action, universe_id=graph_id,
                                 payload_json=json.dumps(payload))
@@ -381,5 +382,6 @@ def read_graph(
             "receivers",
             "output_links",
             "delivery",
+            "deliveries",
         ),
     )

@@ -583,3 +583,47 @@ def test_a_foreground_agent_nodes_saved_output_is_refused_to_another_user(
     assert result["terminal_status"] == "completed", (result, engine.errors)
     _second_user_is_refused(tmp_path, monkeypatch, authenticate_request,
                             result["run_id"], "steward done")
+
+
+def test_an_agent_node_runs_while_another_agents_native_jail_is_live(
+    tmp_path, monkeypatch, authenticate_request, engine,
+):
+    """Live 2026-10-09 (runs c2cc4f886150476d, d9c2736563a0410d): the main
+    agent, mid native turn, woke the Social Media Manager's chat workflow.
+    Every native jail holds the starter seed boundary shared for its whole life,
+    and the woken agent node's turn start waited 5s for it exclusively, raised
+    TimeoutError, and was reported as "exceeded 2592000s timeout" at ~9s."""
+    import os
+
+    from tinyassets.starter_release import prepare_center_starter
+    from tinyassets.starter_seeds import open_seed_boundary
+
+    udir = tmp_path / "universe_alice"
+    assert prepare_center_starter(udir) is not None  # an established center
+    _, held = open_seed_boundary(udir)  # what provider_jail passes to --sync-fd
+    try:
+        engine.script = [[_call("read_brain")]]
+        result = _run(tmp_path, monkeypatch, authenticate_request, ["agent"])
+    finally:
+        os.close(held)
+    assert result["terminal_status"] == "completed", (result, engine.errors)
+
+
+def test_the_turn_start_fast_path_never_reads_past_a_migration_in_flight(tmp_path, engine):
+    """The read-only path holds the boundary shared: a seed transaction holding
+    it exclusively (an owner's Undo between file changes) is waited for, never
+    reported as the installed release (Codex review on #4561)."""
+    import os
+
+    from tinyassets.starter_release import prepare_center_starter
+    from tinyassets.starter_seeds import open_seed_boundary
+
+    udir = tmp_path / "universe_alice"
+    assert prepare_center_starter(udir) is not None
+    _, migrating = open_seed_boundary(udir, exclusive=True)
+    try:
+        with pytest.raises(TimeoutError, match="boundary is busy"):
+            prepare_center_starter(udir)
+    finally:
+        os.close(migrating)
+    assert prepare_center_starter(udir) is not None
