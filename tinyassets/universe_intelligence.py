@@ -109,41 +109,15 @@ _HONESTY_FLOOR = (
 # universe-intelligence call runs isolated: cwd pinned to the universe's own dir,
 # host tools denied.
 #
-# Host decision 2026-07-03 = "web + own-files". WEB is delivered here (WebFetch).
-# OWN-FILES is delivered via CONTEXT, not a filesystem tool: the universe's own
-# soul/canon is injected into its system prompt (see `_build_persona_system_prompt`
-# + retrieval), so it knows itself WITHOUT a Read tool. A raw `Read` tool cannot
-# be confined to the universe's dir via the CLI (headless treats Read/Glob/Grep as
-# default-allowed and a bare deny is all-or-nothing — verified 2026-07-03), so
-# granting it would re-open exactly the disk-wide read leak this fixes. True
-# filesystem-level own-files access is therefore DEFERRED to an OS sandbox
-# (bwrap/container) — see the residual note in the design doc. Until then the
-# engine turn is web + no-filesystem. Brain writes go through the separate
-# governed `commit_learning` path, never the engine's tools, so the reply turn
-# needs no write capability either.
-#
-# DELIVERED 2026-09-24 (universe-harness S1): the OS sandbox exists, so a
-# founder turn with engine tools now gets `read`/`write`/`edit`/`bash` over its
-# own folder -- PLATFORM-executed in the tool jail (`tinyassets.universe_tools`)
-# and served as engine MCP handles, never the CLI's own file tools, which stay
-# denied below for every turn.
-_ENGINE_ALLOWED_TOOLS = ("WebFetch",)
-# Fail-closed denylist. The claude CLI has NO "allow-only-X" mode — an allowlist
-# merely pre-approves; every unlisted built-in stays usable — so isolation
-# depends on denying every non-WebFetch tool by name. Verified 2026-07-03 the CLI
-# ships a broad Agent-SDK tool set beyond the classic ones: `Monitor` RUNS SHELL
-# COMMANDS (it tried `printf > file` in testing), Cron*/RemoteTrigger/SendMessage
-# take side-effecting actions, DesignSync does remote I/O, and the logged-in
-# claude.ai ACCOUNT MCP connectors (Google Drive / the TinyAssets MCP / codex →
-# code exec) load regardless of --setting-sources. All are denied here; `mcp__*`
-# wildcards every MCP server tool. This list WILL rot as the CLI adds tools — the
-# durable fix is an OS sandbox (bwrap/container), tracked as the design-doc
-# residual; unknown names just emit a harmless "no known tool" warning.
+# Served turns use only the platform's granted tools. A non-granted turn has
+# no tools on any provider; native web access is not an exception.
+_ENGINE_ALLOWED_TOOLS = ()
+# Defense in depth alongside the provider's empty native-tool inventory.
 _ENGINE_DISALLOWED_TOOLS = (
     # shell / process execution and filesystem: the one host-reach definition
     *HOST_REACH_TOOLS,
-    # web search (WebFetch is the single allowed capability)
-    "WebSearch",
+    # Native web access is never part of the served agent definition.
+    "WebSearch", "WebFetch",
     # subagents / skills / plans / deferred-tool loading
     "Task", "Agent", "Workflow", "Skill", "ToolSearch", "SlashCommand",
     "TodoWrite", "EnterPlanMode", "ExitPlanMode",
@@ -234,7 +208,7 @@ _ENGINE_DISALLOWED_TOOLS = (
 # things). To change what the served agent can do, edit served_tools.py once.
 _ENGINE_MCP_TOOLS = SERVED_ENGINE_MCP_TOOLS
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
-# Denylist for an engine-MCP-on turn: identical to the WebFetch-only floor EXCEPT
+# Denylist for an engine-MCP-on turn: identical to the tool-free floor EXCEPT
 # the ``mcp__*`` wildcard is dropped (it would also deny the tinyassets handles).
 # Isolation for the OTHER MCP servers comes from ``--strict-mcp-config`` admitting
 # only the one local server (verified 2026-08-13); the three MCP resource-reader
@@ -347,7 +321,7 @@ def _sandboxed_config(
     would either fail the founder's own ACL or invent a principal.
 
     Anything less — flag off, non-founder turn, or a missing verified principal —
-    FAILS CLOSED to the WebFetch-only floor: the learning extractor (which calls
+    FAILS CLOSED to the tool-free floor: the learning extractor (which calls
     this with the defaults) and every non-founder caller never receive tools.
     """
     timeout = 300
@@ -1477,7 +1451,7 @@ def converse(
     # Engine MCP identity binds to the VERIFIED request principal (the WorkOS
     # subject that passed the transport auth gate), NOT the actor_id param — see
     # _sandboxed_config + Codex REJECT 2026-08-13 #1. No verified capability (or a
-    # non-founder turn) → no principal → engine MCP fails closed to WebFetch-only.
+    # non-founder turn) → no principal → engine MCP fails closed to tool-free.
     founder_principal = capability.principal_id if capability is not None else ""
     turn_config = _sandboxed_config(
         ctx,

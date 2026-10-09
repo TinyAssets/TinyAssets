@@ -446,7 +446,7 @@ def test_sandboxed_config_locks_down_the_engine(tmp_path):
     cfg = ui._sandboxed_config(ctx)
 
     assert cfg.sandbox_workspace is True
-    assert cfg.allowed_tools == ("WebFetch",)
+    assert cfg.allowed_tools == ()
     for denied in ("Bash", "Read", "Write", "WebSearch", "Task"):
         assert denied in cfg.disallowed_tools
 
@@ -476,7 +476,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
     assert len(configs) >= 2
     assert all(c is not None and c.sandbox_workspace for c in configs)
     assert all("Bash" in (c.disallowed_tools or ()) for c in configs)
-    assert all(c.allowed_tools == ("WebFetch",) for c in configs)
+    assert all(c.allowed_tools == () for c in configs)
 
 
 def test_generic_identity_detector():
