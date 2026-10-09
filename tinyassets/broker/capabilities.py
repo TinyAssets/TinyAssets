@@ -1,8 +1,6 @@
 """Scoped capability metadata operations on the broker-owned connection ledger."""
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def validate(document):
     from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, validate_query
@@ -49,9 +47,9 @@ def local_operation(ledger, *, principal, command_center, document):
 def capability_operation(data_root, *, principal, command_center, grant_id, connection_id,
                          capability_kind, action="read", descriptor=None, enabled=False,
                          preview=False):
-    from tinyassets.broker.supervisor import broker_selected, get_supervisor
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import (
-        ConnectionLedger,
         ProxyRequestError,
         _validate_connection_capability,
     )
@@ -60,20 +58,13 @@ def capability_operation(data_root, *, principal, command_center, grant_id, conn
                     capability_kind=capability_kind, descriptor=descriptor,
                     enabled=enabled, preview=preview)
     validate(document)
-    if broker_selected():
-        from tinyassets.broker.client import BrokerClient
-
-        supervisor = get_supervisor(data_root)
-        if supervisor is None:
-            raise ProxyRequestError("credential broker is selected but not running")
-        client = BrokerClient(supervisor.socket_path, principal=principal,
-                              command_center=command_center, fence=supervisor.fence,
-                              verify_peer=supervisor.verify_broker, timeout=30)
-        answer = client.capability(document)
-    else:
-        answer = local_operation(ConnectionLedger(Path(data_root) / "outbound.db"),
-                                 principal=principal, command_center=command_center,
-                                 document=document)
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
+    client = BrokerClient(supervisor.socket_path, principal=principal,
+                          command_center=command_center, fence=supervisor.fence,
+                          verify_peer=supervisor.verify_broker, timeout=30)
+    answer = client.capability(document)
     if not isinstance(answer, dict) or set(answer) != {"descriptor"}:
         raise ProxyRequestError("invalid capability response")
     if answer["descriptor"] is None:
