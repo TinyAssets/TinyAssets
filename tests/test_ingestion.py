@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import json
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tinyassets.enrichment_signals import ENRICHMENT_SIGNALS_FILENAME
 from tinyassets.ingestion.core import (
@@ -1048,35 +1050,20 @@ class TestImageExtractor:
 
 
 class TestVideoExtractor:
-    def test_placeholder_when_no_ffmpeg(self):
-        """Should return placeholder when ffmpeg is not found."""
-        from tinyassets.ingestion.video_extractor import (
-            extract_video_description,
-        )
+    def test_no_ffmpeg_outside_the_owner_cell(self):
+        """ffmpeg runs as the owner, in the owner's video cell, or not at all.
 
-        video_data = b"\x00\x00\x00\x1cftyp" + b"\x00" * 1000
+        The module used to look for ffmpeg on PATH and, failing that, return a
+        placeholder that read like a real description. Both are gone: there is
+        no daemon-uid ffmpeg and no answer that is not an answer.
+        """
+        from tinyassets.ingestion import video_extractor
 
-        with patch(
-            "tinyassets.ingestion.video_extractor._find_ffmpeg",
-            return_value="",
-        ):
-            result = extract_video_description("intro.mp4", video_data)
-
-        assert "Video awaiting frame analysis" in result
-        assert "intro.mp4" in result
-
-    def test_placeholder_contains_size_and_format(self):
-        """Placeholder should include file metadata."""
-        from tinyassets.ingestion.video_extractor import (
-            _placeholder_description,
-        )
-
-        data = b"\x00" * (1024 * 1024 * 2)  # 2MB
-        result = _placeholder_description("trailer.mov", data)
-
-        assert "2.0 MB" in result
-        assert ".mov" in result
-        assert "ffmpeg" in result
+        assert not hasattr(video_extractor, "_find_ffmpeg")
+        assert not hasattr(video_extractor, "_placeholder_description")
+        assert not hasattr(video_extractor, "_extract_with_ffmpeg")
+        assert not hasattr(video_extractor, "_get_video_duration")
+        assert "subprocess" not in inspect.getsource(video_extractor)
 
     def test_format_timestamp(self):
         """Timestamps should format correctly."""
@@ -1088,71 +1075,53 @@ class TestVideoExtractor:
         assert _format_timestamp(65) == "1:05"
         assert _format_timestamp(3661) == "1:01:01"
 
-    def test_extract_with_ffmpeg_and_image_pipeline(self):
-        """Full pipeline: ffmpeg extracts frames, image extractor describes."""
-        from tinyassets.ingestion.video_extractor import (
-            extract_video_description,
-        )
+    def test_the_cells_frames_reach_the_owner_scoped_vision_callback(self, tmp_path):
+        """Full pipeline: the owner's video cell returns frames, the caller
+        describes each one under the owner's own vision authority."""
+        from tinyassets import role_video
+        from tinyassets.ingestion.video_extractor import extract_video_description
 
         video_data = b"\x00\x00\x00\x1cftyp" + b"\x00" * 1000
         png_data = _make_tiny_png()
+        seen = []
 
-        def fake_ffmpeg_run(cmd, **kwargs):
-            """Simulate ffmpeg by writing fake frame PNGs."""
-            from unittest.mock import MagicMock
+        def frames(data, universe_dir):
+            assert data is video_data and universe_dir == tmp_path
+            return 25.0, [png_data, png_data]
 
-            # Find the output pattern in the command
-            for i, arg in enumerate(cmd):
-                if "frame_" in arg:
-                    out_dir = Path(arg).parent
-                    # Write 2 fake frames
-                    (out_dir / "frame_001.png").write_bytes(png_data)
-                    (out_dir / "frame_002.png").write_bytes(png_data)
-                    break
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stderr = ""
-            return mock
+        def describe(name, data, *, premise):
+            seen.append((name, premise))
+            return f"a frame called {name}"
 
-        with (
-            patch(
-                "tinyassets.ingestion.video_extractor._find_ffmpeg",
-                return_value="/usr/bin/ffmpeg",
-            ),
-            patch(
-                "tinyassets.ingestion.video_extractor._get_video_duration",
-                return_value=25.0,
-            ),
-            patch(
-                "tinyassets.ingestion.video_extractor.subprocess.run",
-                side_effect=fake_ffmpeg_run,
-            ),
-            patch(
-                "tinyassets.ingestion.image_extractor._find_vision_model",
-                return_value="",
-            ),
-        ):
+        with patch.object(role_video, "frames", frames):
             result = extract_video_description(
                 "scene.mp4", video_data, premise="Epic quest",
+                universe_dir=tmp_path, describe_frame=describe,
             )
 
         assert "Visual Reference: scene.mp4" in result
-        assert "Frame 1" in result
-        assert "Frame 2" in result
-        assert "0:00" in result
+        assert "Frame 1" in result and "Frame 2" in result
+        assert "0:00" in result and "0:10" in result
+        assert seen == [("scene.mp4_frame_000.png", "Epic quest"),
+                        ("scene.mp4_frame_001.png", "Epic quest")]
 
-    def test_extract_text_routes_video(self):
-        """extract_text should route video files to video extractor."""
+    def test_extract_text_routes_video(self, tmp_path):
+        """extract_text routes video files to the video extractor."""
+        from tinyassets import role_video
+        from tinyassets.ingestion.video_extractor import extract_video_description
+
         video_data = b"\x00\x00\x00\x1cftyp" + b"\x00" * 1000
-
-        with patch(
-            "tinyassets.ingestion.video_extractor._find_ffmpeg",
-            return_value="",
-        ):
-            result = extract_text("cutscene.mp4", video_data)
-
+        with patch.object(role_video, "frames",
+                          lambda data, center: (10.0, [_make_tiny_png()])):
+            result = extract_text("cutscene.mp4", video_data, universe_dir=tmp_path,
+                                  describe_frame=lambda *a, **k: "described")
         assert isinstance(result, str)
-        assert "Video awaiting frame analysis" in result
+        assert "Visual Reference: cutscene.mp4" in result
+
+        # And without a vision callback it refuses instead of inventing one.
+        with pytest.raises(RuntimeError, match="owner-scoped vision"):
+            extract_video_description("cutscene.mp4", video_data,
+                                      universe_dir=tmp_path)
 
     def test_video_detection_by_extension(self):
         """Video file types should be detected by extension."""

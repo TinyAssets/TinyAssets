@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.cell_double import CELL_OWNER_UID
 from tinyassets.credential_vault import (
     VAULT_FILENAME,
     apply_provider_auth_env,
@@ -25,6 +26,23 @@ from tinyassets.credential_vault import (
     resolve_codex_home,
     write_credential_vault,
 )
+
+
+@pytest.fixture(autouse=True)
+def _admitted_owner_identity(monkeypatch):
+    """The broker resolves the owner's uid/gid; a test process has no broker.
+
+    Snapshot custody compares the center's label against the broker's answer,
+    so the stand-in here must be the same number the cell double's
+    ``role_snapshot.owner_uid`` reports.
+    """
+    from tinyassets.broker import owner_identities
+
+    monkeypatch.setattr(
+        owner_identities, "owner_identity",
+        lambda root, *, principal, allocate=False: owner_identities.OwnerIdentity(
+            CELL_OWNER_UID, CELL_OWNER_UID),
+    )
 
 
 def _vcs_slot(universe_dir, destination: str, purpose: str) -> str:
@@ -713,49 +731,52 @@ def test_snapshot_directory_and_files_are_owner_only(tmp_path):
         custody=custody,
     )
     try:
-        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o700
-        assert stat.S_IMODE(snapshot.directory.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(snapshot.directory.parent.parent.stat().st_mode) == 0o700
+        # Sealed to exactly the dedicated owner: the per-snapshot directory is
+        # readable, the two platform directories above it only traversable, the
+        # files read-only, and nothing anywhere is granted to other.
+        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o750
+        assert stat.S_IMODE(snapshot.directory.parent.stat().st_mode) == 0o710
+        assert stat.S_IMODE(snapshot.directory.parent.parent.stat().st_mode) == 0o710
         assert {
             path.name: stat.S_IMODE(path.stat().st_mode)
             for path in snapshot.directory.iterdir()
-        } == {".lock": 0o400, "auth.json": 0o400, "config.toml": 0o400}
+        } == {".lock": 0o440, "auth.json": 0o440, "config.toml": 0o440}
     finally:
         cleanup_llm_credential_snapshot(snapshot)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
-def test_role_snapshot_group_is_explicit_and_survives_reprepare(tmp_path, monkeypatch):
+def test_role_snapshot_custody_is_the_owners_and_survives_reprepare(tmp_path):
+    """One identity holds a launch snapshot: this center's dedicated owner.
+
+    There is no shared work group left to fall back to, and re-preparing the
+    root must not loosen what is already published.
+    """
     from tinyassets import credential_vault as vault
-    from tinyassets import role_modes
 
     universe, custody = _credential_snapshot_fixture(tmp_path)
-    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
-    monkeypatch.setattr(role_modes, "WORK_GID", os.getgid())
     snapshot = vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
     try:
         vault._prepare_snapshot_root(universe)
-        for path in (snapshot.directory, snapshot.directory.parent,
-                     snapshot.directory.parent.parent):
-            assert (path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)) == (os.getgid(), 0o2750)
+        assert stat.S_IMODE(snapshot.directory.stat().st_mode) == 0o750
+        for path in (snapshot.directory.parent, snapshot.directory.parent.parent):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o710
         for path in snapshot.directory.iterdir():
-            assert (path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)) == (os.getgid(), 0o440)
+            assert stat.S_IMODE(path.stat().st_mode) == 0o440
+            assert not path.stat().st_mode & 0o007
         assert (snapshot.directory / "auth.json").read_bytes()
     finally:
         vault.cleanup_llm_credential_snapshot(snapshot)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
-@pytest.mark.parametrize("operation", ["fchown", "fchmod", "fsync"])
+@pytest.mark.parametrize("operation", ["fchmod", "fsync"])
 def test_role_snapshot_permission_or_sync_failure_never_returns_credentials(
     tmp_path, monkeypatch, operation,
 ):
     from tinyassets import credential_vault as vault
-    from tinyassets import role_modes
 
     universe, custody = _credential_snapshot_fixture(tmp_path)
-    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
-    monkeypatch.setattr(role_modes, "WORK_GID", os.getgid())
     original = getattr(os, operation)
 
     def fail_file(fd, *args):

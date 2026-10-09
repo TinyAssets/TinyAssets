@@ -353,7 +353,7 @@ def cell_main(*, egress=False, ta=False, extensions=False):
         process_cap = int(limits.processes) + 3
         argv = tools.tool_jail_argv(root,
             inner,
-            agent_id=request['agent_id'], seccomp_fd=filter_fd,
+            agent_id=request['agent_id'], seccomp_fd=filter_fd, promote_brain_files=False,
             egress_socket=Path('/tool-egress.sock') if egress else None,
             ta_socket=Path('/tool-ta.sock') if ta else None,
             extension_root=Path(EXTENSION_MOUNT) if extensions else None)

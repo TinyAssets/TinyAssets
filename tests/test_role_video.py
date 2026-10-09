@@ -6,12 +6,15 @@ import pytest
 from tinyassets import role_decoder, role_video
 from tinyassets.ingestion import extractors, video_extractor
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_selected_video_cannot_fallback_to_daemon(monkeypatch, tmp_path):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
-    def forbidden(*args, **kwargs):
-        pytest.fail('selected extraction ran in daemon')
-    monkeypatch.setattr(video_extractor, '_find_ffmpeg', forbidden)
+    # There is no daemon-side ffmpeg left to fall back to.
+    assert not hasattr(video_extractor, '_find_ffmpeg')
+    assert not hasattr(video_extractor, '_placeholder_description')
     with pytest.raises(RuntimeError, match='owner-scoped vision'):
         video_extractor.extract_video_description('x.mp4', b'video')
     def refused(*args, **kwargs):

@@ -304,6 +304,31 @@ def _workspace(root: Path) -> Path:
         ) from None
 
 
+def _promote_brain_files(root: Path, workspace: Path, *, agent_id: str) -> None:
+    """A brain file the agent wrote while the root had none moves to the root.
+
+    Brain files are bound only when they exist at the root (an empty one would
+    read as "learned"), so writing an absent ``identity.md`` landed in the
+    workspace, where the daemon's grounding never looks (gpt-6-astra on #4194).
+    The root copy is agent-writable anyway, so moving a plain regular file
+    there grants nothing new.
+    """
+    for name in AGENT_BRAIN_FILES:
+        # identity.md is the main agent's own: another agent's call never
+        # promotes it (harness §4.18).
+        if name == "identity.md" and agent_id != MAIN_AGENT:
+            continue
+        source, target = workspace / name, root / name
+        if os.path.lexists(target) or source.is_symlink() or not source.is_file():
+            continue
+        try:
+            # link() never replaces: a root file created meanwhile is kept.
+            os.link(source, target)
+        except FileExistsError:
+            continue
+        source.unlink()
+
+
 def _clear_link_mountpoint(workspace: Path, name: str) -> None:
     """A link left where a root entry is about to be bound is removed first.
 
@@ -319,6 +344,7 @@ def _universe_view(
     root: Path, egress_socket: Path | None = None, *, agent_id: str,
     ta_socket: Path | None = None,
     extension_root: Path | None = None,
+    promote_brain_files: bool = True,
 ) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
@@ -335,10 +361,12 @@ def _universe_view(
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
     workspace = _workspace(root)
-    # Brain-file promotion is the maintenance cell's job
-    # (:func:`tinyassets.role_tool_files.maintain`), which runs as the owner
-    # immediately before this view is built. Doing it here as well would be a
-    # second writer into the owner's tree from whatever uid built the view.
+    # The owner's tool cell passes False: its maintenance cell
+    # (:func:`tinyassets.role_tool_files.maintain`) has already promoted, as
+    # the owner, immediately before this view is built. Promoting again from
+    # inside the cell would be a second writer for the same names.
+    if promote_brain_files:
+        _promote_brain_files(root, workspace, agent_id=agent_id)
     mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
@@ -388,6 +416,7 @@ def tool_jail_argv(
     egress_socket: Path | None = None,
     ta_socket: Path | None = None,
     extension_root: Path | None = None,
+    promote_brain_files: bool = True,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     if not agent_id.strip():
@@ -400,7 +429,8 @@ def tool_jail_argv(
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket,
-                          extension_root=extension_root)
+                          extension_root=extension_root,
+                          promote_brain_files=promote_brain_files)
     # The egress socket lives in the daemon-owned sidecar folder, outside the
     # command center, so it has to be declared as the exact path this jail is
     # allowed to bind from there. A directory prefix is not a capability: the

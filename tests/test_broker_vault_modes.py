@@ -8,12 +8,15 @@ import pytest
 from tinyassets import credential_vault as vault
 from tinyassets import role_modes
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX role permissions")
+# These pin the real role_modes numbers and owner labels; no double is installed.
+pytestmark = [
+    pytest.mark.role_split,
+    pytest.mark.skipif(os.name != "posix", reason="POSIX role permissions"),
+]
 
 
 @pytest.fixture
 def universe(tmp_path, monkeypatch):
-    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
     monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
     return tmp_path
 
@@ -69,7 +72,8 @@ def test_postpublication_flush_failure_does_not_undo_commit(universe, monkeypatc
     assert vault.load_credential_vault(universe)[0]["token"] == "committed"
 
 
-def test_unsplit_publication_remains_private(universe, monkeypatch):
-    monkeypatch.delenv("TINYASSETS_CREDENTIAL_BROKER")
-    persist(universe, "legacy")
-    assert stat.S_IMODE(vault.credential_vault_path(universe).stat().st_mode) == 0o600
+def test_publication_has_no_unsplit_mode(universe):
+    """There is one publication path. 0o600 was the pre-split one; it is gone."""
+    persist(universe, "only")
+    assert stat.S_IMODE(vault.credential_vault_path(universe).stat().st_mode) == 0o640
+    assert not hasattr(vault, "_persist_unsplit_vault_file")

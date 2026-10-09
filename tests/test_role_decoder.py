@@ -9,6 +9,9 @@ import pytest
 
 from tinyassets import role_decoder, tool_images
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 LAUNCHER = runpy.run_path(str(Path(__file__).resolve().parents[1] / "deploy/role_launcher.py"))
 
 

@@ -3,6 +3,9 @@ import pytest
 
 from tinyassets import role_decoder, role_git, workspace_git
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_selected_git_refusal_never_runs_in_daemon(tmp_path, monkeypatch):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())

@@ -188,14 +188,27 @@ def _tool_prepare(universe_dir, *, agent_id="main"):
     return {"visited": 0, "promoted": promoted, "skipped": [], "truncated": False}
 
 
+#: The owner uid/gid every double speaks for. A test host labels nothing in
+#: 300001-399999 (that needs privilege), so one number stands for the admitted
+#: owner across the doubles -- including whatever stands in for
+#: ``broker.owner_identities.owner_identity``, which must agree with this.
+CELL_OWNER_UID = 300001
+
+
 def _snapshot_owner_uid(universe):
-    """The center's owner gid. A test host labels nothing, so use its own."""
-    return os.getgid()
+    """The center's dedicated owner gid."""
+    return CELL_OWNER_UID
 
 
 def _snapshot_seal(fd, uid, *, directory, traverse_only=False):
-    """POSIX ACLs need a real filesystem and a real owner uid; mode is enough."""
-    os.fchmod(fd, (0o2710 if traverse_only else 0o2750) if directory else 0o440)
+    """The mode a real ACL seal leaves behind; the ACL itself needs privilege.
+
+    ``role_snapshot.seal`` publishes an access ACL naming exactly ``uid``, and
+    the kernel reflects its MASK into the group bits: ``rwx--x---`` for a
+    traverse-only directory, ``rwxr-x---`` for a readable one and ``r--r-----``
+    for a file. Nothing is ever granted to other.
+    """
+    os.fchmod(fd, (0o710 if traverse_only else 0o750) if directory else 0o440)
 
 
 @pytest.fixture(autouse=True)

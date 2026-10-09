@@ -7,6 +7,9 @@ import pytest
 
 from tinyassets import role_decoder, role_tools, universe_tools
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_selected_tool_requires_bounded_launcher(monkeypatch, tmp_path):
     monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')

@@ -6,6 +6,9 @@ import pytest
 
 from tinyassets.role_tool_files import maintain
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def call(root, agent='main'):
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

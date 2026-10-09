@@ -6,6 +6,9 @@ from tinyassets import credential_vault as vault
 from tinyassets import role_decoder, role_snapshot
 from tinyassets.broker.owner_identities import OwnerIdentity
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_selected_snapshot_refuses_unmigrated_center(tmp_path, monkeypatch):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())

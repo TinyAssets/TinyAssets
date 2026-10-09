@@ -6,6 +6,9 @@ import pytest
 
 from tinyassets import node_sandbox, role_node
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def test_selected_node_requires_scope_before_any_local_spawn(monkeypatch):
     monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
@@ -56,10 +59,9 @@ def test_selected_compiler_workspace_never_probes_a_daemon_jail(tmp_path, monkey
     from tinyassets.branches import NodeDefinition
     from tinyassets.effectors import EffectChain, WorkspaceMount
 
-    monkeypatch.setenv('TINYASSETS_CREDENTIAL_BROKER', 'process')
-    def forbidden(*args, **kwargs):
-        pytest.fail('compiler attempted a daemon jail probe')
-    monkeypatch.setattr(node_sandbox, 'WORKSPACE_LAUNCHER_FACTORY', forbidden)
+    # The daemon has no workspace launcher factory left to call: the nested
+    # jail is resolved inside the cell, from the mount the cell opened.
+    assert not hasattr(node_sandbox, 'WORKSPACE_LAUNCHER_FACTORY')
     seen = []
     def admitted(instance, **kwargs):
         seen.append((instance.universe_dir, instance.launcher, kwargs['workspace']))

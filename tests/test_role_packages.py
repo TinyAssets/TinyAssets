@@ -10,6 +10,9 @@ import pytest
 from tinyassets import role_packages, workspace_fs
 from tinyassets.role_package_manifest import parse
 
+# These drive the real bounded launcher and cells; no double is installed.
+pytestmark = pytest.mark.role_split
+
 
 def manifest(**changes):
     doc = dict(runtime='python', entry='main.py', args=[], slots=[],
