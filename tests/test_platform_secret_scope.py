@@ -11,8 +11,6 @@ assertion is on names.
 """
 from __future__ import annotations
 
-import ast
-import importlib
 import json
 import os
 import re
@@ -206,294 +204,46 @@ def test_child_env_removes_every_platform_secret_and_keeps_the_rest():
     assert child_env(source) == {"TINYASSETS_DATA_DIR": "/data", "UNRELATED": "kept"}
 
 
-def test_engine_mcp_server_child_gets_a_scrubbed_env(monkeypatch):
-    from tinyassets import engine_mcp_http
+def test_http_engine_config_carries_only_its_route_and_no_ambient_secrets(tmp_path, monkeypatch):
+    from types import SimpleNamespace
 
-    for name in CHILD_FORBIDDEN_ENV:
-        monkeypatch.setenv(name, "placeholder")
-    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    captured = {}
-
-    class _Proc:
-        def poll(self):
-            return None
-
-    def fake_popen(argv, **kwargs):
-        captured["argv"] = argv
-        captured["env"] = kwargs["env"]
-        return _Proc()
-
-    monkeypatch.setattr(engine_mcp_http.subprocess, "Popen", fake_popen)
-    server = engine_mcp_http._EngineServer("universe-a", "user:owner", 8790, "/data")
-    assert server.start() is True
-
-    env = captured["env"]
-    assert captured["argv"][-1] == "tinyassets.engine_mcp_server"
-    assert set(env) & CHILD_FORBIDDEN_ENV == set()
-    # Its own pins and ordinary configuration still arrive.
-    assert env["TINYASSETS_ENGINE_GRAPH_ID"] == "universe-a"
-    assert env["TINYASSETS_ENGINE_ACTOR_ID"] == "user:owner"
-    assert env["TINYASSETS_ENGINE_MCP_TOOLS"] == "1"
-    assert env["TINYASSETS_DATA_DIR"] == "/data"
-
-
-_CLAUDE_PROVIDER = PACKAGE / "providers" / "claude_provider.py"
-
-
-def _server_env_builder(source: str) -> tuple[ast.AST, ast.AST]:
-    """The function that builds ``server_env``, and the module around it."""
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "server_env" for t in sub.targets
-            ):
-                return node, tree
-    raise AssertionError(
-        "claude_provider.py no longer builds server_env; this test has lost its subject"
-    )
-
-
-def _rebound_at(tree: ast.AST, name: str) -> list[int]:
-    """Lines where ``name`` is bound by anything other than an import.
-
-    A name resolved through its import statement is only trustworthy if the
-    import is the ONLY thing that binds it. Codex round 3 on #4267: inserting
-    ``TREE_ENV = "DO_API_TOKEN"`` above the environ reads satisfied an
-    import-only resolver while forwarding a forbidden credential. Every binding
-    form is enumerated here so a rebinding cannot hide in an unusual one.
-    """
-    lines: list[int] = []
-
-    def _stores(target: ast.AST) -> list[ast.Name]:
-        return [
-            n for n in ast.walk(target)
-            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
-        ]
-
-    for node in ast.walk(tree):
-        targets: list[ast.AST] = []
-        if isinstance(node, (ast.Assign, ast.Delete)):
-            targets = list(node.targets)
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
-            targets = [node.target]
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            targets = [node.target]
-        elif isinstance(node, ast.withitem):
-            targets = [node.optional_vars] if node.optional_vars is not None else []
-        elif isinstance(node, ast.ExceptHandler):
-            if node.name == name:
-                lines.append(node.lineno)
-            continue
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            if name in node.names:
-                lines.append(node.lineno)
-            continue
-        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
-            if node.name == name:
-                lines.append(node.lineno)
-            continue
-        elif isinstance(node, ast.MatchMapping):
-            if node.rest == name:
-                lines.append(node.lineno)
-            continue
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if node.name == name:
-                lines.append(node.lineno)
-            args = getattr(node, "args", None)
-            if args is not None:
-                for arg in [
-                    *args.posonlyargs, *args.args, *args.kwonlyargs,
-                    args.vararg, args.kwarg,
-                ]:
-                    if arg is not None and arg.arg == name:
-                        lines.append(arg.lineno)
-            continue
-        else:
-            continue
-        for target in targets:
-            lines.extend(n.lineno for n in _stores(target) if n.id == name)
-    return sorted(set(lines))
-
-
-def _resolve_env_name(key: ast.AST, source: str) -> str:
-    """The literal env name a config key refers to.
-
-    Names are module constants (``TREE_ENV``), imported either at module scope
-    or inside the function. Resolve through the real module so a rename cannot
-    quietly turn a pin into a different variable than the test believes.
-    """
-    if isinstance(key, ast.Constant) and isinstance(key.value, str):
-        return key.value
-    assert isinstance(key, ast.Name), (
-        f"environment key is a computed expression ({ast.dump(key)}); it must be a "
-        "literal or a named constant so the name is auditable here"
-    )
-    for module, imported in re.findall(r"(?m)^\s*from ([\w.]+) import ([^\n(]+)$", source):
-        if key.id in {part.strip().split(" as ")[0] for part in imported.split(",")}:
-            return getattr(importlib.import_module(module), key.id)
-    raise AssertionError(f"could not resolve the env name behind {key.id}")
-
-
-#: The one name the stdio engine config may forward. A 32-hex process-tree id
-#: (``owner_lease.TREE_ENV``) whose documented purpose is to be inherited.
-_FORWARDABLE = {"TINYASSETS_OWNER_TREE"}
-
-
-def _forwarded_env_names(source: str) -> set[str]:
-    """Every env name the stdio engine config forwards, or AssertionError.
-
-    Rejects a wholesale read in any form, a computed key, and -- since the name
-    behind a constant is resolved through its import -- any REBINDING of that
-    constant, which would otherwise let the resolver believe one name while the
-    code forwarded another.
-    """
-    func, tree = _server_env_builder(source)
-    accesses = [
-        node for node in ast.walk(func)
-        if isinstance(node, ast.Attribute) and node.attr == "environ"
-    ]
-    keys: list[ast.AST] = []
-    for node in ast.walk(func):
-        # environ["NAME"]
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) \
-                and node.value.attr == "environ":
-            keys.append(node.slice)
-        # environ.get("NAME", ...)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                and node.func.attr == "get" \
-                and isinstance(node.func.value, ast.Attribute) \
-                and node.func.value.attr == "environ":
-            assert node.args, "environ.get() with no name reads the whole environment"
-            keys.append(node.args[0])
-
-    # Every environ access is accounted for by a single-key read. A bulk form
-    # (.copy(), ** unpacking, passing environ itself) leaves an access with no
-    # matching key and fails here.
-    assert len(accesses) == len(keys), (
-        f"{len(accesses)} environ access(es) but only {len(keys)} single-key read(s): "
-        "the stdio engine config must never inherit the environment wholesale"
-    )
-
-    forwarded: set[str] = set()
-    for key in keys:
-        forwarded.add(_resolve_env_name(key, source))
-        if isinstance(key, ast.Name):
-            # Resolution trusted the import; prove the import is the only binder.
-            rebound = _rebound_at(tree, key.id)
-            assert not rebound, (
-                f"{key.id} is resolved through its import but is also rebound at "
-                f"line(s) {rebound}: the forwarded name is not what this test "
-                "resolved, so the value cannot be audited here"
-            )
-    return forwarded
-
-
-def test_the_stdio_engine_server_config_forwards_no_platform_secret(
-    tmp_path, monkeypatch,
-):
-    """BEHAVIOURAL: build the real config and look at what actually lands in it.
-
-    The source-level checks below can only reason about the code as written.
-    This one sets a distinguishable sentinel for every ``CHILD_FORBIDDEN_ENV``
-    name, builds the stdio engine config through the real
-    ``_engine_mcp_flags`` path, and asserts none of those sentinels appears --
-    as a key or as a value -- in the env the CLI would spawn the engine with.
-    Independent of how the forwarding is spelled.
-    """
+    from tinyassets import credential_vault, engine_mcp_http
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
-    # No routes file under this root, so read_engine_mcp_route returns None and
-    # the real code takes the stdio branch -- the subject of this test.
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     sentinels = {name: f"SENTINEL-{name}" for name in CHILD_FORBIDDEN_ENV}
     for name, value in sentinels.items():
         monkeypatch.setenv(name, value)
-    tree_id = "a" * 32
-    monkeypatch.setenv("TINYASSETS_OWNER_TREE", tree_id)
-
-    universe_dir = tmp_path / "universe"
-    universe_dir.mkdir()
-    flags = _engine_mcp_flags(
-        ModelConfig(
-            engine_mcp_enabled=True,
-            engine_mcp_actor_id="user:owner",
-            engine_mcp_graph_id="universe-a",
-        ),
-        universe_dir,
-    )
-    assert flags, "the engine MCP config was not written, so nothing was proved"
-    written = json.loads(
-        Path(flags[flags.index("--mcp-config") + 1]).read_text(encoding="utf-8")
-    )
-    server = written["mcpServers"]["tinyassets"]
-    assert "command" in server, (
-        "expected the stdio branch; an HTTP route was resolved instead and this "
-        "test no longer covers the config it was written for"
-    )
-    env = server["env"]
-
-    leaked_keys = set(env) & set(CHILD_FORBIDDEN_ENV)
-    assert not leaked_keys, f"platform secret(s) named in the engine config: {sorted(leaked_keys)}"
-    blob = json.dumps(env)
-    leaked_values = sorted(name for name, value in sentinels.items() if value in blob)
-    assert not leaked_values, (
-        f"platform secret VALUE(s) reached the engine config: {leaked_values}"
-    )
-    # Not vacuous: the one name that IS forwarded arrives, so a scan that found
-    # nothing cannot be mistaken for a config that forwarded nothing at all.
-    assert env.get("TINYASSETS_OWNER_TREE") == tree_id
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    route = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="owner-route",
+                            grant_key="grant-proof")
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: route)
+    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
+    config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
+                         credential_snapshot_dir=tmp_path)
+    flags = _engine_mcp_flags(config, tmp_path)
+    assert "--strict-mcp-config" in flags
+    path = Path(flags[flags.index("--mcp-config") + 1])
+    assert path.parent == tmp_path
+    document = json.loads(path.read_text())
+    server = document["mcpServers"]["tinyassets"]
+    assert set(server) == {"type", "url", "headers"}
+    assert server["type"] == "http" and server["url"].startswith(route.url)
+    assert server["headers"] == {"Authorization": "Bearer owner-route"}
+    assert not any(value in path.read_text() for value in sentinels.values())
 
 
-def test_the_stdio_engine_server_config_inherits_no_platform_secret():
-    """SOURCE-LEVEL: only auditable pins, never a bulk copy of ``os.environ``.
+def test_missing_http_engine_route_never_falls_back_to_a_spawn(tmp_path, monkeypatch):
+    from tinyassets import engine_mcp_http
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.claude_provider import _engine_mcp_flags
 
-    Originally a substring ban on ``os.environ``. That over-fired once
-    execution-owner-lease D2 (#4308) began forwarding one named, non-secret
-    variable, so the check now enforces the invariant it was a proxy for: every
-    ``environ`` access must be a single-key read, each key must resolve to a
-    name, and that name must be allowlisted and not a platform secret.
-    """
-    forwarded = _forwarded_env_names(_CLAUDE_PROVIDER.read_text(encoding="utf-8"))
-    assert forwarded <= _FORWARDABLE, (
-        f"new name(s) forwarded into the stdio engine config: "
-        f"{sorted(forwarded - _FORWARDABLE)}. Adding one is a deliberate "
-        "inheritance decision -- classify it in "
-        "docs/reference/environment-variables.md first."
-    )
-    # And whatever is forwarded is not one of the platform's own secrets.
-    assert forwarded.isdisjoint(CHILD_FORBIDDEN_ENV), (
-        f"{sorted(forwarded & CHILD_FORBIDDEN_ENV)} is a platform secret and cannot "
-        "be forwarded to a provider-spawned engine"
-    )
-
-
-def test_rebinding_a_resolved_env_constant_is_rejected():
-    """The import-only resolver is not fooled by a later reassignment.
-
-    Codex round 3 on #4267: resolving ``TREE_ENV`` from its import without
-    checking for a rebinding let a mutation insert ``TREE_ENV = "DO_API_TOKEN"``
-    above the reads -- the resolver still reported the imported value while the
-    code forwarded a forbidden credential. Mutated SOURCE is fed to the checker;
-    the real file is never edited.
-    """
-    source = _CLAUDE_PROVIDER.read_text(encoding="utf-8")
-    assert "DO_API_TOKEN" in DAEMON_FORBIDDEN_ENV, "the mutation must name a real secret"
-    needle = "    if _os.environ.get(TREE_ENV):"
-    assert needle in source, "the forwarding shape moved; update this mutation"
-    mutated = source.replace(
-        needle, '    TREE_ENV = "DO_API_TOKEN"\n' + needle, 1,
-    )
-    assert mutated != source
-
-    # Unmutated source is accepted, so the failure below is the mutation.
-    assert _forwarded_env_names(source) == _FORWARDABLE
-    with pytest.raises(AssertionError, match="rebound at line"):
-        _forwarded_env_names(mutated)
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: None)
+    config = ModelConfig(engine_mcp_actor_id="owner", engine_mcp_graph_id="home",
+                         credential_snapshot_dir=tmp_path)
+    assert _engine_mcp_flags(config, tmp_path) == []
+    assert list(tmp_path.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

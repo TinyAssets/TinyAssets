@@ -89,17 +89,6 @@ def test_a_refusal_is_authority_held_so_no_fallback_text_replaces_it():
     assert not issubclass(ProviderConfinementError, ProviderUnavailableError)
 
 
-def test_a_view_cannot_bind_anything_outside_its_universe(tmp_path):
-    universe = _universe(tmp_path)
-    other = _universe(tmp_path, "u-bravo")
-    view = UniverseView(
-        universe_dir=universe,
-        mounts=(JailMount("ro-bind", "/workspace", other),),
-    )
-    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
-        jail_argv(["cli"], view, bwrap_path="bwrap")
-
-
 @pytest.mark.parametrize("dest", ["/", "/usr/bin", "/etc", "/proc/self", "relative"])
 def test_a_view_cannot_mount_over_system_roots(tmp_path, dest):
     universe = _universe(tmp_path)

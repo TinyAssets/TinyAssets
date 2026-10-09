@@ -234,7 +234,7 @@ def test_member_live_custody_rechecked(scene, mutation):
     if mutation == "revoke":
         scene[2].revoke_grant(_GRANT_ID)
     else:
-        with sqlite3.connect(scene[0] / "outbound.db") as conn:
+        with sqlite3.connect(scene[0] / ".broker" / "outbound.db") as conn:
             conn.execute(
                 "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
                 ("vault://http/rotated", _CONN_ID),

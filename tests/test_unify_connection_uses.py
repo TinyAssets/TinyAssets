@@ -106,7 +106,8 @@ def _broker_proxy(base, grant_id, destination, runtime):
     dispatch = _build_credential_broker_dispatch({
         "allow_test_fixtures": False,
         "allow_http_connections": True,
-        "ledger_db_path": str((base / "outbound.db").resolve()),
+        "ledger_db_path": str((base / ".broker" / "outbound.db").resolve()),
+        "data_root": str(base.resolve()),
         "universe_dir": str((base / UID).resolve()),
         "provider": "http",
         "destination": destination,
@@ -331,7 +332,7 @@ def test_never_seen_llm_connects_from_the_request_and_answers_with_tools(
                              model=selection.model_id, free=False, purpose="reply")
     config = ModelConfig(
         engine_mcp_enabled=True, engine_mcp_actor_id=OWNER, engine_mcp_graph_id=UID,
-        max_tokens=512, selected_model=selection,
+        max_tokens=512, selected_model=selection, invocation_owner_user_id=OWNER,
         agent_request=AgentInferenceRequest(tools=tools),
         request_budget=budget, request_attempt=ordinal,
     )
@@ -681,7 +682,7 @@ def test_the_catalogues_prices_keep_deciding_spend_even_beside_a_declaration(own
     )
 
     _ledger, grant = _priced_connection(owner)
-    with sqlite3.connect(owner / "outbound.db") as conn:
+    with sqlite3.connect(owner / ".broker" / "outbound.db") as conn:
         conn.execute(
             "INSERT INTO connection_capabilities VALUES (?, 'model_use', ?, 0)",
             (grant.connection_id, json.dumps(PAID_AS_FREE["model"])),
