@@ -41,7 +41,8 @@ def case(tmp_path, monkeypatch):
             (owner_sessions.hashed(cookie), json.dumps(identity.to_dict()), time.time() + 3600),
         )
     session = owner_sessions.lookup(cookie)
-    return home, card, session, raw
+    with identity_context(identity):
+        yield home, card, session, raw
 
 
 def decision(preview, choice="approve"):
