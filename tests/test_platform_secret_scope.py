@@ -237,22 +237,37 @@ def test_engine_mcp_server_child_gets_a_scrubbed_env(monkeypatch):
     assert env["TINYASSETS_DATA_DIR"] == "/data"
 
 
-_CLAUDE_PROVIDER = PACKAGE / "providers" / "claude_provider.py"
+#: The engine child's environment is built in ONE place. It used to be the
+#: stdio ``server_env`` inside ``claude_provider._engine_mcp_flags``; the
+#: per-owner isolation cutover deleted the stdio engine (an engine inside the
+#: owner's cell cannot reach the platform's stores, and one outside it would be
+#: an unconfined daemon child), so the only engine the daemon spawns is the
+#: pinned loopback server here.
+_ENGINE_SERVER = PACKAGE / "engine_mcp_http.py"
 
 
 def _server_env_builder(source: str) -> tuple[ast.AST, ast.AST]:
-    """The function that builds ``server_env``, and the module around it."""
+    """The function that builds the engine child's ``env``, and its module.
+
+    Located by shape, not by name: the assignment whose value is a
+    ``child_env(...)`` call. That call IS the scrub, so a rename of the
+    enclosing function cannot quietly move the subject out from under this
+    test, and a builder that stops scrubbing loses it loudly.
+    """
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for sub in ast.walk(node):
-            if isinstance(sub, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "server_env" for t in sub.targets
-            ):
+            if (isinstance(sub, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "env" for t in sub.targets)
+                    and isinstance(sub.value, ast.Call)
+                    and isinstance(sub.value.func, ast.Name)
+                    and sub.value.func.id == "child_env"):
                 return node, tree
     raise AssertionError(
-        "claude_provider.py no longer builds server_env; this test has lost its subject"
+        f"{_ENGINE_SERVER.name} no longer builds the engine child env with "
+        "child_env(); this test has lost its subject"
     )
 
 
@@ -337,24 +352,50 @@ def _resolve_env_name(key: ast.AST, source: str) -> str:
     raise AssertionError(f"could not resolve the env name behind {key.id}")
 
 
-#: The one name the stdio engine config may forward. A 32-hex process-tree id
-#: (``owner_lease.TREE_ENV``) whose documented purpose is to be inherited.
+#: The one name the engine child may inherit BESIDE the scrubbed base. A 32-hex
+#: process-tree id (``owner_lease.TREE_ENV``) whose documented purpose is to be
+#: inherited.
 _FORWARDABLE = {"TINYASSETS_OWNER_TREE"}
 
 
-def _forwarded_env_names(source: str) -> set[str]:
-    """Every env name the stdio engine config forwards, or AssertionError.
+def _scrubbed_bulk_reads(func: ast.AST) -> list[ast.AST]:
+    """``child_env(os.environ)`` accesses: the ONE sanctioned bulk read.
 
-    Rejects a wholesale read in any form, a computed key, and -- since the name
-    behind a constant is resolved through its import -- any REBINDING of that
-    constant, which would otherwise let the resolver believe one name while the
-    code forwarded another.
+    ``child_env`` is itself proved to drop every ``CHILD_FORBIDDEN_ENV`` name
+    (``test_child_env_removes_every_platform_secret_and_keeps_the_rest``), so
+    handing it the whole environment is auditable. A raw ``os.environ.copy()``,
+    ``**os.environ`` or ``os.environ`` passed anywhere else is not, and is
+    counted as an unaccounted access below.
+    """
+    found: list[ast.AST] = []
+    for node in ast.walk(func):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "child_env"):
+            continue
+        for argument in [*node.args, *(kw.value for kw in node.keywords)]:
+            if isinstance(argument, ast.Attribute) and argument.attr == "environ":
+                found.append(argument)
+    return found
+
+
+def _forwarded_env_names(source: str) -> set[str]:
+    """Every env name the engine child inherits by name, or AssertionError.
+
+    Rejects an unscrubbed wholesale read in any form, a computed key, and --
+    since the name behind a constant is resolved through its import -- any
+    REBINDING of that constant, which would otherwise let the resolver believe
+    one name while the code forwarded another.
     """
     func, tree = _server_env_builder(source)
     accesses = [
         node for node in ast.walk(func)
         if isinstance(node, ast.Attribute) and node.attr == "environ"
     ]
+    scrubbed = _scrubbed_bulk_reads(func)
+    assert len(scrubbed) == 1, (
+        f"{len(scrubbed)} scrubbed bulk read(s) of os.environ: the engine child "
+        "env is built from exactly one child_env(os.environ) base"
+    )
     keys: list[ast.AST] = []
     for node in ast.walk(func):
         # environ["NAME"]
@@ -369,12 +410,13 @@ def _forwarded_env_names(source: str) -> set[str]:
             assert node.args, "environ.get() with no name reads the whole environment"
             keys.append(node.args[0])
 
-    # Every environ access is accounted for by a single-key read. A bulk form
-    # (.copy(), ** unpacking, passing environ itself) leaves an access with no
-    # matching key and fails here.
-    assert len(accesses) == len(keys), (
-        f"{len(accesses)} environ access(es) but only {len(keys)} single-key read(s): "
-        "the stdio engine config must never inherit the environment wholesale"
+    # Every environ access is accounted for: either the one scrubbed base, or a
+    # single-key read. Any other bulk form (.copy(), ** unpacking, passing
+    # environ itself) leaves an access with no match and fails here.
+    assert len(accesses) == len(keys) + len(scrubbed), (
+        f"{len(accesses)} environ access(es) but only {len(keys)} single-key "
+        f"read(s) plus {len(scrubbed)} scrubbed base: the engine child must "
+        "never inherit the environment wholesale unscrubbed"
     )
 
     forwarded: set[str] = set()
@@ -391,76 +433,103 @@ def _forwarded_env_names(source: str) -> set[str]:
     return forwarded
 
 
-def test_the_stdio_engine_server_config_forwards_no_platform_secret(
+def _engine_route(root: Path, *, actor: str, graph: str) -> None:
+    """Publish one live engine route, the way the daemon's supervisor does."""
+    from tinyassets.engine_mcp_http import ROUTES_FILENAME
+
+    (root / ROUTES_FILENAME).write_text(
+        json.dumps({graph: {
+            "version": 1, "actor_id": actor, "port": 8790,
+            "url": "http://127.0.0.1:8790/mcp", "secret": "s" * 43,
+            "grant_key": "g" * 43,
+        }}),
+        encoding="utf-8",
+    )
+
+
+def test_the_sealed_engine_mcp_config_carries_no_platform_secret(
     tmp_path, monkeypatch,
 ):
     """BEHAVIOURAL: build the real config and look at what actually lands in it.
 
     The source-level checks below can only reason about the code as written.
     This one sets a distinguishable sentinel for every ``CHILD_FORBIDDEN_ENV``
-    name, builds the stdio engine config through the real
-    ``_engine_mcp_flags`` path, and asserts none of those sentinels appears --
-    as a key or as a value -- in the env the CLI would spawn the engine with.
-    Independent of how the forwarding is spelled.
+    name, builds the engine MCP config through the real ``_engine_mcp_flags``
+    path, and asserts none of those sentinels appears -- as a key or as a
+    value -- anywhere in the file the provider cell is handed. Independent of
+    how the config is spelled.
+
+    The per-owner isolation cutover made this file the WHOLE channel: there is
+    no stdio engine and no ``env`` block any more, because the provider CLI
+    runs in the owner's cell and the sealed launch snapshot is the only
+    daemon-written state it receives. So a platform secret could only reach the
+    engine by being written into this config.
     """
+    from tests.engine_authority_helpers import seed_engine_authority
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
-    # No routes file under this root, so read_engine_mcp_route returns None and
-    # the real code takes the stdio branch -- the subject of this test.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     sentinels = {name: f"SENTINEL-{name}" for name in CHILD_FORBIDDEN_ENV}
     for name, value in sentinels.items():
         monkeypatch.setenv(name, value)
-    tree_id = "a" * 32
-    monkeypatch.setenv("TINYASSETS_OWNER_TREE", tree_id)
+    monkeypatch.setenv("TINYASSETS_OWNER_TREE", "a" * 32)
 
-    universe_dir = tmp_path / "universe"
-    universe_dir.mkdir()
+    actor, graph = "user:owner", "universe-a"
+    seed_engine_authority(tmp_path, actor=actor, graph=graph)
+    _engine_route(tmp_path, actor=actor, graph=graph)
+    universe_dir = tmp_path / graph
+    universe_dir.mkdir(exist_ok=True)
+    snapshot = tmp_path / "launch-snapshot"
+    snapshot.mkdir()
+
     flags = _engine_mcp_flags(
         ModelConfig(
             engine_mcp_enabled=True,
-            engine_mcp_actor_id="user:owner",
-            engine_mcp_graph_id="universe-a",
+            engine_mcp_actor_id=actor,
+            engine_mcp_graph_id=graph,
+            credential_snapshot_dir=snapshot,
         ),
         universe_dir,
     )
     assert flags, "the engine MCP config was not written, so nothing was proved"
-    written = json.loads(
-        Path(flags[flags.index("--mcp-config") + 1]).read_text(encoding="utf-8")
+    assert "--strict-mcp-config" in flags, (
+        "without strict mode the CLI also grants the logged-in account's "
+        "connectors, and this config is no longer the whole channel"
     )
-    server = written["mcpServers"]["tinyassets"]
-    assert "command" in server, (
-        "expected the stdio branch; an HTTP route was resolved instead and this "
-        "test no longer covers the config it was written for"
+    raw = Path(flags[flags.index("--mcp-config") + 1]).read_text(encoding="utf-8")
+    server = json.loads(raw)["mcpServers"]["tinyassets"]
+    assert server["type"] == "http", (
+        "expected the owner's HTTP engine route; the config shape moved and "
+        "this test no longer covers what it was written for"
     )
-    env = server["env"]
 
-    leaked_keys = set(env) & set(CHILD_FORBIDDEN_ENV)
-    assert not leaked_keys, f"platform secret(s) named in the engine config: {sorted(leaked_keys)}"
-    blob = json.dumps(env)
-    leaked_values = sorted(name for name, value in sentinels.items() if value in blob)
+    leaked_keys = sorted(name for name in CHILD_FORBIDDEN_ENV if name in raw)
+    assert not leaked_keys, f"platform secret(s) named in the engine config: {leaked_keys}"
+    leaked_values = sorted(name for name, value in sentinels.items() if value in raw)
     assert not leaked_values, (
         f"platform secret VALUE(s) reached the engine config: {leaked_values}"
     )
-    # Not vacuous: the one name that IS forwarded arrives, so a scan that found
-    # nothing cannot be mistaken for a config that forwarded nothing at all.
-    assert env.get("TINYASSETS_OWNER_TREE") == tree_id
+    # Not vacuous: the owner's own route and bearer DO arrive, so a scan that
+    # found nothing cannot be mistaken for a config that carried nothing.
+    assert server["url"].startswith("http://127.0.0.1:8790/mcp")
+    assert server["headers"]["Authorization"] == "Bearer " + "s" * 43
 
 
-def test_the_stdio_engine_server_config_inherits_no_platform_secret():
-    """SOURCE-LEVEL: only auditable pins, never a bulk copy of ``os.environ``.
+def test_the_engine_server_child_inherits_no_platform_secret():
+    """SOURCE-LEVEL: only auditable pins beside one scrubbed base.
 
     Originally a substring ban on ``os.environ``. That over-fired once
     execution-owner-lease D2 (#4308) began forwarding one named, non-secret
     variable, so the check now enforces the invariant it was a proxy for: every
-    ``environ`` access must be a single-key read, each key must resolve to a
-    name, and that name must be allowlisted and not a platform secret.
+    ``environ`` access must be the one ``child_env(os.environ)`` base or a
+    single-key read, each key must resolve to a name, and that name must be
+    allowlisted and not a platform secret.
     """
-    forwarded = _forwarded_env_names(_CLAUDE_PROVIDER.read_text(encoding="utf-8"))
+    forwarded = _forwarded_env_names(_ENGINE_SERVER.read_text(encoding="utf-8"))
     assert forwarded <= _FORWARDABLE, (
-        f"new name(s) forwarded into the stdio engine config: "
+        f"new name(s) forwarded into the engine child env: "
         f"{sorted(forwarded - _FORWARDABLE)}. Adding one is a deliberate "
         "inheritance decision -- classify it in "
         "docs/reference/environment-variables.md first."
@@ -468,7 +537,7 @@ def test_the_stdio_engine_server_config_inherits_no_platform_secret():
     # And whatever is forwarded is not one of the platform's own secrets.
     assert forwarded.isdisjoint(CHILD_FORBIDDEN_ENV), (
         f"{sorted(forwarded & CHILD_FORBIDDEN_ENV)} is a platform secret and cannot "
-        "be forwarded to a provider-spawned engine"
+        "be forwarded to the engine child"
     )
 
 
@@ -481,12 +550,12 @@ def test_rebinding_a_resolved_env_constant_is_rejected():
     code forwarded a forbidden credential. Mutated SOURCE is fed to the checker;
     the real file is never edited.
     """
-    source = _CLAUDE_PROVIDER.read_text(encoding="utf-8")
+    source = _ENGINE_SERVER.read_text(encoding="utf-8")
     assert "DO_API_TOKEN" in DAEMON_FORBIDDEN_ENV, "the mutation must name a real secret"
-    needle = "    if _os.environ.get(TREE_ENV):"
+    needle = "        if os.environ.get(TREE_ENV):"
     assert needle in source, "the forwarding shape moved; update this mutation"
     mutated = source.replace(
-        needle, '    TREE_ENV = "DO_API_TOKEN"\n' + needle, 1,
+        needle, '        TREE_ENV = "DO_API_TOKEN"\n' + needle, 1,
     )
     assert mutated != source
 

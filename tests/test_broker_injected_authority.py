@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.broker_double import broker_ledger_path
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_user_owned_cloud_automation import _cloud_authority_fixture
@@ -29,7 +30,9 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def cloud(discovery):
     definition, provider, ledger = _cloud_authority_fixture(discovery.root / "private-cloud")
-    path = discovery.root / "private-cloud/outbound.db"
+    # The ledger is the broker's; it lives under ``.broker/`` and the daemon
+    # never opens it. ``<root>/outbound.db`` belongs to nothing now.
+    path = broker_ledger_path(discovery.root / "private-cloud")
     daemon = threading.get_ident()
 
     def ledger_for(principal):
