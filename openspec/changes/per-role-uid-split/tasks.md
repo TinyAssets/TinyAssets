@@ -48,7 +48,7 @@ until that PR merges inside the maintenance window.
 Proof, 2026-10-09: `role_migrate_probe.py` passed all 356 interruption points,
 all preflight refusals, converged no-op, and numeric-owner/mode/ACL snapshot restore.
 The production-backup rehearsal for 1.4 is recorded in the runbook (2026-10-08).
-The full production image `sha256:aa398034015ec0a27c86dd9e362db87c9888a3fb781b86f627a3a114c86fdf7f`
+The full production image `sha256:4e613c6be8a1e5822561f6c8d1eec45c80e5cc03a58c56b557cd6fa675d21c8c`
 passed migration, actual serving, all eleven cell legs, and the shipped
 Claude/Codex CLI execution and discovery probes. This includes engine HTTP tool
 write/read, real dependency download/offline installation, workspace leases,
@@ -66,3 +66,11 @@ production-shaped fixture volume, not the restored production-backup clone, and
 CLI startup/discovery does not prove a real credentialed model turn. Tasks 2.6
 and 3.2 require the maintenance window, actual deployed SHA and founder app pass.
 Production-Verify-conditioned concern deletions in 3.1 remain pending that window.
+
+Resume audit, 2026-10-09: merged main through `b5bc266a92` in `46313de042`.
+The credential broker and reader switches, legacy liveness, single-UID deletion,
+and unconfined consumer fallbacks are absent. Design section 5's code deletions
+and their legacy tests are already applied; its four concern deletions remain
+conditioned on production Verify. The remaining `ENV_SWITCH` in served_chat is
+the unrelated agent-loop selector. The previous run's shipping image log confirms
+the image digest above and `ROLE IMAGE ORACLE PASS`; it does not close task 2.5.
