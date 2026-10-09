@@ -1,8 +1,8 @@
 ---
 severity: P3
-title: Workspace reconcile-on-read targets /scratch and fails on every run read
+title: Workspace reconcile-on-read targets /scratch and fails on run listing
 filed: '2026-10-09'
-summary: '`_reconcile_workspace_on_read` is reached with the data root, so `_ensure_scratch_root` tries to mkdir `/scratch` and logs a PermissionError traceback'
+summary: '`_reconcile_workspace_on_read` is reached with the data root, so `_ensure_scratch_root` tries to mkdir `/scratch` and logs a PermissionError traceback on `list_runs`'
 ---
 
 # Workspace reconcile-on-read targets `/scratch`
@@ -11,14 +11,14 @@ summary: '`_reconcile_workspace_on_read` is reached with the data root, so `_ens
 
 ## Finding
 
-Each run read logs `ERROR:tinyassets.runs:workspace startup reconciliation failed`, with
+Run listing (`list_runs`, the only caller of `_reconcile_workspace_on_read`) logged `ERROR:tinyassets.runs:workspace startup reconciliation failed` at both timestamps above, with
 `PermissionError: [Errno 13] Permission denied: '/scratch'` raised from
 `runs._ensure_scratch_root` via `_reconcile_workspace_on_read` → `ensure_workspace_reconciled`.
 `_ensure_scratch_root(base)` builds `base.parent / "scratch"`, and its docstring expects `base`
-to be a universe directory. So some caller passes the data root (`/data`), which turns the
-target into `/scratch`. The error is caught and logged, and the reads still succeed. But the
-reconciliation it guards never runs on that path, and the traceback is noise in every
-investigation.
+to be a universe directory. The traceback's `/scratch` target means `base` was the data root (`/data`). Which caller passes it
+is not yet verified. The error is caught and logged, and the listing still succeeds. But the
+reconciliation it guards never runs on that path, and the traceback is noise in
+investigations.
 
 Seen while debugging PR #4561; it isn't the cause of that bug.
 
@@ -26,4 +26,4 @@ Seen while debugging PR #4561; it isn't the cause of that bug.
 
 Find the caller that passes the data root, and pass the path that `ensure_workspace_reconciled`
 expects. Or make the function resolve the scratch root from the data root explicitly. Then
-check that one run read on production logs no traceback.
+check that one run listing on production logs no traceback.
