@@ -1080,7 +1080,9 @@
           await endServerSession();
           throw new Error('Sign in to this browser, then start owner sign-in again.');
         }
-        if(!token() && !(await refreshAccessToken())) throw new Error('Sign in to this browser, then start owner sign-in again.');
+        // No signed-in identity to bind to, and this browser dropped the sign-in
+        // cookie: there is no safe way to finish, so say so instead of looping.
+        if(!token() && !(await refreshAccessToken())) throw new Error('This browser blocked the sign-in cookie, so sign-in cannot finish here. Allow cookies for tinyassets.io (or turn off strict tracking protection for it), then sign in again.');
         const send = ()=>withRefreshLock(()=>fetch('/app/owner-sign-in/complete',{
           method:'POST',credentials:'same-origin',
           headers:{'Content-Type':'application/json',...authHeaders()},
