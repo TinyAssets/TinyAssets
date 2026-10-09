@@ -61,3 +61,12 @@ challenge can be hidden if a different scheme is the last field. Combined
 headers work here. Full separate-header interoperability needs the reserved
 HTTP driver to preserve/combine WWW-Authenticate before that projection; this
 slice does not edit that file or bypass the SSRF driver.
+
+Final production-code validation after review fixes: expanded Linux oracle
+379 passed, zero skipped; structural guards 583 passed. The final loopback
+fixture also serves authorization over HTTP and returns empty MCP 202 replies;
+27 slice tests passed locally, with its Linux rerun recorded on PR #4565.
+Ruff, strict OpenSpec validation, plugin build/import probe and hygiene passed.
+Implementation PR: https://github.com/TinyAssets/TinyAssets/pull/4565 (non-draft).
+The scope check intentionally awaits the lead's Drain-Review receipt. No deploy
+or rendered app-agent acceptance is claimed and capability sync remains pending.

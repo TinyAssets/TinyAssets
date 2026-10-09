@@ -87,7 +87,7 @@ class FakeProvider:
                 return
 
             def _reply(self, status, doc):
-                payload = json.dumps(doc).encode()
+                payload = b"" if status == 202 else json.dumps(doc).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))

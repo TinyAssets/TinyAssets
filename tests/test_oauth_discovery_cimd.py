@@ -3,6 +3,7 @@
 import json
 from urllib.parse import parse_qsl, urlsplit
 
+import httpx
 import pytest
 
 from tests import test_generic_oauth_connections as fixtures
@@ -321,6 +322,9 @@ def test_unlisted_mcp_through_connect_card(
     def route(method, host, path, headers, body):
         provider.response_headers = {}
         fetched.append((host, path))
+        if host == AUTH and method == "GET" and urlsplit(path).path == "/authorize":
+            provider.response_headers = {"Location": original_authorize(f"https://{AUTH}{path}")}
+            return 302, None
         if host == API and path == "/tenants/a/mcp":
             token = headers.get("Authorization", "").removeprefix("Bearer ")
             if provider.access.get(token, 0) == 0:
@@ -386,7 +390,13 @@ def test_unlisted_mcp_through_connect_card(
             assert document["client_id"] == cimd
             assert document["token_endpoint_auth_method"] == "none"
             provider.clients[cimd] = document["redirect_uris"]
-        return original_authorize(url)
+        response = httpx.get(  # hermetic-ok: fixture-owned loopback with logical AS Host
+            f"http://127.0.0.1:{provider.port}/authorize?{urlsplit(url).query}",
+            headers={"Host": AUTH},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        return response.headers["location"]
 
     monkeypatch.setattr(provider, "route", route)
     monkeypatch.setattr(provider, "authorize", authorize)
