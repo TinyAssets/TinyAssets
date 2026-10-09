@@ -126,16 +126,19 @@ def _materialize(client, staging, *, principal, center, identity, data, director
                     or proof.get('caps') != 'zero' or proof.get('nnp') != 1
                     or proof.get('profile') != 'cell-deny'):
                 raise RuntimeError('owner content proof is absent')
-            cell.stream.sendall(_frame({'size': len(data), 'directories': directories}))
-            payload = memoryview(data)
-            for offset in range(0, len(data), CHUNK_BYTES):
-                cell.stream.sendall(payload[offset:offset + CHUNK_BYTES])
-            if _read(reader, 1024) != {'written': len(data)} or cell.wait(5) != 0:
+            size = 0 if data is None else len(data)
+            cell.stream.sendall(_frame({'size': size, 'directories': directories,
+                                       'file': data is not None}))
+            if data is not None:
+                payload = memoryview(data)
+                for offset in range(0, size, CHUNK_BYTES):
+                    cell.stream.sendall(payload[offset:offset + CHUNK_BYTES])
+            if _read(reader, 1024) != {'written': size} or cell.wait(5) != 0:
                 raise RuntimeError('owner content cell did not complete')
     # Revoke owner traversal before inspecting or publishing outputs. No owner
     # cell keeps descriptors alive after the launcher has reaped this job.
     os.setxattr(staging, admission.ACCESS, admission._acl(7, {}, mask=0))
-    names = ['file', *(f'dir-{i}' for i in range(directories))]
+    names = ([] if data is None else ['file']) + [f'dir-{i}' for i in range(directories)]
     if sorted(os.listdir(staging)) != sorted(names):
         raise PermissionError('owner content output inventory differs')
     for name in names:
@@ -185,14 +188,28 @@ def _append(parent, name, data, machine):
 
 
 def write(center, parts, data, *, make_parents=True, mode='replace'):
-    """The sole daemon publication operation for admitted visible content."""
+    """The sole daemon file publication operation for admitted visible content."""
+    if mode not in ('replace', 'exclusive', 'append') or not isinstance(data, bytes):
+        raise ValueError('invalid owner content write')
+    _publish(center, parts, data, make_parents=make_parents, mode=mode)
+
+
+def ensure_directories(center, parts, *, machine):
+    """Publish only missing owner directories; never replace existing trees."""
+    if type(machine) is not int:
+        raise ValueError('owner directory identity must be an integer')
+    _publish(center, parts, None, make_parents=True, mode='directories',
+             expected_machine=machine)
+
+
+def _publish(center, parts, data, *, make_parents, mode, expected_machine=None):
+    """Create owner inodes in one cell and publish names from pinned parents."""
     from tinyassets import role_decoder
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
     from tinyassets.universe_owner import owner_of
 
-    if (mode not in ('replace', 'exclusive', 'append') or not isinstance(data, bytes)
-            or not 1 <= len(parts) <= MAX_PARENTS + 1
+    if (not 1 <= len(parts) <= MAX_PARENTS + (mode != 'directories')
             or any(not part or part in ('.', '..') or '/' in part or '\\' in part
                    or '\0' in part for part in parts)
             or not _owner_entry(parts[0])):
@@ -205,16 +222,19 @@ def write(center, parts, data, *, make_parents=True, mode='replace'):
     if principal is None:
         raise PermissionError('owner content center has no recorded owner')
     identity = owner_identity(center.parent, principal=principal)
+    if expected_machine is not None and identity.uid != expected_machine:
+        raise PermissionError('owner directory identity differs from its recorded owner')
     parent = open_dir_nofollow(center)
     try:
         if admission.read_label(parent) != admission.canonical_label(identity.uid):
             raise PermissionError('owner content root differs from its recorded owner')
         # Prepare all potentially missing parents once. Publish each empty
         # directory exclusively; a concurrent creator wins without losing data.
+        directories = parts if mode == 'directories' else parts[:-1]
         with _staging(center.parent, identity.uid) as staging:
             _materialize(client, staging, principal=principal, center=center,
-                         identity=identity, data=data, directories=len(parts) - 1)
-            for index, name in enumerate(parts[:-1]):
+                         identity=identity, data=data, directories=len(directories))
+            for index, name in enumerate(directories):
                 try:
                     child = _directory(parent, name)
                 except FileNotFoundError:
@@ -233,6 +253,8 @@ def write(center, parts, data, *, make_parents=True, mode='replace'):
                     raise
                 os.close(parent)
                 parent = child
+            if mode == 'directories':
+                return
             name = parts[-1]
             if mode == 'replace':
                 os.replace('file', name, src_dir_fd=staging, dst_dir_fd=parent)
@@ -248,16 +270,40 @@ def write(center, parts, data, *, make_parents=True, mode='replace'):
         os.close(parent)
 
 
+def _create_outputs(root, stream, *, size, directories, file):
+    """Write only numbered directories and the explicitly requested file."""
+    for index in range(directories):
+        os.mkdir(f'dir-{index}', 0o770, dir_fd=root)
+    if file:
+        fd = os.open('file', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o660, dir_fd=root)
+        try:
+            from tinyassets.universe_files import _write_all
+            remaining = size
+            while remaining:
+                chunk = stream.read(min(CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise RuntimeError('owner content ended before its declared size')
+                _write_all(fd, chunk)
+                remaining -= len(chunk)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    os.fsync(root)
+
+
 def cell_main():
     """Fixed numbered outputs only; no caller-selected paths or executables."""
     import resource
     import sys
 
     request = _read(sys.stdin.buffer, FRAME_BOUND)
-    if (set(request) != {'size', 'directories'} or type(request['size']) is not int
+    if (set(request) != {'size', 'directories', 'file'}
+            or type(request['file']) is not bool or type(request['size']) is not int
             or not 0 <= request['size'] <= (1 << 63) - 1
             or type(request['directories']) is not int
-            or not 0 <= request['directories'] <= MAX_PARENTS):
+            or not 0 <= request['directories'] <= MAX_PARENTS
+            or (not request['file'] and (request['size'] != 0 or not request['directories']))):
         raise ValueError('invalid owner content request')
     # Exact declared bytes bound disk writes; memory stays at one chunk. The
     # generic writer gains no new file-size ceiling or truncation behavior.
@@ -267,23 +313,8 @@ def cell_main():
     try:
         if os.listdir(root):
             raise PermissionError('owner content staging is not empty')
-        for index in range(request['directories']):
-            os.mkdir(f'dir-{index}', 0o770, dir_fd=root)
-        fd = os.open('file', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o660, dir_fd=root)
-        try:
-            from tinyassets.universe_files import _write_all
-            remaining = size
-            while remaining:
-                chunk = sys.stdin.buffer.read(min(CHUNK_BYTES, remaining))
-                if not chunk:
-                    raise RuntimeError('owner content ended before its declared size')
-                _write_all(fd, chunk)
-                remaining -= len(chunk)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.fsync(root)
+        _create_outputs(root, sys.stdin.buffer, size=size,
+                        directories=request['directories'], file=request['file'])
     finally:
         os.close(root)
     sys.stdout.buffer.write(_frame({'written': size}))

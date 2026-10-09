@@ -51,3 +51,27 @@ def test_publication_never_accepts_platform_or_escaping_paths(tmp_path, parts):
     with pytest.raises(ValueError, match='invalid owner content'):
         role_content.write(tmp_path, parts, b'data')
     assert list(tmp_path.iterdir()) == []
+
+
+def test_directory_only_cell_outputs_have_no_dummy_file(tmp_path):
+    import io
+
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        role_content._create_outputs(root, io.BytesIO(b''), size=0, directories=2, file=False)
+    finally:
+        os.close(root)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ['dir-0', 'dir-1']
+    assert all(path.is_dir() and list(path.iterdir()) == [] for path in tmp_path.iterdir())
+
+
+def test_explicit_empty_file_is_distinct_from_directory_only_output(tmp_path):
+    import io
+
+    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        role_content._create_outputs(root, io.BytesIO(b''), size=0, directories=1, file=True)
+    finally:
+        os.close(root)
+    assert (tmp_path / 'file').read_bytes() == b''
+    assert (tmp_path / 'dir-0').is_dir()
