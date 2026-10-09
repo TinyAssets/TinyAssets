@@ -580,7 +580,9 @@ def _with_sign_in_offer(
     # discovery anywhere its declared endpoints do not already reach.
     hosts = list(dict.fromkeys(
         [str(h) for h in sign_in_hosts]
-        + [str(e.get("host") or "") for e in action.get("endpoints") or []]
+        + [("https://" + str(e["host"]) + str(e["path_template"])
+            if e.get("host") and e.get("path_template") and "{" not in e["path_template"]
+            else str(e.get("host") or "")) for e in action.get("endpoints") or []]
         + [str(h) for h in action.get("hosts") or []]
     ))
     offer, reason = resolve_offer(requested, [h for h in hosts if h])
