@@ -10,15 +10,23 @@ active state and `settings.yaml` narrowing. It returns revision blobs, bounded a
 4 MiB in total; revisions beyond it are listed undelivered and stay
 `runtime_unavailable`.
 
+The thin loop checks the signed session's owner/center/agent active extension
+state on every launch.
+With no active extensions it skips the delivery RPC, so ordinary engine-routed
+reads do not depend on extension transport. Activation is observed by the next
+launch; any required delivery still fails closed.
+
 The host recomputes `sha256(blob)` against the revision digest and unpacks it with
 the existing package checks. Anything malformed, mismatched or unreachable raises
 `remote_extension_delivery_failed` with outcome `not_sent`; the command never runs.
 
 ## Mount claim
 
-The engine resource now accepts only host envelopes: `{"ta": <box message>,
-"mounts": [[name, revision, generation], ...]}` or the delivery request. A box
-message is always nested under `ta`, so a box cannot claim a delivery. The
+The engine resource accepts host envelopes: `{"ta": <box message>,
+"mounts": [[name, revision, generation], ...]}` or the delivery request. With
+no mounted revisions, original `op` messages retain their existing wire shape
+and dispatch with an empty mount set. Box-supplied envelopes are always nested
+under `ta`, so a box cannot claim a delivery. The
 engine binds the claim with `delivered()` for that one dispatch and
 `ExtensionCapabilities.call` keeps every existing check, so a forged or stale
 claim for a revision that is not active for this owner is refused.

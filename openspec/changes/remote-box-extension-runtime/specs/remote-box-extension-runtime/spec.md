@@ -13,6 +13,15 @@ same engine dispatcher, grant and fences as local ta.
 - **WHEN** the same owner runs `ta search` and `ta describe` locally and remotely
 - **THEN** both report the same capabilities and availability
 
+#### Scenario: No active extensions
+- **WHEN** the signed session's agent has no active extensions and calls an engine read through `ta`
+- **THEN** the read uses the existing signed route without requiring extension delivery
+- **AND** the model inventory remains exactly read, write, edit and bash
+
+#### Scenario: Named agent activation between launches
+- **WHEN** a named agent activates an extension between bash launches in one turn
+- **THEN** the next launch requests that agent's delivery even if the main agent has no active extensions
+
 ### Requirement: Content-addressed, credential-free delivery
 Delivery SHALL carry only installed package bytes whose SHA-256 the trusted host
 verified against the revision. It SHALL NOT carry host paths, bindings, grants or

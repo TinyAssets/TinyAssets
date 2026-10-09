@@ -294,7 +294,7 @@ def test_turn_hooks_run_in_the_turns_remote_box(world, tmp_path, monkeypatch):
                 owner=server._ACTOR_ID, turn=SimpleNamespace(turn_id="turn-1"),
                 _interrupted=lambda: False)
             coordinator._open_tools = lambda timeout: tool_session.open_loop_tools(
-                granted=("bash",), loop_reads=(), bind_box=lambda: (tools, "/cc"),
+                granted=("bash",), bind_box=lambda: (tools, "/cc"),
                 owner=server._ACTOR_ID, universe_dir=root,
                 engine_identity=lambda: (server._ACTOR_ID, root.name),
                 timeout=timeout, ta_turn="turn-1")

@@ -90,7 +90,8 @@ def test_turn_event_runner_uses_existing_signed_tool_surface(world, monkeypatch)
     async def open_tools(**kwargs):
         assert kwargs["actor_id"] == server._ACTOR_ID
         # The turn's signed backend grant (hooks run ta), not the four model tools.
-        assert kwargs["enabled_tools"] == BACKEND_ENGINE_CAPABILITIES
+        assert kwargs["enabled_tools"] == ("read", "write", "edit", "bash")
+        assert kwargs["capability_grant"] == BACKEND_ENGINE_CAPABILITIES
         yield Session()
     monkeypatch.setattr(agent_turn_coordinator, "open_engine_tools", open_tools)
     coordinator = SimpleNamespace(

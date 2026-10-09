@@ -137,7 +137,9 @@ async def open_loop_tools(
                                 handle=box._exec.handle,
                                 database=data_dir() / ".remote-ta-receipts.sqlite3",
                                 dispatch=lambda message, **kw: engine_ta(engine, message, **kw),
-                                deliver=lambda: engine_deliver(engine))
+                                deliver=lambda: engine_deliver(
+                                    engine, universe_dir=universe_dir, owner=owner,
+                                    session_key=session_key))
             stack.callback(bridge.close)
             box._exec.enable_ta(bridge)
         box_definitions = box_tool_definitions(root)
