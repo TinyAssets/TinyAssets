@@ -48,8 +48,8 @@ until that PR merges inside the maintenance window.
 Proof, 2026-10-09: `role_migrate_probe.py` passed all 356 interruption points,
 all preflight refusals, converged no-op, and numeric-owner/mode/ACL snapshot restore.
 The production-backup rehearsal for 1.4 is recorded in the runbook (2026-10-08).
-The full production image built from `eb7604293a`,
-`sha256:4102baa237574dfbb5db13276feb5368a3abb8e6a76a0ff67f21c5ebb370fddb`,
+The final production image built from `8ccfa3da9f`,
+`sha256:889f342baaf7ac9b4bf591337f52990823c146964b36585936189a1d37d1ad62`,
 passed migration, actual serving, all eleven cell legs, and the shipped
 Claude/Codex CLI execution and discovery probes. This includes engine HTTP tool
 write/read, real dependency download/offline installation, workspace leases,
@@ -66,10 +66,10 @@ test identities gives zero new failures and zero new skips. Slow tests passed
 10/10 on both revisions. Heavy selection has identical failure messages for all
 47 failures on both revisions, with 1,766 passes and zero skips each; both fail
 the existing 2,000-test floor (1,813 selected). Neither floor nor quarantine was
-relaxed. Final structural guards passed 585/585. Ruff passed on every touched
+relaxed. Final structural guards passed 586/586. Ruff passed on every touched
 Python file. The Claude plugin rebuild and import probe passed with no tracked
 diff. The PR-relative hygiene gate passed with the explicit retired-behavior
-declaration (329 tests added, 284 retired test findings).
+declaration (330 tests added, 284 retired test findings).
 
 Task 2.5 remains incomplete: the current full image proof uses a freshly migrated
 production-shaped fixture volume, not the restored production-backup clone, and
@@ -95,4 +95,16 @@ a bounded child-exit wait, and every incomplete child is killed and reaped. Both
 silent-output and closed-output hangs have real-fork regression coverage. The
 stale staged-bootstrap docstrings were corrected. The review inspected only part
 of the full change and reported no floor violation in that inspected scope.
-The complete jail selection and rebuilt-image extension-delivery proof are pending.
+The complete real-jail selection passed 74/74, with the CI assertion helper
+confirming every marked case executed without skips. The final image repeated
+all migration/serving/cell/provider proofs and delivered an installed extension's
+exact bytes over the authenticated engine resource under the migrated labels.
+The full six-shard comparison above predates the final main merge and timeout
+fix; the post-review proof is the 102-test affected selection, 74 real-jail tests,
+586 structural checks and the rebuilt production image, not another full-suite run.
+
+PR #4568 is non-draft with `infra-change`, maintenance-window-only, with auto-merge
+off and no Drain-Review receipt. Its scope gate is intentionally blocked by that
+missing receipt. Tasks 2.5, 2.6, 3.1's Verify-conditioned concern deletions, and
+3.2 remain open exactly as described above. The cross-family verdict was ADAPT;
+the two concrete findings were addressed and verified, without a second round.
