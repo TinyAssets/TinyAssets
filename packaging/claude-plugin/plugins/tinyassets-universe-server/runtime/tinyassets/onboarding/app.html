@@ -10657,8 +10657,13 @@
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
-    window.addEventListener('focus',()=>{if(token())refreshRail();});
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden&&token())refreshRail();});
+    // Native shells return from approvals in an external browser. In a web tab,
+    // focus also returns from our embedded screens: refreshing here can open a
+    // setup request over the command-center dialog the owner is already using.
+    if(NATIVE||DESKTOP_SHELL){
+      window.addEventListener('focus',()=>{if(token())refreshRail();});
+      document.addEventListener('visibilitychange',()=>{if(!document.hidden&&token())refreshRail();});
+    }
     if(typeof AppUI!=="undefined") AppUI.init();
     HostedModelConnect.wire();
     wireNativeReturn();
