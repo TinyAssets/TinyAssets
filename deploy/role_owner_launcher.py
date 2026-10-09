@@ -519,7 +519,7 @@ class OwnerLauncher:
                            'preview-write', 'tool-jail',
                            'tool-files', 'provider-discovery', 'provider-exec', 'package',
                            'owner-delete', 'owner-delete-subtree',
-                           'center-root', 'owner-content'} or (
+                           'center-root', 'owner-content', 'owner-measure'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
@@ -528,9 +528,9 @@ class OwnerLauncher:
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
                                 'package', 'owner-delete', 'owner-delete-subtree',
-                                'center-root', 'owner-content'}
-                or (kind in ('center-root', 'owner-content', 'owner-delete-subtree',
-                             'workspace-provision')
+                                'center-root', 'owner-content', 'owner-measure'}
+                or (kind in ('center-root', 'owner-content', 'owner-measure',
+                             'owner-delete-subtree', 'workspace-provision')
                     and not streaming)
                 # A workspace operation reaches a remote only through the
                 # center's own checking proxy. Making an empty workspace
@@ -589,7 +589,8 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
-        if kind in ('tool-jail', 'tool-files', 'package', 'owner-delete', 'workspace-remote'):
+        if kind in ('tool-jail', 'tool-files', 'package', 'owner-delete',
+                    'workspace-remote', 'owner-measure'):
             info = os.fstat(received[1])
             expected = self.data_root + '/' + request['command_center']
             if kind == 'package':
@@ -779,6 +780,9 @@ class OwnerLauncher:
                 elif kind == 'owner-content':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-content',
                                'content', self.data_root, str(inner)]
+                elif kind == 'owner-measure':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-measure',
+                               'measure', self.data_root, str(inner)]
                 elif kind == 'tool-files':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
                                'files', self.data_root, str(inner)]

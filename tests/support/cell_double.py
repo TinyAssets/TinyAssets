@@ -161,11 +161,21 @@ def _remote_git(request, *, universe_dir, principal, egress_socket):
 
 def _render(spec, wall_seconds):
     """The preview cell: the real browser child supervisor, run here."""
-    from tinyassets import ui_preview
+    import base64
 
-    out, _err, code, _breach = ui_preview._supervised(
-        json.dumps(spec).encode("utf-8"), wall_seconds)
-    return SimpleNamespace(returncode=code, stdout=out, cell={})
+    from tinyassets.custom_agents import read_app_ui_asset
+    from tinyassets.role_preview_cell import supervised
+
+    assets = {}
+    for path, sha in spec['hashes'].items():
+        data = read_app_ui_asset(spec['base_path'], owner_user_id=spec['owner_user_id'], sha256=sha)
+        if data is not None:
+            assets[path] = base64.b64encode(data).decode('ascii')
+    packet = dict(spec, base_path='/absent', asset_bytes=assets)
+    out, err, code, breach = supervised(json.dumps(packet).encode('utf-8'), wall_seconds)
+    if breach or code:
+        out = json.dumps({'unavailable': breach or err.decode('utf-8', 'replace')[-300:]}).encode()
+    return SimpleNamespace(returncode=0, stdout=out, cell={})
 
 
 def _write_preview(universe_dir, ui_id, data):
@@ -293,6 +303,53 @@ def _snapshot_seal(fd, uid, *, directory, traverse_only=False):
     os.fchmod(fd, (0o710 if traverse_only else 0o750) if directory else 0o440)
 
 
+def _storage_measure(center, scope):
+    """Owner-only logical bytes on same-UID fixtures, without a launcher.
+
+    The daemon still adds its separate platform count. Only this hand-off is
+    doubled; the real raw walker preserves exclusions and inode deduplication.
+    """
+    import stat
+
+    from tinyassets import storage_accounting as accounting
+    from tinyassets.jail_disk import _NOT_JAIL_WRITABLE
+    from tinyassets.role_content import _owner_entry
+    from tinyassets.role_storage import SCOPES
+    from tinyassets.workspace_owner_pool import SCRATCH_DIR
+
+    if scope not in SCOPES:
+        raise ValueError('invalid storage scope')
+    center = Path(center)
+    if scope == 'workspaces':
+        return accounting._walk_bytes(center / 'workspaces',
+                                      exclude_top=frozenset({SCRATCH_DIR}))
+    excluded = accounting._NOT_USER_BYTES if scope == 'universe' else _NOT_JAIL_WRITABLE
+    seen = set()
+    # Legacy same-UID fixtures can alias platform and owner files. Attribute
+    # those aliases to the daemon count once, preserving the public contract.
+    accounting._walk_bytes(center, exclude_top=excluded, _exclude_owner=True, _seen=seen)
+    total = 0
+    try:
+        entries = list(center.iterdir())
+    except FileNotFoundError:
+        return 0
+    for entry in entries:
+        if entry.name in excluded or not _owner_entry(entry.name):
+            continue
+        try:
+            info = entry.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            total += accounting._walk_bytes(entry, _seen=seen)
+        elif stat.S_ISREG(info.st_mode):
+            key = (info.st_dev, info.st_ino)
+            if key not in seen:
+                seen.add(key)
+                total += info.st_size
+    return total
+
+
 @pytest.fixture(autouse=True)
 def owner_cell_double(request, monkeypatch):
     """Stand in for every owner cell, unless the test wants the real one."""
@@ -310,6 +367,7 @@ def owner_cell_double(request, monkeypatch):
         role_preview,
         role_remote_git,
         role_snapshot,
+        role_storage,
         role_tools,
         role_video,
     )
@@ -324,6 +382,7 @@ def owner_cell_double(request, monkeypatch):
     monkeypatch.setattr(role_tools, "run", _tool_run)
     monkeypatch.setattr(role_tools, "prepare", _tool_prepare)
     monkeypatch.setattr(role_video, "frames", _video_frames)
+    monkeypatch.setattr(role_storage, "measure", _storage_measure)
     monkeypatch.setattr(role_snapshot, "owner_uid", _snapshot_owner_uid)
     monkeypatch.setattr(role_snapshot, "seal", _snapshot_seal)
     # Daemon-side code checks these against the process it runs in. A test

@@ -60,11 +60,11 @@ def tool_mounts(uid):
 
 def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=False,
           tool=False, video=False, provider=False, tool_files=False, package=False,
-          owner_delete=False, provider_exec=False, center_root=False, content=False):
+          owner_delete=False, provider_exec=False, center_root=False, content=False, measure=False):
     identity(uid)
     host = namespaces()
     mounted = (preview_write or tool or provider or tool_files or package or owner_delete
-               or center_root or content or (node and mime == 'workspace'))
+               or center_root or content or measure or (node and mime == 'workspace'))
     if center_root or content:
         # DA3: daemon-private staging S; the mapper matched its exact path and
         # daemon owner. Its ACL, not its group, grants this owner rwx.
@@ -160,13 +160,14 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
             if key in mime:
                 argv.extend(['--bind-fd', str(fd), destination])
     elif mounted:
-        argv.extend(['--bind-fd', '3', '/workspace'])
+        argv.extend(['--ro-bind-fd' if measure else '--bind-fd', '3', '/workspace'])
     argv.extend(["--proc", "/proc", "--dev", "/dev"])
     if package or provider_exec:
         argv.extend(['--size', str(256 * 1024 * 1024)])
     argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
+                 'inside-measure' if measure else
                  'inside-owner-delete' if owner_delete else
                  'inside-content' if content else
                  'inside-center-root' if center_root else
@@ -286,7 +287,8 @@ def preview(host, data_root, uid):
     sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
     sys.stdout.buffer.flush()
     sys.path.insert(0, '/app')
-    from tinyassets.ui_preview import MAX_CHILD_OUTPUT, _supervised
+    from tinyassets.role_preview_cell import supervised
+    from tinyassets.ui_preview import MAX_CHILD_OUTPUT
 
     raw = sys.stdin.buffer.read(MAX_CHILD_OUTPUT + 1)
     if len(raw) > MAX_CHILD_OUTPUT:
@@ -299,7 +301,7 @@ def preview(host, data_root, uid):
     # No database or host-path fallback in this cell, even for an empty asset set.
     if not isinstance(spec.get('asset_bytes'), dict) or spec.get('base_path') != '/absent':
         raise ValueError('preview must carry admitted data only')
-    out, err, code, breach = _supervised(json.dumps(spec).encode(), wall)
+    out, err, code, breach = supervised(json.dumps(spec).encode(), wall)
     if breach or code:
         out = json.dumps({'unavailable': breach or err.decode('utf-8', 'replace')[-300:]}).encode()
     sys.stdout.buffer.write(out)
@@ -539,6 +541,30 @@ if __name__ == "__main__":
         sys.stdout.buffer.flush()
         sys.path.insert(0, '/app')
         from tinyassets.role_content import cell_main
+
+        cell_main()
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-measure'
+            and sys.argv[2] == 'measure' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), measure=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-measure'
+            and sys.argv[2] == 'measure' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('storage source differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 256 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 25), (resource.RLIMIT_NOFILE, 192),
+                            (resource.RLIMIT_FSIZE, 0), (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_storage import cell_main
 
         cell_main()
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'

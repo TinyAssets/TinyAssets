@@ -101,6 +101,7 @@ class Store:
 def _walk_bytes(
     root: Path, *, exclude_top: frozenset[str] = frozenset(),
     _seen: set[tuple[int, int]] | None = None,
+    _exclude_owner: bool = False,
 ) -> int:
     """Logical bytes of regular files under ``root``. Symlinks are not followed
     and a hard-linked file is counted once. Missing root is 0 bytes."""
@@ -117,7 +118,8 @@ def _walk_bytes(
         directory, top = stack.pop()
         with os.scandir(directory) as entries:
             for entry in entries:
-                if top and entry.name in exclude_top:
+                if top and (entry.name in exclude_top or (_exclude_owner
+                        and _owner_content_name(entry.name))):
                     continue
                 try:
                     st = entry.stat(follow_symlinks=False)
@@ -141,6 +143,37 @@ def _walk_bytes(
     return total
 
 
+def _owner_content_name(name):
+    from tinyassets.role_content import _owner_entry
+
+    return _owner_entry(name)
+
+
+def _center_bytes(root: Path, *, scope: str, exclude_top=frozenset()):
+    from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
+    from tinyassets.storage import data_dir
+
+    configured = Path(data_dir()).resolve()
+    runtime_center = root.absolute().parent == configured
+    if not runtime_center:
+        try:
+            info = root.lstat()
+        except FileNotFoundError:
+            return 0
+        # An owner-labelled path outside the configured volume is never a
+        # generic utility tree, even when the caller supplied another base.
+        if OWNER_ID_FIRST <= info.st_gid <= OWNER_ID_LAST:
+            raise PermissionError('storage center is outside the admitted data root')
+        target = root / 'workspaces' if scope == 'workspaces' else root
+        return _walk_bytes(target, exclude_top=exclude_top)
+    from tinyassets.role_storage import measure
+
+    owned = measure(root, scope)
+    if scope == 'workspaces':
+        return owned
+    return owned + _walk_bytes(root, exclude_top=exclude_top, _exclude_owner=True)
+
+
 def _universe_files(base: Path, universe_id: str) -> int:
     """Everything in the universe's own directory except what the user did not put
     there -- protected credential materialization/cache
@@ -153,7 +186,7 @@ def _universe_files(base: Path, universe_id: str) -> int:
     root = base / universe_id
     # The host walk never sees a jail's disposable tmpfs. Every on-disk runtime
     # file is persistent, even if a provider renamed/recreated a cache directory.
-    return _walk_bytes(root, exclude_top=_NOT_USER_BYTES)
+    return _center_bytes(root, scope="universe", exclude_top=_NOT_USER_BYTES)
 
 
 #: Top-level entries of a universe directory that are the PLATFORM's, not the
@@ -319,8 +352,8 @@ def _workspaces(base: Path, universe_id: str) -> int:
 
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
         raise ValueError(f"not a command center id: {universe_id!r}")
-    return _walk_bytes(base / universe_id / "workspaces",
-                       exclude_top=frozenset({SCRATCH_DIR}))
+    return _center_bytes(base / universe_id, scope="workspaces",
+                         exclude_top=frozenset({SCRATCH_DIR}))
 
 
 def _blob_sum(columns: tuple[str, ...]) -> str:

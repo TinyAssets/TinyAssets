@@ -65,7 +65,7 @@ MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 #: Every in-container leg this script can drive, in the order it drives them.
 LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
              "provider_exec", "workspace_remote", "workspace_provision", "engine_http",
-             "two_pass_delete")
+             "preview", "two_pass_delete")
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
 #: skipped: the oracle refuses to pretend an unproven thing is proven.
@@ -531,6 +531,7 @@ def leg_engine_http():
     from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.engine_mcp_http import _EngineServer, EngineMcpRoute
     from tinyassets.engine_tool_client import _make_client
+    from tinyassets.engine_steering import route_with_session
     from tinyassets.storage import DB_FILENAME
 
     principal, center = NEW_PRINCIPAL, NEW_CENTER
@@ -555,7 +556,10 @@ def leg_engine_http():
         while not server.server.started and server.alive() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert server.server.started, 'engine endpoint did not start'
-        route = EngineMcpRoute(principal, center, f'http://127.0.0.1:{port}/mcp',
+        url = route_with_session(f'http://127.0.0.1:{port}/mcp', 'oracle',
+                                 grant_key=server.grant_key,
+                                 tools=('read', 'write', 'bash', 'get_status'))
+        route = EngineMcpRoute(principal, center, url,
                                server.secret, server.grant_key)
 
         async def call():
@@ -568,6 +572,9 @@ def leg_engine_http():
                 assert not result.is_error, result
                 text = ''.join(getattr(block, 'text', '') for block in result.content)
                 assert 'OWNER-ENGINE-CELL-OK' in text, text
+                bridged = await client.call_tool('bash', {'command': 'ta search status'})
+                bridge_text = ''.join(getattr(block, 'text', '') for block in bridged.content)
+                assert not bridged.is_error and 'get_status' in bridge_text, bridged
                 return text
 
         import tempfile
@@ -620,24 +627,18 @@ def leg_workspace_remote():
     content = (lease / answer['content']).stat()
     assert (made.st_uid, made.st_gid) == (identity.uid, identity.gid), made
     assert (content.st_uid, content.st_gid) == (identity.uid, identity.gid), content
-    # The pool parent stays the daemon's; this one owner reaches it by ACL and
-    # nobody else by anything (tinyassets/workspace_owner_pool.py).
-    from tinyassets.role_center_admission import _acl
-
     pool_path = DATA / center / WORKSPACES_DIR
     pool = pool_path.stat()
-    access = os.getxattr(pool_path, 'system.posix_acl_access')
-    assert (pool.st_uid, access) == (1001, _acl(7, {identity.gid: 7}, mask=7)), pool
+    assert (pool.st_uid, pool.st_gid) == (identity.uid, identity.gid), pool
     assert not stat.S_IMODE(pool.st_mode) & 0o007, pool
     return dict(center=center, machine=identity.uid, answer=answer,
                 lease_owner=[made.st_uid, made.st_gid],
                 content_owner=[content.st_uid, content.st_gid],
-                daemon_pool=[pool.st_uid, pool.st_gid, oct(stat.S_IMODE(pool.st_mode))],
-                daemon_pool_acl_grants_only_this_owner=True)
+                owner_pool=[pool.st_uid, pool.st_gid, oct(stat.S_IMODE(pool.st_mode))])
 
 
 def leg_workspace_provision():
-    """Real acquisition and offline pip install as the owner, without dependencies."""
+    """Real registry acquisition and offline package install as the owner."""
     import secrets
     from tinyassets import role_remote_git, workspace_owner_pool, workspace_fs
     from tinyassets.workspace_provision import admit_requirements
@@ -658,19 +659,59 @@ def leg_workspace_provision():
     lease_fd = workspace_fs.open_dir_nofollow(lease)
     repo_fd = workspace_fs.open_subdir_nofollow(lease_fd, 'repo')
     try:
+        requirements = ('idna==3.10 --hash=sha256:'
+                        '946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3\n')
         result = execute_provision(
-            ProvisionManifests(admit_requirements(''), None),
+            ProvisionManifests(admit_requirements(requirements), None),
             lease_fd=lease_fd, repo_fd=repo_fd, universe_dir=center, principal=principal,
             max_transfer_bytes=1024 * 1024, storage_bound=128 * 1024 * 1024,
             timeout_s=120, cancelled=lambda: False)
-        assert result.failure is None and result.bytes_to_charge == 0, result
+        assert result.failure is None and 0 < result.bytes_to_charge <= 1024 * 1024, result
+        from tinyassets import universe_tools
+        python = '/u/' + '/'.join((*parts, name, 'repo', '.venv', 'bin', 'python'))
+        with identity_context(Identity(principal, principal)):
+            installed = universe_tools.run_jailed(center, [python, '-c',
+                'import importlib.metadata; print(importlib.metadata.version("idna"))'],
+                agent_id='main')
+        assert installed.exit_code == 0 and installed.output.strip() == b'3.10', installed
         made = (lease / 'repo' / '.venv').stat()
         assert (made.st_uid, made.st_gid) == (identity.uid, identity.gid), made
     finally:
         os.close(repo_fd)
         os.close(lease_fd)
-    return dict(center=center.name, machine=identity.uid, installed='.venv',
+    return dict(center=center.name, machine=identity.uid, installed='idna==3.10',
                 bytes_to_charge=result.bytes_to_charge, registry_retired_before_install=True)
+
+
+def leg_preview():
+    from tinyassets import custom_agents, ui_preview
+    from tinyassets.auth.middleware import Identity, identity_context
+    import io
+    from PIL import Image
+
+    component = {'kind': 'tinyassets.app-ui.v1', 'version': 1,
+                 'ui_id': 'owner-oracle', 'name': 'Owner preview oracle',
+                 'markup': '<div>Owner preview</div>',
+                 'style': 'html,body{margin:0;background:rgb(32,80,192)}', 'script': ''}
+    with identity_context(Identity('alice', 'alice')):
+        custom_agents.change_app_ui_entry(DATA, owner_user_id='alice', universe_id='u-alice',
+            operation='add_ui', payload={'component': component})
+        try:
+            ui_preview.preview_app_ui(DATA, owner_user_id='alice', universe_id='u-alice',
+                                      ui_id='owner-oracle', width=320, height=240,
+                                      wall_seconds=0.01)
+        except ui_preview.PreviewUnavailable as exc:
+            assert 'timeout' in str(exc), str(exc)
+        else:
+            raise AssertionError('preview deadline was not enforced')
+        result = ui_preview.preview_app_ui(DATA, owner_user_id='alice', universe_id='u-alice',
+                                           ui_id='owner-oracle', width=320, height=240)
+    png = Image.open(io.BytesIO(result['png'])).convert('RGB')
+    assert png.size == (320, 240), png.size
+    assert png.getpixel((200, 160)) == (32, 80, 192), png.getpixel((200, 160))
+    assert not result['uncaught_errors'] and not result['missing_assets'], result
+    return dict(center='u-alice', size=list(png.size), png_bytes=len(result['png']),
+                owner_cell=True, browser_sandbox=True, timeout_reaped=True)
 
 
 def leg_two_pass_delete():
@@ -709,7 +750,8 @@ LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
         'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
         'workspace_remote': leg_workspace_remote,
         'workspace_provision': leg_workspace_provision,
-        'engine_http': leg_engine_http, 'two_pass_delete': leg_two_pass_delete}
+        'engine_http': leg_engine_http, 'preview': leg_preview,
+        'two_pass_delete': leg_two_pass_delete}
 
 report, failed = {}, []
 for name in WANTED:
@@ -775,14 +817,15 @@ ACL = (('legacy-one', 'carol', 'admin'), ('legacy-one', 'dave', 'read'))
 
 
 def extra(data):
-    from tinyassets.daemon_server import (grant_universe_access, initialize_author_server,
-                                          set_founder_home)
+    from tinyassets.daemon_server import (grant_universe_access, grant_universe_ownership,
+                                          initialize_author_server, set_founder_home)
     with sqlite3.connect(Path(data) / '.tinyassets.db') as db:
         db.execute('DROP TABLE founder_home')
         db.execute('DROP TABLE universe_acl')
     initialize_author_server(data)
     for founder, universe in AUTHORITY:
         set_founder_home(data, founder_sub=founder, universe_id=universe)
+        grant_universe_ownership(data, universe_id=universe, owner_id=founder)
     for universe, actor, permission in ACL:
         grant_universe_access(data, universe_id=universe, actor_id=actor,
                               permission=permission, granted_by=actor)
@@ -990,7 +1033,7 @@ def stage_cells(args):
 
 
 def stage_providers(args):
-    """Builder C's probe, unchanged: the real CLIs in real provider-exec cells."""
+    """Real CLIs and isolation checks in execution and discovery cells."""
     probe = Path(__file__).resolve().parent / "role_provider_cell_probe.py"
     result = subprocess.run([sys.executable, "-I", str(probe), "--image", args.image],
                             capture_output=True, text=True, encoding="utf-8")

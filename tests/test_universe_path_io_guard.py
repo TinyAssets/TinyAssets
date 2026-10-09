@@ -32,6 +32,9 @@ _EXEMPT = {
     # Lower-level owner-inode creation/publication used by universe_files.
     # It pins every parent, validates custody, and never follows symlinks.
     "tinyassets/role_content.py",
+    # Fixed read-only owner-cell metadata walk: pinned/no-follow descriptors,
+    # exact owner custody, bounded traversal; no caller-selected path or file reads.
+    "tinyassets/role_storage.py",
 }
 
 _TOUCHES_UNIVERSE = re.compile(
@@ -404,6 +407,8 @@ PINNED: dict[str, list[str]] = {
         "_write_raw: .write_text()",
         "_write_raw: os.replace()",
     ],
+    # Fixed owner-cell supervisor reads only kernel /proc/<pid>/stat records.
+    "tinyassets/role_preview_cell.py": ["_proc_snapshot: open()"],
     "tinyassets/ui_preview.py": [
         # The host-wide render slot's flock holder at the DATA ROOT
         # (.ui-preview.lock): no jail binds the data root, and flock needs the

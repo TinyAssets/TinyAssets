@@ -867,3 +867,15 @@ def test_preview_refuses_a_read_only_caller_before_writing(tmp_path, monkeypatch
 
 
         # monkeypatch restores the original poison state and lock globals.
+
+
+@pytest.mark.real_browser
+def test_owner_preview_timeout_retires_child_before_next_render(tmp_path):
+    _need_browser()
+    _add(tmp_path, 'bounded', markup='<div>bounded preview</div>')
+    with pytest.raises(ui_preview.PreviewUnavailable, match='timeout'):
+        ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                  ui_id='bounded', width=320, height=240, wall_seconds=0.01)
+    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                      ui_id='bounded', width=320, height=240)
+    assert report['png'].startswith(b'\x89PNG')

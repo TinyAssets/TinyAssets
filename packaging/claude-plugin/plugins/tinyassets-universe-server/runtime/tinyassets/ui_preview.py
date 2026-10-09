@@ -29,8 +29,9 @@ them from ``blob:`` URLs. Only the parent is a stand-in, playing the app's part:
   ``emit``, ``setConversationDesign``) is refused as a preview, and each call is
   reported so the agent sees what its UI tried.
 
-It runs as a short-lived subprocess tree (``python -m tinyassets.ui_preview``, its
-Playwright driver and Chromium) in a PID namespace, watched from outside: a
+Inside the admitted owner cell it runs as a short-lived subprocess tree
+(``python -m tinyassets.role_preview_cell``, its Playwright driver and Chromium)
+in a PID namespace, watched by the fixed cell supervisor: a
 wall clock, a resident-memory budget summed over the whole tree and a process
 count, and on any breach -- or when the render ends -- the whole namespace is
 killed and reaped before the slot frees. One render per HOST (a lock file the

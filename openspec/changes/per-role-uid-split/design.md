@@ -321,3 +321,39 @@ Selected-model result ceilings travel on the authenticated engine HTTP route.
 Handlers read the current MCP request (with request-context fallback) rather than
 mutating process environment; the fixed maximum and deployment override still win.
 Concurrent endpoint requests retain independent ceilings.
+
+
+### Owner directory publication and storage observation
+
+Runtime workspace parents use the same fixed owner-content staging and daemon
+exclusive publication as files, with an explicit directory-only frame (no dummy
+file). Existing parents must retain their exact admitted owner identity.
+Storage admission observes owner content through a fixed read-only owner-measure
+cell pinned to the canonical center and its recorded owner. Its only selector is
+one of the existing jail, universe-files, or workspaces counting scopes; no path
+or executable is supplied. A bounded no-follow descriptor walk counts logical
+regular-file bytes once per inode, preserving existing exclusions, including
+uncharged scratch workspace storage. Inaccessible or incomplete walks fail.
+The daemon measures platform-classified entries separately and never descends
+owner-classified trees. The cell cannot change modes, content, or authority.
+
+
+### Fixed preview-cell child supervision
+
+The admitted preview decoder invokes a dedicated immutable role_preview_cell
+supervisor over the data-only render packet. The daemon never spawns Chromium.
+The fixed child entry point renders the packet inside a nested PID namespace;
+wall time, aggregate RSS, process count, input and output remain bounded, and
+namespace cleanup completes before the owner cell replies. There is no
+caller-selected command or host-path asset fallback.
+
+### Required-test identity venues
+
+The Linux required-test coordinator routes the owner-tree deletion, reader
+identity, and center-admission proof files to root so their real inode labels
+and capability-free child identities can be exercised. All other tests retain
+UID1001 and the mandatory bubblewrap preflight. Both venues retain the original
+file selection and shard ownership and merge into one shard receipt before the
+unchanged coverage, floor, and quarantine checks. Missing root reports, omitted
+root proof files, skipped root cases, duplicate receipts, and abnormal pytest
+exits fail the gate; root proofs are never exclusions from required coverage.
