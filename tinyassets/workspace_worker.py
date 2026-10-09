@@ -1,4 +1,7 @@
-"""The credential-blind git worker: a spawned child, one operation, no token out.
+"""The credential-blind git worker's operations; its daemon-child spawn is retired.
+
+``execute_workspace_operation`` now refuses (see its docstring). What follows
+describes the operations it used to run.
 
 The token exists only inside this child. The parent passes a credential
 REFERENCE (``vault://http/<key>``), never a secret; the child resolves it with
@@ -15,7 +18,6 @@ directory user code can write.
 
 from __future__ import annotations
 
-import multiprocessing
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,7 +40,6 @@ __all__ = [
     "reconcile_push_intents",
     "WORKSPACE_OPS",
     "execute_workspace_operation",
-    "run_workspace_worker",
 ]
 
 #: Operations the child answers. Anything else is refused without spawning git.
@@ -604,59 +605,13 @@ def reconcile_push_intents(base_path: Any, **kwargs: Any) -> list[tuple[str, str
     return _reconcile(base_path, **kwargs)
 
 
-def _mark_staging_in_use(request: Any) -> bool:
-    """Hold a share on the staging tree for this worker's whole life, and hand the
-    same descriptor to every git it runs.
-
-    The parent's liveness token proves only the PARENT alive; a worker -- or a
-    git in its own session -- can outlive a killed parent and still be writing
-    here. The kernel keeps a shared lock while any process holds a copy of the
-    descriptor, so the sweep can see them (gpt-6-astra, PR #4143 round 1).
-    Never released: the kernel does it when this process and its gits exit.
-
-    Returns False when the share could not be taken. The caller then REFUSES the
-    operation: running unmarked would let a sweep remove the tree underneath it
-    (gpt-6-astra, PR #4143 round 2).
-    """
-    if not isinstance(request, dict) or not request.get("staging_dir"):
-        return True
-    from tinyassets import workspace_git, workspace_staging
-
-    try:
-        fd = workspace_staging.hold_in_use(request["staging_dir"])
-    except OSError:
-        return False
-    if fd is not None:
-        workspace_git.inherit_descriptor(fd)
-    return True
-
-
-def run_workspace_worker(channel: Any) -> None:
-    """Child entry point. Sanitize, answer ONE request, exit."""
-    from tinyassets.storage.outbound_connections import _sanitize_child_environment
-
-    _sanitize_child_environment()
-    try:
-        channel.send({"op": "ready"})
-        request = channel.recv()
-        if not _mark_staging_in_use(request):
-            channel.send({
-                "ok": False,
-                "error": "workspace staging could not be marked in use",
-                "stderr_class": "transport",
-            })
-            return
-        channel.send(handle_request(request))
-    except Exception as exc:  # noqa: BLE001 - a child that dies silently is worse
-        try:
-            channel.send({"ok": False, "error": _safe_error(exc), "stderr_class": "other"})
-        except Exception:  # pragma: no cover - the pipe is already gone
-            pass
-    finally:
-        try:
-            channel.close()
-        except Exception:  # pragma: no cover
-            pass
+#: The refusal every credentialed workspace git operation now receives.
+RETIRED_ANSWER = {
+    "ok": False,
+    "error": ("credentialed workspace git is retired: its worker held the token as a "
+              "daemon child; use authenticated git from bash in the agent's own cell"),
+    "stderr_class": "auth",
+}
 
 
 def execute_workspace_operation(
@@ -666,75 +621,15 @@ def execute_workspace_operation(
     startup_timeout_s: float = 30.0,
     spawn: Any = None,
 ) -> dict[str, Any]:
-    """Spawn the worker, run one operation, and always tear the child down.
+    """Refuse: no daemon-uid child resolves a token or runs git any more.
 
-    ``spawn`` is injectable so a test can drive the whole parent side without a
-    real process. The response is whatever the child sent; a child that dies or
-    never answers is a refusal, never a silent success.
+    The worker was a ``multiprocessing`` child of the daemon that read the vault
+    and ran git with the token and the container network. No owner cell holds a
+    credential, so this class is retired rather than left unconfined
+    (per-role-uid-split design, section 1). ``spawn`` stays injectable for the
+    callers' own tests.
     """
+    del timeout_s, startup_timeout_s
     if spawn is not None:
         return spawn(request)
-    context = multiprocessing.get_context("spawn")
-    parent_channel, child_channel = context.Pipe(duplex=True)
-    worker = context.Process(
-        target=run_workspace_worker,
-        args=(child_channel,),
-        daemon=True,
-        name="workspace-git-worker",
-    )
-    try:
-        worker.start()
-    except Exception as exc:
-        parent_channel.close()
-        child_channel.close()
-        return {
-            "ok": False,
-            "error": f"workspace worker could not be spawned: {type(exc).__name__}",
-            "stderr_class": "transport",
-        }
-    child_channel.close()
-    try:
-        if not parent_channel.poll(startup_timeout_s):
-            return {
-                "ok": False,
-                "error": "workspace worker did not start",
-                "stderr_class": "transport",
-            }
-        hello = parent_channel.recv()
-        if not isinstance(hello, dict) or hello.get("op") != "ready":
-            return {
-                "ok": False,
-                "error": "workspace worker did not hand shake",
-                "stderr_class": "transport",
-            }
-        parent_channel.send(request)
-        # The child's own git timeout is shorter; this is the backstop for a
-        # child that hangs outside git.
-        if not parent_channel.poll(timeout_s + startup_timeout_s):
-            return {
-                "ok": False,
-                "error": "workspace worker did not answer in time",
-                "stderr_class": "timeout",
-            }
-        answer = parent_channel.recv()
-        if not isinstance(answer, dict):
-            return {
-                "ok": False,
-                "error": "workspace worker sent a malformed answer",
-                "stderr_class": "other",
-            }
-        return answer
-    except (EOFError, OSError) as exc:
-        return {
-            "ok": False,
-            "error": f"workspace worker died: {type(exc).__name__}",
-            "stderr_class": "transport",
-        }
-    finally:
-        try:
-            parent_channel.close()
-        except Exception:  # pragma: no cover
-            pass
-        if worker.is_alive():
-            worker.terminate()
-        worker.join(timeout=10)
+    return dict(RETIRED_ANSWER)

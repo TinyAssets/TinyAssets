@@ -138,19 +138,13 @@ on:
       - "tests/test_remote_box_ta.py"
       - "tinyassets/agent_loop/box_ta.py"
       - "tests/test_ta_capabilities.py"
-      # Workspace provisioning and registry proxy jail proofs (real_jail-marked
+      # Workspace mount jail proofs (real_jail-marked
       # 2026-10-01; before that no CI job ran them).
       - "tests/test_node_sandbox_workspace.py"
       - "tests/test_workspace_provision_mount.py"
-      - "tests/test_workspace_provision_process.py"
-      - "tests/test_workspace_registry_proxy.py"
       - "tests/test_sandbox_mount_handles.py"
       # Code nodes' bwrap jail: positive control plus the boundary proofs.
       - "tests/test_node_sandbox.py"
-      - "tinyassets/workspace_provision_process.py"
-      - "tinyassets/workspace_registry_process.py"
-      - "tinyassets/workspace_registry.py"
-      - "tinyassets/workspace_registry_proxy.py"
       - "tests/engine_authority_helpers.py"
       - "tinyassets/universe_tools.py"
       - "tinyassets/ta_capabilities.py"

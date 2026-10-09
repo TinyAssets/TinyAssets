@@ -58,7 +58,6 @@ def fence_connection(
         ProviderWorkBindingState,
     )
     from tinyassets.providers.definition import list_definitions
-    from tinyassets.storage.outbound_connections import ConnectionLedger
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     affected = {
@@ -246,13 +245,9 @@ def fence_connection(
             # app gesture lock. Revoke egress before releasing admission so it
             # cannot adopt the old grant in the gap before vault deletion.
             from tinyassets.broker.disconnect import disconnect
-            from tinyassets.broker.supervisor import broker_selected
 
-            if broker_selected():
-                disconnect(base, principal=owner, command_center=uid, destination=destination,
-                           action="fence", incarnation=incarnation)
-            else:
-                ConnectionLedger(Path(base) / "outbound.db").revoke_connection(connection_id)
+            disconnect(base, principal=owner, command_center=uid, destination=destination,
+                       action="fence", incarnation=incarnation)
             conn.commit()
         from tinyassets.storage.pending_requests import list_pending, resolve_request
 
@@ -309,7 +304,6 @@ def intentionally_disconnected(base, *, owner, uid):
     """No credential IO. A deliberate completed model removal is not failed auth."""
     from tinyassets.provider_assignment import load_provider_assignment_in_transaction
     from tinyassets.providers.definition import list_definitions
-    from tinyassets.storage.outbound_connections import ConnectionLedger
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
@@ -326,42 +320,30 @@ def intentionally_disconnected(base, *, owner, uid):
             "universe_id=? AND owner_user_id=? AND model_source=1 AND completed=1",
             (uid, owner),
         ).fetchall()
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.broker.disconnect import disconnect
+    from tinyassets.broker.ledger_queries import granted_resource_row
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
-    if broker_selected():
-        from tinyassets.api.http_connection import _ids
-        from tinyassets.broker.disconnect import disconnect
-        from tinyassets.broker.ledger_queries import granted_resource_row
-        from tinyassets.storage.outbound_connections import GrantResolutionError
-
-        for definition in list_definitions(uid):
-            if definition.owner_user_id != owner or definition.access_method != "api_key_http":
-                continue
-            try:
-                granted_resource_row(base, principal=owner, command_center=uid,
-                                     grant_id=definition.ref)
-            except GrantResolutionError:
-                continue
-            return False
-        for row in rows:
-            # Completed records are daemon state, but still validate the exact
-            # identity before using the destination-based broker recovery read.
-            if _ids(universe_id=uid, destination=row[1])[0] != row[0]:
-                return False
-            try:
-                snapshot = disconnect(base, principal=owner, command_center=uid,
-                                      destination=row[1])
-            except GrantResolutionError:
-                return False
-            if snapshot["resource"] is not None:
-                return False
-        return bool(rows)
-    ledger = ConnectionLedger(Path(base) / "outbound.db")
     for definition in list_definitions(uid):
-        if definition.owner_user_id == owner and definition.access_method == "api_key_http":
-            grant = ledger.get_grant(definition.ref)
-            if grant and grant.owner_user_id == owner and grant.universe_id == uid:
-                connection = ledger.get_connection(grant.connection_id)
-                if connection and not connection.revoked_at and not grant.revoked_at:
-                    return False
-    return bool(rows) and all(ledger.get_connection(row[0]) is None for row in rows)
+        if definition.owner_user_id != owner or definition.access_method != "api_key_http":
+            continue
+        try:
+            granted_resource_row(base, principal=owner, command_center=uid,
+                                 grant_id=definition.ref)
+        except GrantResolutionError:
+            continue
+        return False
+    for row in rows:
+        # Completed records are daemon state, but still validate the exact
+        # identity before using the destination-based broker recovery read.
+        if _ids(universe_id=uid, destination=row[1])[0] != row[0]:
+            return False
+        try:
+            snapshot = disconnect(base, principal=owner, command_center=uid,
+                                  destination=row[1])
+        except GrantResolutionError:
+            return False
+        if snapshot["resource"] is not None:
+            return False
+    return bool(rows)

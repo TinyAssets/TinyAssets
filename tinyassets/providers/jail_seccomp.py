@@ -27,7 +27,11 @@ What it refuses, and why
   ``clone3`` passes its flags in memory a filter cannot read, so it answers
   ``ENOSYS``: glibc then falls back to ``clone``, whose flags ARE checked.
 
-Two profiles, chosen per launch. The default denies everything above. The
+Three named profiles are available to trusted launch policy. ``cell-deny``
+is the default. ``cell-links`` allows symlink/symlinkat for git/venv/npm,
+but retains the new-user-namespace denial and every other default restriction.
+``cell-nested`` is the existing nested policy described below. No current
+caller is switched to cell-links by this addition. The legacy
 ``nested_sandbox=True`` profile keeps new user namespaces and
 ``symlink``/``symlinkat`` open, and is used ONLY for a launch whose CLI builds
 its own sandbox inside ours: today, a SERVED codex turn. It keeps codex's
@@ -99,9 +103,10 @@ NEWUSER_AARCH64: tuple[int, ...] = (97, 220)
 ENOSYS_ALL: tuple[int, ...] = (435,)
 
 
-def _arch_block(prog, denied, links, newuser, allow, deny, enosys, *, nested_sandbox):
+def _arch_block(prog, denied, links, newuser, allow, deny, enosys, *, nested_sandbox,
+                allow_links):
     """One architecture's checks; ``allow`` names the RET ALLOW it ends with."""
-    for nr in (*denied, *(() if nested_sandbox else links)):
+    for nr in (*denied, *(() if allow_links else links)):
         prog.append((_JEQ_K, deny, 0, nr))
     if not nested_sandbox:
         for nr in ENOSYS_ALL:
@@ -114,13 +119,26 @@ def _arch_block(prog, denied, links, newuser, allow, deny, enosys, *, nested_san
     prog.append((_RET_K, 0, 0, _RET_ALLOW))  # the ``allow`` label
 
 
-def deny_program(*, nested_sandbox: bool = False) -> bytes:
+def deny_program(*, nested_sandbox: bool | None = None, profile: str | None = None) -> bytes:
     """The compiled cBPF program bubblewrap loads with ``--seccomp``.
 
     ``nested_sandbox=True`` keeps new user namespaces and symlinks open, for a
     launch whose CLI builds its own sandbox inside ours (a served codex turn;
     see the module docstring for why).
+
+    Named role-cell profiles implement D9: cell-deny is the default,
+    cell-links permits symlinks but NOT new user namespaces, and cell-nested
+    matches the existing nested CLI policy. Only trusted launch policy selects
+    a profile; never accept a profile from an engine request payload.
     """
+    if profile is None:
+        profile = "cell-nested" if nested_sandbox else "cell-deny"
+    if profile not in ("cell-deny", "cell-links", "cell-nested"):
+        raise ValueError("unknown cell seccomp profile")
+    if nested_sandbox is not None and bool(nested_sandbox) != (profile == "cell-nested"):
+        raise ValueError("conflicting cell seccomp policy")
+    nested_sandbox = profile == "cell-nested"
+    allow_links = profile in ("cell-links", "cell-nested")
     # Jump targets are symbolic here and resolved to forward offsets below.
     prog: list[tuple[int, object, object, int]] = [
         (_LD_W_ABS, 0, 0, _ARCH),
@@ -129,12 +147,12 @@ def deny_program(*, nested_sandbox: bool = False) -> bytes:
         (_JGE_K, "deny", 0, _X32_SYSCALL_BIT),
     ]
     _arch_block(prog, DENIED_X86_64, LINKS_X86_64, NEWUSER_X86_64, "allow_x86", "deny",
-                "enosys", nested_sandbox=nested_sandbox)
+                "enosys", nested_sandbox=nested_sandbox, allow_links=allow_links)
     labels = {"allow_x86": len(prog) - 1, "arm": len(prog)}
     prog.append((_JEQ_K, 0, "deny", _AUDIT_ARCH_AARCH64))
     prog.append((_LD_W_ABS, 0, 0, _NR))
     _arch_block(prog, DENIED_AARCH64, LINKS_AARCH64, NEWUSER_AARCH64, "allow_arm", "deny",
-                "enosys", nested_sandbox=nested_sandbox)
+                "enosys", nested_sandbox=nested_sandbox, allow_links=allow_links)
     labels["allow_arm"] = len(prog) - 1
     labels["deny"] = len(prog)
     prog.append((_RET_K, 0, 0, _RET_EPERM))
@@ -154,15 +172,19 @@ def deny_program(*, nested_sandbox: bool = False) -> bytes:
     )
 
 
-def program_fd(*, nested_sandbox: bool = False) -> int:
+def program_fd(*, nested_sandbox: bool | None = None, profile: str | None = None) -> int:
     """A readable descriptor holding :func:`deny_program`, for the child.
 
     bubblewrap reads it to EOF and closes it; the caller closes its own copy
     once the child is spawned.
     """
+    program = deny_program(nested_sandbox=nested_sandbox, profile=profile)
     read_end, write_end = os.pipe()
     try:
-        os.write(write_end, deny_program(nested_sandbox=nested_sandbox))
+        os.write(write_end, program)
+    except BaseException:
+        os.close(read_end)
+        raise
     finally:
         os.close(write_end)
     return read_end

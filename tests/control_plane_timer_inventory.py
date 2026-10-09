@@ -224,12 +224,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/workspace_family.py::family_fence": (CALL_SCOPED, "fence wait"),
     "tinyassets/workspace_fs.py::_retry_transient_windows": (CALL_SCOPED, "Windows retry"),
     "tinyassets/workspace_pool.py::admit": (CALL_SCOPED, "admission wait"),
-    "tinyassets/workspace_provision_process.py::run_provision_stage": (
-        CALL_SCOPED, "provision stage wait",
-    ),
-    "tinyassets/workspace_registry_process.py::RegistryBrokerProcess.finish": (
-        CALL_SCOPED, "broker shutdown wait",
-    ),
     "tinyassets/workspace_staging.py::_lock_tree_exclusive": (CALL_SCOPED, "lock acquisition"),
     # Bounded retry loops (``for attempt in range(n): ... sleep``).
     "tinyassets/api/wiki.py::_wiki_file_bug": (CALL_SCOPED, "bounded retry"),

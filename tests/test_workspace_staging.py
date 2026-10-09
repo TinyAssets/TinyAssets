@@ -480,42 +480,6 @@ def test_an_unwalkable_tree_is_kept(tmp_path, monkeypatch):
     assert (tree / "credential-ish").is_file()
 
 
-def test_a_worker_that_cannot_mark_its_staging_refuses(tmp_path, monkeypatch):
-    from tinyassets import workspace_worker
-
-    def _cannot(_dir):
-        raise OSError("gone")
-
-    monkeypatch.setattr(ws, "hold_in_use", _cannot)
-    assert workspace_worker._mark_staging_in_use(
-        {"op": "checkout", "staging_dir": str(tmp_path)}
-    ) is False
-
-    class _Channel:
-        sent: list = []
-
-        def send(self, message):
-            self.sent.append(message)
-
-        def recv(self):
-            return {"op": "checkout", "staging_dir": str(tmp_path)}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        workspace_worker, "handle_request",
-        lambda _r: (_ for _ in ()).throw(AssertionError("must not run unmarked")),
-    )
-    monkeypatch.setattr(
-        "tinyassets.storage.outbound_connections._sanitize_child_environment", lambda: None,
-    )
-    channel = _Channel()
-    workspace_worker.run_workspace_worker(channel)
-    assert channel.sent[-1]["ok"] is False
-    assert "marked in use" in channel.sent[-1]["error"]
-
-
 def test_the_boot_sweeper_sweeps_at_once_and_runs_once(tmp_path):
     """What removes the production leftovers after deploy: the serving startup
     starts it, it sweeps immediately, and a second start is a no-op."""

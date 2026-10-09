@@ -687,17 +687,10 @@ def test_execute_uses_the_injected_spawn(staging: Path) -> None:
     assert seen == [{"op": "checkout"}]
 
 
-def test_execute_round_trips_through_a_real_spawned_child(staging: Path) -> None:
-    """The transport itself: a real spawned process answers one request.
-
-    The op is deliberately unknown, so the child answers from its own refusal
-    path without needing a vault, a network or a git.
-    """
-    answer = ww.execute_workspace_operation(
-        {"op": "nonsense", "staging_dir": str(staging)}, timeout_s=60, startup_timeout_s=60
-    )
-    assert answer["ok"] is False
-    assert answer["stderr_class"] == "bad_argument"
+def test_execute_without_an_injected_spawn_is_retired() -> None:
+    """No daemon child resolves a token or runs git: the operation refuses."""
+    answer = ww.execute_workspace_operation({"op": "checkout"})
+    assert answer == ww.RETIRED_ANSWER
 
 
 def test_the_worker_scrubs_an_arbitrary_exception(staging: Path) -> None:

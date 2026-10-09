@@ -1,71 +1,21 @@
-"""One OS jail for every provider CLI launched on a universe's behalf.
+"""The launch scope every provider process needs, and the shared jail pieces.
 
-Why this exists
----------------
-A provider CLI (any command-style adapter, today's or a future one) is a model
-with tools. Before 2026-09-24 a workflow node launched it in the daemon's
-own working directory (``/app``, the platform source) as the daemon's user, so
-its shell and file tools could list ``/data`` -- every user's universe -- and
-read ``/proc/1/environ``, the daemon's platform secrets. A tool deny list does
-not fix that: it is a per-vendor flag naming the tools one CLI version knows
-about, and a hook, a subagent or a renamed tool walks around it.
+A provider CLI is a model with tools, so it never runs as the daemon. The
+router binds the OWNING universe, its sealed launch snapshot and, for a served
+turn, the owner's engine route around every provider call
+(:func:`provider_launch_scope`); the shared spawn point
+(:func:`tinyassets.providers.owned_process.aspawn_owned`) reads that scope and
+starts the CLI in the owner's provider cell, or refuses with
+:class:`ProviderConfinementError` before anything runs. The cell sees the
+snapshot, the shipped install trees, the owner's egress proxy and its engine
+relay, and nothing of ``/data``, ``/app`` state or another owner.
 
-What it does
-------------
-Every provider subprocess spawned through
-:func:`tinyassets.providers.owned_process.aspawn_owned` while a universe is
-bound (:func:`provider_launch_scope`) runs inside bubblewrap. The jail holds:
+The key is the owning universe, not the vendor: an adapter names no mount,
+working directory or sandbox of its own.
 
-* the owning universe's own directory, read-write at its own path, so every
-  path the provider environment already points at (its home, temp and
-  credential directories) resolves unchanged;
-* over it, an empty ``tmpfs`` on every hidden directory at the universe root
-  except ``.runtime``: a CLI's own project settings directory is never a
-  loading mechanism (the harness is vendor-neutral files the platform
-  assembles), so a hook the universe's agent wrote there never runs beside the
-  launch credential;
-* over it, an empty ``tmpfs`` on ``.runtime/provider-launch-credentials``, with
-  ONLY this launch's own credential snapshot bound back -- a concurrent launch's
-  snapshot for another provider is not readable;
-* the provider's own install tree, read-only, plus a fixed list of system
-  paths (``/usr``, ``/bin``, ``/lib*``, CA certificates, name resolution);
-* a private ``/tmp``, ``/dev`` and a ``/proc`` of its own pid namespace;
-* NO network interface of its own: an empty network namespace, with the
-  universe's checking egress proxy (:mod:`tinyassets.universe_egress`) as its
-  only way out, the same floor the universe tool jail has. ``HTTP(S)_PROXY``
-  point the CLI at an in-jail forwarder; a second, pinned relay reaches the
-  universe's OWN engine MCP server on the daemon's loopback and nothing else
-  there. Before 2026-10-01 a provider shared the container network: the
-  daemon's loopback ports, other universes' engine ports, the cloud metadata
-  address, the host and the log sidecar (concern
-  ``2026-10-01-provider-jail-has-unfiltered-host-network``);
-* the shared seccomp filter (:mod:`tinyassets.providers.jail_seccomp`) and
-  in-jail rlimits on processes, open files, file size and core dumps.
-
-Nothing else. Not ``/data`` or another universe, not ``/app``, not the daemon's
-``/proc``, not the host credential homes. Everything the CLI starts -- a hook,
-an MCP stdio server, a shell tool -- is a descendant inside the same
-namespaces.
-
-The key is the OWNING UNIVERSE, not the vendor. The router binds it around every
-provider call (``provider_launch_scope``), and the shared spawn point reads it,
-so a provider inherits the jail by spawning through ``aspawn_owned`` and needs
-no code of its own. An adapter MAY narrow what the universe looks like inside
-the jail (:class:`UniverseView`: a chat turn may see an empty workspace), but
-every bind it asks for must come from inside the owning universe, so it can
-never widen the jail.
-
-Fail closed
------------
-* No bubblewrap, or a host where the probe cannot create a namespace (including
-  every non-Linux host): :class:`ProviderConfinementError` before anything is
-  spawned. There is no unconfined fallback.
-* A provider launch the router made with NO owning universe (a host-authority
-  call such as a leaderboard selector run) is refused the same way. Such a call
-  ran published, possibly foreign, graph content with the host's credentials
-  and every tool; there is no universe to confine it to.
-* A process spawned outside any scope (not a provider call made through the
-  router: the tests of this module's process-family machinery) is unchanged.
+The rest of this module (:class:`UniverseView`, :func:`jail_argv`,
+:func:`hidden_root_masks`, :func:`default_view`, :func:`metadata_view`) is the
+bubblewrap view the universe tool jail builds on.
 """
 
 from __future__ import annotations
@@ -83,15 +33,12 @@ from tinyassets.exceptions import ProviderAuthorityHeldError
 
 __all__ = [
     "BWRAP_RESOLVER",
-    "ConfinedLaunch",
     "JailMount",
     "ProviderConfinementError",
     "UniverseView",
-    "confine_launch",
     "default_view",
     "jail_argv",
     "hidden_root_masks",
-    "launch_is_confined",
     "provider_launch_scope",
 ]
 
@@ -150,21 +97,6 @@ def provider_launch_scope(
         yield
     finally:
         _SCOPE.reset(token)
-
-
-def launch_is_confined() -> bool:
-    """Whether a provider process launched right now would be OS-jailed.
-
-    True exactly when the active scope names an owning universe -- the same
-    condition under which :func:`confine_launch` builds a jail (a scope with no
-    universe is refused, not jailed). An adapter reads this to drop its OWN,
-    nested sandbox when ours is the boundary: a second sandbox inside this one
-    only adds attack surface, and a nested bubblewrap is what would force this
-    jail's seccomp filter to keep user namespaces and symlinks open
-    (``tinyassets.providers.jail_seccomp``).
-    """
-    scope = _SCOPE.get()
-    return scope is not None and scope.universe_dir is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,14 +206,10 @@ def ensure_agent_workspace(universe_dir: Path) -> Path:
     jail can never create the name first (as a link to another universe)
     for the tool jail to bind as ``/u`` (gpt-6-astra on #4194).
     """
-    path = Path(universe_dir) / AGENT_WORKSPACE_DIR
-    try:
-        path.mkdir(mode=0o755)
-    except FileExistsError:
-        pass
-    if path.is_symlink() or not path.is_dir():
-        raise _refuse(f"the universe's {AGENT_WORKSPACE_DIR} is not a plain directory")
-    return path
+    from tinyassets.role_tools import prepare
+
+    prepare(universe_dir, agent_id='workspace-preparation')
+    return Path(universe_dir) / AGENT_WORKSPACE_DIR
 
 
 def default_view(
@@ -672,203 +600,3 @@ def jail_argv(
     out.append("--")
     out.extend(argv)
     return out
-
-
-@dataclass(frozen=True, slots=True)
-class ConfinedLaunch:
-    """A jailed argv and the descriptors the spawn must hand to it.
-
-    ``pass_fds`` holds the seccomp filter bubblewrap reads at start. The
-    spawner passes them to the child and then closes its own copies
-    (:meth:`close`), whether or not the spawn succeeded.
-    """
-
-    argv: list[str]
-    pass_fds: tuple[int, ...] = ()
-    #: The command center directory the jail confines it to: the spawn point
-    #: opens the launch's disk budget there (`tinyassets.jail_disk`).
-    universe_dir: Path | None = None
-
-    def close(self) -> None:
-        for fd in self.pass_fds:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-
-
-#: Limits applied inside the jail by ``prlimit``, after the jail's user
-#: namespace exists, so ``RLIMIT_NPROC`` counts THIS jail's tasks (kernel >=
-#: 5.14), not the daemon user's. Each is only ever lowered, never raised past
-#: the daemon's own hard limit. There is deliberately no ``RLIMIT_AS``: a
-#: JavaScript CLI reserves far more address space than it uses, so any cap that
-#: means something kills it at start. There is no ``RLIMIT_CPU`` either: a turn
-#: runs until it is finished, and a long agentic turn mostly waits on the
-#: network.
-PROVIDER_LIMITS: tuple[tuple[str, str, int], ...] = (
-    ("--nproc", "RLIMIT_NPROC", 512),
-    ("--nofile", "RLIMIT_NOFILE", 8192),
-    ("--core", "RLIMIT_CORE", 0),
-)
-
-
-def _limit_args() -> list[str]:
-    import resource
-
-    args = []
-    for flag, name, value in PROVIDER_LIMITS:
-        _soft, hard = resource.getrlimit(getattr(resource, name))
-        if hard != resource.RLIM_INFINITY:
-            value = min(value, hard)
-        args.append(f"{flag}={value}")
-    return args
-
-
-def _system_binary(name: str) -> str:
-    found = shutil.which(name, path="/usr/bin:/bin")
-    if not found:
-        raise _refuse(f"{name} is not installed on this host, so the jail cannot apply its limits")
-    return found
-
-
-def _forwarder_python() -> tuple[str, list[Path]]:
-    """A Python the jail can run the network forwarder with, and what to bind."""
-    import sys
-
-    system = shutil.which("python3", path="/usr/bin:/bin")
-    if system:
-        return system, []
-    real = Path(os.path.realpath(sys.executable))
-    if real.is_file():
-        return str(real), [real.parent.parent]
-    raise _refuse("no Python is available to run the jail's network forwarder")
-
-
-def _network(
-    view: UniverseView, scope: _LaunchScope | None,
-) -> tuple[list[JailMount], int | None]:
-    """The egress socket (and the engine relay) this launch binds, or refuse.
-
-    There is no unfiltered fallback: a host where the proxy cannot start runs
-    no provider at all.
-    """
-    from tinyassets import universe_egress
-
-    try:
-        egress = universe_egress.ensure_proxy(view.universe_dir)
-    except OSError as exc:
-        raise _refuse(f"the universe's egress proxy could not start ({exc})") from None
-    if egress is None:
-        raise _refuse("this host cannot run the universe's egress proxy")
-    mounts = [JailMount("bind", universe_egress.JAIL_SOCKET, egress)]
-    engine_port = None
-    if scope is not None and scope.engine_route is not None:
-        actor_id, graph_id = scope.engine_route
-        try:
-            relay = universe_egress.ensure_engine_relay(
-                view.universe_dir, actor_id=actor_id, graph_id=graph_id,
-            )
-        except OSError as exc:
-            raise _refuse(f"the universe's engine relay could not start ({exc})") from None
-        if relay is not None:
-            socket_path, engine_port = relay
-            mounts.append(JailMount("bind", universe_egress.JAIL_ENGINE_SOCKET, socket_path))
-    return mounts, engine_port
-
-
-def confine_launch(
-    argv: Sequence[str],
-    *,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    view: UniverseView | None = None,
-    install_mounts: Callable[[], Iterable[Path]] | None = None,
-    nested_sandbox: bool = False,
-) -> ConfinedLaunch | None:
-    """The jailed launch, ``None`` when no jail applies, or refuse.
-
-    Called by the shared spawn point for EVERY provider process. The decision
-    reads only the bound scope and the adapter's optional view -- never the
-    vendor, the config or the command. Inside the jail the command runs under
-    ``prlimit``, behind the egress forwarder, with the seccomp filter loaded.
-
-    ``nested_sandbox=True`` is the adapter declaring that its CLI builds its
-    own sandbox inside this one (a served codex turn keeps ``--sandbox
-    workspace-write`` for its ``apply_patch`` helper). That launch gets the
-    filter profile keeping new user namespaces and symlinks open; every other
-    launch gets the full deny profile (:mod:`tinyassets.providers.jail_seccomp`).
-    """
-    scope = _SCOPE.get()
-    if scope is None and view is None:
-        return None
-    if scope is not None and scope.universe_dir is None:
-        raise _refuse(
-            "this provider call has no owning command center, so there is no "
-            "directory to confine it to; it will not run on the host"
-        )
-    if view is None:
-        view = default_view(
-            scope.universe_dir,
-            credential_dir=scope.credential_dir,
-            cwd=None if cwd is None else os.fspath(cwd),
-            env=env,
-        )
-    elif scope is not None and (
-        view.universe_dir.resolve(strict=False)
-        != scope.universe_dir.resolve(strict=False)
-    ):
-        raise _refuse("the adapter's view names a different command center than its call")
-    if not view.universe_dir.resolve(strict=False).is_dir():
-        raise _refuse("the owning command center directory does not exist")
-    bwrap_path = BWRAP_RESOLVER()
-    install_paths = [*_command_install_paths(str(argv[0]), env)] if argv else []
-    if install_mounts is not None:
-        install_paths.extend(install_mounts())
-    from tinyassets import universe_egress
-    from tinyassets.providers.jail_seccomp import program_fd
-
-    prlimit = _system_binary("prlimit")
-    python, python_paths = _forwarder_python()
-    install_paths.extend(python_paths)
-    net_mounts, engine_port = _network(view, scope)
-    # The ONLY sources outside the command center a view may bind: the sockets
-    # this module just constructed for this launch. An exact set, resolved the
-    # same way the validator resolves a source, so a link that merely lands
-    # under the sidecar folder is not one of them.
-    platform_sources = frozenset(
-        mount.source.resolve(strict=False) for mount in net_mounts
-        if mount.source is not None
-    )
-    # The proxy environment goes LAST, so nothing the provider env carried (an
-    # inherited HTTPS_PROXY or NO_PROXY) can point around the forwarder.
-    view = UniverseView(
-        universe_dir=view.universe_dir,
-        mounts=(*view.mounts, *net_mounts),
-        chdir=view.chdir,
-        setenv=(*view.setenv, *universe_egress.PROXY_ENV),
-    )
-    inner = [
-        prlimit, *_limit_args(), "--",
-        *universe_egress.forwarder_argv(python, list(argv), engine_port=engine_port),
-    ]
-    # The full deny profile (no new user namespaces, no symlinks) unless the
-    # adapter declared a nested sandbox: a non-served codex call runs its
-    # commands directly here with its own sandbox off, and claude has none, so
-    # neither can plant a link the daemon would follow out of the universe. A
-    # served codex turn keeps its own sandbox (apply_patch needs it); its link
-    # residual is the daemon-side link-refusing reader/writer's (#4254).
-    filter_fd = program_fd(nested_sandbox=nested_sandbox)
-    seed_fd = None
-    try:
-        from tinyassets.starter_seeds import open_seed_boundary
-
-        _, seed_fd = open_seed_boundary(view.universe_dir)
-        jailed = jail_argv(
-            inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,
-            seccomp_fd=filter_fd, platform_sources=platform_sources,
-        )
-        jailed[1:1] = ["--sync-fd", str(seed_fd)]
-    except BaseException:
-        os.close(filter_fd)
-        if seed_fd is not None:
-            os.close(seed_fd)
-        raise
-    return ConfinedLaunch(jailed, (filter_fd, seed_fd), view.universe_dir.resolve(strict=False))
