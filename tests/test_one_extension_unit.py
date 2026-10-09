@@ -132,7 +132,8 @@ def backend(tmp_path, **context):
     root = tmp_path / "home"
     root.mkdir(exist_ok=True)
     return Capabilities(root, ExecutionContext("home", "user-1", "main", **context),
-                        [], None, lambda: None, connections_granted=False)
+                        [], None, lambda: None, connections_granted=False,
+                        capability_grant=("write",))
 
 
 def call(service, name, arguments):

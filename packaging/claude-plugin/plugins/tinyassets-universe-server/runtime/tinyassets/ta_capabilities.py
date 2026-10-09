@@ -24,6 +24,21 @@ CLIENT_SOURCE = Path(__file__).with_name("ta_cli.py")
 MAX_REQUEST = 1024 * 1024
 MAX_RESPONSE = 8 * 1024 * 1024
 
+# A new ta capability is effectful unless explicitly classified as a read.
+READ_CAPABILITIES = frozenset({
+    "read_graph", "get_status", "browse_commons", "read_commons_shape", "read_brain",
+    "extension:help", "extension:list", "extension:events",
+})
+MUTATION_GRANTS = frozenset({
+    "write", "edit", "bash", "write_graph", "write_brain", "run_graph",
+    "connect_compute", "source_channel",
+})
+
+
+def _is_read(name):
+    return name in READ_CAPABILITIES or (
+        name.startswith("connection:") and name.rsplit(":", 1)[-1] in {"GET", "HEAD", "OPTIONS"})
+
 
 @dataclass(frozen=True)
 class ExecutionContext:
@@ -38,7 +53,7 @@ class ExecutionContext:
 class Capabilities:
     def __init__(self, root: Path, context: ExecutionContext, platform: list[dict],
                  call_platform, check_authority: Callable, *,
-                 connections_granted: bool = True, review_provider=None,
+                 connections_granted: bool = True, capability_grant=(), review_provider=None,
                  stopped: Callable[[], str | None] | None = None):
         if (root.name != context.universe or not context.owner
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", context.initiating_agent)
@@ -48,6 +63,7 @@ class Capabilities:
         self.platform = {item["name"]: item for item in platform}
         self.call_platform, self.check_authority = call_platform, check_authority
         self.connections_granted = connections_granted
+        self.mutations_granted = bool(MUTATION_GRANTS.intersection(capability_grant))
         self.review_provider = review_provider
         # An activity's launch: every request is refused once it stops running
         # (tinyassets/activity_fence.py), connection calls included.
@@ -147,6 +163,9 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
+        known = name.startswith("extension:") or name in self.platform or name in self.connections()
+        if known and not _is_read(name) and not self.mutations_granted:
+            return {"error": "mutation capability not granted"}
         if name.startswith("extension:"):
             from tinyassets.extension_capabilities import ExtensionCapabilities
 
@@ -318,6 +337,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
     backend = Capabilities(universe_dir, context, platform,
                            call_platform, server._binding_error,
                            review_provider=_turn_reviewer(loop),
+                           capability_grant=granted,
                            connections_granted=connections_granted(granted),
                            stopped=stop_check(universe_dir, _session_key()))
 
