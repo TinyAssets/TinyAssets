@@ -20,7 +20,7 @@ def test_selected_preview_refusal_never_runs_in_daemon(monkeypatch):
         pytest.fail('preview escaped the selected owner launcher')
 
     monkeypatch.setattr(role_preview, 'render', refuse)
-    monkeypatch.setattr(ui_preview, '_supervised', forbidden)
+    monkeypatch.setattr('subprocess.Popen', forbidden)
     with pytest.raises(PermissionError, match='scope refused'):
         ui_preview._run_child({}, 60)
 
@@ -33,7 +33,7 @@ def test_preview_without_a_bounded_launcher_refuses_rather_than_rendering(monkey
     def forbidden(*args):
         pytest.fail('preview escaped without a bounded launcher')
 
-    monkeypatch.setattr(ui_preview, '_supervised', forbidden)
+    monkeypatch.setattr('subprocess.Popen', forbidden)
     spec = {'base_path': '/absent', 'owner_user_id': 'alice',
             'universe_id': 'alice', 'hashes': {}}
     with pytest.raises(Exception, match='bounded preview launcher|not admitted'):
