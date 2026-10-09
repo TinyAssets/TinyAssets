@@ -5,6 +5,7 @@ import array
 import json
 import os
 import re
+import secrets
 import socket
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def remove_subtree(path, *, principal):
     """Two capability-free passes over one subtree inside an admitted center.
 
     Pass one runs the fixed owner-delete code in an ``owner-delete-subtree``
-    cell over ``path`` (no center fence, no admission change); pass two is the
+    cell over ``path`` (owner fence, no admission change); pass two is the
     daemon's verified walk, which also removes ``path`` itself. The caller is
     the daemon acting for ``principal``, the center's owner (a background
     reclaimer has no request identity). An absent path is already done.
@@ -62,6 +63,7 @@ def remove_subtree(path, *, principal):
     from tinyassets import role_decoder, workspace_fs
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
     from tinyassets.role_owner_tree_deletion import daemon_subtree_pass
     from tinyassets.storage import data_dir
     from tinyassets.universe_owner import owner_of
@@ -82,16 +84,37 @@ def remove_subtree(path, *, principal):
         raise PermissionError('subtree deletion principal does not own the center')
     identity = owner_identity(root, principal=principal)
     try:
-        fd = workspace_fs.open_dir_nofollow(target)
+        parent_fd = workspace_fs.open_dir_nofollow(target.parent)
     except FileNotFoundError:
         return {'absent': True}
     try:
-        receipt = _pass_one(client, fd, kind='owner-delete-subtree', principal=principal,
-                            center=center, identity=identity, extra={})
+        try:
+            fd = workspace_fs.open_subdir_nofollow(parent_fd, target.name)
+        except FileNotFoundError:
+            return {'absent': True}
+        token = secrets.token_hex(16)
+        try:
+            try:
+                receipt = _pass_one(client, fd, kind='owner-delete-subtree', principal=principal,
+                                    center=center, identity=identity,
+                                    extra={'delete_token': token})
+                receipt['daemon_pass'] = daemon_subtree_pass(
+                    target, machine=identity.gid, parent_fd=parent_fd, target_fd=fd)
+            except BaseException:
+                # _pass_one's context cancels and reaps its cell before returning.
+                # Abandon pass two before releasing; retry starts from held fds
+                # again. A pre-admission refusal has no matching fence to release.
+                try:
+                    client.finish_delete(principal=principal, command_center=center, token=token)
+                except OwnerLaunchRefused:
+                    pass
+                raise
+            client.finish_delete(principal=principal, command_center=center, token=token)
+            return receipt
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
-    receipt['daemon_pass'] = daemon_subtree_pass(target, machine=identity.gid)
-    return receipt
+        os.close(parent_fd)
 
 
 def _pass_one(client, fd, *, kind, principal, center, identity, extra):

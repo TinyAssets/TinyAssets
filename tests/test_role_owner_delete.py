@@ -123,9 +123,10 @@ def mapper():
     return value
 
 
-def test_fence_requires_quiescence_exact_scope_token_and_explicit_finish():
+@pytest.mark.parametrize('kind', ['owner-delete', 'owner-delete-subtree'])
+def test_fence_requires_quiescence_exact_scope_token_and_explicit_finish(kind):
     value = mapper()
-    request = dict(kind='owner-delete', principal='alice', command_center='alice',
+    request = dict(kind=kind, principal='alice', command_center='alice',
                    delete_token='a' * 32)
     value.jobs[7] = (1, 300001, 0, None)
     with pytest.raises(ValueError, match='quiescent'):

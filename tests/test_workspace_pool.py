@@ -310,6 +310,24 @@ def test_lost_bytes_still_count_against_the_pool(db: Path, roots: Roots) -> None
     assert exc.value.code == wp.REFUSED_POOL_BUSY
 
 
+def test_busy_owner_cleanup_defers_and_retries_without_losing_lease(db, roots):
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
+
+    lease = admit_scratch(db, roots, lease_id_factory=_ids('deferred'))
+    with terminal_txn(db) as conn:
+        wp.enqueue_terminal(conn, run_id='run-1', universe_id='u1', lease=lease)
+    class Busy(FakeFs):
+        def remove_tree_no_follow(self, path):
+            raise OwnerLaunchRefused('owner launcher refused cell scope')
+    assert wp.periodic_sweep(db, fs=Busy(present=(lease.path,)),
+                             claimant='test', now=lambda: 1000) == 0
+    assert wp.pool_usage(db).lost_leases == 0
+    assert wp.pool_usage(db).reserved_bytes > 0
+    assert wp.periodic_sweep(db, fs=FakeFs(present=(lease.path, lease.quarantine_path)),
+                             claimant='retry', now=lambda: 1000 + wp.DEFAULT_CLAIM_TTL_S + 1) == 1
+    assert lease_state(db, 'deferred') == wp.STATE_AVAILABLE
+
+
 def test_a_released_lease_frees_its_pool_bytes(db: Path, roots: Roots) -> None:
     lease = admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     with terminal_txn(db) as conn:

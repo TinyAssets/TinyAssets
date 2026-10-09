@@ -24,6 +24,7 @@ All host commands run on the production box as root:
 ```sh
 cd /opt/tinyassets
 IMAGE=<the PR2 image tag>   # built from the cutover branch; it carries ta-migrate.py
+ROLLBACK=/var/backups/tinyassets/cutover-runtime
 ```
 
 ## 1. Announce
@@ -32,8 +33,14 @@ Tell the testers the window and the expected downtime.
 
 ## 2. Stop
 
-1. Hold auto-deploy, so nothing else merges or deploys:
-   `gh workflow disable deploy-prod.yml`. Hold the merge queue too.
+1. Hold the merge queue and all manual merges except PR #4568. Disable
+   `deploy-prod.yml` and every other host-mutating workflow (including
+   `p0-outage-triage.yml`, `restart-daemon.yml`, `install-host-services.yml`,
+   `apply-daemon-env.yml`, and recovery workflows). Record which were enabled.
+   Cancel queued runs and wait for running host mutations to finish **before**
+   stopping anything. Disabling a workflow does not cancel its existing runs.
+   Keep this exclusive operator hold until Verify or Rollback completes.
+   Leave `build-image.yml` enabled; builds do not mutate the host.
 2. Stop every timer that could restart or read the daemon:
    ```sh
    systemctl stop tinyassets-backup.timer tinyassets-autoheal.timer \
@@ -44,6 +51,24 @@ Tell the testers the window and the expected downtime.
    docker compose -f compose.yml stop
    docker ps --filter volume=tinyassets-data   # must list nothing
    ```
+4. Pin the previous image and its **live runtime bundle**, before a deploy can
+   replace either. The image contains its own entrypoint/launcher; save it too.
+   These local archives contain configuration secrets: keep them root-only.
+   ```sh
+   umask 077
+   mkdir -m 0700 "$ROLLBACK"
+   docker inspect -f '{{.Image}}' tinyassets-daemon > "$ROLLBACK/image-id"
+   PREVIOUS_IMAGE=$(cat "$ROLLBACK/image-id")
+   docker image save "$PREVIOUS_IMAGE" > "$ROLLBACK/image.tar"
+   tar -czpf "$ROLLBACK/runtime.tar.gz" --numeric-owner --acls --xattrs -C / \
+       opt/tinyassets/compose.yml opt/tinyassets/deploy \
+       etc/systemd/system/tinyassets-daemon.service etc/tinyassets \
+       usr/local/sbin/tinyassets-env
+   (cd "$ROLLBACK" && sha256sum image.tar runtime.tar.gz image-id > SHA256SUMS)
+   ```
+   Do not replace this pinned bundle with a later deploy's `bundle-previous`
+   pointer. `opt/tinyassets/deploy` includes the host launch/deploy scripts;
+   the saved image pins the container launcher and Compose pins its authority.
 
 ## 3. Snapshot (the rollback point)
 
@@ -60,8 +85,11 @@ This takes a full-volume tar with every writer stopped
 SNAPSHOT id=tinyassets-snapshot-<ts>.tar.gz sha256=<...> bytes=<n> names=<n>
 ```
 
-It refuses unless every container is stopped and the archive's name count
-equals a fresh census of the volume. Record the id, the sha256 and the size.
+It refuses unless every container is stopped and the archive's exact member
+inventory equals the restorable volume inventory. Only stopped relay sockets
+`.universe-sidecars/<center>/egress-<pid>.sock` and
+`engine-<pid>-<12 lowercase hex>.sock` are disposable, matching the migration.
+Any other socket or omitted member fails. Record the id, sha256 and size.
 
 ## 4. Migrate
 
@@ -119,8 +147,26 @@ migrate --check                                   # must print nothing; exit 0
 
 ## 5. Start
 
-1. Merge PR2. `deploy-prod` deploys it, and PID1 starts with the marker present.
-2. Do not trust `deploy_fail_safe.sh`'s automatic image revert here. The
+1. With deploy still disabled and the exclusive merge hold active, merge only
+   PR #4568. Record the resulting full main SHA as `CUTOVER_SHA`. Wait for its
+   `build-image.yml` run to finish successfully while deploy remains disabled.
+   Confirm no other build or host-mutating run is queued or running, and that
+   main still equals `CUTOVER_SHA`. The earlier branch image used for migration
+   is not the deploy tag: use the completed merge build's 12-character SHA tag.
+2. Enable and explicitly dispatch that one deploy, in this order:
+   ```sh
+   test "$(gh api repos/TinyAssets/TinyAssets/commits/main --jq .sha)" = "$CUTOVER_SHA"
+   gh workflow enable deploy-prod.yml
+   gh workflow run deploy-prod.yml --ref main -f image_tag="$(printf %.12s "$CUTOVER_SHA")"
+   gh run list --workflow deploy-prod.yml --event workflow_dispatch --limit 5
+   ```
+   Identify the new run by event, head SHA and creation time. Wait until that
+   exact run is `in_progress`, then disable `deploy-prod.yml` again (this does
+   not cancel the active run). Watch its run ID to completion with
+   `gh run watch <run-id> --exit-status`. All other mutations and merges remain
+   held, so neither another build completion nor a manual dispatch may race it.
+   If an unexpected run appears, cancel it before allowing host mutation.
+3. Do not trust `deploy_fail_safe.sh`'s automatic image revert here. The
    previous image on a migrated volume is not a supported state. If it
    reverted, go to step 7 (Rollback).
 
@@ -143,8 +189,8 @@ migrate --check                                   # must print nothing; exit 0
    - tester B's cell tries to read the founder's tree and vault;
    - B's daemon-side read names the founder's file;
    - both must refuse.
-6. Re-enable `deploy-prod.yml` and the timers stopped in step 2, then announce
-   the end.
+6. Restore only the workflow/timer states recorded in step 2, release the merge
+   hold, then announce the end.
 
 ## 7. Rollback
 
@@ -157,7 +203,7 @@ Roll back if any Verify step fails, or on a regression later.
 3. Restore the snapshot. Check its sha256 first. This archive is ours and
    verified, so it is extracted with its links, numeric owners and ACLs:
    ```sh
-   sha256sum -c /var/backups/tinyassets/<id>.sha256
+   (cd /var/backups/tinyassets && sha256sum -c <id>.sha256)
    VOL=$(docker volume inspect -f '{{ .Mountpoint }}' tinyassets-data)
    find "$VOL" -mindepth 1 -delete
    tar -xzpf /var/backups/tinyassets/<id> -C "$VOL" \
@@ -166,10 +212,30 @@ Roll back if any Verify step fails, or on a regression later.
    `deploy/backup-restore.sh` restores the nightly full tier. It refuses link
    members, so it cannot restore a volume that holds workspace symlinks or the
    multi-link `.runtime/` inodes. Use the tar line above for this snapshot.
-4. Redeploy the previous image with `deploy-prod` `workflow_dispatch
-   image_tag=<previous>` or with `recovery-retag-image.yml`.
-5. Revert PR2 on main, so the next push does not redeploy it.
-6. Run `deployed_sha` and the canary.
+4. Restore the pinned runtime and image **together**, with workflows and timers
+   still disabled. Never dispatch a previous image using post-cutover main's
+   Compose/launcher bundle. Retagging an image does not deploy it.
+   ```sh
+   (cd "$ROLLBACK" && sha256sum -c SHA256SUMS)
+   docker image load -i "$ROLLBACK/image.tar"
+   tar -xzpf "$ROLLBACK/runtime.tar.gz" -C / --numeric-owner --acls --xattrs --same-owner
+   systemctl daemon-reload
+   PREVIOUS_IMAGE=$(cat "$ROLLBACK/image-id")
+   test "$(docker image inspect -f '{{.Id}}' "$PREVIOUS_IMAGE")" = "$PREVIOUS_IMAGE"
+   TINYASSETS_IMAGE="$PREVIOUS_IMAGE" docker compose --env-file /etc/tinyassets/env \
+       -f /opt/tinyassets/compose.yml up -d --force-recreate --timeout 20 daemon cloudflared logs
+   test "$(docker inspect -f '{{.Image}}' tinyassets-daemon)" = "$PREVIOUS_IMAGE"
+   SAVED_REF=$(sed -n 's/^TINYASSETS_IMAGE=//p' /etc/tinyassets/env)
+   docker image inspect "$SAVED_REF" >/dev/null 2>&1 || docker pull "$SAVED_REF"
+   test "$(docker image inspect -f '{{.Id}}' "$SAVED_REF")" = "$PREVIOUS_IMAGE"
+   ```
+   The restored environment file also retains the previous immutable image ref
+   for subsequent systemd starts. Verify it resolves to the saved image ID.
+5. Revert PR #4568 on main while deploy is disabled. Wait for that build to
+   finish before enabling deploy; never release the merge hold with cutover
+   code at main on the restored old volume.
+6. Assert the previous deployed SHA and run the public canary and a founder
+   app turn. Restore the recorded workflow/timer states only after these pass.
 
 Once users have written after the cutover, rollback loses those writes. Decide
 at Verify.

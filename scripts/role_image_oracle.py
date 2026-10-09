@@ -42,6 +42,7 @@ import json
 import secrets
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -881,13 +882,30 @@ def stage_migrate(args):
     build = _posture(f"{args.prefix}-fixture", args.image, args.volume, user="0",
                      caps=MIGRATION_CAPS, entrypoint="/opt/venv/bin/python",
                      extra=["--rm", "--network", "none", "-v", f"{source}:/src:ro"])
-    made = subprocess.run(build + [
+    if args.backup_archive:
+        archive = Path(args.backup_archive).resolve()
+        if not archive.is_file():
+            raise SystemExit('backup archive is not a local file')
+        with tarfile.open(archive) as handle:
+            names = [member.name for member in handle]
+        strip = (['--strip-components=1'] if all(
+            name == '_data' or name.startswith('_data/') for name in names) else [])
+        restore = _posture(f'{args.prefix}-fixture', args.image, args.volume, user='0',
+                           caps=MIGRATION_CAPS, entrypoint='/bin/tar',
+                           extra=['--rm', '--network', 'none', '-v',
+                                  f'{archive.parent}:/backup:ro'])
+        made = subprocess.run(restore + strip + ['-xzpf', '/backup/' + archive.name, '-C', '/data',
+                                        '--numeric-owner', '--acls', '--xattrs', '--same-owner'],
+                              capture_output=True, text=True, encoding='utf-8')
+    else:
+        made = subprocess.run(build + [
         "-I", "-B", "-c",
         "import runpy\n" + FIXTURE_EXTRA.format(instance=METADATA_INSTANCE_ID,
                                                 sha=args.image),
-    ], capture_output=True, text=True, encoding="utf-8")
-    expect(made.returncode == 0,
-           f"production-shaped fixture: {made.stdout.strip()} names{made.stderr[-2000:]}")
+        ], capture_output=True, text=True, encoding="utf-8")
+    inventory = (f'restored backup: {len(names)} archive members' if args.backup_archive
+                 else f'production-shaped fixture: {made.stdout.strip()} names')
+    expect(made.returncode == 0, inventory + made.stderr[-2000:])
 
     def migrate(*flags):
         run = _posture(f"{args.prefix}-migrate", args.image, args.volume, user="0",
@@ -897,7 +915,8 @@ def stage_migrate(args):
                               capture_output=True, text=True, encoding="utf-8")
 
     before = migrate("--check")
-    expect(before.returncode == 1 and "reserve identity: alice" in before.stdout,
+    expect(before.returncode == 1 and (args.backup_archive or
+                                     "reserve identity: alice" in before.stdout),
            f"--check before the apply: {before.stdout.splitlines()[0] if before.stdout else ''}"
            f"{before.stderr[-2000:]}")
     applied = migrate("--snapshot", args.prefix + "-snapshot", "--snapshot-bytes", "1")
@@ -905,7 +924,20 @@ def stage_migrate(args):
     after = migrate("--check")
     expect(after.returncode == 0 and after.stdout == "",
            f"--check after the apply: 0 diffs{after.stdout[-2000:]}{after.stderr[-2000:]}")
-    return {"fixture_names": made.stdout.strip(), "apply": applied.stdout.strip(),
+    if args.backup_archive:
+        # Only the isolated clone's cloud-instance provenance is changed. Never
+        # use production credentials for turns; its network is internal below.
+        configured = subprocess.run(_posture(
+            f'{args.prefix}-fixture', args.image, args.volume, user='1001', caps=(),
+            entrypoint='/opt/venv/bin/python', extra=['--rm', '--network', 'none']) + [
+                '-I', '-B', '-c',
+                "import json; from pathlib import Path; "
+                "Path('/data/platform-expected-instance.json').write_text(json.dumps("
+                + repr(dict(schema='platform_expected_instance', version=1,
+                            expected_instance_id=METADATA_INSTANCE_ID)) + '))'],
+            capture_output=True, text=True)
+        expect(configured.returncode == 0, 'clone-only metadata identity configured')
+    return {"inventory": inventory, "apply": applied.stdout.strip(),
             "check_before_diffs": len(before.stdout.splitlines())}
 
 
@@ -934,7 +966,8 @@ print(json.dumps(seen))
 
 def _network(args):
     if docker("network", "inspect", args.network, check=False).returncode != 0:
-        docker("network", "create", "--subnet", METADATA_SUBNET, args.network)
+        docker("network", "create", *(('--internal',) if args.backup_archive else ()),
+               "--subnet", METADATA_SUBNET, args.network)
     return args.network
 
 
@@ -1074,6 +1107,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", required=True, help="the cutover image to prove")
+    parser.add_argument('--backup-archive', help='restore this full backup instead of the fixture; '
+                        'use --stages migrate,serve --legs bootstrap (no credentialed turns)')
     parser.add_argument("--prefix", default="role-image-oracle",
                         help="name prefix for this run's volume and containers")
     parser.add_argument("--volume", help="data volume name (default <prefix>-data)")
@@ -1089,6 +1124,10 @@ def main(argv=None):
     args.volume = args.volume or f"{args.prefix}-data"
     args.network = args.network or f"{args.prefix}-net"
     args.legs = tuple(name for name in args.legs.split(",") if name)
+    if args.backup_archive and ('providers' in args.stages.split(',') or
+            ('cells' in args.stages.split(',') and args.legs != ('bootstrap',))):
+        parser.error('restored backups permit migrate,serve and the bootstrap cell leg only; '
+                     'run synthetic owner/provider legs on a separate fixture volume')
     unknown = set(args.legs) - set(LEG_NAMES)
     if unknown:
         raise SystemExit(f"unknown legs: {sorted(unknown)}")

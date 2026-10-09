@@ -104,6 +104,14 @@ its own entries and the empty structure. An owner-wide admission fence SHALL hol
 daemon finishes the exact deletion token. An entry that cannot be removed SHALL fail loudly
 with its path, never as a silent partial success. The same applies to subtree removal (pool
 removal and scoped reset).
+Both subtree passes SHALL retain the same parent and target descriptors. Ancestors SHALL
+be opened without following links, and the original device/inode SHALL be checked before
+removal. Subtree deletion SHALL use the same quiescent owner-wide fence as account deletion.
+
+#### Scenario: An ancestor is replaced between deletion passes
+- **WHEN** an owner replaces a writable ancestor with a symlink into another owner's tree
+- **THEN** the daemon uses its held descriptors and never traverses the replacement
+- **AND** another owner's daemon-owned credentials remain intact
 
 #### Scenario: Account deletion removes engine-created restrictive files
 - **WHEN** an owner's engine created 0700 directories and 0600 files and the account is deleted
@@ -118,7 +126,8 @@ write if the volume is in use, if the filesystem is overlay or lacks ACL support
 snapshot id is given, or if any inode's names span more than one owner or platform class.
 Each step SHALL converge to a target computed from the path and `owner-identities.db`, and
 SHALL change only fields that differ. The layout marker SHALL be written last. Rollback SHALL
-be restoring the snapshot and redeploying the previous image; there SHALL be no reverse
+be restoring the snapshot and the previous image together with its pinned runtime bundle;
+there SHALL be no reverse
 migration.
 
 #### Scenario: A crash is fixed by running it again

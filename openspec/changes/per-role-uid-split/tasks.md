@@ -108,3 +108,79 @@ off and no Drain-Review receipt. Its scope gate is intentionally blocked by that
 missing receipt. Tasks 2.5, 2.6, 3.1's Verify-conditioned concern deletions, and
 3.2 remain open exactly as described above. The cross-family verdict was ADAPT;
 the two concrete findings were addressed and verified, without a second round.
+
+## Round 2: independent BLOCK at fce2685f4a (2026-10-09)
+
+AGREE with all four original findings; their fixes and before/after evidence:
+
+- Subtree deletion retains parent/target descriptors through both passes, walks
+  ancestors without links, checks the original device/inode before removal, and
+  holds the exact-token owner-wide quiescence fence. The real UID300001 ancestor
+  swap deleted Bob's UID1001:GID1102 mode0640 credential on the original modules;
+  it preserves its bytes and inode on the fixed modules. Target replacement and
+  pre-existing ancestor links refuse. The subtree quiescence case failed before
+  the mapper change and passes afterward.
+- Snapshot inventory compares exact member multisets, excluding only the
+  migration's stale egress/engine socket patterns. Both legitimate socket cases
+  failed before and pass now; unknown sockets and an omitted ordinary file still
+  fail. Names are compared as names, not line counts.
+- Start now holds all other merges/host mutations, merges with deploy disabled,
+  waits for the merge build, enables and dispatches its pinned tag, then disables
+  future deploys during verification. Rollback pins/restores the previous image
+  and live runtime bundle together. Executing the documented start and checksum
+  commands in isolated fixtures failed on the original runbook and passes now.
+  The actual backup's previous image
+  `sha256:c8fdf15787068d413850882f9abf9da01cd30f33a47b33e414e7422ec2f08733`
+  paired with new Compose authority exited 1. Restoring the backup plus its
+  matching `956e2838d602` Compose and image launcher passed: tini/serve UID1001,
+  all capability sets zero, `ta-op pulse` and `ta-op canary`. The local Compose
+  rehearsal replaced only host-specific names, env, networking and logging;
+  production GitHub workflow state and systemd were not mutated. Synthetic dev
+  auth and an internal metadata network replaced production auth/provenance.
+- Bootstrap, broker and mapper still exit 78, now with bounded ASCII diagnostics:
+  controlled refusal reason/path or exception type, errno and code operation.
+  The injected secret-bearing OSError test failed before; the fixed output names
+  the operation/errno and contains neither the secret nor the exception filename.
+
+Restored latest reachable full production backup:
+`tinyassets-data-2026-10-09T16-47-42Z.tar.gz`, SHA256
+`3f3a99f792e84a17bad11779251bdd871412b8f7056f23af112384340e247a5e`.
+The image's migration admitted six centers, changed 66,162 entries, and moved
+from 66,181 preflight differences to zero. `role_image_oracle.py --backup-archive`
+handles the nightly `_data/` prefix and restricts restored-clone probes to
+migration/serving/bootstrap on an internal network. Serving health, MCP canary,
+all six bootstrap bindings and daemon/broker capability retirement passed on
+that restored clone. Synthetic owner-class/CLI probes run separately.
+Real credentialed Codex/Claude model turns cannot run in this environment;
+task 2.5 remains open, as do the production-window and app-agent acceptance tasks.
+
+One cross-family round over these fixes returned ADAPT. AGREE: failed subtree
+passes must release their fence after cancelling/reaping and abandoning pass
+two; busy periodic reclamation must retain its durable pending entry and retry
+after claim expiry. Both new regressions failed before and pass after those
+changes. DISAGREE_EVIDENCE with the suggested node-sandbox cleanup regression:
+`node_sandbox.py` allocates this scratch path with `tempfile.mkdtemp`, outside the
+data-root center trees, so that cleanup never calls `remove_subtree`.
+The repeated rollback-canary venue failure was handed off per the loop rule;
+the peer corrected its missing synthetic dev user, then completed the real-image
+rollback rehearsal. No production state or credentials were changed.
+
+Validation: 225 affected tests passed, plus the targeted inode-replacement test;
+the two shellcheck cases initially skipped by the oracle were then both executed
+and passed in a disposable Linux container with shellcheck installed. Final
+real-jail selection: 74 passed, zero skips, all cases asserted by the CI helper.
+Structural guards: 586 passed. Touched-file Ruff and plugin build/import probe
+passed. No gate floors, exclusions or quarantine were relaxed.
+
+Final production Dockerfile image `tinyassets-cutover:round2-verified`,
+`sha256:227f67f22ec15f99a6a32c25f3c447e76a04fcf8a57eca0e2e03971e95d3348e`,
+passed migration, real serving/health/MCP canary, all eleven owner-cell legs,
+and the credentialless shipped Claude/Codex execution/discovery probes after
+the fence-recovery fix. This is a local image proof, not a deployment receipt.
+The same final image repeated serving, health, MCP canary and all six bootstrap
+bindings on the migrated production clone successfully. The 20 oracle/runbook
+contract tests also pass on Linux and Windows after the probe reporting changes.
+The full PR-relative hygiene gate passed (339 added / 284 retired tests, covered
+by the existing reviewed Test-Removal rationale); commit hooks passed, including
+all three plugin mirrors. The downloaded backup and all three throwaway data
+volumes were removed after verification. No receipt or auto-merge was added.

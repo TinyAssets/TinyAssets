@@ -171,21 +171,32 @@ def daemon_pass(root: str | Path, center: str, *, machine: int) -> dict[str, int
         os.close(root_fd)
 
 
-def daemon_subtree_pass(path: str | Path, *, machine: int) -> dict[str, int]:
+def daemon_subtree_pass(path: str | Path, *, machine: int,
+                        parent_fd: int | None = None,
+                        target_fd: int | None = None) -> dict[str, int]:
     """Pass two over one subtree (pool reclamation), ``path`` itself included."""
     path = Path(path)
-    parent_fd = os.open(os.fspath(path.parent), _DIRECTORY)
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    held = parent_fd is not None
+    if held != (target_fd is not None):
+        raise OwnerTreeDeletionRefused('both subtree descriptors are required')
+    if not held:
+        parent_fd = open_dir_nofollow(path.parent)
     try:
         try:
             os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             return {"removed": 0}
-        return {"removed": _daemon_walk(parent_fd, path.name, machine=machine)}
+        return {"removed": _daemon_walk(parent_fd, path.name, machine=machine,
+                                         target_fd=target_fd)}
     finally:
-        os.close(parent_fd)
+        if not held:
+            os.close(parent_fd)
 
 
-def _daemon_walk(parent_fd: int, top: str, *, machine: int) -> int:
+def _daemon_walk(parent_fd: int, top: str, *, machine: int,
+                 target_fd: int | None = None) -> int:
     removed = 0
     device = os.fstat(parent_fd).st_dev
 
@@ -202,18 +213,25 @@ def _daemon_walk(parent_fd: int, top: str, *, machine: int) -> int:
         if depth > _MAX_DEPTH:
             raise OwnerTreeDeletionRefused("deletion depth bound: " + relative[:1024])
         info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if depth == 0 and target_fd is not None and not os.path.samestat(
+                info, os.fstat(target_fd)):
+            raise OwnerTreeDeletionRefused('original subtree replaced: ' + relative)
         directory = stat.S_ISDIR(info.st_mode)
         check(info, relative, directory=directory,
               daemon_parent=os.fstat(parent).st_uid == DAEMON_UID and depth > 0)
         try:
             if directory:
-                fd = os.open(name, _DIRECTORY, dir_fd=parent)
+                fd = (os.dup(target_fd) if depth == 0 and target_fd is not None
+                      else os.open(name, _DIRECTORY, dir_fd=parent))
                 try:
                     if not os.path.samestat(os.fstat(fd), info):
                         raise OwnerTreeDeletionRefused("entry replaced: " + relative)
                     for child in sorted(os.listdir(fd)):
                         walk(fd, child, relative + "/" + child, depth + 1)
                     os.fsync(fd)
+                    if not os.path.samestat(os.fstat(fd), os.stat(
+                            name, dir_fd=parent, follow_symlinks=False)):
+                        raise OwnerTreeDeletionRefused('entry replaced: ' + relative)
                 finally:
                     os.close(fd)
                 os.rmdir(name, dir_fd=parent)

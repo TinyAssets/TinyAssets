@@ -1852,12 +1852,20 @@ def periodic_sweep(
     Unlike the startup sweep this respects a live claim: another processor's
     fresh claim is left alone. Returns the number processed.
     """
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
+
     processed = 0
     while True:
         entry = claim_next(db, claimant=claimant, claim_ttl_s=claim_ttl_s, now=now)
         if entry is None:
             return processed
-        process_entry(db, entry, fs=fs, now=now)
+        try:
+            process_entry(db, entry, fs=fs, now=now)
+        except OwnerLaunchRefused:
+            # A busy owner cannot admit the deletion fence. Keep this durable
+            # entry pending and its bytes charged; claim expiry retries it.
+            # Continue with other owners instead of aborting the whole sweep.
+            continue
         processed += 1
 
 

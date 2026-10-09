@@ -25,6 +25,26 @@ CAPS = (1 << 6) | (1 << 7)
 MAX_CELLS, MAX_OWNER_CELLS = 32, 4
 
 
+class BootstrapRefused(RuntimeError):
+    """Only fixed bootstrap diagnostics and validated filesystem paths."""
+
+
+def _bootstrap_failure(exc, operation):
+    # Never stringify arbitrary exceptions: provider/config/library errors may
+    # carry secrets. A code location and errno still identify their operation.
+    trace = exc.__traceback__
+    while trace is not None and trace.tb_next is not None:
+        trace = trace.tb_next
+    where = (f'{trace.tb_frame.f_code.co_name}:{trace.tb_lineno}' if trace else operation)
+    reason = str(exc) if isinstance(exc, BootstrapRefused) else type(exc).__name__
+    number = exc.errno if isinstance(exc, OSError) else None
+    message = f'bounded {operation} failed at {where}: {reason}; errno={number}'
+    try:
+        os.write(2, (ascii(message)[1:-1][:900] + '; exit=78\n').encode('ascii'))
+    finally:
+        os._exit(78)
+
+
 def package_usage(pid, proc='/proc'):
     """Count/RSS of the cell from OUTSIDE its PID namespace and owner identity.
 
@@ -71,13 +91,10 @@ def bootstrap_services(data_root, run_root, bindings, launch, *, generation):
         raise RuntimeError('service bootstrap requires container PID1')
     try:
         return _bootstrap_services(data_root, run_root, bindings, launch, generation)
-    except BaseException:
+    except BaseException as exc:
         # Especially before daemon retirement, returning an exception to a
         # caller would let a caught startup failure retain host authority.
-        try:
-            os.write(2, b'bounded bootstrap failed; container restart required\n')
-        finally:
-            os._exit(78)
+        _bootstrap_failure(exc, 'bootstrap')
 
 
 def _bootstrap_services(data_root, run_root, bindings, launch, generation):
@@ -93,16 +110,17 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
             raise RuntimeError('bootstrap paths must be absolute')
         for ancestor in (path, *path.parents):
             if not stat.S_ISDIR(ancestor.lstat().st_mode):
-                raise RuntimeError('bootstrap path contains an alias')
+                raise BootstrapRefused(f'bootstrap path contains an alias: {ancestor}')
     for ancestor in (run_root, *run_root.parents):
         info = ancestor.lstat()
         if info.st_uid != 0 or info.st_mode & 0o022:
-            raise RuntimeError('bootstrap IPC parent is writable or not root-owned')
+            raise BootstrapRefused(
+                f'bootstrap IPC parent is writable or not root-owned: {ancestor}')
     broker_dir = run_root / 'broker'
     info = broker_dir.lstat()
     if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid,
             stat.S_IMODE(info.st_mode)) != (1002, 1101, 0o2750)):
-        raise RuntimeError('invalid bootstrap broker socket directory')
+        raise BootstrapRefused(f'invalid bootstrap broker socket directory: {broker_dir}')
     # These are startup-resolved principal bindings, not client request data.
     for (_, center), machine in bindings.items():
         if (not isinstance(center, str) or not center or center in {'.', '..'}
@@ -113,7 +131,8 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
         info = (data_root / center).lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_gid != machine
                 or info.st_uid not in (1001, machine)):
-            raise RuntimeError('owner root does not match bootstrap binding')
+            raise BootstrapRefused(
+                f'owner root does not match bootstrap binding: {data_root / center}')
 
     proof_parent, proof_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     # DA2: the mapper's read-only broker pair exists before the broker fork;
@@ -144,9 +163,8 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
                     '--mapper-pid', mapper]
             os.chdir('/')
             os.execve(argv[0], argv, launch['broker_environment'](data_root))
-        except BaseException:
-            os.write(2, b'bounded bootstrap broker failed\n')
-            os._exit(78)
+        except BaseException as exc:
+            _bootstrap_failure(exc, 'bootstrap broker')
     proof_child.close()
     admission_broker.close()
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -168,9 +186,8 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
             while server.serve_one():
                 pass
             os._exit(0)
-        except BaseException:
-            os.write(2, b'bounded bootstrap mapper failed\n')
-            os._exit(78)
+        except BaseException as exc:
+            _bootstrap_failure(exc, 'bootstrap mapper')
     child.close()
     ready_child.close()
     admission_mapper.close()
@@ -240,7 +257,7 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
             break
         except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
             if time.monotonic() >= deadline:
-                raise RuntimeError('bootstrapped broker readiness timeout') from None
+                raise BootstrapRefused(f'broker readiness timeout: {broker_dir}') from None
             time.sleep(0.02)
     supervisor.start()
     install_bounded_client(client)
@@ -507,7 +524,7 @@ class OwnerLauncher:
             fields.update(('egress', 'engine'))
         if kind == 'package':
             fields.update(('revision', 'ta', 'egress'))
-        if kind == 'owner-delete':
+        if kind in ('owner-delete', 'owner-delete-subtree'):
             fields.add('delete_token')
         socket_count = (1 if kind == 'workspace-provision' else
                         sum(request.get(key) is True for key in ('egress', 'ta'))
@@ -537,7 +554,7 @@ class OwnerLauncher:
                 # reaches nothing, and gets no socket at all.
                 or (kind == 'workspace-remote' and (not streaming
                     or type(request['egress']) is not bool))
-                or (kind == 'owner-delete' and (not streaming
+                or (kind in ('owner-delete', 'owner-delete-subtree') and (not streaming
                     or type(request['delete_token']) is not str
                     or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
                 or (kind == 'package' and (not streaming or type(request['ta']) is not bool
@@ -663,7 +680,7 @@ class OwnerLauncher:
                     raise ValueError('provider engine relay does not match admitted center')
         if kind == 'owner-delete-subtree':
             # Pool reclamation: one owner subtree strictly below the center root,
-            # removed by the owner first (two-pass); no account deletion fence.
+            # removed under the same owner-wide fence as account deletion.
             info = os.fstat(received[1])
             source = os.readlink(f'/proc/self/fd/{received[1]}')
             prefix = self.data_root + '/' + request['command_center'] + '/'
@@ -699,7 +716,7 @@ class OwnerLauncher:
                 status_channel.close()
                 raise
         try:
-            if kind == 'owner-delete':
+            if kind in ('owner-delete', 'owner-delete-subtree'):
                 self.delete_fences[machine] = (request['principal'],
                     request['command_center'], request['delete_token'])
             pid = os.fork()
@@ -894,7 +911,7 @@ class OwnerLauncher:
 
     def _check_delete_fence(self, machine, request):
         fence = self.delete_fences.get(machine)
-        if request['kind'] == 'owner-delete':
+        if request['kind'] in ('owner-delete', 'owner-delete-subtree'):
             expected = (request['principal'], request['command_center'], request['delete_token'])
             if ((fence is not None and fence != expected)
                     or any(job[1] == machine for job in self.jobs.values())):

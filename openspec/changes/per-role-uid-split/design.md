@@ -141,47 +141,14 @@ volume without the marker is not ready, and the service refuses it.
 
 ## 4. Maintenance-window runbook
 
-PR1 adds this as `docs/ops/owner-split-cutover-runbook.md`. Budget about 60 minutes; the PR1
-rehearsal sets the real number. The founder schedules the window.
-
-1. **Announce.** Tell the testers the window and the expected downtime.
-2. **Stop.**
-   - Hold auto-deploy so nothing else merges.
-   - Disable the backup, autoheal and watchdog timers, so nothing restarts the daemon.
-   - `docker compose stop` every container on `tinyassets-data`.
-3. **Snapshot.**
-   - Take a full-volume tar of `tinyassets-data` with writers stopped:
-     `--numeric-owner --acls --xattrs`.
-   - Write a local copy and upload it to the Storage Box, using the `deploy/backup.sh` full tier.
-   - Record its sha256 and name count. The count must match a fresh census.
-   - This is the rollback point.
-4. **Migrate.**
-   - Run `role_migrate --check`, then `role_migrate --snapshot <id>`, then `--check` again, which
-     must show zero diffs.
-   - On a crash, run the same command again.
-5. **Start.**
-   - Merge PR2. `deploy-prod` deploys it, and the bootstrap starts with the marker present.
-   - Do not trust `deploy_fail_safe.sh`'s automatic image revert here. The previous image on a
-     migrated volume is not a supported state, so if it reverted, go to Rollback.
-6. **Verify.**
-   - `python scripts/deployed_sha.py --assert-contains <PR2 sha>`.
-   - `python scripts/mcp_public_canary.py --assert-handles`.
-   - `ps` shows 1001, 1002 and owner uids, with zero capabilities after retirement.
-   - One founder app turn through the app agent, including a provider turn, which exercises
-     provider-exec.
-   - A cross-owner refusal probe in production: tester B's cell tries to read the founder's
-     tree and vault, and B's daemon-side read names the founder's file. Both must refuse.
-   - Re-enable the timers and announce the end.
-7. **Rollback** (any verify step fails, or a regression later):
-   1. Stop.
-   2. If disk allows, move the migrated volume aside; otherwise remove it.
-   3. Restore the snapshot with `deploy/backup-restore.sh`.
-   4. Redeploy the previous image with `deploy-prod` `workflow_dispatch image_tag=<previous>`
-      or `recovery-retag-image.yml`.
-   5. Revert PR2 on main, so the next push does not redeploy it.
-   6. Run `deployed_sha` and the canary.
-
-   Once users have written after the cutover, rollback loses those writes. Decide at Verify.
+`docs/ops/owner-split-cutover-runbook.md` is the executable procedure. Hold all
+other merges and host mutations, stop writers, pin the previous image and live
+runtime bundle, snapshot the restorable inventory, migrate, then merge while
+deploy remains disabled. Wait for the merge build, explicitly enable/dispatch
+that pinned revision, and disable new deploys while verifying. Rollback restores
+the data snapshot and its paired previous image, Compose and launch bundle before
+starting anything. Revert main before releasing the hold. Post-cutover writes
+are lost on snapshot restore. The founder schedules the maintenance window.
 
 ## 5. Deletion list (PR3): app checks the kernel now enforces
 

@@ -10,6 +10,25 @@ from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV
 LAUNCHER = runpy.run_path(str(Path(__file__).resolve().parents[1] / "deploy/role_launcher.py"))
 
 
+def test_bootstrap_failure_is_actionable_bounded_and_secret_free(monkeypatch, capfd):
+    module = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                               / 'deploy/role_owner_launcher.py'))
+    function = module['bootstrap_services']
+    monkeypatch.setattr(module['os'], 'getpid', lambda: 1)
+    def fail(*a):
+        raise OSError(13, 'SECRET-CREDENTIAL-CONTENT', '/secret/token')
+    monkeypatch.setitem(function.__globals__, '_bootstrap_services', fail)
+    def exited(code):
+        raise SystemExit(code)
+    monkeypatch.setattr(module['os'], '_exit', exited)
+    with pytest.raises(SystemExit) as error:
+        function('/data', '/run', {}, {}, generation=0)
+    assert error.value.code == 78
+    output = capfd.readouterr().err
+    assert 'errno=13' in output and 'bootstrap' in output and 'fail' in output
+    assert len(output) < 1024 and 'SECRET' not in output and '/secret/token' not in output
+
+
 def test_broker_allowlist_withholds_unknown_and_forbidden_environment(monkeypatch):
     for name in (*CHILD_FORBIDDEN_ENV, "UNENUMERATED_SECRET", "PYTHONPATH", "LD_PRELOAD"):
         monkeypatch.setenv(name, "must-not-cross")

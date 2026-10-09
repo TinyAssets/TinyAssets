@@ -12,7 +12,9 @@ Nothing here runs docker: the kernel behaviour is the oracle's own job.
 from __future__ import annotations
 
 import ast
+import re
 import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -89,3 +91,46 @@ def test_the_oracle_reuses_the_probes_it_is_built_on():
     assert "role_provider_cell_probe.py" in source
     for name in ("role_migrate_probe.py", "role_provider_cell_probe.py"):
         assert (REPO / "scripts" / name).is_file(), name
+
+
+def test_runbook_start_dispatches_only_after_enabling(tmp_path):
+    start = RUNBOOK.split('## 5. Start', 1)[1].split('## 6.', 1)[0]
+    blocks = re.findall(r'```sh\n(.*?)```', start, re.S)
+    assert blocks, 'start has no executable enable/dispatch sequence'
+    command = '\n'.join(blocks)
+    # Execute the documented commands against a workflow-state double. It
+    # refuses dispatch while disabled, checks the merge SHA and counts runs.
+    script = '''
+set -e
+CUTOVER_SHA=abcdef1234567890
+enabled=0
+dispatched=0
+gh() {
+  case "$1 $2" in
+    'api repos/TinyAssets/TinyAssets/commits/main') echo "$CUTOVER_SHA" ;;
+    'workflow enable') enabled=1 ;;
+    'workflow run') test "$enabled" = 1; dispatched=$((dispatched + 1));
+      test "$*" = 'workflow run deploy-prod.yml --ref main -f image_tag=abcdef123456' ;;
+    'run list') : ;;
+    *) return 1 ;;
+  esac
+}
+''' + command + '\ntest "$dispatched" = 1\n'
+    result = subprocess.run(['bash', '-s'], input=script.encode(), cwd=tmp_path,
+                            capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_runbook_checksum_uses_archive_directory(tmp_path):
+    import hashlib
+    backup = tmp_path / 'backups'
+    backup.mkdir()
+    (backup / 'fixture.tar.gz').write_bytes(b'archive')
+    (backup / 'fixture.tar.gz.sha256').write_text(
+        hashlib.sha256(b'archive').hexdigest() + '  fixture.tar.gz\n')
+    rollback = RUNBOOK.split('## 7. Rollback', 1)[1]
+    line = next(line.strip() for line in rollback.splitlines() if '<id>.sha256' in line)
+    line = line.replace('/var/backups/tinyassets', 'backups')
+    line = line.replace('<id>', 'fixture.tar.gz')
+    result = subprocess.run(['bash', '-s'], input=line.encode(), cwd=tmp_path, capture_output=True)
+    assert result.returncode == 0, result.stderr

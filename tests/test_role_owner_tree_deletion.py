@@ -352,3 +352,131 @@ def test_subtree_daemon_pass_refuses_undeleted_owner_entries(volume):
         as_user(1001, lambda: SUBTREE_PASS(work, machine=300001))
     assert (work / "payload").read_bytes() == b"alice"
     assert stat.S_ISDIR(work.lstat().st_mode)
+
+
+def test_subtree_ancestor_swap_never_deletes_bobs_credential(volume, monkeypatch):
+    from tinyassets import role_decoder, storage, universe_owner
+    from tinyassets.broker import owner_identities, supervisor
+
+    ancestor = volume / 'alice/work'
+    ancestor.chmod(0o770)
+    nested = ancestor / 'nested'
+    nested.mkdir(mode=0o770)
+    label(nested, 300001)
+    target = nested / 'victim'
+    target.mkdir(mode=0o770)
+    label(target, 300001)
+    foreign = volume / 'bob/secret'
+    foreign.mkdir(mode=0o750)
+    os.chown(foreign, 1001, 1102)
+    (foreign / 'nested').mkdir(mode=0o750)
+    os.chown(foreign / 'nested', 1001, 1102)
+    credential = foreign / 'nested/victim'
+    credential.write_bytes(b'Bob credential sentinel')
+    os.chown(credential, 1001, 1102)
+    credential.chmod(0o640)
+    before = credential.stat()
+    # Give Alice control of the ancestor name, just as in an owner workspace.
+    parent = volume / 'alice/mutable'
+    parent.mkdir(mode=0o770)
+    label(parent, 300001)
+    ancestor.rename(parent / 'work')
+    ancestor = parent / 'work'
+    target = ancestor / 'nested/victim'
+    finished = []
+    client = SimpleNamespace(finish_delete=lambda **kw: finished.append(kw))
+    monkeypatch.setattr(role_decoder, '_bounded_client', client)
+    monkeypatch.setattr(storage, 'data_dir', lambda: volume)
+    monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
+    monkeypatch.setattr(universe_owner, 'owner_of', lambda *a: 'alice')
+    monkeypatch.setattr(owner_identities, 'owner_identity',
+                        lambda *a, **kw: SimpleNamespace(uid=300001, gid=300001))
+
+    import socket
+    gate, attacker = socket.socketpair()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            gate.close()
+            os.setgroups([])
+            os.setresgid(300001, 300001, 300001)
+            os.setresuid(300001, 300001, 300001)
+            attacker.recv(1)
+            ancestor.rename(parent / 'original')
+            ancestor.symlink_to(foreign, target_is_directory=True)
+            with pytest.raises(PermissionError):
+                credential.read_bytes()
+            attacker.sendall(b'1')
+            os._exit(0)
+        except BaseException:
+            os._exit(1)
+    attacker.close()
+
+    def swap(*args, **kwargs):
+        gate.sendall(b'1')
+        assert gate.recv(1) == b'1'
+        return {}
+
+    monkeypatch.setattr(role_owner_delete, '_pass_one', swap)
+    as_user(1001, lambda: role_owner_delete.remove_subtree(target, principal='alice'))
+    gate.close()
+    assert os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
+    assert credential.read_bytes() == b'Bob credential sentinel'
+    assert os.path.samestat(before, credential.stat())
+    assert not (parent / 'original/nested/victim').exists()
+
+
+def test_subtree_pass_refuses_symlink_ancestor(volume):
+    alias = volume / 'alice/alias'
+    alias.symlink_to(volume / 'bob')
+    with pytest.raises(Exception):
+        as_user(1001, lambda: SUBTREE_PASS(alias / '.runtime', machine=300001))
+    assert (volume / 'bob/.runtime/provider-launch-credentials/snapshot').exists()
+
+
+def test_failed_subtree_pass_releases_its_fence(volume, monkeypatch):
+    from tinyassets import role_decoder, storage, universe_owner
+    from tinyassets.broker import owner_identities, supervisor
+
+    fences = []
+    def finish(**kwargs):
+        assert fences.pop() == kwargs['token']
+    monkeypatch.setattr(role_decoder, '_bounded_client', SimpleNamespace(finish_delete=finish))
+    monkeypatch.setattr(storage, 'data_dir', lambda: volume)
+    monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
+    monkeypatch.setattr(universe_owner, 'owner_of', lambda *a: 'alice')
+    monkeypatch.setattr(owner_identities, 'owner_identity',
+                        lambda *a, **kw: SimpleNamespace(uid=300001, gid=300001))
+    def fail(*args, **kwargs):
+        fences.append(kwargs['extra']['delete_token'])
+        raise RuntimeError('owner pass failed after admission and reaping')
+    monkeypatch.setattr(role_owner_delete, '_pass_one', fail)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match='owner pass failed'):
+            role_owner_delete.remove_subtree(volume / 'alice/work', principal='alice')
+        assert not fences
+
+
+def test_subtree_replacement_is_refused_before_removing_new_inode(volume, monkeypatch):
+    from tinyassets import role_decoder, storage, universe_owner
+    from tinyassets.broker import owner_identities, supervisor
+
+    releases = []
+    client = SimpleNamespace(finish_delete=lambda **kw: releases.append(kw))
+    monkeypatch.setattr(role_decoder, '_bounded_client', client)
+    monkeypatch.setattr(storage, 'data_dir', lambda: volume)
+    monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
+    monkeypatch.setattr(universe_owner, 'owner_of', lambda *a: 'alice')
+    monkeypatch.setattr(owner_identities, 'owner_identity',
+                        lambda *a, **kw: SimpleNamespace(uid=300001, gid=300001))
+    target = volume / 'alice/work'
+    def replace(*args, **kwargs):
+        target.rename(volume / 'alice/original')
+        target.mkdir(mode=0o770)
+        label(target, 300001)
+        return {}
+    monkeypatch.setattr(role_owner_delete, '_pass_one', replace)
+    with pytest.raises(deletion.OwnerTreeDeletionRefused, match='original subtree replaced'):
+        role_owner_delete.remove_subtree(target, principal='alice')
+    assert target.is_dir() and len(releases) == 1
+    assert (volume / 'alice/original/payload').read_bytes() == b'alice'

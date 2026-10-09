@@ -154,7 +154,8 @@ if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
     SNAPSHOT_DIR="${BACKUP_SNAPSHOT_DIR:-/var/backups/tinyassets}"
     SNAPSHOT_NAME="tinyassets-snapshot-${TS}.tar.gz"
     SNAPSHOT_PATH="${SNAPSHOT_DIR}/${SNAPSHOT_NAME}"
-    mkdir -p -m 0700 "${SNAPSHOT_DIR}"
+    mkdir -p "${SNAPSHOT_DIR}"
+    chmod 0700 "${SNAPSHOT_DIR}"
     log "creating cutover snapshot ${SNAPSHOT_PATH}..."
     if ! tar -czf "${SNAPSHOT_PATH}" --numeric-owner --acls --xattrs \
             -C "${VOLUME_DIR}" .; then
@@ -162,10 +163,39 @@ if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
         rm -f "${SNAPSHOT_PATH}"
         exit 2
     fi
-    names="$(tar -tzf "${SNAPSHOT_PATH}" | grep -vc '^\./$')"
-    census="$(find "${VOLUME_DIR}" -mindepth 1 | wc -l)"
-    if [[ "${names}" != "${census}" ]]; then
-        log "ERROR: snapshot holds ${names} names but the volume has ${census}"
+    if ! names="$(python3 - "${VOLUME_DIR}" "${SNAPSHOT_PATH}" <<'INVENTORY_PY'
+import os
+import re
+import stat
+import sys
+import tarfile
+from collections import Counter
+
+root, archive = sys.argv[1:]
+# Exactly role_migrate.py's disposable stopped-daemon relay socket set.
+relay = re.compile(r"\.universe-sidecars/[A-Za-z0-9_-]{1,128}/"
+                   r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12})\.sock")
+expected = []
+def fail_walk(error):
+    raise error
+for parent, directories, files in os.walk(root, onerror=fail_walk):
+    for name in directories + files:
+        path = os.path.join(parent, name)
+        relative = os.path.relpath(path, root)
+        if stat.S_ISSOCK(os.lstat(path).st_mode):
+            if relay.fullmatch(relative):
+                continue
+            raise SystemExit('unrecognized socket in snapshot inventory: ' + ascii(relative))
+        expected.append(relative)
+with tarfile.open(archive, 'r:gz') as handle:
+    actual = [member.name.removeprefix('./').rstrip('/') for member in handle
+              if member.name not in ('.', './')]
+if Counter(actual) != Counter(expected):
+    raise SystemExit('snapshot restorable inventory mismatch (missing, extra or duplicate names)')
+print(len(expected))
+INVENTORY_PY
+)"; then
+        log "ERROR: snapshot does not match the restorable inventory"
         exit 2
     fi
     sha="$(sha256sum "${SNAPSHOT_PATH}" | cut -d' ' -f1)"
