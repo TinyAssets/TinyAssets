@@ -15,6 +15,8 @@ import pytest
 from tests.test_first_contact import _login, _reset_auth, _serial_dirs  # noqa: F401
 from tinyassets import role_center_admission, role_decoder
 
+pytestmark = pytest.mark.role_split  # the real write-site guards
+
 
 @pytest.fixture
 def data_dir(tmp_path: Path, monkeypatch) -> Path:

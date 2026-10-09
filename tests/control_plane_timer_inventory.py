@@ -107,6 +107,15 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "one broker stream waits for the daemon's refresh answer only until "
         "that stream's own deadline; nothing reschedules",
     ),
+    "tinyassets/role_node.py::run": (
+        CALL_SCOPED, "one node-sandbox cell is supervised until exit or its call deadline",
+    ),
+    "tinyassets/role_package_cell.py::run": (
+        CALL_SCOPED, "one package payload is polled for exit, limits or broker revocation",
+    ),
+    "tinyassets/role_tools.py::run": (
+        CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
+    ),
     "tinyassets/activity_runner.py::linked_activity": (
         CALL_SCOPED,
         "one activity run waits up to wait_s for the dispatcher to bind its "
