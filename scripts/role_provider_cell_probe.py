@@ -28,7 +28,9 @@ bounded = runpy.run_path('/usr/local/libexec/ta-owner-launch.py')
 launch['verify_chain']()
 
 def own(path, uid, gid, mode):
+    # Setup holds CAP_FSETID, so the setgid bit survives a group root is not in.
     os.chown(path, uid, gid); os.chmod(path, mode)
+    assert (os.stat(path).st_mode & 0o7777, os.stat(path).st_gid) == (mode, gid), path
 
 root = Path(tempfile.mkdtemp(prefix='provider-cells-'))
 own(root, 1001, 1001, 0o755)
@@ -63,10 +65,10 @@ for owner, uid in identities.items():
 run = Path(tempfile.mkdtemp(prefix='provider-cells-', dir='/run')); run.chmod(0o755)
 ipc = run / 'broker'; ipc.mkdir(); own(ipc, 1002, 1101, 0o2750)
 os.environ['DAEMON_ONLY_SECRET'] = 'daemon-secret-sentinel'
-# Setup needed CHOWN/DAC_OVERRIDE/FOWNER; the service bootstrap must start with
+# Setup needed CHOWN/DAC_OVERRIDE/FOWNER/FSETID; the service bootstrap must start with
 # exactly its own set (KILL, SETGID, SETUID, SETPCAP), so drop the rest first.
 libc = launch['_libc']()
-for cap in (0, 1, 3):
+for cap in (0, 1, 3, 4):
     launch['_checked'](libc.prctl(24, cap, 0, 0, 0), 'drop setup capability')
 launch['_capset'](launch['ENTRY_CAPS'])
 launch['_assert_caps'](launch['ENTRY_CAPS'])
@@ -107,7 +109,7 @@ import json, os, socket, sys
 targets, port = json.loads(bytes.fromhex(sys.argv[1]))
 fields = dict(l.split(':', 1) for l in open('/proc/self/status').read().splitlines())
 opened = []
-for path in targets + ['/proc/1/environ', '/proc/1/root/tmp']:
+for path in targets:
     try:
         (os.listdir(path) if os.path.isdir(path) else open(path, 'rb').read())
         opened.append(path)
@@ -122,11 +124,20 @@ try:
         engine = c.recv(64).decode().strip()
 except OSError as exc:
     engine = 'unreachable: ' + type(exc).__name__
+# /proc is the cell's own PID namespace: its PID1 is the cell's init, and no
+# daemon (or any host) process, environment or root is visible from here.
+pids = [n for n in os.listdir('/proc') if n.isdigit()]
+seen_secret = False
+for pid in pids:
+    try:
+        seen_secret |= b'daemon-secret-sentinel' in open(f'/proc/{pid}/environ', 'rb').read()
+    except OSError:
+        pass
 fds = sorted(int(n) for n in os.listdir('/proc/self/fd') if n.isdigit()
              and os.path.exists('/proc/self/fd/' + n))
 print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'], 16),
     nnp=int(fields['NoNewPrivs']), fds=fds, opened=opened, direct=direct, engine=engine,
-    env_secret='DAEMON_ONLY_SECRET' in os.environ)))
+    env_secret='DAEMON_ONLY_SECRET' in os.environ, pids=len(pids), proc_secret=seen_secret)))
 """
 PIPES = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
              stderr=asyncio.subprocess.PIPE)
@@ -171,6 +182,12 @@ async def main():
             assert claude[0] == 0 and claude[1].strip(), claude
             codex = await in_cell(owner, [CODEX, '--version'])
             assert codex[0] == 0 and b'codex-cli' in codex[1], codex
+            # What the adapters resolve on PATH: the codex flock wrapper (it
+            # locks the cell's private CODEX_HOME copy) and the claude link.
+            for wrapper, marker in (('/usr/local/bin/codex', b'codex-cli'),
+                                    ('/usr/local/bin/claude', claude[1].split()[0])):
+                done = await in_cell(owner, [wrapper, '--version'])
+                assert done[0] == 0 and marker in done[1], (wrapper, done)
             hello = await app_server_handshake(owner)
             assert 'result' in hello, hello
             catalogue = await read_native_catalogue(
@@ -195,6 +212,7 @@ async def main():
             assert seen['caps'] == 0 and seen['nnp'] == 1 and seen['fds'] == [0, 1, 2], seen
             assert seen['opened'] == [] and seen['direct'] == 'refused', seen
             assert seen['engine'] == 'ENGINE-ROUTE-OK' and not seen['env_secret'], seen
+            assert not seen['proc_secret'] and seen['pids'] < 16, seen
             report[owner] = dict(claude=claude[1].decode().strip(),
                                  codex=codex[1].decode().strip(),
                                  app_server=sorted(hello['result'])[:4],
@@ -215,7 +233,8 @@ def main():
                             capture_output=True, text=True, check=True).stdout.strip()
     command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--user', '0:0',
                '--cap-drop', 'ALL']
-    for cap in ('CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SETPCAP', 'KILL'):
+    for cap in ('CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID', 'SETPCAP',
+                'KILL'):
         command += ['--cap-add', cap]
     for option in ('no-new-privileges=true', 'seccomp=unconfined', 'apparmor=unconfined',
                    'systempaths=unconfined'):
