@@ -95,6 +95,13 @@ def test_platform_areas_and_stale_entries():
     assert target(".tinyassets.db")[:3] == (1001, 1001, 0o600)
 
 
+def test_sidecar_files_keep_their_own_mode():
+    # U2 concern 2026-10-06 (metadata-sidecar-mode): a regular sidecar file never
+    # gains setgid or execute from the directory mode.
+    assert target(".universe-sidecars/u-a/relay.json", mode=0o600)[:3] == (1001, 1100, 0o600)
+    assert target(".universe-sidecars/u-a", stat.S_IFDIR)[:3] == (1001, 1100, 0o2710)
+
+
 @pytest.mark.parametrize("path, kind", [
     ("u-a/notes/pipe", stat.S_IFIFO),
     ("u-a/.runtime/link", stat.S_IFLNK),
