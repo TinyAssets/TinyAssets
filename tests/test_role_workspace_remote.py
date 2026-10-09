@@ -144,7 +144,15 @@ def test_the_kind_is_mounted_streaming_and_carries_exactly_one_relay():
     whose socket count is wrong gets the wrong fixed slot -- both silent.
     """
     source = (ROOT / "deploy" / "role_owner_launcher.py").read_text(encoding="utf-8")
-    assert "'workspace-remote', 'preview-write'" in source, "the kind must be mounted"
+    import ast
+
+    tree = ast.parse(source)
+    mounted = next(node.value for node in ast.walk(tree)
+                   if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == 'mounted'
+                           for target in node.targets))
+    assert eval(compile(ast.Expression(mounted), '<mounted>', 'eval'),
+                {'__builtins__': {}}, {'kind': 'workspace-remote', 'request': {}}) is True
     assert "'tool-jail', 'package', 'workspace-remote'" in source, "one relay slot: egress"
     assert "'node-sandbox', 'workspace-remote'" in source, "a clone needs the long deadline"
     assert "'enter-remote', str(inner)" in source, "the entry is the image's, by fixed path"
