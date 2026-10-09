@@ -17,7 +17,7 @@ from typing import Any
 from tinyassets.broker.ops import new_op_id
 from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome, GrantResolutionError
 
-VERSIONS = ("2025-06-18", "2025-03-26")
+VERSIONS = ("2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26")
 MAX_MESSAGE = 4 * 1024 * 1024
 TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 
@@ -29,13 +29,28 @@ class McpError(RuntimeError):
 class ProtocolRejected(McpError):
     """The server returned a matching JSON-RPC error response."""
 
+    def __init__(self, *, code=None, supported=()):
+        super().__init__("MCP server returned a protocol error")
+        self.code, self.supported = code, supported
+
+
+class LegacyRequired(McpError):
+    """A read-only modern probe got a non-modern HTTP 400."""
+
 
 class SessionExpired(McpError):
     pass
 
 
 class SignInRequired(McpError):
-    pass
+    def __init__(self, status, challenge):
+        super().__init__("MCP sign-in required")
+        self.status = status
+        # Already scanned by the broker; never interpolate into exception text.
+        self.www_authenticate = challenge if (
+            isinstance(challenge, str) and len(challenge) <= 16384
+            and not any(ord(c) < 32 or ord(c) == 127 for c in challenge)
+        ) else ""
 
 
 def _json(raw):
@@ -86,6 +101,8 @@ async def messages(chunks: AsyncIterator[bytes], content_type: str):
                 raise McpError("MCP event too large")
         if len(buffer) + size > MAX_MESSAGE:
             raise McpError("MCP event too large")
+    if buffer == b"\r" and data and b"\n".join(data):
+        yield _json(b"\n".join(data))
     # Incomplete events are not delivered. The caller reports uncertain outcome
     # if a tool result was lost rather than submitting the POST a second time.
 
@@ -105,10 +122,11 @@ class Binding:
 
 
 class RemoteMcp:
-    def __init__(self, broker, binding: Binding, *, check_authority):
+    def __init__(self, broker, binding: Binding, *, check_authority, elicit_url=None):
         self._broker = broker
         self._binding = binding
         self._check_authority = check_authority
+        self._elicit_url = elicit_url
         self._session = ""
         self._version = ""
         self._sequence = 0
@@ -134,7 +152,8 @@ class RemoteMcp:
             if method in {"initialize", "notifications/initialized"}:
                 self._reset()
             if isinstance(exc, asyncio.CancelledError):
-                if method == "tools/call" and attempt.get("request_id") is not None:
+                if (self._version != VERSIONS[0] and method == "tools/call"
+                        and attempt.get("request_id") is not None):
                     # Ask the server to cancel without replaying. A collecting
                     # effector transport cannot stop an already-running worker;
                     # this notification is best effort, never a cancellation receipt.
@@ -151,7 +170,11 @@ class RemoteMcp:
                 raise  # Broker proved the authority refusal preceded every network write.
             if method == "tools/call" and (
                     attempt.get("response") or getattr(stream, "admitted", False)):
-                raise AmbiguousProxyOutcome("MCP tool outcome unknown; do not replay") from None
+                unknown = AmbiguousProxyOutcome("MCP tool outcome unknown; do not replay")
+                unknown.op_id = op_id
+                raise unknown from None
+            if isinstance(exc, AmbiguousProxyOutcome):
+                exc.op_id = op_id
             raise
 
     async def _exchange(self, method, params, *, op_id, notify, notification, attempt):
@@ -164,6 +187,13 @@ class RemoteMcp:
             document["id"] = request_id
         headers = {"Accept": "application/json, text/event-stream",
                    "Content-Type": "application/json"}
+        if self._version == VERSIONS[0]:
+            from tinyassets.mcp_protocol import request_metadata
+
+            params, metadata_headers = request_metadata(
+                method, params, self._tools, elicit_url=self._elicit_url is not None)
+            document["params"] = params
+            headers.update(metadata_headers)
         if self._version:
             headers["MCP-Protocol-Version"] = self._version
         if self._session:
@@ -182,9 +212,10 @@ class RemoteMcp:
             head = await stream.head()
             attempt["response"] = True
             status = head["status"]
+            response_headers = {str(k).lower(): v for k, v in head["headers"].items()}
             if status in (401, 403):
                 self._reset()
-                raise SignInRequired("MCP sign-in required")
+                raise SignInRequired(status, response_headers.get("www-authenticate", ""))
             if status == 404 and self._session:
                 self._reset()
                 raise SessionExpired("MCP session expired; refresh the catalog")
@@ -195,9 +226,13 @@ class RemoteMcp:
                     if chunk:
                         raise McpError("MCP notification returned a body")
                 return None
-            if status != 200:
+            if (status == 400 and method == "tools/list"
+                    and self._version == VERSIONS[0] and not self.catalog_hash):
+                from tinyassets.mcp_protocol import probe_error
+
+                await probe_error(stream, request_id)
+            if status not in (200, 400, 404):
                 raise McpError("MCP request was refused")
-            response_headers = {str(k).lower(): v for k, v in head["headers"].items()}
             if method == "initialize":
                 session = response_headers.get("mcp-session-id", "")
                 if (not isinstance(session, str) or len(session) > 4096
@@ -222,10 +257,16 @@ class RemoteMcp:
                     if (not isinstance(error, dict) or type(error.get("code")) is not int
                             or not isinstance(error.get("message"), str) or "result" in message):
                         raise McpError("invalid MCP error response")
-                    raise ProtocolRejected("MCP server returned a protocol error")
+                    raise ProtocolRejected(code=error["code"])
+                if status != 200:
+                    raise McpError("MCP request was refused")
                 if not isinstance(message.get("result"), dict):
                     raise McpError("invalid MCP result")
                 found = message["result"]
+                if self._version == VERSIONS[0]:
+                    # A final response completes the request even if the server
+                    # neglects to close its SSE stream. Context exit closes it.
+                    return found
         if found is None:
             if method == "tools/call":
                 raise AmbiguousProxyOutcome("MCP tool outcome unknown; do not replay")
@@ -235,10 +276,10 @@ class RemoteMcp:
     async def _initialize(self):
         self._session = self._version = ""
         reply = await self._rpc("initialize", {
-            "protocolVersion": VERSIONS[0], "capabilities": {},
+            "protocolVersion": VERSIONS[1], "capabilities": {},
             "clientInfo": {"name": "TinyAssets", "version": "1"},
         }, op_id=new_op_id())
-        if (reply.get("protocolVersion") not in VERSIONS
+        if (reply.get("protocolVersion") not in VERSIONS[1:]
                 or not isinstance(reply.get("capabilities"), dict)
                 or "tools" not in reply["capabilities"]):
             self._session = ""
@@ -254,11 +295,22 @@ class RemoteMcp:
             for attempt in range(2):
                 try:
                     if not self._version:
-                        await self._initialize()
+                        self._version = VERSIONS[0]
                     tools, cursors, cursor = {}, set(), None
                     while True:
-                        result = await self._rpc("tools/list", {"cursor": cursor} if cursor else {},
-                                                 op_id=new_op_id())
+                        try:
+                            result = await self._rpc(
+                                "tools/list", {"cursor": cursor} if cursor else {},
+                                op_id=new_op_id())
+                        except LegacyRequired:
+                            await self._initialize()
+                            continue
+                        except ProtocolRejected as exc:
+                            if (exc.code == -32022 and self._version == VERSIONS[0]
+                                    and any(v in exc.supported for v in VERSIONS[1:])):
+                                await self._initialize()
+                                continue
+                            raise
                         page = result.get("tools")
                         if not isinstance(page, list):
                             raise McpError("invalid MCP catalog")
@@ -270,6 +322,13 @@ class RemoteMcp:
                                     or not isinstance(tool.get("inputSchema"), dict)):
                                 raise McpError("invalid MCP tool")
                             _safe_schema(tool["inputSchema"])
+                            if self._version == VERSIONS[0]:
+                                from tinyassets.mcp_protocol import header_parameters
+
+                                try:
+                                    header_parameters(tool["inputSchema"])
+                                except ValueError:
+                                    continue
                             tools[tool["name"]] = tool
                         if len(json.dumps(tools)) > MAX_MESSAGE:
                             raise McpError("MCP catalog too large")
@@ -308,8 +367,14 @@ class RemoteMcp:
             except (jsonschema.ValidationError, jsonschema.SchemaError,
                     Unresolvable):
                 raise McpError("MCP tool arguments do not match the catalog") from None
-            return await self._rpc("tools/call", {"name": name, "arguments": arguments},
-                                   op_id=op_id, notify=notify)
+            # Copy caller-owned parameters before any await/host interaction.
+            params = json.loads(json.dumps({"name": name, "arguments": arguments}))
+            result = await self._rpc("tools/call", params, op_id=op_id, notify=notify)
+            if self._version == VERSIONS[0] and result.get("resultType") == "input_required":
+                from tinyassets.mcp_protocol import continue_call
+
+                return await continue_call(self, params, result, op_id=op_id, notify=notify)
+            return result
 
     async def reconcile(self, op_id):
         await asyncio.to_thread(self._check_authority, self._binding)

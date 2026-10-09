@@ -1,5 +1,29 @@
 ## ADDED Requirements
 
+### Requirement: Current remote MCP is compatible without effect replay
+The adapter SHALL support 2026-07-28 per-request metadata, mirrored headers,
+JSON and request-scoped SSE through the existing broker, and legacy negotiated
+2025-11-25, 2025-06-18 and 2025-03-26 sessions. It SHALL propagate bounded
+broker-scanned authentication challenges as structured host-only failure data.
+Modern HTTP cancellation SHALL close the response stream; legacy cancellation
+SHALL retain its best-effort notification. HTTP or transport failures SHALL NOT
+cause automatic tool replay.
+
+#### Scenario: A modern endpoint requires URL input
+- **WHEN** a tools/call returns a valid input_required URL request
+- **THEN** the trusted host receives the full URL, server binding and pending operation
+- **AND** after host consent the adapter continues that same operation with exact opaque requestState and matching inputResponses, using fresh request IDs without a chat continue message
+- **AND** changed authority, host cancellation, changed URL or uncertain delivery cannot reuse prior consent for another operation
+
+#### Scenario: A legacy endpoint rejects the modern discovery probe
+- **WHEN** a read-only modern probe receives a non-modern 400 rejection
+- **THEN** the client initializes a supported legacy version and binds its session to that instance
+- **AND** recognized modern version or header errors are surfaced or negotiated without an indiscriminate legacy fallback
+
+#### Scenario: A round is lost after transmission
+- **WHEN** a continuation POST has an uncertain result
+- **THEN** it is not resent, and its opaque state does not appear in model-visible errors
+
 ### Requirement: Connection routes are general shapes inline in chat
 The system SHALL support MCP attachment shapes through the existing bound inline connection request and continuation mechanism, alongside generic OAuth/HTTP. It SHALL NOT require per-platform code, a directory entry or a platform LLM. The owner SHALL control route and approval policy; cross-user isolation SHALL remain the sole immutable platform behavioral invariant. Credentials SHALL remain daemon-side by default, with only explicit owner-approved stdio injection into that server's separate owner-bound sandbox permitted.
 

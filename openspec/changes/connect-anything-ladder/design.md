@@ -1,5 +1,37 @@
 ## Context
 
+### Slice 3: current remote protocol (2026-10-09)
+
+The July 2026 adapter uses request-local metadata and Streamable HTTP, with
+read-only discovery as the era probe and legacy initialization on an explicit
+non-modern 400 response. Recognized modern errors never trigger blind fallback.
+No tools/call is retried for a version, session, HTTP or transport failure.
+The official contracts are the 2026-07-28 basic/versioning,
+basic/transports/streamable-http and basic/patterns/mrtr specifications.
+
+Storage: no new table, attachment registry or migration. Protocol/session state
+stays on the execution-principal-bound RemoteMcp instance. A pending MRTR call
+retains its original arguments, Binding, host callback, catalog and operation ID
+inside that call; requestState is opaque and never returned to model context.
+Each acknowledged input-required round gets a fresh wire and broker operation ID.
+Uncertain rounds stop without replay. Process restart does not reconstruct a
+pending call; durable host wake belongs to inline-connect-and-approve.
+
+Host interface: an optional trusted URL elicitation callback receives immutable
+server/binding/operation/URL/message context and returns accept/decline/cancel.
+Only URL capability is advertised, and only when that callback is installed.
+The host must show the complete URL and requesting server, obtain consent, open
+it outside model/browser inspection, and await user completion. The adapter
+never fetches or opens a URL. Accepted unchanged URL requests can be polled
+without another tap; changed URLs require fresh consent. Stop and authority
+revocation terminate continuation. The existing spawn sites must install this
+callback; this slice does not edit isolation-owned spawn sites.
+
+SignInRequired retains bounded broker-scanned WWW-Authenticate and HTTP status
+as structured attributes for OAuth discovery; exception text stays fixed.
+It does not fetch metadata or retry the rejected call. Missing headers remain
+missing rather than being invented. Broker APIs and custody are unchanged.
+
 The supplied audit B2/L6/L7 cites HTTP-only `outbound_connections`/ta inventory, the deferred attached-MCP section of universe-agent-harness D6a, and D5's unfinished browser broker. `inline-connect-and-approve` explicitly leaves MCP URLs and browser fallback to follow-up work. This change supplies MCP transport, storage and secret custody; browser-login-custody separately consumes completed D5 and saved-agent-connectors owns tested extensions; it does not create a parallel request inbox or approval engine.
 
 ## Goals / Non-Goals

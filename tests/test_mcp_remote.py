@@ -37,7 +37,9 @@ class FakeBroker:
         request = json.loads(kwargs["request"]["body"])
         method = request["method"]
         status, session, content_type = 200, "", "application/json"
-        if self.expire:
+        if kwargs["request"]["headers"].get("MCP-Protocol-Version") == "2026-07-28":
+            status, result = 400, {}
+        elif self.expire:
             self.expire = False
             status = 404
             result = {}
@@ -120,7 +122,7 @@ async def test_initialize_paginated_discovery_streamed_call():
     assert broker.calls[-1]["op_id"] == "operation"
     assert broker.calls[-1]["request"]["headers"]["MCP-Session-Id"] == "opaque-session"
     assert broker.calls[-1]["request"]["headers"]["MCP-Protocol-Version"] == "2025-06-18"
-    assert broker.closed == 5
+    assert broker.closed == 6
 
 
 @pytest.mark.asyncio
@@ -145,11 +147,11 @@ async def test_lost_result_is_uncertain_and_stale_catalog_does_not_send():
     await remote.discover()
     with pytest.raises(McpError, match="stale"):
         await remote.call("write", {}, catalog_hash="old", op_id="one")
-    assert len(broker.calls) == 4
+    assert len(broker.calls) == 5
     broker.incomplete = True
     with pytest.raises(AmbiguousProxyOutcome):
         await remote.call("write", {}, catalog_hash=remote.catalog_hash, op_id="two")
-    assert len(broker.calls) == 5
+    assert len(broker.calls) == 6
 
 
 @pytest.mark.asyncio
@@ -166,7 +168,7 @@ async def test_revocation_rechecked_before_every_call():
     revoked = True
     with pytest.raises(PermissionError):
         await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id="one")
-    assert len(broker.calls) == 4
+    assert len(broker.calls) == 5
 
 
 @pytest.mark.asyncio
@@ -177,7 +179,7 @@ async def test_unsupported_protocol_does_not_advertise_tools():
     with pytest.raises(McpError, match="unsupported"):
         await remote.discover()
     assert not remote.catalog_hash
-    assert len(broker.calls) == 1
+    assert len(broker.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -206,7 +208,7 @@ async def test_server_schema_cannot_resolve_external_references():
     remote._tools["read"] = {"inputSchema": {"$ref": "https://metadata.internal/secret"}}
     with pytest.raises(McpError, match="arguments"):
         await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id="one")
-    assert len(broker.calls) == 4
+    assert len(broker.calls) == 5
 
 
 @pytest.mark.asyncio
@@ -218,7 +220,7 @@ async def test_post_send_http_failure_is_uncertain(status):
     broker.fail_status = status
     with pytest.raises(AmbiguousProxyOutcome):
         await remote.call("write", {}, catalog_hash=remote.catalog_hash, op_id="one")
-    assert len(broker.calls) == 5
+    assert len(broker.calls) == 6
 
 
 @pytest.mark.asyncio
@@ -237,7 +239,7 @@ async def test_post_send_invalid_message_or_authority_failure_is_uncertain():
     with pytest.raises(AmbiguousProxyOutcome):
         await remote.call("write", {}, catalog_hash=remote.catalog_hash,
                           op_id="two", notify=revoked)
-    assert len(broker.calls) == 6
+    assert len(broker.calls) == 7
 
 
 @pytest.mark.asyncio
@@ -256,7 +258,7 @@ async def test_auth_failure_invalidates_catalog_and_discovery_initializes_again(
         await remote.call("write", {}, catalog_hash=old_hash, op_id="two")
     broker.fail_status = None
     assert await remote.discover() == TOOLS
-    assert json.loads(broker.calls[5]["request"]["body"])["method"] == "initialize"
+    assert json.loads(broker.calls[7]["request"]["body"])["method"] == "initialize"
 
 
 @pytest.mark.asyncio
