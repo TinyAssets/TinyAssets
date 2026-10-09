@@ -127,7 +127,7 @@ from tinyassets.providers.owned_process import aspawn_owned
 from tinyassets.providers.provider_jail import provider_launch_scope
 from tinyassets.role_center_admission import admit_center
 from tinyassets.role_owner_tree_deletion import delete_center
-from tinyassets.universe_files import read_universe_file
+from tinyassets.universe_files import read_universe_file, write_universe_file
 
 
 def proc(pid):
@@ -225,15 +225,19 @@ def leg_daemon_reader():
                     theirs_fd, 'notes/n0.md', max_bytes=4096,
                     expected_identity=(owner_identity(DATA, principal='bob').gid,) * 2)),
         )
-        # The same reader on this owner's OWN file still works: these are
-        # refusals of foreign bytes, not a broken reader. `notes/` is 0700
-        # owner-only, so the daemon cannot read that one either -- by design.
+        # The same reader on this owner's OWN files still works: these are
+        # refusals of foreign bytes, not a broken reader. The daemon serves the
+        # owner's tree for that owner, including a pre-split 0700 `notes/`, and
+        # can still create a file there (the migration's daemon entry).
+        bob = (owner_identity(DATA, principal='bob').gid,) * 2
         found['own_read'] = workspace_fs.read_regular_file_beneath(
-            mine_fd, 'universe.json', max_bytes=4096,
-            expected_identity=(owner_identity(DATA, principal='bob').gid,) * 2).decode()
-        found['own_notes_are_owner_only'] = refuses(
-            "the daemon reading this owner's 0700 notes directory", lambda:
-            workspace_fs.read_regular_file_beneath(mine_fd, 'notes/n0.md', max_bytes=4096))
+            mine_fd, 'universe.json', max_bytes=4096, expected_identity=bob).decode()
+        found['own_notes_read'] = workspace_fs.read_regular_file_beneath(
+            mine_fd, 'notes/n0.md', max_bytes=4096, expected_identity=bob).decode()
+        write_universe_file(DATA / mine, 'notes/daemon-wrote.md', b'daemon')
+        found['own_notes_write'] = read_universe_file(
+            DATA / mine, 'notes/daemon-wrote.md').decode()
+        (DATA / mine / 'notes' / 'daemon-wrote.md').unlink()
     finally:
         os.close(mine_fd)
         os.close(theirs_fd)

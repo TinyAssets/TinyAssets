@@ -32,6 +32,9 @@ def test_open_descriptor_checks_uid_and_gid_after_foreign_name_retirement(tmp_pa
             assert not (tmp_path / "copy").exists()
         os.chown(alias, 300001, 300001)
         assert fs.read_regular_file_beneath(fd, "alias", max_bytes=100) == b"foreign"
+        # The daemon's own write in this owner's tree reads back.
+        os.chown(alias, 1001, 1001)
+        assert fs.read_regular_file_beneath(fd, "alias", max_bytes=100) == b"foreign"
         with pytest.raises(fs.UnsafePoolPath, match="root"):
             fs.read_regular_file_beneath(fd, "alias", max_bytes=100,
                                          expected_identity=(300002, 300002))

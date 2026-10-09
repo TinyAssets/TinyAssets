@@ -75,8 +75,6 @@ SEED_ENTRIES = (".agent-workspace", "previews", "skills", "prompts", "extensions
 SIDECAR_SOCKET = re.compile(r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12})\.sock")
 CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 ACCESS, DEFAULT = "system.posix_acl_access", "system.posix_acl_default"
-# A regular owner work file keeps whatever access ACL it already has.
-KEEP = "keep-live-acl"
 REFUSE = 2
 
 
@@ -384,13 +382,18 @@ def target(path, info, bindings, modes):
         entry = parts[1]
         if entry in OWNER_HIDDEN or not (entry.startswith(".") or entry in VAULT_NAMES):
             _require_plain(path, kind)
-            mode = live & 0o777
-            if regular:
-                return (machine, machine, mode, KEEP, None)
-            group = (mode >> 3) & 7
+            # The daemon still serves this tree for its owner (design section 1),
+            # so its named entry keeps what it could do before the split: rwx on
+            # a directory, rw (plus the owner's x) on a file. The mask widens to
+            # admit it, and the group entry equals the mask -- the owner's group
+            # holds only the owner, and a rerun reads the same bits back.
+            owner, other = (live >> 6) & 7, live & 7
+            daemon = 7 if not regular else 6 | (owner & 1)
+            mask = (live >> 3) & 7 | daemon
+            mode = (owner << 6) | (mask << 3) | other
             return (machine, machine, mode,
-                    _acl((mode >> 6) & 7, {DAEMON: 7}, group, mask=group, other=mode & 7),
-                    _acl(7, {DAEMON: 7}))
+                    _acl(owner, {DAEMON: daemon}, mask, mask=mask, other=other),
+                    None if regular else _acl(7, {DAEMON: 7}))
         _require_plain(path, kind)
         if entry in VAULT_NAMES:
             return (DAEMON, modes["BROKER_READ_GID"], 0o2750 if directory
@@ -434,11 +437,6 @@ def target(path, info, bindings, modes):
 def _require_plain(path, kind):
     if kind not in (stat.S_IFDIR, stat.S_IFREG):
         raise MigrationRefused(f"unexpected special file or link: {path}")
-
-
-def _resolve(wanted, label):
-    """Substitute KEEP with the entry's live access ACL."""
-    return wanted[:3] + (label[3],) + wanted[4:] if wanted[3] == KEEP else wanted
 
 
 # --------------------------------------------------------------------------
@@ -646,7 +644,6 @@ def check(root, modes):
             diffs.append(f"remove: {path}")
         elif isinstance(wanted, tuple):
             actual = _live_label(root, path)
-            wanted = _resolve(wanted, actual)
             if actual != wanted:
                 diffs.append(f"label: {path} {_show(actual)} -> {_show(wanted)}")
     if _label(root) != (DAEMON, DAEMON, 0o755, None, None):
@@ -848,7 +845,6 @@ def _egress(root, broker):
 
 def _apply(fd, wanted):
     """Set one pinned entry's label; only differing fields change."""
-    wanted = _resolve(wanted, _label(fd))
     if _label(fd) == wanted:
         return False
     uid, gid, mode, access, default = wanted

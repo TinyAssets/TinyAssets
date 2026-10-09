@@ -66,12 +66,22 @@ def test_owner_root_gets_the_canonical_admission_label():
 
 
 def test_owner_work_is_owner_owned_and_daemon_keeps_access():
+    # The daemon serves the tree for its owner: rwx on directories, rw (plus
+    # the owner's x) on files, whatever the old mode. The group entry is the
+    # widened mask, so the target of the migrated mode is the same label.
     uid, gid, mode, access, default = target("u-a/notes", stat.S_IFDIR, 0o755)
-    assert (uid, gid, mode) == (300001, 300001, 0o755)
-    assert access == MIGRATE["_acl"](7, {1001: 7}, 5, mask=5, other=5)
+    assert (uid, gid, mode) == (300001, 300001, 0o775)
+    assert access == MIGRATE["_acl"](7, {1001: 7}, 7, mask=7, other=5)
     assert default == MIGRATE["_acl"](7, {1001: 7})
-    assert target("u-a/notes/a.md", mode=0o4755)[:3] == (300001, 300001, 0o755)
-    assert target("u-a/notes/a.md")[3] == MIGRATE["KEEP"]
+    assert target("u-a/notes", stat.S_IFDIR, 0o700)[2:4] == (
+        0o770, MIGRATE["_acl"](7, {1001: 7}, 7, mask=7, other=0))
+    assert target("u-a/notes/a.md", mode=0o4755) == (
+        300001, 300001, 0o775, MIGRATE["_acl"](7, {1001: 7}, 7, mask=7, other=5), None)
+    assert target("u-a/notes/a.md", mode=0o600) == (
+        300001, 300001, 0o660, MIGRATE["_acl"](6, {1001: 6}, 6, mask=6, other=0), None)
+    for path, kind, mode in (("u-a/notes", stat.S_IFDIR, 0o755), ("u-a/n.md", stat.S_IFREG, 0o600)):
+        once = target(path, kind, mode)
+        assert target(path, kind, once[2]) == once  # a converged rerun changes nothing
     assert target("u-a/.agent-workspace", stat.S_IFDIR, 0o755)[0] == 300001
     assert target("u-a/notes-link", stat.S_IFLNK) == "skip"
     assert target("u-a/.runtime/provider-child/tmp/task.output", stat.S_IFLNK) == "skip"

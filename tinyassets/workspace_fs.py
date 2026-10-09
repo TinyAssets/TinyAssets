@@ -58,6 +58,8 @@ _HEX = frozenset("0123456789abcdefABCDEF")
 #: A workspace tree deeper than this is not a repository, and unbounded
 #: recursion through descriptors is a stack overflow waiting for a fixture.
 _MAX_TREE_DEPTH = 64
+#: The daemon's own inode label (role_modes.DAEMON_UID, its primary group).
+_DAEMON = (1001, 1001)
 
 
 class UnsafePoolPath(OSError):
@@ -753,7 +755,10 @@ def _open_regular_beneath(
                 f"{str(relpath)!r} is not a regular file (mode {info.st_mode:#o}); "
                 "a workspace read never opens a device, a FIFO or a directory"
             )
-        if identity is not None and (info.st_uid, info.st_gid) != identity:
+        # The daemon's own writes in an owner tree are 1001:1001 (it cannot
+        # chown). No owner can alias one in: it cannot open another owner's
+        # tree, hardlink a file it cannot open, or have a link followed here.
+        if identity is not None and (info.st_uid, info.st_gid) not in (identity, _DAEMON):
             raise UnsafePoolPath(
                 f"{str(relpath)!r} does not belong to the admitted owner identity"
             )
