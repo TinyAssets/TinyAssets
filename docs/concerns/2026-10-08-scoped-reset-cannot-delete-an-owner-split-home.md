@@ -1,5 +1,5 @@
 ---
-severity: medium
+severity: P2
 title: An offline scoped reset cannot delete an owner-split home
 filed: '2026-10-08'
 summary: scoped_reset runs as an operator CLI without the bounded launcher, so after the cutover it refuses every admitted (D60-labelled) home instead of running the two-pass deletion

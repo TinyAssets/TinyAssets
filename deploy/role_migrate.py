@@ -587,6 +587,9 @@ def _accounting_facts(db):
             continue
         if row[0] != "table" or row[2] != table or _squash(row[1]) != _squash(schema):
             raise MigrationRefused(f"unknown accounting schema: {table}")
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name=?",
+                      (table,)).fetchone():
+            raise MigrationRefused(f"accounting trigger is not migratable: {table}")
         keys = sorted((r[5], r[1]) for r in db.execute(f"PRAGMA table_info({table})") if r[5])
         digest, count = hashlib.sha256(), 0
         for values in db.execute(f"SELECT * FROM {table} ORDER BY "

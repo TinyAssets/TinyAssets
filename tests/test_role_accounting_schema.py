@@ -7,7 +7,7 @@ import pytest
 
 from tinyassets.storage.agent_request_usage import _SCHEMA
 
-MIGRATION = runpy.run_path(str(Path(__file__).parents[1] / "deploy/role_egress_migration.py"))
+MIGRATION = runpy.run_path(str(Path(__file__).parents[1] / "deploy/role_migrate.py"))
 
 
 def test_accounting_migration_schema_matches_runtime():
