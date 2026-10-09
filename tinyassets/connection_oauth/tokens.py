@@ -62,6 +62,8 @@ class TokenBundle:
     scope: str = ""
     token_type: str = "Bearer"
     provider_id: str = ""
+    resource: str = ""
+    issuer: str = ""
 
     def expiring(self, now: float | None = None) -> bool:
         if self.expires_at is None:
@@ -79,6 +81,8 @@ def encode(bundle: TokenBundle) -> str:
         "refresh_token": bundle.refresh_token, "token_url": bundle.token_url,
         "client_id": bundle.client_id, "scope": bundle.scope,
         **({"provider_id": bundle.provider_id} if bundle.provider_id else {}),
+        **({"resource": bundle.resource} if bundle.resource else {}),
+        **({"issuer": bundle.issuer} if bundle.issuer else {}),
     }, sort_keys=True, separators=(",", ":"))
 
 
@@ -117,12 +121,19 @@ def decode(text: str) -> TokenBundle:
         scope=str(doc.get("scope") or ""),
         token_type=str(doc.get("token_type") or "Bearer"),
         provider_id=str(doc.get("provider_id") or ""),
+        resource=validate_https_url(doc["resource"]) if doc.get("resource") else "",
+        issuer=validate_https_url(doc["issuer"]) if doc.get("issuer") else "",
     )
 
 
 def _token_response(status: int, doc: Any, *, secrets: tuple[str, ...]) -> dict[str, Any]:
     if status != 200 or not isinstance(doc, dict):
-        raise OAuthError("token_request_failed", server_error_detail(status, doc, secrets),
+        recovery = {"invalid_client": "registration_required",
+                    "unauthorized_client": "registration_required",
+                    "invalid_grant": "reconnect_required", "invalid_scope": "insufficient_scope"}
+        error = doc.get("error") if isinstance(doc, dict) else ""
+        code = recovery.get(error, "token_request_failed")
+        raise OAuthError(code, server_error_detail(status, doc, secrets),
                          status=status)
     try:
         _token(doc.get("access_token"))
@@ -186,35 +197,40 @@ def _request_token(token_url: str, client_id: str, provider_id: str,
 
 
 def exchange_code(*, token_url: str, client_id: str, code: str, verifier: str,
-                  redirect_uri: str, provider_id: str = "") -> TokenBundle:
+                  redirect_uri: str, provider_id: str = "", resource: str = "",
+                  issuer: str = "", scope: str = "") -> TokenBundle:
     """RFC 6749 §4.1.3 with the RFC 7636 verifier; exactly one attempt."""
     now = time.time()
     doc = _request_token(token_url, client_id, provider_id, {
         "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
         "client_id": client_id, "code_verifier": verifier,
+        **({"resource": validate_https_url(resource)} if resource else {}),
     }, (code, verifier))
     return TokenBundle(
         access_token=doc["access_token"], token_url=token_url, client_id=client_id,
         refresh_token=_token(doc["refresh_token"]) if doc.get("refresh_token") else "",
-        expires_at=_expires_at(doc, now), scope=str(doc.get("scope") or ""),
-        provider_id=provider_id,
+        expires_at=_expires_at(doc, now), scope=str(doc.get("scope", scope)),
+        provider_id=provider_id, resource=resource, issuer=issuer,
     )
 
 
 def refresh(bundle: TokenBundle) -> TokenBundle:
     """RFC 6749 §6. A server that rotates returns a new refresh token; one that
     does not leaves the old one valid, so it is kept."""
+    if not bundle.refresh_token:
+        raise OAuthError("reconnect_required")
     now = time.time()
     secrets = bundle.secret_values()
     doc = _request_token(bundle.token_url, bundle.client_id, bundle.provider_id, {
         "grant_type": "refresh_token", "refresh_token": bundle.refresh_token,
         "client_id": bundle.client_id,
+        **({"resource": bundle.resource} if bundle.resource else {}),
     }, secrets)
     rotated = doc.get("refresh_token")
     return replace(
         bundle, access_token=doc["access_token"],
         refresh_token=_token(rotated) if rotated else bundle.refresh_token,
-        expires_at=_expires_at(doc, now), scope=str(doc.get("scope") or bundle.scope),
+        expires_at=_expires_at(doc, now), scope=str(doc.get("scope", bundle.scope)),
     )
 
 

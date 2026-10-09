@@ -96,3 +96,53 @@ def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
         raise
     finally:
         conn.close()
+
+
+def _registration_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS oauth_public_clients ("
+        "issuer TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
+        "client_id TEXT NOT NULL, method TEXT NOT NULL, "
+        "PRIMARY KEY (issuer, redirect_uri))"
+    )
+
+
+def cached_client(issuer: str, redirect_uri: str) -> str:
+    if not redirect_uri:
+        return ""
+    from tinyassets.connection_oauth import service
+
+    remote = service.inherited_config()
+    if remote:
+        return service.call(remote, {"op": "public_client", "issuer": issuer,
+                                     "redirect_uri": redirect_uri}).get("client_id", "")
+    from tinyassets.api.helpers import _base_path
+
+    with flows_db(_base_path()) as (conn, _):
+        _registration_table(conn)
+        row = conn.execute(
+            "SELECT client_id FROM oauth_public_clients WHERE issuer=? AND redirect_uri=?",
+            (issuer, redirect_uri),
+        ).fetchone()
+        return row[0] if row else ""
+
+
+def remember_client(issuer: str, redirect_uri: str, client_id: str, method: str) -> None:
+    from tinyassets.api.helpers import _base_path
+
+    with flows_db(_base_path()) as (conn, _):
+        _registration_table(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO oauth_public_clients VALUES (?, ?, ?, ?)",
+            (issuer, redirect_uri, client_id, method),
+        )
+
+
+def forget_client(issuer: str, client_id: str) -> None:
+    from tinyassets.api.helpers import _base_path
+
+    with flows_db(_base_path()) as (conn, _):
+        _registration_table(conn)
+        conn.execute(
+            "DELETE FROM oauth_public_clients WHERE issuer=? AND client_id=?", (issuer, client_id)
+        )

@@ -104,7 +104,7 @@ def server_error_detail(status: int, doc: Any, secrets: tuple[str, ...] = ()) ->
     return scrub(text, secrets)
 
 
-def request_json(
+def request_json_with_headers(
     method: str,
     url: str,
     *,
@@ -112,7 +112,7 @@ def request_json(
     json_body: dict[str, Any] | None = None,
     secrets: tuple[str, ...] = (),
     basic_auth: tuple[str, str] | None = None,
-) -> tuple[int, Any]:
+) -> tuple[int, Any, dict[str, str]]:
     """One bounded request; returns ``(status, parsed JSON or None)``.
 
     ``secrets`` are values this request carries (a refresh token, a code) so
@@ -157,4 +157,10 @@ def request_json(
         doc = json.loads(raw) if isinstance(raw, str) and raw.strip() else None
     except (ValueError, RecursionError):
         doc = None
+    return status, doc, {str(k).lower(): str(v) for k, v in (result.get("headers") or {}).items()}
+
+
+def request_json(method: str, url: str, **kwargs) -> tuple[int, Any]:
+    """The JSON-only view used by metadata, registration and token exchange."""
+    status, doc, _headers = request_json_with_headers(method, url, **kwargs)
     return status, doc

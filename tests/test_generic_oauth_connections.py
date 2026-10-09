@@ -91,6 +91,8 @@ class FakeProvider:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
+                for key, value in getattr(provider, "response_headers", {}).items():
+                    self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(payload)
 
@@ -191,6 +193,8 @@ class FakeProvider:
                     return 200, self._issue()
             return 400, {"error": "unsupported_grant_type"}
         if host == API and path == "/v1/tasks":
+            if method == "GET":  # unauthenticated discovery probe, not a task call
+                return 401, {"error": "invalid_token"}
             auth = headers.get("Authorization", "")
             token = auth.removeprefix("Bearer ")
             self.api_calls.append(token)
@@ -367,14 +371,16 @@ def test_discovery_follows_the_resource_to_its_authorization_server(provider):
         "token_url": f"https://{TOKEN}/token", "client_id": "",
         "registration_url": f"https://{AUTH}/register", "iss_parameter_supported": False,
         "scopes": ["tasks.write"],
-        "source": "discovered",
+        "source": "discovered", "resource": f"https://{API}",
+        "registration_method": "dcr",
     }
 
 
 def test_discovery_refuses_what_does_not_cover_the_request(provider):
     from tinyassets.connection_oauth.discovery import resolve_offer
 
-    assert resolve_offer({"scopes": ["billing.admin"]}, [API]) == (None, "scopes_not_offered")
+    offer, reason = resolve_offer({"scopes": ["billing.admin"]}, [API])
+    assert reason == "" and offer["scopes"] == ["billing.admin"]
     provider.pkce = ["plain"]
     assert resolve_offer({"scopes": ["tasks.write"]}, [API]) == (None, "pkce_not_offered")
     provider.pkce = ["S256"]

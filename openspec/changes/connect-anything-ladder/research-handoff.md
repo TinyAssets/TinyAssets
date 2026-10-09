@@ -23,3 +23,21 @@ owner-editable name/link resolution skill. Preserve no service-specific code;
 new per-service registrations and third-party brokers are not prerequisites.
 Floor review and implementation/live gates remain those of the existing lanes;
 sync specs only after implementation acceptance. This docs PR targets main.
+
+## Slice 1 implementation pickup (feat/oauth-discovery-cimd)
+
+Implemented path/challenge discovery, exact issuer/resource checks, existing-client
+then CIMD then DCR selection, issuer/callback-keyed public registration persistence,
+resource propagation and typed registration/reconnect errors. Reuses the already
+served /app/oauth/client-metadata.json; no new public route. The existing daemon
+OAuth RPC supplies public cache reads to isolated children. No broker, outbound
+storage or spawn-site edits are needed for this slice.
+
+Proof: seven targeted regressions failed before and passed after; all six local
+MCP connect-card cases (challenge/path x CIMD/DCR/existing) also failed against
+original production files and passed after. OAuth/registered-client suites passed
+114 tests; the first affected Linux oracle run passed 165, zero skips. Final
+expanded validation and PR/review results are recorded in the implementation PR.
+This is API-level card/callback and local-server proof, not a rendered-browser or
+production deployment assertion. Server-owned callback/mobile return and live
+acceptance remain with the existing follow-on lane; do not mark ladder 1.10 done.

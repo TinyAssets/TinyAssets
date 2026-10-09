@@ -66,6 +66,29 @@ New connection shapes SHALL reuse the existing coordinator, request idempotency,
 ### Requirement: Standard MCP OAuth uses existing connection authority
 Remote MCP SHALL support protected-resource and authorization-server metadata discovery, PKCE S256, DCR, HTTPS client metadata documents and explicit static-client fallback according to server support. Tokens SHALL bind the intended resource/audience, redirect URI and initiating owner session. The registered provider directory and platform Google client SHALL remain optional data, never a required registration or per-platform code path.
 
+Discovery SHALL use an actual Bearer challenge, then endpoint-path and root
+well-known metadata, validate resource identity and exact issuer equality, and
+apply SSRF checks to every target. Registration SHALL prefer an accepted existing
+client, then advertised CIMD, then DCR with application_type web. Public client
+registrations SHALL persist by exact issuer and redirect URI in the OAuth flow
+store, without owner tokens. GET /app/oauth/client-metadata.json SHALL publish the
+stable HTTPS TinyAssets client identity and exact callback with public auth none.
+The token bundle SHALL retain optional resource and issuer without breaking old
+bundles. Authorize, exchange and refresh SHALL send that resource. Requested or
+challenge scopes absent from AS metadata SHALL NOT be rejected for that absence.
+
+#### Scenario: Unknown path endpoint advertises CIMD
+- **WHEN** an unlisted endpoint challenges with protected-resource metadata and its AS advertises CIMD
+- **THEN** the existing connect card uses the published client identity before DCR, and tokens retain the exact resource through refresh
+
+#### Scenario: Registration and grant failures need different recovery
+- **WHEN** registration is unavailable or rejected, or a token grant is revoked
+- **THEN** registration_required and reconnect_required respectively identify the recoverable failure without exposing credentials
+
+#### Scenario: Resource or issuer identity differs
+- **WHEN** metadata names a different resource or an issuer differing even by a trailing slash
+- **THEN** discovery rejects it before registration or authorization
+
 #### Scenario: A server is absent from the provider directory
 - **WHEN** its metadata offers DCR, client metadata documents or configured static registration
 - **THEN** the generic OAuth path connects it without platform code and without forwarding another resource's token
