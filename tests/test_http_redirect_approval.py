@@ -203,7 +203,7 @@ def test_full_connection_does_not_gain_another_authenticated_host_through_redire
 @pytest.mark.parametrize(
     "changed", ["mode", "incarnation", "scopes", "endpoints", "revoked", "grant"]
 )
-def test_approval_cannot_race_a_policy_change_or_revocation_at_the_sql_write(
+def test_approval_rechecks_policy_and_revocation_at_broker_admission(
     base,
     monkeypatch,
     mode,
@@ -211,10 +211,12 @@ def test_approval_cannot_race_a_policy_change_or_revocation_at_the_sql_write(
 ):
     ledger, cid = _seed(base, mode)
     asked = _ask()
-    original = ConnectionLedger.extend_http_connection_endpoints
+    from tinyassets.broker.client import BrokerClient
 
-    def change_then_write(self, **kwargs):
-        with self._connect() as conn:
+    original = BrokerClient.http_policy
+
+    def change_then_write(self, document):
+        with ledger._connect() as conn:
             if changed == "mode":
                 conn.execute(
                     "UPDATE outbound_connections SET access_mode = ?",
@@ -235,9 +237,9 @@ def test_approval_cannot_race_a_policy_change_or_revocation_at_the_sql_write(
                 conn.execute("UPDATE outbound_connections SET revoked_at = 1")
             else:
                 conn.execute("UPDATE outbound_connection_grants SET revoked_at = 1")
-        return original(self, **kwargs)
+        return original(self, document)
 
-    monkeypatch.setattr(ConnectionLedger, "extend_http_connection_endpoints", change_then_write)
+    monkeypatch.setattr(BrokerClient, "http_policy", change_then_write)
     refused = answer_request(
         universe_id="u-1",
         payload={
@@ -304,6 +306,7 @@ def test_prior_no_follow_approval_does_not_satisfy_redirect_request(base):
     fresh = _ask({**new_source, "redirect_mode": "public_https_get"})
     assert "request_id" in fresh, fresh
     assert fresh["request_id"] != old["request_id"]
+    assert set(ledger.get_connection(cid).scopes) == {"GET", "POST"}
     assert all(e.redirect_mode == "none" for e in ledger.get_connection(cid).allowed_endpoints)
 
 

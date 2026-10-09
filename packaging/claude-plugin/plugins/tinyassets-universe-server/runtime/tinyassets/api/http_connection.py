@@ -1618,12 +1618,17 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
                     "endpoints_json": preview["stored_json"],
                     "scopes_json": preview["stored_scopes_json"],
                     "incarnation": preview["stored_incarnation"]})
-    updated = update_policy(
-        base, principal=actor, command_center=uid, destination=destination,
-        expected=expected, action="full" if full else "extend",
-        endpoints=() if full else preview["merged"],
-        scopes=() if full else preview["scopes"],
-        git_host=preview.get("declared_git_host") or "")
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    try:
+        updated = update_policy(
+            base, principal=actor, command_center=uid, destination=destination,
+            expected=expected, action="full" if full else "extend",
+            endpoints=() if full else preview["merged"],
+            scopes=() if full else preview["scopes"],
+            git_host=preview.get("declared_git_host") or "")
+    except GrantResolutionError:
+        return {"error": "connection_conflict", "resource": "connection"}
     if not updated:
         # The connection changed while the request was open, so the yes was
         # not applied to a reach the owner did not see.
@@ -1803,7 +1808,7 @@ def _extend_preview(
         sorted(
             {m for e in merged for m in e.methods}
             | requested_git_scopes
-            | stored_git_scopes
+            | set(stored_scope_list)
         )
     )
     if redirect_extension:

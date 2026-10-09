@@ -253,19 +253,40 @@ def test_the_scopes_guard_cannot_be_skipped():
     )
 
 
-def test_the_reprovision_path_carries_scopes_from_its_cas_snapshot():
-    """Codex round 3: connect_http on an existing key took the git scopes it
-    carries forward from an early parsed read and its CAS baseline from a
-    later raw read. One policy_json read now feeds both."""
-    import tinyassets.api.http_connection as hc
+def test_the_reprovision_path_carries_scopes_from_its_cas_snapshot(base, monkeypatch):  # noqa: F811
+    """An intervening scope grant survives; the stale reprovision cannot overwrite it."""
+    import json
 
-    src = pathlib.Path(hc.__file__).read_text(encoding="utf-8")
-    end = (src.index("def _reprovision_conflict(") if "def _reprovision_conflict(" in src
-           else src.index("def extend_http("))
-    body = src[src.index("def connect_http("):end]
-    assert body.count("ledger.policy_json(connection_id)") == 1
-    assert "_stored_git_scopes(resource)" not in body
-    assert "_git_scopes_in(raw_policy[1])" in body
+    from tinyassets.api.http_connection import _ids, connect_http
+    from tinyassets.broker.client import BrokerClient
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _seed_connection("u-1")
+    ledger = _ledger(base)
+    connection_id, _ = _ids(universe_id="u-1", destination="github")
+    resource = ledger.get_connection(connection_id)
+    original = BrokerClient.http_connect
+    stages = []
+
+    def change_after_prepare(self, document):
+        result = original(self, document)
+        stages.append(document["action"])
+        if document["action"] == "prepare":
+            with ledger._connect() as conn:
+                conn.execute("UPDATE outbound_connections SET scopes_json=? WHERE connection_id=?",
+                             (json.dumps(["POST", "git_read:o/r"]), connection_id))
+        return result
+
+    monkeypatch.setattr(BrokerClient, "http_connect", change_after_prepare)
+    result = connect_http(universe_id="u-1", payload={
+        "destination": "github", "secret": "new-secret", "auth_scheme": "bearer",
+        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "git_host": resource.git_host,
+    })
+    assert result == {"error": "connection_conflict", "resource": "connection"}
+    assert stages == ["prepare", "commit"]
+    assert ledger.get_connection(connection_id).scopes == ("POST", "git_read:o/r")
 
 
 def test_the_preview_derives_everything_from_one_snapshot():
