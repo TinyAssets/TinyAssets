@@ -5,7 +5,7 @@ from contextlib import closing
 
 import pytest
 
-from tests.owner_answer import answer_request
+from tests.owner_answer import answer_request, connect_owner_provider
 from tests.test_owner_notifications import _home
 from tinyassets import request_answers, request_continuations, turn_interrupt
 from tinyassets.api.pending_requests import request_from_user
@@ -748,3 +748,62 @@ def test_subagent_card_answer_in_real_browser(world, surface):
     received, = drain(home)
     assert received["agent"] == agent
     assert "Social Media Manager account" in json.dumps(received["outcome"])
+
+
+def test_answer_wakes_the_asking_agent_with_the_owners_provider_authority(world, monkeypatch):
+    """Live 2026-10-07: five X-reply answers each stopped "Connect your provider".
+
+    The delivery turn runs on the request-continuation thread, which has no MCP
+    request, so it carried no owner authority while the owner's chat (same
+    connected provider) was served. Real door, real recover, real converse; only
+    the model launch is replaced, after the router's own owner-bound checks.
+    """
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.provider_assignment import _served_request_agent
+    from tinyassets.providers.owner_binding import require_owner_bound_context
+
+    home, agent = world
+    connect_owner_provider(home, OWNER)
+    row = ask(home, agent)
+    turns = []
+
+    def writer(turn_input, *, system, universe_context, config, **_):
+        require_owner_bound_context(universe_context, operation="converse")
+        capability, _agent = _served_request_agent(
+            home.parent, home, universe_context.provider_request, "writer", "converse")
+        turns.append((capability.principal_id, universe_context.agent_id, turn_input))
+        return "Posting the edited reply."
+
+    monkeypatch.setattr(ui, "_call_writer", writer)
+    assert answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], "values": {"reply": "Edited reply text"}},
+    )["status"] == "answered"
+    assert request_continuations.recover(home) == 1
+    (principal, asked_by, turn_input), = turns
+    assert (principal, asked_by) == (OWNER, agent)
+    assert "Edited reply text" in turn_input
+    assert request_continuations.recover(home) == 0
+
+
+def test_a_failed_delivery_turn_keeps_the_answer_for_redelivery(world, monkeypatch):
+    """No silent loss: a refused turn is not an ack, and the answer is sent again."""
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.exceptions import PlatformLLMCallRefusedError
+
+    home, agent = world
+    connect_owner_provider(home, OWNER)
+    row = ask(home, agent)
+    answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], "values": {"reply": "Decline"}})
+
+    def refused(*_a, **_kw):
+        raise PlatformLLMCallRefusedError("provider down")
+
+    monkeypatch.setattr(ui, "_call_writer", refused)
+    assert request_continuations.recover(home) == 0
+    with closing(store._db(home)) as conn, conn:
+        assert conn.execute("SELECT delivered_at,attempt_count FROM request_answer_deliveries"
+                            ).fetchone() == (None, 1)
+        conn.execute("UPDATE request_answer_deliveries SET next_attempt_at=0")
+    monkeypatch.setattr(ui, "_call_writer", lambda *_a, **_kw: "Declined.")
+    assert request_continuations.recover(home) == 1
