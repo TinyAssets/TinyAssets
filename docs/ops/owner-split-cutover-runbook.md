@@ -100,6 +100,19 @@ migrate --check                                   # must print nothing; exit 0
   (`scripts/role_migrate_probe.py` proves this at every kill point).
 - `migrate --manifest > manifest.tsv` prints the census
   (path, type, uid, gid, mode, ACLs, sha256). Keep it with the snapshot record.
+- **"zero diffs" holds only before the daemon has run.** Once it has, `--check`
+  reports a handful of platform-state diffs forever, and they are not a failed
+  migration: the broker creates `.broker/state/*` with its own gid 1002 where
+  the label target is 1101, the daemon creates its private state under umask
+  0o007 (`0770`/`0660`) where the target is `0700`/`0600`, and the next deploy
+  reinstalls `release-state.json` as `root:root 0644` where the target is
+  `1001:1001 0600`. Every one of those lives under a parent no other identity
+  can open, so nothing is exposed; run `--check` only with writers stopped, as
+  above, and read a post-start run as drift, not as a diff to fix.
+- Before the window, rehearse the whole thing on a throwaway volume:
+  `python scripts/role_image_oracle.py --image "$IMAGE"`. It builds a
+  production-shaped volume, runs these three commands, boots the image in this
+  file's posture and drives every owner-cell class.
 - The last write adds `"split": "owner-split"` to `/data/.layout.json`. Without
   it the new image refuses to serve (exit 78), and the old image must not be
   started on a migrated volume.
