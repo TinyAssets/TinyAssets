@@ -24,6 +24,8 @@ def run_browser(steps):
     html, _ = render_app_html()
     controller = html[html.index("  const HostedModelConnect={"):
                       html.index("  // End hosted model connection controller.")]
+    handoff = html[html.index("  const ApprovalHandoff = {"):
+                   html.index("  const InlineApprovals = {")]
     program = r"""
 const elements=new Map(),storage=new Map(),requests=[],navigations=[],answers=[];
 const system=[],opened=[];
@@ -39,6 +41,7 @@ let queueScope='',queueOwner='',uploadsRestored=false;const Uploads=null;
 let exchangeResult=null,answerResult={status:'answered'},answerThrows=null;
 let signedInNow=false,workosCalls=0,chatCount=0,refreshes=0,engineConnected=null;
 const window={location:{pathname:'/app',search:'',assign:url=>navigations.push(url)}};
+const location=window.location;
 window.addEventListener=()=>{};
 const document={getElementById:$,addEventListener(){}};
 // The harness owns the clock; browser proofs exercise scheduled recovery.
@@ -85,7 +88,7 @@ __SOURCE__
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
     source = (recovery_source(html) + "\nconst AppRecovery=window.AppRecovery;\n"
-              + controller + _js_function(html, "setQueueScope")
+              + controller + handoff + _js_function(html, "setQueueScope")
               + _js_function(html, "setQueueOwner")
               + _js_function(html, "enterSignedIn") + _js_function(html, "boot"))
     node = shutil.which("node")

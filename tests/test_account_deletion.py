@@ -1200,6 +1200,8 @@ def test_route_deletes_the_signed_in_principal_and_ends_the_session(app_route, t
     set_cookie = resp.headers.get("set-cookie", "")
     assert "ta_rt=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+    assert all(attribute in set_cookie for attribute in
+               ("Secure", "HttpOnly", "SameSite=strict", "Path=/app/token"))
     assert resp.headers.get("cache-control") == "no-store"
 
 

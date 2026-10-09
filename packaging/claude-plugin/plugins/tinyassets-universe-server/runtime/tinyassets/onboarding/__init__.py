@@ -2121,7 +2121,8 @@ async def _handle_account_delete(request: Any) -> Any:
         },
         headers=_NO_STORE,
     )
-    response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
+    response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH,
+                           secure=True, httponly=True, samesite="strict")
     return response
 
 

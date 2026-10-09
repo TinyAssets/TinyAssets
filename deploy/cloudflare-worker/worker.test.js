@@ -563,9 +563,11 @@ describe('proxyToTunnel — response pass-through', () => {
             '__Host-ta-approval-return=ref; Path=/; Secure; HttpOnly; SameSite=lax',
             '__Host-ta-model-return=ref; Path=/; Secure; HttpOnly; SameSite=lax',
             'ta_rt=renewal; Path=/app/token; Secure; HttpOnly; SameSite=strict',
+            'ta_rt=""; Path=/app/token; Secure; HttpOnly; SameSite=strict; Max-Age=0',
             '__Host-ta-owner-login=""; Path=/; Secure; HttpOnly; SameSite=lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT',
         ];
-        for (const path of ['/app/owner-sign-in', '/app?state=oa_state&code=code', '/app/token']) {
+        for (const path of ['/app/owner-sign-in', '/app?state=oa_state&code=code',
+                           '/app/token', '/app/account/delete']) {
             const headers = new Headers({location: '/app'});
             for (const cookie of cookies) headers.append('Set-Cookie', cookie);
             headers.append('Set-Cookie', 'CF_Authorization=private; Secure; HttpOnly; Path=/; SameSite=lax');
