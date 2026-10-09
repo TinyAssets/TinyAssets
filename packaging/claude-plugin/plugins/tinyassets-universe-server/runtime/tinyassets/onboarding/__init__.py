@@ -293,8 +293,8 @@ async def _handle_app(request: Any) -> Any:
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
-    if getattr(request, "query_params", {}).get("state", "").startswith("oa_"):
-        from tinyassets.onboarding.owner_sessions import callback
+    from tinyassets.onboarding.owner_sessions import OWNER_STATE, callback
+    if OWNER_STATE.fullmatch(getattr(request, "query_params", {}).get("state", "")):
         return await callback(request)
     return app_response()
 

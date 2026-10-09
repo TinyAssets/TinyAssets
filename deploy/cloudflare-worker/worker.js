@@ -87,10 +87,11 @@ function appCookieAllowed(cookie, pathname) {
         ['__Host-ta-model-return', '/'], ['__Host-ta-approval-return', '/'],
         ['ta_rt', '/app/token'],
     ]);
-    if (!paths.has(name)) return false;
+    const path = /^__Host-ta-model-[A-Za-z0-9_-]{43}$/.test(name) ? '/' : paths.get(name);
+    if (!path) return false;
     const attrs = attributes.map(value => value.toLowerCase());
     return attrs.includes('secure') && attrs.includes('httponly')
-        && attrs.filter(value => value.startsWith('path=')).join() === 'path=' + paths.get(name)
+        && attrs.filter(value => value.startsWith('path=')).join() === 'path=' + path
         && !attrs.some(value => value.startsWith('domain='))
         && attrs.some(value => value === 'samesite=lax' || value === 'samesite=strict');
 }

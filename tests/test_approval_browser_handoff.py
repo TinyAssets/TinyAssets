@@ -161,7 +161,8 @@ def test_handoff_wrong_owner_expiry_and_bearer_are_not_proof(flow):
         assert browser.get(path, follow_redirects=False).status_code == 410
 
 
-def test_frontend_proxies_owner_callback_and_preserves_cookie_headers(monkeypatch):
+@pytest.mark.parametrize("state", ["oa_" + "a" * 43, "oa_app_" + "Z_-" * 14 + "0"])
+def test_frontend_proxies_owner_callback_and_preserves_cookie_headers(monkeypatch, state):
     from tinyassets.frontend import Frontend
 
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
@@ -186,11 +187,37 @@ def test_frontend_proxies_owner_callback_and_preserves_cookie_headers(monkeypatc
                 transport=httpx.ASGITransport(app=frontend), base_url=ORIGIN
             ) as client:
                 response = await client.get(
-                    "/app?state=oa_test&code=test", headers={"cookie": "flow=cookie"}
+                    "/app", params={"state": state, "code": "test"},
+                    headers={"cookie": "flow=cookie"}
                 )
                 assert response.status_code == 303
                 assert len(response.headers.get_list("set-cookie")) == 2
-        assert seen[0].url.path == "/app" and seen[0].url.params["state"] == "oa_test"
+        assert seen[0].url.path == "/app" and seen[0].url.params["state"] == state
         assert seen[0].headers["cookie"] == "flow=cookie"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("state", [
+    "web.oa_" + "a" * 21, "oa_" + "a" * 21, "oa_" + "a" * 42,
+    "oa_" + "a" * 44, "oa_app_" + "a" * 42, "oa_" + "." * 43,
+])
+def test_web_and_malformed_owner_states_serve_shell(monkeypatch, state):
+    from tinyassets.frontend import Frontend
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    async def forbidden(request):
+        raise AssertionError("web callback reached owner proxy")
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as upstream:
+            for app in (Frontend(upstream, "build", "blue"),
+                        Starlette(routes=onboarding.onboarding_routes())):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url=ORIGIN
+                ) as browser:
+                    response = await browser.get("/app", params={"state": state, "code": "test"})
+                    assert response.status_code == 200
+                    assert 'id="view-signin"' in response.text
 
     asyncio.run(run())

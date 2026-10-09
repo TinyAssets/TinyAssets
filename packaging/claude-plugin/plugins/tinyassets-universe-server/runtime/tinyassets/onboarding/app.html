@@ -969,7 +969,7 @@
     const verifier = randToken(48);
     // An app-initiated sign-in is marked in `state` so the callback page (which
     // lands in the in-app tab, NOT the WebView) knows to bounce the code back.
-    let statePrefix = "";
+    let statePrefix = "web.";
     if(NATIVE){
       // Which install is this? Guessing would send a debug install's sign-in to
       // the Play app, which has no verifier for it; say so instead.

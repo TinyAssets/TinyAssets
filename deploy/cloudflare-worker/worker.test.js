@@ -588,6 +588,28 @@ describe('proxyToTunnel — response pass-through', () => {
         }
     });
 
+    it('retains only exact hosted-model bindings with safe attributes on app routes', async () => {
+        const handle = 'Ab0_-'.repeat(8) + 'xyz';
+        const name = '__Host-ta-model-' + handle;
+        const valid = `${name}=proof; Path=/; Secure; HttpOnly; SameSite=lax`;
+        const cleared = valid.replace('=proof', '=') + '; Max-Age=0';
+        const bad = [
+            valid.replace(handle, handle.slice(1)), valid.replace(handle, handle + 'x'),
+            valid.replace(handle, '.' + handle.slice(1)), valid.replace('__Host', '__host'),
+            valid.replace('; Secure', ''), valid.replace('; HttpOnly', ''),
+            valid.replace('SameSite=lax', 'SameSite=None'), valid.replace('; SameSite=lax', ''),
+            valid + '; Domain=tinyassets.io', valid.replace('Path=/', 'Path=/app'),
+            valid.replace('; Path=/', ''), valid + '; Path=/',
+        ];
+        for (const path of ['/app/model-callback/' + handle, '/mcp', '/appx']) {
+            const headers = new Headers();
+            for (const cookie of [valid, cleared, ...bad]) headers.append('Set-Cookie', cookie);
+            nextUpstreamResponse = new Response(null, {headers});
+            const res = await proxyToTunnel(new Request('https://tinyassets.io' + path));
+            assert.deepEqual(res.headers.getSetCookie(), path.startsWith('/app/') ? [valid, cleared] : []);
+        }
+    });
+
     it('rejects app cookies outside app routes and with unsafe attributes', async () => {
         const valid = '__Host-ta-owner=proof; Path=/; Secure; HttpOnly; SameSite=lax';
         const bad = [valid.replace('; Secure', ''), valid.replace('; HttpOnly', ''),
