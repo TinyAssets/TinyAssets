@@ -196,10 +196,11 @@ class OwnerLauncherClient:
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
             raise ValueError('invalid admitted cell identity')
         document = dict(extra or {})
-        if set(document) - {'mime', 'ui_id', 'workspace', 'egress', 'ta',
+        if set(document) - {'mime', 'ui_id', 'workspace', 'egress', 'ta', 'engine',
                             'revision', 'delete_token'}:
             raise ValueError('unsupported cell parameters')
-        if socket_fds and (kind not in ('tool-jail', 'package', 'provider-exec')
+        if socket_fds and (kind not in ('tool-jail', 'package', 'provider-discovery',
+                                        'provider-exec')
                            or len(socket_fds) > 2):
             raise ValueError('unsupported cell sockets')
         document.update(op='START', kind=kind, principal=principal, command_center=command_center)
