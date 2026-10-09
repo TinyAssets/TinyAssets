@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import subprocess
 import sys
 import time
@@ -562,10 +563,15 @@ def stage_serve(args):
     """The image's real CMD in compose's posture; every proof taken from the host."""
     _metadata(args, start=True)
     docker("rm", "-f", f"{args.prefix}-serve", check=False)
+    # The deploy installs this bearer in the container env; the daemon and the
+    # compose healthcheck (`ta-op pulse`, through the shipped canary) read the
+    # same name. A fresh per-run value, never a committed one.
+    bearer = secrets.token_urlsafe(48)
     command = _posture(f"{args.prefix}-serve", args.image, args.volume, user=COMPOSE_USER,
                        caps=COMPOSE_CAPS,
                        extra=["-d", "--network", args.network,
-                              "-e", "TINYASSETS_IMAGE=" + args.image])
+                              "-e", "TINYASSETS_IMAGE=" + args.image,
+                              "-e", "TINYASSETS_WIKI_CANARY_TOKEN=" + bearer])
     started = subprocess.run(command, capture_output=True, text=True)
     expect(started.returncode == 0, f"serving container started{started.stderr[-2000:]}")
     deadline = time.monotonic() + args.serve_timeout

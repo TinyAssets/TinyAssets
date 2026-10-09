@@ -486,3 +486,32 @@ def test_another_live_processs_staging_survives_until_it_dies(tmp_path):
     report = ws.sweep(tmp_path)
     assert report.removed == 1
     assert not live.exists()
+
+
+# --------------------------------------------------------------------------- #
+# The broker-private tree is another identity's; the daemon never enters it
+# --------------------------------------------------------------------------- #
+
+
+@_POSIX_ONLY
+def test_the_boot_sweep_never_enters_the_broker_private_tree(tmp_path, caplog):
+    """After the owner split `.broker` is 1002:1101 2700 and the daemon holds no
+    access to it. The data-root sweep listed it as a staging candidate, so every
+    boot logged a PermissionError traceback and reported a `failed` count that
+    could never reach zero (found by scripts/role_image_oracle.py on a migrated
+    volume). No workspace operation runs as the broker, so there is nothing
+    there to sweep.
+    """
+    private = tmp_path / ws.BROKER_PRIVATE_DIR
+    (private / ws.STAGING_DIR).mkdir(parents=True)
+    (tmp_path / "u-alice").mkdir()
+    private.chmod(0o000)  # what 2700 looks like to a process that is not 1002
+    try:
+        with caplog.at_level("ERROR", logger="tinyassets.workspace_staging"):
+            report = ws.sweep_data_root(tmp_path)
+    finally:
+        private.chmod(0o700)
+
+    assert report.failed == 0, report
+    assert "PermissionError" not in caplog.text
+    assert ws.BROKER_PRIVATE_DIR not in caplog.text
