@@ -66,7 +66,10 @@ test identities gives zero new failures and zero new skips. Slow tests passed
 10/10 on both revisions. Heavy selection has identical failure messages for all
 47 failures on both revisions, with 1,766 passes and zero skips each; both fail
 the existing 2,000-test floor (1,813 selected). Neither floor nor quarantine was
-relaxed. The previous structural proof passed 584/584; its final rerun is pending.
+relaxed. Final structural guards passed 585/585. Ruff passed on every touched
+Python file. The Claude plugin rebuild and import probe passed with no tracked
+diff. The PR-relative hygiene gate passed with the explicit retired-behavior
+declaration (329 tests added, 284 retired test findings).
 
 Task 2.5 remains incomplete: the current full image proof uses a freshly migrated
 production-shaped fixture volume, not the restored production-backup clone, and
