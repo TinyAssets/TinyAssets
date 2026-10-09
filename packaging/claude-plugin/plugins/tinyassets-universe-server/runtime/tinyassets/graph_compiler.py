@@ -521,9 +521,13 @@ def _run_with_timeout(
         # The future owns the release: a call still running past its timeout
         # keeps what it holds until it actually ends.
         future.add_done_callback(lambda _future: on_done())
-    try:
-        return future.result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError as exc:
+    # Wait on the future, never on ``future.result(timeout=)``: since 3.11
+    # ``concurrent.futures.TimeoutError`` IS the builtin ``TimeoutError``, so a
+    # lock or socket timeout raised BY the work would be caught as this node's
+    # own deadline. Live 2026-10-09: a 5s starter-lock wait failed agent runs
+    # as "exceeded 2592000s timeout" after nine seconds.
+    done, _ = concurrent.futures.wait((future,), timeout=timeout_s)
+    if not done:
         # Returns False once the worker picked it up. That case is not left to
         # chance: the worker-entry check refuses the pickup if the deadline has
         # passed, and a call that got past the check settles normally and is
@@ -534,7 +538,8 @@ def _run_with_timeout(
             "The provider call may still be running in the background; "
             "its own subprocess/HTTP timeout is the backstop.",
             node_id=node_id,
-        ) from exc
+        )
+    return future.result()
 
 
 def _call_policy_router_with_retry(
@@ -788,7 +793,7 @@ def _wrap_provider_failure(node_id: str, exc: BaseException) -> "CompilerError":
     """
     chain_state = getattr(exc, "chain_state", None)
     attempts = getattr(exc, "attempts", None)
-    base_msg = f"Provider call failed in node '{node_id}': {exc}"
+    base_msg = f"Provider call failed in node '{node_id}': {str(exc) or type(exc).__name__}"
     if chain_state is not None:
         try:
             suffix = json.dumps(chain_state, default=str, separators=(",", ":"))
