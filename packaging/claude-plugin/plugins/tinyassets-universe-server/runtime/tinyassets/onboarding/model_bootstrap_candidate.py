@@ -75,14 +75,30 @@ def prepare_candidate(*, base: Path, uid: str, owner: str, grant_id: str,
             raise HostedAuthError("model_candidate_registration_incomplete", 409)
         did = registered["definition_id"]
     current()
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(grant_id)
-    if (grant is None or grant.owner_user_id != owner or grant.universe_id != uid
-            or grant.revoked_at is not None):
-        raise HostedAuthError("model_connection_requires_recovery", 409)
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.broker.capabilities import capability_operation
+        from tinyassets.broker.ledger_queries import granted_resource_row
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        try:
+            resource = granted_resource_row(base, principal=owner, command_center=uid,
+                                            grant_id=grant_id)
+            existing = capability_operation(
+                base, principal=owner, command_center=uid, grant_id=grant_id,
+                connection_id=resource["connection_id"], capability_kind="model_discovery")
+        except GrantResolutionError:
+            raise HostedAuthError("model_connection_requires_recovery", 409) from None
+    else:
+        ledger = ConnectionLedger(base / "outbound.db")
+        grant = ledger.get_grant(grant_id)
+        if (grant is None or grant.owner_user_id != owner or grant.universe_id != uid
+                or grant.revoked_at is not None):
+            raise HostedAuthError("model_connection_requires_recovery", 409)
+        existing = ledger.get_connection_capability(grant.connection_id, "model_discovery")
     descriptor = {"protocol": preset.id, "catalogue_url": preset.catalogue_url,
                   "benchmark_url": preset.benchmark_url}
-    existing = ledger.get_connection_capability(grant.connection_id, "model_discovery")
     if existing is not None and existing.descriptor() != descriptor:
         raise HostedAuthError("model_discovery_requires_review", 409)
     if existing is not None:

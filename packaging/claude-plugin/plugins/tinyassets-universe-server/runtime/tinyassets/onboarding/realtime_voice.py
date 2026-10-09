@@ -120,12 +120,29 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
     if authority.access_method != "api_key_http":
         raise RealtimeVoiceError("provider_voice_unsupported", 409)
 
-    db_path = base / "outbound.db"
-    if db_path.is_symlink() or not db_path.is_file():
-        raise RealtimeVoiceError("voice_authority_invalid", 409)
-    ledger = ConnectionLedger(db_path)
-    grant = ledger.get_grant(authority.grant_id)
-    view = ledger.get_connection_view(authority.connection_id)
+    from tinyassets.broker.supervisor import broker_selected
+
+    selected = broker_selected()
+    if selected:
+        from tinyassets.broker.capabilities import capability_operation
+        from tinyassets.broker.ledger_queries import authorized_connection
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        try:
+            grant, view, _ = authorized_connection(
+                base, principal=owner_user_id, command_center=universe_id,
+                grant_id=authority.grant_id, connection_id=authority.connection_id)
+        except ProxyRequestError as exc:
+            raise RealtimeVoiceError("voice_broker_unavailable", 503) from exc
+        except Exception as exc:
+            raise RealtimeVoiceError("voice_authority_invalid", 409) from exc
+    else:
+        db_path = base / "outbound.db"
+        if db_path.is_symlink() or not db_path.is_file():
+            raise RealtimeVoiceError("voice_authority_invalid", 409)
+        ledger = ConnectionLedger(db_path)
+        grant = ledger.get_grant(authority.grant_id)
+        view = ledger.get_connection_view(authority.connection_id)
     authorized = bool(
         grant is not None
         and view is not None
@@ -141,9 +158,21 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
     if not authorized:
         raise RealtimeVoiceError("voice_authority_invalid", 409)
     try:
-        capability = ledger.get_connection_capability(
-            authority.connection_id, "realtime_voice"
-        )
+        if selected:
+            try:
+                capability = capability_operation(
+                    base, principal=owner_user_id, command_center=universe_id,
+                    grant_id=authority.grant_id, connection_id=authority.connection_id,
+                    capability_kind="realtime_voice",
+                )
+            except ProxyRequestError as exc:
+                raise RealtimeVoiceError("voice_broker_unavailable", 503) from exc
+        else:
+            capability = ledger.get_connection_capability(
+                authority.connection_id, "realtime_voice"
+            )
+    except RealtimeVoiceError:
+        raise
     except Exception as exc:
         raise RealtimeVoiceError("voice_capability_invalid", 409) from exc
     if capability is None:
@@ -289,8 +318,18 @@ def session_request(offer_sdp: str) -> dict[str, Any]:
 def _default_proxy_factory(
     universe_dir: Path, owner_user_id: str, binding: VoiceBinding
 ) -> Any:
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
+    if broker_selected():
+        from tinyassets.effectors.authenticated_external_call import _open_connection_proxy
+
+        return _open_connection_proxy(
+            db_path=universe_dir.parent / "outbound.db", owner_user_id=owner_user_id,
+            universe_id=universe_dir.name,
+            grant_id=binding.grant_id,
+            connection_id=binding.connection_id,
+        )
     ledger = ConnectionLedger(
         universe_dir.parent / "outbound.db",
         verify_authenticated_principal=lambda: owner_user_id,

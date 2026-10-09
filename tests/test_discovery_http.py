@@ -30,6 +30,21 @@ from tinyassets.storage.outbound_connections import (
 URL = "https://models.example.com/api/models/user"
 
 
+@pytest.mark.parametrize("facts", [{}, {"resource": {}}, {"resource": None}])
+def test_malformed_broker_projection_is_a_typed_refusal(tmp_path, monkeypatch, facts):
+    from tinyassets.broker import ledger_queries
+
+    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
+    monkeypatch.setattr(ledger_queries, "query_ledger", lambda *a, **kw: facts)
+    with pytest.raises(discovery.ModelDiscoveryUnavailable) as caught:
+        discovery.read_granted_discovery_document(
+            db_path=tmp_path / "outbound.db", grant_id="grant", owner_user_id="owner",
+            universe_id="universe", url=URL,
+        )
+    assert caught.value.reason == "discovery_unavailable"
+    assert not (tmp_path / "outbound.db").exists()
+
+
 def test_owned_grant_can_discover_before_model_registration(rig):
     assert discovery.read_granted_discovery_document(
         db_path=rig.db, grant_id="grant-discovery", owner_user_id="owner",
