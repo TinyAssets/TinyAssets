@@ -99,6 +99,7 @@ def test_default_runs_real_jails_as_an_unprivileged_user():
     """As root the universe tool jail refuses to start, so ~20 jail and egress
     tests failed for the oracle's own reasons; the default must not be root."""
     cmd = _command("tests/test_universe_tools_jail.py")
+    assert "--init" in cmd
     assert _opts(cmd) == [
         "seccomp=unconfined", "apparmor=unconfined", "systempaths=unconfined",
     ]

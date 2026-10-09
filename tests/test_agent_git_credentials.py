@@ -300,9 +300,11 @@ def extension_launch(s, monkeypatch):
     from tinyassets.extension_capabilities import ExtensionCapabilities
     from tinyassets.ta_capabilities import Capabilities, ExecutionContext
 
-    # This fixture's broker uses ledger.db; production uses outbound.db.
-    monkeypatch.setattr(oc.ConnectionLedger, "incarnation", lambda self, key:
-                        s.book.incarnation(key) if self._db_path != s.db else original(self, key))
+    # Keep incarnation reads on this fixture's real served broker.
+    monkeypatch.setattr("tinyassets.broker.ledger_queries.query_ledger",
+                        lambda base, **scope: s.client.ledger_query(**{
+                            key: value for key, value in scope.items()
+                            if key not in {"principal", "command_center"}}))
     service = Capabilities(s.workspace, ExecutionContext("center", "alice", "main"),
                            [], None, lambda: None)
     service.connections = lambda: {f"connection:git:{v}": (s.record[0], s.record[1], v)

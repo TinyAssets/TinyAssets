@@ -40,6 +40,12 @@ def _admission_and_deletion_double(request, monkeypatch):
     if request.node.get_closest_marker("role_split") is not None:
         yield
         return
+    install(monkeypatch)
+    yield
+
+
+def install(monkeypatch):
+    """Install the same admission double explicitly in spawned test children."""
     from tinyassets import (
         role_center_admission,
         role_owner_delete,
@@ -71,4 +77,3 @@ def _admission_and_deletion_double(request, monkeypatch):
     monkeypatch.setattr(role_owner_tree_deletion, "delete_center", delete_center)
     monkeypatch.setattr(role_owner_tree_deletion, "pending", lambda root: [])
     monkeypatch.setattr(role_owner_delete, "remove_subtree", remove_subtree)
-    yield

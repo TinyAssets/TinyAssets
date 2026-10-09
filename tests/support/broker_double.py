@@ -144,6 +144,11 @@ class _InProcessBroker:
                 listener.close()
                 try:
                     await asyncio.wait_for(listener.wait_closed(), 5)
+                    pending = [task for task in asyncio.all_tasks()
+                               if task is not asyncio.current_task()]
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
                 finally:
                     done.set()
 
@@ -151,6 +156,9 @@ class _InProcessBroker:
             done.wait(6)
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
+        if self._thread.is_alive():
+            raise RuntimeError("in-process broker thread did not stop")
+        self._loop.close()
 
 
 class _Registry:

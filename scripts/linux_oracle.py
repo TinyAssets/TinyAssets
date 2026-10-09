@@ -310,7 +310,9 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         command = shlex.join(["python", "-m", "pytest", "-p", "no:cacheprovider", *pytest_args])
     excludes = " ".join(f"--exclude=./{name}" for name in COPY_EXCLUDES)
     # Named, so a lane can stop its own run by name; Docker is shared across lanes.
-    run = ["docker", "run", "--rm", "--name", f"ta-oracle-{os.getpid()}",
+    # Reap orphaned jail descendants during a full required shard. Without an
+    # init, runuser becomes PID 1 and hundreds of exited children accumulate.
+    run = ["docker", "run", "--init", "--rm", "--name", f"ta-oracle-{os.getpid()}",
            "-v", f"{_docker_path(root)}:/src:ro"]
     for pair in args.env:
         if "=" not in pair:

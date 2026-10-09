@@ -94,7 +94,8 @@ def _definition(protocol: str = "openai_chat", *, ref: str = _GRANT_ID) -> Provi
 
 
 def _config() -> Any:
-    return SimpleNamespace(temperature=0.2, timeout=60, max_tokens=1024)
+    return SimpleNamespace(temperature=0.2, timeout=60, max_tokens=1024,
+                           invocation_owner_user_id="founder")
 
 
 def _run(provider: ApiKeyHttpProvider, universe_dir: Path) -> Any:

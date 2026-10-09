@@ -51,7 +51,7 @@ class Terminal(BaseProvider):
 
 
 @pytest.fixture
-def rig(tmp_path, monkeypatch, request):
+def rig(tmp_path, monkeypatch, request, _signed_in_operator):
     import tinyassets.platform_runtime_provenance as provenance
     from tinyassets.providers import call
     from tinyassets.storage.effector_consents import grant_consent
@@ -170,7 +170,10 @@ def rig(tmp_path, monkeypatch, request):
                                              schema_defaulted=set(), node_key="n1")
         return result[aec.EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]
 
-    yield locals()
+    from tinyassets.auth.middleware import identity_context
+
+    with identity_context(replace(_signed_in_operator, user_id="acct_alice")):
+        yield locals()
     session.close()
 
 
@@ -206,8 +209,8 @@ def test_owner_configured_subscription_review_holds_with_cause(rig):
 @pytest.mark.parametrize("rig", ["owner"], indirect=True)
 @pytest.mark.parametrize("guard,kind", [
     ("rule", "rule_ask_first"), ("hand_off", "rule_hand_off"),
-    ("consent", "missing_consent"), ("foreign_grant", "grant_not_for_universe"),
-    ("revoked_grant", "revoked_grant"),
+    ("consent", "missing_consent"), ("foreign_grant", "connection_authority_unavailable"),
+    ("revoked_grant", "connection_authority_unavailable"),
 ])
 def test_owner_write_without_review_still_enforces_authority(rig, guard, kind):
     if guard in {"rule", "hand_off"}:
@@ -219,7 +222,7 @@ def test_owner_write_without_review_still_enforces_authority(rig, guard, kind):
         revoke_consent(rig["universe"], sink=aec.EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
                        destination="example.com")
     else:
-        with sqlite3.connect(rig["tmp_path"] / "outbound.db") as conn:
+        with sqlite3.connect(rig["tmp_path"] / ".broker" / "outbound.db") as conn:
             if guard == "foreign_grant":
                 conn.execute("UPDATE outbound_connection_grants SET universe_id='other'")
             else:

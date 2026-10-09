@@ -132,7 +132,7 @@ def test_capability_cannot_widen_endpoint_or_method_authority(tmp_path):
             enabled=True,
         )
 
-    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections SET scopes_json = ? WHERE connection_id = ?",
             (json.dumps(["GET"]), view.connection_id),
