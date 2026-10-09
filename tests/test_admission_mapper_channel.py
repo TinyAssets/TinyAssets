@@ -154,12 +154,17 @@ def test_mapper_reads_are_typed_and_authenticated(pair, identities):
     thread = threading.Thread(target=channel.serve_forever, daemon=True)
     thread.start()
     value = mapper(mapper_end, os.getpid())
-    assert value._owner_machine("alice") == 300001
-    assert value._owner_machine("bob") is None
-    assert value._center_state("alice-home") == "admitted"
-    assert value._center_state("other") == "unadmitted"
-    assert value._admission_row(1)["machine"] == 300001
-    assert value._admission_row(9) is None
+    try:
+        assert value._owner_machine("alice") == 300001
+        assert value._owner_machine("bob") is None
+        assert value._center_state("alice-home") == "admitted"
+        assert value._center_state("other") == "unadmitted"
+        assert value._admission_row(1)["machine"] == 300001
+        assert value._admission_row(9) is None
+    finally:
+        mapper_end.shutdown(socket.SHUT_RDWR)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_mapper_refuses_an_answer_from_any_other_pid(pair):
