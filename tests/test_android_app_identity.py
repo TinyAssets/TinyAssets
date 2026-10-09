@@ -356,6 +356,18 @@ def test_app_sign_in_refuses_visibly_when_the_install_is_unknown(
     assert "didn't say which install" in result["notice"]
 
 
+def test_web_sign_in_namespaces_owner_like_randomness(tmp_path: Path) -> None:
+    # Web sign-in now normally delegates to server PKCE. Exercise the retained
+    # client PKCE state construction too, so its fallback namespace stays safe.
+    body = _js_function(_app_html(), "beginSignIn")
+    state_block = body[body.index("const verifier ="):body.index("const challenge =")]
+    program = _SHIM + "\nconst NATIVE = false;\n(async()=>{\n" + state_block
+    program = program.replace('return "RANDOM";', 'return "oa_' + 'a' * 21 + '";')
+    program += '\nconsole.log(JSON.stringify(JSON.parse(store.pkce))); })();'
+    result = _run_node(tmp_path, program)
+    assert result["state"] == "web.oa_" + "a" * 21
+
+
 def _native_sign_in(get_info: str) -> str:
     html = _app_html()
     table = re.search(r"  const APP_RETURN_PACKAGES = \{[^\n]*\};", html)
