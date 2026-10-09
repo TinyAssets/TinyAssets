@@ -313,6 +313,8 @@ def _run_against(tmp_path, monkeypatch, *, status, body):
         _install_loopback_driver,
         _setup,
     )
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
     from tinyassets.effectors.authenticated_external_call import (
         EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
         run_authenticated_external_call_effector,
@@ -340,11 +342,12 @@ def _run_against(tmp_path, monkeypatch, *, status, body):
                     "body": {"text": "hello"}},
     }
     try:
-        evidence = run_authenticated_external_call_effector(
-            node_id="call", output_keys=["out"],
-            run_state={"out": json.dumps(packet)},
-            base_path=str(universe_dir), run_id="r1",
-        )
+        with identity_context(Identity(user_id="user-1", username="fixture-owner")):
+            evidence = run_authenticated_external_call_effector(
+                node_id="call", output_keys=["out"],
+                run_state={"out": json.dumps(packet)},
+                base_path=str(universe_dir), run_id="r1",
+            )
     finally:
         far_side.stop()
     assert evidence["delivered"] is True, evidence

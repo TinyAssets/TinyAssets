@@ -56,7 +56,11 @@ def broker_accounting_resolver(resolve):
 
     def wrapped(*args, **identity):
         delegate = resolve(*args, **identity)
-        ledger = ConnectionLedger(identity["db_path"],
+        ledger_path = Path(identity["db_path"]).resolve()
+        base = ledger_path.parent.parent if ledger_path.parent.name == ".broker" else (
+            ledger_path.parent)
+        ledger = ConnectionLedger(base / ".broker" / "outbound.db",
+                                  data_root=base,
                                   verify_authenticated_principal=lambda: identity["owner_user_id"])
 
         def network(**kwargs):
