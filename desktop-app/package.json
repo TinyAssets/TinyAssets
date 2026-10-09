@@ -17,6 +17,7 @@
   "build": {
     "appId": "io.tinyassets.app",
     "productName": "TinyAssets",
+    "protocols": [{"name": "TinyAssets approval return", "schemes": ["tinyassets-desktop"]}],
     "files": [
       "src/**/*",
       "config.js",

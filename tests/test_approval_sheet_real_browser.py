@@ -11,6 +11,31 @@ browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
+def test_electron_sheet_opens_browser_handoff_only_after_click(app_url, browser):
+    context = browser.new_context(user_agent="TinyAssets Electron/43.4.1")
+    page = context.new_page()
+    launched = []
+    page.route("**/app/approval-handoff", lambda route: (
+        launched.append(route.request.post_data_json),
+        route.fulfill(json={"launch_path": "/app/approval-handoff/" + "x" * 43}),
+    ))
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      window.handoffs=[];window.open=url=>window.handoffs.push(url);
+      renderRail([{request_id:'connect', title:'Connect TikTok', sticky:true,
+                   action:{type:'connect'}, fields:[]}]);
+    }""")
+    assert page.locator("#request-rail").is_hidden()
+    assert launched == []
+    page.evaluate("RequestSheets.inbox()")
+    page.locator("#needs-you-items button").click()
+    page.wait_for_function("() => window.handoffs.length === 1")
+    assert launched == [{"request_id": "connect", "client": "desktop"}]
+    assert page.evaluate("window.handoffs[0]").endswith("/app/approval-handoff/" + "x" * 43)
+    assert page.locator("#request-rail").is_hidden()
+    context.close()
+
+
 @pytest.mark.parametrize("width", [390, 1280])
 def test_notification_link_waits_for_its_request_then_focuses_its_item(app_url, browser, width):
     page = browser.new_page(viewport={"width": width, "height": 844})

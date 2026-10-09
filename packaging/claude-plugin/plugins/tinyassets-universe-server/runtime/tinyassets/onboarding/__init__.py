@@ -396,7 +396,8 @@ async def _handle_token(request: Any) -> Any:
         if session_ref:
             _drop_refresh_session(session_ref)
         response = JSONResponse({"ok": True}, headers=_NO_STORE)
-        response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
+        response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH,
+                               secure=True, httponly=True, samesite="strict")
         return response
     if grant == "refresh_token":
         # Silent session renewal. AuthKit access tokens live ~5 minutes; the
@@ -2568,6 +2569,7 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.onboarding import approval_handoff
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
@@ -2598,6 +2600,8 @@ def onboarding_routes() -> list[Any]:
         Route("/app/unread", handle_unread, methods=["GET", "POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
+        Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
+        Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),
         Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
