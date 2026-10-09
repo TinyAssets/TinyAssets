@@ -139,7 +139,7 @@ def test_a_surviving_binding_does_not_hide_a_broken_connection_request(
         )
         ledger.revoke_grant(_GRANT_ID)
     else:
-        with sqlite3.connect(tmp_path / "outbound.db") as conn:
+        with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as conn:
             conn.execute(
                 "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
                 ("vault://http/replaced", _CONN_ID),

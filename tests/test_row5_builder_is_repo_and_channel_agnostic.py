@@ -31,6 +31,7 @@ from tests.test_workspace_effector import (  # noqa: F401 - fixtures come with i
     EffectChain,
     FakeWorker,
     _packet,
+    _principal,
     _run,
     chain,
     fs_spy,
@@ -59,16 +60,17 @@ def _universe_for(tmp_path: Path, host: str, repo: str) -> tuple[Path, Path]:
     from tinyassets.storage.outbound_connections import ConnectionLedger
     from tinyassets.storage.workspace_authority import workspace_consent_destination
 
+    principal = _principal()
     data_root = tmp_path / "data"
     universe_dir = data_root / UNIVERSE
     universe_dir.mkdir(parents=True)
     ledger = ConnectionLedger(
         data_root / ".broker" / "outbound.db", data_root=data_root,
-        verify_authenticated_principal=lambda: "user-1"
+        verify_authenticated_principal=lambda: principal
     )
     ledger.create_connection(
         connection_id="conn-git",
-        owner_user_id="user-1",
+        owner_user_id=principal,
         connection_class="outbound-http",
         scopes=(f"git_read:{repo}", f"git_write:{repo}"),
         provider="http",
@@ -83,7 +85,7 @@ def _universe_for(tmp_path: Path, host: str, repo: str) -> tuple[Path, Path]:
     ledger.grant_connection(
         grant_id="grant-git",
         connection_id="conn-git",
-        owner_user_id="user-1",
+        owner_user_id=principal,
         universe_id=UNIVERSE,
     )
     for op in ("checkout", "push"):

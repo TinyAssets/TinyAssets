@@ -498,7 +498,7 @@ def test_capability_disclosure_changes_when_bound_service_changes(monkeypatch, t
 def test_capability_refuses_session_url_outside_connection_policy(monkeypatch, tmp_path):
     _enable(monkeypatch)
     universe = _seed_binding(tmp_path, monkeypatch)
-    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE connection_capabilities SET descriptor_json = ?",
             (json.dumps({
@@ -518,7 +518,7 @@ def test_capability_refuses_session_url_outside_connection_policy(monkeypatch, t
 def test_invalid_stored_capability_fails_closed(monkeypatch, tmp_path):
     _enable(monkeypatch)
     universe = _seed_binding(tmp_path, monkeypatch)
-    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE connection_capabilities SET descriptor_json = '{broken'"
         )

@@ -37,6 +37,12 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/role_preview_cell.py::supervised": (
+        CALL_SCOPED, "one preview cell waits for its browser until the call deadline",
+    ),
+    "tinyassets/role_preview_cell.py::supervised#2": (
+        CALL_SCOPED, "bounded cleanup wait for that preview's PID namespace",
+    ),
     "tinyassets/workspace_provision_process.py::run_provision_stage": (
         CALL_SCOPED, "bounded dependency stage inside one owner cell; ends with the call",
     ),

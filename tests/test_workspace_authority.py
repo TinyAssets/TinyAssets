@@ -142,7 +142,9 @@ def _connection(uid, connection_id):
 
     from tinyassets.api.helpers import _base_path
 
-    return ConnectionLedger(Path(_base_path()) / "outbound.db").get_connection(
+    return ConnectionLedger(
+        Path(_base_path()) / ".broker" / "outbound.db", data_root=Path(_base_path()),
+    ).get_connection(
         connection_id
     )
 
