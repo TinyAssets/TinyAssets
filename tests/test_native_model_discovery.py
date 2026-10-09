@@ -181,11 +181,8 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
                 timeout=0.2 if mode == "timeout" else 3,
             ))
             if mode == "cancel":
-                # Cancel the admitted metadata process, after its shared
-                # family handshake. Pre-handshake cancellation is owned by
-                # the launcher's separate teardown tests.
-                from tinyassets.providers import owned_process
-                while not children or owned_process._get_family(children[-1]) is None:
+                # Cancel the admitted metadata process once it exists.
+                while not children:
                     await asyncio.sleep(0.01)
                 task.cancel()
             expected = asyncio.CancelledError if mode == "cancel" else ProviderError

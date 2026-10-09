@@ -12,11 +12,11 @@ from tinyassets.broker import supervisor
 from tinyassets.providers import owned_process, provider_jail
 
 
-def test_shared_spawn_refuses_unbound_selected_execution_before_legacy_jail(monkeypatch):
+def test_shared_spawn_refuses_an_unbound_launch_before_any_process(monkeypatch):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
     def forbidden(*args, **kwargs):
-        pytest.fail('selected provider reached daemon subprocess path')
-    monkeypatch.setattr(provider_jail, 'confine_launch', forbidden)
+        pytest.fail('a provider reached a daemon subprocess')
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
     with pytest.raises(provider_jail.ProviderConfinementError, match='view'):
         asyncio.run(owned_process.aspawn_owned(['/bin/sh']))
 

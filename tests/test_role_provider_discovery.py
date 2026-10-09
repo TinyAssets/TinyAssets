@@ -243,8 +243,8 @@ def test_cell_stream_shim_preserves_metadata_protocol_and_revokes(monkeypatch, t
     monkeypatch.setattr(role_provider_discovery, 'aspawn_cell', aspawn_cell)
 
     async def forbidden(*args, **kwargs):
-        pytest.fail('selected metadata spawned a daemon subprocess')
-    monkeypatch.setattr(discovery, 'aspawn_owned', forbidden)
+        pytest.fail('metadata spawned a daemon subprocess')
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
     catalogue = asyncio.run(discovery.read_native_catalogue(
         ['/opt/codex-install/node_modules/.bin/codex', 'app-server'], protocol=PROTOCOL,
         env={}, cwd=str(snapshot), universe_dir=root / 'alice'))
@@ -257,8 +257,8 @@ def test_cell_stream_shim_preserves_metadata_protocol_and_revokes(monkeypatch, t
 def test_kill_owned_tree_revokes_shim_and_never_signals(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail('shim teardown attempted a PID signal')
-    monkeypatch.setattr(owned_process, '_kill_direct', forbidden)
-    monkeypatch.setattr(owned_process, '_take_family', forbidden)
+    monkeypatch.setattr('os.kill', forbidden)
+    monkeypatch.setattr('os.killpg', forbidden)
     writer = SimpleNamespace(transport=None)
     cell = _FakeCell(None)
     proc = owned_process.OwnerCellProcess(cell, None, writer)

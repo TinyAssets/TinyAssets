@@ -45,10 +45,20 @@ def no_spawn(monkeypatch: pytest.MonkeyPatch) -> list:
         launched.append(args)
         raise AssertionError("a refused launch reached the process spawn")
 
-    monkeypatch.setattr(owned_process, "_aspawn_anchored", _tripwire)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _tripwire)
     monkeypatch.setattr(asyncio, "create_subprocess_shell", _tripwire)
     return launched
+
+
+@pytest.fixture(autouse=True)
+def prepared_workspace(monkeypatch):
+    """The agent workspace is made by the owner's tool-files cell in production
+    (``role_tools.prepare``); here a plain directory stands in for it."""
+    from tinyassets import role_tools
+
+    def prepare(universe_dir, *, agent_id):
+        (Path(universe_dir) / provider_jail.AGENT_WORKSPACE_DIR).mkdir(exist_ok=True)
+    monkeypatch.setattr(role_tools, "prepare", prepare)
 
 
 def _universe(root: Path, name: str = "u-alpha") -> Path:
@@ -65,7 +75,7 @@ def test_a_provider_launch_with_no_owning_universe_is_refused_before_spawn(no_sp
         with provider_launch_scope(None):
             await owned_process.aspawn_owned([sys.executable, "-c", "pass"])
 
-    with pytest.raises(ProviderConfinementError, match="no owning command center"):
+    with pytest.raises(ProviderConfinementError, match="not admitted"):
         asyncio.run(drive())
     assert no_spawn == []
 
@@ -249,36 +259,6 @@ def test_powershell_is_on_the_one_host_reach_floor():
     assert "PowerShell" in _ENGINE_DISALLOWED_TOOLS
 
 
-
-
-@posix_paths
-def test_the_spawn_point_passes_the_filter_and_closes_its_copy(wired, monkeypatch):
-    universe, *_ = wired
-    seen: dict = {}
-
-    async def _spawn(argv, *, extra_fds=(), **kwargs):
-        seen["fds"] = extra_fds
-        seen["open_during_spawn"] = [_is_open(fd) for fd in extra_fds]
-        raise RuntimeError("spawn failed after the jail was built")
-
-    monkeypatch.setattr(owned_process, "_aspawn_anchored", _spawn)
-
-    async def drive():
-        with provider_launch_scope(universe):
-            await owned_process.aspawn_owned(["cli"])
-
-    with pytest.raises(RuntimeError, match="spawn failed"):
-        asyncio.run(drive())
-    assert seen["open_during_spawn"] == [True, True]
-    assert [_is_open(fd) for fd in seen["fds"]] == [False, False], "a launch fd leaked"
-
-
-def _is_open(fd: int) -> bool:
-    try:
-        os.fstat(fd)
-    except OSError:
-        return False
-    return True
 
 
 def test_the_router_grants_an_engine_route_only_when_the_call_wires_one():

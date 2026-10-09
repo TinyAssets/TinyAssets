@@ -129,11 +129,10 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
         await run(server=server)
     assert "model rejected [redacted]" in str(failure.value)
     assert "secretsensitive" not in str(failure.value)
-    # The adapter hands the shared spawn point codex's own argv plus its view of
-    # the universe; the jail wraps it there (provider_jail).
-    assert launch.call_args.kwargs["universe_view"] is not None
-    # Codex runs nothing itself, so it declares no nested sandbox and gets the
-    # jail's full deny profile.
+    # The adapter hands the shared spawn point codex's own argv only; the owner
+    # cell decides its view. Codex runs nothing itself, so it declares no
+    # nested sandbox and gets the cell's full deny profile.
+    assert "universe_view" not in launch.call_args.kwargs
     assert not launch.call_args.kwargs.get("nested_sandbox")
     inner = launch.call_args.args
     pairs = list(zip(inner, inner[1:]))
@@ -142,7 +141,7 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
     assert "--dangerously-bypass-approvals-and-sandbox" not in inner
     for name in ("shell_tool", "apps", "plugins", "remote_plugin"):
         assert ("--disable", name) in pairs
-    assert ("-c", 'projects."/workspace".trust_level="untrusted"') in pairs
+    assert ("-c", 'projects."/tmp/workspace".trust_level="untrusted"') in pairs
     assert not any("mcp_servers" in arg for arg in inner)
 
 
@@ -157,9 +156,8 @@ async def test_served_model_selection_is_native_unless_explicit(
         monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
     else:
         monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
-    run, launch, *_ = served
-    result, server = await run(cfg=ModelConfig(sandbox_workspace=True))
-    assert launch.call_args.kwargs["universe_view"] is not None
+    run, launch, _state, config, _root = served
+    result, server = await run(cfg=config(engine_mcp_enabled=False))
     params = server.requests("thread/start")[0]["params"]
     expected = (override or "").strip()
     if expected:

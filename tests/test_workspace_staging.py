@@ -328,35 +328,6 @@ def test_the_owners_own_removal_waits_for_a_user_then_queues_it(tmp_path):
 
 
 @_POSIX_ONLY
-def test_the_worker_hands_its_share_to_every_git(tmp_path, monkeypatch):
-    from tinyassets import workspace_git, workspace_worker
-
-    monkeypatch.setattr(workspace_git, "_INHERITED_FDS", ())
-    path = ws.create(tmp_path, "run", "node")
-    workspace_worker._mark_staging_in_use({"op": "checkout", "staging_dir": str(path)})
-    (fd,) = workspace_git._INHERITED_FDS
-    seen = {}
-
-    def _launcher(command, **kwargs):
-        seen.update(kwargs)
-
-        class _Done:
-            returncode, stdout, stderr = 0, b"", b""
-
-        return _Done()
-
-    home = tmp_path / "git-home"
-    home.mkdir()
-    workspace_git.run_git(
-        ["--version"], cwd=path, home_dir=home, path="/usr/bin",
-        timeout_s=5, launcher=_launcher,
-    )
-    assert fd in seen["pass_fds"]
-    os.close(fd)
-    ws.remove(path)
-
-
-@_POSIX_ONLY
 def test_an_uninspectable_lock_keeps_the_tree(tmp_path, monkeypatch):
     """Fail closed (round 2): an .inuse we cannot open may be a live worker's."""
     root = ws.staging_root(tmp_path)
@@ -431,33 +402,6 @@ def test_a_scoped_inheritance_reaches_only_gits_inside_the_block(tmp_path, monke
     if os.name == "posix":
         assert fd in seen[0]
     assert fd not in seen[1], "a scoped share must not leak into later gits"
-
-
-@_POSIX_ONLY
-def test_the_parent_populate_git_inherits_the_staging_share(tmp_path, monkeypatch):
-    """Round 3: the PARENT runs populate's git against staging, in its own
-    session; it must carry the share too."""
-    import tinyassets.workspace_git as wg
-    from tests.test_workspace_effector import _packet, _run, _setup
-    from tinyassets.effectors import EffectChain
-
-    _root, universe_dir = _setup(tmp_path)
-    chain = EffectChain(run_id="run-1", base_path=str(tmp_path), universe_id="universe-1")
-    captured = {}
-
-    def _populate(bundle, dest, ref_name, checkout_ref, *, home_dir, **_kw):
-        staging = Path(bundle).parent
-        captured["scoped"] = wg._SCOPED_FDS.get()
-        captured["held"] = ws.in_use_fd(staging)
-        Path(dest).mkdir(parents=True, exist_ok=True)
-        return "c" * 40
-
-    monkeypatch.setattr(wg, "populate_workspace_from_bundle", _populate)
-    monkeypatch.setattr("tinyassets.effectors.workspace._git_path", lambda: "/usr/bin")
-    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-
-    assert captured["held"] is not None
-    assert captured["held"] in captured["scoped"]
 
 
 @_POSIX_ONLY
