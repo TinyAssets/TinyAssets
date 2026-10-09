@@ -267,6 +267,16 @@ def _tool_prepare(universe_dir, *, agent_id="main"):
 CELL_OWNER_UID = 300001
 
 
+def _owner_identity(data_root, *, principal, allocate=False):
+    """The broker's identity answer: every admitted principal is the one owner."""
+    from tinyassets.broker.owner_identities import OwnerIdentity, validate_principal
+
+    validate_principal(principal)
+    if type(allocate) is not bool:
+        raise ValueError("allocate must be boolean")
+    return OwnerIdentity(CELL_OWNER_UID, CELL_OWNER_UID)
+
+
 def _snapshot_owner_uid(universe):
     """The center's dedicated owner gid."""
     return CELL_OWNER_UID
@@ -289,6 +299,9 @@ def owner_cell_double(request, monkeypatch):
     if request.node.get_closest_marker("role_split"):
         yield None
         return
+    from tinyassets.broker import owner_identities
+
+    monkeypatch.setattr(owner_identities, "owner_identity", _owner_identity)
     from tinyassets import (
         role_decoder,
         role_git,

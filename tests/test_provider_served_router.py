@@ -954,7 +954,12 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
                 universe_context=context,
             )
         )
-        await provider.started.wait()
+        started = asyncio.create_task(provider.started.wait())
+        await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():  # the call ended before the provider ran: say why, never hang
+            started.cancel()
+            task.result()
+            raise AssertionError("the served call returned before the provider started")
         auth_file = universe_dir / "codex-auth" / "auth.json"
         subprocess.run(
             [
