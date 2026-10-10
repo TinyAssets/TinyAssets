@@ -513,13 +513,12 @@ jobs:
         env:
           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
           GITHUB_STEP_SUMMARY: shard-out/summary-affected-${{ matrix.shard }}.md
-          # Unix sockets must fit sun_path, including pytest's test-name suffix.
-          PYTEST_ADDOPTS: --basetemp=/tmp/p
         run: |
           set -euo pipefail
           mkdir -p shard-out
           python scripts/ci_required_tests.py \
             --junit "shard-out/junit-affected-${{ matrix.shard }}.xml" \
+            --pytest-arg=--basetemp=/tmp/p \
             --exclude-from .github/heavy-test-files.txt \
             --affected affected.txt \
             --shard "${{ matrix.shard }}/4" --profile affected

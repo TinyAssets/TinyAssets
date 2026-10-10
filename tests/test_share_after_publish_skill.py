@@ -50,7 +50,6 @@ def test_existing_owner_can_copy_or_delete_share_skill(tmp_path):
 
 
 @pytest.mark.usefixtures("cloud_runtime")
-@pytest.mark.real_jail
 def test_scripted_turn_offers_a_public_post_and_picture_without_posting(
     tmp_path, monkeypatch, authenticate_request, engine,
 ):

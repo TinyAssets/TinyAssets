@@ -77,7 +77,6 @@ def test_name_yourself_and_remember_my_preference_through_governed_ta(engine, ho
     assert "concise reports" not in call(engine, "read_brain")["brain"]["founder"]
 
 
-@pytest.mark.real_jail
 def test_bash_ta_records_memory_and_generates_document_without_forged_receipts(
     world, monkeypatch,  # noqa: F811
 ):

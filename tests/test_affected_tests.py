@@ -98,6 +98,13 @@ def test_a_changed_test_runs_and_a_deleted_one_does_not(tmp_path):
         "tests/test_long.py": "import json\n",
         "tests/test_cell.py": "import pytest\npytestmark=pytest.mark.role_split\n",
         "tests/test_browser.py": "import playwright.async_api\n",
+        "tests/test_cloud.py": "from tests.cloud_runtime_fixture import cloud_runtime\n",
+        "tests/test_shell.py": (
+            "from tinyassets import universe_tools as tools\ntools.bash(None, 'true')\n"),
+        "tests/test_world.py": "from tests.test_universe_tools_jail import world\n",
+        "tests/test_guard.py": "import json\n",
+        "scripts/ci_structural_guards.py": (
+            "def targets(): return ['tests/test_guard.py', 'tests/test_mine.py::test_one']\n"),
         "tests/test_heavy.py": "import json\n",
         ".github/test-durations.json": '{"tests/test_long.py": 6}',
         ".github/heavy-test-files.txt": 'tests/test_heavy.py\n',

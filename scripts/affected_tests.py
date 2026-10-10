@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import os
 import re
@@ -427,23 +428,47 @@ def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
     Slow files remain in the existing merge/deploy/scheduled tiers. This is a
     selection rule, not a marker that lets a failed capability skip its gate.
     Unknown durations stay selected; measured files over five seconds move out.
+    Integration fixtures and actual shell calls also require the execution
+    venue, even when old timing data is absent or was measured with seam mocks.
     """
     durations = json.loads((root / '.github/test-durations.json').read_text())
     heavy = {line.split('#', 1)[0].strip() for line in
              (root / '.github/heavy-test-files.txt').read_text().splitlines()}
+    # The required structural job already executes these exact full files.
+    # Partial node-ID targets must leave their other cases in the affected tier.
+    structural_files = set()
+    guard_script = root / 'scripts/ci_structural_guards.py'
+    if guard_script.is_file():
+        spec = importlib.util.spec_from_file_location('pr_structural_targets', guard_script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        structural_files = {target for target in module.targets() if '::' not in target}
     candidates = selected if selected is not None else sorted(
         p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py'))
     result = []
     for name in candidates:
+        if name in structural_files:
+            continue
         source = (root / name).read_text(encoding='utf-8')
         tree = ast.parse(source)
+        shell_modules = {
+            alias.asname or alias.name
+            for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+            and node.module == 'tinyassets'
+            for alias in node.names if alias.name == 'universe_tools'
+        }
         execution_tier = any(
             isinstance(node, ast.Attribute) and node.attr in (
                 'real_jail', 'role_split', 'real_browser', 'slow')
             or isinstance(node, ast.ImportFrom) and
-            (node.module or '').startswith(('playwright', 'selenium'))
+            (node.module or '').startswith((
+                'playwright', 'selenium', 'tests.cloud_runtime_fixture',
+                'tests.test_universe_tools_jail'))
             or isinstance(node, ast.Import) and any(
                 alias.name.startswith(('playwright', 'selenium')) for alias in node.names)
+            or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'bash' and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in shell_modules
             for node in ast.walk(tree))
         if name not in heavy and durations.get(name, 0) <= 5 and not execution_tier:
             result.append(name)
