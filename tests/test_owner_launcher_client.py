@@ -311,6 +311,7 @@ def test_mapper_pulse_keeps_only_its_live_child_and_eof_still_revokes(monkeypatc
     launcher.jobs = {child: (1, 300001, float('inf'), mapper)}
     launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False, None]}
     launcher.package_jobs = set()
+    launcher.browser_jobs = set()
     launcher.launch = None
     launcher.daemon_pid = os.getpid() if authorized else os.getpid() + 1
     launcher.overflow_uid, launcher.overflow_gid = os.getuid(), os.getgid()
