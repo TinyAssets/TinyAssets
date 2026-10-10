@@ -1019,7 +1019,9 @@ def docker(*args, check=True, text=True, encoding="utf-8"):
 
 
 def _posture(name, image, volume, *, user, caps, entrypoint=None, extra=()):
-    command = ["docker", "run", "--name", name, "--user", user, "--cap-drop", "ALL",
+    command = ["docker", "run", "--label", "tinyassets.disposable=true",
+           "--label", f"tinyassets.created-at={int(time.time())}",
+           "--name", name, "--user", user, "--cap-drop", "ALL",
                '--memory', COMPOSE_MEMORY, '--memory-swap', COMPOSE_MEMORY]
     for capability in caps:
         command += ["--cap-add", capability]
@@ -1085,7 +1087,9 @@ def stage_migrate(args):
     """The runbook's step 4, on a fresh production-shaped layout-2 volume."""
     repo = Path(__file__).resolve().parents[1]
     docker("volume", "rm", "-f", args.volume, check=False)
-    docker("volume", "create", args.volume)
+    docker("volume", "create", "--label", "tinyassets.disposable=true",
+           "--label", f"tinyassets.created-at={int(time.time())}",
+           args.volume)
     source = str(repo)
     if len(source) > 2 and source[1] == ":":  # C:\... -> /c/... for Docker Desktop
         source = "/" + source[0].lower() + source[2:].replace("\\", "/")
@@ -1198,7 +1202,9 @@ def _metadata(args, *, start):
             docker("network", "rm", args.network, check=False)
         return None
     if args.isolated_metadata:
-        started = docker('run', '-d', '--name', name, '--network', 'none', '--user', '0',
+        started = docker('run', '--label', 'tinyassets.disposable=true',
+            '--label', f'tinyassets.created-at={int(time.time())}',
+           '-d', '--name', name, '--network', 'none', '--user', '0',
             '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_BIND_SERVICE',
             '--entrypoint', '/opt/venv/bin/python', args.image, '-I', '-B', '-c',
             ISOLATED_METADATA_SETUP + METADATA_SERVER.format(body=METADATA_INSTANCE_ID))
@@ -1207,7 +1213,9 @@ def _metadata(args, *, start):
         return name
     _network(args)
     started = subprocess.run(
-        ["docker", "run", "-d", "--name", name, "--network", args.network,
+        ["docker", "run", "--label", "tinyassets.disposable=true",
+           "--label", f"tinyassets.created-at={int(time.time())}",
+           "-d", "--name", name, "--network", args.network,
          "--ip", METADATA_ADDRESS, "--user", "0", "--cap-drop", "ALL",
          "--cap-add", "NET_BIND_SERVICE", "--entrypoint", "/opt/venv/bin/python",
          args.image, "-I", "-B", "-c",

@@ -16,10 +16,9 @@ Why a SessionStart hook is the mechanism:
 
 Its one weakness is that it only fires when a session starts, which is why
 ``scripts/install_dev_hygiene_task.ps1`` registers an hourly Task Scheduler job
-for the full pass. This hook deliberately runs only the two cheap classes
-(measured 2026-09-26: basetemp 3.4s, scratch 0.3s on the real box) and reads the
-scheduled job's summary for the rest, so a session start never waits on a
-two-minute git walk.
+for the full pass. Only basetemp and scratch run in the foreground. Docker,
+worktree and toolcache run detached under a shared lock; their saved summary
+is read on the next session start. Unknown or busy resources are kept.
 
 Advisory only. Never blocks, never fails a session, never exits non-zero.
 """
@@ -33,7 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-# Cheap classes only: worktree + docker inventory takes minutes on this box.
+# Only cheap classes may delay a session start.
 SESSION_CLASSES = "basetemp,scratch"
 DEFAULT_FLOOR_GB = 40.0
 HOOK_TIMEOUT = 45
@@ -57,14 +56,14 @@ def _floor_gb() -> float:
         return DEFAULT_FLOOR_GB
 
 
-def _full_pass_escalation(project: Path) -> str:
+def _full_pass_escalation(project: Path, name: str = "full") -> str:
     """The hourly full pass's escalation, if it is recent enough to still be true."""
-    path = project / ".claude" / "logs" / "dev-hygiene-full.json"
+    path = project / ".claude" / "logs" / f"dev-hygiene-{name}.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return ""
-    text = str(payload.get("escalation") or "")
+    text = "\n".join([str(payload.get("escalation") or ""), *payload.get("notes", [])]).strip()
     if not text:
         return ""
     finished = payload.get("finished_epoch")
@@ -101,7 +100,7 @@ def main() -> int:
         "--escalate-below",
         f"{floor:g}",
         "--budget-seconds",
-        "20",
+        "2",
         "--quiet",
         "--repo",
         str(project),
@@ -120,12 +119,51 @@ def main() -> int:
             timeout=HOOK_TIMEOUT,
             cwd=str(project),
         )
-        session_escalation = (proc.stdout or "").strip() if proc.returncode == 3 else ""
+        session_escalation = (proc.stdout or "").strip()
     except (subprocess.SubprocessError, OSError):
         # A hygiene pass is never worth a failed session start.
         session_escalation = ""
 
-    blocks = [b for b in (session_escalation, _full_pass_escalation(project)) if b]
+    blocks = [
+        b
+        for b in (
+            session_escalation,
+            _full_pass_escalation(project),
+            _full_pass_escalation(project, "background"),
+        )
+        if b
+    ]
+    try:
+        logs.mkdir(parents=True, exist_ok=True)
+        with (logs / "dev-hygiene-background.log").open("ab") as output:
+            options = (
+                {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+                if os.name == "nt"
+                else {"start_new_session": True}
+            )
+            subprocess.Popen(
+                [
+                    "python",
+                    "scripts/dev_hygiene.py",
+                    "--docker",
+                    "--session-background",
+                    "--apply",
+                    "--escalate-below",
+                    f"{floor:g}",
+                    "--quiet",
+                    "--summary-out",
+                    str(logs / "dev-hygiene-background.json"),
+                ],
+                cwd=str(project),
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                close_fds=True,
+                **options,
+            )
+    except OSError:
+        # Advisory hook; launch failures remain visible without failing the session.
+        blocks.append("Could not launch detached hygiene; see the scheduled task.")
     if not blocks:
         return 0
     print(
