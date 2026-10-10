@@ -248,12 +248,14 @@ def _seed_open_serving_assignment(
     host="api.example.com",
 ) -> str:
     """Select one synthetic owner-bound HTTP provider for foreground runs."""
+    from tests.support.broker_double import seed_owner_admission
     from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
     from tinyassets.providers.definition import register_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base_path))
+    seed_owner_admission(base_path, principal=owner_user_id, center=universe_id)
     universe_dir = base_path / universe_id
     universe_dir.mkdir(exist_ok=True)
     connection_id = "http_" + "b" * 32

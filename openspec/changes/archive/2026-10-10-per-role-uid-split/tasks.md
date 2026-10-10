@@ -184,3 +184,13 @@ The full PR-relative hygiene gate passed (339 added / 284 retired tests, covered
 by the existing reviewed Test-Removal rationale); commit hooks passed, including
 all three plugin mirrors. The downloaded backup and all three throwaway data
 volumes were removed after verification. No receipt or auto-merge was added.
+
+## Archive disposition, 2026-10-10
+
+Archived after the cutover at the founder's explicit request. Both delta specs
+are synced to `openspec/specs`. Production's deployed SHA contains merge
+`5acadd7a2bf` (assertion passed; reported SHA `6bd296c1be2f`). Unchecked historical
+acceptance items remain unclaimed and are transferred to
+`docs/concerns/2026-10-10-isolation-production-acceptance.md`; the second-account
+probe is also in `docs/host-actions.md`. No production acceptance is inferred
+from local tests or from archiving this directory.

@@ -5,7 +5,9 @@ import os
 import re
 
 MARKER = 'TA_CELL_FAILURE '
-FILES = ('role_decoder.py', 'role_owner_launcher.py', 'role_provider_cell.py',
+STDERR_TAIL_BYTES = 512
+FILES = ('role_decoder.py', 'role_owner_launcher.py', 'role_provider_cell.py', 'role_content.py',
+         'role_storage.py',
          'role_tools.py', 'role_tool_files.py', 'universe_tools.py', 'provider_jail.py',
          'jail_seccomp.py', 'role_git.py', 'role_provision.py', 'library')
 ALIASES = {'ta-decoder.py': 'role_decoder.py', 'ta-owner-launch.py': 'role_owner_launcher.py',

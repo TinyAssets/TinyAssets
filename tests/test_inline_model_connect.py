@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import subprocess
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -15,6 +17,7 @@ from tests.test_onboarding_model_connect import ingress, post  # noqa: F401
 from tinyassets import onboarding
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
+from tinyassets.frontend import Frontend
 from tinyassets.onboarding import hosted_model_auth as hosted
 from tinyassets.onboarding import inline_model_connect as inline
 from tinyassets.onboarding import owner_sessions
@@ -86,6 +89,81 @@ def test_popup_callback_and_once_only_server_held_exchange(monkeypatch):
     assert len(calls) == 1
     assert post("inline_poll", {"flow": flow["flow"]}).json() == {"status": "consumed"}
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("keep_binding", [True, False])
+def test_hosted_roundtrip_through_worker_frontend_and_owner(monkeypatch, keep_binding):
+    flow = start()
+    worker_file = Path(__file__).resolve().parents[1] / "deploy/cloudflare-worker/worker.js"
+    worker_url = worker_file.as_uri()
+    calls = []
+
+    async def exchange(**kwargs):
+        calls.append(kwargs)
+        return "synthetic-private-key"
+
+    monkeypatch.setattr(hosted, "exchange_key", exchange)
+    # Execute the actual Worker against the actual frontend/owner response.
+    # No public service is contacted; only the external provider exchange is stubbed.
+    program = """
+import {proxyToTunnel} from WORKER;
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+const data = JSON.parse(input);
+globalThis.fetch = async () => new Response(null, {status:data.status, headers:data.headers});
+const response = await proxyToTunnel(new Request(data.url));
+const headers = [...response.headers].filter(([k]) => k !== 'set-cookie');
+for (const cookie of response.headers.getSetCookie()) headers.push(['set-cookie', cookie]);
+console.log(JSON.stringify(headers));
+""".replace("WORKER", json.dumps(worker_url))
+
+    async def run():
+        owner_transport = httpx.ASGITransport(app=Starlette(routes=onboarding.onboarding_routes()))
+
+        async def owner(request):
+            response = await owner_transport.handle_async_request(request)
+            return httpx.Response(response.status_code, headers=response.headers,
+                                  stream=httpx.ByteStream(await response.aread()))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(owner)) as upstream:
+            frontend = httpx.ASGITransport(app=Frontend(upstream, "test", "blue"))
+
+            async def edge(request):
+                response = await frontend.handle_async_request(request)
+                result = subprocess.run(
+                    ["node", "--input-type=module", "-e", program],
+                    input=json.dumps({"url": str(request.url), "status": response.status_code,
+                                      "headers": response.headers.multi_items()}),
+                    text=True, capture_output=True, check=True, timeout=30,
+                )
+                return httpx.Response(response.status_code, headers=json.loads(result.stdout),
+                                      content=await response.aread())
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(edge),
+                                         base_url="https://tinyassets.io") as browser:
+                browser.cookies.set(owner_sessions.COOKIE, "owner-cookie")
+                launched = await browser.get(
+                    flow["launch_path"], headers={"sec-fetch-dest": "document"})
+                assert launched.status_code == 307
+                assert "code_challenge=" in launched.headers["location"]
+                binding = "__Host-ta-model-" + flow["flow"]
+                assert binding in browser.cookies
+                browser.cookies.delete(owner_sessions.COOKIE)
+                if not keep_binding:
+                    browser.cookies.clear()
+                returned = await browser.get(
+                    urlsplit(flow["launch_path"]).path + "?code=synthetic-code")
+                assert returned.status_code == (200 if keep_binding else 409)
+                assert binding not in browser.cookies
+
+    asyncio.run(run())
+    reply = post("inline_poll", {"flow": flow["flow"]})
+    assert reply.json()["status"] == ("confirmation_required" if keep_binding else "waiting")
+    assert len(calls) == int(keep_binding)
+    assert post("inline_poll", {"flow": flow["flow"]}).json() == {
+        "status": "consumed" if keep_binding else "waiting"
+    }
+    assert len(calls) == int(keep_binding)
 
 
 @pytest.mark.parametrize("operation", ["inline_poll", "inline_cancel"])

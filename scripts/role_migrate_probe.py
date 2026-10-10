@@ -32,6 +32,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -303,14 +304,22 @@ def outside():
         linux_oracle._build(root, tag)
     volumes = (VOLUME, OUT_VOLUME)
     subprocess.run(["docker", "volume", "rm", "-f", *volumes], capture_output=True)
+    for volume in volumes:
+        subprocess.run(["docker", "volume", "create", "--label", "tinyassets.disposable=true",
+                        "--label", f"tinyassets.created-at={int(time.time())}",
+           volume], check=True)
     common = ["--network", "none", "-v", f"{VOLUME}:/data", "-v", f"{OUT_VOLUME}:{OUT}",
               "-v", f"{linux_oracle._docker_path(root)}:/src:ro", tag,
               "python", "-I", "-B", "/src/scripts/role_migrate_probe.py", "--app", "/src"]
     # The migration's own posture, then a host-like root for the restore.
-    migration = ["docker", "run", "--rm", "--user", "0", "--cap-drop", "ALL",
+    migration = ["docker", "run", "--label", "tinyassets.disposable=true",
+           "--label", f"tinyassets.created-at={int(time.time())}",
+           "--rm", "--user", "0", "--cap-drop", "ALL",
                  *[flag for cap in CAPS for flag in ("--cap-add", cap)], *common,
                  "--inside", "/data"]
-    restore = ["docker", "run", "--rm", "--user", "0", *common, "--roundtrip", "/data"]
+    restore = ["docker", "run", "--label", "tinyassets.disposable=true",
+           "--label", f"tinyassets.created-at={int(time.time())}",
+           "--rm", "--user", "0", *common, "--roundtrip", "/data"]
     try:
         return subprocess.run(migration).returncode or subprocess.run(restore).returncode
     finally:

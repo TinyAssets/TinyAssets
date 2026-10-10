@@ -18,6 +18,12 @@ After [PR #4594](https://github.com/TinyAssets/TinyAssets/pull/4594) merges and 
 
 Release note for Android 1.0.6 and earlier: cached `app.*` / `appdebug.*` sign-ins keep a package-pinned compatibility return until **2026-10-24 00:00 UTC**. Reopening the hosted app loads the new return-secret flow; publish 1.0.7 before the cutoff and tell testers to reopen/update if an old sign-in expires. Desktop and iOS binaries must be rebuilt from the #4594 fix head: the earlier downloaded desktop packages and iOS compile predate callback-secret delivery and are superseded.
 
+## Isolation production refusal acceptance (2026-10-10)
+
+| Item | Smallest founder-only action |
+|---|---|
+| Second owner for the post-cutover refusal probe | Supply a separately signed-in tester B account/command center. Runbook ?6.5: B?s cell attempts the founder?s tree and vault, then B?s daemon-side read names the founder?s file; both must refuse. Local UID proofs passed, but no production two-account result is claimed. |
+
 ## Connector directory submissions (2026-10-10)
 
 Packet: [requirements, form answers, assets and isolated reviewer plan](ops/connector-directory-listings.md).

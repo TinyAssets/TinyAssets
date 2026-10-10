@@ -46,7 +46,8 @@ def test_render_build(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "state", ["oa_app_pending", "na_pending", "app.pending", "appdebug.pending"]
+    "state", ["oa_" + "r" * 43, "oa_app_" + "r" * 43,
+              "na_pending", "app.pending", "appdebug.pending"]
 )
 def test_auth_callbacks_are_forwarded_to_owner(monkeypatch, state):
     from tinyassets.frontend import Frontend
@@ -133,7 +134,8 @@ def test_local_shell_and_health(monkeypatch):
     monkeypatch.setattr(onboarding, "build_sha", forbidden)
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     with TestClient(create_app()) as client:
-        for path in ("/healthz", "/app"):
+        for path in ("/healthz", "/app", "/app?state=oa_app_pending",
+                     "/app?state=oa_" + "r" * 42, "/app?state=oa_" + "r" * 44):
             response = client.get(path)
             assert response.status_code == 200
             assert response.headers["x-ta-frontend"] == "blue/abc"

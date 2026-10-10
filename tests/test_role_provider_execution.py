@@ -279,3 +279,18 @@ def test_cell_refusal_reaches_the_reader_as_the_decoder_marker():
             await process.stdout.readline()
         assert Cell.stop_reason in str(failure.value)
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('reply', [True, False, RuntimeError('invalid reply')])
+def test_cell_heartbeat_uses_only_the_owned_authenticated_channel(reply):
+    calls = []
+    def heartbeat():
+        calls.append('pulse')
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    proc = owned_process.OwnerCellProcess(SimpleNamespace(heartbeat=heartbeat), None,
+                                         SimpleNamespace(transport=None))
+    assert asyncio.run(owned_process.cell_heartbeat(proc)) is (reply is True)
+    assert calls == ['pulse']
+    assert asyncio.run(owned_process.cell_heartbeat(SimpleNamespace(returncode=None))) is False

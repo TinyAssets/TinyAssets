@@ -17,7 +17,7 @@ LEGACY_AGENTS_HASHES = (
 
 
 def starter_manifest() -> SeedManifest:
-    return SeedManifest("starter-agent-v1", "1", tuple(
+    return SeedManifest("starter-agent-v1", "2-wake-when", tuple(
         SeedFile(path, text.encode("utf-8"),
                  LEGACY_AGENTS_HASHES if path == "AGENTS.md" else (),
                  historically_seeded=path == "AGENTS.md")

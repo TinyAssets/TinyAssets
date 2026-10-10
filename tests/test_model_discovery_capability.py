@@ -25,10 +25,12 @@ DESCRIPTOR = {
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
+    from tests.support.broker_double import seed_owner_admission
     from tinyassets import daemon_server, provider_serving_binding
     from tinyassets.api import permissions
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    seed_owner_admission(tmp_path, principal="owner", center="u-models")
     (tmp_path / "u-models").mkdir()
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "owner")

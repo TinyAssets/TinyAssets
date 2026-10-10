@@ -473,8 +473,6 @@ def test_claude_echo_dedupe_never_discards_distinct_blocks(monkeypatch, tmp_path
         _stream({"type": "assistant", "message": {"content": ["PRIVATE_SENTINEL"]}}, _result()),
         _stream(_assistant(123), _result()),
         _stream(["PRIVATE_SENTINEL"]),
-        _stream(_result("VERDICT: APPROVE"), _assistant("PRIVATE_SENTINEL")),
-        _stream(_result("VERDICT: APPROVE"), _result("PRIVATE_SENTINEL")),
         _stream(_result("VERDICT: APPROVE")) + b"PRIVATE_SENTINEL",
     ],
 )
@@ -610,3 +608,14 @@ def test_peer_task_env_returns_a_new_mapping_and_never_mutates_its_input():
 
 
 
+
+
+def test_claude_post_terminal_capture_keeps_review_in_out(monkeypatch, tmp_path, capsys):
+    capture = Path(__file__).parent / "fixtures" / "claude_review_post_terminal.jsonl"
+    rc, out, _ = _run_main(monkeypatch, tmp_path, _FakeProc(stdout=capture.read_bytes()))
+    assert rc == 0
+    assert out == "Review evidence.\n\nVERDICT: ADAPT\n"
+    captured = capsys.readouterr()
+    assert "ignored Claude assistant event after terminal result" in captured.err
+    assert "ignored Claude result event after terminal result" in captured.err
+    assert "EXTRA_SENTINEL" not in out + captured.out + captured.err

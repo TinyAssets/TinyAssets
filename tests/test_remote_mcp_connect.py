@@ -52,7 +52,8 @@ def _remote_mcp_exists() -> bool:
 
 def _denials(text: str) -> list[str]:
     sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
-    return [s for s in sentences if _DENIAL.search(s) and not re.search(r"stdio", s, re.I)]
+    return [s for s in sentences if _DENIAL.search(s)
+            and (not re.search(r"\bstdio\b", s, re.I) or re.search(r"\bremote\b", s, re.I))]
 
 
 def _served_guidance() -> dict[str, str]:
@@ -81,6 +82,35 @@ def test_no_served_guidance_says_mcp_attachment_is_unavailable():
     # And the chapter it read now carries the route.
     chapter = json.loads(engine._handbook_read("write_graph.connect"))["text"]
     assert "mcp_servers" in chapter and '"auth_scheme":"none"' in chapter
+
+
+def test_stdio_exemption_never_hides_a_remote_mcp_denial():
+    assert not _denials("Local stdio MCP attachment is not available yet.")
+    assert _denials("Remote and stdio MCP attachment is not available yet.")
+    assert _denials("MCP attachment is unavailable for remote or stdio servers.")
+
+
+@pytest.mark.parametrize("stage", ["inventory", "revision"])
+def test_connections_mcp_read_survives_sqlite_errors(tmp_path, monkeypatch, stage):
+    import sqlite3
+
+    from tinyassets import command_center_packages as packages
+    from tinyassets.extension_state import ExtensionStore, remote_mcp_by_connection
+
+    store = ExtensionStore(tmp_path, owner=OWNER, universe=UID, agent="main")
+    installed = store.install({"extension.json": json.dumps(MANIFEST).encode()})
+    store.transition("deepwiki", installed["revision"], expected_generation=0, active=True,
+                     bindings={"server": {"connection_id": "conn-1", "grant_id": "g",
+                                          "incarnation": "i"}})
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    if stage == "inventory":
+        monkeypatch.setattr(packages, "_db", locked)
+    else:
+        monkeypatch.setattr(ExtensionStore, "load", locked)
+    assert remote_mcp_by_connection(tmp_path, owner=OWNER, universe=UID) == {}
 
 
 def _backend(base, agent="main"):

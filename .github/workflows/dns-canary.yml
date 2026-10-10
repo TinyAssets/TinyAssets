@@ -40,11 +40,15 @@ jobs:
         run: |
           set +e
           output=$(python3 << 'ENDSCRIPT'
-          import socket, sys
+          import socket, sys, time
           errors = []
           for host in ("tinyassets.io", "mcp.tinyassets.io"):
               try:
+                  started = time.monotonic()
                   ip = socket.gethostbyname(host)
+                  elapsed = time.monotonic() - started
+                  if elapsed > 2.0:
+                      raise RuntimeError(f"resolution took {elapsed:.2f}s, limit is 2.0s")
                   print(f"PASS {host} -> {ip}")
               except Exception as e:
                   errors.append(host)

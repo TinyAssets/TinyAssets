@@ -359,6 +359,21 @@ def test_app_sign_in_refuses_visibly_when_the_install_is_unknown(
     assert "didn't say which install" in result["notice"]
 
 
+def test_web_sign_in_namespaces_owner_like_randomness(tmp_path: Path) -> None:
+    # Web sign-in delegates to server PKCE even if client randomness resembles
+    # an owner callback. It must never construct a competing client-side flow.
+    body = _js_function(_app_html(), "beginSignIn")
+    program = _SHIM + "\nconst NATIVE = false, DESKTOP_SHELL = false;\n" + body
+    program = program.replace('return "RANDOM";', 'return "oa_' + 'a' * 21 + '";')
+    program += (
+        "\n(async()=>{await beginSignIn();"
+        "console.log(JSON.stringify({href:window.location.href,pkce:store.pkce||null}));})();"
+    )
+    result = _run_node(tmp_path, program)
+    assert result["href"] == "/app/owner-sign-in?app=1"
+    assert result["pkce"] is None
+
+
 def _native_sign_in(get_info: str) -> str:
     html = _app_html()
     return "\n".join(

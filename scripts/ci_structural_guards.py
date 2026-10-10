@@ -13,6 +13,10 @@ import pytest
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
 GUARDS = {
+    'test_role_production_acceptance_integrity': (
+        'Remove broker, cell, launcher or relay substitutions from the production-copy '
+        'acceptance. Use a real isolated network peer and normal authority checks. '
+    ),
     'test_execution_authority_import_boundary': (
         'Remove the reported operational adapter import from the authority core; pass '
         'facts through the boundary instead. '
