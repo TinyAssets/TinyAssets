@@ -1,6 +1,11 @@
-// Minimal preload. The desktop shell is a pure webview over the live SPA; the
-// renderer needs no privileged bridge, so this deliberately exposes nothing.
-// It exists as the seam where a later OpenAI-loopback bridge (start a local
-// 127.0.0.1 listener in the main process, hand the caught code back to the SPA)
-// would attach via contextBridge — kept empty until that follow-up ships.
+// A narrow bridge; main checks the exact app origin, path and top frame.
 'use strict';
+const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('tinyassetsDesktop', {
+  openExternal: (url) => ipcRenderer.invoke('tinyassets:open-external', url),
+  onAppReturn: (callback) => {
+    ipcRenderer.removeAllListeners('tinyassets:app-return');
+    ipcRenderer.on('tinyassets:app-return', (_event, url) => callback(url));
+    ipcRenderer.send('tinyassets:return-ready');
+  },
+});

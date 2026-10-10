@@ -27,15 +27,16 @@ public class SystemAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
                 return
             }
             self.anchor = window
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "tinyassets") { _, error in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "tinyassets") { callbackURL, error in
                 DispatchQueue.main.async {
                     self.session = nil
                     self.anchor = nil
                     if error != nil {
                         call.reject("Sign-in was cancelled. Try again when ready.")
+                    } else if let callbackURL = callbackURL {
+                        call.resolve(["url": callbackURL.absoluteString])
                     } else {
-                        // Callback data is not authority. JS redeems its saved reference with PKCE.
-                        call.resolve()
+                        call.reject("Sign-in returned without an app callback. Try again.")
                     }
                 }
             }

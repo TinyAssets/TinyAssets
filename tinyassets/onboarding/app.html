@@ -937,6 +937,10 @@
     history.replaceState(history.state,'',next.pathname+next.search+next.hash);
   }
   async function openExternal(url){
+    if(DESKTOP_SHELL){
+      if(!window.tinyassetsDesktop)throw new Error('Update the desktop app to open the system browser.');
+      await window.tinyassetsDesktop.openExternal(url);return;
+    }
     const B = NATIVE ? nativePlugin("Browser") : null;
     if(B){ try{ await B.open({url, presentationStyle:"popover"}); return; }catch(_e){} }
     if(NATIVE) throw new Error("The system browser could not open. Update the app and try again.");
@@ -986,16 +990,15 @@
       const response=await fetch('/app/native-sign-in',{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({client,code_challenge})});
       const flow=await response.json();
-      if(!response.ok||!/^[A-Za-z0-9_-]{43}$/.test(flow.ref))throw new Error('Sign-in could not start. Try again.');
+      if(!response.ok||!/^[A-Za-z0-9_-]{43}$/.test(flow.ref))throw new Error(flow.message||'Sign-in could not start. Try again.');
       pkceStore.setItem(PKCE_KEY,JSON.stringify({verifier,native_ref:flow.ref,expires:Date.now()+600000}));
       notice.textContent="Finish signing in in your browser, then return here.";
       if(client==='ios'){
         const auth=nativePlugin('SystemAuth');
         if(!auth)throw new Error('Update the app to use secure system sign-in.');
-        // ASWebAuthenticationSession owns the callback; the app still redeems with PKCE.
-        await auth.open({url:flow.url});
+        const returned=await auth.open({url:flow.url});
+        if(!returned?.url || !(await handleAppReturn(returned.url)))throw new Error('Sign-in returned to a different session. Start again.');
       }else await openExternal(flow.url);
-      resumeNativeSignIn();
     }catch(error){
       pkceStore.removeItem(PKCE_KEY);notice.textContent=error.message;
     }finally{signInButton.disabled=false;}
@@ -1011,11 +1014,12 @@
     if(saved.expires<Date.now()){
       pkceStore.removeItem(PKCE_KEY);notice.textContent='Sign-in expired. Try again.';return;
     }
+    if(!saved.return_secret)return; // Focus alone is not proof of the browser return.
     nativeSignInBusy=true;
     try{
       const response=await withRefreshLock(()=>fetch('/app/token',{method:'POST',credentials:'same-origin',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier})}));
+        body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier,return_secret:saved.return_secret})}));
       const result=await response.json();
       // A replaced/cancelled flow must never install a late session.
       if(pkceStore.getItem(PKCE_KEY)!==JSON.stringify(saved))return;
@@ -1031,8 +1035,7 @@
     }finally{nativeSignInBusy=false;}
   }
 
-  // The AuthKit callback is handled server-side; native returns carry only a reference.
-  // Native: the app was (re)opened through tinyassets://auth?code=…&state=…
+  // The AuthKit callback returns a one-time secret independently of the saved PKCE verifier.
   // Step trace for the in-app OAuth hand-offs: one short line per step to the
   // daemon log (identity-scoped, never a secret). Lets the flow be debugged
   // from a phone test without the tester narrating every screen.
@@ -1044,9 +1047,23 @@
 
   async function handleAppReturn(url){
     let u; try{ u = new URL(url); }catch(_e){ return false; }
-    if(!(u.protocol === "tinyassets:" && (u.host === "auth" || u.pathname.replace(/^\/+/,"") === "auth"))) return false;
-    if(/^[A-Za-z0-9_-]{43}$/.test(u.searchParams.get('signin')||'')){
+    if(!['tinyassets:','tinyassets-desktop:'].includes(u.protocol) || u.host!=='auth' ||
+       u.username || u.password || u.hash || u.pathname)return false;
+    let saved;try{saved=JSON.parse(pkceStore.getItem(PKCE_KEY)||'{}');}catch(_e){return false;}
+    const ref=u.searchParams.get('signin'),secret=u.searchParams.get('return_secret');
+    if(ref){
+      if(!/^[A-Za-z0-9_-]{43}$/.test(ref)||ref!==saved.native_ref||
+         !/^[A-Za-z0-9_-]{43}$/.test(secret||'')||u.searchParams.size!==2)return false;
+      pkceStore.setItem(PKCE_KEY,JSON.stringify({...saved,return_secret:secret}));
       await closeExternal();await resumeNativeSignIn();return true;
+    }
+    // Cached Android <=1.0.6 flows may return during the two-week rollout window.
+    const legacyState=u.searchParams.get('state'),code=u.searchParams.get('code');
+    if(NATIVE && Date.now()<1792800000000 && code && code.length<=8192 &&
+       /^app(?:debug)?\.[A-Za-z0-9_-]{24}$/.test(legacyState||'') &&
+       saved.state===legacyState && saved.verifier && !saved.native_ref && u.searchParams.size===2){
+      await closeExternal();const ok=await finishLegacyExchange(code,saved);
+      if(ok)await enterSignedIn();return ok;
     }
     if(/^[A-Za-z0-9_-]{43}$/.test(u.searchParams.get('completion')||'')){
       await closeExternal();
@@ -1055,10 +1072,32 @@
     }
     return false;
   }
+  // Legacy exchange of the exact saved verifier; the code is one-time, so any failure ends the flow.
+  async function finishLegacyExchange(code,saved){
+    if(nativeSignInBusy)return false;
+    const raw=JSON.stringify(saved),notice=document.getElementById('signin-notice');
+    nativeSignInBusy=true;
+    try{
+      const response=await withRefreshLock(()=>fetch('/app/token',{method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({code,code_verifier:saved.verifier,redirect_uri:redirectUri()})}));
+      const result=await response.json();
+      // A replaced/cancelled flow must never install a late session.
+      if(pkceStore.getItem(PKCE_KEY)!==raw)return false;
+      pkceStore.removeItem(PKCE_KEY);
+      if(!response.ok||!result.access_token)throw new Error('Sign-in could not finish. Start again in the app.');
+      storeAccessToken(result.access_token,result.expires_in);storeSessionRef(result.session_ref);
+      return true;
+    }catch(error){notice.textContent=error.message;return false;}
+    finally{nativeSignInBusy=false;}
+  }
   function wireNativeReturn(){
     if(NATIVE||DESKTOP_SHELL){
       window.addEventListener('focus',resumeNativeSignIn);
       resumeNativeSignIn();
+    }
+    if(DESKTOP_SHELL && window.tinyassetsDesktop){
+      window.tinyassetsDesktop.onAppReturn(url=>handleAppReturn(url));
     }
     if(!NATIVE) return;
     const A = nativePlugin("App");

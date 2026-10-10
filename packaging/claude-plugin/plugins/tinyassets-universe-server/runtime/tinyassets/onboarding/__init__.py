@@ -293,6 +293,9 @@ async def _handle_app(request: Any) -> Any:
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
+    if getattr(request, "query_params", {}).get("state", "").startswith(("app.", "appdebug.")):
+        from tinyassets.onboarding.native_sign_in import legacy_callback
+        return await legacy_callback(request)
     if getattr(request, "query_params", {}).get("state", "").startswith("na_"):
         from tinyassets.onboarding.native_sign_in import callback
         return await callback(request)
@@ -432,7 +435,8 @@ async def _handle_token(request: Any) -> Any:
         if "native_ref" in data:
             from tinyassets.onboarding.native_sign_in import consume
             try:
-                callback_data = consume(data["native_ref"], data.get("code_verifier"))
+                callback_data = consume(data["native_ref"], data.get("code_verifier"),
+                                        data.get("return_secret"))
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400, headers=_NO_STORE)
             if callback_data is None:

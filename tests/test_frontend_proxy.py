@@ -45,7 +45,9 @@ def test_render_build(monkeypatch):
     assert '"build": "abc"' in onboarding.render_app_html(build="abc")[0]
 
 
-@pytest.mark.parametrize("state", ["oa_app_pending", "na_pending"])
+@pytest.mark.parametrize(
+    "state", ["oa_app_pending", "na_pending", "app.pending", "appdebug.pending"]
+)
 def test_auth_callbacks_are_forwarded_to_owner(monkeypatch, state):
     from tinyassets.frontend import Frontend
 
