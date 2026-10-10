@@ -96,7 +96,8 @@ const InlineConnection={waiting:()=>false,hold:()=>{
   throw new Error('Unexpected connection request in the live-turn harness');
 }};
 els["dot"]=new El("div"); els["universe-name"]=new El("div");
-for(const id of ["profile-name","profile-responsibility","profile-status"])
+for(const id of ["profile-name","profile-responsibility","profile-status",
+                 "wakes-list","wakes-status"])
   els[id]=new El("div");
 let healed=[]; async function healServing(s){ healed.push(s); }
 let uploadRestores=0; function restoreUploadRecords(){ uploadRestores++; }
@@ -393,6 +394,8 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     await loadHistory(); await pollStatus();
     const turn=sendTurn("account A private question");
     await settle();
+    els["wakes-list"].textContent="account A private wake";
+    els["wakes-status"].textContent="account A wake status";
     // Sign-out / other account on the same page: the page's own boundary code.
     // The shim logs bubbles separately from the thread it empties, so the log
     // is reset here to read what the NEXT account's screen shows.
@@ -402,6 +405,7 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     Owner.getConversation=async()=>({universe_id:"u-2", recent_conversation:{turns:[]}});
     await loadHistory(); await pollStatus(); await pollStatus(); await settle();
     const asB=snapshot();
+    const wakesAsB=[els["wakes-list"].textContent,els["wakes-status"].textContent];
     // The old turn's reply lands after the switch: it paints nothing.
     gates[0].resolve({reply:"account A private answer"}); await turn; await settle();
     const afterLateReply=snapshot();
@@ -412,9 +416,10 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     Owner.getStatus=async()=>({active_host:"h",universe_id:"u-1"});
     Owner.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[]}});
     await loadHistory(); await pollStatus(); await pollStatus(); await settle();
-    console.log(JSON.stringify({asB, afterLateReply, backAsA:snapshot()}));
+    console.log(JSON.stringify({asB, wakesAsB, afterLateReply, backAsA:snapshot()}));
     """)
     as_b = out["asB"]
+    assert out["wakesAsB"] == ["", ""], "the old account's wake content leaked"
     assert as_b["founderBubbles"] == 0 and as_b["resendButtons"] == 0
     assert [n["text"] for n in as_b["notes"]] == [
         "An unconfirmed message from another command center's session on this browser "

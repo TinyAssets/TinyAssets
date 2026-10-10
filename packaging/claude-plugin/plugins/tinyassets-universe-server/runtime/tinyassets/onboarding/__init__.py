@@ -2594,6 +2594,7 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.public_run import handle_public_run
     from tinyassets.onboarding.soul import handle_soul
     from tinyassets.onboarding.ui_frame import handle_ui_frame
+    from tinyassets.onboarding.wakes import handle_wakes
     from tinyassets.owner_door import owner_door_routes
 
     return [
@@ -2634,6 +2635,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
+        Route("/app/wakes", handle_wakes, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/soul", handle_soul, methods=["GET", "POST"]),
         Route("/app/profile", _handle_profile, methods=["GET"]),

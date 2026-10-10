@@ -27,6 +27,7 @@ MAX_RESPONSE = 8 * 1024 * 1024
 READ_CAPABILITIES = frozenset({
     "read_graph", "get_status", "browse_commons", "read_commons_shape", "read_brain",
     "extension:help", "extension:list", "extension:events",
+    "wake:list",
 })
 MUTATION_GRANTS = frozenset({
     "write", "edit", "bash", "write_graph", "write_brain", "run_graph",
@@ -63,6 +64,11 @@ class Capabilities:
         self.call_platform, self.check_authority = call_platform, check_authority
         self.connections_granted = connections_granted
         self.mutations_granted = bool(MUTATION_GRANTS.intersection(capability_grant))
+        self.shell_granted = "bash" in capability_grant
+        from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+        # A narrowed workflow launch cannot schedule an unrestricted chat turn.
+        self.wakes_granted = set(BACKEND_ENGINE_CAPABILITIES).issubset(capability_grant)
         self.review_provider = review_provider
         # An activity's launch: every request is refused once it stops running
         # (tinyassets/activity_fence.py), connection calls included.
@@ -124,7 +130,9 @@ class Capabilities:
         if not isinstance(message, dict):
             return {"error": "request must be an object"}
         if message.get("op") == "catalog" and set(message) == {"op"}:
-            items = list(self.platform.values())
+            from tinyassets.wake_capabilities import CATALOG
+
+            items = list(self.platform.values()) + (CATALOG if self.wakes_granted else [])
             if self.connections_granted:
                 items.append({'name': 'browser', 'description':
                     'Default website connection: connect with official HTTPS url, account label, '
@@ -164,10 +172,17 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
-        known = (name == 'browser' or name.startswith("extension:")
+        known = (name == "browser" or name.startswith(("extension:", "wake:"))
                  or name in self.platform or name in self.connections())
         if known and not _is_read(name) and not self.mutations_granted:
             return {"error": "mutation capability not granted"}
+        if name.startswith("wake:"):
+            from tinyassets.wake_capabilities import call
+
+            try:
+                return {"result": await asyncio.to_thread(call, self, name, arguments)}
+            except (ValueError, LookupError, OSError) as exc:
+                return {"error": str(exc)}
         if name == 'browser':
             if not self.connections_granted:
                 return {'error': 'connections not granted'}
