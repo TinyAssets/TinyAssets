@@ -67,6 +67,7 @@ from tinyassets.auth.wiki_canary import (
     set_wiki_canary_authority,
     wiki_canary_token_matches,
 )
+from tinyassets.capability_health import observed
 from tinyassets.command_center_names import (
     CommandCenterNames,
     internal_value,
@@ -649,6 +650,7 @@ def _unknown_target(handle: str, target: str, allowed: tuple[str, ...]) -> str:
     })
 
 
+@observed('public_mcp')
 def read_graph(
     target: str = "status",
     graph_id: str = "",
@@ -4030,6 +4032,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
 
             _identity = current_identity_or_none()
             if _identity is not None and _identity.user_id == CANARY.user_id:
+                from tinyassets.capability_health import RATES
+
+                payload['capability_health'] = RATES.snapshot()
                 payload["platform_runtime_provenance"] = sanitized_peek_fields(
                     peek_platform_runtime_provenance()
                 )

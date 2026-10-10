@@ -12,6 +12,10 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+| One-time core-canary setup (2026-10-10) | Founder-only action |
+|---|---|
+| Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint echoes the submitted `nonce`. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup makes the deploy capability check fail and select rollback; no silent skip. |
+
 ## Connector directory submissions (2026-10-10)
 
 Packet: [requirements, form answers, assets and isolated reviewer plan](ops/connector-directory-listings.md).

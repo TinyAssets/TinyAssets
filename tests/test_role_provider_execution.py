@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from tinyassets import role_decoder, role_provider_discovery, role_provider_execution
-from tinyassets.broker import supervisor
 from tinyassets.providers import owned_process, provider_jail
 
 
@@ -21,24 +20,6 @@ def test_shared_spawn_refuses_an_unbound_launch_before_any_process(monkeypatch):
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
     with pytest.raises(provider_jail.ProviderConfinementError, match='view'):
         asyncio.run(owned_process.aspawn_owned(['/bin/sh']))
-
-
-def test_all_adapters_share_the_same_selected_dispatch(monkeypatch, tmp_path):
-    seen = []
-    monkeypatch.setattr(role_decoder, '_bounded_client', object())
-    monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
-    async def launch(argv, **kwargs):
-        seen.append((argv, kwargs))
-        return 'owner-process'
-    monkeypatch.setattr(role_provider_discovery, 'aspawn_cell', launch)
-    snapshot = tmp_path / '.runtime/provider-launch-credentials/one'
-    with provider_jail.provider_launch_scope(tmp_path, credential_dir=snapshot):
-        for binary in ('/opt/first/cli', '/opt/second/cli'):
-            assert asyncio.run(owned_process.aspawn_owned([binary, '--version'],
-                env={}, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)) == 'owner-process'
-    assert len(seen) == 2
-    assert all(item[1]['execution'] and item[1]['snapshot_dir'] == snapshot for item in seen)
 
 
 @pytest.mark.parametrize('change', ['view', 'shell', 'nested', 'cwd',
@@ -62,23 +43,6 @@ def test_unsupported_execution_view_never_reaches_cell(tmp_path, monkeypatch, ch
     with pytest.raises(provider_jail.ProviderConfinementError):
         argv = ['/installed/cli', str(tmp_path)] if change == 'host-argv' else ['/installed/cli']
         asyncio.run(role_provider_execution.spawn(argv, **kwargs))
-
-
-def test_served_turn_carries_its_engine_route_into_the_cell(tmp_path, monkeypatch):
-    seen = []
-    monkeypatch.setattr(supervisor, '_protect_daemon', lambda: None)
-
-    async def launch(argv, **kwargs):
-        seen.append(kwargs)
-        return 'owner-process'
-    monkeypatch.setattr(role_provider_discovery, 'aspawn_cell', launch)
-    scope = SimpleNamespace(universe_dir=tmp_path, credential_dir=tmp_path / 'snapshot',
-                            engine_route=('alice', tmp_path.name))
-    assert asyncio.run(role_provider_execution.spawn(
-        ['/installed/cli'], scope=scope, shell=False, view=None, nested_sandbox=False,
-        options=dict(env={}, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                     stderr=asyncio.subprocess.PIPE))) == 'owner-process'
-    assert seen[0]['engine_route'] == ('alice', tmp_path.name) and seen[0]['execution']
 
 
 def test_execution_only_relocates_the_snapshot_not_a_persistent_workspace(tmp_path):

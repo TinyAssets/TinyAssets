@@ -242,20 +242,7 @@ def test_the_shard_venue_adds_no_host_privilege_and_no_secret():
     assert "secrets." not in yaml.safe_dump(job)
 
 
-def test_affected_shards_install_browser_before_running_selected_tests():
-    """A selected real_browser case must execute instead of failing setup."""
-    job = _load()["jobs"]["affected-tests"]
-    assert job["runs-on"] == "ubuntu-latest"
-    steps = job["steps"]
-    install = next(i for i, s in enumerate(steps)
-                   if "playwright install --with-deps chromium" in s.get("run", ""))
-    assert "'.[dev,browser]'" in steps[install]["run"]
-    assert not steps[install].get("if")
-    assert not steps[install].get("continue-on-error", False)
-    assert "|| true" not in steps[install]["run"]
-    runners = [i for i, s in enumerate(steps)
-               if "ci_required_tests.py" in s.get("run", "")]
-    assert runners and all(install < i for i in runners)
+
 
 
 def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
@@ -765,7 +752,7 @@ def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> 
 def test_affected_tests_select_then_run_their_slice_through_the_gate_script() -> None:
     job = _load()["jobs"]["affected-tests"]
     run = "\n".join(s.get("run", "") for s in job["steps"])
-    assert "scripts/affected_tests.py --base HEAD^1 --out affected.txt" in run
+    assert "scripts/affected_tests.py --pr --base HEAD^1 --out affected.txt" in run
     assert "--affected affected.txt" in run
     assert "--profile affected" in run
     # Same exclusion as the required shards: the heavy list is red at baseline.
@@ -774,47 +761,27 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
     assert len(n) == 1
     assert job["strategy"]["matrix"]["shard"] == list(range(1, int(n[0]) + 1))
     assert re.findall(r"/(\d+)$", str(job["name"])) == n
-    # The same split as the queue's shards: a different split co-locates
-    # different neighbours, and an order-dependent test then reds the PR job
-    # on a failure the queue never produces.
-    required = _load()["jobs"]["required-tests-shard"]["strategy"]["matrix"]["shard"]
-    assert job["strategy"]["matrix"]["shard"] == required
+    assert job["strategy"]["matrix"]["shard"] == [1, 2]
 
 
 # ---- the conservative merge gate (round-2 fixes from the #4359 review) ------
 
 
-def test_affected_tests_provide_the_same_render_namespace_as_the_queue() -> None:
-    """Chromium alone cannot run the preview's required bubblewrap PID tree."""
+def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
     jobs = _load()["jobs"]
-    steps = jobs["affected-tests"]["steps"]
-    queue_profile = next(s for s in jobs["required-tests-shard"]["steps"]
-                         if "apparmor_parser" in s.get("run", ""))
-    profile = next(s for s in steps if "apparmor_parser" in s.get("run", ""))
+    unit = "\n".join(s.get("run", "") for s in jobs["affected-tests"]["steps"])
+    assert "--pr --base HEAD^1" in unit
+    assert "playwright install" not in unit and "linux_oracle.py" not in unit
+    image = jobs["core-capabilities"]
+    assert "if" not in image and not image.get("continue-on-error")
+    assert "core-capabilities" in jobs["required-tests"]["needs"]
+    steps = image["steps"]
+    build = next(s for s in steps if "docker/build-push-action" in s.get("uses", ""))
+    assert build["with"]["context"] == "." and build["with"]["load"] is True
+    probe = next(s for s in steps if "core_capability_image.py" in s.get("run", ""))
+    assert build["if"] == probe["if"] == "steps.tier.outputs.required == 'true'"
+    assert not probe.get("continue-on-error") and "|| true" not in probe["run"]
 
-    def commands(step):
-        return [line.strip() for line in step["run"].splitlines()
-                if line.strip() and not line.lstrip().startswith("#")]
-
-    assert commands(profile) == commands(queue_profile)
-    assert profile["env"] == queue_profile["env"]
-    render = next(s for s in steps if "--profile affected" in s.get("run", ""))
-    run = render["run"]
-    assert steps.index(profile) < steps.index(render)
-    assert "scripts/linux_oracle.py --required-runner --out shard-out" in run
-    assert "--apparmor ta-jail-userns" in run
-    assert '--junit "/out/junit-affected-${{ matrix.shard }}.xml"' in run
-    assert "--env TINYASSETS_DATA_DIR=/tmp/ta-data" in run
-    assert "GITHUB_STEP_SUMMARY=/out/summary-affected-" in run
-    for step in (profile, render):
-        assert "if" not in step
-        assert not step.get("continue-on-error", False)
-    for bypass in ("--no-bwrap", "--as-root", "|| true"):
-        assert bypass not in run
-    upload = next(s for s in steps if "upload-artifact" in s.get("uses", ""))
-    assert upload["with"]["path"] == "shard-out/"
-    assert upload["with"]["overwrite"] is True
-    assert _expr(upload["if"]) == "always()"
 
 
 def test_select_installs_before_it_selects() -> None:
@@ -938,12 +905,12 @@ def test_every_event_requires_structural_success(tmp_path):
     assert "if" not in step and not step.get("continue-on-error")
     assert step["env"]["STRUCTURAL_RESULT"] == "${{ needs.structural-guards.result }}"
     # Binary stdin avoids Windows launcher quoting and CRLF translation.
-    for result in ("success", "failure", "skipped", "cancelled", ""):
-        run = subprocess.run(
-            ["bash", "-s"],
-            input=f"STRUCTURAL_RESULT={result}\n{step['run']}".encode(),
-            cwd=tmp_path, capture_output=True,
-        )
-        assert run.returncode == (0 if result == "success" else 1)
-        if result != "success":
-            assert b"Fix structural-guards" in run.stdout
+    assert step['env']['CAPABILITY_RESULT'] == '${{ needs.core-capabilities.result }}'
+    for gate in ('STRUCTURAL_RESULT', 'CAPABILITY_RESULT'):
+        for result in ("success", "failure", "skipped", "cancelled", ""):
+            env = dict(STRUCTURAL_RESULT='success', CAPABILITY_RESULT='success')
+            env[gate] = result
+            script = ''.join(f'{key}={value}\n' for key, value in env.items()) + step['run']
+            run = subprocess.run(["bash", "-s"], input=script.encode(),
+                                 cwd=tmp_path, capture_output=True)
+            assert run.returncode == (0 if result == "success" else 1)

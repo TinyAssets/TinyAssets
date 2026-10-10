@@ -23,6 +23,7 @@ from pathlib import Path
 from tinyassets.addressed_agents import MAIN_AGENT, AddressedAgent
 from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
+from tinyassets.capability_health import observed
 from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
 from tinyassets.providers.base import (
@@ -1265,6 +1266,7 @@ def _ordinary_chat(message: str) -> bool:
     ))
 
 
+@observed('chat_stream')
 def converse(
     universe_id: str,
     founder_message: str,

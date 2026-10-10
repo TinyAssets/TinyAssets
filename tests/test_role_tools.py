@@ -109,6 +109,9 @@ def test_tool_limits_do_not_lower_disk_floors_or_increase_resource_ceilings():
     request = dict(inner=['/bin/true'], agent_id='main', stdin=None,
                    limits=asdict(universe_tools.DEFAULT_LIMITS), wall=600, cap=65536)
     role_tools._validate(request)
+    image_cap = universe_tools.MAX_IMAGE_SOURCE_BYTES
+    role_tools._validate(dict(request, cap=image_cap,
+                             limits={**request['limits'], 'output_bytes': image_cap}))
     for key, value in [('min_free_disk_bytes', 1), ('memory_bytes', 2**40)]:
         invalid = dict(request, limits={**request['limits'], key: value})
         with pytest.raises(ValueError):
@@ -126,20 +129,6 @@ def test_tool_mapper_refuses_profile_and_numeric_identity_before_descriptor_use(
         with pytest.raises(ValueError, match='unsupported owner engine'):
             launcher._decoder(dict(op='START', kind='tool-jail', principal='alice',
                                    command_center='alice', **override), [])
-
-
-def test_image_read_preserves_its_existing_source_allowance(monkeypatch, tmp_path):
-    seen = []
-    def runner(root, inner, *, agent_id, limits):
-        request = dict(inner=inner, agent_id=agent_id, stdin=None,
-                       limits=asdict(limits), wall=limits.wall_seconds, cap=limits.output_bytes)
-        role_tools._validate(request)
-        seen.append(limits.output_bytes)
-        return universe_tools.ToolRun(exit_code=1, output=b'missing fixture',
-                                      killed=None, elapsed=0)
-    monkeypatch.setattr(universe_tools, 'RUNNER', runner)
-    assert 'missing fixture' in universe_tools.read_file(tmp_path, 'image.png', agent_id='main')
-    assert seen == [universe_tools.MAX_IMAGE_SOURCE_BYTES]
 
 
 def test_prepared_cell_view_never_requests_daemon_preparation(monkeypatch, tmp_path):

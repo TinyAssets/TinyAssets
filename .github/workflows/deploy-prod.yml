@@ -563,6 +563,16 @@ jobs:
             echo "::error::deploy failed (rc=${rc}); see log above"; exit 1
           fi
 
+      - name: Core user capabilities and systemic failure rates
+        id: core_canary
+        uses: ./.github/actions/core-capability-canary
+        env:
+          TINYASSETS_CORE_CANARY_CONFIG: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+
       - name: Public MCP canary (--assert-handles)
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
@@ -692,7 +702,7 @@ jobs:
       # test_prune_units). The CONDITION is what had to change — the app probe
       # is a second public surface that must trigger the same rollback.
       - name: Roll back if the public canary is red
-        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure') }}
+        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || steps.core_canary.outcome == 'failure') }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |
@@ -941,6 +951,7 @@ jobs:
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"
+            echo "- core capabilities: \`${{ steps.core_canary.outcome }}\`"
             echo "- app surface probe: \`${{ steps.app_probe.outcome }}\`"
             echo "- protected receipt assertion: \`${{ steps.deployed_sha.outcome }}\`"
             echo "- image retention: \`${{ steps.retention.outcome }}\`"

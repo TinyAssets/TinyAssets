@@ -1,0 +1,2281 @@
+{
+  "method": "Parent tests over fixed production, then reverse only production fix; tests unchanged. Linux oracle network none, Python 3.11.17, uid 1001, /tmp/p. Counts exclude tests introduced by the fix. This is the selected seam cohort, not the whole repository.",
+  "cohort_prefixes": [
+    "test_role_",
+    "test_broker_",
+    "test_owner_launcher",
+    "test_universe_egress",
+    "test_universe_tools",
+    "test_tool_images",
+    "test_providers"
+  ],
+  "excluded_root_only_files": [
+    "test_role_owner_tree_deletion.py",
+    "test_role_reader_identity.py",
+    "test_role_center_admission.py"
+  ],
+  "catch_rate": {
+    "pre_existing": "0/10",
+    "real_image": "10/10",
+    "disabled_capability_entrypoints": "14/14"
+  },
+  "replays": [
+    {
+      "regression": "4576",
+      "fixed_sha": "f070625e09d",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 90.144,
+        "failed": [],
+        "passed": 897,
+        "skipped": 0,
+        "test_seconds": 79.859
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 89.087,
+        "failed": [],
+        "passed": 897,
+        "skipped": 0,
+        "test_seconds": 77.676
+      },
+      "caught": []
+    },
+    {
+      "regression": "4577",
+      "fixed_sha": "e7097baa5e4",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 99.574,
+        "failed": [],
+        "passed": 904,
+        "skipped": 0,
+        "test_seconds": 86.549
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 97.058,
+        "failed": [],
+        "passed": 904,
+        "skipped": 0,
+        "test_seconds": 86.821
+      },
+      "caught": []
+    },
+    {
+      "regression": "4578",
+      "fixed_sha": "8813ba77871",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 89.233,
+        "failed": [],
+        "passed": 906,
+        "skipped": 0,
+        "test_seconds": 79.137
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 88.418,
+        "failed": [],
+        "passed": 906,
+        "skipped": 0,
+        "test_seconds": 80.846
+      },
+      "caught": []
+    },
+    {
+      "regression": "4579",
+      "fixed_sha": "78b98a84f58",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 1,
+        "wall_seconds": 81.238,
+        "failed": [
+          "tests.test_owner_launcher_client::test_mapper_resource_kills_have_authenticated_completion_reason[usage0-process_limit]",
+          "tests.test_owner_launcher_client::test_mapper_resource_kills_have_authenticated_completion_reason[usage1-rss_limit]",
+          "tests.test_owner_launcher_client::test_mapper_resource_kills_have_authenticated_completion_reason[usage2-usage_unavailable]"
+        ],
+        "passed": 910,
+        "skipped": 0,
+        "test_seconds": 72.25
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 75.981,
+        "failed": [],
+        "passed": 913,
+        "skipped": 0,
+        "test_seconds": 67.937
+      },
+      "caught": []
+    },
+    {
+      "regression": "4580",
+      "fixed_sha": "6e7373d328e",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 1,
+        "wall_seconds": 74.713,
+        "failed": [
+          "tests.test_owner_launcher_client::test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow",
+          "tests.test_role_provider_execution::test_execution_communicate_preserves_stdout_stderr_and_authenticated_reap"
+        ],
+        "passed": 914,
+        "skipped": 0,
+        "test_seconds": 66.5
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 70.697,
+        "failed": [],
+        "passed": 916,
+        "skipped": 0,
+        "test_seconds": 63.55
+      },
+      "caught": []
+    },
+    {
+      "regression": "4581",
+      "fixed_sha": "94aaedc2132",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 73.618,
+        "failed": [],
+        "passed": 923,
+        "skipped": 0,
+        "test_seconds": 65.703
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 70.307,
+        "failed": [],
+        "passed": 923,
+        "skipped": 0,
+        "test_seconds": 63.424
+      },
+      "caught": []
+    },
+    {
+      "regression": "4584",
+      "fixed_sha": "9e118da5243",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 74.161,
+        "failed": [],
+        "passed": 945,
+        "skipped": 0,
+        "test_seconds": 66.039
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 67.926,
+        "failed": [],
+        "passed": 945,
+        "skipped": 0,
+        "test_seconds": 61.09
+      },
+      "caught": []
+    },
+    {
+      "regression": "current-broker",
+      "fixed_sha": "d4720a4872b",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_scope.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 72.215,
+        "failed": [],
+        "passed": 963,
+        "skipped": 0,
+        "test_seconds": 64.366
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 73.053,
+        "failed": [],
+        "passed": 963,
+        "skipped": 0,
+        "test_seconds": 66.143
+      },
+      "caught": []
+    },
+    {
+      "regression": "current-image",
+      "fixed_sha": "d4720a4872b",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_scope.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 86.052,
+        "failed": [],
+        "passed": 963,
+        "skipped": 0,
+        "test_seconds": 77.629
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 73.311,
+        "failed": [],
+        "passed": 963,
+        "skipped": 0,
+        "test_seconds": 65.446
+      },
+      "caught": []
+    },
+    {
+      "regression": "current-content",
+      "fixed_sha": "1871d58cffc",
+      "files": [
+        "tests/test_broker_account_erasure.py",
+        "tests/test_broker_bootstrap.py",
+        "tests/test_broker_bootstrap_ipc.py",
+        "tests/test_broker_capabilities.py",
+        "tests/test_broker_capability_ipc.py",
+        "tests/test_broker_catalog.py",
+        "tests/test_broker_catalog_ipc.py",
+        "tests/test_broker_compute_consumers.py",
+        "tests/test_broker_compute_ipc.py",
+        "tests/test_broker_definition_modes.py",
+        "tests/test_broker_disconnect.py",
+        "tests/test_broker_discovery_http.py",
+        "tests/test_broker_effector_consumers.py",
+        "tests/test_broker_fence.py",
+        "tests/test_broker_graph_connections.py",
+        "tests/test_broker_http_connect.py",
+        "tests/test_broker_http_policy.py",
+        "tests/test_broker_injected_authority.py",
+        "tests/test_broker_ledger_queries.py",
+        "tests/test_broker_liveness_creation.py",
+        "tests/test_broker_ops.py",
+        "tests/test_broker_owner_metadata.py",
+        "tests/test_broker_provider_metadata.py",
+        "tests/test_broker_readonly_liveness.py",
+        "tests/test_broker_refresh.py",
+        "tests/test_broker_relocated_paths.py",
+        "tests/test_broker_resource_consumers.py",
+        "tests/test_broker_scan.py",
+        "tests/test_broker_server.py",
+        "tests/test_broker_serving_consumers.py",
+        "tests/test_broker_source_budget.py",
+        "tests/test_broker_supervisor.py",
+        "tests/test_broker_upstream_stream.py",
+        "tests/test_broker_usage_evidence.py",
+        "tests/test_broker_usage_ipc.py",
+        "tests/test_broker_usage_source.py",
+        "tests/test_broker_vault_modes.py",
+        "tests/test_broker_workspace_consumers.py",
+        "tests/test_broker_workspace_intents.py",
+        "tests/test_owner_launcher_client.py",
+        "tests/test_providers.py",
+        "tests/test_providers_call.py",
+        "tests/test_role_accounting_schema.py",
+        "tests/test_role_content.py",
+        "tests/test_role_decoder.py",
+        "tests/test_role_git.py",
+        "tests/test_role_image_oracle.py",
+        "tests/test_role_launcher.py",
+        "tests/test_role_migrate.py",
+        "tests/test_role_node.py",
+        "tests/test_role_owner_delete.py",
+        "tests/test_role_packages.py",
+        "tests/test_role_preview.py",
+        "tests/test_role_production_acceptance_integrity.py",
+        "tests/test_role_provider_discovery.py",
+        "tests/test_role_provider_execution.py",
+        "tests/test_role_relays.py",
+        "tests/test_role_scope.py",
+        "tests/test_role_snapshot.py",
+        "tests/test_role_storage.py",
+        "tests/test_role_tool_files.py",
+        "tests/test_role_tool_sockets.py",
+        "tests/test_role_tools.py",
+        "tests/test_role_video.py",
+        "tests/test_role_workspace_remote.py",
+        "tests/test_tool_images.py",
+        "tests/test_universe_egress.py",
+        "tests/test_universe_tools.py",
+        "tests/test_universe_tools_jail.py"
+      ],
+      "fixed": {
+        "exit": 0,
+        "wall_seconds": 76.005,
+        "failed": [],
+        "passed": 979,
+        "skipped": 0,
+        "test_seconds": 67.254
+      },
+      "reverted": {
+        "exit": 0,
+        "wall_seconds": 79.121,
+        "failed": [],
+        "passed": 979,
+        "skipped": 0,
+        "test_seconds": 69.804
+      },
+      "caught": []
+    }
+  ],
+  "image_reintroduction_method": "Build production Dockerfile. Apply each inline unified patch to its named source in a derived image: deploy/role_owner_launcher.py -> /usr/local/libexec/ta-owner-launch.py, deploy/role_decoder.py -> /usr/local/libexec/ta-decoder.py, other files -> /app/<path>; root:root 0444. Run unchanged scripts/core_capability_image.py --image <derived> --report <report>. Each patch is independent; no runtime mocking. Base includes #4596 and #4597.",
+  "image_replays": [
+    {
+      "regression": "4576-churn",
+      "exit": 1,
+      "seconds": 17.63,
+      "patch_sha256": "395b3105e787e293070e5dfc647662baf4db645e1f0bcd8774652f7fd1775c2c",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "real streamed reply failed: {\"error\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"provider cell ended (owner cell: usage_unavailable: ProcessLookupError errno=3)\\\" Ref: b13e20c8660740b3\", \"provider_diagnosis\": [{\"provider\": \"claude-code\", \"status\": \"failed\", \"skip_class\": \"provider_error\"}], \"turn_failure\": {\"version\": 1, \"kind\": \"turn_failed\", \"code\": \"unknown\", \"effects\": \"unknown\", \"provider_detail\": \"provider cell ended (owner cell: usage_unavailable: ProcessLookupError errno=3)\", \"ref\": \"b13e20c8660740b3\"}, \"failure_notice\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"provider cell ended (owner cell: usage_unavailable: ProcessLookupError errno=3)\\\" Ref: b13e20c8660740b3\", \"history_saved\": true}"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- deploy/role_owner_launcher.py\n+++ deploy/role_owner_launcher.py\n@@ -63,7 +63,7 @@\n             raw = Path(proc, name, 'stat').read_text()\n             fields = raw[raw.rfind(')') + 2:].split()\n             records[int(name)] = (int(fields[1]), int(fields[21]))\n-        except (FileNotFoundError, ProcessLookupError):\n+        except FileNotFoundError:\n             # procfs can return ESRCH after open but before read when a task\n             # exits. Like ENOENT, that is a vanished process, not failed\n             # accounting. Unrelated daemon children race this scan too.\n"
+    },
+    {
+      "regression": "4577-compatible",
+      "exit": 1,
+      "seconds": 28.02,
+      "patch_sha256": "abd8a3bd89db12c8140ac67827002fa3ce4ae46f4b3de6d234487cab897e1e1c",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "real streamed reply failed: {\"error\": \"Reading your model's reply \\u2014 your model went quiet mid-turn, so the turn was ended and whatever it finished before that stands; asking it to continue is usually better than sending the whole request again. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"claude -p produced no protocol event for 10s (idle watchdog fired; no provider cooldown); stderr: TA_CELL_FAILURE relay:pump:errno=104\\\" Ref: a8a33a2ba86a4a33\", \"failure_class\": \"provider_idle_timeout\", \"provider_diagnosis\": [{\"provider\": \"claude-code\", \"status\": \"failed\", \"skip_class\": \"timed_out\", \"failure_class\": \"provider_idle_timeout\"}], \"turn_failure\": {\"version\": 1, \"kind\": \"turn_failed\", \"code\": \"provider_idle_timeout\", \"stage\": \"model_reply\", \"effects\": \"unknown\", \"provider_detail\": \"claude -p produced no protocol event for 10s (idle watchdog fired; no provider cooldown); stderr: TA_CELL_FAILURE relay:pump:errno=104\", \"ref\": \"a8a33a2ba86a4a33\"}, \"failure_notice\": \"Reading your model's reply \\u2014 your model went quiet mid-turn, so the turn was ended and whatever it finished before that stands; asking it to continue is usually better than sending the whole request again. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"claude -p produced no protocol event for 10s (idle watchdog fired; no provider cooldown); stderr: TA_CELL_FAILURE relay:pump:errno=104\\\" Ref: a8a33a2ba86a4a33\", \"history_saved\": true}"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- deploy/role_owner_launcher.py\n+++ deploy/role_owner_launcher.py\n@@ -400,7 +400,6 @@\n         self.jobs = {}\n         self.diagnostics = {}\n         self.package_jobs = set()\n-        self.browser_jobs = set()\n         self.delete_fences = {}\n \n     def _alive(self):\n@@ -552,7 +551,7 @@\n         if (not isinstance(request, dict)\n                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}\n                 or kind not in {'image-decoder', 'workspace-git', 'workspace-remote',\n-                                'workspace-provision', 'ui-preview', 'browser', 'preview-write',\n+                                'workspace-provision', 'ui-preview', 'preview-write',\n                                 'node-sandbox', 'tool-jail', 'ingestion-video',\n                                 'provider-discovery', 'provider-exec', 'tool-files',\n                                 'package', 'owner-delete', 'owner-delete-subtree',\n@@ -588,7 +587,7 @@\n                 or not isinstance(request['command_center'], str)\n                 or len(received) != (2 if mounted else 1)\n                     + int(streaming) + socket_count + extension_count\n-                    + 2 * int(kind == 'provider-exec')):\n+                    + int(kind == 'provider-exec')):\n             raise ValueError('unsupported owner engine')\n         if not streaming and self.jobs:\n             raise ValueError('blocking spawn cannot suspend active cell supervision')\n@@ -604,11 +603,7 @@\n                 raise ValueError('owner cell concurrency is exhausted')\n             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)\n         if kind == 'provider-exec':\n-            # Ordinary pipes, as a local subprocess would get: stdin's read end\n-            # in the data slot, stdout's and stderr's write ends before status.\n-            self._daemon_pipe(received[0], os.O_RDONLY)\n-            self._daemon_pipe(received[-3], os.O_WRONLY)\n-            self._daemon_pipe(received[-2], os.O_WRONLY)\n+            self._daemon_endpoint(received[-2], socket.SOCK_STREAM)\n         if kind == 'preview-write':\n             ui_id = request['ui_id']\n             if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64\n@@ -720,8 +715,7 @@\n                     or not re.fullmatch(r'registry-[a-f0-9]{32}\\.sock', source[len(prefix):])):\n                 raise ValueError('registry relay is outside the admitted center')\n         fd = received[0]\n-        if kind != 'provider-exec':\n-            self._daemon_endpoint(fd, socket.SOCK_STREAM)\n+        self._daemon_endpoint(fd, socket.SOCK_STREAM)\n         status_channel = None\n         if streaming:\n             status_channel = socket.socket(fileno=os.dup(received[-1]))\n@@ -750,9 +744,6 @@\n \n                 stderr_copy = fcntl.fcntl(error_write, fcntl.F_DUPFD_CLOEXEC, 20)\n                 os.dup2(stderr_copy, 2)\n-                stdout_copy = None\n-                if kind == 'provider-exec':\n-                    stdout_copy = fcntl.fcntl(received[-3], fcntl.F_DUPFD_CLOEXEC, 20)\n                 retained = (3,) if mounted else ()\n                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',\n                              'package', 'workspace-remote', 'workspace-provision') and (\n@@ -781,7 +772,7 @@\n                         os.dup2(sources[index], 6)\n                         retained.append(6)\n                 os.dup2(fd, 0)\n-                os.dup2(fd if stdout_copy is None else stdout_copy, 1)\n+                os.dup2(fd, 1)\n                 os.dup2(stderr_copy, 2)\n                 if mounted and not (socket_count or extension_count):\n                     os.dup2(received[1], 3)\n@@ -843,9 +834,6 @@\n                 elif kind == 'ui-preview':\n                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview',\n                                self.data_root, str(inner)]\n-                elif kind == 'browser':\n-                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-browser',\n-                               self.data_root, str(inner)]\n                 elif kind == 'preview-write':\n                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview-write',\n                                request['ui_id'], self.data_root, str(inner)]\n@@ -859,13 +847,8 @@\n                 _diagnostics['report_failure'](exc, 'launcher')\n                 os._exit(126)\n         os.close(error_write)\n-        error_sink = None\n-        if kind == 'provider-exec':\n-            # The daemon's stderr pipe. The cell's fd 2 is the mapper's own\n-            # pipe above, so a bootstrap failure is parsed here first and\n-            # every byte is then forwarded without ever blocking the mapper.\n-            error_sink = os.dup(received[-2])\n-            os.set_blocking(error_sink, False)\n+        error_sink = (socket.socket(fileno=os.dup(received[-2]))\n+                      if kind == 'provider-exec' else None)\n         # At most 256 KiB of pending stderr per cell; capture never blocks the\n         # mapper. A slow consumer receives an explicit truncation completion.\n         self.diagnostics[pid] = [error_read, error_sink, b'', None, bytearray(), False, None]\n@@ -876,14 +859,12 @@\n             155 if kind == 'ingestion-video' else\n             1810 if kind in ('node-sandbox', 'workspace-remote', 'workspace-provision') else\n             660 if kind == 'tool-jail' else\n-            610 if kind == 'browser' else 75 if kind == 'ui-preview' else\n+            75 if kind == 'ui-preview' else\n             65 if kind == 'workspace-git' else 35)\n         if streaming:\n             self.jobs[pid] = (inner, machine, deadline, status_channel)\n-            if kind in ('package', 'provider-exec', 'browser'):\n+            if kind in ('package', 'provider-exec'):\n                 self.package_jobs.add(pid)\n-            if kind == 'browser':\n-                self.browser_jobs.add(pid)\n             try:\n                 self.channel.sendall(json.dumps(\n                     dict(op='STARTED', uid=machine, gid=machine)).encode())\n@@ -1030,22 +1011,6 @@\n         del self.delete_fences[machine]\n         self.channel.sendall(b'{\"op\":\"DELETE_FINISHED\"}')\n \n-    def _daemon_pipe(self, fd, direction):\n-        \"\"\"One end of an anonymous pipe the daemon made, open only ``direction``.\n-\n-        A pipe has no peer credentials; the authenticated request already\n-        proves the daemon sent it. What is checked is that it is an unnamed\n-        pipe (never a FIFO on a filesystem, a socket or a file), daemon-created\n-        and open only in the direction the cell's stdio slot needs.\n-        \"\"\"\n-        import fcntl\n-\n-        info = os.fstat(fd)\n-        if (not stat.S_ISFIFO(info.st_mode) or info.st_uid != self.overflow_uid\n-                or not os.readlink(f'/proc/self/fd/{fd}').startswith('pipe:[')\n-                or fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != direction):\n-            raise ValueError('owner cell needs daemon pipes')\n-\n     def _daemon_endpoint(self, fd, kind):\n         if not stat.S_ISSOCK(os.fstat(fd).st_mode):\n             raise ValueError('owner cell needs daemon socketpair')\n@@ -1092,19 +1057,19 @@\n     def _flush_stderr(state):\n         if state[1] is not None and state[4]:\n             try:\n-                sent = os.write(state[1], state[4])\n+                sent = state[1].send(state[4], socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL)\n                 del state[4][:sent]\n             except BlockingIOError:\n                 pass  # Retry on the next mapper iteration, retaining every byte.\n-            except BrokenPipeError:\n-                state[5] = True  # The daemon stopped reading; nothing to deliver to.\n+            except (BrokenPipeError, ConnectionResetError):\n+                state[5] = True\n \n     def _finish_diagnostics(self, pid, code, stop_reason=None):\n         self._drain_diagnostics(pid)\n         fd, sink, _, reason, pending, truncated, relay = self.diagnostics.pop(pid)\n         os.close(fd)\n         if sink is not None:\n-            os.close(sink)\n+            sink.close()\n         if relay:\n             os.write(2, ('owner cell relay notice: ' + relay + '\\n').encode())\n         reason = stop_reason or reason or (\n@@ -1127,10 +1092,8 @@\n                     count, rss = package_usage(pid)\n                     if count > 68:\n                         reason = f'process_limit: count={count} limit=68'\n-                    else:\n-                        limit = (1536 if pid in self.browser_jobs else 512) * 1024 * 1024\n-                        if rss > limit:\n-                            reason = f'rss_limit: bytes={rss} limit={limit}'\n+                    elif rss > 512 * 1024 * 1024:\n+                        reason = f'rss_limit: bytes={rss} limit=536870912'\n                 except (OSError, ValueError, IndexError, RuntimeError) as exc:\n                     # No arbitrary exception text: it can contain owner data.\n                     reason = (f'usage_unavailable: {type(exc).__name__} '\n@@ -1175,5 +1138,4 @@\n                     channel.close()\n                     del self.jobs[pid]\n                     self.package_jobs.discard(pid)\n-                    self.browser_jobs.discard(pid)\n         assert_mapper(self.launch)\n--- tinyassets/owner_launcher_client.py\n+++ tinyassets/owner_launcher_client.py\n@@ -32,21 +32,11 @@\n \n \n class OwnerCell:\n-    \"\"\"One mapper-owned process lifetime; caller owns its data endpoints.\n-\n-    A data cell's ``stream`` is one duplex socket. A ``provider-exec`` cell\n-    instead gets three ordinary pipes, exactly like a local subprocess:\n-    ``stdin`` (the daemon's write end), ``stream`` (stdout, read end) and\n-    ``stderr`` (read end). Pipes are one-directional, so closing the CLI's\n-    input can never discard its output, and a CLI that exits with unread\n-    input leaves the daemon a clean stdout EOF (plus EPIPE on its own write)\n-    instead of ECONNRESET on a shared socket.\n-    \"\"\"\n-\n-    def __init__(self, client, stream, status, identity, *, stderr=None, stdin=None):\n+    \"\"\"One mapper-owned process lifetime; caller owns its bidirectional stream.\"\"\"\n+\n+    def __init__(self, client, stream, status, identity, *, stderr=None):\n         self.stream, self._status = stream, status\n         self.stderr = stderr\n-        self.stdin = stdin\n         self._client, self._identity = client, identity\n         self._pid = os.getpid()\n         self._result = None\n@@ -56,9 +46,9 @@\n         _live_cells.add(self)\n \n     def _after_fork(self):\n-        for endpoint in (self.stream, self.stderr, self.stdin):\n-            if endpoint is not None:\n-                endpoint.close()\n+        self.stream.close()\n+        if self.stderr is not None:\n+            self.stderr.close()\n         self._status.close()\n         self._closed = True\n \n@@ -113,9 +103,9 @@\n             try:\n                 self.cancel()\n             finally:\n-                for endpoint in (self.stream, self.stderr, self.stdin):\n-                    if endpoint is not None:\n-                        endpoint.close()\n+                self.stream.close()\n+                if self.stderr is not None:\n+                    self.stderr.close()\n                 self._status.close()\n                 self._closed = True\n                 _live_cells.discard(self)\n@@ -129,12 +119,6 @@\n \n class OwnerLaunchRefused(RuntimeError):\n     \"\"\"One completed authenticated exchange was refused; channel remains usable.\"\"\"\n-\n-\n-def _pipe():\n-    \"\"\"(read end, write end) of one anonymous pipe, both close-on-exec.\"\"\"\n-    read_fd, write_fd = os.pipe()\n-    return os.fdopen(read_fd, 'rb', buffering=0), os.fdopen(write_fd, 'wb', buffering=0)\n \n \n class OwnerLauncherClient:\n@@ -241,10 +225,6 @@\n         ``extension_fd`` is the daemon's materialised extension tree for ONE\n         tool call. It follows the relay sockets in the descriptor order, so the\n         mapper's fixed slots stay stable when a call has no relay.\n-\n-        A ``provider-exec`` cell receives pipes, not a duplex socket: its\n-        stdin read end first, then (after the relays) its stdout and stderr\n-        write ends, then the status channel. The daemon keeps the other ends.\n         \"\"\"\n         if (type(identity) is not OwnerIdentity or identity.uid != identity.gid\n                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):\n@@ -262,15 +242,10 @@\n         if extension_fd is not None and kind != 'tool-jail':\n             raise ValueError('unsupported cell extension mount')\n         document.update(op='START', kind=kind, principal=principal, command_center=command_center)\n+        data, child = socket.socketpair()\n         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)\n+        stderr, child_stderr = socket.socketpair() if kind == 'provider-exec' else (None, None)\n         status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)\n-        stdin = stderr = child_stdout = child_stderr = None\n-        if kind == 'provider-exec':\n-            child, stdin = _pipe()\n-            data, child_stdout = _pipe()\n-            stderr, child_stderr = _pipe()\n-        else:\n-            data, child = socket.socketpair()\n         try:\n             with self._lock:\n                 self._check()\n@@ -281,8 +256,7 @@\n                 handles.extend(socket_fds)\n                 if extension_fd is not None:\n                     handles.append(extension_fd)\n-                if child_stdout is not None:\n-                    handles.append(child_stdout.fileno())\n+                if child_stderr is not None:\n                     handles.append(child_stderr.fileno())\n                 handles.append(child_status.fileno())\n                 try:\n@@ -297,8 +271,7 @@\n                         raise RuntimeError('invalid owner launcher start receipt')\n                     if reply['uid'] != identity.uid:\n                         actual = OwnerIdentity(reply['uid'], reply['gid'])\n-                        with OwnerCell(self, data, status, actual, stderr=stderr,\n-                                       stdin=stdin) as refused:\n+                        with OwnerCell(self, data, status, actual, stderr=stderr) as refused:\n                             refused.cancel()  # Reap before returning a reusable refusal.\n                         raise OwnerLaunchRefused('owner launcher refused cell identity')\n                 except OwnerLaunchRefused:\n@@ -306,16 +279,18 @@\n                 except BaseException:\n                     self._close()\n                     raise\n-            return OwnerCell(self, data, status, identity, stderr=stderr, stdin=stdin)\n+            return OwnerCell(self, data, status, identity, stderr=stderr)\n         except BaseException:\n-            for endpoint in (data, status, stderr, stdin):\n-                if endpoint is not None:\n-                    endpoint.close()\n+            data.close()\n+            status.close()\n+            if stderr is not None:\n+                stderr.close()\n             raise\n         finally:\n-            for endpoint in (child, child_status, child_stdout, child_stderr):\n-                if endpoint is not None:\n-                    endpoint.close()\n+            child.close()\n+            child_status.close()\n+            if child_stderr is not None:\n+                child_stderr.close()\n \n     def preview(self, spec, wall_seconds, *, principal, command_center, identity):\n         from tinyassets.ui_preview import MAX_CHILD_OUTPUT\n--- tinyassets/role_provider_discovery.py\n+++ tinyassets/role_provider_discovery.py\n@@ -73,8 +73,9 @@\n async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, execution=False,\n                       engine_route=None):\n     from tinyassets import role_decoder, role_relays, universe_egress\n+    from tinyassets.auth.middleware import current_identity\n     from tinyassets.broker.owner_identities import owner_identity\n-    from tinyassets.role_scope import owner_principal\n+    from tinyassets.daemon_server import get_founder_home, universe_access_permission\n     from tinyassets.storage import data_dir\n     from tinyassets.workspace_fs import open_dir_nofollow\n \n@@ -83,7 +84,11 @@\n         raise PermissionError('provider discovery requires its bounded owner launcher')\n     root = data_dir().resolve()\n     center = Path(universe_dir)\n-    principal = owner_principal(center)\n+    principal = current_identity().user_id\n+    if (center.parent != root or center.resolve() != center\n+            or not (get_founder_home(root, principal) == center.name or universe_access_permission(\n+                root, universe_id=center.name, actor_id=principal) == 'admin')):\n+        raise PermissionError('provider discovery owner scope is not admitted')\n     snapshot = Path(snapshot_dir)\n     expected = center / '.runtime' / 'provider-launch-credentials' / snapshot.name\n     if snapshot != expected:\n@@ -137,28 +142,29 @@\n         os.close(descriptor)\n         for relay_fd in relay_fds:\n             os.close(relay_fd)\n-    writer = None\n-    data_socket = None\n+    writer = error_writer = None\n+    data_socket = error_socket = None\n     try:\n+        cell.stream.setblocking(False)\n+        data_socket = cell.stream.dup() if execution else cell.stream\n+        reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)\n         if execution:\n-            from tinyassets.role_provider_execution import ExecutionProcess, pipe_streams\n+            from tinyassets.role_provider_execution import ExecutionProcess\n \n-            # Three ordinary pipes, read and written exactly as asyncio reads\n-            # and writes a local subprocess. The transports own duplicates, so\n-            # reaping (which closes the cell's own ends) never discards bytes\n-            # still queued for a reader.\n-            reader, writer, error_reader = await pipe_streams(cell, limit)\n-            proc = ExecutionProcess(cell, reader, writer, error_reader)\n+            cell.stderr.setblocking(False)\n+            error_socket = cell.stderr.dup()\n+            error_reader, error_writer = await asyncio.open_connection(\n+                sock=error_socket, limit=limit)\n+            proc = ExecutionProcess(cell, reader, writer, error_reader, error_writer)\n         else:\n-            cell.stream.setblocking(False)\n-            data_socket = cell.stream\n-            reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)\n             proc = OwnerCellProcess(cell, reader, writer)\n     except BaseException:\n-        if writer is not None:\n-            writer.close()\n-        if data_socket is not None:\n-            data_socket.close()\n+        for opened in (writer, error_writer):\n+            if opened is not None:\n+                opened.close()\n+        for opened in (data_socket, error_socket):\n+            if opened is not None:\n+                opened.close()\n         cell.close()\n         raise\n     try:\n@@ -175,8 +181,8 @@\n         proc.revoke()\n         await proc.wait()\n         writer.close()\n-        if execution:\n-            proc.close_stdio()\n+        if error_writer is not None:\n+            error_writer.close()\n         if not isinstance(exc, Exception):\n             raise\n         raise ProviderError('provider cell startup failed' + disk_stop_note(proc)) from exc\n--- tinyassets/role_provider_execution.py\n+++ tinyassets/role_provider_execution.py\n@@ -2,7 +2,6 @@\n from __future__ import annotations\n \n import asyncio\n-import os\n import weakref\n from pathlib import Path\n from types import SimpleNamespace\n@@ -11,81 +10,19 @@\n from tinyassets.providers.provider_jail import ProviderConfinementError\n \n \n-class _PipeWriterProtocol(asyncio.streams.FlowControlMixin):\n-    \"\"\"What ``asyncio.subprocess`` gives a child's stdin: a flow-controlled\n-    writer whose ``drain`` raises once the reader (the CLI) is gone.\"\"\"\n+class ExecutionProcess(OwnerCellProcess):\n+    \"\"\"Async process shape with independent stderr and mapper-owned lifetime.\"\"\"\n \n-    def __init__(self, loop):\n-        super().__init__(loop=loop)\n-        self._closed = loop.create_future()\n-\n-    def connection_lost(self, exc):\n-        super().connection_lost(exc)\n-        if not self._closed.done():\n-            if exc is None:\n-                self._closed.set_result(None)\n-            else:\n-                self._closed.set_exception(exc)\n-\n-    def _get_close_waiter(self, stream):\n-        return self._closed\n-\n-    def __del__(self):\n-        # Match asyncio.streams: an unretrieved close exception is not a warning.\n-        try:\n-            if self._closed.done() and not self._closed.cancelled():\n-                self._closed.exception()\n-        except Exception:  # noqa: BLE001 - interpreter shutdown\n-            pass\n-\n-\n-async def pipe_streams(cell, limit):\n-    \"\"\"(stdout reader, stdin writer, stderr reader) over the cell's three pipes.\n-\n-    The read transports take duplicates of the cell's descriptors, so the\n-    authenticated reap can close the cell's own ends without discarding bytes\n-    still queued for a reader. The write transport takes the cell's stdin end\n-    ITSELF: a pipe reader sees EOF only when every write end is closed, so the\n-    daemon must hold exactly one, and closing the writer must be that close.\n-    \"\"\"\n-    loop = asyncio.get_running_loop()\n-    readers = []\n-    for source in (cell.stream, cell.stderr):\n-        reader = asyncio.StreamReader(limit=limit, loop=loop)\n-        protocol = asyncio.StreamReaderProtocol(reader, loop=loop)\n-        await loop.connect_read_pipe(lambda protocol=protocol: protocol,\n-                                     os.fdopen(os.dup(source.fileno()), 'rb', buffering=0))\n-        readers.append(reader)\n-    stdin_fd = os.dup(cell.stdin.fileno())\n-    cell.stdin.close()\n-    cell.stdin = None\n-    transport, protocol = await loop.connect_write_pipe(\n-        lambda: _PipeWriterProtocol(loop), os.fdopen(stdin_fd, 'wb', buffering=0))\n-    writer = asyncio.StreamWriter(transport, protocol, None, loop)\n-    return readers[0], writer, readers[1]\n-\n-\n-class ExecutionProcess(OwnerCellProcess):\n-    \"\"\"Async process shape over three real pipes, with a mapper-owned lifetime.\n-\n-    ``stdin`` is an ordinary pipe writer: ``close()`` ends only the CLI's\n-    input, and a CLI that exits without reading it costs the writer an EPIPE\n-    and nothing else. Stdout and stderr are read to their own EOFs.\n-    \"\"\"\n-\n-    def __init__(self, cell, reader, writer, error_reader):\n+    def __init__(self, cell, reader, writer, error_reader, error_writer):\n         super().__init__(cell, reader, writer)\n-        self.stdin = writer  # a one-directional pipe: no half-close shim\n         self.stderr = error_reader\n-        self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer)\n+        self._error_writer = error_writer\n+        self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer, error_writer)\n \n     @staticmethod\n     def _close_stdio(*writers):\n         for writer in writers:\n             writer.close()\n-\n-    def close_stdio(self):\n-        self._stdio_finalizer()\n \n     async def wait(self, timeout=None):\n         # No wall-clock ceiling: the cell lives until it exits or is revoked.\n@@ -111,7 +48,7 @@\n                 if input:\n                     self.stdin.write(input)\n                     await self.stdin.drain()\n-                self.stdin.close()\n+                self.stdin.write_eof()\n             except (BrokenPipeError, ConnectionResetError):\n                 pass\n \n--- tinyassets/providers/owned_process.py\n+++ tinyassets/providers/owned_process.py\n@@ -40,7 +40,7 @@\n     def close(self):\n         if not self._closed:\n             self._closed = True\n-            self._writer.write_eof()\n+            self._writer.close()\n \n     def is_closing(self):\n         return self._closed or self._writer.is_closing()\n"
+    },
+    {
+      "regression": "4578",
+      "exit": 1,
+      "seconds": 13.02,
+      "patch_sha256": "4c51cfffde4fe5cccf6cbe5521d4860e61e5f9f53f8a8a618af2fdf6e94ee533",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "real streamed reply failed: {\"error\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"provider cell ended (owner cell: decoder:role_provider_cell.py:148:ValueError:errno=None)\\\" Ref: 105e8ed5bb9c4e4e\", \"provider_diagnosis\": [{\"provider\": \"claude-code\", \"status\": \"failed\", \"skip_class\": \"provider_error\"}], \"turn_failure\": {\"version\": 1, \"kind\": \"turn_failed\", \"code\": \"unknown\", \"effects\": \"unknown\", \"provider_detail\": \"provider cell ended (owner cell: decoder:role_provider_cell.py:148:ValueError:errno=None)\", \"ref\": \"105e8ed5bb9c4e4e\"}, \"failure_notice\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"provider cell ended (owner cell: decoder:role_provider_cell.py:148:ValueError:errno=None)\\\" Ref: 105e8ed5bb9c4e4e\", \"history_saved\": true}"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- tinyassets/role_provider_cell.py\n+++ tinyassets/role_provider_cell.py\n@@ -137,8 +137,8 @@\n     if engine_port is not None and (not execution or type(engine_port) is not int\n                                     or not 1024 <= engine_port <= 65535 or engine_port == 3128):\n         raise ValueError('invalid provider engine port')\n-    if (type(argv) is not list or not 1 <= len(argv) <= (MAX_EXEC_ARGS if execution else MAX_ARGS)\n-            or any(type(item) is not str or not (0 if execution else 1) <= len(item) <= (\n+    if (type(argv) is not list or not 1 <= len(argv) <= MAX_ARGS\n+            or any(type(item) is not str or not 0 < len(item) <= (\n                 MAX_CONFIG_BYTES if execution else 4096) or '\\0' in item\n                    for item in argv)\n             or type(env) is not dict or len(env) > MAX_ENV\n"
+    },
+    {
+      "regression": "4579",
+      "exit": 1,
+      "seconds": 14.72,
+      "patch_sha256": "f1303c9c6bf220cd348d04715c2bb7609c53dce5626b34145a57bbbceab4cae8",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "real streamed reply failed: {\"error\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"provider cell ended (owner cell: decoder:role_provider_cell.py:153:ValueError:errno=None)\\\" Ref: aafe6e2c7e0c4b07\", \"provider_diagnosis\": [{\"provider\": \"claude-code\", \"status\": \"failed\", \"skip_class\": \"provider_error\"}], \"turn_failure\": {\"version\": 1, \"kind\": \"turn_failed\", \"code\": \"unknown\", \"effects\": \"unknown\", \"provider_detail\": \"provider cell ended (owner cell: decoder:role_provider_cell.py:153:ValueError:errno=None)\", \"ref\": \"aafe6e2c7e0c4b07\"}, \"failure_notice\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"provider cell ended (owner cell: decoder:role_provider_cell.py:153:ValueError:errno=None)\\\" Ref: aafe6e2c7e0c4b07\", \"history_saved\": true}"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- tinyassets/role_provider_cell.py\n+++ tinyassets/role_provider_cell.py\n@@ -149,7 +149,8 @@\n     # No host data path survives into the cell; the snapshot is pre-rewritten.\n     if any(data_root in item for item in (*argv, *env.values())):\n         raise ValueError('provider config names a host data path')\n-    argv[0] = resolve_executable(argv[0])\n+    if not argv[0] or not shipped_executable(argv[0]):\n+        raise ValueError('provider executable is outside the shipped install trees')\n     return argv, {**safe_environment(env, file_values(SNAPSHOT)), **FIXED_ENV}, engine_port\n \n \n"
+    },
+    {
+      "regression": "4580-compatible",
+      "exit": 1,
+      "seconds": null,
+      "patch_sha256": "996e0c2fe273cc61c8f4e612b6336e34e7e433456288702602e14b4c681f7dac",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "early CLI exit lost its stderr reason: provider cell stream failed (owner cell: cell:exit=1)"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- deploy/role_owner_launcher.py\n+++ deploy/role_owner_launcher.py\n@@ -400,7 +400,6 @@\n         self.jobs = {}\n         self.diagnostics = {}\n         self.package_jobs = set()\n-        self.browser_jobs = set()\n         self.delete_fences = {}\n \n     def _alive(self):\n@@ -552,7 +551,7 @@\n         if (not isinstance(request, dict)\n                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}\n                 or kind not in {'image-decoder', 'workspace-git', 'workspace-remote',\n-                                'workspace-provision', 'ui-preview', 'browser', 'preview-write',\n+                                'workspace-provision', 'ui-preview', 'preview-write',\n                                 'node-sandbox', 'tool-jail', 'ingestion-video',\n                                 'provider-discovery', 'provider-exec', 'tool-files',\n                                 'package', 'owner-delete', 'owner-delete-subtree',\n@@ -588,7 +587,7 @@\n                 or not isinstance(request['command_center'], str)\n                 or len(received) != (2 if mounted else 1)\n                     + int(streaming) + socket_count + extension_count\n-                    + 2 * int(kind == 'provider-exec')):\n+                    + int(kind == 'provider-exec')):\n             raise ValueError('unsupported owner engine')\n         if not streaming and self.jobs:\n             raise ValueError('blocking spawn cannot suspend active cell supervision')\n@@ -604,11 +603,7 @@\n                 raise ValueError('owner cell concurrency is exhausted')\n             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)\n         if kind == 'provider-exec':\n-            # Ordinary pipes, as a local subprocess would get: stdin's read end\n-            # in the data slot, stdout's and stderr's write ends before status.\n-            self._daemon_pipe(received[0], os.O_RDONLY)\n-            self._daemon_pipe(received[-3], os.O_WRONLY)\n-            self._daemon_pipe(received[-2], os.O_WRONLY)\n+            self._daemon_endpoint(received[-2], socket.SOCK_STREAM)\n         if kind == 'preview-write':\n             ui_id = request['ui_id']\n             if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64\n@@ -720,8 +715,7 @@\n                     or not re.fullmatch(r'registry-[a-f0-9]{32}\\.sock', source[len(prefix):])):\n                 raise ValueError('registry relay is outside the admitted center')\n         fd = received[0]\n-        if kind != 'provider-exec':\n-            self._daemon_endpoint(fd, socket.SOCK_STREAM)\n+        self._daemon_endpoint(fd, socket.SOCK_STREAM)\n         status_channel = None\n         if streaming:\n             status_channel = socket.socket(fileno=os.dup(received[-1]))\n@@ -750,9 +744,6 @@\n \n                 stderr_copy = fcntl.fcntl(error_write, fcntl.F_DUPFD_CLOEXEC, 20)\n                 os.dup2(stderr_copy, 2)\n-                stdout_copy = None\n-                if kind == 'provider-exec':\n-                    stdout_copy = fcntl.fcntl(received[-3], fcntl.F_DUPFD_CLOEXEC, 20)\n                 retained = (3,) if mounted else ()\n                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',\n                              'package', 'workspace-remote', 'workspace-provision') and (\n@@ -781,7 +772,7 @@\n                         os.dup2(sources[index], 6)\n                         retained.append(6)\n                 os.dup2(fd, 0)\n-                os.dup2(fd if stdout_copy is None else stdout_copy, 1)\n+                os.dup2(fd, 1)\n                 os.dup2(stderr_copy, 2)\n                 if mounted and not (socket_count or extension_count):\n                     os.dup2(received[1], 3)\n@@ -843,9 +834,6 @@\n                 elif kind == 'ui-preview':\n                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview',\n                                self.data_root, str(inner)]\n-                elif kind == 'browser':\n-                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-browser',\n-                               self.data_root, str(inner)]\n                 elif kind == 'preview-write':\n                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview-write',\n                                request['ui_id'], self.data_root, str(inner)]\n@@ -859,13 +847,8 @@\n                 _diagnostics['report_failure'](exc, 'launcher')\n                 os._exit(126)\n         os.close(error_write)\n-        error_sink = None\n-        if kind == 'provider-exec':\n-            # The daemon's stderr pipe. The cell's fd 2 is the mapper's own\n-            # pipe above, so a bootstrap failure is parsed here first and\n-            # every byte is then forwarded without ever blocking the mapper.\n-            error_sink = os.dup(received[-2])\n-            os.set_blocking(error_sink, False)\n+        error_sink = (socket.socket(fileno=os.dup(received[-2]))\n+                      if kind == 'provider-exec' else None)\n         # At most 256 KiB of pending stderr per cell; capture never blocks the\n         # mapper. A slow consumer receives an explicit truncation completion.\n         self.diagnostics[pid] = [error_read, error_sink, b'', None, bytearray(), False, None]\n@@ -876,14 +859,12 @@\n             155 if kind == 'ingestion-video' else\n             1810 if kind in ('node-sandbox', 'workspace-remote', 'workspace-provision') else\n             660 if kind == 'tool-jail' else\n-            610 if kind == 'browser' else 75 if kind == 'ui-preview' else\n+            75 if kind == 'ui-preview' else\n             65 if kind == 'workspace-git' else 35)\n         if streaming:\n             self.jobs[pid] = (inner, machine, deadline, status_channel)\n-            if kind in ('package', 'provider-exec', 'browser'):\n+            if kind in ('package', 'provider-exec'):\n                 self.package_jobs.add(pid)\n-            if kind == 'browser':\n-                self.browser_jobs.add(pid)\n             try:\n                 self.channel.sendall(json.dumps(\n                     dict(op='STARTED', uid=machine, gid=machine)).encode())\n@@ -1030,22 +1011,6 @@\n         del self.delete_fences[machine]\n         self.channel.sendall(b'{\"op\":\"DELETE_FINISHED\"}')\n \n-    def _daemon_pipe(self, fd, direction):\n-        \"\"\"One end of an anonymous pipe the daemon made, open only ``direction``.\n-\n-        A pipe has no peer credentials; the authenticated request already\n-        proves the daemon sent it. What is checked is that it is an unnamed\n-        pipe (never a FIFO on a filesystem, a socket or a file), daemon-created\n-        and open only in the direction the cell's stdio slot needs.\n-        \"\"\"\n-        import fcntl\n-\n-        info = os.fstat(fd)\n-        if (not stat.S_ISFIFO(info.st_mode) or info.st_uid != self.overflow_uid\n-                or not os.readlink(f'/proc/self/fd/{fd}').startswith('pipe:[')\n-                or fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != direction):\n-            raise ValueError('owner cell needs daemon pipes')\n-\n     def _daemon_endpoint(self, fd, kind):\n         if not stat.S_ISSOCK(os.fstat(fd).st_mode):\n             raise ValueError('owner cell needs daemon socketpair')\n@@ -1092,19 +1057,19 @@\n     def _flush_stderr(state):\n         if state[1] is not None and state[4]:\n             try:\n-                sent = os.write(state[1], state[4])\n+                sent = state[1].send(state[4], socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL)\n                 del state[4][:sent]\n             except BlockingIOError:\n                 pass  # Retry on the next mapper iteration, retaining every byte.\n-            except BrokenPipeError:\n-                state[5] = True  # The daemon stopped reading; nothing to deliver to.\n+            except (BrokenPipeError, ConnectionResetError):\n+                state[5] = True\n \n     def _finish_diagnostics(self, pid, code, stop_reason=None):\n         self._drain_diagnostics(pid)\n         fd, sink, _, reason, pending, truncated, relay = self.diagnostics.pop(pid)\n         os.close(fd)\n         if sink is not None:\n-            os.close(sink)\n+            sink.close()\n         if relay:\n             os.write(2, ('owner cell relay notice: ' + relay + '\\n').encode())\n         reason = stop_reason or reason or (\n@@ -1127,10 +1092,8 @@\n                     count, rss = package_usage(pid)\n                     if count > 68:\n                         reason = f'process_limit: count={count} limit=68'\n-                    else:\n-                        limit = (1536 if pid in self.browser_jobs else 512) * 1024 * 1024\n-                        if rss > limit:\n-                            reason = f'rss_limit: bytes={rss} limit={limit}'\n+                    elif rss > 512 * 1024 * 1024:\n+                        reason = f'rss_limit: bytes={rss} limit=536870912'\n                 except (OSError, ValueError, IndexError, RuntimeError) as exc:\n                     # No arbitrary exception text: it can contain owner data.\n                     reason = (f'usage_unavailable: {type(exc).__name__} '\n@@ -1175,5 +1138,4 @@\n                     channel.close()\n                     del self.jobs[pid]\n                     self.package_jobs.discard(pid)\n-                    self.browser_jobs.discard(pid)\n         assert_mapper(self.launch)\n--- tinyassets/owner_launcher_client.py\n+++ tinyassets/owner_launcher_client.py\n@@ -32,21 +32,11 @@\n \n \n class OwnerCell:\n-    \"\"\"One mapper-owned process lifetime; caller owns its data endpoints.\n-\n-    A data cell's ``stream`` is one duplex socket. A ``provider-exec`` cell\n-    instead gets three ordinary pipes, exactly like a local subprocess:\n-    ``stdin`` (the daemon's write end), ``stream`` (stdout, read end) and\n-    ``stderr`` (read end). Pipes are one-directional, so closing the CLI's\n-    input can never discard its output, and a CLI that exits with unread\n-    input leaves the daemon a clean stdout EOF (plus EPIPE on its own write)\n-    instead of ECONNRESET on a shared socket.\n-    \"\"\"\n-\n-    def __init__(self, client, stream, status, identity, *, stderr=None, stdin=None):\n+    \"\"\"One mapper-owned process lifetime; caller owns its bidirectional stream.\"\"\"\n+\n+    def __init__(self, client, stream, status, identity, *, stderr=None):\n         self.stream, self._status = stream, status\n         self.stderr = stderr\n-        self.stdin = stdin\n         self._client, self._identity = client, identity\n         self._pid = os.getpid()\n         self._result = None\n@@ -56,9 +46,9 @@\n         _live_cells.add(self)\n \n     def _after_fork(self):\n-        for endpoint in (self.stream, self.stderr, self.stdin):\n-            if endpoint is not None:\n-                endpoint.close()\n+        self.stream.close()\n+        if self.stderr is not None:\n+            self.stderr.close()\n         self._status.close()\n         self._closed = True\n \n@@ -113,9 +103,9 @@\n             try:\n                 self.cancel()\n             finally:\n-                for endpoint in (self.stream, self.stderr, self.stdin):\n-                    if endpoint is not None:\n-                        endpoint.close()\n+                self.stream.close()\n+                if self.stderr is not None:\n+                    self.stderr.close()\n                 self._status.close()\n                 self._closed = True\n                 _live_cells.discard(self)\n@@ -129,12 +119,6 @@\n \n class OwnerLaunchRefused(RuntimeError):\n     \"\"\"One completed authenticated exchange was refused; channel remains usable.\"\"\"\n-\n-\n-def _pipe():\n-    \"\"\"(read end, write end) of one anonymous pipe, both close-on-exec.\"\"\"\n-    read_fd, write_fd = os.pipe()\n-    return os.fdopen(read_fd, 'rb', buffering=0), os.fdopen(write_fd, 'wb', buffering=0)\n \n \n class OwnerLauncherClient:\n@@ -241,10 +225,6 @@\n         ``extension_fd`` is the daemon's materialised extension tree for ONE\n         tool call. It follows the relay sockets in the descriptor order, so the\n         mapper's fixed slots stay stable when a call has no relay.\n-\n-        A ``provider-exec`` cell receives pipes, not a duplex socket: its\n-        stdin read end first, then (after the relays) its stdout and stderr\n-        write ends, then the status channel. The daemon keeps the other ends.\n         \"\"\"\n         if (type(identity) is not OwnerIdentity or identity.uid != identity.gid\n                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):\n@@ -262,15 +242,10 @@\n         if extension_fd is not None and kind != 'tool-jail':\n             raise ValueError('unsupported cell extension mount')\n         document.update(op='START', kind=kind, principal=principal, command_center=command_center)\n+        data, child = socket.socketpair()\n         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)\n+        stderr, child_stderr = socket.socketpair() if kind == 'provider-exec' else (None, None)\n         status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)\n-        stdin = stderr = child_stdout = child_stderr = None\n-        if kind == 'provider-exec':\n-            child, stdin = _pipe()\n-            data, child_stdout = _pipe()\n-            stderr, child_stderr = _pipe()\n-        else:\n-            data, child = socket.socketpair()\n         try:\n             with self._lock:\n                 self._check()\n@@ -281,8 +256,7 @@\n                 handles.extend(socket_fds)\n                 if extension_fd is not None:\n                     handles.append(extension_fd)\n-                if child_stdout is not None:\n-                    handles.append(child_stdout.fileno())\n+                if child_stderr is not None:\n                     handles.append(child_stderr.fileno())\n                 handles.append(child_status.fileno())\n                 try:\n@@ -297,8 +271,7 @@\n                         raise RuntimeError('invalid owner launcher start receipt')\n                     if reply['uid'] != identity.uid:\n                         actual = OwnerIdentity(reply['uid'], reply['gid'])\n-                        with OwnerCell(self, data, status, actual, stderr=stderr,\n-                                       stdin=stdin) as refused:\n+                        with OwnerCell(self, data, status, actual, stderr=stderr) as refused:\n                             refused.cancel()  # Reap before returning a reusable refusal.\n                         raise OwnerLaunchRefused('owner launcher refused cell identity')\n                 except OwnerLaunchRefused:\n@@ -306,16 +279,18 @@\n                 except BaseException:\n                     self._close()\n                     raise\n-            return OwnerCell(self, data, status, identity, stderr=stderr, stdin=stdin)\n+            return OwnerCell(self, data, status, identity, stderr=stderr)\n         except BaseException:\n-            for endpoint in (data, status, stderr, stdin):\n-                if endpoint is not None:\n-                    endpoint.close()\n+            data.close()\n+            status.close()\n+            if stderr is not None:\n+                stderr.close()\n             raise\n         finally:\n-            for endpoint in (child, child_status, child_stdout, child_stderr):\n-                if endpoint is not None:\n-                    endpoint.close()\n+            child.close()\n+            child_status.close()\n+            if child_stderr is not None:\n+                child_stderr.close()\n \n     def preview(self, spec, wall_seconds, *, principal, command_center, identity):\n         from tinyassets.ui_preview import MAX_CHILD_OUTPUT\n--- tinyassets/role_provider_discovery.py\n+++ tinyassets/role_provider_discovery.py\n@@ -73,8 +73,9 @@\n async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, execution=False,\n                       engine_route=None):\n     from tinyassets import role_decoder, role_relays, universe_egress\n+    from tinyassets.auth.middleware import current_identity\n     from tinyassets.broker.owner_identities import owner_identity\n-    from tinyassets.role_scope import owner_principal\n+    from tinyassets.daemon_server import get_founder_home, universe_access_permission\n     from tinyassets.storage import data_dir\n     from tinyassets.workspace_fs import open_dir_nofollow\n \n@@ -83,7 +84,11 @@\n         raise PermissionError('provider discovery requires its bounded owner launcher')\n     root = data_dir().resolve()\n     center = Path(universe_dir)\n-    principal = owner_principal(center)\n+    principal = current_identity().user_id\n+    if (center.parent != root or center.resolve() != center\n+            or not (get_founder_home(root, principal) == center.name or universe_access_permission(\n+                root, universe_id=center.name, actor_id=principal) == 'admin')):\n+        raise PermissionError('provider discovery owner scope is not admitted')\n     snapshot = Path(snapshot_dir)\n     expected = center / '.runtime' / 'provider-launch-credentials' / snapshot.name\n     if snapshot != expected:\n@@ -137,28 +142,29 @@\n         os.close(descriptor)\n         for relay_fd in relay_fds:\n             os.close(relay_fd)\n-    writer = None\n-    data_socket = None\n+    writer = error_writer = None\n+    data_socket = error_socket = None\n     try:\n+        cell.stream.setblocking(False)\n+        data_socket = cell.stream.dup() if execution else cell.stream\n+        reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)\n         if execution:\n-            from tinyassets.role_provider_execution import ExecutionProcess, pipe_streams\n+            from tinyassets.role_provider_execution import ExecutionProcess\n \n-            # Three ordinary pipes, read and written exactly as asyncio reads\n-            # and writes a local subprocess. The transports own duplicates, so\n-            # reaping (which closes the cell's own ends) never discards bytes\n-            # still queued for a reader.\n-            reader, writer, error_reader = await pipe_streams(cell, limit)\n-            proc = ExecutionProcess(cell, reader, writer, error_reader)\n+            cell.stderr.setblocking(False)\n+            error_socket = cell.stderr.dup()\n+            error_reader, error_writer = await asyncio.open_connection(\n+                sock=error_socket, limit=limit)\n+            proc = ExecutionProcess(cell, reader, writer, error_reader, error_writer)\n         else:\n-            cell.stream.setblocking(False)\n-            data_socket = cell.stream\n-            reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)\n             proc = OwnerCellProcess(cell, reader, writer)\n     except BaseException:\n-        if writer is not None:\n-            writer.close()\n-        if data_socket is not None:\n-            data_socket.close()\n+        for opened in (writer, error_writer):\n+            if opened is not None:\n+                opened.close()\n+        for opened in (data_socket, error_socket):\n+            if opened is not None:\n+                opened.close()\n         cell.close()\n         raise\n     try:\n@@ -175,8 +181,8 @@\n         proc.revoke()\n         await proc.wait()\n         writer.close()\n-        if execution:\n-            proc.close_stdio()\n+        if error_writer is not None:\n+            error_writer.close()\n         if not isinstance(exc, Exception):\n             raise\n         raise ProviderError('provider cell startup failed' + disk_stop_note(proc)) from exc\n--- tinyassets/role_provider_execution.py\n+++ tinyassets/role_provider_execution.py\n@@ -2,7 +2,6 @@\n from __future__ import annotations\n \n import asyncio\n-import os\n import weakref\n from pathlib import Path\n from types import SimpleNamespace\n@@ -11,81 +10,19 @@\n from tinyassets.providers.provider_jail import ProviderConfinementError\n \n \n-class _PipeWriterProtocol(asyncio.streams.FlowControlMixin):\n-    \"\"\"What ``asyncio.subprocess`` gives a child's stdin: a flow-controlled\n-    writer whose ``drain`` raises once the reader (the CLI) is gone.\"\"\"\n+class ExecutionProcess(OwnerCellProcess):\n+    \"\"\"Async process shape with independent stderr and mapper-owned lifetime.\"\"\"\n \n-    def __init__(self, loop):\n-        super().__init__(loop=loop)\n-        self._closed = loop.create_future()\n-\n-    def connection_lost(self, exc):\n-        super().connection_lost(exc)\n-        if not self._closed.done():\n-            if exc is None:\n-                self._closed.set_result(None)\n-            else:\n-                self._closed.set_exception(exc)\n-\n-    def _get_close_waiter(self, stream):\n-        return self._closed\n-\n-    def __del__(self):\n-        # Match asyncio.streams: an unretrieved close exception is not a warning.\n-        try:\n-            if self._closed.done() and not self._closed.cancelled():\n-                self._closed.exception()\n-        except Exception:  # noqa: BLE001 - interpreter shutdown\n-            pass\n-\n-\n-async def pipe_streams(cell, limit):\n-    \"\"\"(stdout reader, stdin writer, stderr reader) over the cell's three pipes.\n-\n-    The read transports take duplicates of the cell's descriptors, so the\n-    authenticated reap can close the cell's own ends without discarding bytes\n-    still queued for a reader. The write transport takes the cell's stdin end\n-    ITSELF: a pipe reader sees EOF only when every write end is closed, so the\n-    daemon must hold exactly one, and closing the writer must be that close.\n-    \"\"\"\n-    loop = asyncio.get_running_loop()\n-    readers = []\n-    for source in (cell.stream, cell.stderr):\n-        reader = asyncio.StreamReader(limit=limit, loop=loop)\n-        protocol = asyncio.StreamReaderProtocol(reader, loop=loop)\n-        await loop.connect_read_pipe(lambda protocol=protocol: protocol,\n-                                     os.fdopen(os.dup(source.fileno()), 'rb', buffering=0))\n-        readers.append(reader)\n-    stdin_fd = os.dup(cell.stdin.fileno())\n-    cell.stdin.close()\n-    cell.stdin = None\n-    transport, protocol = await loop.connect_write_pipe(\n-        lambda: _PipeWriterProtocol(loop), os.fdopen(stdin_fd, 'wb', buffering=0))\n-    writer = asyncio.StreamWriter(transport, protocol, None, loop)\n-    return readers[0], writer, readers[1]\n-\n-\n-class ExecutionProcess(OwnerCellProcess):\n-    \"\"\"Async process shape over three real pipes, with a mapper-owned lifetime.\n-\n-    ``stdin`` is an ordinary pipe writer: ``close()`` ends only the CLI's\n-    input, and a CLI that exits without reading it costs the writer an EPIPE\n-    and nothing else. Stdout and stderr are read to their own EOFs.\n-    \"\"\"\n-\n-    def __init__(self, cell, reader, writer, error_reader):\n+    def __init__(self, cell, reader, writer, error_reader, error_writer):\n         super().__init__(cell, reader, writer)\n-        self.stdin = writer  # a one-directional pipe: no half-close shim\n         self.stderr = error_reader\n-        self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer)\n+        self._error_writer = error_writer\n+        self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer, error_writer)\n \n     @staticmethod\n     def _close_stdio(*writers):\n         for writer in writers:\n             writer.close()\n-\n-    def close_stdio(self):\n-        self._stdio_finalizer()\n \n     async def wait(self, timeout=None):\n         # No wall-clock ceiling: the cell lives until it exits or is revoked.\n@@ -111,7 +48,7 @@\n                 if input:\n                     self.stdin.write(input)\n                     await self.stdin.drain()\n-                self.stdin.close()\n+                self.stdin.write_eof()\n             except (BrokenPipeError, ConnectionResetError):\n                 pass\n \n"
+    },
+    {
+      "regression": "4581",
+      "exit": 1,
+      "seconds": 16.36,
+      "patch_sha256": "6305f116baebd0671b5b738ee432479910881e452b4f62298e06486deb7f046c",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_ec2271cadb4ef5ac2d7877c0_0\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": \\\"{\\\\\\\"result\\\\\\\":\\\\\\\"error: tool cell failed: decoder:role_tools.py:150:RuntimeError:errno=None (owner cell: decoder:role_decoder.py:35:ValueError:errno=None)\\\\\\\"}\\\"}]\"]"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "cell_execution_failed"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- deploy/role_decoder.py\n+++ deploy/role_decoder.py\n@@ -28,13 +28,9 @@\n         raise RuntimeError(\"decoder role retirement is absent\")\n \n \n-def tool_mounts(uid, root_fd=3):\n+def tool_mounts(uid):\n     \"\"\"Pin only owner content; never mount the command-center root itself.\"\"\"\n-    # Platform history/sidecars never enter this view and must not consume its\n-    # descriptor/mount budget. A migrated production center has hundreds of them.\n-    entries = [name for name in os.listdir(root_fd)\n-               if not ((name.startswith('.') and name != '.agent-workspace')\n-                       or name in ('owner.json', 'provider_definitions.json'))]\n+    entries = os.listdir(3)\n     if len(entries) > 256:\n         raise ValueError('tool center has too many immediate entries')\n     required = {'.agent-workspace', 'skills', 'prompts', 'extensions',\n@@ -43,7 +39,10 @@\n         raise ValueError('tool center has not been prepared')\n     mounts = ['--tmpfs', '/center']\n     for name in sorted(entries):\n-        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=root_fd)\n+        if ((name.startswith('.') and name != '.agent-workspace')\n+                or name in ('owner.json', 'provider_definitions.json')):\n+            continue\n+        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=3)\n         info = os.fstat(fd)\n         if stat.S_ISLNK(info.st_mode):\n             os.close(fd)\n@@ -61,8 +60,7 @@\n \n def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=False,\n           tool=False, video=False, provider=False, tool_files=False, package=False,\n-          owner_delete=False, provider_exec=False, center_root=False, content=False, measure=False,\n-          browser=False):\n+          owner_delete=False, provider_exec=False, center_root=False, content=False, measure=False):\n     identity(uid)\n     host = namespaces()\n     mounted = (preview_write or tool or provider or tool_files or package or owner_delete\n@@ -112,7 +110,7 @@\n     # or application initialization before the owner boundary exists.\n     filter_factory = runpy.run_path(\"/app/tinyassets/providers/jail_seccomp.py\")[\"program_fd\"]\n     profile = 'cell-links' if package else (\n-        'cell-nested' if preview or browser or node or tool else 'cell-deny')\n+        'cell-nested' if preview or node or tool else 'cell-deny')\n     descriptor = filter_factory(profile=profile)\n     os.set_inheritable(descriptor, True)\n     argv = [\"/usr/bin/bwrap\", \"--die-with-parent\", \"--new-session\", \"--unshare-all\",\n@@ -124,7 +122,7 @@\n     for path in (\"/bin\", \"/lib\", \"/lib64\"):\n         if os.path.exists(path):\n             argv.extend([\"--ro-bind\", path, path])\n-    if preview or browser:\n+    if preview:\n         for path in ('/opt/ms-playwright', '/etc/fonts'):\n             argv.extend(['--ro-bind', path, path])\n         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])\n@@ -156,9 +154,6 @@\n             argv.extend(['--bind-fd', '5', '/provider-engine.sock'])\n     elif tool:\n         argv.extend(tool_mounts(uid))\n-        if 'e' in mime:\n-            # Public trust roots for HTTPS through the pinned checking proxy.\n-            argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])\n         if 'x' in mime:\n             argv.extend(['--ro-bind-fd', '6', '/tool-extensions'])\n         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):\n@@ -172,7 +167,7 @@\n     argv.extend([\"--tmpfs\", \"/tmp\",\n                  \"--chdir\", \"/tmp\", \"--seccomp\", str(descriptor), \"--\",\n                  \"/opt/venv/bin/python\", \"-I\", \"-B\", \"/usr/local/libexec/ta-decoder.py\",\n-                 'inside-browser' if browser else 'inside-measure' if measure else\n+                 'inside-measure' if measure else\n                  'inside-owner-delete' if owner_delete else\n                  'inside-content' if content else\n                  'inside-center-root' if center_root else\n@@ -664,16 +659,6 @@\n             and 0 < int(sys.argv[5]) < 100000):\n         raise SystemExit(preview_write(\n             sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5])))\n-    elif len(sys.argv) == 4 and sys.argv[1] == 'enter-browser' and 0 < int(sys.argv[3]) < 100000:\n-        enter('', sys.argv[2], int(sys.argv[3]), browser=True)\n-    elif len(sys.argv) == 6 and sys.argv[1] == 'inside-browser' and 0 < int(sys.argv[5]) < 100000:\n-        proof = prove_cell(json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5]), 'cell-nested')\n-        sys.stdout.write(json.dumps({'cell': proof}) + '\\n')\n-        sys.stdout.flush()\n-        sys.path.insert(0, '/app')\n-        from tinyassets.browser_cell import main\n-\n-        main()\n     elif len(sys.argv) == 4 and sys.argv[1] == 'enter-preview' and 0 < int(sys.argv[3]) < 100000:\n         enter('', sys.argv[2], int(sys.argv[3]), preview=True)\n     elif len(sys.argv) == 6 and sys.argv[1] == 'inside-preview' and 0 < int(sys.argv[5]) < 100000:\n"
+    },
+    {
+      "regression": "4584-full",
+      "exit": 1,
+      "seconds": 35.93,
+      "patch_sha256": "3cc86200f63bd00922942a0e0a45c4f9a0566bbb41e71767559e42f0489db7ca",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "read_graph failed: {\"text\": \"**Run on workflow `Synthetic capability c171095307665bb78a80b7f2`** \\u2014 status `failed`\\nActor: command_center:u-alice\\n\\nNodes:\\n  - code: running\\n\\nGraph:\\n```mermaid\\nflowchart LR\\n    START([\\\"START\\\"])\\n    END([\\\"END\\\"])\\n    code[\\\"Echo in owner cell\\\"]\\n    code --> END\\n    class code running\\n    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px\\n    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px\\n    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px\\n    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px\\n    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px\\n```\", \"run_id\": \"2f59cb86435c46ff\", \"branch_def_id\": \"8d855bbb4156\", \"status\": \"failed\", \"actor\": \"command_center:u-alice\", \"last_node_id\": \"\", \"started_at\": 1791667010.7977958, \"finished_at\": 1791667010.8847833, \"error\": \"PermissionError: node owner scope is not admitted\", \"node_statuses\": [{\"node_id\": \"code\", \"status\": \"running\"}], \"mermaid\": \"```mermaid\\nflowchart LR\\n    START([\\\"START\\\"])\\n    END([\\\"END\\\"])\\n    code[\\\"Echo in owner cell\\\"]\\n    code --> END\\n    class code running\\n    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px\\n    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px\\n    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px\\n    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px\\n    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px\\n```\", \"summary\": \"**Run on workflow `Synthetic capability c171095307665bb78a80b7f2`** \\u2014 status `failed`\\nActor: command_center:u-alice\\n\\nNodes:\\n  - code: running\\n\\nGraph:\\n```mermaid\\nflowchart LR\\n    START([\\\"START\\\"])\\n    END([\\\"END\\\"])\\n    code[\\\"Echo in owner cell\\\"]\\n    code --> END\\n    class code running\\n    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px\\n    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px\\n    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px\\n    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px\\n    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px\\n```\", \"recursion_limit\": 1000000, \"output_catalog\": {\"fields\": [], \"offset\": 0, \"total_fields\": 0, \"next_offset\": null, \"offset_unit\": \"fields\"}, \"output_read\": \"Use read_graph target=\\\"run_output\\\" with this run_id and field_name. For continued content pass next_offset as output_offset; omit field_name to page the field catalog.\", \"cancel_requested\": false, \"activity_evidence\": \"Stored node events are local observations, not provider acknowledgments or first-byte evidence. Local start precedes concurrency/provider admission; local elapsed time is not provider execution time. A returned value may subsequently fail output validation. Returned-call metadata is tagged with its own step/time and may precede a later start or failure. Local start counts are not provider attempt counts. When present, execution is metadata on the stored returned call: model_status=reported means the model identifier was reported; model_status=unknown means it was not reported. Neither status records request receipt or admission, nor establishes validated output. Legacy provider labels do not identify the actual answering model. Null means unavailable, not evidence that the provider never started or replied. These events do not establish exact subprocess stop or cancellation.\", \"node_activity\": [{\"node_id\": \"code\", \"status\": \"running\", \"latest_step_index\": 1000000, \"latest_event_status\": \"running\", \"latest_event_at\": 1791667010.8728697, \"local_started_at\": 1791667010.8728697, \"local_finished_at\": null, \"local_elapsed_seconds\": null, \"start_events_observed\": 1, \"return_observed_at\": null, \"return_step_index\": null, \"execution\": null, \"legacy_provider_label\": null, \"provider_latency_ms\": null, \"provider_attempts\": null, \"provider_degraded\": null, \"failure_reason\": null, \"failure_type\": null}]}"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- tinyassets/role_node.py\n+++ tinyassets/role_node.py\n@@ -54,8 +54,9 @@\n \n def run(instance, *, invoke, workspace, **request):\n     from tinyassets import role_decoder\n+    from tinyassets.auth.middleware import current_identity\n     from tinyassets.broker.owner_identities import owner_identity\n-    from tinyassets.role_scope import owner_principal\n+    from tinyassets.daemon_server import get_founder_home, universe_access_permission\n     from tinyassets.storage import data_dir\n \n     client = role_decoder._bounded_client\n@@ -63,7 +64,11 @@\n         raise RuntimeError('node requires its bounded owner launcher and command center')\n     root = data_dir().resolve()\n     center = Path(instance.universe_dir)\n-    principal = owner_principal(center)\n+    principal = current_identity().user_id\n+    if (center.parent != root or center.resolve() != center\n+            or not (get_founder_home(root, principal) == center.name or universe_access_permission(\n+                root, universe_id=center.name, actor_id=principal) == 'admin')):\n+        raise PermissionError('node owner scope is not admitted')\n     if instance.launcher is not None and type(instance.launcher) is not sandbox.BwrapLauncher:\n         raise ValueError('node cell cannot replace the fixed nested jail')\n     timeout = request['timeout']\n--- tinyassets/graph_compiler.py\n+++ tinyassets/graph_compiler.py\n@@ -2569,8 +2569,7 @@\n             result = NodeSandbox(\n                 timeout=timeout_s,\n                 should_cancel=should_cancel,\n-                universe_dir=(effect_chain.base_path if effect_chain is not None\n-                              and effect_chain.base_path is not None else base_path),\n+                universe_dir=base_path,\n             ).run_sync(\n                 node_id=node.node_id,\n                 source_code=src,\n"
+    },
+    {
+      "regression": "current-broker-exact",
+      "exit": 1,
+      "seconds": 31.19,
+      "patch_sha256": "d552b282a4a7ee0bd93b2ef0a619c4c8fcab8355fc9ad89ed38833209605f6a0",
+      "error": {
+        "code": "broker_refused",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_8ea134def1f55a999813eb72_5\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": [{\\\"type\\\": \\\"text\\\", \\\"text\\\": \\\"{\\\\\\\"error\\\\\\\": \\\\\\\"outbound request failed: ProviderAuthorityHeldError\\\\\\\", \\\\\\\"error_kind\\\\\\\": \\\\\\\"outbound_request_failed\\\\\\\", \\\\\\\"detail\\\\\\\": \\\\\\\"inference usage authority refused\\\\\\\", \\\\\\\"matched_output_key\\\\\\\": \\\\\\\"call\\\\\\\", \\\\\\\"connection_id\\\\\\\": \\\\\\\"http_3ad62676c73f6311f2a623f47640d9dd\\\\\\\", \\\\\\\"grant_id\\\\\\\": \\\\\\\"http_grant_3ad62676c73f6311f2a623f47640d9dd\\\\\\\", \\\\\\\"verb\\\\\\\": \\\\\\\"POST\\\\\\\", \\\\\\\"url\\\\\\\": \\\\\\\"https://service.capability.test/probe\\\\\\\"}\\\\n[exit code 1]\\\"}]}]\"]"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "broker_refused"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- tinyassets/storage/agent_request_usage.py\n+++ tinyassets/storage/agent_request_usage.py\n@@ -171,11 +171,13 @@\n         # inference sources; a request cannot evade this by omitting model/body.\n         is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None\n                        for kind in (\"model_use\", \"model_discovery\"))\n-        from tinyassets.broker.provider_metadata import read_definitions\n         from tinyassets.providers.definition import _verified_definition\n+        from tinyassets.universe_files import read_universe_file\n \n         try:\n-            definitions = read_definitions(store.base, universe)\n+            definitions = json.loads(read_universe_file(\n+                store.base, f\"{universe}/provider_definitions.json\",\n+            ))\n         except FileNotFoundError:\n             definitions = ()\n         except (OSError, ValueError, TypeError) as exc:\n@@ -386,9 +388,11 @@\n                     or not isinstance(request.get(\"body\"), dict)\n                     or request[\"body\"].get(\"model\") != attempt.model):\n                 raise ValueError(\"source or model mismatch\")\n-            from tinyassets.broker.provider_metadata import read_definitions\n-\n-            rows = read_definitions(self.base, scope[1])\n+            from tinyassets.universe_files import read_universe_file\n+\n+            rows = json.loads(read_universe_file(\n+                self.base, f\"{scope[1]}/provider_definitions.json\",\n+            ))\n             definition = next(_verified_definition(row, expect_universe=scope[1])\n                               for row in rows\n                               if row.get(\"id\") == attempt.source_ref.removeprefix(\"api_key_http:\"))\n"
+    },
+    {
+      "regression": "current-image",
+      "exit": 1,
+      "seconds": 32.03,
+      "patch_sha256": "690382a848515b753108b8aaea363466c105bccef06e2106cfb351638a87743e",
+      "error": {
+        "code": "cell_entry_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_f32e3e17ba48e02542d2e653_4\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": [{\\\"type\\\": \\\"text\\\", \\\"text\\\": \\\"error: /u/capability-image.png could not enter the admitted image decoder cell\\\"}]}]\"]"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "cell_entry_failed"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- tinyassets/universe_tools.py\n+++ tinyassets/universe_tools.py\n@@ -1005,7 +1005,7 @@\n     if run.killed or run.exit_code != 0:\n         return (f\"error: {note}\"\n                 f\"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}\")\n-    shown = bound_image(run.output, target, universe_dir=universe_dir)\n+    shown = bound_image(run.output, target)\n     if isinstance(shown, ToolImage) and note:\n         return replace(shown, text=note + shown.text)\n     return shown\n"
+    },
+    {
+      "regression": "current-content-exact",
+      "exit": 1,
+      "seconds": 16.48,
+      "patch_sha256": "f334a04d5aa06db0d877f1760bddeebc3371e859fad4ddb932d06ae989c7b1b4",
+      "error": {
+        "code": "content_frame_invalid",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"type\\\": \\\"tool_result\\\", \\\"content\\\": \\\"Error calling tool 'write': invalid owner content frame\\\", \\\"is_error\\\": true, \\\"tool_use_id\\\": \\\"capability_863883e85652c82ccf0e9993_0\\\"}]\"]"
+      },
+      "failed_capabilities": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "content_frame_invalid"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ],
+      "patch": "--- tinyassets/config.py\n+++ tinyassets/config.py\n@@ -246,30 +246,13 @@\n         return UniverseConfig()\n \n \n-def _publish_config(universe_path: str | Path, data: dict[str, Any]) -> None:\n-    \"\"\"Atomically replace ``config.yaml`` through the one owner-content writer.\n-\n-    ``config.yaml`` is owner content (command_center_layout USER_NAMES), so a\n-    daemon-side ``os.replace`` would leave a daemon-owned inode that the owner\n-    storage scan refuses; ``write_universe_file`` routes it through the owner\n-    cell and follows no link.\n-    \"\"\"\n-    import yaml\n-\n-    from tinyassets.universe_files import write_universe_file\n-\n-    Path(universe_path).mkdir(parents=True, exist_ok=True)\n-    rendered = yaml.safe_dump(data, default_flow_style=False, sort_keys=True)\n-    write_universe_file(universe_path, \"config.yaml\", rendered.encode(\"utf-8\"), mode=\"replace\")\n-\n-\n def write_universe_config_fields(\n     universe_path: str | Path, **fields: Any\n ) -> None:\n     \"\"\"Merge *fields* into ``{universe_path}/config.yaml`` (atomic).\n \n     Loads the existing config.yaml (if any), updates the given top-level keys,\n-    and writes the merged mapping back atomically (``_publish_config``). Existing\n+    and writes the merged mapping back atomically (temp file + rename). Existing\n     keys not named in *fields* are preserved. This is the write path for\n     per-universe engine assignment (``preferred_writer`` /\n     ``allow_api_key_providers`` set by ``universe action=set_engine``).\n@@ -278,6 +261,11 @@\n     silently-dropped engine assignment would leave the universe on the wrong\n     engine (Hard Rule #8).\n     \"\"\"\n+    import os\n+    import tempfile\n+\n+    import yaml\n+\n     from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for, record_path\n \n     refused = sorted(set(fields) & set(AUTHORITY_FIELDS))\n@@ -302,7 +290,20 @@\n         data.pop(name, None)\n     data.update(fields)\n \n-    _publish_config(universe_path, data)\n+    config_file.parent.mkdir(parents=True, exist_ok=True)\n+    fd, tmp_path = tempfile.mkstemp(\n+        dir=str(config_file.parent), prefix=\".config.\", suffix=\".yaml.tmp\"\n+    )\n+    try:\n+        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as fh:\n+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)\n+        os.replace(tmp_path, config_file)\n+    except Exception:\n+        try:\n+            os.unlink(tmp_path)\n+        except OSError:\n+            pass\n+        raise\n \n \n def write_provider_assignment_projection(\n@@ -324,6 +325,11 @@\n     of supported provider brands. These records are data, not launch authority;\n     the publisher owns their resolution and admission still re-reads the ledger.\n     \"\"\"\n+\n+    import os\n+    import tempfile\n+\n+    import yaml\n \n     normalized_state = state.strip()\n     if normalized_state not in {\"unassigned\", \"pending\", \"ready\", \"failed\"}:\n@@ -382,6 +388,7 @@\n         preferred = \"\"\n         engine_source = \"requester_local\" if generation else \"unassigned\"\n \n+    config_file = Path(universe_path) / \"config.yaml\"\n     data: dict[str, Any] = {}\n     try:\n         loaded = _read_config_document(universe_path, absent=CONFIG_ABSENT)\n@@ -411,4 +418,17 @@\n         \"engine_source\": engine_source,\n         \"preferred_writer\": preferred,\n     })\n-    _publish_config(universe_path, data)\n+    config_file.parent.mkdir(parents=True, exist_ok=True)\n+    fd, tmp_path = tempfile.mkstemp(\n+        dir=str(config_file.parent), prefix=\".config.\", suffix=\".yaml.tmp\"\n+    )\n+    try:\n+        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as fh:\n+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)\n+        os.replace(tmp_path, config_file)\n+    except Exception:\n+        try:\n+            os.unlink(tmp_path)\n+        except OSError:\n+            pass\n+        raise\n--- tinyassets/branch_tasks.py\n+++ tinyassets/branch_tasks.py\n@@ -35,9 +35,7 @@\n \n QUEUE_FILENAME = \"branch_tasks.json\"\n ARCHIVE_FILENAME = \"branch_tasks_archive.json\"\n-# Dotted: a platform coordination file, never owner content\n-# (command_center_layout.PLATFORM_LOCK_NAMES).\n-LOCK_FILENAME = \".branch_tasks.json.lock\"\n+LOCK_FILENAME = \"branch_tasks.json.lock\"\n # Lease window. INVARIANT: must comfortably exceed the worst-case time between\n # heartbeat refreshes, which happen per graph node (not on an independent\n # timer). A single writer node can run the whole provider fallback chain, each\n--- tinyassets/auto_ship_ledger.py\n+++ tinyassets/auto_ship_ledger.py\n@@ -46,9 +46,7 @@\n from typing import Iterator\n \n LEDGER_FILENAME = \"auto_ship_attempts.jsonl\"\n-# Dotted: a platform coordination file, never owner content\n-# (command_center_layout.PLATFORM_LOCK_NAMES).\n-LOCK_FILENAME = \".auto_ship_attempts.jsonl.lock\"\n+LOCK_FILENAME = \"auto_ship_attempts.jsonl.lock\"\n \n #: Valid ``ship_status`` values across Phase 1-3 (\u00c2\u00a710).\n VALID_SHIP_STATUSES: frozenset[str] = frozenset({\n@@ -192,15 +190,14 @@\n \n     Same primitive as ``tinyassets.branch_tasks._file_lock`` \u00e2\u20ac\u201d kept as a\n     private mirror rather than importing it because the lock is\n-    namespaced to ``.auto_ship_attempts.jsonl.lock``, not to the queue\n+    namespaced to ``auto_ship_attempts.jsonl.lock``, not to the queue\n     file. Two concurrent ledger writes serialize; ledger writes do\n     NOT serialize against branch_tasks writes (they touch different\n-    files anyway). Opened link-free through ``universe_files.open_lock_file``.\n-    \"\"\"\n-    from tinyassets.universe_files import open_lock_file\n-\n+    files anyway).\n+    \"\"\"\n     Path(universe_path).mkdir(parents=True, exist_ok=True)\n-    fd = open_lock_file(universe_path, LOCK_FILENAME)\n+    lock_file = _lock_path(universe_path)\n+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)\n     try:\n         if sys.platform == \"win32\":\n             import msvcrt\n"
+    }
+  ],
+  "capability_fault_method": "Independently insert raise RuntimeError(\"disabled capability: <id>\") at first statement of each listed runtime entry, copy only that source into a derived production image, then run the unchanged image check. These outage mutations supplement, not replace, historical regressions.",
+  "capability_faults": [
+    {
+      "capability": "owner_sign_in",
+      "entry": "tinyassets/onboarding/owner_sessions.py:callback",
+      "exit": 1,
+      "seconds": 12.72,
+      "source_sha256": "60eeffcea98fc2c365637d0c3d65b1dced70b7031c32e0421da554adfebe4180",
+      "error": {
+        "code": "operation_failed",
+        "detail": "Server error '500 Internal Server Error' for url 'https://tinyassets.io/app?code=LQIALIy77FZTI5TZBdhHp_yzHV9mkBo7&state=oa_app_pJn0s_QXZIZeW_nk9FXQbp18wT_B6Zr6EDwJmN3WLPE'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "owner_sign_in",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "approval",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "public_mcp",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "chat_stream",
+      "entry": "tinyassets/universe_intelligence.py:converse",
+      "exit": 1,
+      "seconds": 13.52,
+      "source_sha256": "37724b4d79925d8c651aa56855d1056483c4eb19b6ebcc049357f809b992cf4a",
+      "error": {
+        "code": "operation_failed",
+        "detail": "real streamed reply failed: {\"error\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"disabled capability: chat_stream\\\" Ref: 0684e30bca984899\", \"turn_failure\": {\"version\": 1, \"kind\": \"turn_failed\", \"code\": \"unknown\", \"effects\": \"unknown\", \"provider_detail\": \"disabled capability: chat_stream\", \"ref\": \"0684e30bca984899\"}, \"failure_notice\": \"Your agent's turn stopped \\u2014 we could not identify why; we cannot tell whether this is a connection, usage, billing, or platform problem, so rather than guess we have recorded the details. We can't tell whether actions ran, so actions may already have occurred. Check progress before sending again; sending again repeats the whole request. Detail: \\\"disabled capability: chat_stream\\\" Ref: 0684e30bca984899\", \"history_saved\": true}"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "bash",
+      "entry": "tinyassets/universe_tools.py:bash",
+      "exit": 1,
+      "seconds": 31.95,
+      "source_sha256": "213b125d652ee2c8803bce96d9928d3b8543cd0810a71e68b2d5e830df38e7d9",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"type\\\": \\\"tool_result\\\", \\\"content\\\": \\\"Error calling tool 'bash': disabled capability: bash\\\", \\\"is_error\\\": true, \\\"tool_use_id\\\": \\\"capability_49b17c6eb41ec9b320485f79_4\\\"}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "operation_failed"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "write",
+      "entry": "tinyassets/universe_tools.py:write_file",
+      "exit": 1,
+      "seconds": 20.93,
+      "source_sha256": "703b4b124fc5dc9b0eba79069cdc337619e3a48879267f9fb3e4a0baab2a0534",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"type\\\": \\\"tool_result\\\", \\\"content\\\": \\\"Error calling tool 'write': disabled capability: write\\\", \\\"is_error\\\": true, \\\"tool_use_id\\\": \\\"capability_4a1ae25db8e68ea964214dae_0\\\"}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "operation_failed"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "read",
+      "entry": "tinyassets/universe_tools.py:read_file",
+      "exit": 1,
+      "seconds": 23.7,
+      "source_sha256": "f19c89271a05261d5047a5bcc8d2c69ed81f3a39d274e7b91e6fc6a431ef1387",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"type\\\": \\\"tool_result\\\", \\\"content\\\": \\\"Error calling tool 'read': disabled capability: read\\\", \\\"is_error\\\": true, \\\"tool_use_id\\\": \\\"capability_21fb974080c292e88afb80c9_1\\\"}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "operation_failed"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "edit",
+      "entry": "tinyassets/universe_tools.py:edit_file",
+      "exit": 1,
+      "seconds": 27.33,
+      "source_sha256": "9051b0e14d40805900bf6458c464097845cf6dffeae65703746793f42469aaf9",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"type\\\": \\\"tool_result\\\", \\\"content\\\": \\\"Error calling tool 'edit': disabled capability: edit\\\", \\\"is_error\\\": true, \\\"tool_use_id\\\": \\\"capability_956897aba93f9b34223d461d_2\\\"}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "operation_failed"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "ta",
+      "entry": "tinyassets/ta_capabilities.py:dispatch",
+      "exit": 1,
+      "seconds": 42.65,
+      "source_sha256": "97bba65be9bed4223a519a5dcd973e50d4b58cf36ec7bddc5d48aea8741cd695",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_180f1bcdfe093003134d5773_6\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": [{\\\"type\\\": \\\"text\\\", \\\"text\\\": \\\"{\\\\\\\"error\\\\\\\": \\\\\\\"{\\\\\\\\\\\\\\\"error\\\\\\\\\\\\\\\": \\\\\\\\\\\\\\\"ta request failed\\\\\\\\\\\\\\\"}\\\\\\\"}\\\\n[exit code 1]\\\"}]}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "operation_failed"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "connected_service",
+      "entry": "tinyassets/broker/client.py:request",
+      "exit": 1,
+      "seconds": 42.35,
+      "source_sha256": "713dde24a353aa676aa747f6b12bd332531b9d7f1881e499afcefc2f9c4538b6",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_2b56c80477b1fc7f9e2cf90e_6\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": [{\\\"type\\\": \\\"text\\\", \\\"text\\\": \\\"{\\\\\\\"error\\\\\\\": \\\\\\\"outbound request failed: RuntimeError\\\\\\\", \\\\\\\"error_kind\\\\\\\": \\\\\\\"outbound_request_failed\\\\\\\", \\\\\\\"detail\\\\\\\": \\\\\\\"disabled capability: connected_service\\\\\\\", \\\\\\\"matched_output_key\\\\\\\": \\\\\\\"call\\\\\\\", \\\\\\\"connection_id\\\\\\\": \\\\\\\"http_3ad62676c73f6311f2a623f47640d9dd\\\\\\\", \\\\\\\"grant_id\\\\\\\": \\\\\\\"http_grant_3ad62676c73f6311f2a623f47640d9dd\\\\\\\", \\\\\\\"verb\\\\\\\": \\\\\\\"POST\\\\\\\", \\\\\\\"url\\\\\\\": \\\\\\\"https://service.capability.test/probe\\\\\\\"}\\\\n[exit code 1]\\\"}]}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "operation_failed"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "approval",
+      "entry": "tinyassets/onboarding/inline_requests.py:handle_approval",
+      "exit": 1,
+      "seconds": 15.25,
+      "source_sha256": "969159c0068a4fdd628cce681dc95a2d53beb05384f67b2ba1b72087f8762bda",
+      "error": {
+        "code": "operation_failed",
+        "detail": "Server error '500 Internal Server Error' for url 'https://tinyassets.io/app/approvals/answer'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "approval",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "read_image",
+      "entry": "tinyassets/role_decoder.py:decode",
+      "exit": 1,
+      "seconds": 41.98,
+      "source_sha256": "09092ec77503d2c35bc50df19a6de758742a4fbaf7e4f9f41dd1011ca727a480",
+      "error": {
+        "code": "cell_entry_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_fc4c89d9310436c228c37e45_5\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": [{\\\"type\\\": \\\"text\\\", \\\"text\\\": \\\"error: /u/capability-image.png could not enter the admitted image decoder cell\\\"}]}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "cell_entry_failed"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "background_run",
+      "entry": "tinyassets/role_node.py:run",
+      "exit": 1,
+      "seconds": 50.06,
+      "source_sha256": "3bc9e1a17755f5fa28578594c27e1891883e7187a1f926a5e601349e2a316699",
+      "error": {
+        "code": "cell_execution_failed",
+        "detail": "read_graph failed: {\"text\": \"**Run on workflow `Synthetic capability 49086d20976301478e0ec587`** \\u2014 status `failed`\\nActor: command_center:u-alice\\n\\nNodes:\\n  - code: running\\n\\nGraph:\\n```mermaid\\nflowchart LR\\n    START([\\\"START\\\"])\\n    END([\\\"END\\\"])\\n    code[\\\"Echo in owner cell\\\"]\\n    code --> END\\n    class code running\\n    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px\\n    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px\\n    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px\\n    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px\\n    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px\\n```\", \"run_id\": \"e0fe97d3ae8f47dc\", \"branch_def_id\": \"fb0dd83fbf7c\", \"status\": \"failed\", \"actor\": \"command_center:u-alice\", \"last_node_id\": \"\", \"started_at\": 1791667895.5313127, \"finished_at\": 1791667895.6784494, \"error\": \"RuntimeError: disabled capability: background_run\", \"node_statuses\": [{\"node_id\": \"code\", \"status\": \"running\"}], \"mermaid\": \"```mermaid\\nflowchart LR\\n    START([\\\"START\\\"])\\n    END([\\\"END\\\"])\\n    code[\\\"Echo in owner cell\\\"]\\n    code --> END\\n    class code running\\n    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px\\n    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px\\n    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px\\n    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px\\n    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px\\n```\", \"summary\": \"**Run on workflow `Synthetic capability 49086d20976301478e0ec587`** \\u2014 status `failed`\\nActor: command_center:u-alice\\n\\nNodes:\\n  - code: running\\n\\nGraph:\\n```mermaid\\nflowchart LR\\n    START([\\\"START\\\"])\\n    END([\\\"END\\\"])\\n    code[\\\"Echo in owner cell\\\"]\\n    code --> END\\n    class code running\\n    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px\\n    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px\\n    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px\\n    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px\\n    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px\\n```\", \"recursion_limit\": 1000000, \"output_catalog\": {\"fields\": [], \"offset\": 0, \"total_fields\": 0, \"next_offset\": null, \"offset_unit\": \"fields\"}, \"output_read\": \"Use read_graph target=\\\"run_output\\\" with this run_id and field_name. For continued content pass next_offset as output_offset; omit field_name to page the field catalog.\", \"cancel_requested\": false, \"activity_evidence\": \"Stored node events are local observations, not provider acknowledgments or first-byte evidence. Local start precedes concurrency/provider admission; local elapsed time is not provider execution time. A returned value may subsequently fail output validation. Returned-call metadata is tagged with its own step/time and may precede a later start or failure. Local start counts are not provider attempt counts. When present, execution is metadata on the stored returned call: model_status=reported means the model identifier was reported; model_status=unknown means it was not reported. Neither status records request receipt or admission, nor establishes validated output. Legacy provider labels do not identify the actual answering model. Null means unavailable, not evidence that the provider never started or replied. These events do not establish exact subprocess stop or cancellation.\", \"node_activity\": [{\"node_id\": \"code\", \"status\": \"running\", \"latest_step_index\": 1000000, \"latest_event_status\": \"running\", \"latest_event_at\": 1791667895.6549306, \"local_started_at\": 1791667895.6549306, \"local_finished_at\": null, \"local_elapsed_seconds\": null, \"start_events_observed\": 1, \"return_observed_at\": null, \"return_step_index\": null, \"execution\": null, \"legacy_provider_label\": null, \"provider_latency_ms\": null, \"provider_attempts\": null, \"provider_degraded\": null, \"failure_reason\": null, \"failure_type\": null}]}"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "public_mcp",
+      "entry": "tinyassets/universe_server.py:read_graph",
+      "exit": 1,
+      "seconds": 16.32,
+      "source_sha256": "3703ada0b02a25b525b66ca23a129e2605a68d869398a9d1447795c365c57370",
+      "error": {
+        "code": "operation_failed",
+        "detail": "Error calling tool 'read_graph': disabled capability: public_mcp"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "bash",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "write",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "edit",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "ta",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "connected_service",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "read_image",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "approval",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "public_mcp",
+          "code": "evidence_missing"
+        }
+      ]
+    },
+    {
+      "capability": "patch_request",
+      "entry": "tinyassets/patch_intake.py:send_patch_request",
+      "exit": 1,
+      "seconds": 48.15,
+      "source_sha256": "ef13b0195e09afb8b03423d951b723657f6e0b811fafe1a809f88228f2866b77",
+      "error": {
+        "code": "operation_failed",
+        "detail": "model-boundary verification failed: [\"AssertionError: [{\\\"tool_use_id\\\": \\\"capability_4e11539e0472e6075a79f5b1_7\\\", \\\"type\\\": \\\"tool_result\\\", \\\"content\\\": [{\\\"type\\\": \\\"text\\\", \\\"text\\\": \\\"{\\\\\\\"error\\\\\\\": \\\\\\\"Error calling tool 'write_graph': disabled capability: patch_request\\\\\\\"}\\\\n[exit code 1]\\\"}]}]\"]"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "chat_stream",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "background_run",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        },
+        {
+          "capability": "patch_request",
+          "code": "operation_failed"
+        }
+      ]
+    },
+    {
+      "capability": "scheduled_wake",
+      "entry": "tinyassets/automations.py:run_due_automation",
+      "exit": 1,
+      "seconds": 147.24,
+      "source_sha256": "ebac36c565d1edf813c8e70e7ae8228eea597bae81ccfdcb92f52c5656781d29",
+      "error": {
+        "code": "deadline_exceeded",
+        "detail": "daemon did not consume scheduled wake: bf7455dc23ff45f7be9eb1d53b875b5d"
+      },
+      "missing_or_failed": [
+        {
+          "capability": "scheduled_wake",
+          "code": "evidence_missing"
+        }
+      ]
+    }
+  ],
+  "healthy_image": {
+    "capabilities": [
+      {
+        "capability": "owner_sign_in",
+        "status": "passed",
+        "evidence": "verified_owner_session",
+        "observation": {
+          "callback": "verified",
+          "refresh": "verified"
+        }
+      },
+      {
+        "capability": "public_mcp",
+        "status": "passed",
+        "evidence": "authenticated_tool_call",
+        "observation": {
+          "authenticated_tool": "read_graph"
+        }
+      },
+      {
+        "capability": "approval",
+        "status": "passed",
+        "evidence": "answered_request",
+        "observation": {
+          "request_id": "req_79529dad205a429d8f84e503",
+          "decision": "allowed"
+        }
+      },
+      {
+        "capability": "write",
+        "status": "passed",
+        "evidence": "tool_result",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "read",
+        "status": "passed",
+        "evidence": "tool_result",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "edit",
+        "status": "passed",
+        "evidence": "tool_result",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "bash",
+        "status": "passed",
+        "evidence": "tool_result",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "read_image",
+        "status": "passed",
+        "evidence": "image_content",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "ta",
+        "status": "passed",
+        "evidence": "completed_capability",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "connected_service",
+        "status": "passed",
+        "evidence": "http_effect",
+        "observation": {
+          "model_received_result": true,
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "chat_stream",
+        "status": "passed",
+        "evidence": "reply_deltas",
+        "observation": {
+          "reply": "CAPABILITY-REPLY-2821edfb1825e490114ba788",
+          "model_sse_deltas": 2
+        }
+      },
+      {
+        "capability": "patch_request",
+        "status": "passed",
+        "evidence": "filed_request",
+        "observation": {
+          "delivery_id": "26971ce11458498e8525b37b48ab0247",
+          "nonce": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "background_run",
+        "status": "passed",
+        "evidence": "completed_run",
+        "observation": {
+          "run_id": "36e8e4c2eda5450c",
+          "echo": "2821edfb1825e490114ba788"
+        }
+      },
+      {
+        "capability": "scheduled_wake",
+        "status": "passed",
+        "evidence": "consumed_wake",
+        "observation": {
+          "automation_id": "b0a95585eaf74d39bbe59d10b6b9eeb1",
+          "run_id": "1eab22176b5148cd",
+          "echo": "2821edfb1825e490114ba788"
+        }
+      }
+    ],
+    "image": "ta-core-capabilities:latest",
+    "runtime_rates": {
+      "schema": 1,
+      "boot_id": "3b9bda3ca3cb48d3b1a9d58f6b621809",
+      "pid": 1,
+      "observed_seconds": 40,
+      "window_seconds": 300,
+      "history_seconds": 1200,
+      "outcomes": 39,
+      "capability_outcomes": {
+        "owner_sign_in": 1,
+        "chat_stream": 2,
+        "bash": 3,
+        "read": 2,
+        "write": 1,
+        "edit": 1,
+        "ta": 4,
+        "connected_service": 1,
+        "read_image": 1,
+        "approval": 1,
+        "background_run": 3,
+        "scheduled_wake": 1,
+        "patch_request": 1,
+        "public_mcp": 17
+      },
+      "failures": [],
+      "alarms": []
+    },
+    "failures": []
+  },
+  "limits": [
+    "Initial #4576 mutant survived without live process churn; fixed check churns 24 children through the real launcher. Initial #4584 role_node-only revert survived until the compiler owner-path regression was also restored.",
+    "Initial #4577/#4580 old owned_process restore produced an incompatible import error and is excluded. Coherent pre-duplex transport with current owned_process exercises real relay behavior.",
+    "#4580 healthy conversation alone survived. Check now also launches the actual CLI with an invalid option and unread prompt, requiring its real stderr reason; mutant fails that assertion.",
+    "Fixed baselines #4579/#4580 have 3/2 obsolete-fixture failures that disappear on reversal; these are not regression catches.",
+    "Production dedicated-owner sign-in/model behavior and paging remain unverified until founder provisioning. Hosted schedule is nominal, not a guaranteed five-minute delivery SLA."
+  ],
+  "test_inventory": {
+    "original_main_69c38cff499": {
+      "files": 1333,
+      "functions": 20652
+    },
+    "dependency_base_9fa0cc6d285": {
+      "files": 1335,
+      "functions": 20661
+    },
+    "working": {
+      "files": 1336,
+      "functions": 20631
+    }
+  },
+  "removed_seam_tests": [
+    "test_all_adapters_share_the_same_selected_dispatch",
+    "test_served_turn_carries_its_engine_route_into_the_cell",
+    "test_edit_replaces_exactly_one_match_and_writes_it_back",
+    "test_image_read_preserves_its_existing_source_allowance",
+    "test_a_checked_destination_is_tunnelled"
+  ],
+  "folded_assertions": "Image output cap stays in existing pure tool-limit test; all five positive seam assertions move to the real-image check. Retired PR browser-install/namespace workflow assertion replaced by tier+required-image contract.",
+  "retired_deploy_tests": {
+    "baseline": "30 identical failures before/after; all except one were already in known-failing ledger",
+    "retired": [
+      "test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs",
+      "test_capture_previous_transports_bounded_prior_receipt_read_only",
+      "test_capture_previous_uses_configured_and_running_digest_observations",
+      "test_daemon_deploy_owns_exact_public_server_name_assertion",
+      "test_deploy_failure_issue_consumes_rollback_and_terminal_outputs",
+      "test_deploy_failure_issue_has_truthful_bounded_wording",
+      "test_deploy_failure_issue_rejects_partial_or_contradictory_tuples",
+      "test_disk_preflight_precedes_every_remote_image_pull",
+      "test_disk_preflight_runs_before_deploy_image_pull",
+      "test_forward_green_terminal_identity_failure_stays_red_after_publication",
+      "test_image_marker_is_immediately_before_first_tinyassets_image_write",
+      "test_manual_image_tag_is_env_bound_and_validated_before_use",
+      "test_manual_unsafe_fence_recovery_is_separate_and_source_bound",
+      "test_production_marker_is_immediately_before_first_scrub_host_write",
+      "test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly",
+      "test_resolved_digest_is_canonical_before_any_host_write",
+      "test_rollback_and_terminal_receipt_are_ordered_under_always",
+      "test_rollback_emits_safe_defaults_and_final_outputs_before_exit",
+      "test_rollback_runs_always_and_eligibility_keys_to_image_marker",
+      "test_stop_writer_blocks_unsafe_rollback_image",
+      "test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids",
+      "test_terminal_canary_output_preserves_the_raw_applicable_canary",
+      "test_terminal_never_reports_deployed_without_exact_cleanup_restoration",
+      "test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer",
+      "test_terminal_receipt_keys_to_production_marker",
+      "test_terminal_receipt_never_mutates_the_deployed_image_after_publication",
+      "test_terminal_writer_outputs_are_visible_before_fallible_work",
+      "test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation"
+    ],
+    "folded": [
+      "test_canary_step_only_probes_canonical",
+      "test_rollback_step_present"
+    ]
+  },
+  "timings": {
+    "old_hosted_tests_run": 38023768139,
+    "old_hosted_wall_seconds": 435,
+    "old_hosted_runner_seconds_excluding_aggregate": 1729,
+    "new_hosted": "pending PR run",
+    "deploy_test_pair_before": {
+      "passed": 59,
+      "failed": 30,
+      "seconds": 6.6
+    },
+    "deploy_test_pair_after": {
+      "passed": 61,
+      "failed": 0,
+      "seconds": 4.71
+    }
+  }
+}

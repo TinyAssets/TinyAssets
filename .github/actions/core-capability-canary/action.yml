@@ -1,0 +1,24 @@
+name: Core capability canary
+description: Exercise the dedicated production owner and page on capability or rate failures.
+runs:
+  using: composite
+  steps:
+    - name: Install canary client
+      shell: bash
+      run: |
+        pip install 'fastmcp>=3.2,<4' httpx pillow playwright
+        python -m playwright install --with-deps chromium
+    - name: Probe all capabilities and daemon failure rates
+      id: probe
+      shell: bash
+      run: python scripts/core_capability_live.py --report core-capabilities-live.json
+    - name: Reconcile incident and emergency push
+      if: always()
+      shell: bash
+      run: python scripts/core_capability_alert.py core-capabilities-live.json
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: core-capabilities-live
+        path: core-capabilities-live.json
+        if-no-files-found: error

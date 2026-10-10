@@ -91,10 +91,24 @@ def test_a_test_naming_a_file_by_path_is_selected(tmp_path):
 
 
 def test_a_changed_test_runs_and_a_deleted_one_does_not(tmp_path):
-    root = _repo(tmp_path, {"tests/test_mine.py": "import json\n"})
+    root = _repo(tmp_path, {
+        "tests/test_mine.py": "import json\n",
+        "tests/test_long.py": "import json\n",
+        "tests/test_cell.py": "import pytest\npytestmark=pytest.mark.role_split\n",
+        "tests/test_browser.py": "import playwright.async_api\n",
+        "tests/test_heavy.py": "import json\n",
+        ".github/test-durations.json": '{"tests/test_long.py": 6}',
+        ".github/heavy-test-files.txt": 'tests/test_heavy.py\n',
+    })
     assert at.select(["tests/test_mine.py", "tests/test_gone.py"], root)[0] == [
         "tests/test_mine.py"
     ]
+    assert at.pr_tier(None, root) == ['tests/test_mine.py']
+    assert at.pr_tier([], root) == []
+    for path in ('Dockerfile', 'tinyassets/role_tools.py', 'deploy/role_decoder.py',
+                 'scripts/core_capability_image.py', '.github/workflows/tests.yml'):
+        assert at.needs_image([path]), path
+    assert not at.needs_image(['docs/concerns/example.md', 'tests/test_example.py'])
 
 
 def test_an_unmentioned_non_python_change_selects_nothing(tmp_path):

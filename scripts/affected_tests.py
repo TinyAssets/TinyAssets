@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import os
 import re
 import subprocess
@@ -408,11 +409,53 @@ def changed_files(base: str) -> list[str]:
     return out.splitlines()
 
 
+def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
+    """PRs run affected fast units; real execution belongs to the image gate.
+
+    Slow files remain in the existing merge/deploy/scheduled tiers. This is a
+    selection rule, not a marker that lets a failed capability skip its gate.
+    Unknown durations stay selected; measured files over five seconds move out.
+    """
+    durations = json.loads((root / '.github/test-durations.json').read_text())
+    heavy = {line.split('#', 1)[0].strip() for line in
+             (root / '.github/heavy-test-files.txt').read_text().splitlines()}
+    candidates = selected if selected is not None else sorted(
+        p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py'))
+    result = []
+    for name in candidates:
+        source = (root / name).read_text(encoding='utf-8')
+        tree = ast.parse(source)
+        execution_tier = any(
+            isinstance(node, ast.Attribute) and node.attr in (
+                'real_jail', 'role_split', 'real_browser', 'slow')
+            or isinstance(node, ast.ImportFrom) and
+            (node.module or '').startswith(('playwright', 'selenium'))
+            or isinstance(node, ast.Import) and any(
+                alias.name.startswith(('playwright', 'selenium')) for alias in node.names)
+            for node in ast.walk(tree))
+        if name not in heavy and durations.get(name, 0) <= 5 and not execution_tier:
+            result.append(name)
+    return result
+
+
+def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from scripts.runtime_paths import runtime_inputs
+
+    inputs = runtime_inputs(root, 'HEAD')
+    return any(inputs.covers(name) or name.startswith('scripts/core_capability')
+               or name in ('scripts/affected_tests.py', '.github/workflows/tests.yml')
+               for name in changed)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", help="git ref to diff against (merge-base ...HEAD)")
     ap.add_argument("--changed", nargs="*", help="explicit changed paths instead of --base")
     ap.add_argument("--out", help="write the selection here; ALL means the whole suite")
+    ap.add_argument('--pr', action='store_true', help='select affected fast units for a PR')
+    ap.add_argument('--image-output', help='write true/false for the real-image gate')
     ap.add_argument(
         "--gate",
         action="store_true",
@@ -427,6 +470,8 @@ def main() -> int:
     if (args.base is None) == (args.changed is None):
         raise SystemExit("pass exactly one of --base or --changed")
     changed = args.changed if args.changed is not None else changed_files(args.base)
+    if args.image_output:
+        Path(args.image_output).write_text(str(needs_image(changed)).lower()+'\n')
     try:
         selected, reasons = (gate_selection if args.gate else select)(changed)
     except RuntimeError as exc:
@@ -436,6 +481,9 @@ def main() -> int:
         # dependencies installed lands here -- the conftest import probe needs
         # pytest -- which is why the select job installs before asking.
         selected, reasons = None, [f"selection failed, running the whole suite: {exc}"]
+    if args.pr:
+        selected = pr_tier(selected)
+        reasons.append('PR tier: affected fast units; execution seams run in the image gate')
     body = "ALL\n" if selected is None else "".join(f"{t}\n" for t in selected)
     for line in reasons:
         print(line, file=sys.stderr)

@@ -2292,6 +2292,13 @@ def update_run_status(
             base_path, run_id, workspace_terminal_base, local_owed=owed
         )
     if completed_row:
+        from tinyassets.capability_health import RATES
+        from tinyassets.core_capabilities import failure_code
+
+        if status == RUN_STATUS_COMPLETED:
+            RATES.record('background_run')
+        elif status == RUN_STATUS_FAILED:
+            RATES.record('background_run', failure_code(error or 'run failed'))
         deliver_terminal_events(base_path, run_ids=[run_id])
 
 

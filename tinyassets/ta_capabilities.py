@@ -17,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from tinyassets.capability_health import observed
+
 JAIL_SOCKET = "/tmp/ta.sock"
 JAIL_CLIENT = "/ta/bin/ta"
 CLIENT_SOURCE = Path(__file__).with_name("ta_cli.py")
@@ -91,6 +93,7 @@ class Capabilities:
                 found[name] = (grant, view, verb)
         return found
 
+    @observed('ta')
     async def dispatch(self, message):
         from tinyassets.auth.middleware import identity_context
 
