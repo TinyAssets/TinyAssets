@@ -108,6 +108,40 @@ def _run(script: Path, env: dict, args: list[str] | None = None) -> subprocess.C
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize('mode', ['snapshot', 'nightly'])
+def test_browser_keys_never_enter_data_archives(tmp_path, mode):
+    import sqlite3
+
+    volume = tmp_path / 'volume'
+    keys = volume / '.broker' / 'browser-vault'
+    keys.mkdir(parents=True)
+    (keys / 'owner.key').write_bytes(b'private owner key')
+    with sqlite3.connect(volume / '.broker' / 'outbound.db') as conn:
+        conn.execute('CREATE TABLE custody (sealed BLOB)')
+        conn.execute('INSERT INTO custody VALUES (?)', (b'encrypted session',))
+    archives = tmp_path / 'archives'
+    archives.mkdir()
+    fake_env = tmp_path / 'commands.sh'
+    fake_env.write_text(
+        f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
+        'rclone() { if [[ $1 == copyto ]]; then '
+        f'cp "$6" {shlex.quote(str(archives))}/; fi; }}\n')
+    result = _run(BACKUP_SH, {
+        'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-browser-backup-test',
+        'BACKUP_DEST': 'test:backup', 'BACKUP_MODE': mode, 'GH_TOKEN': '',
+        'BACKUP_LOG': str(tmp_path / 'log'),
+        'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    found = list(archives.glob('*.tar.gz'))
+    assert len(found) == (1 if mode == 'snapshot' else 2)
+    for archive in found:
+        with tarfile.open(archive) as handle:
+            names = handle.getnames()
+            assert any(name.endswith('.broker/outbound.db') for name in names)
+            assert not any('browser-vault' in name for name in names)
+
+
 @pytest.mark.parametrize('entry', ['egress-42.sock', 'engine-42-abcdef123456.sock',
                                   'unknown.sock', 'omit-file'])
 def test_snapshot_restorable_inventory(tmp_path, entry):

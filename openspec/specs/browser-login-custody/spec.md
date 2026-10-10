@@ -1,4 +1,9 @@
-## ADDED Requirements
+# Browser login custody
+
+## Purpose
+Owner-custodied cloud website sign-in through the protected app sheet and ta.
+
+## Requirements
 
 ### Requirement: One interruption and remembered account custody
 The inline action SHALL be labelled Sign in with its exact origin and open owner

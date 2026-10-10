@@ -349,6 +349,9 @@ class _Connection:
         elif op == "CONNECTION_CATALOG":
             answer = await asyncio.to_thread(self._connection_catalog, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "BROWSER_VAULT":
+            answer = await asyncio.to_thread(self._browser_vault, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "FENCE":
             try:
                 generation, token = await asyncio.to_thread(
@@ -469,6 +472,21 @@ class _Connection:
                 "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                 else "refused")
             return {"op": "LEDGER_REFUSED", "error_class": error}
+
+    def _browser_vault(self, doc):
+        from tinyassets.broker.browser_vault import local_operation
+
+        try:
+            if set(doc) != {'op', 'principal', 'command_center', 'generation', 'token', 'document'}:
+                raise ValueError('invalid browser custody fields')
+            _namespace(doc['principal'], doc['command_center'])
+            with self._server._fence.send(doc['generation'], doc['token']):
+                result = local_operation(self._server._ledger_for(doc['principal']),
+                    principal=doc['principal'], command_center=doc['command_center'],
+                    document=doc['document'])
+                return {'op': 'BROWSER_RESULT', 'result': result}
+        except Exception:  # noqa: BLE001 - credentials never enter error payloads
+            return {'op': 'BROWSER_REFUSED'}
 
     def _connection_catalog(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.catalog import local_page, validate

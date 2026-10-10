@@ -2572,6 +2572,7 @@ def onboarding_routes() -> list[Any]:
 
     from tinyassets.onboarding import approval_handoff
     from tinyassets.onboarding.app_modules import handle_app_module
+    from tinyassets.onboarding.browser_login import handle as handle_browser_login
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.inline_requests import handle_approval
@@ -2603,6 +2604,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
+        Route("/app/browser-login", handle_browser_login, methods=["POST"]),
         Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),
         Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),
