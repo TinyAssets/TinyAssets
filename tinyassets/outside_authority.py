@@ -135,6 +135,11 @@ class OutsideClientAuthority:
                     "SELECT client,family,retired FROM outside_families WHERE owner=?", (owner,))]}
 
     def admit(self, owner, bound, *, universe=None, agent=None, capability=None):
+        if "api_key" in bound:
+            from tinyassets.api_keys import KeyStore
+
+            return KeyStore(self.path.parent).admit_key(
+                owner, bound, universe=universe, agent=agent, capability=capability)
         try:
             with self.db() as conn:
                 switch = conn.execute("SELECT enabled FROM outside_switch WHERE id=1").fetchone()
@@ -176,6 +181,12 @@ def effect_admission():
     bound = identity.metadata.get("outside_origin") if identity is not None else None
     if bound is None:
         yield
+        return
+    if "api_key" in bound:
+        from tinyassets.api_keys import current_store as key_store
+
+        with key_store().effect(identity):
+            yield
         return
     import uuid
 

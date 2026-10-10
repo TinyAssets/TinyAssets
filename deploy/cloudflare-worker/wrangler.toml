@@ -63,6 +63,7 @@ compatibility_flags = []
 routes = [
     { pattern = "tinyassets.io/mcp*", zone_name = "tinyassets.io" },
     { pattern = "tinyassets.io/app*", zone_name = "tinyassets.io" },
+    { pattern = "tinyassets.io/api/v1/*", zone_name = "tinyassets.io" },
 ]
 
 # Observability — enable request logs so post-P0 debugging has a trail.

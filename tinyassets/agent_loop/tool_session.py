@@ -57,6 +57,11 @@ class LoopToolSession:
         self._engine = engine
         self._steer = steer
         self._names = frozenset(tool.name for tool in tools)
+        from tinyassets.auth.middleware import current_identity_or_none
+
+        identity = current_identity_or_none()
+        origin = identity.metadata.get("outside_origin", {}) if identity else {}
+        self._key_identity = identity if "api_key" in origin else None
 
     async def _steered(self, result: CallToolResult) -> CallToolResult:
         """The owner's mid-turn messages ride on a loop-served result too, exactly
@@ -73,6 +78,12 @@ class LoopToolSession:
     async def call(self, name: str, arguments: dict[str, Any], *, op_id: str) -> CallToolResult:
         if name not in self._names or not isinstance(arguments, dict):
             raise EngineToolError("loop_tool_not_allowed")
+        if self._key_identity is not None:
+            from tinyassets.outside_authority import check_identity
+
+            origin = self._key_identity.metadata["outside_origin"]
+            check_identity(self._key_identity, universe=origin.get("universe"),
+                           agent=origin.get("agent"), capability=name)
         if name in BOX_TOOLS:
             try:
                 text = await self._box.call(name, op_id, arguments)

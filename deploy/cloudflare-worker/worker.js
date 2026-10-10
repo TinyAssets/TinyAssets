@@ -278,6 +278,7 @@ function shouldProxy(pathname) {
     // to be `tinyassets.io/app*` and cannot be an exact `tinyassets.io/app`.
     if (pathname === '/mcp' || pathname.startsWith('/mcp/')) return true;
     if (pathname === '/app' || pathname.startsWith('/app/')) return true;
+    if (pathname.startsWith('/api/v1/')) return true;
     return false;
 }
 

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>API keys · TinyAssets</title>
+<style nonce="{{NONCE}}">
+body{font:16px system-ui,sans-serif;max-width:850px;margin:40px auto;padding:0 20px;color:#202725;background:#f5f7f4}
+a{color:#146451}h1{font-size:28px}label{display:block;margin:14px 0}input,select,button{font:inherit;padding:9px;border:1px solid #85968e;border-radius:6px}
+input[type=text]{width:min(95%,420px)}button{cursor:pointer;background:white;margin:4px}button[type=submit]{background:#146451;color:white}
+fieldset,article{border:1px solid #c1cdc5;border-radius:10px;padding:16px;margin:18px 0;background:white}
+fieldset label{display:inline-block;margin:8px}code{overflow-wrap:anywhere}pre{white-space:pre-wrap}#notice{min-height:24px}small{color:#506057}
+</style></head><body>
+<a href="/app">← Back to app</a><p>Connected apps</p><h1>API keys</h1>
+<p>Let a programmatic agent use your command centers. Keys work until you revoke them. Keep each key private.</p>
+<p><a href="/app/owner-sign-in">Sign in to the protected owner view</a> · <a href="/api/v1/openapi.json">OpenAPI reference</a></p>
+<p id="notice" role="status"></p>
+<section id="secret-box" hidden><h2>Copy your key now</h2><p>This is the only time it is shown.</p>
+<code id="secret"></code><p><button id="dismiss-secret">I saved it</button></p></section>
+<form id="form"><fieldset><legend id="form-title">Create a key</legend>
+<label>Name <input id="name" type="text" maxlength="80" required placeholder="My research agent"></label>
+<label>Command center <select id="center" required></select></label>
+<label>Agents <input id="agents" type="text" required value="main" placeholder="main, researcher"></label>
+<p><small>Use exact agent IDs separated by commas, or * for all current and future agents. Shared state, activity, connections and runs require *.</small></p>
+<fieldset><legend>Access levels (independent)</legend>
+<label><input type="checkbox" name="level" value="read" checked> Read</label>
+<label><input type="checkbox" name="level" value="message" checked> Message</label>
+<label><input type="checkbox" name="level" value="control"> Control</label>
+<label><input type="checkbox" name="level" value="costly"> Costly</label>
+<p><small>Message allows sending a turn. Tool actions still need the applicable levels. Runs require Control and Costly. Sensitive approvals stay with you in the app.</small></p></fieldset>
+<button type="submit">Save</button><button type="button" id="cancel">Cancel edit</button>
+</fieldset></form><h2>Your keys</h2><button id="refresh">Refresh</button><div id="keys"></div>
+<script nonce="{{NONCE}}">
+const $=id=>document.getElementById(id);let editing=null;
+function clearSecret(){$('secret').textContent='';$('secret-box').hidden=true;}
+async function call(body){const r=await fetch('/app/api-keys',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(r.status===403?'Sign in to the protected owner view, then refresh. A changed key may also need a refresh.':d.error);return d;}
+function notice(error){$('notice').textContent=error.message||error;}
+function reset(){editing=null;$('form-title').textContent='Create a key';$('name').value='';$('agents').value='main';document.querySelectorAll('[name=level]').forEach(n=>n.checked=['read','message'].includes(n.value));}
+async function refresh(){try{const d=await call({operation:'list'});$('keys').replaceChildren();$('center').replaceChildren();for(const id of d.command_centers){const o=document.createElement('option');o.value=id;o.textContent=id;$('center').append(o);}for(const key of d.keys){const row=document.createElement('article'),title=document.createElement('strong'),info=document.createElement('p'),scope=document.createElement('pre');title.textContent=key.name;info.textContent=(key.revoked_at?'Revoked':'Active')+' · Last used: '+(key.last_used_at?new Date(key.last_used_at*1000).toLocaleString():'Never');scope.textContent=key.scopes.map(s=>s.command_center_id+': '+s.agents.join(', ')+' — '+s.levels.join(', ')).join('\n');row.append(title,info,scope);if(!key.revoked_at){const edit=document.createElement('button'),revoke=document.createElement('button');edit.textContent='Edit name and scope';edit.onclick=()=>{clearSecret();editing=key;$('form-title').textContent='Edit key';$('name').value=key.name;$('center').value=key.scopes[0].command_center_id;$('agents').value=key.scopes[0].agents.join(', ');document.querySelectorAll('[name=level]').forEach(n=>n.checked=key.scopes[0].levels.includes(n.value));$('form').scrollIntoView();};revoke.textContent='Revoke';revoke.onclick=async()=>{if(!confirm('Revoke '+key.name+'? Its next call will fail.'))return;clearSecret();try{await call({operation:'revoke',key_id:key.key_id,expected_generation:key.generation});reset();await refresh();notice('Key revoked.');}catch(e){notice(e);}};row.append(edit,revoke);}$('keys').append(row);}notice(d.keys.length?'':'No keys yet.');}catch(e){clearSecret();$('keys').replaceChildren();notice(e);}}
+$('form').onsubmit=async e=>{e.preventDefault();clearSecret();const button=e.submitter;button.disabled=true;try{const scopes=[{command_center_id:$('center').value,agents:$('agents').value.split(',').map(s=>s.trim()).filter(Boolean),levels:[...document.querySelectorAll('[name=level]:checked')].map(n=>n.value)}];const data=await call({operation:editing?'update':'create',name:$('name').value,scopes,...(editing?{key_id:editing.key_id,expected_generation:editing.generation}:{})});reset();await refresh();if(data.secret){$('secret').textContent=data.secret;$('secret-box').hidden=false;}notice(data.secret?'Key created. Copy it now.':'Key updated. Previously queued work must be retried.');}catch(e){notice(e);}finally{button.disabled=false;}};
+$('refresh').onclick=()=>{clearSecret();reset();refresh();};$('cancel').onclick=reset;$('dismiss-secret').onclick=clearSecret;window.addEventListener('pagehide',clearSecret);refresh();
+</script></body></html>
