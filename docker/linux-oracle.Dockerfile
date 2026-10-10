@@ -10,7 +10,7 @@
 #
 # Built by scripts/linux_oracle.py, which tags it with a hash of this file plus
 # pyproject.toml, so a dependency change rebuilds it and nothing else does.
-FROM python:3.11-slim
+FROM mirror.gcr.io/library/python:3.11-slim
 
 # git: the workspace sink shells to it, and several suites need a real repo.
 # bubblewrap: the node sandbox jail - the two proofs that skip everywhere else.

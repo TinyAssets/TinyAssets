@@ -26,7 +26,7 @@
 
 # ---------- Stage 1: builder ----------
 
-FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
+FROM mirror.gcr.io/library/python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
 
 ARG TARGETARCH
 ARG NODEJS_VERSION=22.23.3-1nodesource1
@@ -183,7 +183,7 @@ RUN python -m venv /opt/venv && \
 
 # ---------- Stage 2: final ----------
 
-FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
+FROM mirror.gcr.io/library/python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
 ARG TARGETARCH
 ARG NODEJS_VERSION=22.23.3-1nodesource1
