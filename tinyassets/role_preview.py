@@ -8,19 +8,16 @@ from pathlib import Path
 
 def render(spec, wall_seconds):
     from tinyassets import role_decoder
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
     from tinyassets.custom_agents import read_app_ui_asset
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
     from tinyassets.ui_preview import MAX_CHILD_OUTPUT
 
     root = data_dir().resolve()
-    principal = current_identity().user_id
     center = spec['universe_id']
-    if (Path(spec['base_path']) != root or spec['owner_user_id'] != principal
-            or not (get_founder_home(root, principal) == center or universe_access_permission(
-                root, universe_id=center, actor_id=principal) == 'admin')):
+    principal = owner_principal(root / center)
+    if Path(spec['base_path']) != root or spec['owner_user_id'] != principal:
         raise PermissionError('preview owner scope is not admitted')
     client = role_decoder._bounded_client
     if client is None:
@@ -42,23 +39,16 @@ def render(spec, wall_seconds):
 
 def write(universe_dir, ui_id, data):
     from tinyassets import role_decoder, workspace_fs
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
-    from tinyassets.storage import data_dir
+    from tinyassets.role_scope import owner_principal
 
-    root = data_dir().resolve()
     directory = Path(universe_dir)
-    principal = current_identity().user_id
+    principal = owner_principal(directory)
     center = directory.name
-    if (directory.parent != root or not (get_founder_home(root, principal) == center
-            or universe_access_permission(root, universe_id=center,
-                                          actor_id=principal) == 'admin')):
-        raise PermissionError('preview output scope is not admitted')
     client = role_decoder._bounded_client
     if client is None:
         raise RuntimeError('bounded preview launcher is unavailable')
-    identity = owner_identity(root, principal=principal)
+    identity = owner_identity(directory.parent, principal=principal)
     fd = workspace_fs.open_dir_nofollow(directory)
     try:
         result = client.write_preview(data, ui_id, directory_fd=fd, principal=principal,

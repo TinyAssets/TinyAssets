@@ -46,20 +46,18 @@ def _scope(universe_dir, principal):
     from tinyassets import role_decoder
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
-    from tinyassets.storage import data_dir
+    from tinyassets.role_scope import owner_principal
 
     client = role_decoder._bounded_client
     if client is None:
         raise RuntimeError('workspace git requires its bounded owner launcher')
     supervisor._protect_daemon()
-    root, center = data_dir().resolve(), Path(universe_dir)
-    if not principal or center.parent != root or center.resolve() != center:
-        raise PermissionError('workspace git scope is not an admitted command center')
-    if not (get_founder_home(root, principal) == center.name or universe_access_permission(
-            root, universe_id=center.name, actor_id=principal) == 'admin'):
-        raise PermissionError('workspace git owner scope is not admitted')
-    return client, center, owner_identity(root, principal=principal)
+    center = Path(universe_dir)
+    if not principal:
+        raise PermissionError('workspace git scope requires an explicit actor')
+    principal = owner_principal(center, actor=principal)
+    return client, center, principal, owner_identity(center.parent, principal=principal)
+
 
 
 def run(request, *, universe_dir, principal, egress_socket):
@@ -72,7 +70,7 @@ def run(request, *, universe_dir, principal, egress_socket):
     from tinyassets import workspace_fs, workspace_owner_pool
     from tinyassets.role_relays import pin_for_owner
 
-    client, center, identity = _scope(universe_dir, principal)
+    client, center, principal, identity = _scope(universe_dir, principal)
     parts = tuple(request.get('lease_parent') or ())
     if parts:
         workspace_owner_pool.prepare(center, parts, machine=identity.gid)

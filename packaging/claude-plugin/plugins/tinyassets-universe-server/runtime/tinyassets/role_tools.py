@@ -112,10 +112,9 @@ def _files_exchange(client, *, principal, center, identity, fd, agent_id):
 def prepare(universe_dir, *, agent_id='main'):
     """Only the owner cell creates selected-path tool workspace directories."""
     from tinyassets import role_decoder
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
     from tinyassets.workspace_fs import open_dir_nofollow
 
@@ -124,11 +123,7 @@ def prepare(universe_dir, *, agent_id='main'):
         raise tools.UniverseToolError('tool preparation requires its bounded owner launcher')
     supervisor._protect_daemon()
     root, center = data_dir().resolve(), Path(universe_dir)
-    principal = current_identity().user_id
-    if (center.parent != root or center.resolve() != center
-            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
-                root, universe_id=center.name, actor_id=principal) == 'admin')):
-        raise PermissionError('tool preparation scope is not admitted')
+    principal = owner_principal(center)
     identity = owner_identity(root, principal=principal)
     fd = open_dir_nofollow(center)
     try:
@@ -196,10 +191,9 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
     read-only in the cell for the nested jail to re-bind at ``/ta/extensions``.
     """
     from tinyassets import role_decoder
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.starter_seeds import seed_boundary
     from tinyassets.storage import data_dir
     from tinyassets.workspace_fs import open_dir_nofollow
@@ -216,11 +210,7 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
             raise tools.UniverseToolError('tool cell socket forwarding requires a scoped relay')
     supervisor._protect_daemon()
     root = data_dir().resolve()
-    principal = current_identity().user_id
-    if (center.parent != root or center.resolve() != center
-            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
-                root, universe_id=center.name, actor_id=principal) == 'admin')):
-        raise PermissionError('tool owner scope is not admitted')
+    principal = owner_principal(center)
     if stop is not None and not callable(stop):
         raise ValueError('tool stop poll must be callable')
     request = dict(inner=list(inner), agent_id=agent_id,
