@@ -43,7 +43,7 @@ def test_previous_release_upgrades_stock_and_keeps_owner_customizations(center):
     customized = center / 'starter/hooks.md'
     customized.write_text('Owner instructions')
     result = prepare_center_starter(center)
-    assert result['version'] == '2'
+    assert result['version'] == current.version
     assert (center / 'AGENTS.md').read_bytes() == next(
         file.content for file in current.files if file.path == 'AGENTS.md')
     assert customized.read_text() == 'Owner instructions'
