@@ -179,10 +179,8 @@ def test_the_proofs_run_in_the_jail_proofs_venue_and_nowhere_weaker():
     assert "scripts/linux_oracle.py" in paths and "docker/linux-oracle.Dockerfile" in paths
 
 
-def test_browser_proof_runs_after_merge_while_prs_use_the_image_gate():
-    assert _job(_load())["if"] == (
-        "github.event_name != 'pull_request'"
-    )
+def test_browser_proof_runs_on_path_selected_prs_and_after_merge():
+    assert "if" not in _job(_load())
 
 
 def test_the_whole_preview_module_runs_and_every_collected_case_is_asserted():

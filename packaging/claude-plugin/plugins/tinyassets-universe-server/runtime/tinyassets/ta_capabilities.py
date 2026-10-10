@@ -99,7 +99,7 @@ class Capabilities:
                 found[name] = (grant, view, verb)
         return found
 
-    @observed('ta')
+    @observed('ta', owner=lambda self, message: self.context.owner)
     async def dispatch(self, message):
         from tinyassets.auth.middleware import identity_context
 

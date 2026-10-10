@@ -23,4 +23,7 @@
 - [x] 4.1 Run affected tests, Ruff, structural guards, plugin build, hygiene and Linux/image acceptance; resolve the cross-family floor review.
 - [x] 4.2 Sync the implemented spec, commit explicit paths with attribution, push and open the non-draft infra-change PR.
 
-PR #4598 remains stacked on #4597 and #4596. Production canary activation and positive live proof require the dedicated account/secret in `docs/host-actions.md` before merge. No deployment is claimed. The founder requested no receipt; the scope guard therefore remains blocked. Hosted behavioral proof and timings are recorded for 71f0fede04b in `replay-evidence.json`.
+PR #4598 fix round merges origin/main. AGREE with all six supplied cross-family findings: configuration is advisory; model/external observations cannot authorize rollback; candidate-only failures must reproduce against the previous image; unique scratch paths and restart retries prevent probe races; rate alarms require multiple owners; secrets are step-scoped and installs pinned; PR jail/browser proofs and affected-test jail execution are restored. No review receipt is requested or generated. No deployment is claimed.
+
+- [ ] Re-run touched/heavy proofs, structural guards, Ruff, actionlint and hygiene.
+- [ ] Push the corrected head and re-measure full hosted PR CI including isolation workflows.

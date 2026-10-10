@@ -74,7 +74,7 @@ jobs:
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     # 15 min of deploy work plus up to 55 for "Wait for in-flight turns".
-    timeout-minutes: 70
+    timeout-minutes: 100
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -566,17 +566,19 @@ jobs:
       - name: Core user capabilities and systemic failure rates
         id: core_canary
         uses: ./.github/actions/core-capability-canary
-        env:
-          TINYASSETS_CORE_CANARY_CONFIG: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+        continue-on-error: true
+        with:
+          config: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
+          health-token: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pushover-user: ${{ secrets.PUSHOVER_USER_KEY }}
+          pushover-token: ${{ secrets.PUSHOVER_APP_TOKEN }}
 
       - name: Public MCP canary (--assert-handles)
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: canary
+        continue-on-error: true
         run: |
           set -euo pipefail
           python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles
@@ -586,6 +588,7 @@ jobs:
       # /app 404s. Folded into the same rollback condition below.
       - name: Public app-surface probe
         id: app_probe
+        continue-on-error: true
         run: |
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
@@ -697,12 +700,29 @@ jobs:
           echo "ssh_rc=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
-      # Name kept verbatim: three test files key on this step by name
-      # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
-      # test_prune_units). The CONDITION is what had to change — the app probe
-      # is a second public surface that must trigger the same rollback.
+      - name: Report public surface observation failures
+        if: ${{ always() && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || steps.core_canary.outcome == 'failure') }}
+        run: echo '::warning::Public observation failed; inspect probe logs. No candidate-only platform regression has yet been established.'
+
+      # Internet, credentials and model failures alone never authorize rollback.
+      - name: Reproduce against candidate and previous images
+        id: core_regression
+        if: ${{ always() && steps.deploy.outputs.rc == '0' }}
+        continue-on-error: true
+        timeout-minutes: 28
+        env:
+          CANDIDATE_IMAGE: ${{ steps.tag.outputs.image_ref }}
+          PREVIOUS_IMAGE: ${{ steps.capture.outputs.prev_image }}
+        run: |
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+            'profile ta-capability-userns flags=(unconfined) {' '  userns,' '}' \
+            > "$RUNNER_TEMP/ta-capability-userns"
+          sudo apparmor_parser -r "$RUNNER_TEMP/ta-capability-userns"
+          pip install cryptography==49.0.0
+          python scripts/core_capability_regression.py
+
       - name: Roll back if the public canary is red
-        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || steps.core_canary.outcome == 'failure') }}
+        if: ${{ always() && steps.deploy.outputs.rc == '0' && steps.core_regression.outputs.rollback == 'true' }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |
@@ -721,6 +741,17 @@ jobs:
           # is undoing.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh --restore-bundle '${PREV_IMAGE}'"
+          # Stop candidate publication after restoring the previous release.
+          exit 1
+
+      - name: Preserve paired image comparison
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && steps.core_regression.outcome != 'skipped'
+        continue-on-error: true
+        with:
+          name: core-image-comparison
+          path: core-regression/
+          if-no-files-found: warn
 
       # AFTER the rollback: nothing here touches production, so none of it can
       # delay recovery. Fetches what the snapshot wrote, sanitizes locally, and
@@ -815,11 +846,12 @@ jobs:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           DEPLOYED_IMAGE: ${{ steps.deploy.outputs.deployed_image }}
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          FORWARD_CANARY_STATUS: ${{ steps.canary.outcome == 'success' && steps.app_probe.outcome == 'success' && 'passed' || 'unknown' }}
         run: |
           set -euo pipefail
           now="$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)"
           cat > release-state.json <<EOF
-          {"receipt_available":true,"git_sha":"${GIT_SHA}","image_tag":"${IMAGE_TAG}","image_digest":"${IMAGE_DIGEST}","build_run_id":"${BUILD_RUN_ID}","build_run_url":"https://github.com/${{ github.repository }}/actions/runs/${BUILD_RUN_ID}","deploy_run_id":"${{ github.run_id }}","deploy_run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}","schema_migration_rev":"not_applicable","canary_bundle_status":"not_run","deployed_at":"${now}","rollback_target":"","actor":"${{ github.actor }}","repository":"${{ github.repository }}","workflow_event":"${{ github.event_name }}","extra":{"active_git_sha":"${GIT_SHA}","active_identity_status":"running_healthy","active_image_digest":"${IMAGE_DIGEST}","active_image_ref":"${DEPLOYED_IMAGE}","active_source_provenance":"digest_revision_label","image_ref":"${IMAGE_REF}","image_mutation_started":true,"outcome":"succeeded","production_mutation_started":true,"release_state_version":2,"rollback_attempted":false,"rollback_reason":"not_needed","rollback_result":"not_attempted","running_image_ref":"${DEPLOYED_IMAGE}","forward_canary_status":"passed","forward_deploy_status":"succeeded","terminal_at":"${now}"}}
+          {"receipt_available":true,"git_sha":"${GIT_SHA}","image_tag":"${IMAGE_TAG}","image_digest":"${IMAGE_DIGEST}","build_run_id":"${BUILD_RUN_ID}","build_run_url":"https://github.com/${{ github.repository }}/actions/runs/${BUILD_RUN_ID}","deploy_run_id":"${{ github.run_id }}","deploy_run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}","schema_migration_rev":"not_applicable","canary_bundle_status":"not_run","deployed_at":"${now}","rollback_target":"","actor":"${{ github.actor }}","repository":"${{ github.repository }}","workflow_event":"${{ github.event_name }}","extra":{"active_git_sha":"${GIT_SHA}","active_identity_status":"running_healthy","active_image_digest":"${IMAGE_DIGEST}","active_image_ref":"${DEPLOYED_IMAGE}","active_source_provenance":"digest_revision_label","image_ref":"${IMAGE_REF}","image_mutation_started":true,"outcome":"succeeded","production_mutation_started":true,"release_state_version":2,"rollback_attempted":false,"rollback_reason":"not_needed","rollback_result":"not_attempted","running_image_ref":"${DEPLOYED_IMAGE}","forward_canary_status":"${FORWARD_CANARY_STATUS}","forward_deploy_status":"succeeded","terminal_at":"${now}"}}
           EOF
           python scripts/release_containment.py release-state.json
           scp -i ~/.ssh/do_deploy -o BatchMode=yes release-state.json \

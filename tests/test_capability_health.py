@@ -16,18 +16,26 @@ def test_rates_detect_total_failure_and_spikes_without_retaining_user_material()
     for _ in range(100):
         rates.record("bash")
     now[0] = 301
-    for _ in range(3):
-        rates.record("bash", failure_code(ValueError("invalid owner content frame /private")))
-    for _ in range(7):
+    for owner in ("owner-a", "owner-b"):
+        for _ in range(3):
+            rates.record(
+                "bash",
+                failure_code(ValueError("invalid owner content frame /private")),
+                owner=owner,
+            )
+    for _ in range(4):
         rates.record("bash")
     snapshot = rates.snapshot()
     (alarm,) = snapshot["alarms"]
-    assert alarm["code"] == "content_frame_invalid" and alarm["rate"] == 0.3
+    assert alarm["code"] == "content_frame_invalid" and alarm["rate"] == 0.6
     assert alarm["baseline_samples"] == 100 and alarm["samples"] == 10
     assert "/private" not in json.dumps(snapshot)
     fresh = health.CapabilityRates(lambda: now[0])
-    for _ in range(3):
-        fresh.record("connected_service", failure_code("inference usage authority refused"))
+    for owner in ("a", "b"):
+        for _ in range(3):
+            fresh.record(
+                "connected_service", failure_code("inference usage authority refused"), owner=owner
+            )
     assert fresh.snapshot()["alarms"][0]["rate"] == 1
     now[0] += health.HISTORY + 60
     assert rates.snapshot()["outcomes"] == 0 and not rates.snapshot()["alarms"]
@@ -55,8 +63,9 @@ def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     asyncio.run(asynchronous())
     snapshot = rates.snapshot()
     assert snapshot["outcomes"] == 4
-    assert snapshot["alarms"][0]["failures"] == 3
-    assert snapshot["alarms"][0]["samples"] == 4
+    assert snapshot["failures"][0]["failures"] == 3
+    assert snapshot["failures"][0]["samples"] == 4
+    assert not snapshot["alarms"]  # unknown owners cannot manufacture a systemic outage
     from types import SimpleNamespace
 
     for expected_refusal in (
@@ -125,3 +134,63 @@ def test_capability_image_keeps_real_execution_seams():
                 except SyntaxError:
                     continue
                 assert not substitutions(node.value), (name, node.lineno)
+
+
+def test_one_broken_owner_and_low_volume_never_alarm():
+    rates = health.CapabilityRates()
+    for _ in range(100):
+        rates.record("connected_service", "authentication_failed", owner="broken-key")
+    rates.record("connected_service", "authentication_failed", owner="one-off")
+    assert not rates.snapshot()["alarms"]
+    for _ in range(2):
+        rates.record("connected_service", "authentication_failed", owner="one-off")
+    assert rates.snapshot()["alarms"][0]["failing_owners"] == 2
+    assert "broken-key" not in json.dumps(rates.snapshot())
+
+
+def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch):
+    from scripts import core_capability_live as live
+
+    monkeypatch.delenv("TINYASSETS_CORE_CANARY_CONFIG", raising=False)
+    report = asyncio.run(live.collect())
+    assert not report["failures"] and report["warnings"][0]["code"] == "canary_not_provisioned"
+    attempts = []
+
+    async def restarted(report):
+        attempts.append(1)
+        raise live.DaemonRestart()
+
+    async def delay(_):
+        pass
+
+    monkeypatch.setattr(live, "run", restarted)
+    monkeypatch.setattr(live.asyncio, "sleep", delay)
+    report = asyncio.run(live.collect())
+    assert len(attempts) == 3
+    assert not report["failures"]
+    assert report["warnings"][0]["code"] == "deployment_in_progress"
+
+
+def test_only_candidate_specific_measured_image_failures_authorize_rollback():
+    from scripts.core_capability_regression import regressions
+
+    green = {
+        "capabilities": [
+            dict(
+                capability=name,
+                status="passed",
+                evidence=contract.evidence,
+                observation={"verified": True},
+            )
+            for name, contract in CAPABILITIES.items()
+        ]
+    }
+    red = {"capabilities": [dict(capability="bash", status="failed", code="cell_entry_failed")]}
+    live = {"failures": [{"capability": "bash", "code": "probe_failed"}]}
+    assert regressions(red, green, live) == ["bash"]
+    assert regressions(red, red, live) == []
+    assert regressions({}, green, live) == []
+    assert (
+        regressions(red, green, {"warnings": [{"capability": "bash", "code": "rate_alarm"}]}) == []
+    )
+    assert regressions(green, green, live) == []

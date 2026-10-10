@@ -10,11 +10,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pushover_page import P0_EXPIRE_S, P0_RETRY_S, send_pushover
+from pushover_page import send_pushover
 
 from tinyassets.core_capabilities import validate_report  # noqa: E402
 
-TITLE = "Core user capability failure"
+TITLE = "Core user capability observations"
 
 
 def github(path, *, method="GET", document=None):
@@ -34,12 +34,12 @@ def github(path, *, method="GET", document=None):
 def alert(report):
     repo = os.environ["GITHUB_REPOSITORY"]
     sha = report.get("deployed_sha") or "unknown (receipt unavailable)"
-    failures = report.get("failures") or validate_report(report)
+    failures = report.get("failures", validate_report(report)) + report.get("warnings", [])
     if report.get("probe_error") and not failures:
         failures = [dict(capability="public_mcp", code="probe_failed")]
     existing = [
         issue
-        for issue in github(f"repos/{repo}/issues?state=open&labels=p0-outage")
+        for issue in github(f"repos/{repo}/issues?state=open&labels=bug")
         if issue["title"] == TITLE
     ]
     if not failures:
@@ -69,9 +69,9 @@ def alert(report):
         issue = github(
             f"repos/{repo}/issues",
             method="POST",
-            document={"title": TITLE, "body": body, "labels": ["p0-outage", "bug"]},
+            document={"title": TITLE, "body": body, "labels": ["bug"]},
         )
-    # A failed push is a failed alert job, never an apparently delivered page.
+    # Alert transport errors are warnings and cannot change deployment health.
     # The incident comment remembers a delivered page across hosted invocations.
     comments = github(f"repos/{repo}/issues/{issue['number']}/comments")
     if not any(c["body"].startswith("[PAGED core-capabilities]") for c in comments):
@@ -79,16 +79,14 @@ def alert(report):
             TITLE,
             f"{sha}\n{detail}"[:900],
             issue["html_url"],
-            priority=2,
-            retry=P0_RETRY_S,
-            expire=P0_EXPIRE_S,
+            priority=0,
         )
         if not ok:
             raise RuntimeError("Emergency push delivery failed: " + error)
         github(
             f"repos/{repo}/issues/{issue['number']}/comments",
             method="POST",
-            document={"body": "[PAGED core-capabilities] Emergency Pushover page delivered."},
+            document={"body": "[PAGED core-capabilities] Pushover notification delivered."},
         )
 
 
@@ -110,4 +108,14 @@ if __name__ == "__main__":
             ]
         }
     )
-    alert(document)
+    try:
+        alert(document)
+    except Exception as exc:
+        # Do not print response bodies or subprocess stderr containing secrets.
+        print("::warning::Core capability alert delivery failed: " + type(exc).__name__)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as output:
+                output.write(
+                    "\nCore capability alert delivery failed; inspect the probe artifact.\n"
+                )

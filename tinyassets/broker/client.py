@@ -324,7 +324,7 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker capability response")
         return answer["result"]
 
-    @observed('connected_service')
+    @observed('connected_service', owner=lambda self, **kwargs: self._principal)
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
                 inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:

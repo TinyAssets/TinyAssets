@@ -152,8 +152,7 @@ concurrency:
 jobs:
   real-browser-proof:
     name: real-browser-proof
-    # Optional heavy proof after merge; PRs use the required production-image gate.
-    if: github.event_name != 'pull_request'
+    # Run path-selected isolation proofs on PRs, including drafts.
     # Ephemeral GitHub-hosted VM only, never self-hosted. The proofs run in a
     # throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest

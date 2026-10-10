@@ -509,16 +509,34 @@ jobs:
           python scripts/affected_tests.py --pr --base HEAD^1 --out affected.txt
           { echo "### Selection"; echo; echo '```'; head -c 60000 affected.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run this shard of the selection
+      # Preview rendering requires a bubblewrap PID namespace as well as
+      # Chromium. Use the queue's oracle venue, including its jail preflight,
+      # instead of the bare Ubuntu runner where user namespaces are restricted.
+      - name: Allow user namespaces for the jail container only
         env:
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
-          GITHUB_STEP_SUMMARY: shard-out/summary-affected-${{ matrix.shard }}.md
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
+
+      - name: Run this shard of the selection
         run: |
           set -euo pipefail
           mkdir -p shard-out
-          python scripts/ci_required_tests.py \
-            --junit "shard-out/junit-affected-${{ matrix.shard }}.xml" \
-            --pytest-arg=--basetemp=/tmp/p \
+          # The oracle invokes scripts/ci_required_tests.py inside the container.
+          python scripts/linux_oracle.py --required-runner --out shard-out \
+            --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            --env CI=true --env GITHUB_ACTIONS=true \
+            --env "GITHUB_STEP_SUMMARY=/out/summary-affected-${{ matrix.shard }}.md" \
+            -- \
+            --junit "/out/junit-affected-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
             --affected affected.txt \
             --shard "${{ matrix.shard }}/4" --profile affected

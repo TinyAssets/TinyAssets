@@ -771,7 +771,8 @@ def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
     jobs = _load()["jobs"]
     unit = "\n".join(s.get("run", "") for s in jobs["affected-tests"]["steps"])
     assert "--pr --base HEAD^1" in unit
-    assert "playwright install" not in unit and "linux_oracle.py" not in unit
+    assert "linux_oracle.py --required-runner" in unit
+    assert "--apparmor ta-jail-userns" in unit
     image = jobs["core-capabilities"]
     assert "if" not in image and not image.get("continue-on-error")
     assert "core-capabilities" in jobs["required-tests"]["needs"]

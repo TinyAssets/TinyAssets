@@ -1,4 +1,4 @@
-"""Dedicated-owner production canary. Missing setup and missing evidence are red."""
+"""Dedicated-owner observations: alert-only; rollback requires paired image proof."""
 
 from __future__ import annotations
 
@@ -24,6 +24,10 @@ ORIGIN = "https://tinyassets.io"
 
 
 class ProbeFailure(RuntimeError):
+    pass
+
+
+class DaemonRestart(RuntimeError):
     pass
 
 
@@ -115,12 +119,62 @@ async def health(http, report):
     return rates
 
 
+async def direct_tools(client, config, report, nonce, scratch):
+    """Deterministic tool cell operations when the transport grants the four tools."""
+    path = "/u/" + scratch + ".txt"
+
+    async def tool(name, **arguments):
+        value = await client.call_tool(name, arguments)
+        if value.is_error:
+            raise ProbeFailure(name + " tool cell refused")
+        return value
+
+    await tool("write", path=path, content="before-" + nonce)
+    read = await tool("read", path=path)
+    if "before-" + nonce not in str(read.content):
+        raise ProbeFailure("direct read lost its nonce")
+    await tool("edit", path=path, old_text="before-", new_text="after-")
+    result = await tool("bash", command="cat " + shlex.quote(path))
+    if "after-" + nonce not in str(result.content):
+        raise ProbeFailure("direct edit/bash lost its nonce")
+    for name in ("write", "read", "edit", "bash"):
+        report.setdefault("direct_observations", {})[name] = {"nonce": nonce}
+    from PIL import Image
+
+    output = io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(output, format="PNG")
+    encoded = base64.b64encode(output.getvalue()).decode()
+    png = "/u/" + scratch + ".png"
+    await tool(
+        "bash", command="printf %s " + shlex.quote(encoded) + " | base64 -d > " + shlex.quote(png)
+    )
+    result = await tool("read", path=png)
+    if not any(getattr(block, "type", "") == "image" for block in result.content):
+        raise ProbeFailure("direct image read returned no image content")
+    report["direct_observations"]["read_image"] = {"image_content": True}
+    request = json.dumps({"request": {"path": config["service_path"], "body": {"nonce": nonce}}})
+    result = await tool(
+        "bash",
+        command="ta connection:" + config["connection_id"] + ":POST --json " + shlex.quote(request),
+    )
+    expected = hmac.new(
+        config["service_hmac_key"].encode(), nonce.encode(), hashlib.sha256
+    ).hexdigest()
+    if expected not in str(result.content):
+        raise ProbeFailure("direct connection returned no service HMAC")
+    for name in ("ta", "connected_service"):
+        report["direct_observations"][name] = {"service_hmac_verified": True}
+    for name, observation in report["direct_observations"].items():
+        passed(report, name, observation)
+
+
 async def exercise(config, http, token, report):
     from fastmcp import Client
     from PIL import Image, ImageDraw, ImageFont
 
     universe = config["universe_id"]
     nonce = secrets.token_hex(12)
+    scratch = "capability-" + nonce
     transport_observations = {}
     async with Client(stream_transport(token, transport_observations), timeout=180) as client:
 
@@ -171,74 +225,92 @@ async def exercise(config, http, token, report):
             raise ProbeFailure("protected approval was not answered")
         passed(report, "approval", {"request_id": request_id, "decision": "allowed"})
 
-        expected = secrets.token_hex(4).upper()
-        picture = Image.new("RGB", (256, 64), "white")
-        ImageDraw.Draw(picture).text(
-            (8, 8), expected, fill="black", font=ImageFont.load_default(size=32)
-        )
-        output = io.BytesIO()
-        picture.save(output, format="PNG")
-        encoded = base64.b64encode(output.getvalue()).decode()
-        connection_request = json.dumps(
-            {"request": {"path": config["service_path"], "body": {"nonce": nonce}}}
-        )
-        prompt = (
-            "Run this synthetic capability check only in this canary home. Do each operation "
-            "with its named tool; stop and report a failure if one fails, without substituting "
-            'another tool. Use write to put "before-' + nonce + '" in /u/capability.txt. '
-            "Use read on that file and retain its returned text. Use edit to change before- "
-            "to after-. Use bash to cat the file and retain stdout, then use bash to decode "
-            "this PNG into /u/capability.png: " + encoded + ". Use read to view the PNG and name "
-            "the eight characters printed in it. Through bash run ta connection:"
-            + config["connection_id"]
-            + ":POST --json "
-            + shlex.quote(connection_request)
-            + ". Then use ta write_graph "
-            'target=patch_request operation=send with title "Synthetic canary ' + nonce + '" '
-            'and details "Synthetic verification ' + nonce + '". Reply ONLY with JSON keys '
-            "read, bash, image_text, service_hmac (from the HTTP response's hmac field), "
-            "delivery_id. "
-            "Never infer a success or invent an output."
-        )
-        report["active_capability"] = "chat_stream"
-        reply = await call("converse", graph_id=universe, message=prompt)
-        text = str(reply.get("reply", "")).strip()
-        if text.startswith("```"):
-            text = "\n".join(text.splitlines()[1:-1])
-        observed = json.loads(text)
-        checks = {
-            "read": observed.get("read") == "before-" + nonce,
-            "bash": str(observed.get("bash", "")).strip() == "after-" + nonce,
-            "read_image": observed.get("image_text", "").strip().upper() == expected,
-            "connected_service": hmac.compare_digest(
-                str(observed.get("service_hmac", "")),
-                hmac.new(
-                    config["service_hmac_key"].encode(), nonce.encode(), hashlib.sha256
-                ).hexdigest(),
-            ),
-        }
-        stored = await call(
-            "read_graph", target="universe_file", graph_id=universe, query="capability.txt"
-        )
-        checks["write"] = checks["edit"] = stored.get("text", "").strip() == "after-" + nonce
-        checks["ta"] = checks["connected_service"]
-        for capability, ok in checks.items():
-            if ok:
-                passed(report, capability, {"nonce": nonce, "observed_output": True})
-            else:
-                report["capabilities"].append(
-                    dict(
-                        capability=capability,
-                        status="failed",
-                        code="probe_failed",
-                        observation={"nonce": nonce},
+        async def model_probe():
+            if report.get("direct_observations"):
+                await call("converse", graph_id=universe, message="Reply with this nonce: " + nonce)
+                if not transport_observations.get("sse_response"):
+                    raise ProbeFailure("streamed chat evidence is missing")
+                passed(report, "chat_stream", {"sse_reply_received": True, "nonce": nonce})
+                return
+            expected = secrets.token_hex(4).upper()
+            picture = Image.new("RGB", (256, 64), "white")
+            ImageDraw.Draw(picture).text(
+                (8, 8), expected, fill="black", font=ImageFont.load_default(size=32)
+            )
+            output = io.BytesIO()
+            picture.save(output, format="PNG")
+            encoded = base64.b64encode(output.getvalue()).decode()
+            connection_request = json.dumps(
+                {"request": {"path": config["service_path"], "body": {"nonce": nonce}}}
+            )
+            prompt = (
+                "Run this synthetic capability check only in this canary home. Do each operation "
+                "with its named tool; stop and report a failure if one fails, without substituting "
+                'another tool. Use write to put "before-' + nonce + '" in /u/' + scratch + ".txt. "
+                "Use read on that file and retain its returned text. Use edit to change before- "
+                "to after-. Use bash to cat the file and retain stdout, then use bash to decode "
+                "this PNG into /u/"
+                + scratch
+                + ".png: "
+                + encoded
+                + ". Use read to view the PNG and name "
+                "the eight characters printed in it. Through bash run ta connection:"
+                + config["connection_id"]
+                + ":POST --json "
+                + shlex.quote(connection_request)
+                + ". Reply ONLY with JSON keys read, bash, image_text, service_hmac "
+                "(from the HTTP response's hmac field). "
+                "Never infer a success or invent an output."
+            )
+            report["active_capability"] = "chat_stream"
+            reply = await call("converse", graph_id=universe, message=prompt)
+            text = str(reply.get("reply", "")).strip()
+            if text.startswith("```"):
+                text = "\n".join(text.splitlines()[1:-1])
+            observed = json.loads(text)
+            checks = {
+                "read": observed.get("read") == "before-" + nonce,
+                "bash": str(observed.get("bash", "")).strip() == "after-" + nonce,
+                "read_image": observed.get("image_text", "").strip().upper() == expected,
+                "connected_service": hmac.compare_digest(
+                    str(observed.get("service_hmac", "")),
+                    hmac.new(
+                        config["service_hmac_key"].encode(), nonce.encode(), hashlib.sha256
+                    ).hexdigest(),
+                ),
+            }
+            stored = await call(
+                "read_graph", target="universe_file", graph_id=universe, query=scratch + ".txt"
+            )
+            checks["write"] = checks["edit"] = stored.get("text", "").strip() == "after-" + nonce
+            checks["ta"] = checks["connected_service"]
+            for capability, ok in checks.items():
+                if ok:
+                    passed(report, capability, {"nonce": nonce, "observed_output": True})
+                else:
+                    report["capabilities"].append(
+                        dict(
+                            capability=capability,
+                            status="failed",
+                            code="probe_failed",
+                            observation={"nonce": nonce},
+                        )
                     )
-                )
-        if not transport_observations.get("sse_response"):
-            raise ProbeFailure("streamed chat evidence is missing")
-        passed(report, "chat_stream", {"sse_reply_received": True, "nonce": nonce})
+            if not transport_observations.get("sse_response"):
+                raise ProbeFailure("streamed chat evidence is missing")
+            passed(report, "chat_stream", {"sse_reply_received": True, "nonce": nonce})
+
         report["active_capability"] = "patch_request"
-        delivery_id = observed.get("delivery_id", "")
+        delivery_result = await call(
+            "write_graph",
+            target="patch_request",
+            operation="send",
+            graph_id=universe,
+            payload_json=json.dumps(
+                {"title": "Synthetic canary " + nonce, "details": "Synthetic verification " + nonce}
+            ),
+        )
+        delivery_id = delivery_result.get("delivery_id", "")
         if not delivery_id:
             raise ProbeFailure("patch request returned no delivery id")
         delivery = await call("read_graph", target="delivery", graph_id=universe, query=delivery_id)
@@ -322,14 +394,52 @@ async def exercise(config, http, token, report):
                     graph_id=universe,
                     automation_id=wake_id,
                 )
-                return
+                break
             await asyncio.sleep(0.5)
-        raise ProbeFailure("daemon did not consume scheduled wake")
+        else:
+            raise ProbeFailure("daemon did not consume scheduled wake")
+        # The public connector exposes graph APIs, not the served engine's four
+        # tool handles. Do not add an authority bypass for a probe. Exercise
+        # those handles directly when the authenticated transport exposes them.
+        names = {tool.name for tool in await client.list_tools()}
+        if {"read", "write", "edit", "bash"} <= names:
+            await direct_tools(client, config, report, nonce, scratch)
+        try:
+            await model_probe()
+        except Exception as exc:
+            report.setdefault("warnings", []).append(
+                dict(
+                    capability="chat_stream",
+                    code="model_probe_unavailable",
+                    detail=type(exc).__name__,
+                )
+            )
 
 
 async def run(report):
     import httpx
 
+    raw = os.environ.get("TINYASSETS_CORE_CANARY_CONFIG", "")
+    if not raw:
+        report["configuration_missing"] = True
+        return
+    try:
+        config = json.loads(raw)
+        required = (
+            "email",
+            "password",
+            "universe_id",
+            "connection_id",
+            "service_path",
+            "service_hmac_key",
+            "intake_receiver_id",
+            "branch_id",
+        )
+        if any(not isinstance(config.get(key), str) or not config[key] for key in required):
+            raise ValueError("incomplete")
+    except (ValueError, AttributeError):
+        report["configuration_missing"] = True
+        return
     async with httpx.AsyncClient(
         timeout=180,
         follow_redirects=True,
@@ -343,76 +453,79 @@ async def run(report):
                 code=failure_code(exc),
                 detail=str(exc) if isinstance(exc, ProbeFailure) else type(exc).__name__,
             )
-        raw = os.environ.get("TINYASSETS_CORE_CANARY_CONFIG", "")
-        if not raw:
-            report["configuration_missing"] = True
-            return
-        config = json.loads(raw)
-        for name in (
-            "email",
-            "password",
-            "universe_id",
-            "connection_id",
-            "service_path",
-            "service_hmac_key",
-            "intake_receiver_id",
-            "branch_id",
-        ):
-            if not isinstance(config.get(name), str) or not config[name]:
-                raise ProbeFailure("canary configuration missing " + name)
         report["active_capability"] = "owner_sign_in"
-        token = await login(config, http)
-        passed(report, "owner_sign_in", {"callback": "verified", "home": "dedicated canary"})
-        await exercise(config, http, token, report)
+        try:
+            token = await login(config, http)
+            passed(report, "owner_sign_in", {"callback": "verified", "home": "dedicated canary"})
+            await exercise(config, http, token, report)
+        except Exception:
+            # A disconnect during a deployment is not a capability outage.
+            if not report.get("health_failure"):
+                try:
+                    after = await health(http, report)
+                except Exception:
+                    raise DaemonRestart() from None
+                if before["boot_id"] != after["boot_id"]:
+                    raise DaemonRestart() from None
+            raise
         report["active_capability"] = "public_mcp"
         after = await health(http, report)
         if report.get("health_failure"):
             return
         if before["boot_id"] != after["boot_id"]:
-            raise ProbeFailure("daemon restarted during capability evidence collection")
-        for name in CAPABILITIES:
-            if after["capability_successes"][name] <= before["capability_successes"][name]:
-                report["capabilities"] = [
-                    r for r in report["capabilities"] if r["capability"] != name
-                ]
-                report.setdefault("missing_runtime_success", []).append(name)
+            raise DaemonRestart()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", default="core-capabilities-live.json")
     args = parser.parse_args()
-    report = {"capabilities": [], "started_at": time.time(), "deployed_sha": ""}
-    try:
-        asyncio.run(run(report))
-    except Exception as exc:
-        report["probe_error"] = str(exc) if isinstance(exc, ProbeFailure) else type(exc).__name__
-    report["failures"] = validate_report(report)
-    if report.get("probe_error"):
-        report["failures"].append(
-            dict(
-                capability=report.get("active_capability", "public_mcp"),
-                code="probe_failed",
-                detail=report["probe_error"],
-            )
-        )
-    if report.get("configuration_missing"):
-        report["failures"] = [
-            dict(capability=name, code="configuration_missing") for name in CAPABILITIES
-        ]
-    if report.get("health_failure"):
-        report["failures"].append(report["health_failure"])
-    for row in report.get("rate_alarms", []):
-        report["failures"].append(
+    report = asyncio.run(collect())
+    Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    for row in report.get("warnings", []) + report.get("failures", []):
+        print("::warning::core canary " + row["capability"] + ": " + row["code"])
+    # Observations, model/provider/configuration errors and rate alarms cannot
+    # establish that the previous image would fare better.
+    return 0
+
+
+async def collect():
+    for attempt in range(3):
+        report = {
+            "capabilities": [],
+            "started_at": time.time(),
+            "deployed_sha": "",
+            "warnings": [],
+            "failures": [],
+            "attempt": attempt + 1,
+        }
+        try:
+            await run(report)
+        except DaemonRestart:
+            if attempt < 2:
+                await asyncio.sleep(5)
+                continue
+            report["warnings"].append(dict(capability="public_mcp", code="deployment_in_progress"))
+            return report
+        except Exception as exc:
+            report["probe_error"] = type(exc).__name__
+        if report.get("configuration_missing"):
+            report["warnings"].append(dict(capability="canary", code="canary_not_provisioned"))
+            return report
+        report["failures"] = validate_report(report)
+        if report.get("health_failure"):
+            report["warnings"].append(report["health_failure"])
+        report["warnings"].extend(
             dict(
                 capability=row["capability"],
-                code=row["code"],
-                detail=f"{row['failures']}/{row['samples']} failures in the recent window",
+                code="rate_alarm",
+                detail=f"{row['failures']}/{row['samples']} failures across "
+                f"{row.get('failing_owners', 0)} owners",
             )
+            for row in report.get("rate_alarms", [])
+            if row.get("failing_owners", 0) >= 2
         )
-    Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"deployed_sha": report["deployed_sha"], "failures": report["failures"]}))
-    return int(bool(report["failures"] or report.get("probe_error")))
+        return report
 
 
 if __name__ == "__main__":

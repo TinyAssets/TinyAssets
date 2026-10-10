@@ -259,7 +259,7 @@ def test_canary_step_only_probes_canonical():
     steps = _steps(_load())
     core = next(s for s in steps if s.get("id") == "core_canary")
     assert core["uses"] == "./.github/actions/core-capability-canary"
-    assert "if" not in core and not core.get("continue-on-error")
+    assert "if" not in core and core.get("continue-on-error") is True
     public = next(s for s in steps if s.get("id") == "canary")
     assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
     assert steps.index(core) == next(i for i, s in enumerate(steps) if s.get("id") == "deploy") + 1
@@ -411,9 +411,8 @@ def test_rollback_step_present():
     steps = _steps(_load())
     rollback = next(s for s in steps if s.get("name") == "Roll back if the public canary is red")
     assert (
-        rollback["if"] == "${{ failure() && steps.deploy.outputs.rc == '0' && "
-        "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || "
-        "steps.core_canary.outcome == 'failure') }}"
+        rollback["if"] == "${{ always() && steps.deploy.outputs.rc == '0' && "
+        "steps.core_regression.outputs.rollback == 'true' }}"
     )
     assert "--restore-bundle" in rollback["run"]
     assert rollback["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"
