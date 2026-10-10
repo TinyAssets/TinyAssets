@@ -23,7 +23,7 @@ skp()  { echo "SKIP  $1  -- $2"; skip=$((skip + 1)); }
 np()   { echo "NOT_PROVEN  $1  -- $2"; unproven=$((unproven + 1)); }
 
 # An identity refusal is a different row's result, never this row's.
-IDENTITY_TAGS='unexpected-entry-uid|exact-five-caps|legacy-entry-|nnp-readback|uid-gid-readback|fs-uid-readback|fs-gid-readback|group-readback'
+IDENTITY_TAGS='unexpected-entry-uid|exact-bootstrap-caps|legacy-entry-|nnp-readback|uid-gid-readback|fs-uid-readback|fs-gid-readback|group-readback'
 
 # Refuses with exit 78 and the expected TA_OP_REFUSED tag.
 expect_refusal() {
@@ -77,14 +77,14 @@ case "$uid" in
     echo "NOTE  entry uid=0 CapEff=$caps — row 10/11/12 discrimination is the container's cap_add set"
     if [ "$rc" -eq 0 ]; then
       case "$out" in
-        "ta-op 1 modes="*) ok "10 root + five caps: full drop then version"; guard_ok=1 ;;
-        *) bad "10 root + five caps" "unexpected banner: $out" ;;
+        "ta-op 1 modes="*) ok "10 root + bootstrap caps: full drop then version"; guard_ok=1 ;;
+        *) bad "10 root + bootstrap caps" "unexpected banner: $out" ;;
       esac
     else
       guard_why="$out"
       case "$out" in
-        *"TA_OP_REFUSED:exact-five-caps"*) ok "11/12 non-exact cap set refused" ;;
-        *) bad "10 root + five caps" "exit $rc: $out" ;;
+        *"TA_OP_REFUSED:exact-bootstrap-caps"*) ok "11/12 non-exact cap set refused" ;;
+        *) bad "10 root + bootstrap caps" "exit $rc: $out" ;;
       esac
     fi
     ;;
@@ -110,7 +110,7 @@ case "$uid" in
     expect_refusal "5  unexpected entry uid" unexpected-entry-uid version
     guard_why="uid $uid is neither 0 nor 1001"
     skp "6  rootless exact groups" "current uid is $uid, not 1001"
-    skp "10 root + five caps" "current uid is $uid, not 0"
+    skp "10 root + bootstrap caps" "current uid is $uid, not 0"
     ;;
 esac
 
