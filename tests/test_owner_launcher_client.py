@@ -372,3 +372,39 @@ def test_heartbeat_rejects_an_unauthenticated_mapper_reply():
                 cell.heartbeat()
         finally:
             client._close()
+
+
+@pytest.mark.parametrize('late', ['alive', 'foreign', 'duplicate'])
+def test_timed_out_heartbeat_does_not_hide_the_completion(late):
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    alive = dict(op='SPAWN_ALIVE', uid=300001, gid=300001)
+    done = dict(op='SPAWN_DONE', returncode=-9, uid=300001, gid=300001,
+                stop_reason='revoked')
+    replies = [TimeoutError(), alive, done]
+    if late == 'foreign':
+        replies[1] = dict(op='SPAWN_ALIVE', uid=300002, gid=300002)
+    elif late == 'duplicate':
+        replies.insert(2, alive)
+    def reply(**kwargs):
+        answer = replies.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    stream, peer = socket.socketpair()
+    with status, mapper, stream, peer:
+        cell = OwnerCell(SimpleNamespace(_reply=reply), stream, status,
+                         OwnerIdentity(300001, 300001))
+        with pytest.raises(TimeoutError):
+            cell.heartbeat()
+        assert mapper.recv(32) == b'PULSE'
+        assert cell.heartbeat() is False  # no second outstanding request
+        if late == 'alive':
+            assert cell.wait() == -9
+            assert cell.stop_reason == 'revoked'
+            assert not replies
+        else:
+            with pytest.raises(RuntimeError, match='invalid owner cell completion'):
+                cell.wait()

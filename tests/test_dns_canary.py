@@ -13,7 +13,6 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
-import time
 
 import pytest
 
@@ -21,9 +20,6 @@ HOSTNAMES = [
     "tinyassets.io",
     "mcp.tinyassets.io",
 ]
-
-# Resolution must complete within this many seconds.
-LATENCY_LIMIT_S = 2.0
 
 # RFC 1918 + link-local + loopback prefixes that are never valid public IPs.
 _PRIVATE_NETWORKS = [
@@ -48,22 +44,6 @@ def _is_private(addr: str) -> bool:
     return any(ip in net for net in _PRIVATE_NETWORKS)
 
 
-def _resolve_ex(hostname: str) -> tuple[list[str], float]:
-    """Return (ip_list, elapsed_seconds) via gethostbyname_ex.
-
-    Raises OSError on resolution failure.
-    """
-    prev = socket.getdefaulttimeout()
-    try:
-        socket.setdefaulttimeout(LATENCY_LIMIT_S + 1)
-        t0 = time.monotonic()
-        _name, _aliases, addrs = socket.gethostbyname_ex(hostname)
-        elapsed = time.monotonic() - t0
-    finally:
-        socket.setdefaulttimeout(prev)
-    return addrs, elapsed
-
-
 # ---------------------------------------------------------------------------
 # Parametrised resolution tests
 # ---------------------------------------------------------------------------
@@ -75,7 +55,7 @@ def test_hostname_resolves(hostname: str):
     if _no_network:
         pytest.skip("NO_NETWORK=1")
     try:
-        addrs, _ = _resolve_ex(hostname)
+        addrs = socket.gethostbyname_ex(hostname)[2]
     except OSError as exc:
         pytest.fail(f"{hostname} failed to resolve: {exc}")
     assert addrs, f"{hostname} resolved to empty address list"
@@ -87,7 +67,7 @@ def test_hostname_resolves_to_public_ip(hostname: str):
     if _no_network:
         pytest.skip("NO_NETWORK=1")
     try:
-        addrs, _ = _resolve_ex(hostname)
+        addrs = socket.gethostbyname_ex(hostname)[2]
     except OSError as exc:
         pytest.fail(f"{hostname} failed to resolve: {exc}")
     public = [a for a in addrs if not _is_private(a)]

@@ -51,6 +51,7 @@ class OwnerCell:
         self._pid = os.getpid()
         self._result = None
         self._status_lock = threading.Lock()
+        self._heartbeat_pending = False
         self.stop_reason = None
         self.revoke_caller = None
         self._closed = False
@@ -73,6 +74,12 @@ class OwnerCell:
                 return self._result
             self._status.settimeout(timeout)
             answer = self._client._reply(channel=self._status)
+            if self._heartbeat_pending:
+                self._heartbeat_pending = False
+                if self._is_heartbeat(answer):
+                    # A timed-out probe may arrive before the exit receipt.
+                    # Consume only the one outstanding, identity-checked reply.
+                    answer = self._client._reply(channel=self._status)
             return self._completion(answer)
 
     def heartbeat(self):
@@ -83,16 +90,23 @@ class OwnerCell:
         if not self._status_lock.acquire(blocking=False):
             return False
         try:
+            if self._heartbeat_pending:
+                return False  # Never queue a second probe behind an unanswered one.
             self._status.settimeout(5)
             self._status.sendall(b'PULSE')
+            self._heartbeat_pending = True
             answer = self._client._reply(channel=self._status)
-            expected = dict(op='SPAWN_ALIVE', uid=self._identity.uid, gid=self._identity.gid)
-            if answer == expected and all(type(answer[k]) is int for k in ('uid', 'gid')):
+            self._heartbeat_pending = False
+            if self._is_heartbeat(answer):
                 return True
             self._completion(answer)  # Exit may have raced the pulse.
             return False
         finally:
             self._status_lock.release()
+
+    def _is_heartbeat(self, answer):
+        expected = dict(op='SPAWN_ALIVE', uid=self._identity.uid, gid=self._identity.gid)
+        return answer == expected and all(type(answer[k]) is int for k in ('uid', 'gid'))
 
     def _completion(self, answer):
         reason = answer.get('stop_reason')
