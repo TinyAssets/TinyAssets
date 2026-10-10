@@ -34,7 +34,9 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 EXEC_LOG_FILENAME = "bid_execution_log.json"
-EXEC_LOG_LOCK_FILENAME = "bid_execution_log.json.lock"
+# Dotted: a platform coordination file, never owner content
+# (command_center_layout.PLATFORM_LOCK_NAMES).
+EXEC_LOG_LOCK_FILENAME = ".bid_execution_log.json.lock"
 # Legacy filenames — read during this transition only. Future
 # hardening pass can remove once no universe retains the old names.
 _LEGACY_LOG_FILENAME = "bid_ledger.json"
@@ -44,15 +46,12 @@ def execution_log_path(universe_path: Path) -> Path:
     return Path(universe_path) / EXEC_LOG_FILENAME
 
 
-def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / EXEC_LOG_LOCK_FILENAME
-
-
 @contextlib.contextmanager
 def _exec_log_lock(universe_path: Path) -> Iterator[None]:
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lf = _lock_path(universe_path)
-    fd = os.open(str(lf), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_path, EXEC_LOG_LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt

@@ -217,44 +217,41 @@ def test_a_planted_soul_lock_link_does_not_create_a_file_outside_the_universe(da
     assert not victim.exists(), "the lock open created a file in another universe"
 
 
-def test_a_planted_queue_lock_link_does_not_create_a_file_outside_the_universe(data):
-    """The branch-task queue lock had the identical defect."""
-    from tinyassets.branch_tasks import LOCK_FILENAME, _file_lock
+@pytest.mark.parametrize("module, lock, opener", [
+    ("tinyassets.branch_tasks", "LOCK_FILENAME", "_file_lock"),
+    ("tinyassets.auto_ship_ledger", "LOCK_FILENAME", "_file_lock"),
+    ("tinyassets.subscriptions", "LOCK_FILENAME", "_file_lock"),
+    ("tinyassets.bid.execution_log", "EXEC_LOG_LOCK_FILENAME", "_exec_log_lock"),
+])
+def test_a_planted_coordination_lock_link_does_not_create_a_file_outside_the_universe(
+        data, module, lock, opener):
+    """Each daemon coordination lock had the identical raw ``os.open`` defect."""
+    import importlib
 
+    mod = importlib.import_module(module)
     alpha = _alpha(data)
-    victim = data / "u-bravo" / "planted-by-alpha-queue.db"
-    _link(victim, alpha / LOCK_FILENAME)
+    victim = data / "u-bravo" / "planted-by-alpha.db"
+    _link(victim, alpha / getattr(mod, lock))
 
     with pytest.raises(OSError):
-        with _file_lock(alpha):
-            pass
-    assert not victim.exists(), "the lock open created a file in another universe"
-
-
-def test_a_planted_auto_ship_lock_link_does_not_create_a_file_outside_the_universe(data):
-    """The auto-ship ledger lock opened its sidecar with a raw ``os.open``."""
-    from tinyassets.auto_ship_ledger import LOCK_FILENAME, _file_lock
-
-    alpha = _alpha(data)
-    victim = data / "u-bravo" / "planted-by-alpha-ledger.db"
-    _link(victim, alpha / LOCK_FILENAME)
-
-    with pytest.raises(OSError):
-        with _file_lock(alpha):
+        with getattr(mod, opener)(alpha):
             pass
     assert not victim.exists(), "the lock open created a file in another universe"
 
 
 def test_daemon_coordination_locks_are_dotted_platform_entries(data):
     """A visible lock is owner content; a daemon-created one fails the owner scan."""
-    from tinyassets import auto_ship_ledger, branch_tasks
+    from tinyassets import auto_ship_ledger, branch_tasks, subscriptions
+    from tinyassets.bid import execution_log
     from tinyassets.command_center_layout import PLATFORM, classify
 
     alpha = _alpha(data)
-    with branch_tasks._file_lock(alpha), auto_ship_ledger._file_lock(alpha):
+    with (branch_tasks._file_lock(alpha), auto_ship_ledger._file_lock(alpha),
+          subscriptions._file_lock(alpha), execution_log._exec_log_lock(alpha)):
         pass
     created = sorted(entry.name for entry in alpha.iterdir())
-    assert created == [".auto_ship_attempts.jsonl.lock", ".branch_tasks.json.lock"]
+    assert created == [".auto_ship_attempts.jsonl.lock", ".bid_execution_log.json.lock",
+                       ".branch_tasks.json.lock", ".subscriptions.json.lock"]
     assert all(classify(name) == PLATFORM for name in created)
 
 

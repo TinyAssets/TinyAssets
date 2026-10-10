@@ -161,7 +161,6 @@ PINNED: dict[str, list[str]] = {
         "_brain: .open()",
     ],
     "tinyassets/bid/execution_log.py": [
-        "_exec_log_lock: os.open()",
         "append_execution_log_entry: .write_text()",
         "append_execution_log_entry: os.replace()",
         "read_execution_log: .read_text()",
@@ -395,7 +394,6 @@ PINNED: dict[str, list[str]] = {
         "adopt_newer_on_disk_document: .read_bytes()",
     ],
     "tinyassets/subscriptions.py": [
-        "_file_lock: os.open()",
         "_read_raw: .read_text()",
         "_write_raw: .write_text()",
         "_write_raw: os.replace()",

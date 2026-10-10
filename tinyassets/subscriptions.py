@@ -5,7 +5,7 @@ A subscription is an opt-in on a Goal slug. The daemon reads
 pool directories to scan (``<repo_root>/goal_pool/<goal_slug>/``).
 
 File-locked via a **separate** sidecar
-`<universe>/subscriptions.json.lock` — deliberately distinct from
+`<universe>/.subscriptions.json.lock` — deliberately distinct from
 `.branch_tasks.json.lock` so subscription mutations don't contend
 with dispatcher-cycle queue writes.
 
@@ -29,7 +29,9 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 SUBSCRIPTIONS_FILENAME = "subscriptions.json"
-LOCK_FILENAME = "subscriptions.json.lock"
+# Dotted: a platform coordination file, never owner content
+# (command_center_layout.PLATFORM_LOCK_NAMES).
+LOCK_FILENAME = ".subscriptions.json.lock"
 
 DEFAULT_GOALS: tuple[str, ...] = ("maintenance",)
 
@@ -38,18 +40,16 @@ def _subscriptions_path(universe_path: Path) -> Path:
     return Path(universe_path) / SUBSCRIPTIONS_FILENAME
 
 
-def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LOCK_FILENAME
-
-
 @contextlib.contextmanager
 def _file_lock(universe_path: Path) -> Iterator[None]:
     """Mirrors ``tinyassets.branch_tasks._file_lock`` but on a separate
-    sidecar file. Cross-platform exclusive lock.
+    sidecar file. Cross-platform exclusive lock, opened link-free through
+    ``universe_files.open_lock_file``.
     """
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lock_file = _lock_path(universe_path)
-    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_path, LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt
