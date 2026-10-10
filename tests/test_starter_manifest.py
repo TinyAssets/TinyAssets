@@ -5,6 +5,15 @@ import pytest
 from tinyassets.starter_manifest import SeedFile, SeedManifest, digest
 
 
+def test_published_starter_release_is_immutable():
+    from tinyassets.starter_release import starter_manifest
+
+    manifest = starter_manifest()
+    assert (manifest.version, manifest.sha256) == (
+        '2-wake-when', 'a00b36f7ef39005da172f24108f60bef9bf5d3dfe8143c1af536a2034f75c935',
+    ), 'Starter content changed: publish a new version and update its hash together.'
+
+
 @pytest.mark.parametrize(
     "path",
     [
