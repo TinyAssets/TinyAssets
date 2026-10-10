@@ -1943,7 +1943,7 @@
         let resp;
         try{
           resp=await fetch(path,{method:"POST",headers,credentials:"same-origin",
-            cache:"no-store",body:JSON.stringify(body)});
+            cache:"no-store",signal:AbortSignal.timeout(20000),body:JSON.stringify(body)});
         }catch(_netErr){
           MCP._assertLogin(loginEpoch);
           if(attempt<1){ await MCP._pause(1500); continue; }
@@ -1978,7 +1978,7 @@
     read(args){ return this._post("/app/api/read", args); },
     // The get_status arguments (plus the conversation page cursor).
     status(args){ return this._post("/app/api/status", args||{}); },
-    getStatus(){ return this.status({}); },
+    getStatus(){ return this.getConversation(); },
     getModelOptions(){ return this.read({target:"model_options"}); },
     // The shared cross-surface thread, one page at a time. The app rendered ONLY
     // what was appended during the current page life, so any refresh emptied the
@@ -2262,7 +2262,7 @@
   // Declared HERE, with the indicator that reads them, rather than beside the
   // heartbeat that arms them: serverTurnLive() below would be in their const
   // temporal-dead-zone if they were declared further down the file.
-  const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
+  const STATUS_IDLE_MS=5000, STATUS_WORKING_MS=5000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
   let deployPending=false;
@@ -4200,7 +4200,15 @@
       checkLogin();
     }
     const started=Date.now();
-    if(payload&&payload.consumer_turn)renderedConsumerFounders.add(payload.consumer_turn.turn_id);
+    if(payload&&payload.consumer_turn){
+      const id=payload.consumer_turn.turn_id,key="consumer:"+id+":founder";
+      const nodes=Array.from($("thread").children),own=nodes.find(n=>n.clientSendId===opts.clientSendId);
+      if(own){
+        nodes.filter(n=>n!==own&&n.savedTurnKey===key).forEach(n=>n.remove());
+        own.savedTurnKey=key;
+      }
+      renderedConsumerFounders.add(id);
+    }
     while(payload&&payload.consumer_turn&&payload.consumer_turn.state==="pending"){
       if(Date.now()-started>30*60*1000)throw new Error("Still working. Check this same conversation again.");
       await new Promise(resolve=>setTimeout(resolve,1500));
@@ -5402,8 +5410,19 @@
   }
 
   async function pollStatus(){
+    if(pollStatus.reading||!token()) return;
+    pollStatus.reading=true;
+    const agentNow=()=>typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const epoch=MCP._loginEpoch,owner=queueOwner,scope=queueScope,agent=agentNow();
+    const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&agent===agentNow();
     try{
-      const s=await Owner.getStatus(); const dot=$("dot");
+      const s=await Owner.getStatus();
+      if(!current()) return;
+      const conv=s&&s.recent_conversation;
+      if(conv&&!conv.error){
+        drawHistoryTurns([...(conv.turns||[]),...(conv.pending||[])]);
+      }
+      const dot=$("dot");
       const host=s.active_host, alive=host&&host!=="none";
       dot.className="dot "+(alive?"dot--ok":"dot--warn");
       dot.title=alive?("host: "+host):"no active host";
@@ -5421,6 +5440,7 @@
       if(!inflightRestored) restoreInflight([]);
       healServing(s);
     }catch(err){
+      if(!current()) return;
       if(err.authRequired) return sessionExpired();
       // The heartbeat doubles as the healer. A transport failure means the
       // session may be dead, so drop it here too: the next poll (30s) or the
@@ -5435,8 +5455,8 @@
       // A failed poll is not evidence that the turn ended, so nothing believed
       // about it is discarded here. It ages out on its own (serverTurnLive), so
       // a dead connection cannot leave the indicator claiming work forever.
-      renderWorking();
-    }
+      if(current()) renderWorking();
+    }finally{pollStatus.reading=false;}
   }
   // The working-rate beat and its constants are declared with the indicator that
   // reads them (see TURN_WORKING_STATES).
@@ -10442,9 +10462,8 @@
   // Restore the conversation on load. Without this the thread only ever showed
   // what this page instance had appended, so a refresh looked like the command center
   // had forgotten everything — it had not; the app just never asked for it.
-  // A turn still in flight is NOT in the store yet (the exchange is recorded on
-  // completion), so a refresh mid-reply legitimately shows nothing for it; that
-  // is why the composer keeps its own optimistic copy until the reply lands.
+  // Accepted intent is returned alongside saved pairs until projection commits.
+  // The heartbeat merges both by stable identity after this initial page.
   let historyLoaded = false;
   async function loadHistory(){
     if(historyLoaded || !token()) return;
@@ -10460,9 +10479,7 @@
       const r = await Owner.getConversation();
       if(!stillOwner()) return;
       setQueueScope(r && (r.universe_id || r.universe));
-      // A reload mid-turn: the exchange is not in history yet (it is stored on
-      // completion), so history alone shows nothing at all for a turn that is
-      // still running. The same read already carries whether it IS running.
+      // The same read carries accepted intent and the current working state.
       readServerTurn(r); renderWorking();
       const conv = r && r.recent_conversation;
       if(conv && typeof conv.error==="string"){
@@ -10473,6 +10490,7 @@
       }
       historyFailed(null);
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
+      turns = turns.concat(conv&&Array.isArray(conv.pending)?conv.pending:[]);
       if(!turns.length){ restoreInflight(turns); return; }
       historyLoaded = true;
       drawHistoryTurns(turns);
@@ -10503,9 +10521,18 @@
     const ordered = stamped||turns.every(t=>sequence(t)!==null) ? turns.slice().sort(compare) : turns.slice();
     ordered.forEach((t,index)=>{
       if(!t||typeof t.text!=="string"||!t.text)return;
-      const key=t.id?"id:"+t.id:JSON.stringify([t.speaker,t.ts,t.text]);
+      const key=t.consumer_turn_id ? "consumer:"+t.consumer_turn_id+":"+t.speaker :
+        t.id?"id:"+t.id:JSON.stringify([t.speaker,t.ts,t.text]);
       const place=node=>{
+        // A terminal row wins even if an earlier pending snapshot arrives late.
+        if(node.serverTurn&&node.serverTurn.pending!==true&&t.pending===true) return;
         node.savedTurnKey=key;node.serverTurn=t;
+        if(node.pendingLabel){node.pendingLabel.remove();node.pendingLabel=null;}
+        if(t.pending){
+          const label=document.createElement("small");label.className="pending-turn-state";
+          label.textContent=t.state==="running"?"Working\u2026":t.state==="queued"?"Queued\u2026":"Awaiting saved reply\u2026";
+          node.appendChild(label);node.pendingLabel=label;
+        }
         if(typeof t.ts==="number"&&Number.isFinite(t.ts)) node.messageTime=t.ts;
         const thread=$("thread");
         const later=Array.from(thread.children).find(n=>n!==node&&
@@ -10782,22 +10809,24 @@
     window.addEventListener("online",resumeUnconfirmedTurns);
     window.addEventListener("focus",resumeUnconfirmedTurns);
     window.addEventListener("pagehide",()=>Voice.stop(false));
-    setInterval(checkForNewBuild, 10*60*1000);
+    setInterval(checkForNewBuild, 60000);
   }
 
   // The desktop app loads this page once at startup; without this a user could keep
   // looking at a form from before the latest deploy (it happened). Compare the
   // build we were served with the build the server serves NOW; reload on change.
-  // Never reloads mid-typing: only when nothing is being entered in a field.
+  // Composer drafts survive via AppRecovery; other editors and active sends hold the update.
   async function checkForNewBuild(){
-    if(!CFG.build) return;
+    if(!CFG.build&&!CFG.shell_version) return;
     // Every hold is asked TWICE: before the probe and again when it answers.
     // The probe can take seconds (a tab waking from sleep reopens its
     // connections), and a founder who started typing and sent in the meantime
     // had the page reload under the turn - composer, bubble and notice gone.
     const held=()=>{
       const active=document.activeElement;
-      if(active && (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return true;
+      if(active && active.id!=="composer-input" &&
+         (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return true;
+      if(Uploads&&Uploads.count&&Uploads.count()) return true;
     // Never mid-turn either: a reload while the command center is answering, or while
     // a failed message is waiting to be resent, throws away what the user is
     // looking at. On 2026-08-29 the 10-minute tick fired seconds after a served
@@ -10809,7 +10838,7 @@
     // settles is cut by the proxy long before that, so the bound only has to
     // exist, not be tight. Past it a reload IS the recovery - the message
     // survives in the in-flight record and is offered back after it. A failed
-    // message holds the update ~20 minutes (plus at most one 10-minute tick).
+    // message holds the update ~20 minutes (plus at most one minute's tick).
       if($("btn-send").disabled && (Date.now()-turnStartedAt) < 3*60*60*1000) return true;
       const pending=readInflight();
       if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return true;
@@ -10817,9 +10846,12 @@
     };
     if(held()) return;
     try{
-      const r=await fetch("/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
+      const r=await fetch("/app",{method:"HEAD",cache:"no-store",credentials:"omit",
+        signal:AbortSignal.timeout(10000)});
       const live=r.headers.get("X-TinyAssets-Build");
-      if(live && live!==CFG.build && !held()) location.reload();
+      const shell=r.headers.get("X-TinyAssets-Shell");
+      if(r.ok && ((live&&live!==CFG.build)||
+         (CFG.shell_version&&shell&&shell!==CFG.shell_version)) && !held()) AppRecovery.upgrade();
     }catch(_e){ /* offline or blocked: try again next time */ }
   }
 
@@ -10874,7 +10906,8 @@
       timeout:AppUI.ready&&AppUI.frame&&AppUI.frame.isConnected?120000:15000}),
     holdUpdate:()=>{
       const active=document.activeElement,pending=readInflight();
-      return !!((isTypingTarget(active)&&active.value)||
+      return !!((isTypingTarget(active)&&active.id!=="composer-input"&&active.value)||
+        (Uploads&&Uploads.count&&Uploads.count())||
         ($("btn-send").disabled&&Date.now()-turnStartedAt<3*60*60*1000)||
         (!$("btn-send").disabled&&pending&&Date.now()-(pending.ts||0)<20*60*1000));
     },

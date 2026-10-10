@@ -310,15 +310,14 @@ def test_a_turn_this_page_never_sent_still_shows_the_indicator(tmp_path, html):
     # How long, and that it did not come from this tab, are both said on it.
     assert "for 3m 34s" in out["after"]["line"]
     assert "another window" in out["after"]["line"]
-    # ...and the page asks again sooner than the 30s host beat, so the indicator
-    # clears promptly for a tab that cannot see the turn end locally.
-    assert out["beat"] == 10000 and 10000 in out["armed"]
+    # The live transcript and indicator share the five-second heartbeat.
+    assert out["beat"] == 5000 and out["armed"] == []  # Already armed at the live rate.
 
 
 def test_an_idle_server_and_a_stale_row_are_both_left_unpainted(tmp_path, html):
     """Idle is idle; a row older than the served cap is a killed process's leftover."""
     idle = _run(tmp_path, html, {"activeTurn": None}, _SERVER_TURN)
-    assert idle["after"]["shown"] is False and idle["beat"] == 30000
+    assert idle["after"]["shown"] is False and idle["beat"] == 5000
     # Same state, same shape -- only `stale` differs, so a pass here cannot come
     # from the state list or from the row being ignored wholesale.
     stale = _run(tmp_path, html, {

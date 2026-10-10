@@ -65,6 +65,15 @@ def module_url(name: str) -> str:
     return f"/app/m/{build_segment()}/{name}"
 
 
+def shell_version(html_path: Path) -> str:
+    """Hash the packaged shell sources, independently of release-receipt timing."""
+    digest = hashlib.sha256(build_segment().encode())
+    names = ("app.html", "app_ui.js", "app_recovery.js", "chat_render.js", "request_theme.json")
+    for name in names:
+        digest.update(name.encode() + b"\0" + html_path.with_name(name).read_bytes() + b"\0")
+    return digest.hexdigest()[:24]
+
+
 def chat_renderer_source() -> str:
     """Trusted packaged script, also loadable by a frontend without owner storage."""
     return (MODULE_DIR.parent / "chat_render.js").read_text(encoding="utf-8")
