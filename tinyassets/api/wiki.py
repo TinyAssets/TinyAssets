@@ -37,7 +37,7 @@ from tinyassets.api.helpers import (
     _wiki_pages_dir,
     _wiki_root,
 )
-from tinyassets.universe_files import unlink_data_path, write_data_path
+from tinyassets.universe_files import ensure_data_directory, unlink_data_path, write_data_path
 
 # Wiki category taxonomy. Expanded 2026-04-13 to stop user-intent content
 # (recipes, workflows, personal notes) getting dumped into `research/`
@@ -114,7 +114,7 @@ def _write_reserved_wiki_canary(content: str) -> str:
         return json.dumps({"error": "content is required."})
     draft_path = _wiki_root() / WIKI_CANARY_RELATIVE_PATH
     try:
-        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_data_directory(draft_path.parent)
         is_new = not draft_path.exists()
         write_data_path(draft_path, content)
     except OSError as exc:
@@ -151,12 +151,12 @@ def _ensure_wiki_scaffold(wiki_root: Path) -> None:
     from datetime import date as _date
     today = _date.today().isoformat()
 
-    wiki_root.mkdir(parents=True, exist_ok=True)
+    ensure_data_directory(wiki_root)
     for base in ("pages", "drafts"):
         for cat in _WIKI_CATEGORIES:
-            (wiki_root / base / cat).mkdir(parents=True, exist_ok=True)
-    (wiki_root / "log").mkdir(parents=True, exist_ok=True)
-    (wiki_root / "raw").mkdir(parents=True, exist_ok=True)
+            ensure_data_directory(wiki_root / base / cat)
+    ensure_data_directory(wiki_root / "log")
+    ensure_data_directory(wiki_root / "raw")
 
     anchors = {
         "index.md": (
@@ -1217,7 +1217,7 @@ def _wiki_write(
 
     draft_path = _wiki_drafts_dir() / category / (slug + ".md")
     try:
-        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_data_directory(draft_path.parent)
         is_new = not draft_path.exists()
         _charge_commons_write(content, draft_path)
         write_data_path(draft_path, content)
@@ -1541,7 +1541,7 @@ def _wiki_promote(
 
     dest_path = _wiki_pages_dir() / found_category / (slug + ".md")
     try:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_data_directory(dest_path.parent)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if "updated:" in content:
             content = re.sub(r"updated:.*", f"updated: {today}", content)
@@ -1572,7 +1572,7 @@ def _wiki_ingest(
 
     raw_dir = _wiki_raw_dir()
     try:
-        raw_dir.mkdir(parents=True, exist_ok=True)
+        ensure_data_directory(raw_dir)
         target = raw_dir / Path(filename).name
         _charge_commons_write(content, target)
         write_data_path(target, content)
@@ -1912,7 +1912,7 @@ def _wiki_sync_projects(**_kwargs: Any) -> str:
     pp_dir = _wiki_pages_dir() / "projects"
 
     try:
-        pp_dir.mkdir(parents=True, exist_ok=True)
+        ensure_data_directory(pp_dir)
     except OSError as exc:
         return json.dumps({"error": f"Cannot create projects dir: {exc}"})
 
@@ -2432,7 +2432,7 @@ def _wiki_file_bug(
     pages_dir = _wiki_pages_dir() / category_dir
     drafts_dir = _wiki_drafts_dir() / category_dir
     try:
-        pages_dir.mkdir(parents=True, exist_ok=True)
+        ensure_data_directory(pages_dir)
     except OSError as exc:
         return json.dumps({"error": f"Cannot create {category_dir} dir: {exc}"})
 

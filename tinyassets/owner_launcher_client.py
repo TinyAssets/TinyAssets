@@ -43,7 +43,8 @@ class OwnerCell:
     instead of ECONNRESET on a shared socket.
     """
 
-    def __init__(self, client, stream, status, identity, *, stderr=None, stdin=None):
+    def __init__(self, client, stream, status, identity, *, stderr=None, stdin=None,
+                 kind='unknown'):
         self.stream, self._status = stream, status
         self.stderr = stderr
         self.stdin = stdin
@@ -53,6 +54,8 @@ class OwnerCell:
         self._status_lock = threading.Lock()
         self._heartbeat_pending = False
         self.stop_reason = None
+        self.kind = kind
+        self.stderr_tail = ''
         self.revoke_caller = None
         self._closed = False
         _live_cells.add(self)
@@ -109,15 +112,20 @@ class OwnerCell:
         return answer == expected and all(type(answer[k]) is int for k in ('uid', 'gid'))
 
     def _completion(self, answer):
+        from tinyassets.cell_diagnostics import STDERR_TAIL_BYTES
+
         reason = answer.get('stop_reason')
-        if (set(answer) - {'stop_reason'} != {'op', 'returncode', 'uid', 'gid'}
+        tail = answer.get('stderr_tail', '')
+        if (set(answer) - {'stop_reason', 'stderr_tail'} != {'op', 'returncode', 'uid', 'gid'}
                 or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
                 or type(answer['uid']) is not int or type(answer['gid']) is not int
                 or (reason is not None and (type(reason) is not str
                     or not reason.isascii() or not reason.isprintable() or len(reason) > 256))
+                or type(tail) is not str or len(tail) > STDERR_TAIL_BYTES
                 or (answer['uid'], answer['gid']) != (self._identity.uid, self._identity.gid)):
             raise RuntimeError('invalid owner cell completion')
         self.stop_reason = reason
+        self.stderr_tail = tail
         self._result = answer['returncode']
         return self._result
 
@@ -163,8 +171,36 @@ class OwnerCell:
     def __enter__(self):
         return self
 
-    def __exit__(self, *_):
-        self.close()
+    def failure(self, exc):
+        """Retain authenticated completion, never echo a malformed data frame."""
+        import logging
+
+        from tinyassets.cell_diagnostics import failure_reason
+
+        try:
+            code = self.wait(5)
+        except (OSError, RuntimeError):
+            try:
+                code = self.cancel()
+            except (OSError, RuntimeError):
+                code = 'completion-unavailable'
+        message = (f'cell failed: kind={self.kind} exit={code} '
+                   f'reason={self.stop_reason} stderr_tail={self.stderr_tail!r} '
+                   + failure_reason(exc, 'decoder'))
+        logging.getLogger(__name__).error('%s', message)
+        return message
+
+    def __exit__(self, exc_type, exc, trace):
+        error = None
+        if isinstance(exc, (OSError, ValueError, RuntimeError, KeyError, TypeError)):
+            error = OwnerLaunchRefused(self.failure(exc))
+        try:
+            self.close()
+        except (OSError, RuntimeError):
+            if error is None:
+                raise
+        if error is not None:
+            raise error from exc
 
 
 class OwnerLaunchRefused(RuntimeError):
@@ -338,7 +374,7 @@ class OwnerLauncherClient:
                     if reply['uid'] != identity.uid:
                         actual = OwnerIdentity(reply['uid'], reply['gid'])
                         with OwnerCell(self, data, status, actual, stderr=stderr,
-                                       stdin=stdin) as refused:
+                                       stdin=stdin, kind=kind) as refused:
                             refused.cancel()  # Reap before returning a reusable refusal.
                         raise OwnerLaunchRefused('owner launcher refused cell identity')
                 except OwnerLaunchRefused:
@@ -346,7 +382,7 @@ class OwnerLauncherClient:
                 except BaseException:
                     self._close()
                     raise
-            return OwnerCell(self, data, status, identity, stderr=stderr, stdin=stdin)
+            return OwnerCell(self, data, status, identity, stderr=stderr, stdin=stdin, kind=kind)
         except BaseException:
             for endpoint in (data, status, stderr, stdin):
                 if endpoint is not None:

@@ -32,6 +32,52 @@ def test_cell_diagnostics_never_echo_exception_material():
     assert not PATTERN.search(b'TA_CELL_FAILURE decoder:secret.py:1:ValueError:errno=None\n')
 
 
+@pytest.mark.parametrize('kind', ['owner-content', 'owner-measure', 'tool-jail', 'image-decoder'])
+@pytest.mark.parametrize('code', [0, 1, -9])
+def test_nonframe_failure_reports_kind_exit_and_bounded_tail(kind, code, caplog):
+    import io
+
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell, OwnerLaunchRefused
+    from tinyassets.role_content import _read
+
+    stream, peer = socket.socketpair()
+    status, mapper = socket.socketpair()
+    tail = 'last failure\nwith control \x1b'
+    reply = dict(op='SPAWN_DONE', returncode=code, uid=300001, gid=300001,
+                 stop_reason=f'cell:exit={code}', stderr_tail=tail)
+    cell = OwnerCell(SimpleNamespace(_reply=lambda **kwargs: reply), stream, status,
+                     OwnerIdentity(300001, 300001), kind=kind)
+    with peer, mapper, pytest.raises(OwnerLaunchRefused) as caught:
+        with cell:
+            _read(io.BytesIO(b'private malformed stdout'), 64)
+    for message in (str(caught.value), caplog.text):
+        assert f'kind={kind} exit={code}' in message
+        assert repr(tail) in message
+        assert 'private malformed stdout' not in message
+    assert cell._closed
+
+
+def test_mapper_preserves_only_the_stderr_tail(capfd):
+    import runpy
+
+    scope = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                              / 'deploy/role_owner_launcher.py'))
+    launcher = object.__new__(scope['OwnerLauncher'])
+    reader, writer = os.pipe()
+    os.set_blocking(reader, False)
+    launcher.diagnostics = {1: [reader, None, b'', None, bytearray(), False, None,
+                                'owner-content']}
+    os.write(writer, b'not retained prefix' + b'x' * 2048 + b'last failure\n')
+    os.close(writer)
+    tail = launcher._stderr_tail(1)
+    assert len(tail.encode()) == 512 and tail.endswith('last failure\n')
+    launcher._finish_diagnostics(1, 1)
+    log = capfd.readouterr().err
+    assert 'kind=owner-content exit=1' in log and repr(tail) in log
+    assert 'not retained prefix' not in log
+
+
 def test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow():
     import runpy
 
@@ -43,7 +89,7 @@ def test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow():
     consumer, sink = os.pipe()  # the daemon's stderr pipe, as the mapper holds it
     os.set_blocking(sink, False)
     os.set_blocking(consumer, False)
-    state = [reader, sink, b'', None, bytearray(), False, None]
+    state = [reader, sink, b'', None, bytearray(), False, None, 'provider-exec']
     launcher.diagnostics = {1: state}
     try:
         expected = b''.join(bytes([number]) * 4096 for number in range(20))
@@ -81,7 +127,7 @@ def test_relay_teardown_does_not_replace_the_cell_exit():
     launcher = object.__new__(scope['OwnerLauncher'])
     reader, writer = os.pipe()
     os.set_blocking(reader, False)
-    launcher.diagnostics = {1: [reader, None, b'', None, bytearray(), False, None]}
+    launcher.diagnostics = {1: [reader, None, b'', None, bytearray(), False, None, 'provider-exec']}
     os.write(writer, b'TA_CELL_FAILURE relay:half-close:errno=107\n')
     os.close(writer)
     assert launcher._finish_diagnostics(1, 1) == 'cell:exit=1'
@@ -235,7 +281,8 @@ def test_mapper_resource_kills_have_authenticated_completion_reason(monkeypatch,
     error_read, error_write = os.pipe()
     os.close(error_write)
     os.set_blocking(error_read, False)
-    launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False, None]}
+    launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False,
+                                   None, 'provider-exec']}
     launcher.package_jobs = {child}
     launcher.browser_jobs = set()
     launcher.launch = None
@@ -309,7 +356,8 @@ def test_mapper_pulse_keeps_only_its_live_child_and_eof_still_revokes(monkeypatc
     os.close(error_write)
     os.set_blocking(error_read, False)
     launcher.jobs = {child: (1, 300001, float('inf'), mapper)}
-    launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False, None]}
+    launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False,
+                                   None, 'provider-exec']}
     launcher.package_jobs = set()
     launcher.browser_jobs = set()
     launcher.launch = None

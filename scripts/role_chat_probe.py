@@ -44,14 +44,26 @@ def main():
         import socket
 
         assert {name for index, name in socket.if_nameindex()} == {'lo'}
+    center = os.environ["ORACLE_COMMAND_CENTER"]
+    root = Path('/data') / center
+    machine = root.stat().st_gid
+    # Clone-only fixture, before bootstrap retires SETUID. Plant as the owner;
+    # do not let daemon-created bytes stand in for a real pending brain.
+    planted = os.fork()
+    if planted == 0:
+        os.setgroups([])
+        os.setgid(machine)
+        os.setuid(machine)
+        (root / '.agent-workspace/MEMORY.md').write_bytes(b'ORACLE pending brain\n')
+        os._exit(0)
+    assert os.waitpid(planted, 0)[1] == 0, 'pending brain fixture failed'
     launch = runpy.run_path("/usr/local/libexec/ta-launch.py")
     bindings, services = launch["boot"](launch)
-    center = os.environ["ORACLE_COMMAND_CENTER"]
     owner = next(owner for owner, name in bindings if name == center)
     os.environ["UNIVERSE_SERVER_DEV_USER"] = owner
     requests, launches = [], []
     answer = "ORACLE real read write edit bash succeeded"
-    active = {}
+    active = {'runs': []}
     from tinyassets import role_tools
 
     real_run = role_tools.run
@@ -68,6 +80,57 @@ def main():
         return result
 
     role_tools.run = observe_run
+
+    from tinyassets import role_content
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.universe_tools import run_jailed
+
+    (root / 'MEMORY.md').unlink(missing_ok=True)
+    failures = []
+    with identity_context(Identity(owner, owner)):
+        import secrets
+
+        from tinyassets.api.wiki import _scoped_wiki_root, _wiki_write
+
+        # Migration normalizes old inode labels. Recreate the live trigger:
+        # writing a new wiki category must not leave a daemon-owned directory
+        # that poisons the next tool's storage observation.
+        category = 'oracle-content-' + secrets.token_hex(6)
+        debris = root / 'wiki/drafts' / (category + '-old-empty')
+        debris.mkdir()  # The deployed bug's empty daemon-owned category.
+        with _scoped_wiki_root(root / 'wiki'):
+            wiki_result = json.loads(_wiki_write(category=category, filename='proof',
+                                                content='ORACLE wiki content\n'))
+        if 'error' in wiki_result:
+            print('ORACLE DETAIL wiki-publication: ' + wiki_result['error'], flush=True)
+            failures.append('wiki-publication')
+        for name, operation in (
+            ('pending-brain', lambda: run_jailed(root, ['/bin/sh', '-c', 'echo ok'],
+                                                agent_id='main')),
+            ('content-data', lambda: role_content.write(root, ['notes', 'oracle-content'],
+                                                        b'ORACLE content\n')),
+            ('content-directories', lambda: role_content.ensure_directories(
+                root, ['notes', 'oracle-directories', 'nested'], machine=machine)),
+        ):
+            try:
+                result = operation()
+                if name == 'pending-brain':
+                    assert result.exit_code == 0 and result.output.strip() == b'ok'
+                    assert (root / 'MEMORY.md').read_bytes() == b'ORACLE pending brain\n'
+                    assert (root / 'MEMORY.md').stat().st_uid == machine
+                    assert debris.stat().st_uid == machine and not list(debris.iterdir())
+                elif name == 'content-data':
+                    assert (root / 'notes/oracle-content').read_bytes() == b'ORACLE content\n'
+                    assert (root / 'notes/oracle-content').stat().st_uid == machine
+                else:
+                    assert (root / 'notes/oracle-directories/nested').stat().st_uid == machine
+                    assert list((root / 'notes/oracle-directories/nested').iterdir()) == []
+                print('ORACLE CONTENT PASS ' + name, flush=True)
+            except Exception as exc:
+                print('ORACLE DETAIL ' + name + ': ' + str(exc), flush=True)
+                failures.append(name)
+    assert not failures, 'owner publication failed: ' + ', '.join(failures)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -473,7 +536,8 @@ def main():
             graph_runs = await prove_runs(client, center, owner)
         print(
             "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results, launches=launches,
-                                                     graph_runs=graph_runs)),
+                graph_runs=graph_runs, owner_content=['wiki-publication', 'pending-brain',
+                    'content-data', 'content-directories', 'empty-category-repair'])),
             flush=True,
         )
 
