@@ -361,7 +361,8 @@ def test_create_connection_enforces_the_binding_at_the_storage_boundary(
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "founder"
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "founder"
     )
     with pytest.raises(SsrfValidationError):
         ledger.create_connection(
@@ -382,7 +383,8 @@ def test_create_connection_refuses_a_full_capability_url(base: Path) -> None:
     from tinyassets.storage.outbound_connections import ACCESS_FULL, ConnectionLedger
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "founder"
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "founder"
     )
     with pytest.raises(SsrfValidationError) as exc:
         ledger.create_connection(
@@ -411,7 +413,8 @@ def test_set_access_mode_cannot_promote_a_capability_url_to_full(base: Path) -> 
     )
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "founder"
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "founder"
     )
     ledger.create_connection(
         connection_id="c-3",

@@ -9,14 +9,13 @@ import asyncio
 import contextvars
 import json
 import re
+import secrets
 import socket
 import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-
-from tinyassets.storage.outbound_connections import ConnectionLedger
 
 JAIL_SOCKET = "/tmp/ta.sock"
 JAIL_CLIENT = "/ta/bin/ta"
@@ -76,21 +75,12 @@ class Capabilities:
         # A launch whose grant withholds connections neither lists nor calls one.
         if not self.connections_granted:
             return {}
-        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.broker.catalog import connections
 
-        if broker_selected():
-            from tinyassets.broker.catalog import connections
-
-            inventory = ((grant, view) for grant, view, _ in connections(
-                self.root.parent, principal=self.context.owner,
-                command_center=self.context.universe))
-        else:
-            ledger = ConnectionLedger(self.root.parent / "outbound.db")
-            # No catalogue truncation. Existing ledger API has no cursor.
-            inventory = ((grant, ledger.get_connection_view(grant.connection_id))
-                         for grant in ledger.list_grants(owner_user_id=self.context.owner,
-                                                         universe_id=self.context.universe,
-                                                         limit=2**31 - 1))
+        # No catalogue truncation: the broker's catalog pages to exhaustion.
+        inventory = ((grant, view) for grant, view, _ in connections(
+            self.root.parent, principal=self.context.owner,
+            command_center=self.context.universe))
         found = {}
         for grant, view in inventory:
             if (view is None or view.owner_user_id != self.context.owner
@@ -217,7 +207,10 @@ class JailBridge:
     headers, a bearer or a route. Closing the bash invocation revokes the socket.
     """
 
-    def __init__(self, dispatch):
+    def __init__(self, dispatch, *, universe_dir=None):
+        if universe_dir is None:
+            raise ValueError("capability bridge requires an admitted command center")
+        self.universe_dir = Path(universe_dir)
         self.dispatch = dispatch
         self._context = contextvars.copy_context()
         self._closed = threading.Event()
@@ -236,11 +229,19 @@ class JailBridge:
             except Exception:
                 self._directory.cleanup()
                 raise
-        self.path = Path(self._directory.name) / "cap.sock"
+        from tinyassets import role_relays
+        from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
+        self.path = (self.universe_dir.parent / UNIVERSE_SIDECARS_DIR
+                     / self.universe_dir.name / ("ta-" + secrets.token_hex(16) + ".sock"))
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(str(self.path))
-        self.path.chmod(0o600)
-        self._server.listen(8)
+        try:
+            self._socket_identity = role_relays.bind(self._server, self.path)
+            self._server.listen(8)
+        except BaseException:
+            self._server.close()
+            self._directory.cleanup()
+            raise
         self._server.settimeout(0.1)
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -278,7 +279,13 @@ class JailBridge:
     def __exit__(self, *_):
         self._closed.set()
         self._server.close()
-        self._directory.cleanup()
+        self._thread.join(timeout=1)
+        from tinyassets import role_relays
+
+        try:
+            role_relays.remove(self.path, self._socket_identity)
+        finally:
+            self._directory.cleanup()
 
 
 async def engine_dispatch(server, *, completed: list | None = None):

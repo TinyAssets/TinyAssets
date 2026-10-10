@@ -84,7 +84,7 @@ def test_the_owner_takes_a_key_back_from_the_rail(base):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, grant_id = _ids(universe_id="u-1", destination="github")
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     assert ledger._get_connection_resource(conn_id) is None
     assert ledger.get_grant(grant_id) is None

@@ -15,7 +15,7 @@ def test_broker_dispatch_preserves_logical_root_with_private_ledger(tmp_path):
 
 
 def test_role_broker_opens_only_the_relocated_ledger(tmp_path):
-    dispatcher = _Dispatchers(tmp_path, allow_test_fixtures=False, role_split=True)
+    dispatcher = _Dispatchers(tmp_path, allow_test_fixtures=False)
     ledger = dispatcher.ledger_for("alice")
     assert ledger.require_authenticated_principal_id() == "alice"
     assert (tmp_path / ".broker/outbound.db").is_file()

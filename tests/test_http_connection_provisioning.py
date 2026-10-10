@@ -133,7 +133,8 @@ def _ledger(base: Path, actor: str) -> Any:
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     return ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: actor
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: actor
     )
 
 
@@ -418,7 +419,8 @@ def test_connections_list_isolates_by_owner_not_just_universe(base: Path) -> Non
     # property of the list_grants owner filter, which this exercises head-on).
     def _seed(owner: str, dest: str, conn_id: str, grant_id: str) -> None:
         ledger = ConnectionLedger(
-            base / "outbound.db", verify_authenticated_principal=lambda: owner
+            base / ".broker" / "outbound.db", data_root=base,
+            verify_authenticated_principal=lambda: owner
         )
         ledger.create_connection(
             connection_id=conn_id, owner_user_id=owner, connection_class="http",
@@ -821,11 +823,12 @@ def test_second_admin_cannot_transfer_existing_credential(base: Path) -> None:
     assert recs[0]["token"] == "founder-secret"
 
 
-def test_inert_self_heal_after_grant_fault(base: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A mid-provision fault (the grant write raises after the vault + connection
-    landed) leaves only INERT partial state — a connection with no grant, which
-    cannot authorize a call. The deterministic-id retry completes it (Codex review
-    finding #1: the claim is inert-self-heal, not all-or-nothing)."""
+def test_atomic_broker_commit_rolls_back_grant_fault_then_retries(
+    base: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The broker commits connection and grant together. A grant fault rolls
+    back both ledger rows; the owner's vault deposit remains retryable.
+    """
     from tinyassets.storage import outbound_connections as oc
 
     udir = _make_universe(base, "u-heal", admin="founder")
@@ -842,19 +845,19 @@ def test_inert_self_heal_after_grant_fault(base: Path, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(oc.ConnectionLedger, "grant_connection", _flaky_grant)
 
-    # First call: vault + connection land, grant raises. The fault surfaces, not
-    # a usable connection.
-    with pytest.raises(RuntimeError):
+    # The vault lands; the broker transaction rolls back both ledger writes.
+    from tinyassets.broker.client import BrokerRefused
+
+    with pytest.raises(BrokerRefused, match="credential broker connect refused"):
         _connect("u-heal")
     from tinyassets.api.http_connection import _ids
 
     conn_id, grant_id = _ids(universe_id="u-heal", destination="webhook:acme")
     ledger = _ledger(base, "founder")
-    assert ledger._get_connection_resource(conn_id) is not None  # inert connection
+    assert ledger._get_connection_resource(conn_id) is None  # rolled back with the grant
     assert ledger.get_grant(grant_id) is None  # no grant → cannot authorize a call
 
-    # Retry (same deterministic ids): reuses the inert connection, completes the
-    # grant. Now usable, exactly once.
+    # Retry (same deterministic ids) commits both rows, exactly once.
     healed = _connect("u-heal")
     assert healed["status"] == "provisioned"
     assert healed["connection_id"] == conn_id
@@ -895,7 +898,9 @@ def test_create_fault_orphan_is_owner_locked_then_original_owner_heals(
     # 1. Founder's first call: the vault deposit lands (owner recorded), then
     #    create_connection raises. The fault surfaces; no connection row exists.
     _login("founder")
-    with pytest.raises(RuntimeError):
+    from tinyassets.broker.client import BrokerRefused
+
+    with pytest.raises(BrokerRefused, match="credential broker connect refused"):
         _connect("u-orphan", secret="founder-secret")
 
     from tinyassets.api.http_connection import _ids
@@ -1257,8 +1262,8 @@ def test_http_cap_migration_preserves_other_caps_and_malformed_rows(base: Path) 
         before = conn.execute(
             "SELECT * FROM outbound_connection_grants ORDER BY grant_id"
         ).fetchall()
-    ConnectionLedger(base / "outbound.db")
-    ConnectionLedger(base / "outbound.db")
+    ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     with ledger._connect() as conn:
         after = conn.execute(
             "SELECT * FROM outbound_connection_grants ORDER BY grant_id"
@@ -1281,7 +1286,8 @@ def test_http_cap_migration_concurrent_opens(base: Path) -> None:
 
     def open_ledger(_index: int) -> Any:
         barrier.wait(timeout=10)
-        return ConnectionLedger(base / "outbound.db").get_grant(grant_id)
+        ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+        return ledger.get_grant(grant_id)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         grants = list(pool.map(open_ledger, range(8)))
@@ -1303,16 +1309,17 @@ def test_http_cap_migration_lock_failure_preserves_cap_then_retries(
         return conn
 
     monkeypatch.setattr(ConnectionLedger, "_connect", short_timeout)
-    with sqlite3.connect(base / "outbound.db") as writer:
+    with sqlite3.connect(base / ".broker" / "outbound.db") as writer:
         writer.execute("BEGIN IMMEDIATE")
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            ConnectionLedger(base / "outbound.db")
+            ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
         cap = writer.execute(
             "SELECT unprompted_action_cap_json FROM outbound_connection_grants WHERE grant_id = ?",
             (grant_id,),
         ).fetchone()[0]
         assert json.loads(cap)["name"] == "http_requests"
-    assert ConnectionLedger(base / "outbound.db").get_grant(grant_id).unprompted_action_cap is None
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    assert ledger.get_grant(grant_id).unprompted_action_cap is None
 
 
 def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
@@ -1321,7 +1328,7 @@ def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-reopen")
-    ConnectionLedger(base / "outbound.db")
+    ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     statements: list[str] = []
     original = ConnectionLedger._connect
 
@@ -1332,9 +1339,9 @@ def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
         return conn
 
     monkeypatch.setattr(ConnectionLedger, "_connect", traced_connect)
-    with sqlite3.connect(base / "outbound.db") as writer:
+    with sqlite3.connect(base / ".broker" / "outbound.db") as writer:
         writer.execute("BEGIN IMMEDIATE")
-        reopened = ConnectionLedger(base / "outbound.db")
+        reopened = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
         assert reopened.get_grant(grant_id).unprompted_action_cap is None
     assert not any(
         sql.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE", "REPLACE", "BEGIN"))

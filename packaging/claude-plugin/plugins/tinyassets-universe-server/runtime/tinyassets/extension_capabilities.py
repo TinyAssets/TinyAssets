@@ -155,12 +155,31 @@ class ExtensionCapabilities:
     def _current(self):
         return set(self.backend.platform) | set(self.backend.connections())
 
-    def _bindings(self, name, revision, requested):
-        from tinyassets.storage.outbound_connections import ConnectionLedger
+    def _incarnation(self, pin):
+        """The broker's live incarnation for an exact pinned grant, or ``""``.
 
+        Only the broker opens the ledger, and it answers only inside this
+        agent's admitted owner/command-center scope.
+        """
+        from tinyassets.broker.ledger_queries import authorized_connection
+        from tinyassets.storage.outbound_connections import (
+            GrantResolutionError,
+            ProxyRequestError,
+        )
+
+        context = self.backend.context
+        try:
+            _grant, _resource, incarnation = authorized_connection(
+                self.backend.root.parent, principal=context.owner,
+                command_center=context.universe, grant_id=pin["grant_id"],
+                connection_id=pin["connection_id"])
+        except (GrantResolutionError, ProxyRequestError):
+            return ""
+        return incarnation
+
+    def _bindings(self, name, revision, requested):
         doc, _ = self.store.load(name, revision).content()
         slots = {row["name"]: row for row in doc.get("connections", [])}
-        ledger = ConnectionLedger(self.backend.root.parent / "outbound.db")
         available = self.backend.connections()
         result = {}
         for slot, pin in requested.items():
@@ -170,7 +189,7 @@ class ExtensionCapabilities:
                 match = available.get(f"connection:{pin['connection_id']}:{verb}")
                 if match is None or match[0].grant_id != pin["grant_id"]:
                     raise ExtensionError("connection binding exceeds current grant")
-            incarnation = ledger.incarnation(pin["connection_id"])
+            incarnation = self._incarnation(pin)
             if not incarnation:
                 raise ExtensionError("connection binding unavailable")
             result[slot] = {**pin, "incarnation": incarnation}
@@ -178,15 +197,12 @@ class ExtensionCapabilities:
 
     def connection(self, state, row, verb=None):
         """Resolve only private, revision-bound local authority; never author credentials."""
-        from tinyassets.storage.outbound_connections import ConnectionLedger
-
         pin = self.store.bindings(state).get(row["name"])
         if pin is None:
             return None
         ceiling = self.store.active(state["name"], state["revision"], state["generation"],
                                     current_capabilities=self._current())
-        ledger = ConnectionLedger(self.backend.root.parent / "outbound.db")
-        if ledger.incarnation(pin["connection_id"]) != pin["incarnation"]:
+        if self._incarnation(pin) != pin["incarnation"]:
             raise ExtensionError("connection binding incarnation changed")
         available = self.backend.connections()
         for required in row["verbs"]:
@@ -245,6 +261,11 @@ class ExtensionCapabilities:
                 target.chmod(0o555)
             mounted.add(
                 (state["name"], state["revision"], state["generation"]))
+        # The temporary parent stays private to the daemon. This selected tree
+        # must be traversable after the mapper retires to the owner, regardless
+        # of the daemon umask; its cell mount is read-only.
+        for folder in (directory, *(p for p in directory.rglob("*") if p.is_dir())):
+            folder.chmod(0o755)
         _MOUNTS.set(frozenset(mounted))
         return True
 

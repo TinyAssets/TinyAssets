@@ -11,14 +11,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(autouse=True)
-def isolation_on(monkeypatch):
-    # The D60 identity guards ride the isolation switch (R2); OFF reads as main.
-    from tinyassets.broker.supervisor import ENV_SWITCH, PROCESS
-
-    monkeypatch.setenv(ENV_SWITCH, PROCESS)
-
-
 def test_open_descriptor_checks_uid_and_gid_after_foreign_name_retirement(tmp_path):
     own = tmp_path / "alice"
     own.mkdir()
@@ -39,6 +31,9 @@ def test_open_descriptor_checks_uid_and_gid_after_foreign_name_retirement(tmp_pa
                 fs.copy_regular_file_beneath(fd, "alias", tmp_path / "copy", max_bytes=100)
             assert not (tmp_path / "copy").exists()
         os.chown(alias, 300001, 300001)
+        assert fs.read_regular_file_beneath(fd, "alias", max_bytes=100) == b"foreign"
+        # The daemon's own write in this owner's tree reads back.
+        os.chown(alias, 1001, 1001)
         assert fs.read_regular_file_beneath(fd, "alias", max_bytes=100) == b"foreign"
         with pytest.raises(fs.UnsafePoolPath, match="root"):
             fs.read_regular_file_beneath(fd, "alias", max_bytes=100,

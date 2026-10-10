@@ -220,8 +220,8 @@ def reconcile_push_intents(
     base_path: str | Path,
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    credential_ref_for: Callable[[str], str] | None = None,
     revalidate: Callable[[PushIntent], bool] | None = None,
+    principal_for: Callable[[PushIntent], str] | None = None,
     host: str = "",
     staging_root: str | Path | None = None,
 ) -> list[tuple[str, str]]:
@@ -231,6 +231,12 @@ def reconcile_push_intents(
     the same commit is success, not a failure. Anything else is ``failed`` with
     the observed ref recorded. An intent the remote could not be asked about
     becomes ``unknown`` and stays owed -- never guessed in either direction.
+
+    ``principal_for`` is how the owner is recovered for one intent; it defaults
+    to :func:`_intent_principal`, which revalidates the whole chain against
+    the daemon's persisted run. It is a seam because this runs at STARTUP,
+    where there is no request identity to read and a caller may already hold
+    the admitted owner.
     """
     intents = open_intents(base_path)
     if not intents:
@@ -240,34 +246,30 @@ def reconcile_push_intents(
 
         execute = execute_workspace_operation
 
-    from tinyassets import workspace_staging
-
+    # No staging: the probe is one route-only ls-remote inside the owner's own
+    # cell, so there is no local directory to make, hold or sweep.
+    del staging_root
     settled: list[tuple[str, str]] = []
     for intent in intents:
-        # Owned by this process's liveness token and removed after the probe,
-        # whatever it answered: it used to be left behind on every pass.
-        # ``staging_root`` names the directory whose ``.workspace-staging`` is used.
-        with workspace_staging.staging(
-            staging_root if staging_root is not None else base_path,
-            f"reconcile-{intent.intent_id}",
-        ) as staging:
-            _reconcile_one(
-                base_path, intent, staging, settled,
-                execute=execute, credential_ref_for=credential_ref_for,
-                revalidate=revalidate, host=host,
-            )
+        _reconcile_one(
+            base_path, intent, settled, execute=execute, revalidate=revalidate,
+            principal_for=principal_for or _intent_principal_for(base_path), host=host,
+        )
     return settled
+
+
+def _intent_principal_for(base_path: str | Path) -> Callable[[PushIntent], str]:
+    return lambda intent: _intent_principal(base_path, intent)
 
 
 def _reconcile_one(
     base_path: str | Path,
     intent: PushIntent,
-    staging: Path,
     settled: list[tuple[str, str]],
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]],
-    credential_ref_for: Callable[[str], str] | None,
     revalidate: Callable[[PushIntent], bool] | None,
+    principal_for: Callable[[PushIntent], str],
     host: str,
 ) -> None:
     """Settle one intent. Appends its (intent_id, state) to ``settled``."""
@@ -286,24 +288,15 @@ def _reconcile_one(
             settled.append((intent.intent_id, "sent"))
             return
 
-    from tinyassets.broker.supervisor import broker_selected
-
-    credential_ref = ""
-    if broker_selected():
-        try:
-            credential_ref = _broker_credential_ref(base_path, intent)
-        except Exception:
-            # No unknown authority may reach even a read-only remote probe.
-            _defer(base_path, intent, reason="broker authority unavailable")
-            settled.append((intent.intent_id, "sent"))
-            return
-    elif credential_ref_for is not None:
-        try:
-            credential_ref = credential_ref_for(intent.connection_id)
-        except Exception:
-            credential_ref = ""
-    if not credential_ref and not broker_selected():
-        credential_ref = _credential_ref(base_path, intent.connection_id)
+    try:
+        principal = principal_for(intent)
+        if not principal:
+            raise PermissionError("intent has no admitted owner")
+    except Exception:
+        # No unknown authority may reach even a read-only remote probe.
+        _defer(base_path, intent, reason="broker authority unavailable")
+        settled.append((intent.intent_id, "sent"))
+        return
 
     # The intent's OWN host, never a module default: defaulting to
     # github.com would contact a host this push never used (round 3 P0 #1).
@@ -319,11 +312,13 @@ def _reconcile_one(
             {
                 "op": "ls_remote",
                 "universe_dir": str(base_path),
-                "credential_ref": credential_ref,
+                "principal": principal,
+                "agent": f"workspace-intent-{intent.intent_id[:16]}",
+                "grant_id": intent.grant_id,
+                "connection_id": intent.connection_id,
                 "host": intent_host,
                 "owner_repo": intent.repo,
                 "remote_ref": intent.remote_ref,
-                "staging_dir": str(staging),
             }
         )
     except Exception:
@@ -370,26 +365,15 @@ def _defer(base_path: str | Path, intent: PushIntent, *, reason: str) -> None:
     )
 
 
-def _credential_ref(base_path: str | Path, connection_id: str) -> str:
-    """The connection's credential REFERENCE (never a secret), or empty."""
-    if not connection_id:
-        return ""
-    from tinyassets.broker.supervisor import broker_selected
+def _intent_principal(base_path: str | Path, intent: PushIntent) -> str:
+    """The owner whose authority settles this intent.
 
-    if broker_selected():
-        raise RuntimeError("broker custody lookup requires admitted intent scope")
-    try:
-        from tinyassets.storage.outbound_connections import ConnectionLedger
-
-        ledger = ConnectionLedger(Path(base_path).parent / "outbound.db")
-        resource = ledger._get_connection_resource(connection_id)
-        return str(getattr(resource, "credential_ref", "") or "")
-    except Exception:
-        return ""
-
-
-def _broker_credential_ref(base_path: str | Path, intent: PushIntent) -> str:
-    """Recover authority from the daemon's persisted run, never intent payloads."""
+    Recovered from the daemon's persisted run, never from intent payloads, and
+    revalidated end to end -- grant, host, scope, consent -- before anything
+    reaches even a read-only remote probe. What comes back is the PRINCIPAL: no
+    credential crosses this boundary any more, because the probe runs in that
+    owner's own cell and only the broker resolves the token.
+    """
     from tinyassets import runs
     from tinyassets.broker.ledger_queries import authorized_connection
     from tinyassets.effectors.workspace import _require_consent, _require_scope, transport_host_for
@@ -411,4 +395,4 @@ def _broker_credential_ref(base_path: str | Path, intent: PushIntent) -> str:
                      access_mode=connection_access_mode(resource))
     if not resource.credential_ref:
         raise PermissionError("intent custody unavailable")
-    return resource.credential_ref
+    return run["owner_user_id"]

@@ -44,6 +44,11 @@ _POSIX = os.name == "posix" and os.open in os.supports_dir_fd
 
 _COPY_CHUNK = 1024 * 1024
 _LEASE_DIR_MODE = 0o700
+#: A workspace an OWNER CELL creates inside its command center. The group bits
+#: carry the inherited ACL mask, which is what keeps the daemon's named rwx
+#: entry effective: ``0o700`` would zero the mask and lock the daemon out of
+#: the lease it has to open, measure and reclaim.
+OWNER_WORK_DIR_MODE = 0o770
 _COPY_DEST_MODE = 0o600
 #: A lease directory's name must be unguessable: the parent is shared, and an
 #: attacker who can predict the name can create it first. 16 hex chars is 64
@@ -53,6 +58,8 @@ _HEX = frozenset("0123456789abcdefABCDEF")
 #: A workspace tree deeper than this is not a repository, and unbounded
 #: recursion through descriptors is a stack overflow waiting for a fixture.
 _MAX_TREE_DEPTH = 64
+#: The daemon's own inode label (role_modes.DAEMON_UID, its primary group).
+_DAEMON = (1001, 1001)
 
 
 class UnsafePoolPath(OSError):
@@ -504,6 +511,14 @@ def _create_dir_beneath(parent_fd: int, name: str, *, mode: int) -> int:
             raise UnsafePoolPath(
                 f"{name!r} is owned by uid {opened.st_uid}, not this process"
             )
+        # ``mkdir`` subtracts the process umask, so the mode below is the mode
+        # this call ASKED for only after this. It matters for an owner work
+        # directory, whose group bits carry the inherited ACL mask: an
+        # inherited 0o022 umask would silently drop the daemon's named rwx.
+        # Safe by construction -- the handle is the fresh directory we own.
+        if stat.S_IMODE(opened.st_mode) != mode:
+            os.fchmod(fd, mode)
+            opened = os.fstat(fd)
         if stat.S_IMODE(opened.st_mode) != mode:
             raise UnsafePoolPath(
                 f"{name!r} has mode {stat.S_IMODE(opened.st_mode):#o}, not the "
@@ -590,17 +605,70 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
     return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
-def _reader_guards_selected() -> bool:
-    """Alias refusal and owner-identity walks ride the isolation switch.
+def _overflow_uid() -> int:
+    """How the host daemon's uid appears inside an owner cell's user namespace.
 
-    Production holds legitimate same-owner multi-link files (interrupted brain
-    promotion, agent ``ln``, local git clones), and on the shared-uid jail no
-    cross-owner alias can be planted. So with the switch OFF a read behaves as
-    before the per-role uid split; ON, the dedicated-owner guards apply.
+    The cell is mapped ``0 300000 100000``, so every host uid outside that
+    window -- the daemon's 1001 included -- reads back as the kernel's overflow
+    uid. There is no way to see 1001 from in there, and nothing should try.
     """
-    from tinyassets.broker.supervisor import broker_selected
+    try:
+        return int(Path("/proc/sys/kernel/overflowuid").read_text())
+    except OSError:
+        return 65534
 
-    return broker_selected()
+
+def create_cell_lease_dir(
+    parent_fd: int, name: str, *, mode: int = OWNER_WORK_DIR_MODE
+) -> int:
+    """Create one lease directory from INSIDE the owner cell, and return its handle.
+
+    The cell is the only process that can make a lease the owner owns, which is
+    what a node cell needs before it will mount one. Its parent is the pool
+    directory the daemon prepared for exactly this owner
+    (``workspace_owner_pool.prepare``), so the ownership rule differs from
+    :func:`create_lease_dir`'s by exactly one case: the parent may be owned by
+    the daemon as well as by this owner.
+
+    What this proves, and what it does not. It proves the parent belongs to the
+    daemon or to this owner, that it is not world-writable, and that the handle
+    returned is the fresh, empty, owner-owned directory with the mode this call
+    asked for. It does NOT read the parent's ACL: a POSIX ACL makes the group
+    bits report the mask, so a group-write test here would refuse every
+    correctly prepared parent. That the parent's ACL names only the daemon and
+    this one owner is asserted on the DAEMON side before the cell starts; the
+    unguessable name is what closes the rest.
+    """
+    _require_posix("create_cell_lease_dir")
+    _require_component(name)
+    if len(name) < MIN_LEASE_NAME_CHARS or any(char not in _HEX for char in name):
+        raise UnsafePoolPath(
+            f"a lease directory name must be at least {MIN_LEASE_NAME_CHARS} "
+            f"random hex characters (secrets.token_hex(8) or wider), got {name!r}"
+        )
+    parent = os.fstat(parent_fd)
+    if not stat.S_ISDIR(parent.st_mode):
+        raise UnsafePoolPath("the pool parent handed to the cell is not a directory")
+    if parent.st_uid not in (os.getuid(), _overflow_uid()):
+        raise UnsafePoolPath(
+            f"the pool parent is owned by uid {parent.st_uid}, which is neither "
+            "this owner nor the daemon"
+        )
+    if parent.st_mode & stat.S_IWOTH:
+        raise UnsafePoolPath("the pool parent is world-writable")
+    return _create_dir_beneath(parent_fd, name, mode=mode)
+
+
+def create_cell_subdir(parent_fd: int, name: str, *, mode: int = OWNER_WORK_DIR_MODE) -> int:
+    """A FIXED-name owner directory inside a directory the cell already walked.
+
+    ``<lease>/repo`` and a permanent ``<repo-key>/<generation>``: the name is
+    the platform's, not a secret, so the entropy rule would be cargo. The
+    mkdirat/openat verification still runs.
+    """
+    _require_posix("create_cell_subdir")
+    _require_component(name)
+    return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
 def _directory_owner_identity(fd: int) -> tuple[int, int] | None:
@@ -661,8 +729,7 @@ def _open_regular_beneath(
         raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
     parts = _split_relpath(relpath)
     current = dir_fd
-    guarded = _reader_guards_selected()
-    identity = _read_owner_identity(dir_fd) if guarded else None
+    identity = _read_owner_identity(dir_fd)
     if expected_identity is not None:
         if identity is not None and identity != expected_identity:
             raise UnsafePoolPath("read root does not match the admitted owner identity")
@@ -672,8 +739,6 @@ def _open_regular_beneath(
         for part in parts[:-1]:
             current = _open_child_dir(current, part)
             opened.append(current)
-            if not guarded:
-                continue
             child_identity = _directory_owner_identity(current)
             if child_identity is not None:
                 if identity is not None and child_identity != identity:
@@ -690,12 +755,10 @@ def _open_regular_beneath(
                 f"{str(relpath)!r} is not a regular file (mode {info.st_mode:#o}); "
                 "a workspace read never opens a device, a FIFO or a directory"
             )
-        if guarded and info.st_nlink != 1:
-            raise UnsafePoolPath(
-                f"{str(relpath)!r} has {info.st_nlink} links; "
-                "a workspace read refuses aliased regular files"
-            )
-        if identity is not None and (info.st_uid, info.st_gid) != identity:
+        # The daemon's own writes in an owner tree are 1001:1001 (it cannot
+        # chown). No owner can alias one in: it cannot open another owner's
+        # tree, hardlink a file it cannot open, or have a link followed here.
+        if identity is not None and (info.st_uid, info.st_gid) not in (identity, _DAEMON):
             raise UnsafePoolPath(
                 f"{str(relpath)!r} does not belong to the admitted owner identity"
             )
@@ -948,6 +1011,11 @@ class RealPoolFilesystem:
         self._retry_total_s = retry_total_s
         self._retry_step_s = retry_step_s
         self._sleep = sleep
+        from tinyassets.storage import data_dir
+
+        # Resolved once, before any check: the data root is where command
+        # centers live, and their subtrees delete in two passes.
+        self._data_root = Path(os.path.abspath(data_dir()))
 
     def exists(self, path: Path) -> bool:
         """Presence WITHOUT following links: a dangling symlink is present, and
@@ -998,14 +1066,41 @@ class RealPoolFilesystem:
         finally:
             os.close(src_fd)
 
+    def owner_scoped(self, path: Path) -> bool:
+        """``path`` lies inside a command center, so its owner wrote entries the
+        daemon cannot remove or move: delete it in place, in two passes."""
+        if not self._posix:
+            return False
+        # Lexical only: this check makes no filesystem call by path.
+        try:
+            relative = Path(os.path.abspath(path)).relative_to(self._data_root)
+        except ValueError:
+            return False
+        # Every workspace lease lives inside a command center now, the scratch
+        # pool included (``workspace_owner_pool``), and the owner made the
+        # directory -- so there is no daemon-only pool root left to except.
+        return len(relative.parts) >= 2 and not relative.parts[0].startswith(".")
+
     def remove_tree_no_follow(self, path: Path) -> None:
         """Delete a tree bottom-up, never descending into a link or junction.
 
         A path that is already gone is not an error: the processor is
         at-least-once, so a repeat has to be a no-op. Anything else propagates as
         ``OSError`` and the lease becomes ``LOST`` with its bytes still charged.
+        Inside a command center the owner-delete cell runs pass one and the
+        daemon pass two (D10); there is no daemon-only route there.
         """
         target = Path(path)
+        if self.owner_scoped(target):
+            from tinyassets.role_owner_delete import remove_subtree
+            from tinyassets.universe_owner import owner_of
+
+            center = Path(os.path.abspath(target)).relative_to(self._data_root).parts[0]
+            owner = owner_of(self._data_root, center)
+            if not owner:
+                raise UnsafePoolPath("an unowned command center admits no deletion")
+            remove_subtree(target, principal=owner)
+            return
         if not self._posix:
             _remove_tree_windows(
                 str(target),

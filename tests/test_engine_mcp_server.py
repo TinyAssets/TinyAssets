@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -708,26 +709,49 @@ def test_engine_mcp_flags_fail_closed_without_ids(tmp_path):
     assert _engine_mcp_flags(cfg, tmp_path) == []
 
 
-def test_engine_mcp_flags_emits_strict_config_and_pins(tmp_path, monkeypatch):
+def _seal_plainly(monkeypatch):
+    from tinyassets import credential_vault
+
+    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                        lambda path, data: Path(path).write_bytes(data))
+
+
+def test_engine_mcp_flags_seal_an_http_route_config_into_the_snapshot(tmp_path, monkeypatch):
+    from tinyassets import engine_mcp_http
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _seal_plainly(monkeypatch)
+    route = engine_mcp_http.EngineMcpRoute(
+        "sub-9", "u-9", "http://127.0.0.1:8790/mcp", "s" * 40, "")
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kwargs: route)
+    snapshot = tmp_path / "u-9" / ".runtime" / "provider-launch-credentials" / "codex-1"
+    snapshot.mkdir(parents=True)
+    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub-9",
+                      engine_mcp_graph_id="u-9", credential_snapshot_dir=snapshot)
+    flags = _engine_mcp_flags(cfg, tmp_path / "u-9")
+    assert flags[0] == "--mcp-config" and flags[2] == "--strict-mcp-config"
+    config_path = Path(flags[1])
+    assert config_path.parent == snapshot  # the only daemon state a cell receives
+    server = json.loads(config_path.read_text())["mcpServers"]["tinyassets"]
+    assert server["type"] == "http" and server["url"].startswith("http://127.0.0.1:8790/mcp")
+    assert server["headers"] == {"Authorization": "Bearer " + "s" * 40}
+    assert "command" not in server  # no stdio engine
 
-    cfg = ModelConfig(
-        engine_mcp_enabled=True,
-        engine_mcp_actor_id="sub-9",
-        engine_mcp_graph_id="u-9",
-    )
-    flags = _engine_mcp_flags(cfg, tmp_path)
-    assert "--strict-mcp-config" in flags
-    assert "--mcp-config" in flags
 
-    data = json.loads((tmp_path / ".runtime" / "engine-mcp-config.json").read_text())
-    srv = data["mcpServers"]["tinyassets"]
-    assert srv["args"] == ["-m", "tinyassets.engine_mcp_server"]
-    assert srv["env"]["TINYASSETS_ENGINE_ACTOR_ID"] == "sub-9"
-    assert srv["env"]["TINYASSETS_ENGINE_GRAPH_ID"] == "u-9"
+def test_engine_mcp_flags_refuse_without_a_route_or_snapshot(tmp_path, monkeypatch):
+    from tinyassets import engine_mcp_http
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.claude_provider import _engine_mcp_flags
+
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kwargs: None)
+    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
+                      engine_mcp_graph_id="u", credential_snapshot_dir=tmp_path)
+    assert _engine_mcp_flags(cfg, tmp_path) == []
+    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
+                      engine_mcp_graph_id="u")
+    assert _engine_mcp_flags(cfg, tmp_path) == []
 
 
 def test_sandbox_cli_args_fails_closed_when_strict_not_installed(monkeypatch, tmp_path):
@@ -767,7 +791,7 @@ def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
         engine_mcp_actor_id="sub",
         engine_mcp_graph_id="u",
     )
-    flags, _cwd = cp._sandbox_cli_args(cfg, tmp_path)
+    flags = cp._sandbox_cli_args(cfg, tmp_path)
     assert "--strict-mcp-config" in flags
 
 
@@ -778,7 +802,7 @@ def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
 # keep the guarantees the old `mcp_servers` wiring had: the workspace stays
 # untrusted, the route fails closed, and its secret never reaches the CLI.
 
-_UNTRUSTED = ("-c", 'projects."/workspace".trust_level="untrusted"')
+_UNTRUSTED = ("-c", 'projects."/tmp/workspace".trust_level="untrusted"')
 
 
 def _codex_route(tmp_path, monkeypatch, **entry):
@@ -1033,7 +1057,8 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
         permission="admin", granted_by="owner-akh",
     )
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-akh"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-akh"
     )
     ledger.create_connection(
         connection_id="http_akh", owner_user_id="owner-akh", connection_class="http",
@@ -1072,7 +1097,8 @@ def test_connect_compute_api_key_http_grant_isolation_end_to_end(monkeypatch, tm
 
     # A DIFFERENT founder whose grant belongs to another owner is refused not_found.
     other_ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-akh"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-akh"
     )
     other_ledger.grant_connection(
         grant_id="grant_foreign_owner", connection_id="http_akh",

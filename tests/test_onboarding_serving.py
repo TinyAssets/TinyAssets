@@ -96,7 +96,8 @@ def _manifest_setup(tmp_path, monkeypatch, *, custom=False, http=False):
         from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
         ledger = ConnectionLedger(
-            tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-1",
+            tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+            verify_authenticated_principal=lambda: "owner-1",
         )
         connection_id, grant_id = "http_" + "c" * 32, "http_grant_" + "d" * 32
         ledger.create_connection(
@@ -393,7 +394,8 @@ def test_a_provider_that_is_not_yours_is_refused_by_ownership(tmp_path, monkeypa
     # owner-1's, but owner-1 names its definition.
     grant_id = "http_grant_" + "b" * 32
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-2"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-2"
     )
     ledger.create_connection(
         connection_id="conn_" + "b" * 32,

@@ -264,9 +264,13 @@ def _claude(definition, tmp_path, monkeypatch):
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path / "data")
     monkeypatch.setattr(claude_provider, "_resolve_claude_cmd", lambda: (["claude"], False))
     monkeypatch.setattr(claude_provider, "subprocess_env_for_provider", lambda *a, **k: {})
+    monkeypatch.setattr("tinyassets.credential_vault._write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
+    snapshot = tmp_path / ".runtime" / "provider-launch-credentials" / "claude-1"
+    snapshot.mkdir(parents=True)
     launch = install_fake_owned_spawn(monkeypatch, claude_provider.__name__,
                                       side_effect=Captured)
-    config = _served_config(sandbox_workspace=True)
+    config = _served_config(sandbox_workspace=True, credential_snapshot_dir=snapshot)
     with pytest.raises(Captured):
         asyncio.run(claude_provider.ClaudeProvider().complete(
             "Reply OK.", definition.instructions, config, universe_dir=tmp_path))
@@ -330,27 +334,32 @@ def _codex(definition, tmp_path, monkeypatch):
     from tinyassets.providers import codex_app_server, codex_provider
 
     opened = []
-    auth = tmp_path / ".runtime" / "auth"
+    from tinyassets import credential_vault
+
+    auth = tmp_path / ".runtime" / "provider-launch-credentials" / "codex-1"
     auth.mkdir(parents=True)
     monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools",
                         _recording_engine_tools(opened))
     monkeypatch.setattr(codex_provider, "_resolve_codex_cmd", lambda: (["codex"], False))
-    monkeypatch.setattr(codex_provider, "get_sandbox_status", lambda: {"bwrap_available": True})
     monkeypatch.setattr(codex_provider, "subprocess_env_for_provider",
                         lambda *a, **k: {"CODEX_HOME": str(auth)})
-    monkeypatch.setattr(codex_provider, "_codex_sandbox_mounts", lambda command: [])
-    monkeypatch.setattr(codex_provider, "_codex_home_file_mounts", lambda path: [])
-    monkeypatch.setattr(codex_app_server, "bundled_catalog", lambda base_cmd, **k: {"models": [
-        {"slug": "m", "tool_mode": "code_mode_only", "multi_agent_version": "v2"}]})
+    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
+
+    async def bundled(base_cmd, **k):
+        return {"models": [
+            {"slug": "m", "tool_mode": "code_mode_only", "multi_agent_version": "v2"}]}
+    monkeypatch.setattr(codex_app_server, "bundled_catalog", bundled)
     held = {}
     launch = install_fake_owned_spawn(
         monkeypatch, codex_provider.__name__,
         side_effect=lambda argv, **kw: held.setdefault("server", FakeAppServer()))
-    config = _served_config(sandbox_workspace=True)
+    config = _served_config(sandbox_workspace=True, credential_snapshot_dir=auth)
     asyncio.run(codex_provider.CodexProvider().complete(
         "Reply OK.", definition.instructions, config, universe_dir=tmp_path))
     argv = list(launch.call_args.args)
-    catalog = json.loads((tmp_path / ".runtime" / "codex-model-catalog.json").read_text())
+    [catalog_file] = auth.glob("model-catalog-*.json")
+    catalog = json.loads(catalog_file.read_text())
     native_tools_off = (
         argv[1:1 + len(codex_app_server.SERVED_LAUNCH_ARGS)]
         == list(codex_app_server.SERVED_LAUNCH_ARGS)

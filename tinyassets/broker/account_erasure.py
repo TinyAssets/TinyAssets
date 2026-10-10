@@ -73,7 +73,7 @@ def erase_account(data_root, *, principal):
     validate(principal, ACCOUNT_SCOPE)
     supervisor = get_supervisor(data_root)
     if supervisor is None:
-        raise ProxyRequestError("credential broker is selected but not running")
+        raise ProxyRequestError("the credential broker is not running")
     generation, token = supervisor.fence()
     document = {"op": "ERASE_ACCOUNT", "principal": principal,
                 "command_center": ACCOUNT_SCOPE, "generation": generation, "token": token}

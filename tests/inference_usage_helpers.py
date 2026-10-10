@@ -19,6 +19,17 @@ def accounting_resolver(resolve):
     return wrapped
 
 
+def _broker_store(db_path):
+    """The store as the broker builds it: claiming a reference is broker-only."""
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger_path = Path(db_path).resolve()
+    base = ledger_path.parent.parent if ledger_path.parent.name == ".broker" else (
+        ledger_path.parent)
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    return UsageStore(base, broker_ledger=ledger)
+
+
 class _AccountedProxy:
     def __init__(self, delegate, identity):
         self.delegate, self.identity = delegate, identity
@@ -29,7 +40,7 @@ class _AccountedProxy:
     def request(self, verb, request, *, inference_usage=None):
         if inference_usage is not None:
             identity = self.identity
-            dispatch = UsageStore(Path(identity["db_path"]).parent).claim_reference(
+            dispatch = _broker_store(identity["db_path"]).claim_reference(
                 inference_usage.reference, owner=identity["owner_user_id"],
                 universe=identity["universe_id"], usage_id=inference_usage.usage_id,
                 grant_id=identity["grant_id"], connection_id=identity["connection_id"],
@@ -45,7 +56,11 @@ def broker_accounting_resolver(resolve):
 
     def wrapped(*args, **identity):
         delegate = resolve(*args, **identity)
-        ledger = ConnectionLedger(identity["db_path"],
+        ledger_path = Path(identity["db_path"]).resolve()
+        base = ledger_path.parent.parent if ledger_path.parent.name == ".broker" else (
+            ledger_path.parent)
+        ledger = ConnectionLedger(base / ".broker" / "outbound.db",
+                                  data_root=base,
                                   verify_authenticated_principal=lambda: identity["owner_user_id"])
 
         def network(**kwargs):

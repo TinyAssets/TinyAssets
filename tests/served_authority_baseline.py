@@ -162,7 +162,8 @@ def legacy_authorize_served_provider_call(
                     )
 
                     connection_id = _open_connection_id(
-                        Path(base_path), uid, assignment.provider
+                        Path(base_path), uid, assignment.provider,
+                        owner_user_id=capability.principal_id,
                     )
                     custody = current_connection_grant_custody(
                         conn,
@@ -250,4 +251,3 @@ def legacy_authorize_served_provider_call(
             raise ProviderAuthorityHeldError(held) from exc
         finally:
             cleanup_llm_credential_snapshot(credential_snapshot)
-

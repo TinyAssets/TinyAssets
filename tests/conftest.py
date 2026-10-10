@@ -20,6 +20,12 @@ from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.providers import call as _provider_call
 
+# The owner-split runtime's test doubles: the in-process broker, the bounded
+# launcher, and center admission/deletion. Production has no fallback; tests opt out of a double
+# with the ``role_split`` marker when they exercise the real one.
+pytest_plugins = ("tests.support.broker_double", "tests.support.cell_double",
+                  "tests.support.admission_double")
+
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -709,14 +715,12 @@ def universe_input() -> dict[str, Any]:
 # start without it; the suite runs as this named operator unless a test sets
 # its own. A test that wants NO identity calls auth_middleware(None) and
 # asserts the refusal, never a stand-in.
-import os as _os
-
-_os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")
+os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")
 
 # pystray picks its tray backend at import and, off Windows/macOS, opens an X
 # display to do it -- so on a headless Linux runner `import tinyassets_tray`
 # died at COLLECTION and the tray tests never ran in CI at all (they sat in
 # known-failing-tests.txt as collection errors for two months). Its own dummy
 # backend is the headless choice; a real desktop keeps whatever it has.
-if not sys.platform.startswith(("win", "darwin")) and not _os.environ.get("DISPLAY"):
-    _os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
+if not sys.platform.startswith(("win", "darwin")) and not os.environ.get("DISPLAY"):
+    os.environ.setdefault("PYSTRAY_BACKEND", "dummy")

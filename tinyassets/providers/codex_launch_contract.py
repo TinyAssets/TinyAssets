@@ -33,8 +33,8 @@ SERVED_LAUNCH_ARGS: tuple[str, ...] = (
     # No AGENTS.md from the working directory or its parents reaches the
     # model; ``baseInstructions`` is the whole of what it is told.
     "-c", "project_doc_max_bytes=0",
-    # No project `.codex/config.toml` may load from the served workspace.
-    "-c", 'projects."/workspace".trust_level="untrusted"',
+    # No project `.codex/config.toml` may load from the cell's workspace.
+    "-c", 'projects."/tmp/workspace".trust_level="untrusted"',
 )
 
 #: The only files of a credential snapshot a served CODEX_HOME receives, by

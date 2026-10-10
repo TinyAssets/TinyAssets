@@ -26,7 +26,8 @@ OPTED = {**SOURCE, "redirect_mode": "public_https_get"}
 def _seed(base, mode):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
-    ledger = ConnectionLedger(base / "outbound.db", verify_authenticated_principal=lambda: "alice")
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
+    verify_authenticated_principal=lambda: "alice")
     cid, gid = _ids(universe_id="u-1", destination="downloads")
     ledger.create_connection(
         connection_id=cid,
@@ -96,7 +97,7 @@ def test_legacy_identity_repair_is_stable_and_changes_no_policy_or_grants(base):
         grants = [dict(row) for row in conn.execute("SELECT * FROM outbound_connection_grants")]
 
     def reopen(_):
-        return ConnectionLedger(base / "outbound.db").incarnation(cid)
+        return ConnectionLedger(base / ".broker" / "outbound.db", data_root=base).incarnation(cid)
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         tokens = list(pool.map(reopen, range(12)))
@@ -122,10 +123,11 @@ def test_repair_covers_rollback_rows_and_never_reuses_previous_identity(base):
         # Simulate a rollback writer recreating the same id and policy without
         # the new field. A previous approval must not attach to that generation.
         conn.execute("UPDATE outbound_connections SET incarnation = ''")
-    reopened = ConnectionLedger(base / "outbound.db")
+    reopened = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     replacement_token = reopened.incarnation(cid)
     assert replacement_token and replacement_token != original_token
-    assert ConnectionLedger(base / "outbound.db").incarnation(cid) == replacement_token
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    assert ledger.incarnation(cid) == replacement_token
     refused = answer_request(
         universe_id="u-1", payload={"request_id": asked["request_id"], "values": {}}
     )
@@ -201,7 +203,7 @@ def test_full_connection_does_not_gain_another_authenticated_host_through_redire
 @pytest.mark.parametrize(
     "changed", ["mode", "incarnation", "scopes", "endpoints", "revoked", "grant"]
 )
-def test_approval_cannot_race_a_policy_change_or_revocation_at_the_sql_write(
+def test_approval_rechecks_policy_and_revocation_at_broker_admission(
     base,
     monkeypatch,
     mode,
@@ -209,10 +211,12 @@ def test_approval_cannot_race_a_policy_change_or_revocation_at_the_sql_write(
 ):
     ledger, cid = _seed(base, mode)
     asked = _ask()
-    original = ConnectionLedger.extend_http_connection_endpoints
+    from tinyassets.broker.client import BrokerClient
 
-    def change_then_write(self, **kwargs):
-        with self._connect() as conn:
+    original = BrokerClient.http_policy
+
+    def change_then_write(self, document):
+        with ledger._connect() as conn:
             if changed == "mode":
                 conn.execute(
                     "UPDATE outbound_connections SET access_mode = ?",
@@ -233,9 +237,9 @@ def test_approval_cannot_race_a_policy_change_or_revocation_at_the_sql_write(
                 conn.execute("UPDATE outbound_connections SET revoked_at = 1")
             else:
                 conn.execute("UPDATE outbound_connection_grants SET revoked_at = 1")
-        return original(self, **kwargs)
+        return original(self, document)
 
-    monkeypatch.setattr(ConnectionLedger, "extend_http_connection_endpoints", change_then_write)
+    monkeypatch.setattr(BrokerClient, "http_policy", change_then_write)
     refused = answer_request(
         universe_id="u-1",
         payload={
@@ -302,6 +306,7 @@ def test_prior_no_follow_approval_does_not_satisfy_redirect_request(base):
     fresh = _ask({**new_source, "redirect_mode": "public_https_get"})
     assert "request_id" in fresh, fresh
     assert fresh["request_id"] != old["request_id"]
+    assert set(ledger.get_connection(cid).scopes) == {"GET", "POST"}
     assert all(e.redirect_mode == "none" for e in ledger.get_connection(cid).allowed_endpoints)
 
 

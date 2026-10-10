@@ -13,53 +13,30 @@ from tinyassets.providers.base import ModelConfig
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("confined", [True, False])
-async def test_a_non_served_codex_node_drops_its_own_sandbox_only_inside_our_jail(
-    monkeypatch, tmp_path, confined,
+async def test_a_non_served_codex_node_runs_without_its_own_sandbox_in_the_cell(
+    monkeypatch, tmp_path,
 ):
-    """A workflow-node (non-served) codex call runs codex's shell. Inside our
-    provider jail it uses --dangerously-bypass-approvals-and-sandbox so codex
-    does not nest its own bubblewrap (which would need user namespaces the jail
-    now denies); off the jail it keeps --sandbox workspace-write."""
+    """A workflow-node (non-served) codex call runs codex's shell inside its
+    owner's cell, so codex never nests its own bubblewrap (which would need the
+    user namespaces the cell denies) and works in the cell's empty workspace."""
     from tinyassets.providers import codex_provider as provider
-    from tinyassets.providers.provider_jail import provider_launch_scope
 
     proc = AsyncMock()
     proc.returncode = 0
-    # A non-served node reads plain stdout through proc.communicate (no event
-    # stream), so give the fake process a simple reply.
     proc.communicate = AsyncMock(return_value=(b"ok", b""))
     launch = install_fake_owned_spawn(monkeypatch, provider.__name__, return_value=proc)
     monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
-    monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
-        "bwrap_available": True, "bwrap_path": "fake-bwrap",
-    })
     monkeypatch.setattr(provider, "subprocess_env_for_provider", lambda *a, **kw: {})
-    monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
-
-    async def drive():
-        return await provider.CodexProvider().complete(
-            "prompt", "system", ModelConfig(sandbox_workspace=False), universe_dir=tmp_path,
-        )
-
-    if confined:
-        with provider_launch_scope(tmp_path):
-            await drive()
-    else:
-        await drive()
-
+    await provider.CodexProvider().complete(
+        "prompt", "system", ModelConfig(sandbox_workspace=False), universe_dir=tmp_path,
+    )
     inner = launch.call_args.args
     pairs = list(zip(inner, inner[1:]))
-    if confined:
-        assert "--dangerously-bypass-approvals-and-sandbox" in inner
-        assert ("--sandbox", "workspace-write") not in pairs
-    else:
-        assert ("--sandbox", "workspace-write") in pairs
-        assert "--dangerously-bypass-approvals-and-sandbox" not in inner
+    assert "--dangerously-bypass-approvals-and-sandbox" in inner
+    assert ("--sandbox", "workspace-write") not in pairs
+    assert ("-C", "/tmp/workspace") in pairs
     # A non-served node never disables the shell tool -- it is a coding turn.
     assert ("--disable", "shell_tool") not in pairs
-    # It never declares a nested sandbox, so a confined one gets the jail's full
-    # deny profile (no new user namespaces, no symlinks).
     assert not launch.call_args.kwargs.get("nested_sandbox")
 
 
@@ -152,11 +129,10 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
         await run(server=server)
     assert "model rejected [redacted]" in str(failure.value)
     assert "secretsensitive" not in str(failure.value)
-    # The adapter hands the shared spawn point codex's own argv plus its view of
-    # the universe; the jail wraps it there (provider_jail).
-    assert launch.call_args.kwargs["universe_view"] is not None
-    # Codex runs nothing itself, so it declares no nested sandbox and gets the
-    # jail's full deny profile.
+    # The adapter hands the shared spawn point codex's own argv only; the owner
+    # cell decides its view. Codex runs nothing itself, so it declares no
+    # nested sandbox and gets the cell's full deny profile.
+    assert "universe_view" not in launch.call_args.kwargs
     assert not launch.call_args.kwargs.get("nested_sandbox")
     inner = launch.call_args.args
     pairs = list(zip(inner, inner[1:]))
@@ -165,7 +141,7 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
     assert "--dangerously-bypass-approvals-and-sandbox" not in inner
     for name in ("shell_tool", "apps", "plugins", "remote_plugin"):
         assert ("--disable", name) in pairs
-    assert ("-c", 'projects."/workspace".trust_level="untrusted"') in pairs
+    assert ("-c", 'projects."/tmp/workspace".trust_level="untrusted"') in pairs
     assert not any("mcp_servers" in arg for arg in inner)
 
 
@@ -180,9 +156,8 @@ async def test_served_model_selection_is_native_unless_explicit(
         monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
     else:
         monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
-    run, launch, *_ = served
-    result, server = await run(cfg=ModelConfig(sandbox_workspace=True))
-    assert launch.call_args.kwargs["universe_view"] is not None
+    run, launch, _state, config, _root = served
+    result, server = await run(cfg=config(engine_mcp_enabled=False))
     params = server.requests("thread/start")[0]["params"]
     expected = (override or "").strip()
     if expected:
@@ -193,7 +168,8 @@ async def test_served_model_selection_is_native_unless_explicit(
         assert result.model == "provider-default"
     # The model is a thread parameter, never a launch flag.
     inner = launch.call_args.args
-    assert "-m" not in inner and "--model" not in inner
+    assert "-m" not in inner
+    assert "--model" not in inner
     assert result.text == "done" and result.input_tokens == 5 and result.output_tokens == 3
     assert list(inner[1:1 + len(SERVED_LAUNCH_ARGS)]) == list(SERVED_LAUNCH_ARGS)
     assert "--dangerously-bypass-approvals-and-sandbox" not in inner

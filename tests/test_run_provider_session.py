@@ -259,7 +259,7 @@ def _seed_open_serving_assignment(
     connection_id = "http_" + "b" * 32
     grant_id = "http_grant_" + "a" * 32
     ledger = ConnectionLedger(
-        base_path / "outbound.db",
+        base_path / ".broker" / "outbound.db", data_root=base_path,
         verify_authenticated_principal=lambda: owner_user_id,
     )
     ledger.create_connection(
@@ -1457,8 +1457,11 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
     assert codex_config.workflow_node is True
 
     universe_dir = tmp_path / "universe_alice"
-    flags, run_cwd = _sandbox_cli_args(claude_config, universe_dir)
-    assert run_cwd == str(universe_dir)
+    # The fixed provider cell owns cwd; the adapter only projects tool policy.
+    # Its actual private scratch and absent host paths are image-oracle proofs.
+    flags = _sandbox_cli_args(claude_config, universe_dir)
+    assert claude_config.invocation_owner_user_id == codex_config.invocation_owner_user_id
+    assert claude_config.invocation_owner_user_id
     assert flags[flags.index("--setting-sources") + 1] == ""
     denied = flags[flags.index("--disallowedTools") + 1:]
     assert set(HOST_REACH_TOOLS) <= set(denied)

@@ -111,7 +111,9 @@ def test_background_roles_come_from_exact_immutable_branch(
         raise AssertionError("unsupported immutable role was accepted")
 
 
-def test_universe_server_flag_off_constructs_no_consumer(tmp_path: Path, monkeypatch) -> None:
+def test_universe_server_flag_off_constructs_no_consumer(
+    tmp_path: Path, monkeypatch, in_process_broker,
+) -> None:
     import threading
 
     import tinyassets.engine_mcp_http as engine_http
@@ -133,6 +135,7 @@ def test_universe_server_flag_off_constructs_no_consumer(tmp_path: Path, monkeyp
 
     monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    in_process_broker.supervisor_for(tmp_path)
     monkeypatch.setattr(threading, "Thread", _NoopThread)
     monkeypatch.setattr(
         provider_assignment, "reconcile_orphaned_reservations_on_boot", lambda _root: 0
@@ -148,7 +151,7 @@ def test_universe_server_flag_off_constructs_no_consumer(tmp_path: Path, monkeyp
 
 
 def test_universe_server_enabled_consumer_is_started_and_stopped(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, in_process_broker,
 ) -> None:
     import threading
 
@@ -178,6 +181,7 @@ def test_universe_server_enabled_consumer_is_started_and_stopped(
 
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "on")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    in_process_broker.supervisor_for(tmp_path)
     monkeypatch.setattr(threading, "Thread", _NoopThread)
     monkeypatch.setattr(
         provider_assignment, "reconcile_orphaned_reservations_on_boot", lambda _root: 0

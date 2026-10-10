@@ -244,7 +244,7 @@ def test_answering_deposits_under_the_policy_on_the_request(base):
     assert out["destination"] == "github"
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     resource = ledger._get_connection_resource(out["connection_id"])
     assert [e.host for e in resource.allowed_endpoints] == ["api.github.com"]
@@ -700,7 +700,7 @@ def test_one_request_can_cover_the_several_calls_a_real_flow_needs(base):
 
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     resource = ledger._get_connection_resource(done["connection_id"])
     paths = sorted(e.path_template for e in resource.allowed_endpoints)
@@ -893,7 +893,7 @@ def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, _ = _ids(universe_id="u-1", destination="github")
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     res = ledger._get_connection_resource(conn_id)
     assert sorted(e.path_template for e in res.allowed_endpoints) == [

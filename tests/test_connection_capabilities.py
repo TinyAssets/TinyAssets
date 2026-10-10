@@ -40,7 +40,7 @@ def _descriptor(**changes):
 
 
 def test_capability_round_trips_without_changing_public_connection_view(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     view = _create_connection(ledger)
 
     capability = ledger.configure_capability(
@@ -62,7 +62,7 @@ def test_capability_round_trips_without_changing_public_connection_view(tmp_path
 
 
 def test_capability_upsert_and_revoke_are_idempotent(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     view = _create_connection(ledger)
 
     first = ledger.configure_capability(
@@ -107,7 +107,7 @@ def test_capability_upsert_and_revoke_are_idempotent(tmp_path):
     ],
 )
 def test_capability_rejects_malformed_or_secret_shaped_descriptors(tmp_path, descriptor):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     view = _create_connection(ledger)
 
     with pytest.raises(ValueError):
@@ -121,7 +121,7 @@ def test_capability_rejects_malformed_or_secret_shaped_descriptors(tmp_path, des
 
 
 def test_capability_cannot_widen_endpoint_or_method_authority(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     view = _create_connection(ledger)
 
     with pytest.raises(SsrfValidationError):
@@ -132,7 +132,7 @@ def test_capability_cannot_widen_endpoint_or_method_authority(tmp_path):
             enabled=True,
         )
 
-    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections SET scopes_json = ? WHERE connection_id = ?",
             (json.dumps(["GET"]), view.connection_id),
@@ -147,7 +147,7 @@ def test_capability_cannot_widen_endpoint_or_method_authority(tmp_path):
 
 
 def test_delete_then_reprovision_does_not_resurrect_capability(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     view = _create_connection(ledger)
     ledger.configure_capability(
         connection_id=view.connection_id,

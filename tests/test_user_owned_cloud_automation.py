@@ -34,6 +34,13 @@ from tinyassets.storage.provider_work_authority import (
 )
 
 
+def _authority(ledger):
+    from tinyassets.broker.connection_authority import BrokerConnectionAuthority
+
+    return BrokerConnectionAuthority(ledger._data_root, 'universe_alice',
+                                     ledger.require_authenticated_principal_id)
+
+
 def _automation():
     return importlib.import_module("tinyassets.user_owned_cloud_automation")
 
@@ -137,7 +144,7 @@ def _cloud_authority_fixture(
     payload["provider_binding_id"] = binding.binding_id
     definition = _automation().RepositorySpecWorkDefinition.from_dict(payload)
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "acct_alice",
     )
     ledger.create_connection(
@@ -589,7 +596,7 @@ def test_inactive_cloud_authority_resolves_exact_user_owned_bindings(
     resolved = automation.resolve_inactive_cloud_authority(
         definition,
         provider_store=provider_store,
-        connection_ledger=ledger,
+        connection_ledger=_authority(ledger),
     )
 
     assert resolved.provider_binding_id == definition.provider_binding_id
@@ -618,7 +625,7 @@ def test_inactive_cloud_authority_rejects_revoked_provider_binding(
         automation.resolve_inactive_cloud_authority(
             definition,
             provider_store=provider_store,
-            connection_ledger=ledger,
+            connection_ledger=_authority(ledger),
         )
 
 
@@ -663,7 +670,7 @@ def test_inactive_cloud_authority_rejects_broader_or_unusable_authority(
         automation.resolve_inactive_cloud_authority(
             definition,
             provider_store=provider_store,
-            connection_ledger=ledger,
+            connection_ledger=_authority(ledger),
         )
 
 
@@ -679,7 +686,7 @@ def test_inactive_cloud_authority_accepts_additional_declared_provider_roles(
     resolved = automation.resolve_inactive_cloud_authority(
         definition,
         provider_store=provider_store,
-        connection_ledger=ledger,
+        connection_ledger=_authority(ledger),
     )
 
     assert resolved.provider_binding_id == definition.provider_binding_id
@@ -721,7 +728,7 @@ def test_inactive_cloud_authority_rejects_stale_request_or_connection(
         automation.resolve_inactive_cloud_authority(
             definition,
             provider_store=provider_store,
-            connection_ledger=ledger,
+            connection_ledger=_authority(ledger),
         )
 
 
@@ -739,7 +746,8 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
         ledger.revoke_grant(definition.destination_grant_id, revoked_at=2.0)
     elif fault == "grant_owner":
         other_ledger = ConnectionLedger(
-            tmp_path / "other-owner-outbound.db",
+            tmp_path / "other-owner" / ".broker" / "outbound.db",
+            data_root=tmp_path / "other-owner",
             verify_authenticated_principal=lambda: "acct_alice",
         )
         other_ledger.create_connection(
@@ -783,7 +791,8 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
         definition = replace(definition, destination_grant_id="replacement_grant")
     else:
         other_ledger = ConnectionLedger(
-            tmp_path / "other-outbound.db",
+            tmp_path / "other" / ".broker" / "outbound.db",
+            data_root=tmp_path / "other",
             verify_authenticated_principal=lambda: "acct_alice",
         )
         other_ledger.create_connection(
@@ -816,5 +825,5 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
         automation.resolve_inactive_cloud_authority(
             definition,
             provider_store=provider_store,
-            connection_ledger=ledger,
+            connection_ledger=_authority(ledger),
         )

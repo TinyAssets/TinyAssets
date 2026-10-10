@@ -50,7 +50,6 @@ import hashlib
 import json
 import re
 import urllib.parse
-from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
@@ -59,7 +58,6 @@ from tinyassets.storage.outbound_connections import (
     _URL_SECRET_SCHEME,
     ACCESS_EXACT,
     ACCESS_FULL,
-    ConnectionLedger,
     SsrfValidationError,
     _parse_allowed_endpoints,
     normalize_access_mode,
@@ -395,10 +393,9 @@ def _answered_policy_snapshot(document: dict) -> dict[str, str] | None:
     }
     if not all(isinstance(v, str) and v for v in snapshot.values()):
         return None
-    # The incarnation is OPTIONAL within a snapshot that has the rest: a row
-    # raised before it existed still gets the ask/answer drift check. Requiring
-    # it would silently downgrade those rows to no snapshot at all, which is
-    # the weaker guarantee wearing the stronger one's name.
+    # Preserve an older snapshot as an incomplete approval rather than silently
+    # downgrading it to no snapshot. The mutation boundary requires its deposit
+    # incarnation and asks for fresh approval when it is absent.
     incarnation = raw.get("incarnation")
     snapshot["incarnation"] = incarnation if isinstance(incarnation, str) else ""
     return snapshot  # type: ignore[return-value]
@@ -634,7 +631,7 @@ def _deposit_http(*, uid, actor, destination, secret):
 
 def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destination,
                   connection_id, grant_id, scheme, credential_ref, git_host,
-                  requested_endpoints, http_scopes):
+                  requested_endpoints, http_scopes, access_mode=ACCESS_EXACT):
     """Pure existing-policy conflict checks, shared with broker preparation/commit."""
     legacy_scope_upgrade = False
     endpoints_extend = False
@@ -709,8 +706,16 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
             and not scopes_match
             and tuple(resource.scopes) == ("http",)
         )
+        # Full channel access already authorizes every supported HTTP verb.
+        # A same-policy key rotation may therefore widen its verb projection,
+        # while owner, destination, endpoints and git host must still match.
+        full_scope_upgrade = (
+            access_mode == ACCESS_FULL and not non_scope_mismatch
+            and set(resource.scopes) <= set(http_scopes)
+        )
         if non_scope_mismatch or (
             not scopes_match and not legacy_scope_upgrade and not endpoints_extend
+            and not full_scope_upgrade
         ):
             return {"error": "connection_conflict", "resource": "connection"}
     if existing_grant is not None and (
@@ -923,161 +928,25 @@ def _connect_http(
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
 
-    credential_ref = f"vault://http/{destination}"
-    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.http_connect import connect_operation
 
-    if broker_selected():
-        from tinyassets.broker.http_connect import connect_operation
-
-        policy = {"auth_scheme": scheme, "scopes": list(http_scopes),
-                  "endpoints": requested_endpoints, "access_mode": asked_access,
-                  "git_host": git_host}
-        prepared = connect_operation(base, principal=actor, command_center=uid,
-                                     destination=destination, policy=policy, action="prepare")
-        if "error" in prepared:
-            return prepared
-        deposit_error = _deposit_http(uid=uid, actor=actor, destination=destination, secret=secret)
-        if deposit_error is not None:
-            return deposit_error
-        committed = connect_operation(base, principal=actor, command_center=uid,
-                                      destination=destination, policy=policy, action="commit",
-                                      expected=prepared["revision"])
-        return committed if "error" in committed else committed["projection"]
-    ledger = ConnectionLedger(
-        Path(base) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    )
-
-    # 4. Conflict-check the connection AND grant BEFORE depositing anything, so a
-    #    mismatch never rotates a credential. Compare EVERY immutable field (Codex
-    #    review): a re-provision may only reuse+rotate a policy-identical connection
-    #    (same owner/type/class/scheme/scopes/destination/ref/endpoints). The
-    #    endpoint allow-list is compared as an unordered set (`_canonical_policy`),
-    #    so a pure reorder stays idempotent; any real change (a different endpoint
-    #    list, or any field) is a conflict, never a silent reuse of the old policy
-    #    under a rotated secret. Changing an existing connection's policy is
-    #    done through explicit extension or remove/redeposit, not silent rotation.
-    #    Credential-bearing read (trusted
-    #    server code); the ref never reaches the projection.
-    resource = ledger._get_connection_resource(connection_id)
-    # The ONE raw snapshot the extension at the end is guarded by. The git
-    # scopes carried forward come from it too, so a scope an extension added
-    # between this read and the write makes the CAS fail instead of being
-    # dropped by a payload derived from an older read (Codex round 3).
-    raw_policy = ledger.policy_json(connection_id) if resource is not None else None
-    existing_grant = ledger.get_grant(grant_id)
-    plan = _connect_plan(
-        resource=resource, raw_policy=raw_policy, existing_grant=existing_grant,
-        actor=actor, uid=uid, destination=destination, connection_id=connection_id,
-        grant_id=grant_id, scheme=scheme, credential_ref=credential_ref, git_host=git_host,
-        requested_endpoints=requested_endpoints, http_scopes=http_scopes)
-    if "error" in plan:
-        return plan
-    http_scopes = plan["http_scopes"]
-    legacy_scope_upgrade = plan["legacy_scope_upgrade"]
-    endpoints_extend = plan["endpoints_extend"]
-
-    # 5. Deposit (or rotate) the bearer secret into the per-universe vault. The
-    #    single `destination` value is both the upsert service key and the
-    #    resolver lookup key, so there is exactly one http record per destination.
-    #    write_credential_vault is atomic + self-compensating (owner-row txn then
-    #    atomic file swap); a malformed record mutates nothing.
+    # The broker owns the ledger: it conflict-checks the connection and the
+    # grant, this deposits the secret into the owner's vault between prepare
+    # and commit, and the commit is CAS-guarded on the prepared revision.
+    policy = {"auth_scheme": scheme, "scopes": list(http_scopes),
+              "endpoints": requested_endpoints, "access_mode": asked_access,
+              "git_host": git_host}
+    prepared = connect_operation(base, principal=actor, command_center=uid,
+                                 destination=destination, policy=policy, action="prepare")
+    if "error" in prepared:
+        return prepared
     deposit_error = _deposit_http(uid=uid, actor=actor, destination=destination, secret=secret)
     if deposit_error is not None:
         return deposit_error
-
-    # 6. Idempotent create — the ledger validates endpoints (SSRF boundary) and
-    #    the http credential-scheme biconditional. Map its errors secret-free.
-    if resource is None:
-        try:
-            resource = ledger.create_connection(
-                connection_id=connection_id,
-                owner_user_id=actor,
-                connection_class="http",
-                connection_type="http",
-                auth_scheme=scheme,
-                scopes=http_scopes,
-                provider="http",
-                destination=destination,
-                credential_ref=credential_ref,
-                allowed_endpoints=endpoints,
-                # The mode the owner accepted. Defaulting it here stored an
-                # exact connection for a full yes (Codex code review round 1).
-                access_mode=asked_access,
-                git_host=git_host,
-            )
-        except SsrfValidationError as exc:
-            return {"error": "endpoint_not_permitted", "detail": str(exc)}
-        except ValueError as exc:
-            return {"error": "connection_setup_invalid", "detail": str(exc)}
-
-    # 7a. A full deposit on a connection that already exists moves its mode.
-    #     `asked_access` used to be read only inside the create branch, so
-    #     rotating a key with a full ask left the connection exact: the owner
-    #     read "full access" and got the endpoints they already had (Codex code
-    #     review round 2). Compare-and-swap on the whole policy, like every
-    #     other mode move.
-    if asked_access == ACCESS_FULL and resource is not None:
-        # The SAME snapshot the re-provision above is guarded by. A second read
-        # here would be a second snapshot, which is the class the one-snapshot
-        # rule exists to prevent: a write landing between the two would pass
-        # one CAS and be lost by the other.
-        if raw_policy is not None and resource.access_mode == ACCESS_EXACT:
-            stored_endpoints_json, stored_scopes_json = raw_policy
-            if not ledger.set_access_mode(
-                connection_id=connection_id,
-                access_mode=ACCESS_FULL,
-                expected_mode=ACCESS_EXACT,
-                expected_endpoints_json=stored_endpoints_json,
-                expected_scopes_json=stored_scopes_json,
-            ):
-                return {"error": "connection_conflict", "resource": "connection"}
-
-    # 7. Idempotent grant bound to the universe.
-    grant = existing_grant
-    if grant is None:
-        grant = ledger.grant_connection(
-            grant_id=grant_id,
-            connection_id=connection_id,
-            owner_user_id=actor,
-            universe_id=uid,
-        )
-
-    # 8. Bounded legacy-scope migration — applied ONLY now that the grant-conflict
-    #    check passed and the credential deposit succeeded above, so any earlier
-    #    failure left the legacy ("http",) scope untouched and the connection inert.
-    #    The UPDATE is CAS-guarded on the exact legacy token (never a real scope set).
-    if legacy_scope_upgrade:
-        ledger._upgrade_http_connection_scopes(
-            connection_id=connection_id, scopes=http_scopes
-        )
-        resource = ledger._get_connection_resource(connection_id)
-
-    # 9. Endpoint EXTENSION, applied only now — after the grant-conflict check and
-    #    a successful credential deposit — so a failure above leaves the stored
-    #    policy exactly as it was. CAS-guarded on the endpoints we read, so a
-    #    concurrent deposit that moved the policy makes this a no-op rather than
-    #    a clobber; the caller sees the row as it actually stands.
-    if endpoints_extend and resource is not None:
-        if raw_policy is None:
-            return dict(_NOT_FOUND)
-        try:
-            ledger.extend_http_connection_endpoints(
-                connection_id=connection_id,
-                endpoints=requested_endpoints,
-                scopes=http_scopes,
-                expected_endpoints_json=raw_policy[0],
-                expected_scopes_json=raw_policy[1],
-                git_host=resource.git_host,
-            )
-        except GitScopeError as exc:
-            return {"error": "connection_setup_invalid", "detail": str(exc)}
-        except SsrfValidationError as exc:
-            return {"error": "endpoint_not_permitted", "detail": str(exc)}
-        resource = ledger._get_connection_resource(connection_id)
-
-    return _project(resource, grant)
+    committed = connect_operation(base, principal=actor, command_center=uid,
+                                  destination=destination, policy=policy, action="commit",
+                                  expected=prepared["revision"])
+    return committed if "error" in committed else committed["projection"]
 
 
 def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -1146,32 +1015,21 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
 
     from tinyassets.broker.disconnect import disconnect
-    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.storage.outbound_connections import GrantResolutionError, _resource_from_row
 
-    selected = broker_selected()
-    if selected:
-        try:
-            snapshot = disconnect(base, principal=actor, command_center=uid,
-                                  destination=destination)
-        except GrantResolutionError:
-            return dict(_NOT_FOUND)
-        resource = _resource_from_row(snapshot["resource"]) if snapshot["resource"] else None
-        incarnation = snapshot["incarnation"]
-    else:
-        ledger = ConnectionLedger(
-            Path(base) / "outbound.db",
-            verify_authenticated_principal=lambda: actor,
-        )
-        resource = ledger._get_connection_resource(connection_id)
+    try:
+        snapshot = disconnect(base, principal=actor, command_center=uid,
+                              destination=destination)
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
+    resource = _resource_from_row(snapshot["resource"]) if snapshot["resource"] else None
+    incarnation = snapshot["incarnation"]
     if resource is not None and resource.owner_user_id != actor:
         # Mirrors extend_http: an admin may act on the universe, but not on
         # another principal's deposited credential.
         return dict(_NOT_FOUND)
 
     observed = document.get("incarnation")
-    if not selected:
-        incarnation = ledger.incarnation(connection_id)
     if observed is not None and resource is not None and observed != incarnation:
         return {"error": "connection_changed", "resource": "connection"}
     from tinyassets.providers.connection_lifecycle import complete_disconnect, fence_connection
@@ -1180,10 +1038,9 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         fence_connection(base, _universe_dir(uid), owner=actor, uid=uid,
                          connection_id=connection_id, grant_id=grant_id,
                          incarnation=incarnation or "", destination=destination)
-        # Deny new direct HTTP dispatch before secret/ledger cleanup; an already
-        # dispatched request may still finish, which the receipt states explicitly.
-        if not selected:
-            ledger.revoke_connection(connection_id)
+        # The broker's `disconnect` already denied new dispatch before this
+        # secret/ledger cleanup; an already dispatched request may still
+        # finish, which the receipt states explicitly.
 
     # Read the SHAPE before destroying it. Endpoints and git scopes are the two
     # things a re-deposit has to reproduce, and scopes in particular die with
@@ -1220,12 +1077,9 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     secrets_removed = forget_credential(
         _universe_dir(uid), credential_type="http", destination=destination
     )
-    if selected:
-        rows_removed = disconnect(base, principal=actor, command_center=uid,
-                                  destination=destination, action="erase",
-                                  incarnation=incarnation)["removed"]
-    else:
-        rows_removed = ledger.delete_connection(connection_id)
+    rows_removed = disconnect(base, principal=actor, command_center=uid,
+                              destination=destination, action="erase",
+                              incarnation=incarnation)["removed"]
     # Everything this key authorized goes with it. The connection id is
     # deterministic per (universe, destination), so a re-deposit under the same
     # name used to inherit the old repository consents -- a grant the owner
@@ -1283,31 +1137,19 @@ def _rotation_target(
     """
     base = _base_path()
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.ledger_queries import authorized_connection
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
-    selected = broker_selected()
-    if selected:
-        from tinyassets.broker.ledger_queries import authorized_connection
-        from tinyassets.storage.outbound_connections import GrantResolutionError
+    try:
+        grant, resource, incarnation = authorized_connection(
+            base, principal=actor, command_center=uid, grant_id=grant_id,
+            connection_id=connection_id)
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
 
-        try:
-            grant, resource, incarnation = authorized_connection(
-                base, principal=actor, command_center=uid, grant_id=grant_id,
-                connection_id=connection_id)
-        except GrantResolutionError:
-            return dict(_NOT_FOUND)
+    def current_incarnation():
+        return incarnation
 
-        def current_incarnation():
-            return incarnation
-    else:
-        ledger = ConnectionLedger(
-            Path(base) / "outbound.db",
-            verify_authenticated_principal=lambda: actor,
-        )
-        resource = ledger._get_connection_resource(connection_id)
-
-        def current_incarnation():
-            return ledger.incarnation(connection_id)
     if resource is None or resource.revoked_at is not None:
         # Nothing to rotate. A revoked row is not rotatable either: the deposit
         # door refuses to re-provision one, so a key put into it would be inert.
@@ -1333,8 +1175,6 @@ def _rotation_target(
     # universe naming this destination already addresses its own row. The grant
     # is compared anyway: a derivation is not a check, and a connection with no
     # live grant for this universe is not this universe's to rotate.
-    if not selected:
-        grant = ledger.get_grant(grant_id)
     if (
         grant is None
         or grant.connection_id != connection_id
@@ -1766,106 +1606,39 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     if preview.get("status") == "unchanged":
         return preview
 
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.http_policy import read_policy, update_policy
 
-    if broker_selected():
-        from tinyassets.broker.http_policy import read_policy, update_policy
+    full = preview.get("access") == ACCESS_FULL and not redirect_extension
+    if full and "policy_snapshot" in document:
+        answered = _answered_policy_snapshot(document)
+        if answered is None or not answered.get("incarnation"):
+            return {"error": "connection_conflict", "resource": "connection"}
+    expected = ((_answered_policy_snapshot(document) if full else expected_redirect)
+                or {"access_mode": preview["expected_access_mode"],
+                    "endpoints_json": preview["stored_json"],
+                    "scopes_json": preview["stored_scopes_json"],
+                    "incarnation": preview["stored_incarnation"]})
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
-        full = preview.get("access") == ACCESS_FULL and not redirect_extension
-        expected = ((_answered_policy_snapshot(document) if full else expected_redirect)
-                    or {"access_mode": preview["expected_access_mode"],
-                        "endpoints_json": preview["stored_json"],
-                        "scopes_json": preview["stored_scopes_json"],
-                        "incarnation": preview["stored_incarnation"]})
+    try:
         updated = update_policy(
             base, principal=actor, command_center=uid, destination=destination,
             expected=expected, action="full" if full else "extend",
             endpoints=() if full else preview["merged"],
             scopes=() if full else preview["scopes"],
             git_host=preview.get("declared_git_host") or "")
-        if not updated:
-            return {"error": "connection_conflict", "resource": "connection"}
-        resource, _grant, _snapshot = read_policy(
-            base, principal=actor, command_center=uid, destination=destination)
-        return {"status": "extended", "destination": destination,
-                "access": resource.access_mode,
-                "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
-                "scopes": list(resource.scopes), "secret_reused": True}
-
-    ledger = preview["ledger"]
-    connection_id = preview["connection_id"]
-    if preview.get("access") == ACCESS_FULL and not redirect_extension:
-        # The whole write: one mode, compare-and-swapped on the policy THE
-        # OWNER READ. When the ask carries the snapshot it rendered its
-        # sentence from, that is what the swap compares -- not this call's own
-        # fresh read, which would happily grant full on a host added while the
-        # tab sat open (Codex code review round 2, left open then).
-        expected = _answered_policy_snapshot(document) or {
-            "access_mode": preview["expected_access_mode"],
-            "endpoints_json": preview["stored_json"],
-            "scopes_json": preview["stored_scopes_json"],
-            "incarnation": preview.get("stored_incarnation") or "",
-        }
-        if not ledger.set_access_mode(
-            connection_id=connection_id,
-            access_mode=ACCESS_FULL,
-            expected_mode=expected["access_mode"],
-            expected_endpoints_json=expected["endpoints_json"],
-            expected_scopes_json=expected["scopes_json"],
-            # Which DEPOSIT the owner was answering about. Without it a key
-            # removed and replaced under the same destination with an identical
-            # policy matched every predicate (Codex code review round 3, P0).
-            expected_incarnation=expected["incarnation"] or None,
-        ):
-            return {
-                "error": "connection_conflict",
-                "resource": "connection",
-                "detail": (
-                    "this connection changed while the request was open, so the "
-                    "yes was not applied to a reach you did not see; ask again "
-                    "and the tab will name what is there now"
-                ),
-            }
-        resource = ledger._get_connection_resource(connection_id)
-        return {
-            "status": "extended",
-            "destination": destination,
-            "access": ACCESS_FULL,
-            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
-            "scopes": list(resource.scopes),
-            "secret_reused": True,
-        }
-    try:
-        widened = ledger.extend_http_connection_endpoints(
-            connection_id=connection_id,
-            endpoints=preview["merged"],
-            scopes=preview["scopes"],
-            expected_endpoints_json=preview["stored_json"],
-            expected_scopes_json=preview["stored_scopes_json"],
-            git_host=preview.get("declared_git_host") or "",
-            **({
-                "expected_access_mode": expected_redirect["access_mode"],
-                "expected_incarnation": expected_redirect["incarnation"],
-                "expected_grant_id": _ids(universe_id=uid, destination=destination)[1],
-            } if expected_redirect else {}),
-        )
-    except GitScopeError as exc:
-        return {"error": "connection_setup_invalid", "detail": str(exc)}
-    except SsrfValidationError as exc:
-        return {"error": "endpoint_not_permitted", "detail": str(exc)}
-    if not widened:
-        # A concurrent deposit moved the policy after we read it.
+    except GrantResolutionError:
         return {"error": "connection_conflict", "resource": "connection"}
-
-    resource = ledger._get_connection_resource(connection_id)
-    return {
-        "status": "extended",
-        "destination": destination,
-        "access": preview.get("access", ACCESS_EXACT),
-        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
-        "scopes": list(resource.scopes),
-        "secret_reused": True,
-    }
+    if not updated:
+        # The connection changed while the request was open, so the yes was
+        # not applied to a reach the owner did not see.
+        return {"error": "connection_conflict", "resource": "connection"}
+    resource, _grant, _snapshot = read_policy(
+        base, principal=actor, command_center=uid, destination=destination)
+    return {"status": "extended", "destination": destination,
+            "access": resource.access_mode,
+            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+            "scopes": list(resource.scopes), "secret_reused": True}
 
 
 def _extend_preview(
@@ -1899,26 +1672,14 @@ def _extend_preview(
     )
 
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.http_policy import read_policy
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
-    selected = broker_selected()
-    redirect_snapshot = None
-    if selected:
-        from tinyassets.broker.http_policy import read_policy
-        from tinyassets.storage.outbound_connections import GrantResolutionError
-
-        try:
-            resource, grant, redirect_snapshot = read_policy(
-                base, principal=actor, command_center=uid, destination=destination)
-        except GrantResolutionError:
-            return dict(_NOT_FOUND)
-        ledger = None
-    else:
-        ledger = ConnectionLedger(
-            Path(base) / "outbound.db",
-            verify_authenticated_principal=lambda: actor,
-        )
-        resource = ledger._get_connection_resource(connection_id)
+    try:
+        resource, grant, redirect_snapshot = read_policy(
+            base, principal=actor, command_center=uid, destination=destination)
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
     redirect_extension = _redirect_permission_requested(added)
     if redirect_extension:
         try:
@@ -1930,11 +1691,6 @@ def _extend_preview(
                 "error": "connection_setup_invalid",
                 "detail": "Request redirect endpoints separately from full channel access.",
             }
-        if not selected:
-            captured = ledger._resource_policy_snapshot(connection_id)
-            if captured is None:
-                return dict(_NOT_FOUND)
-            resource, redirect_snapshot = captured
     if resource is None or resource.owner_user_id != actor:
         # Nothing to extend, or not this principal's connection. Uniform
         # envelope so this cannot be used to probe which destinations exist.
@@ -1945,8 +1701,6 @@ def _extend_preview(
     # connection, invisible to the inventory, answered `already_held` with its
     # endpoints and scopes: a new oracle for the served agent (Codex on the
     # 2026-09-02 rail change).
-    if not selected:
-        grant = ledger.get_grant(grant_id)
     if (
         grant is None
         or grant.revoked_at is not None
@@ -1966,13 +1720,8 @@ def _extend_preview(
     # from the same raw read the CAS compares against. Deriving the union from
     # an earlier parsed read and the CAS from a later raw read let a write
     # that landed between them pass the CAS and be lost (Codex round 2).
-    raw_policy = (
-        (redirect_snapshot["endpoints_json"], redirect_snapshot["scopes_json"])
-        if redirect_snapshot else ledger.policy_json(connection_id)
-    )
-    if raw_policy is None:
-        return dict(_NOT_FOUND)
-    stored_json, stored_scopes_json = raw_policy
+    stored_json = redirect_snapshot["endpoints_json"]
+    stored_scopes_json = redirect_snapshot["scopes_json"]
     try:
         stored = list(json.loads(stored_json))
         stored_scope_list = [str(s) for s in json.loads(stored_scopes_json)]
@@ -2019,13 +1768,11 @@ def _extend_preview(
             "status": "extends",
             "destination": destination,
             "connection_id": connection_id,
-            "ledger": ledger,
             "access": ACCESS_FULL,
             "expected_access_mode": stored_mode,
             "stored_json": stored_json,
             "stored_scopes_json": stored_scopes_json,
-            "stored_incarnation": (redirect_snapshot["incarnation"] if selected
-                                   else ledger.incarnation(connection_id) or ""),
+            "stored_incarnation": redirect_snapshot["incarnation"],
             "git_host": git_host_for_endpoints(stored_hosts, resource.git_host),
             "declared_git_host": resource.git_host,
             "hosts": stored_hosts,
@@ -2061,7 +1808,7 @@ def _extend_preview(
         sorted(
             {m for e in merged for m in e.methods}
             | requested_git_scopes
-            | stored_git_scopes
+            | set(stored_scope_list)
         )
     )
     if redirect_extension:
@@ -2073,7 +1820,7 @@ def _extend_preview(
         "stored_json": redirect_snapshot["endpoints_json"],
         "stored_scopes_json": redirect_snapshot["scopes_json"],
         "stored_incarnation": redirect_snapshot["incarnation"],
-    } if redirect_snapshot else {}
+    }
     # The ledger's own rule, run here so an ask that would fail at the write
     # fails at the RAISE, with the reason going to the agent that can act on it.
     try:
@@ -2112,7 +1859,6 @@ def _extend_preview(
         "access": stored_mode if redirect_extension else ACCESS_EXACT,
         "destination": destination,
         "connection_id": connection_id,
-        "ledger": ledger,
         "stored": stored,
         "stored_json": stored_json,
         "stored_scopes_json": stored_scopes_json,

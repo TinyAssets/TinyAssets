@@ -1,126 +1,55 @@
-**Founder D60 (2026-10-05) supersedes the shared engine identity below.** Every
-owner gets a dedicated machine UID AND GID, allocated permanently by the broker
-from 300001..399999 (D61/D62) and mapped into that owner's cells by a bounded
-user-namespace mapper. Engine and provider children run as their owner's pair,
-never as a shared 1003; uid 1003 survives in the image only as a vestige. Status
-and the landing slices live in `tasks.md`.
+# Per-owner isolation, one clean cutover
 
-**founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
-round-3 findings; no fourth design review, normal cross-family build review,
-no deployment. D10 records the lead's technical decision resolving ACL-mask
-access preservation with capability-free two-pass owner deletion and explicit
-startup reverse migration before capability drop. The capability ambiguity is
-resolved; documentation is not implementation acceptance.
+**Founder decision 2026-10-08 (README § Direction line 5, PR #4558):** the isolated path is the
+only path. It ships with one migration in a short maintenance window after a full backup. Cross-owner
+app checks that the OS now enforces are deleted in the same change. This replaces the ~13
+switched-off slices (L0–L12), the reversible migration and the activation lanes A–G. We have one
+real user plus a handful of testers, so the reversible-migration machinery and the dual-path
+off switches were insurance we don't need. They also made the work take weeks and grew the
+codebase.
 
 ## Why
 
-The credential broker (S6, `broker-streaming-contract`, #4299) authenticates its callers by the
-kernel uid on its socket (`SO_PEERCRED`). In production today every role runs as one uid (1001):
-the daemon, its engine and provider children, and the workspace workers. A same-uid child can
-therefore read the daemon's `owner.json` and act as the owner on the broker's owner channel. So
-the broker refuses to start (`BrokerUidSplitRequired`, deviation (c)). The broker is also what
-cuts the per-turn memory of a model round from about 29 MiB (one Python worker per proxy) to about
-100 KiB (one stream), so this split gates both a security boundary and the platform's memory
-headroom.
-
-Measured on prod (2026-10-02, read-only):
-- the daemon container runs as `tinyassets` (1001), with `cap_drop: ALL` and
-  `no-new-privileges`;
-- `/data` and every store in it are owned by that uid;
-- no process in the container can change uid today.
+The credential broker authenticates callers by kernel uid (`SO_PEERCRED`). In production every
+role runs as uid 1001: the daemon, every engine and provider child, and every workspace worker.
+So any child can act as its owner on the broker, and one owner's child is the same kernel
+principal as every other owner's. The broker also cuts a model round from about 29 MiB (one
+Python proxy worker) to about 100 KiB (one stream). This change is therefore both the
+security boundary and the memory headroom. It unblocks outbound MCP attach
+(`broker-streaming-contract`, then `connect-anything-ladder`).
 
 ## What Changes
 
-- **Mandatory per-owner cells for every engine class.** The lead decision in D8 makes
-  cross-user isolation non-negotiable now: extend the existing bubblewrap jail through
-  the launcher to every owner-scoped child and descendant. Shared `ta-work` access is
-  confined inside that namespace. The provider-only denial option is rejected. D8 lists
-  all covered spawn sites and requires actual-process, per-class production-image oracle
-  denial of other owners' data, owner.json, vault and owner channel token.
-
-- **A uid per role and per owner, enforced by the kernel.** Owner/daemon 1001 (unchanged, it
-  owns `/data`); broker 1002; each owner's engine and provider children run as that owner's
-  dedicated UID/GID (D60), reserved in a broker-private, append-only `owner-identities.db`
-  (D61) and mapped as `0 300000 100000`, with host 300000 kept for the mapper itself (D62).
-  Daemon, inspect and broker readers require both labels to match the requesting owner on the
-  open descriptor, plus no-follow and single-link checks (D65). Three service groups carry the cross-uid access
-  the split needs: `ta-work` (1100) for workspaces, `ta-brk` (1101) for the broker socket,
-  `ta-vault` (1102) for vault reads. The box-host and per-box ranges are reserved for S4/S5 and
-  agreed with `openshell-spike`.
-- **A staged root bootstrap, not a privileged daemon (D60/D62/D68-D70).** In the privileged
-  startup window PID1 runs the migration, forks the broker and the bounded mapper, then retires
-  itself to the capability-free daemon (1001). The mapper keeps only `SETUID`/`SETGID` inside its
-  owner user namespace; out-of-range identities fail in the kernel, and the daemon reaches it over
-  an inherited, `SCM_CREDENTIALS`-authenticated channel. Either service dying ends the container;
-  no role restarts with host privilege. The original single-request launcher text follows as
-  history. The container starts as root with a
-  phase-scoped capability set: the one-time ownership migration needs `CHOWN`, `FOWNER` and
-  `DAC_OVERRIDE` because it re-modes paths euid 0 does not own; the launcher needs `SETUID`,
-  `SETGID`, `SETPCAP` and `KILL`, and **drops the migration's three before it serves**.
-  `deploy/native/ta_op.c` asserts set equality on root entry and the container healthcheck runs
-  through it, so its `MASK` changes in the same commit. The launcher starts the broker and the
-  daemon as their own uids, then serves exactly one request from the daemon's own pid: "spawn this
-  allowlisted child in its owner's cell" (originally "as 1003"; D60 replaces that). The daemon keeps no capability, so it cannot become the broker's uid
-  and read the vault.
-- **No owner-writable path on a privileged chain.** The entrypoint moves out of `/app` (where the
-  image chowns it to 1001) to a root-owned path; the launcher runs `python -I -S` from a root-owned
-  file so `PYTHONPATH=/app` and every `site-packages` `.pth` are out of the privileged process;
-  `/app` itself becomes root-owned and read-only, with the owner's `HOME` moved to
-  `/home/tinyassets`. Each child's environment is built from a per-kind **allowlist** — not from
-  `platform_secrets.child_env`, which is a denylist — with that denylist still applied on top.
-- **Owner-reachable IPC separated from private broker state.** The broker's own state stays
-  1002-only at `/data/.broker/` 0700. The sockets move to the `/run` tmpfs with group `ta-brk`, and
-  the launcher — not the owner — starts, restarts and stops the broker. The owner's
-  `(socket, generation, token)` is held in process memory and `owner.json` is deleted.
-- **Volume permissions follow role authority.** D11 assigns outbound.db and
-  .outbound-proxy to broker uid 1002, group ta-brk, with daemon ledger/accounting/
-  refresh operations mediated by authenticated broker IPC. Forward and reverse
-  migration happen in D10's privileged startup window. This replaces the prior
-  rule forbidding owner changes to any file an older image reads. Vault deposits
-  remain daemon-written and broker-readable only; workspaces retain ta-work.
-  One mode declaration governs startup and runtime creation. The ledger's
-  physical parent is /data/.broker (D12), allowing private SQLite journals
-  without widening D4's daemon-owned /data at 0755. The access inventory names
-  raw SQL, account deletion, backup and refresh dependencies as well as callers.
-- `start_broker` replaces its refusal with the launcher-mediated start when it observes distinct
-  uids. It still refuses when it does not.
+- **End state, no alternative.**
+  - The broker runs as 1002.
+  - The daemon stays 1001, with no capabilities.
+  - Every owner gets a permanent dedicated UID/GID (300001–399999, founder D60). Every
+    owner-scoped child runs as that pair inside an owner cell, started by the bounded mapper.
+  - New centers are admitted at runtime from the broker's admission log.
+  - Startup is the D70 bootstrap, every boot.
+  - Nothing reads `TINYASSETS_CREDENTIAL_BROKER`, and there is no legacy spawn, reader or
+    proxy-worker path.
+- **One forward-only migration.**
+  - It runs once, offline, as a one-shot container with writers stopped, after a full
+    snapshot of the data volume.
+  - Each step converges the volume to a target computed from the volume itself, so a crash is
+    fixed by running it again.
+  - There is no reverse migration, journal, quarantine or old-image probe.
+  - Rollback is: restore the snapshot and redeploy the previous image.
+- **Deletions.** The switch plumbing and every legacy branch go. The few app-level checks the
+  kernel now enforces go too (`design.md` § 5).
+- **Folds in `owner-dynamic-admission`.** Its runtime admission requirements move here. Its
+  restart contract (DA7) and its "inert while the bounded client is absent" rule (DA8) are
+  dropped, because startup no longer migrates and there is no legacy path. That change is
+  deleted.
 
 ## Impact
 
-- **Deploy shape:** `Dockerfile` (users and groups, `/app` ownership, `HOME`, the launcher and the
-  relocated entrypoint), `deploy/docker-entrypoint.sh` (install path only — contents unchanged),
-  `deploy/compose.yml` (root entry, `cap_add`, `HOME`), and the deploy validator's capability
-  assertions.
-- **Rollback and deletion must be proven after engine writes.** Access/default ACLs
-  for uid 1001 and child umask 007 are required, but explicit 0700 creation/chmod
-  masks those ACLs. D10 requires engine 1003 to remove engine-owned entries
-  inside the owner's cell through normal launcher spawn, then daemon 1001 to
-  remove daemon-owned entries and empty structure, both without capabilities.
-  Failures report the path loudly. Rollback is explicitly selected at startup in
-  the forward migration's privileged window, before capability drop, with dry-run
-  and idempotent recovery. No retained capability or privileged helper is added.
-  Known owner-work creation modes remain group-preserving as defense in depth.
-
-- **Code:** `tinyassets/role_launcher` ships as a root-owned file, not an importable module;
-  `tinyassets/broker/supervisor.py` (refusal → launcher-mediated start; `owner.json`, `stop()` and
-  `read_owner` deleted); `tinyassets/broker/process.py` (the generation is minted by the broker, so
-  `lease_verifier` loses its `owner_generation` parameter, and the socket's umask changes);
-  `tinyassets/credential_vault.py` (one mode declaration replacing the literals at 187-188, 1783,
-  1784-1793, 1808, 1846, 2069 and the two write-path `chmod`s, plus the explicit group on the temp
-  file); `tinyassets/storage/outbound_connections.py` (the brokered channel reads the fence from
-  the live supervisor, and the legacy proxy worker refuses to spawn while the broker is selected);
-  `tinyassets/workspace_worker.py` (its channel becomes an inherited socketpair so it can run as
-  1003); `deploy/native/ta_op.c` (`MASK`); and every spawn site that starts an engine or provider
-  child goes through the launcher client — `providers/owned_process.py`, `engine_mcp_http.py`,
-  `node_sandbox.py`, and the four the first enumeration missed:
-  `providers/native_jsonrpc_discovery.py` (reached from `providers/base.py`, historically outside the jail; now using the metadata view),
-  `universe_tools.py`, `workspace_provision_process.py`, `workspace_registry_process.py`.
-  New gate: `scripts/check_privileged_chain.py`.
-- **Owner identities and cells (D60-D87):** `tinyassets/broker/owner_identities.py`,
-  `deploy/role_owner_launcher.py` (the mapper), `deploy/role_decoder.py`, and per-class cell
-  modules for decoder, workspace git, git_bridge, preview, node, tools, video, provider
-  discovery, packages, owner delete and provider exec. The volume migration, two-pass delete
-  and startup switch are the U2 lane.
-- **Dependencies:** lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
-- **Specs:** new capability `runtime-process-roles`. `credential-vault` gains the vault's
-  broker-readable group and the owner-only writer rule.
+- One PR (`design.md` § 6), per the founder's final integration instruction: the migration
+  and runbook, cutover, and code deletions merge together inside the maintenance window.
+- These are superseded (listed, not closed):
+  - U1 #4523 `feat/per-role-uid-split`
+  - U2 #4509/#4510 `feat/per-role-uid-split-migration`
+  - the stacked base of #4512
+- #4556 (L3 consumers) lands as is; the cutover deletes its switch branches.
+- Specs: new capability `runtime-process-roles`; `credential-vault` modified.

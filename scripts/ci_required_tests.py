@@ -38,11 +38,20 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
+
+# Inode labels and dropping to distinct real UIDs require a root coordinator.
+# These files still belong to their ordinary shard and selection receipt.
+ROOT_TEST_FILES = frozenset({
+    "tests/test_role_owner_tree_deletion.py",
+    "tests/test_role_reader_identity.py",
+    "tests/test_role_center_admission.py",
+})
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,
 # mass-deselects, or deletes most of the suite goes green on nothing — pytest
@@ -252,6 +261,7 @@ def parse_shard(raw: str) -> tuple[int, int]:
 
 def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest -p
     parser.addoption("--ci-shard", default=None, help="I/N: run only files hashed to shard I")
+    parser.addoption("--ci-venue", choices=("user", "root"), default=None)
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -260,7 +270,8 @@ def pytest_ignore_collect(collection_path, config):
     # is_file() FIRST: a directory can be named `x.py`, and pytest asks about
     # directories before descending. Hashing one would hand the directory to
     # one shard and its files to others, and no shard would run them.
-    if not raw or not collection_path.is_file() or collection_path.suffix != ".py":
+    venue = config.getoption("--ci-venue", default=None)
+    if not (raw or venue) or not collection_path.is_file() or collection_path.suffix != ".py":
         return None
     if collection_path.name in ("conftest.py", "__init__.py"):
         return None
@@ -268,8 +279,12 @@ def pytest_ignore_collect(collection_path, config):
         rel = collection_path.resolve().relative_to(Path(config.rootpath).resolve()).as_posix()
     except ValueError:
         return None
-    index, total = parse_shard(raw)
-    return True if shard_of(rel, total) != index else None
+    if venue and (rel in ROOT_TEST_FILES) != (venue == "root"):
+        return True
+    if raw:
+        index, total = parse_shard(raw)
+        return True if shard_of(rel, total) != index else None
+    return None
 
 
 def _min_ran_arg(raw: str) -> int:
@@ -798,8 +813,85 @@ def _read_selection(args: argparse.Namespace) -> list[str] | None:
     return [rel for rel in gating if shard_of(rel, args.shard[1]) == args.shard[0]]
 
 
+def run_oracle_venues(cmd, *, args, selection, env, junit):
+    """Run one selection in two identities and publish one fail-closed receipt."""
+    if os.name != "posix" or os.geteuid() != 0:
+        raise SystemExit("--oracle-venues requires the Linux oracle root coordinator")
+    paths = selection
+    if args.include_from:
+        paths = [rel for rel in excluded_prefixes(args.include_from)
+                 if (REPO_ROOT / rel).exists()]
+    roots = sorted(rel for rel in ROOT_TEST_FILES if paths is None or any(
+        rel == path or rel.startswith(path.rstrip("/") + "/") for path in paths))
+    roots = gating_selection(roots, args.exclude_from)
+    if args.shard:
+        roots = [rel for rel in roots if shard_of(rel, args.shard[1]) == args.shard[0]]
+    user_files = None if paths is None else [rel for rel in paths if rel not in ROOT_TEST_FILES]
+    run_env = dict(os.environ if env is None else env)
+    scripts_dir = str(Path(__file__).resolve().parent)
+    run_env["PYTHONPATH"] = os.pathsep.join(filter(None, [scripts_dir, run_env.get("PYTHONPATH")]))
+    base = [arg for arg in cmd if not arg.startswith("--junitxml=")]
+    if "ci_required_tests" not in base:
+        base += ["-p", "ci_required_tests"]
+    merged = ET.Element("testsuites")
+    seen = set()
+    exits = []
+    with tempfile.TemporaryDirectory(prefix="ta-ci-venues-") as temp:
+        directory = Path(temp)
+        directory.chmod(0o755)
+        user_directory = directory / "user"
+        user_directory.mkdir(mode=0o700)
+        os.chown(user_directory, 1001, 1001)
+        venues = [("user", user_files)] if user_files is None or user_files else []
+        if roots:
+            venues.append(("root", roots))
+        for venue, files in venues:
+            report = (user_directory if venue == "user" else directory) / f"{venue}.xml"
+            command = [arg for arg in base if paths is None or arg not in paths]
+            if files is not None:
+                command += files
+            command += [f"--ci-venue={venue}", f"--junitxml={report}"]
+            identity = {}
+            child_env = dict(run_env)
+            if venue == "user":
+                identity = {"user": 1001, "group": 1001, "extra_groups": []}
+                child_env.update(HOME="/home/oracle", USER="oracle", LOGNAME="oracle",
+                                 SHELL="/bin/sh", TMPDIR="/tmp/t")
+            else:
+                # Never let root's pytest own the unprivileged run's temp tree.
+                command += [f"--basetemp={directory / 'root-tmp'}"]
+            print(f"[oracle venue={venue}] " + " ".join(command), flush=True)
+            proc = subprocess.run(command, cwd=REPO_ROOT, env=child_env, **identity)
+            exits.append(proc.returncode)
+            try:
+                result = ET.parse(report).getroot()
+                cases = list(result.iter("testcase"))
+                reported = {(case.get("file") or "").replace("\\", "/") for case in cases}
+                if venue == "root" and (set(roots) != reported or any(
+                        case.find("skipped") is not None for case in cases)):
+                    raise ValueError("root venue changed or skipped the selected proof files")
+                if venue == "user" and reported.intersection(ROOT_TEST_FILES):
+                    raise ValueError("root proof ran in the unprivileged venue")
+                for case in cases:
+                    node = node_id(case)
+                    if node in seen:
+                        raise ValueError(f"duplicate venue receipt: {node}")
+                    seen.add(node)
+                merged.extend([result] if result.tag == "testsuite"
+                              else list(result.iter("testsuite")))
+            except (OSError, ET.ParseError, ValueError) as exc:
+                print(f"required venue receipt refused: {exc}", flush=True)
+                return subprocess.CompletedProcess(cmd, 3)
+    ET.ElementTree(merged).write(junit, encoding="utf-8", xml_declaration=True)
+    # Infrastructure/collection failures must not turn into a tolerated test failure.
+    code = next((code for code in exits if code not in (0, 1)), 1 if 1 in exits else 0)
+    return subprocess.CompletedProcess(cmd, code)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--oracle-venues", action="store_true",
+                    help="oracle-only: retain root inode proofs and unprivileged jail tests")
     ap.add_argument("--junit", default="junit.xml")
     ap.add_argument(
         "--pytest-arg",
@@ -1231,7 +1323,8 @@ def main() -> int:
         env = dict(os.environ)
         scripts_dir = str(Path(__file__).resolve().parent)
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [scripts_dir, env.get("PYTHONPATH")]))
-    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
+    proc = (run_oracle_venues(cmd, args=args, selection=selection, env=env, junit=junit)
+            if args.oracle_venues else subprocess.run(cmd, cwd=REPO_ROOT, env=env))
     print(f"pytest exit code: {proc.returncode}", flush=True)
     if args.shard:
         # Written unconditionally, BEFORE any verdict: the aggregate needs to
@@ -1273,7 +1366,8 @@ def main() -> int:
         heading = f"### Affected tests{_shard_label(args)}"
         # Exit 5 (nothing collected) is honest here: a selected file can hold
         # only `slow` tests, which `-m "not slow"` deselects.
-        exits = [0 if code == 5 else code for code in exits]
+        if not args.oracle_venues:
+            exits = [0 if code == 5 else code for code in exits]
     elif args.shard:
         heading = f"### Required tests - shard {args.shard[0]}/{args.shard[1]}"
     else:

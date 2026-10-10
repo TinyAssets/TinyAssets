@@ -82,7 +82,7 @@ class ProvisionMountTests(unittest.TestCase):
             argv(sandbox.ProvisionMount(30, 31, "install"), inherited=(30, 31))
 
     def test_installation_requires_held_checkout(self):
-        with self.assertRaisesRegex(ValueError, "held checkout"):
+        with self.assertRaisesRegex(ValueError, "held directory descriptor"):
             sandbox._bwrap_argv(
                 provision_mount=sandbox.ProvisionMount(30, 31, "install"),
                 workspace_bind="/owned/project", allowed_workspace_roots=("/owned",),

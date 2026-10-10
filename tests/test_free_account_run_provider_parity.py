@@ -202,7 +202,7 @@ def _seed_universe(
     connection_id = "http_" + suffix * 32
     grant_id = "http_grant_" + suffix * 32
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: owner,
     )
     ledger.create_connection(

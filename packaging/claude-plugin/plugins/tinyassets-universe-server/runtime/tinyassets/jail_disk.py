@@ -105,7 +105,7 @@ def _jail_writable_bytes(root: Path) -> int:
     Runtime session/snapshot subtrees remain writable and charged."""
     from tinyassets import storage_accounting
 
-    return storage_accounting._walk_bytes(root, exclude_top=_NOT_JAIL_WRITABLE)
+    return storage_accounting._center_bytes(root, scope="jail", exclude_top=_NOT_JAIL_WRITABLE)
 
 
 @dataclass

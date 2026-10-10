@@ -1,7 +1,8 @@
 """Named D11 read operations; no SQL, path or callable crosses the broker socket.
 
 Discovery facts are read in one SQLite transaction, including the priced-source
-precedence check. The legacy local route exists only when broker mode is off.
+precedence check. :func:`local_query` is the broker's own transaction; the
+daemon only ever reaches it through :func:`query_ledger` and the socket.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ def validate_query(query, principal, command_center, grant_id, connection_id):
 
 def local_query(ledger, *, query: str, principal: str, command_center: str,
                 grant_id: str, connection_id: str = "") -> dict[str, Any]:
-    """Broker-local transaction, also used by the unsplit developer runtime."""
+    """The broker-local transaction. Only the broker process opens the ledger."""
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     validate_query(query, principal, command_center, grant_id, connection_id)
@@ -155,26 +156,19 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
 
 def query_ledger(data_root: Path, *, query: str, principal: str, command_center: str,
                  grant_id: str, connection_id: str = "") -> dict[str, Any]:
-    """Route before constructing a ledger; selected-but-unavailable is fatal."""
-    from tinyassets.broker.supervisor import broker_selected, get_supervisor
+    """Ask the broker. A broker that is not running is fatal, never a local read."""
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
+    from tinyassets.storage.outbound_connections import ProxyRequestError
 
     validate_query(query, principal, command_center, grant_id, connection_id)
-    arguments = dict(query=query, grant_id=grant_id, connection_id=connection_id)
-    if broker_selected():
-        from tinyassets.broker.client import BrokerClient
-        from tinyassets.storage.outbound_connections import ProxyRequestError
-
-        supervisor = get_supervisor(data_root)
-        if supervisor is None:
-            raise ProxyRequestError("credential broker is selected but not running")
-        client = BrokerClient(supervisor.socket_path, principal=principal,
-                              command_center=command_center, fence=supervisor.fence,
-                              verify_peer=supervisor.verify_broker, timeout=30)
-        return client.ledger_query(**arguments)
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    ledger = ConnectionLedger(Path(data_root) / "outbound.db", data_root=data_root)
-    return local_query(ledger, principal=principal, command_center=command_center, **arguments)
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
+    client = BrokerClient(supervisor.socket_path, principal=principal,
+                          command_center=command_center, fence=supervisor.fence,
+                          verify_peer=supervisor.verify_broker, timeout=30)
+    return client.ledger_query(query=query, grant_id=grant_id, connection_id=connection_id)
 
 
 def granted_resource_row(data_root: Path, *, principal: str, command_center: str, grant_id: str):

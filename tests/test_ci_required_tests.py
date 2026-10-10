@@ -269,6 +269,8 @@ class _FakeConfig:
         self._shard = shard
 
     def getoption(self, name, default=None):
+        if name == "--ci-venue":
+            return None
         assert name == "--ci-shard"
         return self._shard
 
@@ -873,3 +875,78 @@ def test_slow_clean_union_reports_cost_without_blocking(shards, monkeypatch, cap
     output = capsys.readouterr().out
     assert "ADVISORY" in output and "120" in output
     assert "does not block merging" in output
+
+
+@pytest.mark.parametrize("fault", [None, "missing", "omitted", "skipped", "exit3", "exit5"])
+@pytest.mark.parametrize("user_selected", [False, True])
+@pytest.mark.parametrize("source", ["affected", "include"])
+def test_oracle_venues_require_both_receipts_and_preserve_identity(
+    tmp_path, monkeypatch, fault, user_selected, source,
+):
+    from types import SimpleNamespace
+
+    root_file = "tests/test_role_owner_tree_deletion.py"
+    normal_file = "tests/test_ci_required_tests.py"
+    selection = [root_file, *([normal_file] if user_selected else [])]
+    junit = tmp_path / "combined.xml"
+    calls = []
+    monkeypatch.setattr(gate, "os", SimpleNamespace(
+        name="posix", geteuid=lambda: 0, environ={}, pathsep=os.pathsep,
+        chown=lambda *args: None))
+
+    def execute(cmd, **kwargs):
+        root = "--ci-venue=root" in cmd
+        calls.append((root, kwargs))
+        assert (root_file in cmd, normal_file in cmd) == (root, not root)
+        report = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--junitxml=")))
+        assert not report.exists()
+        if not (root and fault == "missing"):
+            suite = ET.Element("testsuite")
+            if not (root and fault == "omitted"):
+                case = ET.SubElement(suite, "testcase", file=root_file if root else normal_file,
+                                     name="test_proof", classname="")
+                if root and fault == "skipped":
+                    ET.SubElement(case, "skipped")
+            ET.ElementTree(suite).write(report)
+        code = int(fault[-1]) if root and fault in ("exit3", "exit5") else 0
+        return subprocess.CompletedProcess(cmd, code)
+
+    monkeypatch.setattr(gate.subprocess, "run", execute)
+    included = tmp_path / "included.txt"
+    included.write_text("\n".join(selection))
+    args = SimpleNamespace(include_from=str(included) if source == "include" else None,
+                           exclude_from=None, shard=None)
+    proc = gate.run_oracle_venues(
+        [sys.executable, "-m", "pytest", *selection, f"--junitxml={junit}"],
+        args=args, selection=selection if source == "affected" else None, env=None, junit=junit)
+    assert [root for root, _ in calls] == ([False, True] if user_selected else [True])
+    if user_selected:
+        assert {k: calls[0][1][k] for k in ("user", "group", "extra_groups")} == {
+            "user": 1001, "group": 1001, "extra_groups": []}
+    assert "user" not in calls[-1][1]
+    expected = 0 if fault is None else 5 if fault == "exit5" else 3
+    assert proc.returncode == expected
+    if fault in ("missing", "omitted", "skipped"):
+        assert not junit.exists()
+    else:
+        assert len(list(ET.parse(junit).iter("testcase"))) == 1 + int(user_selected)
+
+
+def test_venue_partition_keeps_each_files_original_shard(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gate, "shard_of", lambda rel, total: 2)
+    root_file = tmp_path / "tests/test_role_owner_tree_deletion.py"
+    normal_file = tmp_path / "tests/test_normal.py"
+    root_file.parent.mkdir()
+    root_file.touch()
+    normal_file.touch()
+    for venue in ("user", "root"):
+        for shard in ("1/2", "2/2"):
+            options = {"--ci-venue": venue, "--ci-shard": shard}
+            config = SimpleNamespace(rootpath=tmp_path, getoption=options.get)
+            # Pytest supplies default by keyword.
+            config.getoption = lambda name, default=None: options.get(name, default)
+            for path in (root_file, normal_file):
+                keep = shard == "2/2" and (path == root_file) == (venue == "root")
+                assert gate.pytest_ignore_collect(path, config) is (None if keep else True)

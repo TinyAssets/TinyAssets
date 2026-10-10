@@ -448,50 +448,50 @@ def test_unexpected_directory_errors_are_not_hidden(configured, monkeypatch):
         discovery.resolve_offer({}, [API])
 
 
-def test_invalid_directory_does_not_block_engine_restart(configured, tmp_path, monkeypatch, caplog):
+def test_invalid_directory_does_not_block_engine_restart(configured, app, monkeypatch):
     from tinyassets.engine_mcp_http import _EngineServer
 
     configured[1].write_text(SECRET, encoding="utf-8")
-    launches = []
-
-    class Process:
-        def poll(self):
-            return None
-
-        def terminate(self):
-            pass
-
-    def launch(*_args, **kwargs):
-        launches.append(kwargs["env"])
-        return Process()
-
-    monkeypatch.setattr("tinyassets.engine_mcp_http.subprocess.Popen", launch)
-    engine = _EngineServer(UID, OWNER, 8790, str(tmp_path))
+    directory.prepare_children()
+    before = set(service._bindings)
+    class Thread:
+        def __init__(self, **kwargs):
+            self.live = False
+        def start(self):
+            self.live = True
+        def is_alive(self):
+            return self.live
+        def join(self, timeout):
+            self.live = False
+    monkeypatch.setattr("tinyassets.engine_mcp_http.threading.Thread", Thread)
+    engine = _EngineServer(UID, OWNER, 8790, str(app))
     assert engine.start()
-    first = json.loads(launches[0][service.ENV])
-    assert engine.start()
-    second = json.loads(launches[1][service.ENV])
-    assert first["token"] != second["token"]
-    assert first["token"] not in service._bindings
+    first = engine.endpoint
     engine.stop()
-    assert second["token"] not in service._bindings
-    assert all(SECRET_NAME not in env for env in launches)
+    assert first.module.__name__ not in sys.modules
+    assert engine.start()
+    assert engine.endpoint is not first
+    second = engine.endpoint
+    assert second.module.__name__ in sys.modules
+    engine.stop()
+    assert second.module.__name__ not in sys.modules
+    assert set(service._bindings) == before
     assert SECRET_NAME not in os.environ and directory.secret(SECRET_NAME) == SECRET
-    assert "oauth_directory_invalid" in caplog.text and SECRET not in caplog.text
 
 
-def test_invalid_directory_does_not_block_real_proxy_spawn(configured, tmp_path):
-    from tests.test_outbound_proxy_startup_diagnosis import _ledger_for
+def test_invalid_directory_does_not_block_shared_broker_channel(configured, tmp_path):
+    from tests.test_outbound_connection_ledger import _grant_github_connection
+    from tinyassets.storage.outbound_connections import ConnectionLedger
 
     configured[1].write_text("invalid", encoding="utf-8")
     before = set(service._bindings)
-    proxy = _ledger_for(tmp_path).resolve_scoped_proxy(
-        universe_id="universe-1", connection_class="issue-writer",
-    )
-    created = set(service._bindings) - before
-    assert len(created) == 1
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "user-1")
+    _grant_github_connection(ledger)
+    proxy = ledger.resolve_exact_scoped_proxy(
+        universe_id="universe-1", grant_id="grant-github", connection_id="conn-github")
     proxy.close()
-    assert not created & set(service._bindings)
+    assert set(service._bindings) == before
 
 
 def test_startup_scrubs_oauth_secrets_before_storage_or_children(configured, monkeypatch):
@@ -558,32 +558,29 @@ def test_invalid_directory_connect_ask_keeps_key_paste(configured, provider, uni
         assert _ask().get("oauth_unavailable")
 
 
-def test_failed_engine_spawn_revokes_capability(configured, tmp_path, monkeypatch):
+def test_failed_engine_endpoint_mints_no_child_oauth_capability(configured, app, monkeypatch):
     from tinyassets.engine_mcp_http import _EngineServer
 
     before = set(service._bindings)
-
     def fail(*_args, **_kwargs):
-        raise OSError("spawn failed")
-
-    monkeypatch.setattr("tinyassets.engine_mcp_http.subprocess.Popen", fail)
-    assert not _EngineServer(UID, OWNER, 8790, str(tmp_path)).start()
+        raise OSError("endpoint failed")
+    monkeypatch.setattr("tinyassets.engine_endpoint.EngineEndpoint", fail)
+    with pytest.raises(OSError, match="endpoint failed"):
+        _EngineServer(UID, OWNER, 8790, str(app)).start()
     assert set(service._bindings) == before
 
 
-@pytest.mark.parametrize("failure", ["spawn", "timeout", "startup"])
-def test_failed_proxy_start_revokes_capability(configured, tmp_path, monkeypatch, failure):
-    from tests import test_outbound_proxy_startup_diagnosis as diagnosis
+def test_unavailable_broker_mints_no_child_oauth_capability(configured, tmp_path, monkeypatch):
+    from tests.test_outbound_connection_ledger import _grant_github_connection
+    from tinyassets.broker import supervisor
+    from tinyassets.storage.outbound_connections import ConnectionLedger, ProxyRequestError
 
     before = set(service._bindings)
-    if failure == "spawn":
-        diagnosis.test_a_child_that_cannot_be_spawned_still_gets_the_diagnostic_contract(
-            tmp_path, monkeypatch,
-        )
-    elif failure == "timeout":
-        diagnosis.test_a_live_but_slow_child_is_reported_as_a_timeout_not_a_process_exit(
-            tmp_path, monkeypatch,
-        )
-    else:
-        diagnosis.test_scoped_proxy_start_failure_names_a_cause(tmp_path)
+    ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path,
+                              verify_authenticated_principal=lambda: "user-1")
+    _grant_github_connection(ledger)
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
+    with pytest.raises(ProxyRequestError, match="credential broker is not running"):
+        ledger.resolve_exact_scoped_proxy(
+            universe_id="universe-1", grant_id="grant-github", connection_id="conn-github")
     assert set(service._bindings) == before

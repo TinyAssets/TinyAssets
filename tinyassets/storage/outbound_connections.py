@@ -12,17 +12,14 @@ import ipaddress
 import json
 import logging
 import math
-import multiprocessing
 import os
 import re
 import secrets
 import socket
 import sqlite3
 import ssl
-import sys
 import threading
 import time
-import traceback
 import urllib.parse
 import urllib.request
 import uuid
@@ -477,8 +474,8 @@ class SsrfValidationError(ProxyRequestError):
     """A general outbound HTTP request was refused by the strict egress guard.
 
     Subclasses ``ProxyRequestError`` so it flows through the broker's existing
-    secret-free error hygiene (``_adapter_safe_proxy_error`` reduces it to a
-    fixed string across the process boundary). Its own messages are FIXED —
+    secret-free error hygiene (the broker reduces it to a fixed class name
+    across its socket). Its own messages are FIXED —
     they never echo the offending URL, header, or address, because those can
     themselves carry credential material (e.g. ``https://user:pass@host``).
     """
@@ -519,70 +516,13 @@ class ConnectionAuthorizationError(ProxyRequestError):
         return record
 
 
-_MAX_PROXY_FRAME_BYTES = 16 * 1024 * 1024
-
-
-def _adapter_safe_proxy_error(exc: BaseException) -> str:
-    """Return the only error text allowed across the adapter process boundary."""
-    if isinstance(exc, AmbiguousProxyOutcome):
-        return "destination outcome ambiguous"
-    if isinstance(exc, GrantResolutionError):
-        return "outbound connection grant unavailable"
-    if isinstance(exc, PermissionError):
-        return "outbound request not permitted"
-    if isinstance(exc, OutboundDeadlineExceeded):
-        return "outbound request exceeded its time budget"
-    return "outbound request failed"
-
-
-def _send_message(channel: Any, value: object) -> None:
-    try:
-        # UTF-8 as UTF-8: ``\uXXXX`` escaping made non-ASCII text up to six
-        # times larger, so a reply under its body cap could still overflow the
-        # frame (Codex, 2026-10-02). Quote and backslash escaping still double.
-        payload = json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ProxyRequestError(
-            "outbound proxy messages must use the redacted JSON contract"
-        ) from exc
-    if len(payload) > _MAX_PROXY_FRAME_BYTES:
-        raise ProxyRequestError("outbound proxy message exceeds the size limit")
-    channel.send_bytes(payload)
-
-
-def _receive_message(channel: Any) -> object:
-    try:
-        payload = channel.recv_bytes(_MAX_PROXY_FRAME_BYTES)
-        return json.loads(payload.decode("utf-8"))
-    except (EOFError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ProxyRequestError("outbound proxy received an invalid message") from exc
-
-
-def _load_dispatch_factory(
-    factory_reference: str,
-    config: dict[str, Any],
-) -> Callable[[str, str, object], Any]:
-    factory = _TRUSTED_DISPATCH_FACTORIES.get(factory_reference)
-    if factory is None:
-        raise ValueError("dispatch factory is not in the trusted registry")
-    dispatch = factory(config)
-    if not callable(dispatch):
-        raise TypeError("dispatch factory must return a callable")
-    return dispatch
-
-
-#: Environment variables the spawned broker child must never carry: TLS
+#: Environment variables the broker process must never carry: TLS
 #: key-logging (would leak the outbound TLS session key, defeating
 #: credential-blindness) and ambient proxy routing (an SSRF/exfil vector the
 #: transport disables structurally; dropping it here also keeps any other TLS
-#: context created in the child — e.g. the GitHub read driver's plain urlopen —
-#: from honoring an ambient proxy or logging keys). The child is a spawned
-#: process, so this pop never touches the parent's environment.
+#: context created there — e.g. the GitHub read driver's plain urlopen —
+#: from honoring an ambient proxy or logging keys). The broker is its own
+#: process, so this pop never touches the daemon's environment.
 _SSRF_CHILD_ENV_DENYLIST = (
     "SSLKEYLOGFILE",
     "HTTP_PROXY",
@@ -607,14 +547,6 @@ def _sanitize_child_environment() -> None:
 #: deployment sets this truthy, an ``http`` connection fails closed even if one
 #: is created — nothing routes through the general driver by default.
 _OUTBOUND_HTTP_FLAG = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
-
-#: Handshake budget for the spawned broker child, and the var that overrides it.
-_PROXY_STARTUP_TIMEOUT_VAR = "TINYASSETS_OUTBOUND_PROXY_STARTUP_TIMEOUT_S"
-#: Measured: the broker module is pure-stdlib and a fresh interpreter imports it
-#: in ~0.13s, so this is ~100x headroom, not a guess. Kept well under the cap
-#: because the wait occupies a run-executor thread.
-_DEFAULT_PROXY_STARTUP_TIMEOUT_S = 15.0
-_MAX_PROXY_STARTUP_TIMEOUT_S = 120.0
 
 #: The only connection_type values a connection may be created with. Empty is the
 #: legacy/untyped github/slack shape; "http" is the general typed connection. Any
@@ -853,56 +785,6 @@ def _outbound_http_enabled() -> bool:
     )
 
 
-def _proxy_startup_timeout_seconds() -> float:
-    """Seconds to wait for the spawned broker child's ready handshake.
-
-    The child is a ``spawn`` process, so it pays a FULL cold re-import of the
-    package chain before it can answer. The original 5s budget was measured
-    against nothing, and a cold container under load can exceed it — which
-    surfaced as a proxy that "failed to start" with no further detail. Tunable
-    so a slow host can be corrected without a redeploy.
-    """
-    raw = os.environ.get(_PROXY_STARTUP_TIMEOUT_VAR, "").strip()
-    if not raw:
-        return _DEFAULT_PROXY_STARTUP_TIMEOUT_S
-    try:
-        value = float(raw)
-    except ValueError:
-        value = math.nan
-    if not math.isfinite(value) or value <= 0:
-        # An explicitly-set unusable value is a misconfiguration, and silently
-        # swallowing it is what Hard Rule 8 forbids. It still must not take
-        # egress down, so: say so loudly, then use the default (Codex FIX C).
-        print(
-            f"{_PROXY_STARTUP_TIMEOUT_VAR}={raw!r} is not a positive number; "
-            f"using the {_DEFAULT_PROXY_STARTUP_TIMEOUT_S:g}s default",
-            file=sys.stderr,
-        )
-        return _DEFAULT_PROXY_STARTUP_TIMEOUT_S
-    # Cap the range. The startup blocks a run-executor thread, and the top-level
-    # pool is small (4 workers), so an unbounded budget lets a handful of hung
-    # startups stall all top-level graph progress for that long (Codex FIX C).
-    if value > _MAX_PROXY_STARTUP_TIMEOUT_S:
-        print(
-            f"{_PROXY_STARTUP_TIMEOUT_VAR}={raw!r} exceeds the "
-            f"{_MAX_PROXY_STARTUP_TIMEOUT_S:g}s cap; clamping",
-            file=sys.stderr,
-        )
-        return _MAX_PROXY_STARTUP_TIMEOUT_S
-    return value
-
-
-def _describe_child_exit(exitcode: int | None) -> str:
-    """Render a broker child's exit status for an operator-facing error."""
-    if exitcode is None:
-        return ""
-    # A negative code is the signal that killed it — -9 is the OOM killer, which
-    # is the difference between "misconfigured" and "the box is out of memory".
-    if exitcode < 0:
-        return f" (killed by signal {-exitcode})"
-    return f" (exitcode {exitcode})"
-
-
 def _verb_within_scopes(
     verb: object,
     scopes: Iterable[str],
@@ -934,210 +816,11 @@ def _verb_within_scopes(
     return verb in scopes
 
 
-def _run_proxy_worker(
-    channel: Any,
-    dispatch_factory: str,
-    dispatch_config: dict[str, Any],
-    grant_id: str,
-    scopes: tuple[str, ...],
-) -> None:
-    """Run the trusted dispatcher in a separate spawned process."""
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.request_budget import RequestBudgetExceeded
-    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
-
-    _sanitize_child_environment()
-    try:
-        dispatch = _load_dispatch_factory(dispatch_factory, dispatch_config)
-    except Exception as exc:
-        # Hard Rule 8. The startup path runs BEFORE any credential is resolved
-        # (`_load_dispatch_factory` only builds the ledger/driver/audit objects),
-        # so the failure carries no credential material. Only the exception CLASS
-        # crosses the wire, which is enough to discriminate the real causes —
-        # PermissionError (runtime_root mkdir), OperationalError (ledger open),
-        # ImportError — which a fixed string never was.
-        #
-        # The traceback is OPERATOR-VISIBLE, NOT host-only: daemon stderr goes to
-        # Docker's fluentd driver (deploy/compose.yml:24,:46) into Vector, which
-        # forwards unredacted to Better Stack (deploy/vector-betterstack.yaml:10).
-        # It reaches no MCP user, but it does reach a third-party log sink, and
-        # exception messages here can carry absolute host paths. Do not widen this
-        # to dump locals or the config dict (Codex FIX B).
-        traceback.print_exc(file=sys.stderr)
-        sys.stderr.flush()
-        _send_message(
-            channel,
-            {
-                "op": "startup_failed",
-                "message": "trusted proxy failed to start",
-                "cause": type(exc).__name__,
-            },
-        )
-        channel.close()
-        return
-    _send_message(channel, {"op": "ready"})
-    try:
-        while True:
-            message = _receive_message(channel)
-            if message == {"op": "close"}:
-                return
-            if not isinstance(message, dict) or message.get("op") != "request":
-                _send_message(
-                    channel,
-                    {
-                        "ok": False,
-                        "error_type": "ProxyRequestError",
-                        "message": "outbound proxy rejected an invalid request",
-                    },
-                )
-                continue
-            verb = message.get("verb")
-            if not _verb_within_scopes(verb, scopes):
-                _send_message(
-                    channel,
-                    {
-                        "ok": False,
-                        "error_type": "PermissionError",
-                        "message": "verb is outside the granted connection scope",
-                    },
-                )
-                continue
-            try:
-                accounting = ({"inference_usage": message["inference_usage"],
-                               "operation_id": message.get("operation_id")}
-                              if "inference_usage" in message else {})
-                result = dispatch(grant_id, verb, message.get("request"), **accounting)
-            except RequestBudgetExceeded as exc:
-                _send_message(channel, {"ok": False, "error_type": "InferenceUsageStopped",
-                                        "reason": exc.reason,
-                                        "usage_id": exc.request_receipt.get("usage_id")})
-            except InferenceUsageRequired:
-                _send_message(channel, {"ok": False, "error_type": "InferenceUsageRequired"})
-            except ProviderAuthorityHeldError:
-                _send_message(channel, {"ok": False, "error_type": "ProviderAuthorityHeldError",
-                                        "message": "inference usage authority refused"})
-            except ConnectionAuthorizationError as exc:
-                _send_message(
-                    channel,
-                    {
-                        "ok": False,
-                        "error_type": "ConnectionAuthorizationError",
-                        "message": str(exc),
-                        "failure": exc.failure,
-                    },
-                )
-            except (
-                AmbiguousProxyOutcome,
-                GrantResolutionError,
-                PermissionError,
-                ProxyRequestError,
-            ) as exc:
-                _send_message(
-                    channel,
-                    {
-                        "ok": False,
-                        "error_type": type(exc).__name__,
-                        "message": _adapter_safe_proxy_error(exc),
-                    },
-                )
-            except Exception:
-                _send_message(
-                    channel,
-                    {
-                        "ok": False,
-                        "error_type": "ProxyRequestError",
-                        "message": "outbound request failed",
-                    },
-                )
-            else:
-                _send_message(channel, {"ok": True, "result": result})
-    except (OSError, ProxyRequestError):
-        return
-    finally:
-        channel.close()
-
-
-class _ProxyChannel:
-    """Adapter-side transport; contains no dispatcher or credential material."""
-
-    __slots__ = ("_channel", "_closed", "_lock", "_process", "_oauth_service")
-
-    def __init__(self, channel: Any, process: Any, oauth_service=None) -> None:
-        self._channel = channel
-        self._closed = False
-        self._lock = threading.Lock()
-        self._process = process
-        self._oauth_service = oauth_service
-
-    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
-        with self._lock:
-            if self._closed:
-                raise ProxyRequestError("outbound proxy is closed")
-            _send_message(
-                self._channel,
-                {"op": "request", "verb": verb, "request": request,
-                 **({"inference_usage": inference_usage.document(),
-                     "operation_id": inference_usage.operation_id}
-                    if inference_usage is not None else {})},
-            )
-            response = _receive_message(self._channel)
-        if not isinstance(response, dict):
-            raise ProxyRequestError("outbound proxy returned an invalid response")
-        if response.get("ok") is True:
-            return response.get("result")
-        message = str(response.get("message") or "outbound request failed")
-        error_type = response.get("error_type")
-        if error_type == "InferenceUsageStopped":
-            from tinyassets.storage.agent_request_usage import InferenceUsageStopped
-
-            raise InferenceUsageStopped(response.get("reason"), response.get("usage_id"))
-        if error_type == "InferenceUsageRequired":
-            from tinyassets.storage.agent_request_usage import InferenceUsageRequired
-
-            raise InferenceUsageRequired()
-        if error_type == "ProviderAuthorityHeldError":
-            from tinyassets.exceptions import ProviderAuthorityHeldError
-
-            raise ProviderAuthorityHeldError("inference usage authority refused")
-        if error_type == "PermissionError":
-            raise PermissionError(message)
-        if error_type == "GrantResolutionError":
-            raise GrantResolutionError(message)
-        if error_type == "AmbiguousProxyOutcome":
-            raise AmbiguousProxyOutcome(message)
-        if error_type == "OutboundDeadlineExceeded":
-            raise OutboundDeadlineExceeded(message)
-        if error_type == "ConnectionAuthorizationError":
-            failure = response.get("failure")
-            detail = failure.get("provider_detail", "") if isinstance(failure, dict) else ""
-            raise ConnectionAuthorizationError(str(detail))
-        raise ProxyRequestError(message)
-
-    def close(self) -> None:
-        from tinyassets.connection_oauth.service import release_client
-
-        release_client(self._oauth_service)
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            try:
-                _send_message(self._channel, {"op": "close"})
-            except (OSError, ProxyRequestError):
-                pass
-            self._channel.close()
-        self._process.join(timeout=1.0)
-        if self._process.is_alive():
-            self._process.terminate()
-            self._process.join(timeout=1.0)
-
-
 class _BrokerChannel:
-    """``ScopedConnectionProxy``'s channel when the broker process serves it.
+    """``ScopedConnectionProxy``'s only channel: the broker process serves it.
 
     Each ``request`` is one broker stream, collected (``BrokerClient``), with a
-    fresh ``op_id``: the same document and typed errors as the worker's
-    channel. Holds no credential.
+    fresh ``op_id``. Holds no credential.
     """
 
     __slots__ = ("_client", "_closed", "_connection_id", "_grant_id")
@@ -1167,21 +850,19 @@ class _BrokerChannel:
 
 
 def _broker_channel(data_root: Path, *, principal: str, command_center: str, grant_id: str,
-                    connection_id: str) -> _BrokerChannel | None:
-    """The broker's channel when the broker is selected; ``None`` keeps the worker.
+                    connection_id: str) -> _BrokerChannel:
+    """The broker's channel. A broker that is not running is a loud refusal.
 
-    Selected but not running is a loud refusal, never a silent fall back to the
-    worker: a switch that quietly does nothing cannot be proven on.
+    There is no second channel to fall back to: the credential and the ledger
+    live in the broker's own tree, and this process cannot open either.
     """
-    from tinyassets.broker.supervisor import broker_selected, get_supervisor
-
-    if not broker_selected():
-        return None
-    supervisor = get_supervisor(Path(data_root))
-    if supervisor is None:
-        raise ProxyRequestError("the credential broker is selected but not running")
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.refresh import prepare
+    from tinyassets.broker.supervisor import get_supervisor
+
+    supervisor = get_supervisor(Path(data_root))
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
 
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
@@ -1205,7 +886,7 @@ class ScopedConnectionProxy:
     #: a since-upgraded channel until the caller opens a new proxy, which is
     #: the safe direction to be wrong in.
     access_mode: str = ACCESS_EXACT
-    _channel: _ProxyChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
+    _channel: _BrokerChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
     def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         if not _verb_within_scopes(verb, self.scopes, self.access_mode):
@@ -1996,7 +1677,7 @@ INFERENCE_IDLE_MIN_SECONDS = 30.0
 #: same horizon after which a working turn's row reads as stale.
 INFERENCE_STREAM_MAX_SECONDS = 6 * 3600.0
 #: Body cap for a streamed reply: event framing multiplies a reply's size, and
-#: this still fits ``_MAX_PROXY_FRAME_BYTES`` when JSON escaping doubles it.
+#: this still fits ``rpc_frames.MAX_CONTROL_FRAME`` when JSON escaping doubles it.
 INFERENCE_STREAM_MAX_BODY_BYTES = 7 * 1024 * 1024
 _SSRF_READ_CHUNK = 65536
 # RESIDUALS owed before this driver is ACTIVATED (it is dark; activation is
@@ -4999,15 +4680,12 @@ def _build_credential_broker_dispatch(
             universe_dir=config["universe_dir"],
             owner_user_id=config["owner_user_id"],
             oauth_service=config.get("oauth_service"),
-            allow_local_refresh=config.get("allow_local_refresh", True),
+            # The broker process never refreshes from the owner's vault: the
+            # daemon's refresh admission does, and hands the bundle back.
+            allow_local_refresh=False,
         ),
     )
     return broker.dispatch
-
-
-_TRUSTED_DISPATCH_FACTORIES = {
-    "credential_broker_v1": _build_credential_broker_dispatch,
-}
 
 
 def _streamed_text(response: object) -> str:
@@ -5190,6 +4868,16 @@ def _reject_secret_material(value: object) -> None:
             _reject_secret_material(item)
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Ledger transactions retire their descriptor without waiting for GC."""
+
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class ConnectionLedger:
     """SQLite ledger for user-owned connections and universe grants."""
 
@@ -5277,7 +4965,7 @@ class ConnectionLedger:
                 )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._db_path, timeout=30.0)
+        connection = sqlite3.connect(self._db_path, timeout=30.0, factory=_ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
@@ -6051,63 +5739,6 @@ class ConnectionLedger:
             )
         return cursor.rowcount > 0
 
-    def resolve_scoped_proxy(
-        self,
-        *,
-        universe_id: str,
-        connection_class: str,
-    ) -> ScopedConnectionProxy:
-        """Resolve exactly one current grant; absent/revoked/ambiguous fail closed."""
-        owner_user_id = self.require_authenticated_principal_id()
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT g.grant_id, g.revoked_at AS grant_revoked_at,
-                       c.owner_user_id,
-                       c.provider, c.destination, c.scopes_json,
-                       c.connection_type,
-                       c.revoked_at AS connection_revoked_at
-                  FROM outbound_connection_grants AS g
-                  JOIN outbound_connections AS c
-                    ON c.connection_id = g.connection_id
-                 WHERE g.owner_user_id = ?
-                   AND g.universe_id = ?
-                   AND c.owner_user_id = ?
-                   AND c.connection_class = ?
-                """,
-                (
-                    _required("owner_user_id", owner_user_id),
-                    _required("universe_id", universe_id),
-                    _required("owner_user_id", owner_user_id),
-                    _required("connection_class", connection_class),
-                ),
-            ).fetchall()
-        if not rows:
-            raise GrantResolutionError("absent outbound connection grant")
-        active = [
-            row
-            for row in rows
-            if row["grant_revoked_at"] is None
-            and row["connection_revoked_at"] is None
-        ]
-        if not active:
-            raise GrantResolutionError("revoked outbound connection grant")
-        if len(active) != 1:
-            raise GrantResolutionError("ambiguous outbound connection grants")
-        row = active[0]
-        columns = set(row.keys())
-        return self._start_scoped_proxy(
-            grant_id=row["grant_id"],
-            universe_id=universe_id,
-            provider=row["provider"],
-            destination=row["destination"],
-            scopes=tuple(json.loads(row["scopes_json"])),
-            owner_user_id=row["owner_user_id"],
-            connection_type=(
-                (row["connection_type"] if "connection_type" in columns else "") or ""
-            ),
-        )
-
     def resolve_exact_scoped_proxy(
         self,
         *,
@@ -6115,32 +5746,22 @@ class ConnectionLedger:
         grant_id: str,
         connection_id: str,
     ) -> ScopedConnectionProxy:
-        """Resolve one named current grant and connection for the principal."""
+        """Resolve one named current grant and connection for the principal.
+
+        The broker process serves every connection (S6): no per-proxy worker
+        is ever spawned, and the daemon never holds the credential.
+        """
         grant, resource = self.authorize_exact(
             universe_id=universe_id, grant_id=grant_id, connection_id=connection_id,
         )
-        # The broker serves http connections, the only production type; the
-        # legacy untyped test fixture keeps its worker.
-        channel = None if resource.connection_type != "http" else _broker_channel(
-            self._data_root, principal=resource.owner_user_id,
-            command_center=grant.universe_id, grant_id=grant.grant_id,
-            connection_id=resource.connection_id,
-        )
-        if channel is not None:
-            # The broker process serves it (S6): no per-proxy worker is spawned.
-            return ScopedConnectionProxy(
-                grant_id=grant.grant_id, provider=resource.provider,
-                destination=resource.destination, scopes=resource.scopes,
-                _channel=channel,
-            )
-        return self._start_scoped_proxy(
-            grant_id=grant.grant_id,
-            universe_id=grant.universe_id,
-            provider=resource.provider,
-            destination=resource.destination,
-            scopes=resource.scopes,
-            owner_user_id=resource.owner_user_id,
-            connection_type=resource.connection_type,
+        return ScopedConnectionProxy(
+            grant_id=grant.grant_id, provider=resource.provider,
+            destination=resource.destination, scopes=resource.scopes,
+            _channel=_broker_channel(
+                self._data_root, principal=resource.owner_user_id,
+                command_center=grant.universe_id, grant_id=grant.grant_id,
+                connection_id=resource.connection_id,
+            ),
         )
 
     def authorize_exact(
@@ -6189,131 +5810,6 @@ class ConnectionLedger:
                 (self._db_path.parent / ".outbound-proxy" / grant_runtime_id).resolve()
             ),
         }
-
-    def _start_scoped_proxy(
-        self,
-        *,
-        grant_id: str,
-        universe_id: str,
-        provider: str,
-        destination: str,
-        scopes: tuple[str, ...],
-        owner_user_id: str,
-        connection_type: str = "",
-    ) -> ScopedConnectionProxy:
-        from tinyassets.broker.supervisor import broker_selected
-
-        if broker_selected():
-            raise ProxyRequestError("legacy proxy worker is forbidden while the broker is selected")
-        factory_reference = "credential_broker_v1"
-        factory_config = self.broker_dispatch_config(
-            grant_id=grant_id, universe_id=universe_id, provider=provider,
-            destination=destination, owner_user_id=owner_user_id,
-            connection_type=connection_type,
-        )
-        # Resolve the budget BEFORE spawning: a validation failure here must not
-        # leak an already-started child (Codex FIX C).
-        timeout = _proxy_startup_timeout_seconds()
-        from tinyassets.connection_oauth.service import client_config, release_client
-
-        factory_config["oauth_service"] = client_config(
-            Path(factory_config["universe_dir"]), owner_user_id,
-        )
-        context = multiprocessing.get_context("spawn")
-        client_channel, server_channel = context.Pipe(duplex=True)
-        worker = context.Process(
-            target=_run_proxy_worker,
-            args=(
-                server_channel,
-                factory_reference,
-                factory_config,
-                grant_id,
-                scopes,
-            ),
-            daemon=True,
-            name=f"outbound-proxy-{grant_id}",
-        )
-        try:
-            worker.start()
-        except Exception as exc:
-            release_client(factory_config["oauth_service"])
-            # A spawn that never starts used to bypass the diagnostic contract
-            # entirely, surfacing as an unrelated error type (Codex FIX D).
-            client_channel.close()
-            server_channel.close()
-            raise ProxyRequestError(
-                f"outbound proxy could not be spawned: {type(exc).__name__}"
-            ) from exc
-        server_channel.close()
-
-        def _abandon() -> int | None:
-            """Tear the child down, reporting how it died if it died on its own.
-
-            Reads ``exitcode`` BEFORE terminating: our own SIGTERM sets ``-15``,
-            so terminating first would overwrite the child's real exit status and
-            report every timeout as a process death (Codex FIX D).
-            """
-            # Read liveness BEFORE touching the channel. Closing our end breaks
-            # the child's pipe, and a healthy-but-slow child then dies on the
-            # broken pipe while trying to send "ready" — so an exitcode sampled
-            # after the close can be a death the PARENT caused, which is the very
-            # misattribution this helper exists to prevent.
-            release_client(factory_config["oauth_service"])
-            own_exit = worker.exitcode
-            if own_exit is None and not worker.is_alive():
-                # Already exited, just not reaped yet; is_alive() reaps it, so
-                # the EOF path recovers the real code instead of losing it.
-                own_exit = worker.exitcode
-            client_channel.close()
-            if own_exit is None:
-                worker.terminate()
-                worker.join(timeout=1.0)
-            return own_exit
-
-        _describe = _describe_child_exit
-
-        if not client_channel.poll(timeout):
-            exitcode = _abandon()
-            if exitcode is None:
-                raise ProxyRequestError(
-                    "outbound proxy did not finish starting within "
-                    f"{timeout:g}s"
-                )
-            raise ProxyRequestError(
-                f"outbound proxy exited during startup{_describe(exitcode)}"
-            )
-        try:
-            ready = _receive_message(client_channel)
-        except ProxyRequestError:
-            # On Linux a child that dies CLOSES the pipe, so poll() reports
-            # readable and the read hits EOF. That is a child death, not a
-            # malformed frame, and it was reaching the caller as an unrelated
-            # generic message — the most likely production shape (Codex FIX D).
-            exitcode = _abandon()
-            raise ProxyRequestError(
-                f"outbound proxy exited during startup{_describe(exitcode)}"
-            ) from None
-        if isinstance(ready, dict) and ready.get("op") == "startup_failed":
-            cause = ready.get("cause")
-            _abandon()
-            detail = f": {cause}" if isinstance(cause, str) and cause else ""
-            # The cause is the child's exception CLASS only; its full traceback is
-            # on the daemon's stderr. Redacted by construction, still diagnostic.
-            raise ProxyRequestError(
-                f"outbound proxy failed to start{detail}"
-            )
-        if ready != {"op": "ready"}:
-            _abandon()
-            raise ProxyRequestError(
-                "outbound proxy sent an unrecognized startup message"
-            )
-        return ScopedConnectionProxy(
-            grant_id=grant_id,
-            provider=provider,
-            destination=destination,
-            scopes=scopes,
-            _channel=_ProxyChannel(client_channel, worker, factory_config["oauth_service"]),
-        )
 
     def _active_resource_for_grant(
         self, grant_id: str

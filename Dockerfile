@@ -177,7 +177,7 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
 
 # Install into a venv that we'll copy to the final stage. Keeps the
 # final image free of pip metadata + build tools.
-RUN python -m venv /opt/venv && \
+RUN python -m venv --copies /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,browser]"
 
@@ -214,12 +214,14 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 RUN set -e; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+        acl \
         bubblewrap \
         ca-certificates \
         curl \
         git \
         gnupg \
         libgomp1 \
+        ffmpeg \
         ripgrep \
         tini \
         util-linux; \
@@ -246,7 +248,12 @@ RUN set -e; \
     rm -f /tmp/nodesource-repo.gpg.key /tmp/gh.deb; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 1001 tinyassets; \
-    useradd --system --uid 1001 --gid tinyassets --home /app --shell /bin/bash tinyassets
+    useradd --system --uid 1001 --gid tinyassets --home /home/tinyassets --shell /bin/bash tinyassets; \
+    groupadd --system --gid 1002 ta-broker; \
+    groupadd --system --gid 1100 ta-work; \
+    groupadd --system --gid 1101 ta-brk; \
+    groupadd --system --gid 1102 ta-vault; \
+    useradd --system --uid 1002 --gid ta-broker --home /var/lib/ta-broker --shell /usr/sbin/nologin ta-broker
 
 # The jail binds /usr, not the daemon's /opt/venv. Install the basic test
 # runner on its Python so a checkout can run tests without platform imports.
@@ -271,7 +278,7 @@ RUN chmod 0755 /usr/local/bin/codex && \
     git --version && rg --version && node --version && python3 --version
 
 # Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
-# OUTSIDE /app and /data, both of which are chowned to uid 1001 further down.
+# OUTSIDE /app and /data; /app stays root-owned and read-only.
 # A binary that root may one day exec must not live in a tree its target
 # user can write. Not setuid, not setgid: it grants nothing, it retires.
 # The pinned SQLite (see the builder). /usr/local/lib precedes the Debian lib
@@ -350,7 +357,21 @@ COPY scripts/_canary_common.py /app/scripts/_canary_common.py
 # `docker cp` before you can run it is one that gets skipped. Stdlib-only and
 # read-only against a temp root under /tmp; it never touches /data.
 COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
-COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
+# Owner split (openspec/changes/per-role-uid-split). Every file on PID1's
+# privileged execution and import chain is root-owned 0555 outside /data, and
+# ta-chain.py verifies the whole chain (ancestors and link targets included)
+# before the bootstrap trusts it. ta-migrate.py is the one-time volume migration
+# (docs/ops/owner-split-cutover-runbook.md); the service never runs it.
+COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
+COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
+COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
+COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
+COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
+COPY deploy/role_git.py /usr/local/libexec/ta-git.py
+COPY deploy/role_provision.py /usr/local/libexec/ta-provision.py
+COPY deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.py
+COPY deploy/role_migrate.py /usr/local/libexec/ta-migrate.py
+COPY deploy/broker_main.py /app/broker_main.py
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -360,22 +381,39 @@ ENV PATH=/opt/venv/bin:$PATH \
 # Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;
 # operators supply it via `-v /host/path:/data` + the env var below.
-ENV TINYASSETS_DATA_DIR=/data
-RUN mkdir -p /data && \
-    chmod +x /app/docker-entrypoint.sh && \
-    chown -R tinyassets:tinyassets /data /app
+# /run/tinyassets-roles is root 0755 and its broker socket directory is
+# 1002:1101 2750, made here because the bootstrap holds no CHOWN.
+ENV TINYASSETS_DATA_DIR=/data HOME=/home/tinyassets
+RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker /run/tinyassets-roles/broker && \
+    chown tinyassets:tinyassets /data /home/tinyassets && \
+    chown ta-broker:ta-broker /var/lib/ta-broker && \
+    chmod 0700 /home/tinyassets /var/lib/ta-broker && \
+    chmod 0755 /run/tinyassets-roles && \
+    chown ta-broker:ta-brk /run/tinyassets-roles/broker && \
+    chmod 2750 /run/tinyassets-roles/broker && \
+    chown -R root:root /app && \
+    chmod -R a-w,a+rX /app && \
+    chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh \
+        /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-launch.py \
+        /usr/local/libexec/ta-owner-launch.py /usr/local/libexec/ta-decoder.py \
+        /usr/local/libexec/ta-git.py /usr/local/libexec/ta-provision.py /usr/local/libexec/ta-admission-contract.py \
+        /usr/local/libexec/ta-migrate.py && \
+    /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 
 USER tinyassets
 
 EXPOSE 8001
 
-# tini as PID 1 handles signal forwarding + zombie reaping.
-# docker-entrypoint.sh enforces cloud-daemon subscription-only auth,
-# optionally installs a subscription Codex auth bundle, then execs the CMD.
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
+# No tini: the D60 bootstrap must be PID1 (it reaps adopted orphans itself).
+# ta-entry.sh strips platform credentials, checks static data, then execs the
+# CMD in place.
+ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]
 
-# Default command — the FastMCP streamable-http server on 0.0.0.0:8001.
-# Through a launcher whose import is empty: every broker/workspace child is a
-# multiprocessing spawn child, which re-imports __main__ by name first, and the
-# server as __main__ cost each child ~5 s (tinyassets/serve.py).
-CMD ["python", "-m", "tinyassets.serve"]
+# Default command: the owner-split PID1 (deploy/role_launcher.py). It refuses
+# unless it starts as root holding only KILL, SETGID, SETUID and SETPCAP
+# (compose `user: "0:0"` and `cap_add`) on a migrated volume; then it forks the
+# broker and the mapper, retires to uid 1001 and serves the FastMCP server on
+# 0.0.0.0:8001. Its __main__ imports only the standard library, so every
+# multiprocessing spawn child, which re-imports __main__ first, stays light.
+# As the image's default uid 1001 it refuses (the CI startup check).
+CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]

@@ -58,7 +58,7 @@ def connect_owner_provider(home, owner):
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     grant, connection = "http_grant_" + "a" * 32, "http_" + "b" * 32
-    ledger = ConnectionLedger(home.parent / "outbound.db",
+    ledger = ConnectionLedger(home.parent / ".broker" / "outbound.db", data_root=home.parent,
                               verify_authenticated_principal=lambda: owner)
     ledger.create_connection(
         connection_id=connection, owner_user_id=owner, connection_class="http",

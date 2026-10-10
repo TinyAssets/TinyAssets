@@ -442,6 +442,14 @@ def sweep(base_path: str | Path) -> SweepReport:
     return report
 
 
+#: Broker-private, 1002:1101 2700 after the owner split: the daemon holds no
+#: access to it and must not try. No workspace operation ever runs as the
+#: broker, so no staging can exist there -- sweeping it only produced a
+#: PermissionError traceback and a permanently non-zero `failed` count at every
+#: boot (found by scripts/role_image_oracle.py on the migrated volume).
+BROKER_PRIVATE_DIR = ".broker"
+
+
 def sweep_data_root(data_root: str | Path) -> SweepReport:
     """Retry this process's queued removals, sweep the data root's staging and
     every universe directory's staging, and log the inventory removed."""
@@ -451,6 +459,8 @@ def sweep_data_root(data_root: str | Path) -> SweepReport:
     candidates = [base]
     try:
         for child in sorted(base.iterdir()):
+            if child.name == BROKER_PRIVATE_DIR:
+                continue
             if child.is_dir() and not child.is_symlink():
                 candidates.append(child)
     except OSError:
@@ -514,6 +524,7 @@ def stop_sweeper(timeout_s: float = 5.0) -> bool:
 
 
 __all__ = [
+    "BROKER_PRIVATE_DIR",
     "INUSE_NAME",
     "STAGING_DIR",
     "SweepReport",

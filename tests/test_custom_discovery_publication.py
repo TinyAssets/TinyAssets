@@ -52,7 +52,7 @@ def source(rig, monkeypatch):
                                                        "agent_score": 14.25,
                                                        "reason_score": 22.5},
     }]})
-    broker_ledger = ConnectionLedger(rig.base / "outbound.db",
+    broker_ledger = ConnectionLedger(rig.base / ".broker" / "outbound.db", data_root=rig.base,
                                       verify_authenticated_principal=lambda: "owner")
 
     def network(**kwargs):
@@ -90,14 +90,16 @@ def source(rig, monkeypatch):
         def close(self):
             state.closes += 1
 
-    def start(self, **kwargs):
-        state.starts.append(kwargs)
-        access_mode = rig.ledger.get_connection_view("conn-models").access_mode
-        return ScopedConnectionProxy(grant_id=kwargs["grant_id"], provider=kwargs["provider"],
-                                      destination=kwargs["destination"], scopes=kwargs["scopes"],
-                                      _channel=Channel(), access_mode=access_mode)
+    def start(base, *, principal, command_center, grant_id, connection_id):
+        assert principal == "owner" and command_center == "u-models"
+        state.starts.append(dict(grant_id=grant_id, connection_id=connection_id))
+        view = rig.ledger.get_connection_view(connection_id)
+        return ScopedConnectionProxy(grant_id=grant_id, provider=view.provider,
+                                      destination=view.destination, scopes=view.scopes,
+                                      _channel=Channel(), access_mode=view.access_mode)
 
-    monkeypatch.setattr(ConnectionLedger, "_start_scoped_proxy", start)
+    monkeypatch.setattr("tinyassets.providers.discovery_http._broker_channel", start)
+    monkeypatch.setattr("tinyassets.storage.outbound_connections._broker_channel", start)
     state.refresh = lambda: snapshots.refresh_model_discovery(
         owner_user_id="owner", universe_id="u-models", definition_id=rig.definition.id,
     )

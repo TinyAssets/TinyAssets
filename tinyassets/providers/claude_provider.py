@@ -427,129 +427,66 @@ def _resolve_claude_cmd() -> tuple[list[str], bool]:
 
 
 def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
-    """Wire the local, founder-scoped TinyAssets MCP server into the engine turn.
+    """Wire the owner's engine MCP route into the served turn.
 
-    Founder directive 2026-08-12: the universe agent ("Tiny") gets the SAME MCP
-    handles the founder's browser chatbot has. This writes a per-universe
-    ``--mcp-config`` pointing at ``python -m tinyassets.engine_mcp_server`` and
-    returns the flags that admit EXACTLY that one server:
+    Founder directive 2026-08-12: the universe agent gets the SAME MCP handles
+    the founder's browser chatbot has. This seals a one-server ``--mcp-config``
+    into the launch snapshot (the only daemon-written state the provider cell
+    receives) and returns the flags that admit EXACTLY that one server:
 
-      * ``--strict-mcp-config`` — grants ONLY the servers in ``--mcp-config`` and
-        excludes the logged-in claude.ai account connectors (Google Drive /
-        codex → code exec). Verified 2026-08-13: with strict + a single-server
-        config, ``mcp__codex__codex`` is unreachable — this is what actually
-        closes the 2026-07-03 ambient-MCP leak, not ``--setting-sources``.
+      * ``--strict-mcp-config`` grants ONLY the servers in ``--mcp-config`` and
+        excludes the logged-in claude.ai account connectors. Verified 2026-08-13:
+        with strict + a single-server config, ``mcp__codex__codex`` is
+        unreachable.
 
-    FAIL-CLOSED: the engine MCP is wired only when the founder actor_id AND the
-    universe graph_id are both present; a missing either returns no flags so the
-    turn stays tool-free rather than exposing tools with an unbound identity.
-    The server itself binds ``_current_identity`` to the founder and pins every
-    handler to ``engine_mcp_graph_id`` (see ``tinyassets.engine_mcp_server``).
+    The server is the owner's persistent HTTP engine route
+    (``engine_mcp_http``); inside the cell, its loopback port is the pinned
+    relay socket and nothing else. FAIL-CLOSED: no actor, graph, live route or
+    launch snapshot returns no flags, and the caller refuses the turn rather
+    than relax its tool policy. There is no stdio engine: an engine inside the
+    owner's cell could not reach the platform's stores, and one outside it
+    would be an unconfined daemon child.
     """
+    del universe_dir
     actor_id = (config.engine_mcp_actor_id or "").strip()
     graph_id = (config.engine_mcp_graph_id or "").strip()
-    if not (actor_id and graph_id):
+    snapshot = config.credential_snapshot_dir
+    if not (actor_id and graph_id and snapshot is not None):
         return []
     import json as _json
-    import sys as _sys
 
-    # Config lives under the universe's platform-owned ``.runtime/``, which the
-    # universe tool jail masks: the agent's own read/bash tools never see it.
-    # HTTP config carries the private bearer; never put this config in the
-    # prompt or logs. Overwritten each turn. The pre-harness location at the
-    # universe root is removed so no stale bearer stays readable there.
-    # One config per session: the route names the launch's session and turn for
-    # owner steering (S2), so two sessions' launches must never share a file and
-    # read each other's route (gpt-6-astra on #4188).
-    from tinyassets.agent_sessions import digest as _session_digest
     from tinyassets.engine_mcp_http import read_engine_mcp_route
     from tinyassets.engine_steering import route_with_session, session_of, turn_of
+    from tinyassets.role_provider_execution import seal_launch_file
     from tinyassets.served_tools import granted_tools
     from tinyassets.storage import data_dir
 
-    session_key = session_of(config)
-    config_path = universe_dir / ".runtime" / (
-        f"engine-mcp-config-{_session_digest(session_key)[:16]}.json"
-        if session_key else "engine-mcp-config.json"
+    # The bearer travels in the --mcp-config HEADERS (which the CLI holds
+    # internally, never surfaced to the LLM), not the prompt. The route names
+    # the launch's session and turn for owner steering (S2).
+    route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=data_dir())
+    if route is None:
+        return []
+    model_url = route_with_session(
+        route.url, session_of(config), turn_of(),
+        grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config),
+        context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
     )
-    legacy_path = universe_dir / ".engine_mcp_config.json"
-    server_env = {
-        "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
-        "TINYASSETS_ENGINE_GRAPH_ID": graph_id,
+    model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"
+    mcp_config = {
+        "mcpServers": {
+            "tinyassets": {
+                "type": "http",
+                "url": model_url,
+                "headers": {"Authorization": "Bearer " + route.secret},
+            }
+        }
     }
-    root = data_dir()
-    server_env["TINYASSETS_DATA_DIR"] = str(root)
-    # A stdio engine acts for this owner and joins its tree
-    # (execution-owner-lease D2); the CLI may not pass the environment through.
-    import os as _os
-
-    from tinyassets.owner_lease import TREE_ENV
-
-    if _os.environ.get(TREE_ENV):
-        server_env[TREE_ENV] = _os.environ[TREE_ENV]
-    # The ceiling on a single tool result scales with the window the result has
-    # to fit in (``engine_result_bounds``). Passed only when this turn's model is
-    # known; the persistent HTTP transport below outlives any one turn's choice,
-    # so it runs on the safe default instead of a stale number.
-    selected = getattr(config, "selected_model", None)
-    context_tokens = getattr(selected, "context_tokens", None)
-    if type(context_tokens) is int and context_tokens > 0:
-        server_env["TINYASSETS_ENGINE_MODEL_CONTEXT_TOKENS"] = str(context_tokens)
-    # Transport selection. The claude CLI's STDIO MCP spawn is flaky in the
-    # headless served subprocess (verified live 2026-08-19: the server process
-    # never launched, CLI reported "still connecting"); HTTP MCP connects
-    # reliably. So when a persistent per-universe HTTP engine server is running,
-    # point --mcp-config at its loopback URL + inject the per-server bearer
-    # secret (Codex gate #6). Falls back to stdio when none is running. The route
-    # owner-bound route map is written 0600 by engine_mcp_http; the secret goes
-    # in the --mcp-config HEADERS (which the CLI
-    # holds internally — never surfaced to the LLM), not the prompt.
-    route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
-    if route is not None:
-        model_url = route_with_session(
-            route.url, session_key, turn_of(),
-            grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config),
-        )
-        model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"
-        mcp_config = {
-            "mcpServers": {
-                "tinyassets": {
-                    "type": "http",
-                    # Names this launch's session for owner steering (S2).
-                    "url": model_url,
-                    "headers": {"Authorization": "Bearer " + route.secret},
-                }
-            }
-        }
-    else:
-        import secrets
-
-        from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV, launch_grant
-
-        # The platform owns the subprocess environment; none of this enters /u.
-        key = secrets.token_hex(32)
-        server_env[LAUNCH_GRANT_KEY_ENV] = key
-        server_env["TINYASSETS_ENGINE_STDIO_GRANT"] = launch_grant(
-            key, "", "", granted_tools(config),
-        )
-        server_env["TINYASSETS_ENGINE_MODEL_INVENTORY"] = "four"
-        mcp_config = {
-            "mcpServers": {
-                "tinyassets": {
-                    "command": _sys.executable,
-                    "args": ["-m", "tinyassets.engine_mcp_server"],
-                    "env": server_env,
-                }
-            }
-        }
     try:
-        config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        config_path.write_text(_json.dumps(mcp_config), encoding="utf-8")
-        if legacy_path.is_file() and not legacy_path.is_symlink():
-            legacy_path.unlink()
-    except OSError:
-        # If we cannot write the config, fail closed to tool-free rather than
-        # passing --mcp-config a missing path (which would error the whole turn).
+        config_path = seal_launch_file(
+            snapshot, "engine-mcp", ".json", _json.dumps(mcp_config).encode("utf-8"),
+        )
+    except (OSError, PermissionError):
         return []
     return ["--mcp-config", str(config_path), "--strict-mcp-config"]
 
@@ -591,12 +528,11 @@ def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
     return replace(config, sandbox_workspace=True, disallowed_tools=denied)
 
 
-def _sandbox_cli_args(
-    config: ModelConfig, universe_dir: Path | None
-) -> tuple[list[str], str | None]:
-    """Build tool-policy flags + isolated cwd for a sandboxed subprocess turn.
+def _sandbox_cli_args(config: ModelConfig, universe_dir: Path | None) -> list[str]:
+    """Build tool-policy flags for a sandboxed subprocess turn.
 
-    Returns ``(extra_cmd_flags, run_cwd)``. This is the P0 isolation seam for the
+    Every launch runs in its owner's provider cell, whose working directory
+    is an empty owner-private scratch directory. This is the P0 isolation seam for the
     founder-facing universe-intelligence turn (2026-07-03 live-test finding): the
     universe engine must NOT inherit the daemon's checkout (repo source,
     ``CLAUDE.md``, other universes) nor keep host tools (Bash → arbitrary host
@@ -683,8 +619,7 @@ def _sandbox_cli_args(
                 "expose ambient MCP connectors (fail-closed)."
             )
         flags += engine_flags
-    run_cwd = str(universe_dir) if config.sandbox_workspace else None
-    return flags, run_cwd
+    return flags
 
 
 #: Flags that make the CLI answer a metadata request and nothing else: print
@@ -800,7 +735,7 @@ class ClaudeProvider(BaseProvider):
         ]
         if system:
             cmd.extend(["--system-prompt", system])
-        extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
+        extra_flags = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(
             self.name,
@@ -819,7 +754,6 @@ class ClaudeProvider(BaseProvider):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
-            cwd=run_cwd,
             limit=_STDOUT_READER_LIMIT,
         )
         return await self._read_stream(proc, prompt, config)
@@ -1305,7 +1239,7 @@ class ClaudeProvider(BaseProvider):
         cmd.extend(native_model_arguments(config.native_model_id, "--model"))
         if system:
             cmd.extend(["--system-prompt", system])
-        extra_flags, run_cwd = _sandbox_cli_args(config, universe_dir)
+        extra_flags = _sandbox_cli_args(config, universe_dir)
         cmd.extend(extra_flags)
         proc_env = subprocess_env_for_provider(
             self.name,
@@ -1322,7 +1256,6 @@ class ClaudeProvider(BaseProvider):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
-            cwd=run_cwd,
         )
 
         # EVERY exit -- success, classified raise, cancellation -- ends the

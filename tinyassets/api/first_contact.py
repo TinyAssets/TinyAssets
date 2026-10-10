@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import threading
 from pathlib import Path
 
@@ -135,11 +134,8 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     with _HOME_MATERIALIZE_LOCK:
         if home_is_complete(base, winner):
             return winner
-        if universe_dir.exists():
-            try:
-                shutil.rmtree(universe_dir)
-            except OSError:
-                pass
+        # DA4: an incomplete home keeps its root and grant; _universe_impl
+        # resumes admission and seeding in place.
         try:
             # ``winner`` passed the provenance gate above: its founder_home row
             # carries the platform-generated marker AND it is serial-shaped. Only

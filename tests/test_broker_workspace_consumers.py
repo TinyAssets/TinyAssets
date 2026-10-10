@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.effectors import EffectChain, EffectFailedError, workspace
 from tinyassets.graph_compiler import BranchExecutionContext, _wrap_with_effects

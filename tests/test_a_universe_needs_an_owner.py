@@ -879,21 +879,34 @@ class TestTheOwnerIsClaimedFirst:
         assert sorted(p.name for p in base.iterdir()) == before
         assert owned_universe_ids(base) == set()
 
-    def test_a_failed_create_takes_the_grant_back(self, base, signed_in, monkeypatch):
-        """The grant is written first, so rollback has to revoke it -- otherwise
-        a failed create silently claims the id forever."""
+    @pytest.mark.parametrize("published", [False, True])
+    def test_failed_create_retains_only_a_published_root(self, base, signed_in, monkeypatch,
+                                                        published):
+        """Admission owns the root once published; retry must reuse that inode."""
+        from tinyassets import role_center_admission
+
         signed_in("workos|founder")
 
-        def _boom(*_a, **_k):
+        def fail(*_a, **_k):
             raise OSError("disk full")
 
-        monkeypatch.setattr(us, "_normalize_escaped_text", _boom)
-
-        out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
-
+        with monkeypatch.context() as fault:
+            if published:
+                fault.setattr(us, "_normalize_escaped_text", fail)
+            else:
+                fault.setattr(role_center_admission, "admit_center", fail)
+            out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
         assert "error" in out, out
-        assert owned_universe_id(base, "u-doomed") == ""
-        assert not (base / "u-doomed").exists()
+        home = base / "u-doomed"
+        assert owned_universe_id(base, "u-doomed") == ("u-doomed" if published else "")
+        assert home.exists() is published
+        if published:
+            inode = home.stat().st_ino
+            assert not (home / "soul.md").exists()
+            retried = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
+            assert retried["status"] == "created"
+            assert home.stat().st_ino == inode
+            assert (home / "soul.md").is_file()
 
 
 # --------------------------------------------------------------------------- #

@@ -60,14 +60,18 @@ def test_submillisecond_reset_and_current_time_boundaries(tmp_path):
     assert budget(tmp_path).used == 2
 
 
-@pytest.mark.parametrize("broken", [False, True])
-def test_unreadable_journal_returns_unknown_without_creating_it(tmp_path, broken):
+def test_corrupt_legacy_journal_returns_unknown_without_changing_it(tmp_path):
     path = tmp_path / DB_FILENAME
-    if broken:
-        path.write_text("not a database")
+    path.write_text("not a database")
     assert requests_today(tmp_path, "owner", "connection", reset_timezone="UTC", now=NOW) is None
     assert budget(tmp_path) is None
-    assert path.exists() == broken
+    assert path.read_text() == "not a database"
+
+
+def test_absent_legacy_journal_uses_broker_evidence_without_creating_it(tmp_path):
+    assert requests_today(tmp_path, "owner", "connection", reset_timezone="UTC", now=NOW) == (0, 0)
+    assert budget(tmp_path).used == 0
+    assert not (tmp_path / DB_FILENAME).exists()
 
 
 def test_source_reset_timezone_is_data(tmp_path):
@@ -165,11 +169,17 @@ def test_credit_suggestion_uses_installed_amount_and_url(tmp_path):
     assert "your account may already qualify" in suggestion
 
 
-def test_durable_dispatch_times_include_internal_failures_and_survive_journal_deletion(tmp_path):
+def test_durable_dispatch_times_include_internal_failures_and_survive_journal_deletion(
+    tmp_path, monkeypatch,
+):
+    import tinyassets.request_budget as request_budget_module
     from tinyassets.request_budget import TurnRequestBudget
 
     midnight = NOW.replace(hour=0)
     clock = [midnight - timedelta(microseconds=1)]
+    # Timestamp authority belongs to the broker; the wire never accepts the
+    # client's wall clock. Control the broker's clock in this in-process test.
+    monkeypatch.setattr(request_budget_module, "_now", lambda: clock[0])
     parent = TurnRequestBudget("owner", "seed-universe", wall_clock=lambda: clock[0],
                                failure_limit=None)
     parent.persist(tmp_path)

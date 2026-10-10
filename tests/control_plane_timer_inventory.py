@@ -37,6 +37,15 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/role_preview_cell.py::supervised": (
+        CALL_SCOPED, "one preview cell waits for its browser until the call deadline",
+    ),
+    "tinyassets/role_preview_cell.py::supervised#2": (
+        CALL_SCOPED, "bounded cleanup wait for that preview's PID namespace",
+    ),
+    "tinyassets/workspace_provision_process.py::run_provision_stage": (
+        CALL_SCOPED, "bounded dependency stage inside one owner cell; ends with the call",
+    ),
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
@@ -80,16 +89,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "bounded MRTR continuation of one host-consented remote call; stops with "
         "the caller, timeout, revocation or an uncertain response",
     ),
-    "tinyassets/ui_preview.py::_supervised": (
-        CALL_SCOPED,
-        "one requested preview polls its child tree until exit, wall deadline "
-        "or a resource breach; no scheduled or autonomous preview work",
-    ),
-    "tinyassets/ui_preview.py::_supervised#2": (
-        CALL_SCOPED,
-        "the same preview waits at most ten seconds for namespace descendants "
-        "to stop during cleanup, then refuses further previews if uncontained",
-    ),
     "tinyassets/owner_lease.py::_lock_blocking": (
         CALL_SCOPED, "one owner-tree gate acquisition retries until timeout_s",
     ),
@@ -111,6 +110,15 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "one broker stream waits for the daemon's refresh answer only until "
         "that stream's own deadline; nothing reschedules",
+    ),
+    "tinyassets/role_node.py::run": (
+        CALL_SCOPED, "one node-sandbox cell is supervised until exit or its call deadline",
+    ),
+    "tinyassets/role_package_cell.py::run": (
+        CALL_SCOPED, "one package payload is polled for exit, limits or broker revocation",
+    ),
+    "tinyassets/role_tools.py::run": (
+        CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
     ),
     "tinyassets/activity_runner.py::linked_activity": (
         CALL_SCOPED,
@@ -168,7 +176,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/node_sandbox.py::NodeSandbox.run_sync": (CALL_SCOPED, "child process wait"),
+    "tinyassets/node_sandbox.py::NodeSandbox.run_nested": (CALL_SCOPED, "child process wait"),
     "tinyassets/node_sandbox.py::_watch_process_tree_rss": (CALL_SCOPED, "child RSS watch"),
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::blocking_provider_child": (CALL_SCOPED, "slot wait"),
@@ -183,11 +191,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "reads ONE codex app-server turn's stdout under its idle/tool/absolute "
         "budgets; ends with the turn's terminal notification, EOF or timeout",
-    ),
-    "tinyassets/providers/owned_process.py::_watch_disk.watch": (
-        CALL_SCOPED,
-        "host-side disk-budget watch for one jailed provider launch; ends with "
-        "proc.wait or budget-breach family teardown and settles that launch's budget",
     ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
@@ -229,12 +232,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/workspace_family.py::family_fence": (CALL_SCOPED, "fence wait"),
     "tinyassets/workspace_fs.py::_retry_transient_windows": (CALL_SCOPED, "Windows retry"),
     "tinyassets/workspace_pool.py::admit": (CALL_SCOPED, "admission wait"),
-    "tinyassets/workspace_provision_process.py::run_provision_stage": (
-        CALL_SCOPED, "provision stage wait",
-    ),
-    "tinyassets/workspace_registry_process.py::RegistryBrokerProcess.finish": (
-        CALL_SCOPED, "broker shutdown wait",
-    ),
     "tinyassets/workspace_staging.py::_lock_tree_exclusive": (CALL_SCOPED, "lock acquisition"),
     # Bounded retry loops (``for attempt in range(n): ... sleep``).
     "tinyassets/api/wiki.py::_wiki_file_bug": (CALL_SCOPED, "bounded retry"),

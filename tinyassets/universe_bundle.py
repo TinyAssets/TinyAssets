@@ -389,7 +389,9 @@ def seed_okf_bundle(
     Idempotent-safe on a fresh directory; callers create the directory first.
     Does not create ``self/``, ``soul/``, ``notes.json``, or ``activity.log``.
     """
-    universe_dir.mkdir(parents=True, exist_ok=True)
+    from tinyassets.role_center_admission import ensure_center_dir
+
+    ensure_center_dir(universe_dir)
 
     soul_text = _soul_md(purpose, loop_branch_def_id)
 

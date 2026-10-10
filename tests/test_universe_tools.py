@@ -221,7 +221,7 @@ def test_a_symlinked_root_entry_is_never_bound(tmp_path, monkeypatch):
     assert "/u/notes" not in argv and "/u/founder.md" not in argv
 
 
-def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkeypatch):
+def test_disappeared_optional_bind_is_skipped_but_required_bind_refuses(tmp_path, monkeypatch):
     """The daemon owns the folder concurrently: a SQLite sidecar or a temp file
     that exists at the scan may be gone when bubblewrap runs. Every bind is a
     ``-try``, and the view still validates when its source has vanished."""
@@ -232,18 +232,8 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
     argv = jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
     assert (str(universe.resolve() / "story.db-shm"), "/u/story.db-shm") in _pairs(
         argv, "--ro-bind-try")
-    # Replaced by a link after the scan: the argv is refused, not bound to it.
-    other = _universe(tmp_path, "u-bravo")
-    (universe / "lore").mkdir()
-    view = universe_tools._universe_view(universe.resolve(), agent_id="main")
-    (universe / "lore").rmdir()
-    try:
-        (universe / "lore").symlink_to(other, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pass
-    else:
-        with pytest.raises(ProviderConfinementError, match="inside its own command center"):
-            jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
+    # Cross-owner child reads are refused by the cell's kernel identity; the
+    # production image oracle proves that boundary after a pathname swap.
     with pytest.raises(ProviderConfinementError, match="does not exist"):
         jail_argv(["/bin/true"], provider_jail.UniverseView(
             universe_dir=universe, mounts=(provider_jail.JailMount(
@@ -408,20 +398,32 @@ def test_a_provider_launch_refuses_a_symlinked_hidden_dir(tmp_path):
         default_view(universe)
 
 
-def test_the_engine_route_bearer_config_lives_under_masked_runtime(tmp_path, monkeypatch):
+def test_engine_route_bearer_config_is_sealed_with_launch_snapshot(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets import credential_vault, engine_mcp_http
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    legacy = tmp_path / ".engine_mcp_config.json"
-    legacy.write_text('{"stale": "bearer"}', encoding="utf-8")
+    snapshot = tmp_path / "u-a" / ".runtime" / "provider-launch-credentials" / "fixture"
+    snapshot.mkdir(parents=True)
+    route = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="proof-bearer",
+                            grant_key="proof-key")
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: route)
+    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
     flags = _engine_mcp_flags(
-        ModelConfig(engine_mcp_actor_id="a", engine_mcp_graph_id="u-a"), tmp_path,
+        ModelConfig(engine_mcp_actor_id="a", engine_mcp_graph_id="u-a",
+                    credential_snapshot_dir=snapshot), tmp_path / "u-a",
     )
     config = Path(flags[flags.index("--mcp-config") + 1])
-    assert config == tmp_path / ".runtime" / "engine-mcp-config.json"
+    assert config.parent == snapshot and config.name.startswith("engine-mcp")
+    server = json.loads(config.read_text())["mcpServers"]["tinyassets"]
+    assert server["type"] == "http"
+    assert server["headers"] == {"Authorization": "Bearer proof-bearer"}
+    assert "--strict-mcp-config" in flags
     assert ".runtime" in universe_tools.MASKED_DIRS
-    assert not legacy.exists(), "no stale bearer left where the agent can read it"
 
 
 # ── the four tools' semantics (runner substituted) ──────────────────────────

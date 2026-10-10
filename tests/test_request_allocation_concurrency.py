@@ -3,6 +3,7 @@
 import faulthandler
 import gc
 import multiprocessing
+import os
 import threading
 
 import pytest
@@ -11,8 +12,25 @@ from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.request_budget import RunRequestAllocation, TurnRequestBudget
 
 
+def _with_broker(target, base):
+    # Spawn does not inherit pytest's broker fixture or its same-UID group.
+    from tests.support.broker_double import _Registry
+    from tinyassets import role_modes
+    from tinyassets.broker import supervisor
+
+    registry = _Registry()
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+            patch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
+            target(base)
+    finally:
+        registry.close()
+
+
 def _run_bounded(target, base):
-    process = multiprocessing.get_context("spawn").Process(target=target, args=(base,))
+    process = multiprocessing.get_context("spawn").Process(
+        target=_with_broker, args=(target, base))
     process.start()
     try:
         process.join(timeout=15)

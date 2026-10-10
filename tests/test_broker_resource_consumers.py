@@ -45,7 +45,6 @@ def consumers(tmp_path, monkeypatch):
             return ledger_queries.local_query(ledger, principal=self.principal,
                                               command_center=self.center, **kwargs)
 
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: SimpleNamespace(
         socket_path=tmp_path / "broker.sock", fence=lambda: (1, "synthetic"), verify_broker=None))
     monkeypatch.setattr("tinyassets.broker.client.BrokerClient", Client)
@@ -97,10 +96,10 @@ def test_revoked_resources_are_never_captured_or_displayed(consumers, kind):
 def test_unavailable_broker_never_opens_local_ledger(consumers, monkeypatch):
     c = consumers
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: None)
-    with pytest.raises(ProxyRequestError, match="selected but not running"):
+    with pytest.raises(ProxyRequestError, match="not running"):
         _validate_http_grant(base=c.root, universe_id="cc-alice", actor="alice",
                              grant_id="grant-alice")
-    with pytest.raises(ProxyRequestError, match="selected but not running"):
+    with pytest.raises(ProxyRequestError, match="not running"):
         _connection_incarnations(c.root, "alice", "cc-alice", [c.provider])
     assert source_display_name(base=c.root, universe_id="cc-alice", provider=c.provider) == ""
 

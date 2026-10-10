@@ -79,20 +79,33 @@ class TestCreationRecordsTheOwner:
 
         assert uo.owned_universes(base, A) == sorted([first, second])
 
-    def test_a_failed_create_takes_the_owner_back_with_the_grant(
-        self, base, signed_in, monkeypatch,
+    @pytest.mark.parametrize("published", [False, True])
+    def test_failed_create_retains_ownership_only_after_root_publication(
+        self, base, signed_in, monkeypatch, published,
     ):
+        from tinyassets import role_center_admission
+
         signed_in(A)
 
         def _boom(*_a, **_k):
             raise OSError("disk full")
 
-        monkeypatch.setattr(us, "_normalize_escaped_text", _boom)
-        out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
+        with monkeypatch.context() as fault:
+            if published:
+                fault.setattr(us, "_normalize_escaped_text", _boom)
+            else:
+                fault.setattr(role_center_admission, "admit_center", _boom)
+            out = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
 
         assert "error" in out, out
-        assert uo.owner_of(base, "u-doomed") is None
-        assert uo.owned_universes(base, A) == []
+        assert uo.owner_of(base, "u-doomed") == (A if published else None)
+        assert uo.owned_universes(base, A) == (["u-doomed"] if published else [])
+        assert (base / "u-doomed").exists() is published
+        if published:
+            inode = (base / "u-doomed").stat().st_ino
+            retried = json.loads(us._action_create_universe(universe_id="u-doomed", text="x"))
+            assert retried["status"] == "created"
+            assert (base / "u-doomed").stat().st_ino == inode
 
     def test_ownership_never_moves_and_the_grant_rolls_back_with_it(self, base):
         grant_universe_ownership(base, universe_id="u-x", owner_id=A)

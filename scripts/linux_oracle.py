@@ -58,6 +58,9 @@ mode refuses ``--shell``, ``--no-bwrap`` and ``--as-root`` (a shard must never
 fall back to a venue where the jail tests skip), and requires ``--out`` with a
 ``--junit`` under ``/out`` so the junit and the manifest the runner writes
 beside it reach the caller.
+The coordinator retains root only to run the fixed inode-identity proof files;
+ordinary tests still run as UID1001 after the jail probe. Both reports become
+one shard receipt before the gate evaluates it.
 """
 from __future__ import annotations
 
@@ -292,7 +295,7 @@ def _required_runner_command(args: argparse.Namespace) -> str:
         )
     if not any(a.startswith("--pytest-arg=--basetemp") for a in runner_args):
         runner_args.append(f"--pytest-arg=--basetemp={DEFAULT_BASETEMP}")
-    return shlex.join(["python", REQUIRED_RUNNER, *runner_args])
+    return shlex.join(["python", REQUIRED_RUNNER, "--oracle-venues", *runner_args])
 
 
 def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
@@ -310,7 +313,9 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         command = shlex.join(["python", "-m", "pytest", "-p", "no:cacheprovider", *pytest_args])
     excludes = " ".join(f"--exclude=./{name}" for name in COPY_EXCLUDES)
     # Named, so a lane can stop its own run by name; Docker is shared across lanes.
-    run = ["docker", "run", "--rm", "--name", f"ta-oracle-{os.getpid()}",
+    # Reap orphaned jail descendants during a full required shard. Without an
+    # init, runuser becomes PID 1 and hundreds of exited children accumulate.
+    run = ["docker", "run", "--init", "--rm", "--name", f"ta-oracle-{os.getpid()}",
            "-v", f"{_docker_path(root)}:/src:ro"]
     for pair in args.env:
         if "=" not in pair:
@@ -318,7 +323,17 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         run += ["-e", pair]
     if args.out:
         run += ["-v", f"{_docker_path(Path(args.out))}:/out"]
-    if args.as_root:
+    if getattr(args, "required_runner", False):
+        # Prepare/probe the normal identity first. Only the coordinator stays
+        # root; it drops every ordinary pytest run to UID1001 and merges the
+        # explicit real-inode proofs into the same required shard receipt.
+        script = _USER_SCRIPT.format(excludes=excludes, uid=ORACLE_UID).replace(
+            "exec runuser", "runuser")
+        script += '\ngit config --global --add safe.directory /work\nexec ' + command + '\n'
+        script = script.replace('\ngit config --global', '\ncd /work\ngit config --global')
+        user_script = JAIL_PROBE + _REPO_AND_RUN_SCRIPT.format(command="true")
+        run += ["-e", "ORACLE_USER_SCRIPT=" + user_script]
+    elif args.as_root:
         script = _RUN_SCRIPT.format(excludes=excludes, command=command)
     else:
         script = _USER_SCRIPT.format(excludes=excludes, uid=ORACLE_UID)

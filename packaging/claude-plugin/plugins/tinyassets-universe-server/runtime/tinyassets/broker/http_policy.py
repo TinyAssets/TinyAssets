@@ -124,7 +124,7 @@ def update_policy(data_root, *, principal, command_center, destination, expected
     validate(document)
     supervisor = get_supervisor(data_root)
     if supervisor is None:
-        raise ProxyRequestError("credential broker is selected but not running")
+        raise ProxyRequestError("the credential broker is not running")
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
                           verify_peer=supervisor.verify_broker, timeout=30)
