@@ -2153,11 +2153,11 @@ def collect_docker_cache(
         Item(
             "docker",
             "build-cache",
-            reclaimable,
+            0,  # Docker df cannot age-filter: do not promise the unfiltered byte total.
             "REMOVE",
             "docker_build_cache",
             f"builder prune {flag}={int(keep_gb * 1024**3)} "
-            f"until={min_age_hours:g}h (unused build cache only)",
+            f"until={min_age_hours:g}h (at most {human(reclaimable)} before age filtering)",
             prune_flag=flag,
             docker_age_hours=min_age_hours,
         )
@@ -2490,8 +2490,7 @@ def prune_docker(item: Item, *, keep_gb: float, docker: str = "docker") -> tuple
     )
     if proc.returncode != 0:
         return False, f"docker builder prune failed: {proc.stderr.strip()[:300]}"
-    tail = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
-    return True, tail[-1].strip() if tail else "pruned"
+    return True, proc.stdout.strip() or "pruned"
 
 
 def apply_removals(
@@ -2538,6 +2537,14 @@ def apply_removals(
                 ok, detail = False, str(exc)
             if ok:
                 item.detail = detail
+                if item.path == "build-cache":
+                    total = re.search(r"(?:Total reclaimed space:|Total:)\s*(.+)", detail)
+                    if total:
+                        item.size_bytes = parse_docker_size(total.group(1))
+                        if item.size_bytes == 0:
+                            item.verdict, item.reason = "KEEP", "nothing_reclaimed"
+                            lines.append(f"{stamp} KEPT docker build-cache {detail}")
+                            continue
         elif item.kind == "toolcache":
             ok, detail = clean_tool_cache(item)
         else:
@@ -2708,6 +2715,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--docker", action="store_true", help="run only Docker hygiene")
     parser.add_argument(
+        "--defer-notices",
+        action="store_true",
+        help="unattended scheduler: leave the one-time Docker disk notice for the next session",
+    )
+    parser.add_argument(
         "--apply", action="store_true", help="remove the REMOVE set (default: dry-run)"
     )
     parser.add_argument("--dry-run", action="store_true", help="explicit dry-run (the default)")
@@ -2802,7 +2814,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verbose", action="store_true", help="also print every KEEP with its reason"
     )
-    parser.add_argument("--quiet", action="store_true", help="print only escalations")
+    parser.add_argument(
+        "--quiet", action="store_true", help="print only escalations and actionable notices"
+    )
     return parser
 
 
@@ -2884,7 +2898,7 @@ def main(argv: list[str] | None = None) -> int:
         report.applied = True
         report.free_after_gb = free_gb(repo)
 
-    if "docker" in classes and os.name == "nt":
+    if "docker" in classes and os.name == "nt" and not args.defer_notices:
         report.notes.extend(docker_desktop_notice(repo))
 
     escalating = args.escalate_below is not None and report.free_after_gb < args.escalate_below

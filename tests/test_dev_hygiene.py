@@ -2527,3 +2527,15 @@ def test_docker_endpoint_is_pinned_across_context_changes(monkeypatch):
     )
     dh.run(["docker", "image", "ls"])
     assert calls == [["docker", "--host", "unix:///var/run/docker.sock", "image", "ls"]]
+
+
+def test_docker_zero_reclaim_is_not_reported_as_removed(monkeypatch):
+    item = dh.Item("docker", "build-cache", 0, "REMOVE", "docker_build_cache")
+    report = dh.Report(items=[item])
+    monkeypatch.setattr(dh, "local_docker", lambda: None)
+    monkeypatch.setattr(dh, "prune_docker", lambda *a, **kw: (True, "Total: 0B"))
+    lines = dh.apply_removals(report, _REPO, keep_gb=8, log_path=None)
+    assert not item.removable
+    assert item.reason == "nothing_reclaimed"
+    assert report.reclaimable_bytes == 0
+    assert "KEPT docker build-cache" in lines[0]

@@ -85,6 +85,8 @@ $argumentList = @(
     '--log', "`"$log`""
     '--summary-out', "`"$summary`""
     '--quiet'
+    # Task Scheduler discards stdout; do not consume the founder's one-time notice.
+    '--defer-notices'
 ) -join ' '
 
 Write-Host "task      : $TaskName"
