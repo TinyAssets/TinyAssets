@@ -26,6 +26,21 @@ class TestUniverseServerMetadata:
             assert tool.annotations is not None, tool.name
             assert tool.description, tool.name
 
+    def test_multiplexed_write_handles_disclose_aggregate_risk(self):
+        tools = {tool.name: tool for tool in _list_tools()}
+        for name in ("write_graph", "write_page", "run_graph", "converse"):
+            hints = tools[name].annotations
+            assert hints.readOnlyHint is False, name
+            assert hints.destructiveHint is True, name
+            assert hints.idempotentHint is False, name
+            assert hints.openWorldHint is True, name
+        for name in ("read_graph", "read_page", "get_status"):
+            assert tools[name].annotations.readOnlyHint is True, name
+        assert "delete" in tools["write_graph"].description
+        assert "shared with other users" in tools["write_page"].description
+        assert "external services" in tools["converse"].description
+        assert "side effects" in tools["run_graph"].description
+
     def test_prompt_metadata_is_present(self):
         prompts = {prompt.name: prompt for prompt in _list_prompts()}
 
