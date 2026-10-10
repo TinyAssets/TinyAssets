@@ -1088,6 +1088,39 @@ print(sum(1 for _ in Path('/data').rglob('*')) + 1)
 """
 
 
+def _soul_inventory(args):
+    """Hash history in the stopped clone; never expose content in reports."""
+    if not args.command_center:
+        return None
+    program = '''
+import hashlib, json, sqlite3, stat
+from pathlib import Path
+root = Path('/data') / CENTER / 'soul_versions'
+with sqlite3.connect('file:/data/.broker/state/owner-identities.db?mode=ro', uri=True) as db:
+    row = db.execute('SELECT machine FROM center_admissions WHERE center=? AND event=?',
+                     (CENTER, 'admit')).fetchone()
+    assert row is not None, 'history center has no recorded admission'
+    machine = row[0]
+result = {}
+if root.exists():
+    for path in [root, *sorted(root.rglob('*'))]:
+        info = path.lstat()
+        assert not stat.S_ISLNK(info.st_mode), 'history link refused'
+        assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+        assert stat.S_ISDIR(info.st_mode) or info.st_nlink == 1
+        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        result[path.relative_to(root).as_posix()] = [info.st_uid, info.st_gid, digest]
+print(json.dumps(dict(owner=machine, entries=result), sort_keys=True))
+'''
+    command = _posture(f'{args.prefix}-fixture', args.image, args.volume, user='0',
+        caps=MIGRATION_CAPS, entrypoint='/opt/venv/bin/python',
+        extra=['--rm', '--network', 'none'])
+    result = subprocess.run(command + ['-I', '-B', '-c',
+        f'CENTER = {args.command_center!r}\n' + program],
+        capture_output=True, text=True, encoding='utf-8', check=True)
+    return json.loads(result.stdout)
+
+
 def stage_migrate(args):
     """The runbook's step 4, on a fresh production-shaped layout-2 volume."""
     repo = Path(__file__).resolve().parents[1]
@@ -1133,6 +1166,36 @@ def stage_migrate(args):
         return subprocess.run(run + ["-I", "-B", "/usr/local/libexec/ta-migrate.py", *flags],
                               capture_output=True, text=True, encoding="utf-8")
 
+    history_before = _soul_inventory(args)
+    if args.reproduce_daemon_soul_history:
+        # This fresh disposable restore has no running writers. Reproduce the
+        # former writer's labels without changing any production history bytes.
+        # _soul_inventory already rejects links and special files throughout.
+        expect(bool(history_before and history_before['entries']),
+               'recovery replay requires existing soul history in the backup')
+        program = '''
+import os
+from pathlib import Path
+root = Path('/data') / CENTER / 'soul_versions'
+for relative in ENTRIES:
+    fd = os.open(root / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        os.fchown(fd, 1001, 1001)
+    finally:
+        os.close(fd)
+'''
+        replay = subprocess.run(build + [
+            '-I', '-B', '-c', f'CENTER = {args.command_center!r}\n'
+            f'ENTRIES = {list(history_before["entries"])!r}\n' + program],
+            capture_output=True, text=True, encoding='utf-8')
+        expect(replay.returncode == 0, 'replayed daemon history custody on disposable restore')
+        replayed = _soul_inventory(args)
+        expect({key: value[2] for key, value in history_before['entries'].items()} ==
+               {key: value[2] for key, value in replayed['entries'].items()},
+               'damage replay preserved every history path and byte digest')
+        expect(all(value[:2] == [1001, 1001] for value in replayed['entries'].values()),
+               'damage replay reproduced daemon custody')
+        history_before = replayed
     before = migrate("--check")
     expect(before.returncode == 1 and (args.backup_archive or
                                      "reserve identity: alice" in before.stdout),
@@ -1143,6 +1206,27 @@ def stage_migrate(args):
     after = migrate("--check")
     expect(after.returncode == 0 and after.stdout == "",
            f"--check after the apply: 0 diffs{after.stdout[-2000:]}{after.stderr[-2000:]}")
+    history_after = _soul_inventory(args)
+    history_proof = None
+    if history_before and history_before['entries']:
+        old_entries, new_entries = history_before['entries'], history_after['entries']
+        expect(history_before['owner'] == history_after['owner'],
+               'soul history: recorded owner identity preserved')
+        expect({key: value[2] for key, value in old_entries.items()} ==
+               {key: value[2] for key, value in new_entries.items()},
+               'soul history: every path and byte digest preserved')
+        owner_ids = {tuple(value[:2]) for value in new_entries.values()}
+        expect(owner_ids == {(history_after['owner'], history_after['owner'])},
+               'soul history: all files and directories match the recorded owner')
+        repeated = migrate('--snapshot', args.prefix + '-snapshot', '--snapshot-bytes', '1')
+        expect(repeated.returncode == 0 and json.loads(repeated.stdout)['changed'] == 0,
+               'soul history repair: repeated migration changes zero entries')
+        expect(_soul_inventory(args) == history_after, 'soul history repair is idempotent')
+        history_proof = dict(entries=len(old_entries),
+            reproduced_daemon_custody=args.reproduce_daemon_soul_history,
+            daemon_owned_before=sum(value[:2] == [1001, 1001]
+                                    for value in old_entries.values()),
+            owner=list(owner_ids)[0], paths_and_hashes=new_entries)
     if args.backup_archive:
         # Only the isolated clone's cloud-instance provenance is changed. Never
         # use production credentials for turns; its network is internal below.
@@ -1157,7 +1241,8 @@ def stage_migrate(args):
             capture_output=True, text=True)
         expect(configured.returncode == 0, 'clone-only metadata identity configured')
     return {"inventory": inventory, "apply": applied.stdout.strip(),
-            "check_before_diffs": len(before.stdout.splitlines())}
+            "check_before_diffs": len(before.stdout.splitlines()),
+            "soul_history_recovery": history_proof}
 
 
 #: Read every /proc identity in ONE exec, so the runbook's three roles are
@@ -1393,8 +1478,26 @@ def stage_runs(args):
     return stage_chat(args, runs_only=True)
 
 
+def stage_writers(args):
+    """Actual daemon requests/periodic bodies, followed by owner custody checks."""
+    _metadata(args, start=True)
+    program = Path(__file__).with_name('role_writer_probe.py').read_text(encoding='utf-8')
+    command = _posture(f'{args.prefix}-writers', args.image, args.volume,
+        user=COMPOSE_USER, caps=COMPOSE_CAPS, entrypoint='/opt/venv/bin/python',
+        extra=['--rm', '-i', '--network', args.network])
+    result = subprocess.run(command + ['-I', '-B', '-'], input=program,
+        text=True, encoding='utf-8', capture_output=True, timeout=600)
+    for line in result.stdout.splitlines():
+        if line.startswith('OWNER WRITER PASS '):
+            print(line, flush=True)
+        if line.startswith('OWNER WRITERS PASS ') and result.returncode == 0:
+            return json.loads(line.removeprefix('OWNER WRITERS PASS '))
+    raise RuntimeError('owner writer guard failed: ' + result.stderr[-4000:])
+
+
 STAGES = {"migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
-          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs}
+          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs,
+          "writers": stage_writers}
 
 
 def main(argv=None):
@@ -1404,6 +1507,9 @@ def main(argv=None):
     parser.add_argument('--backup-archive', help='restore this full backup instead of the fixture; '
                         'chat acceptance uses only a local streaming endpoint')
     parser.add_argument('--command-center', help='production command center for chat acceptance')
+    parser.add_argument('--reproduce-daemon-soul-history', action='store_true',
+                        help='replay daemon history ownership on the fresh disposable restore '
+                             'before testing migration; preserve all history bytes')
     parser.add_argument("--prefix", default="role-image-oracle",
                         help="name prefix for this run's volume and containers")
     parser.add_argument("--volume", help="data volume name (default <prefix>-data)")
@@ -1421,6 +1527,11 @@ def main(argv=None):
     args.volume = args.volume or f"{args.prefix}-data"
     args.network = args.network or f"{args.prefix}-net"
     args.legs = tuple(name for name in args.legs.split(",") if name)
+    if args.reproduce_daemon_soul_history and (
+            not args.backup_archive or not args.command_center
+            or 'migrate' not in args.stages.split(',')):
+        parser.error('history damage replay requires migrate, --backup-archive '
+                     'and --command-center')
     if ({'chat', 'runs'} & set(args.stages.split(','))
             and (not args.backup_archive or not args.command_center)):
         parser.error('chat acceptance requires --backup-archive and --command-center')
@@ -1448,7 +1559,7 @@ def main(argv=None):
             print(f"\n=== {name} ===", flush=True)
             report[name] = STAGES[name](args)
     finally:
-        for suffix in ("serve", "cells", "fixture", "migrate", "chat"):
+        for suffix in ("serve", "cells", "fixture", "migrate", "chat", "writers"):
             docker("rm", "-f", f"{args.prefix}-{suffix}", check=False)
         _metadata(args, start=False)
         if not args.keep:
