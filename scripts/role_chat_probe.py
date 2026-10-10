@@ -9,6 +9,24 @@ owner; HTTP request-authority middleware is real, external OAuth verification is
 """
 
 
+def advertised_tools(request):
+    """Classic and Responses-lite envelopes, including nested namespaces."""
+    roots = list(request.get('tools', []))
+    for item in request.get('input', []):
+        if isinstance(item, dict) and item.get('type') == 'additional_tools':
+            roots.extend(item['tools'])
+
+    def names(items, prefix=''):
+        for item in items:
+            name = prefix + item['name']
+            if item.get('type') == 'namespace':
+                yield from names(item['tools'], '' if name == 'functions' else name + '.')
+            else:
+                yield name
+
+    return list(names(roots))
+
+
 def main():
     import http.server
     import json
@@ -26,13 +44,39 @@ def main():
     owner = next(owner for owner, name in bindings if name == center)
     os.environ["UNIVERSE_SERVER_DEV_USER"] = owner
     requests, launches = [], []
-    answer = "ORACLE streamed response"
+    answer = "ORACLE real read write edit bash succeeded"
+    active = {}
+    from tinyassets import role_tools
+
+    real_run = role_tools.run
+
+    def observe_run(*args, **kwargs):
+        try:
+            result = real_run(*args, **kwargs)
+        except Exception as exc:
+            from tinyassets.cell_diagnostics import failure_reason
+
+            print('ORACLE FAILURE ' + failure_reason(exc, 'decoder'), flush=True)
+            raise
+        active['runs'].append(result)
+        return result
+
+    role_tools.run = observe_run
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
         def do_POST(self):
+            try:
+                self.respond()
+            except Exception as exc:
+                from tinyassets.cell_diagnostics import failure_reason
+
+                print('ORACLE FAILURE ' + failure_reason(exc, 'decoder'), flush=True)
+                os._exit(2)  # Stop this disposable container; never retry a false proof.
+
+        def respond(self):
             assert (
                 self.headers.get("x-api-key") == "sk-oracle-local-only"
                 or self.headers.get("Authorization") == "Bearer sk-oracle-local-only"
@@ -41,11 +85,66 @@ def main():
             assert size <= 16 * 1024 * 1024
             body = json.loads(self.rfile.read(size))
             requests.append((self.path, body))
+            claude = '/messages' in self.path
+            step = active['step']
+            offered = advertised_tools(body)
+            # The CLI also sends side requests (no tools, no oracle history);
+            # only the conversation advances the scripted tool sequence.
+            conversation = (f'oracle_{step - 1}' in json.dumps(body) if step
+                            else any(name.split('__')[-1] == 'write' for name in offered))
+            if not conversation:
+                active['side'] = active.get('side', 0) + 1
+            if step and conversation:
+                call_id = f'oracle_{step - 1}'
+
+                def outputs(value):
+                    if isinstance(value, dict):
+                        if (value.get('tool_use_id') == call_id
+                                or value.get('call_id') == call_id):
+                            if value.get('type') in ('tool_result', 'function_call_output'):
+                                yield value
+                        for item in value.values():
+                            yield from outputs(item)
+                    elif isinstance(value, list):
+                        for item in value:
+                            yield from outputs(item)
+
+                returned = list(outputs(body))
+                assert returned, 'oracle tool result missing'
+                # edit reads then rewrites the file: two real jail runs.
+                runs = active['runs'][active['mark']:]
+                assert len(runs) == (2 if step == 3 else 1), 'oracle real tool execution missing'
+                assert all(run.exit_code == 0 and run.killed is None for run in runs), (
+                    'oracle tool execution failed')
+                run = runs[-1]
+                assert not any(item.get('is_error') for item in returned), 'oracle tool error'
+                if step in (2, 4):
+                    expected = active['before'] if step == 2 else active['after']
+                    assert expected.encode() in run.output, 'oracle tool content mismatch'
+                    assert expected in json.dumps(returned), 'oracle MCP result content mismatch'
+            calls = [
+                ('write', dict(path=active['path'], content=active['before'])),
+                ('read', dict(path=active['path'])),
+                ('edit', dict(path=active['path'], old_text=active['before'],
+                              new_text=active['after'])),
+                ('bash', dict(command='cat ' + active['path']
+                    + '; test ! -e /data && test ! -e /app && test ! -e /snapshot'
+                    + ' && test "$(id -u)" -ne 0')),
+            ]
+            tool = None
+            if conversation and step < len(calls):
+                name, arguments = calls[step]
+                candidates = [item for item in offered if item.split('__')[-1] == name]
+                assert len(candidates) == 1, 'oracle expected one advertised platform tool'
+                tool = dict(name=candidates[0], arguments=arguments,
+                            id=f'oracle_{step}')
+                active['step'] += 1
+                active['mark'] = len(active['runs'])
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
             self.end_headers()
-            if "/messages" in self.path:
+            if claude:
                 events = [
                     (
                         "message_start",
@@ -90,6 +189,14 @@ def main():
                     ),
                     ("message_stop", dict(type="message_stop")),
                 ]
+                if tool:
+                    events[1] = ('content_block_start', dict(type='content_block_start', index=0,
+                        content_block=dict(type='tool_use', id=tool['id'],
+                                           name=tool['name'], input={})))
+                    events[2] = ('content_block_delta', dict(type='content_block_delta', index=0,
+                        delta=dict(type='input_json_delta',
+                                   partial_json=json.dumps(tool['arguments']))))
+                    events[4][1]['delta']['stop_reason'] = 'tool_use'
             else:
                 message = dict(
                     id="msg_oracle",
@@ -138,6 +245,21 @@ def main():
                     ),
                     ("response.completed", dict(type="response.completed", response=response)),
                 ]
+                if tool:
+                    item = dict(type='function_call', id='fc_' + tool['id'],
+                        call_id=tool['id'], name=tool['name'],
+                        arguments=json.dumps(tool['arguments']), status='completed')
+                    response['output'] = [item]
+                    events = [events[0],
+                        ('response.output_item.added', dict(type='response.output_item.added',
+                            output_index=0,
+                            item={**item, 'arguments': '', 'status': 'in_progress'})),
+                        ('response.function_call_arguments.delta',
+                            dict(type='response.function_call_arguments.delta',
+                                 item_id=item['id'], output_index=0, delta=item['arguments'])),
+                        ('response.output_item.done', dict(type='response.output_item.done',
+                                                          output_index=0, item=item)),
+                        ('response.completed', dict(type='response.completed', response=response))]
             try:
                 for event, payload in events:
                     time.sleep(0.15)
@@ -208,6 +330,8 @@ def main():
         launches.append(
             dict(
                 executable=Path(argv[0]).name,
+                command=next((part for part in argv
+                              if part in ('exec', 'app-server', 'debug')), ''),
                 argc=len(argv),
                 config_bytes=len(result),
                 system_bytes=len(system.encode()),
@@ -243,8 +367,15 @@ def main():
         results = {}
         async with Client("http://127.0.0.1:8001/mcp", auth="oracle-local", timeout=180) as client:
             for provider in ("claude-code", "codex"):
+                import secrets
+
+                nonce = secrets.token_hex(12)
+                active.clear()
+                active.update(step=0, runs=[], path=f'/u/oracle-{nonce}.txt',
+                              before='before-' + nonce, after='after-' + nonce)
                 before = len(requests)
-                arguments = {"message": "Say hello.", "graph_id": center}
+                arguments = {"message": "Use write, read, edit and bash in /u; report success.",
+                             "graph_id": center}
                 if provider == "codex":
                     arguments["model_choice"] = {
                         "version": 2,
@@ -255,16 +386,26 @@ def main():
                     }
                 result = await client.call_tool("converse", arguments)
                 document = result.data
-                assert document.get("reply") == answer, document
-                assert document["execution"]["provider"] == provider, document
+                assert document.get("reply") == answer, 'oracle reply mismatch'
+                assert document["execution"]["provider"] == provider, 'oracle provider mismatch'
+                assert active['step'] == 4 and len(active['runs']) == 5, 'oracle tools incomplete'
                 assert len(requests) > before, "reply did not reach the local streaming endpoint"
-                results[provider] = dict(reply=document["reply"], requests=len(requests) - before)
+                results[provider] = dict(reply=document["reply"], requests=len(requests) - before,
+                    tools=['write', 'read', 'edit', 'bash'],
+                    side_requests=active.get('side', 0),
+                    exit_codes=[run.exit_code for run in active['runs']])
         print(
             "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results, launches=launches)),
             flush=True,
         )
 
-    asyncio.run(chat())
+    try:
+        asyncio.run(chat())
+    except Exception as exc:
+        from tinyassets.cell_diagnostics import failure_reason
+
+        print('ORACLE FAILURE ' + failure_reason(exc, 'decoder'), flush=True)
+        raise
 
 
 if __name__ == "__main__":
