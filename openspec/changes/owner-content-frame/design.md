@@ -17,3 +17,9 @@ Recovery is limited to 10,000 entries per category parent. A nonempty daemon dir
 ## Verification and rollback
 
 Restore the newest backup into a disposable volume; exercise direct bytes, directory-only publication and a pending owner-owned brain before real tool calls. Compare baseline and fixed images, run affected Linux suites and repo gates, then one Claude review. Revert the code commit to roll back; no data migration.
+
+## Verification outcome
+
+Fresh 2026-10-10T21-45-21Z backup: baseline wiki creation leaves a daemon category, then echo ok fails with invalid owner content frame. Direct content bytes/directories pass. The fixed serving/chat image passes the recreated wiki trigger, empty-category recovery, pending-brain promotion, direct publication, Claude/Codex/sub-agent tools and cross-owner refusal. Linux: 403 affected tests and 188 follow-up diagnostics/provider/browser tests passed; structural guards: 588 passed; ruff, plugin build and hygiene passed. PR #4599 is non-draft with infra-change. Production was read only.
+
+Cross-family Claude review: APPROVE. AGREE: descriptor-pinned parents, atomic empty rmdir and no-replace publication preserve user bytes and owner isolation. AGREE with nonblocking scope notes: existing debris heals on the next tool preparation; other nonempty or misplaced daemon directories remain refused; cell failure logging is retained even where an existing caller treats OwnerLaunchRefused as retryable. No receipt was issued, as requested.

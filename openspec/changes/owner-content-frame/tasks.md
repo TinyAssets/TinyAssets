@@ -7,4 +7,4 @@
 ## 2. Verify and deliver
 
 - [x] 2.1 Run affected Linux suites, ruff, structural guards, plugin build and hygiene gate.
-- [ ] 2.2 Sync spec, commit, push and open an infra-change PR; resolve one cross-family floor review.
+- [x] 2.2 Sync spec, commit, push and open an infra-change PR; resolve one cross-family floor review.
