@@ -32,7 +32,8 @@ App (web, Android, iOS, desktop)      Any MCP client (Claude, ChatGPT, ...)
           provider children jailed to their owner's command center
 ```
 
-`https://tinyassets.io/mcp` is the only public endpoint (`AGENTS.md` fact 11).
+`https://tinyassets.io/mcp` is the only public MCP endpoint (`AGENTS.md` fact 11).
+Programmatic agents use [REST v1](api/rest-v1.md) at `https://tinyassets.io/api/v1`.
 Production is one container image (`Dockerfile`) run by `deploy/compose.yml`
 beside `cloudflared` and a log shipper.
 
@@ -53,7 +54,8 @@ beside `cloudflared` and a log shipper.
 
 | Path | Owns |
 |---|---|
-| `tinyassets/api/` | MCP actions, one module per cluster (runs, branches, wiki, status, connections, market, ...). |
+| `tinyassets/api/` | Shared actions, one module per cluster (runs, branches, wiki, status, connections, market, ...). |
+| `tinyassets/rest_api.py`, `tinyassets/api_keys.py` | REST v1 adapter over the MCP handles; hashed, scoped keys in the protected outside-authority store. |
 | `tinyassets/onboarding/` | The app served at `/app`: sign-in, model connect, chat, requests, notifications. |
 | `tinyassets/owner_door/` | The app's complete reads of its owner's data (ADR-011). |
 | `WebSite/site-react/` | The public site (Next.js static export). |

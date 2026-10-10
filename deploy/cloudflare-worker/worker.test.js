@@ -28,6 +28,28 @@ import worker, {
 
 // ------- fetch stub harness ------------------------------------------------
 
+describe('REST v1 routing', () => {
+    it('only forwards the versioned API subtree', () => {
+        for (const path of ['/api/v1/openapi.json', '/api/v1/command-centers',
+            '/api/v1/command-centers/home/agents/main/messages']) {
+            assert.equal(shouldProxy(path), true);
+        }
+        for (const path of ['/api', '/api/v1', '/api/v10/keys', '/api/v2/keys', '/api/private']) {
+            assert.equal(shouldProxy(path), false);
+        }
+    });
+    it('forwards API key authorization and never sets a cookie on REST', async () => {
+        nextUpstreamResponse = new Response('{}', {headers: {
+            'Content-Type': 'application/json',
+            'Set-Cookie': '__Host-ta-owner=no; Secure; HttpOnly; Path=/; SameSite=Lax',
+        }});
+        const response = await worker.fetch(new Request('https://tinyassets.io/api/v1/command-centers',
+            {headers: {Authorization: 'Bearer ta_key_test'}}), {});
+        assert.equal(lastUpstreamRequest.headers.get('Authorization'), 'Bearer ta_key_test');
+        assert.equal(response.headers.get('Set-Cookie'), null);
+    });
+});
+
 let originalFetch;
 let lastUpstreamRequest;
 let nextUpstreamResponse;

@@ -42,6 +42,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/approval_scopes.py",
     "tinyassets/auth/provider.py",
     "tinyassets/outside_authority.py",
+    "tinyassets/api_keys.py",  # Same platform authority DB; atomic key generations and counters.
     "tinyassets/extension_state.py",
     "tinyassets/extension_hooks.py",
     "tinyassets/authoring/store.py",

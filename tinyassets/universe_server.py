@@ -4040,6 +4040,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.ingress import AppIngressMiddleware
 
     app = AuthContextMiddleware(AppIngressMiddleware(_MCPDiscoveryMiddleware(app), ingress))
+    from tinyassets.rest_api import RestMiddleware
+
+    app = RestMiddleware(app)
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no
