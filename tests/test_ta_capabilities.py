@@ -234,7 +234,8 @@ def test_connection_uses_initiating_agents_rules_and_broker(
         catalog = invoke(backend(root), op="catalog")
         assert "D6-SYNTHETIC-SECRET" not in json.dumps(catalog)
         assert "credential_ref" not in json.dumps(catalog)
-        assert catalog["capabilities"][0]["name"] == "connection:conn-http:POST"
+        assert [item['name'] for item in catalog['capabilities']] == [
+            'browser', 'connection:conn-http:POST']
         assert catalog["extension_roots"]["agent"] == "/u/agents/worker/extensions"
     finally:
         loop.stop()
@@ -267,7 +268,7 @@ def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch
 def test_cross_user_and_context_spoofing_fail_closed(tmp_path):
     _, root, _ = _setup(tmp_path)
     foreign = backend(root, owner="user-2")
-    assert invoke(foreign, op="catalog")["capabilities"] == []
+    assert [item['name'] for item in invoke(foreign, op='catalog')['capabilities']] == ['browser']
     assert call(foreign) == {"error": "unknown capability"}
     service = backend(root)
     assert invoke(service, op="catalog", owner="user-1")["error"] == "invalid ta request"
@@ -463,7 +464,7 @@ def test_unrestricted_launch_keeps_every_served_capability_and_connections(
                                      platform_call("write_graph"), platform_call("run_graph"))
     assert [item["name"] for item in catalog["capabilities"]] == [
         t for t in BACKEND_ENGINE_CAPABILITIES if t not in FILE_TOOLS
-    ] + ["connection:conn-http:POST"]
+    ] + ["browser", "connection:conn-http:POST"]
     assert wrote == {"result": {"called": "write_graph"}}
     assert ran == {"result": {"called": "run_graph"}} and calls == ["write_graph", "run_graph"]
 
@@ -502,7 +503,7 @@ def test_grant_holding_build_and_run_reaches_connections_as_before(tmp_path, mon
     signed_launch(monkeypatch, ["write_graph", "run_graph", "bash"])
     (catalog,) = through_ta(grant_engine(monkeypatch, root, []), CATALOG)
     assert [item["name"] for item in catalog["capabilities"]] == [
-        "run_graph", "write_graph", "connection:conn-http:POST"]
+        "run_graph", "write_graph", "browser", "connection:conn-http:POST"]
 
 
 def test_unsigned_forged_or_foreign_grant_never_widens(tmp_path, monkeypatch):

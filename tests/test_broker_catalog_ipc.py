@@ -30,7 +30,7 @@ def test_catalog_real_ipc_pages_and_consumer_redact_authority(discovery):
     backend = Capabilities(discovery.root / "cc-alice", ExecutionContext(
         universe="cc-alice", owner="alice", initiating_agent="main"), [], None, lambda: None)
     result = asyncio.run(backend.dispatch({"op": "catalog"}))
-    assert [row["name"] for row in result["capabilities"]] == ["connection:conn-a:GET"]
+    assert [row["name"] for row in result["capabilities"]] == ["browser", "connection:conn-a:GET"]
     assert "credential_ref" not in json.dumps(result)
     assert "vault://" not in json.dumps(result)
     assert not (discovery.root / "outbound.db").exists()

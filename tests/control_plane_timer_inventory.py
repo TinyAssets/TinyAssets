@@ -37,6 +37,8 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    'tinyassets/browser_sessions.py::owner_action [Timer]': (
+        CALL_SCOPED, 'One protected login capture expires and destroys its owner browser cell.'),
     "tinyassets/role_preview_cell.py::supervised": (
         CALL_SCOPED, "one preview cell waits for its browser until the call deadline",
     ),

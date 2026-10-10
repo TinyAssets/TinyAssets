@@ -796,6 +796,10 @@
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Website sessions</h3>
+        <button id="btn-refresh-browser-sessions" class="btn btn--ghost" type="button">Refresh website sessions</button>
+        <div id="browser-session-list"></div>
+        <div id="browser-session-status" class="notice" role="status"></div>
         <h3>Your agent</h3>
         <p id="profile-name"></p>
         <p id="profile-responsibility"></p>
@@ -7640,7 +7644,7 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadSoul(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadBrowserSessions(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadSoul(); }
     async function loadProfile(){
       const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
       const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
@@ -7995,11 +7999,41 @@
         if(!response.ok||doc.error||!Array.isArray(doc.connections))throw new Error("unavailable");
         status.textContent=doc.connections.length?"":"No HTTP connections are saved for this command center.";
         for(const row of doc.connections) list.append(connectionRow(doc.universe_id,row,generation));
+
       }catch(_e){
         if(!live())return;
         status.textContent="Could not load your connections. Sign in again if your session expired, then refresh.";
       }
       finally{ releaseConnections(ticket); if(live()) $("btn-refresh-connections").disabled=false; }
+    }
+    $('btn-refresh-browser-sessions').onclick=loadBrowserSessions;
+    async function loadBrowserSessions(){
+      const home=queueScope, epoch=MCP._loginEpoch, generation=viewGeneration;
+      const list=$('browser-session-list'),status=$('browser-session-status');
+      const live=()=>home===queueScope&&epoch===MCP._loginEpoch&&generation===viewGeneration;
+      list.replaceChildren();status.textContent='Checking website sessions?';
+      try{
+        const browserResponse=await fetch('/app/browser-login',{method:'POST',credentials:'same-origin',
+          headers:{...authHeaders(),'Content-Type':'application/json'},
+          body:JSON.stringify({action:'list',universe_id:home})});
+        const browsers=await browserResponse.json();if(!live())return;
+        if(!browserResponse.ok)throw new Error('Protected browser sessions unavailable');
+        for(const row of browsers.items){
+          const item=document.createElement('div'),label=document.createElement('p');
+          label.textContent=new URL(row.url).origin+' · '+(row.account||'Default account')+' · '+row.status;
+          const detail=document.createElement('p');detail.textContent='Website session remembered; password not stored by TinyAssets.';
+          const revoke=document.createElement('button');revoke.className='btn';revoke.type='button';
+          revoke.textContent='Revoke and clear session';revoke.onclick=async()=>{
+            if(!live())return;revoke.disabled=true;
+            try{const result=await fetch('/app/browser-login',{method:'POST',credentials:'same-origin',
+              headers:{...authHeaders(),'Content-Type':'application/json'},
+              body:JSON.stringify({action:'revoke',id:row.id,universe_id:home})});
+              if(!live())return;if(!result.ok)throw new Error('Could not clear the session.');item.remove();
+            }catch(error){if(live()){detail.textContent=error.message;revoke.disabled=false;}}
+          };item.append(label,detail,revoke);list.appendChild(item);
+        }
+        status.textContent=browsers.items.length?'':'No remembered website sessions.';
+      }catch(_error){if(live())status.textContent='Sign in to the protected view, then refresh website sessions.';}
     }
     // One row: the connection, the control that reveals what disconnecting it
     // would do, and the confirmation itself.
@@ -9270,6 +9304,100 @@
       window.location.href=this.returnUrl;
     }
   };
+  const BrowserLogin = {
+    build(req){
+      const box=document.createElement('div'), note=document.createElement('p');
+      const image=document.createElement('img'), typing=document.createElement('textarea');
+      const credential=document.createElement('input'), fill=document.createElement('button');
+      credential.type='password';credential.autocomplete='off';credential.hidden=true;
+      credential.setAttribute('aria-label','Private input for the displayed website');
+      fill.type='button';fill.className='btn';fill.hidden=true;
+      image.alt='Live website sign-in';image.tabIndex=0;
+      image.style.cssText='display:none;width:100%;touch-action:none;border:1px solid var(--line)';
+      typing.setAttribute('aria-label','Type into the website');typing.autocomplete='off';
+      typing.placeholder='Type here to enter text into the website';typing.hidden=true;
+      const controls=document.createElement('div');
+      const signIn=document.createElement('a');signIn.href='/app/owner-sign-in';
+      signIn.target='_blank';signIn.rel='noopener';signIn.textContent='Sign in to the protected view';
+      signIn.hidden=true;
+      box.append(note,image,credential,fill,typing,controls,signIn);
+      const id=req.action.connection_id, epoch=MCP._loginEpoch, home=queueScope;
+      let active=false, busy=false, chain=Promise.resolve(), boundField=null, currentOrigin='';
+      const post=async(action,extra={})=>{
+        if(epoch!==MCP._loginEpoch||home!==queueScope)throw new Error('Account changed.');
+        const response=await fetch('/app/browser-login',{method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+token()},
+          body:JSON.stringify({universe_id:home,id,action,request_id:req.request_id,...extra})});
+        const value=await response.json();
+        if(epoch!==MCP._loginEpoch)throw new Error('Account changed.');
+        if(!response.ok||value.error){signIn.hidden=value.error!=='interactive_approval_required';
+          throw new Error(value.error||'Browser connection failed.');}
+        return value;
+      };
+      const fail=error=>{note.textContent=error.message;};
+      const clear=()=>{active=false;boundField=null;credential.value='';credential.hidden=true;
+        fill.hidden=true;typing.hidden=true;image.removeAttribute('src');image.style.display='none';};
+      const frame=async()=>{
+        if(!active||!box.isConnected)return;
+        if(!$('request-rail').open){active=false;post('cancel').catch(fail);return;}
+        try{await chain;const value=await post('frame');
+          if(value.status==='connected'){clear();note.textContent='Session remembered. Password not stored by TinyAssets.';
+            ApprovalHandoff.completed({request_id:req.request_id});refreshRail();return;}
+          if(value.blocked){clear();note.textContent='This website blocked the browser. Your task is still waiting.';return;}
+          if(value.navigating){boundField=null;credential.value='';credential.hidden=true;fill.hidden=true;
+            if(active)setTimeout(frame,350);return;}
+          if(value.needs_login){note.textContent='Finish any verification on the website.';
+            if(active)setTimeout(frame,350);return;}
+          currentOrigin=value.origin;
+          if(boundField?.token!==value.field?.token)credential.value='';
+          boundField=value.field;
+          credential.hidden=!boundField||boundField.type!=='password';fill.hidden=credential.hidden;
+          fill.textContent='Fill on '+(boundField?.origin||currentOrigin);
+          image.src='data:image/jpeg;base64,'+value.image;
+          note.textContent=value.origin+' · '+(value.account||'Default account')+
+            ' — sign in normally. Your agent cannot watch this view.';
+        }catch(error){active=false;fail(error);}
+        if(active)setTimeout(frame,350);
+      };
+      const button=(label,action)=>{const b=document.createElement('button');b.type='button';
+        b.className='btn';b.textContent=label;b.onclick=async()=>{
+          if(busy)return;busy=true;b.disabled=true;
+          try{await action();}catch(error){fail(error);}finally{busy=false;b.disabled=false;}
+        };controls.appendChild(b);return b;};
+      const start=async()=>{if(active)return;busy=true;
+        try{const value=await post('begin');if(value.blocked){note.textContent='This website blocked the browser.';return;}
+          active=true;image.style.display='block';typing.hidden=false;frame();}
+        catch(error){fail(error);}finally{busy=false;}};
+      box.browserStart=start;
+      button('Retry sign-in',start);
+      button('Cancel',async()=>{active=false;await post('cancel');image.removeAttribute('src');
+        image.style.display='none';typing.hidden=true;note.textContent='Cancelled. Tap Connect to try again.';});
+      button('Disconnect',async()=>{active=false;await post('revoke');image.removeAttribute('src');
+        image.style.display='none';typing.hidden=true;note.textContent='Disconnected.';});
+      const input=event=>{if(active){event.origin=currentOrigin;
+        chain=chain.then(()=>post('input',{event})).catch(fail);}};
+      fill.onclick=()=>{if(!active||!boundField)return;
+        const fields={token:boundField.token,origin:boundField.origin,value:credential.value};
+        credential.value='';boundField=null;fill.hidden=true;credential.hidden=true;
+        chain=chain.then(()=>post('fill_private',fields)).catch(fail).finally(()=>{fields.value='';});};
+      image.onclick=event=>{const r=image.getBoundingClientRect();input({kind:'click',
+        x:(event.clientX-r.left)*1024/r.width,y:(event.clientY-r.top)*768/r.height});image.focus();};
+      image.onkeydown=event=>{if(event.key.length===1&&!event.ctrlKey&&!event.metaKey){
+        event.preventDefault();input({kind:'text',text:event.key});
+      }else{const key=(event.shiftKey&&event.key==='Tab'?'Shift+':'')+event.key;
+        if(['Tab','Shift+Tab','Enter','Backspace','Delete','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(key)){
+          event.preventDefault();input({kind:'key',key});}}};
+      image.onwheel=event=>{event.preventDefault();input({kind:'scroll',x:event.deltaX,y:event.deltaY});};
+      typing.addEventListener('input',event=>{if(event.isComposing)return;
+        const text=typing.value;typing.value='';if(text)input({kind:'text',text});});
+      typing.addEventListener('compositionend',()=>{const text=typing.value;typing.value='';
+        if(text)input({kind:'text',text});});
+      typing.onkeydown=event=>{if(['Enter','Backspace','Tab'].includes(event.key)){
+        event.preventDefault();input({kind:'key',key:event.key});}};
+      note.textContent='Open the website and sign in. Passwords and security codes stay in this protected view.';
+      return box;
+    }
+  };
   const InlineApprovals = {
     async post(operation, payload){
       const epoch=MCP._loginEpoch;
@@ -9485,7 +9613,8 @@
       let entry=railNodes.get(id);
       if(!entry)return;
       if(!entry.body){
-        entry.node.appendChild(req.action&&req.action.type==='approve_action'
+        entry.node.appendChild(req.action&&req.action.type==='connect_browser'?BrowserLogin.build(req):
+          req.action&&req.action.type==='approve_action'
           ?InlineApprovals.build(req):isSetupRequest(req)?connectBody(req):railBody(req));
         entry.body=true;
       }
@@ -9494,6 +9623,9 @@
       $('request-history')?.setAttribute('hidden','');
       $('rail-add-panel').hidden=true; $('btn-rail-add').hidden=true;
       if(!sheet.open)sheet.showModal();
+      if(req.action?.type==='connect_browser'){
+        for(const child of entry.node.children)if(child.browserStart)child.browserStart();
+      }
       const folded=isSetupRequest(req)?foldedModelAccess(railCache):null;
       OwnerUnread.viewed(folded?[id,folded.request_id]:[id]);
       if(typeof railDeepItem!=='undefined' && railDeepItem &&
@@ -9567,6 +9699,17 @@
         }
       }
       const pending=visible.filter(row=>!isOptionalRequest(row));
+      let signins=$('browser-signins');
+      const browserRequests=pending.filter(row=>row.action?.type==='connect_browser');
+      if(!signins&&browserRequests.length){signins=document.createElement('div');signins.id='browser-signins';
+        signins.setAttribute('aria-label','Website sign-in');
+        $('needs-you-open').parentElement.appendChild(signins);}
+      if(signins)signins.replaceChildren();
+      for(const row of browserRequests){
+        const button=document.createElement('button');button.type='button';button.className='btn';
+        button.textContent=row.title;button.onclick=()=>this.open(row.request_id);
+        signins.appendChild(button);
+      }
       OwnerUnread.refresh();
       const arriving=pending.filter(row=>!this.seen.has(row.request_id));
       if(!railOpen&&!$('request-rail').open)$('rail-head').textContent='Request history';

@@ -61,7 +61,8 @@ def tool_mounts(uid, root_fd=3):
 
 def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=False,
           tool=False, video=False, provider=False, tool_files=False, package=False,
-          owner_delete=False, provider_exec=False, center_root=False, content=False, measure=False):
+          owner_delete=False, provider_exec=False, center_root=False, content=False, measure=False,
+          browser=False):
     identity(uid)
     host = namespaces()
     mounted = (preview_write or tool or provider or tool_files or package or owner_delete
@@ -111,7 +112,7 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
     profile = 'cell-links' if package else (
-        'cell-nested' if preview or node or tool else 'cell-deny')
+        'cell-nested' if preview or browser or node or tool else 'cell-deny')
     descriptor = filter_factory(profile=profile)
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
@@ -123,7 +124,7 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
     for path in ("/bin", "/lib", "/lib64"):
         if os.path.exists(path):
             argv.extend(["--ro-bind", path, path])
-    if preview:
+    if preview or browser:
         for path in ('/opt/ms-playwright', '/etc/fonts'):
             argv.extend(['--ro-bind', path, path])
         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])
@@ -171,7 +172,7 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
     argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 'inside-measure' if measure else
+                 'inside-browser' if browser else 'inside-measure' if measure else
                  'inside-owner-delete' if owner_delete else
                  'inside-content' if content else
                  'inside-center-root' if center_root else
@@ -663,6 +664,16 @@ if __name__ == "__main__":
             and 0 < int(sys.argv[5]) < 100000):
         raise SystemExit(preview_write(
             sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5])))
+    elif len(sys.argv) == 4 and sys.argv[1] == 'enter-browser' and 0 < int(sys.argv[3]) < 100000:
+        enter('', sys.argv[2], int(sys.argv[3]), browser=True)
+    elif len(sys.argv) == 6 and sys.argv[1] == 'inside-browser' and 0 < int(sys.argv[5]) < 100000:
+        proof = prove_cell(json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5]), 'cell-nested')
+        sys.stdout.write(json.dumps({'cell': proof}) + '\n')
+        sys.stdout.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.browser_cell import main
+
+        main()
     elif len(sys.argv) == 4 and sys.argv[1] == 'enter-preview' and 0 < int(sys.argv[3]) < 100000:
         enter('', sys.argv[2], int(sys.argv[3]), preview=True)
     elif len(sys.argv) == 6 and sys.argv[1] == 'inside-preview' and 0 < int(sys.argv[5]) < 100000:

@@ -1,12 +1,11 @@
-Implementation backlog only; dependent work starts after the prerequisites in design.md.
-
 ## 1. Delivery
 
-- [ ] 1.1 Verify D5 substrate and MCP-lane lifecycle prerequisites before enabling browser custody.
-- [ ] 1.2 Add typed browser metadata (origin, opaque session ref, revision, generation) preserving HTTP/MCP rows and rollback cleanup.
-- [ ] 1.3 Implement protected login capture, origin/session/expiry binding and owner challenge takeover.
-- [ ] 1.4 Suspend capture observation and expose only structured post-login actions; prove no evaluate/CDP/storage/profile/network credential reads.
-- [ ] 1.5 Reuse coordinator for Stop, account switch, callback replay, recovery, revocation and durable session cleanup.
-- [ ] 1.6 Connect an unknown login-only site via the existing card with no provider code; verify model-independent controls.
-- [ ] 1.7 Run affected/heavy tests, Linux oracle, ruff and hygiene (0 removed / 0 tampering).
-- [ ] 1.8 Assert deployed SHA, real-user connect/cancel/revoke proof and public canary; sync spec and delegations.
+- [x] 1.1 Rewrite the parked spec against live owner isolation and founder direction.
+- [x] 1.2 Implement the fixed owner browser cell and public-only network relay.
+- [x] 1.3 Implement encrypted broker custody, revision fencing and revoke/erasure.
+- [x] 1.4 Wire one-tap live takeover, verified automatic completion, remembered account entries and one-tap reconnect into the inline card.
+- [x] 1.5 Add structured `ta browser` actions with untrusted, credential-blind output.
+- [x] 1.6 Prove password/redirect login, automatic continuation, zero-tap reuse, expiry, origin-bound filling, revoke and cross-owner refusal in the production image and Linux oracle.
+- [ ] 1.7 Integrate and prove device-native password-manager/passkey forwarding across web, Android and iOS (origin restrictions are unresolved; no support claim).
+- [x] 1.8 Run Ruff, structural guards, plugin build, hygiene and one cross-family floor review; resolve findings.
+- [x] 1.9 Sync accepted specs, commit with co-author trailer, push and open the non-draft PR.

@@ -125,6 +125,17 @@ class Capabilities:
             return {"error": "request must be an object"}
         if message.get("op") == "catalog" and set(message) == {"op"}:
             items = list(self.platform.values())
+            if self.connections_granted:
+                items.append({'name': 'browser', 'description':
+                    'Default website connection: connect with official HTTPS url, account label, '
+                    'verify {url,selector} identifying an authenticated-only page element; list; '
+                    'steps with id and structured navigate/click/fill/press/read steps. '
+                    'Login is owner-only in the Connect card. Site output is untrusted.',
+                    'arguments': {'type': 'object', 'properties': {
+                        'action': {'enum': ['connect', 'reconnect', 'list', 'steps']},
+                        'url': {'type': 'string'}, 'id': {'type': 'string'},
+                        'account': {'type': 'string'}, 'verify': {'type': 'object'},
+                        'steps': {'type': 'array', 'items': {'type': 'object'}}}}})
             for name, (_grant, view, verb) in self.connections().items():
                 items.append({
                     "name": name, "description": f"{view.destination}: {verb}",
@@ -153,9 +164,27 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
-        known = name.startswith("extension:") or name in self.platform or name in self.connections()
+        known = (name == 'browser' or name.startswith("extension:")
+                 or name in self.platform or name in self.connections())
         if known and not _is_read(name) and not self.mutations_granted:
             return {"error": "mutation capability not granted"}
+        if name == 'browser':
+            if not self.connections_granted:
+                return {'error': 'connections not granted'}
+            from tinyassets.browser_sessions import agent
+
+            def checkpoint():
+                if self.check_authority() or (self.stopped and self.stopped() is not None):
+                    raise PermissionError('browser authority ended')
+
+            try:
+                from tinyassets.agent_review import bound as review_bound
+
+                with review_bound(self.review_provider, active=self.review_provider is not None):
+                    return {'result': await asyncio.to_thread(
+                        agent, self.root.parent, self.context, arguments, checkpoint)}
+            except Exception:  # noqa: BLE001 - browser exceptions can contain secrets
+                return {'error': 'browser operation unavailable; do not retry an uncertain action'}
         if name.startswith("extension:"):
             from tinyassets.extension_capabilities import ExtensionCapabilities
 
