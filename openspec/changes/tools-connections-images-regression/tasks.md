@@ -7,5 +7,5 @@
 ## 2. Verify and deliver
 
 - [x] 2.1 Pass production-copy acceptance and tool, connection and image suites on Linux.
-- [ ] 2.2 Pass ruff, structural guards, plugin build and hygiene gate; sync the spec.
+- [x] 2.2 Pass ruff, structural guards, plugin build and hygiene gate; sync the spec.
 - [ ] 2.3 Commit, push, open a ready PR and complete the required cross-family floor review.
