@@ -111,7 +111,9 @@ async def endpoint(request):
         if name == "centers":
             # Filter before calling any content reader, not after serialization.
             rows = await run_in_threadpool(store.inspect_keys, identity.user_id)
-            scopes = next(r["scopes"] for r in rows if r["key_id"] == bound["api_key"])
+            scopes = next((r["scopes"] for r in rows if r["key_id"] == bound["api_key"]), None)
+            if scopes is None:
+                raise InvalidKey("API key was removed")
             if not any("read" in scope["levels"] for scope in scopes):
                 raise PermissionError("listing requires read")
             result = []

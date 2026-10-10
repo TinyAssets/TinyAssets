@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import time
@@ -135,6 +136,8 @@ class KeyStore(OutsideClientAuthority):
                                (hashlib.sha256(secret.encode()).hexdigest(),)).fetchone()
             if row is None:
                 raise InvalidKey("invalid API key")
+            bound = {"api_key": row["key_id"], "generation": row["generation"]}
+            self.live(conn, row["owner"], bound)
             window = int(now // 60)
             count = row["calls"] if row["window"] == window else 0
             if count >= LIMIT:
@@ -142,10 +145,11 @@ class KeyStore(OutsideClientAuthority):
             conn.execute("UPDATE api_keys SET last_used_at=?,window=?,calls=? WHERE key_id=?",
                          (now, window, count + 1, row["key_id"]))
             return Identity(row["owner"], row["owner"], capabilities=["read", "write", "costly"],
-                            metadata={"outside_origin": {
-                                "api_key": row["key_id"], "generation": row["generation"]}})
+                            metadata={"outside_origin": bound})
 
     def live(self, conn, owner, bound):
+        if os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1":
+            raise OutsideRefused("outside work is disabled")
         row = conn.execute("SELECT * FROM api_keys WHERE key_id=? AND owner=?",
                            (bound["api_key"], owner)).fetchone()
         if (row is None or row["revoked_at"] is not None
@@ -200,6 +204,8 @@ class KeyStore(OutsideClientAuthority):
     @contextmanager
     def effect(self, identity):
         bound = identity.metadata["outside_origin"]
+        if not bound.get("universe"):
+            raise OutsideRefused("API key effect requires a bound command center")
         lease = secrets.token_hex(16)
         with self.keys() as conn:
             conn.execute("BEGIN IMMEDIATE")

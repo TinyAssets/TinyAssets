@@ -199,6 +199,33 @@ def test_key_origin_survives_saved_work_and_live_revoke(system):
         pytest.fail("revoked effect admitted")
 
 
+def test_operator_deny_stops_ingress_and_existing_key_work(system, monkeypatch):
+    store, client = system
+    data = key(system)
+    identity = store.authenticate(data["secret"])
+    identity.metadata["outside_origin"].update(universe="home", agent="*")
+    monkeypatch.setenv("TINYASSETS_OUTSIDE_DENY", "1")
+    assert client.get("/api/v1/command-centers", headers=bearer(data["secret"])).status_code == 403
+    with pytest.raises(OutsideRefused):
+        check_identity(identity)
+    with identity_context(identity), pytest.raises(OutsideRefused), effect_admission():
+        pytest.fail("operator denied effect admitted")
+
+
+def test_disappearing_key_and_unbound_effect_refuse_cleanly(system, monkeypatch):
+    store, client = system
+    data = key(system)
+    identity = store.authenticate(data["secret"])
+    with identity_context(identity), pytest.raises(OutsideRefused), effect_admission():
+        pytest.fail("unbound effect admitted")
+    def delete_before_list(self, owner):
+        with self.keys() as conn:
+            conn.execute("DELETE FROM api_keys WHERE owner=?", (owner,))
+        return []
+    monkeypatch.setattr(KeyStore, "inspect_keys", delete_before_list)
+    assert client.get("/api/v1/command-centers", headers=bearer(data["secret"])).status_code == 401
+
+
 def test_message_grant_cannot_launder_control_or_shared_reads(system):
     data = key(system, levels=["read", "message"], agents=["main"])
     identity = system[0].authenticate(data["secret"])
