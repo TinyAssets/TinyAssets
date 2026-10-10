@@ -1978,6 +1978,7 @@ def get_status(
             if universe_exists and permissions.universe_access_allows(uid, write=True):
                 from tinyassets import addressed_agents
                 from tinyassets.conversation_failure import normalize_turn_failure
+                from tinyassets.conversation_pending import read_pending
                 from tinyassets.conversation_store import read_history_page
                 from tinyassets.providers.execution_receipt import normalize_execution_receipt
 
@@ -1989,11 +1990,19 @@ def get_status(
                     permissions.current_actor_id(),
                     _addressed.agent_id if _addressed else addressed_agents.MAIN_AGENT,
                 )
+                _pending = read_pending(udir, _session) if conversation_before is None else []
                 _turns, _has_more = read_history_page(
                     udir, _session, limit=conversation_limit, before=conversation_before,
                 )
                 _cap = 4000  # per-turn char bound (fence against unbounded content)
                 response["recent_conversation"] = {
+                    "pending": [p for p in _pending if not (
+                        p.get("consumer_turn_id") and p["consumer_turn_id"] in {
+                            t.consumer_turn_id for t in _turns
+                        } or p.get("client_send_id") and p["client_send_id"] in {
+                            t.client_send_id for t in _turns
+                        }
+                    )],
                     "session_scope": "agent" if _addressed else "principal",
                     **({"agent": {"agent_id": _addressed.agent_id, "name": _addressed.name}}
                        if _addressed else {}),

@@ -121,6 +121,7 @@ def read_graph(
         from tinyassets import addressed_agents
         from tinyassets.api.helpers import _base_path, _request_universe
         from tinyassets.api.permissions import current_actor_id, is_authenticated_request
+        from tinyassets.conversation_pending import exclude_saved, read_pending
         from tinyassets.conversation_retrieval import read_conversation_page
         from tinyassets.shared_self import require_founder_home
 
@@ -134,10 +135,15 @@ def read_graph(
                 base, universe_id=uid, owner=actor, agent_id=agent_binding_id,
             )
             session = addressed_agents.memory_session(actor, agent.agent_id if agent else "main")
+            pending = read_pending(root, session) if not field_name and not output_offset else []
             payload = read_conversation_page(
                 root, session, field_name=field_name,
                 offset=output_offset, max_chars=output_max_chars, query=query,
             )
+            payload["pending"] = [p for p in exclude_saved(root, session, pending)
+                                  if not query or query.casefold() in p["text"].casefold()]
+            if payload["pending"]:
+                payload["available"] = True
         except addressed_agents.AgentNotAddressable as exc:
             return json.dumps({"error": str(exc), "agent_not_found": True})
         except PermissionError:
