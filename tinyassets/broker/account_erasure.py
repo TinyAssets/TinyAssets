@@ -16,7 +16,7 @@ TABLES = frozenset({
     "outbound_connections", "outbound_connection_grants", "connection_capabilities",
     "outbound_connector_artifacts", "outbound_connector_artifact_edges",
     "agent_request_usage", "agent_request_attempts", "agent_request_usage_links",
-    "agent_request_dispatches",
+    "agent_request_dispatches", "browser_vault",
 })
 
 
@@ -33,6 +33,7 @@ def local_erase(ledger, *, principal, command_center):
     owned_connections = "SELECT connection_id FROM outbound_connections WHERE owner_user_id=?"
     owned_artifacts = "SELECT artifact_id FROM outbound_connector_artifacts WHERE owner_user_id=?"
     targets = [
+        ('browser_vault', 'owner=?', (principal,)),
         ("outbound_connector_artifact_edges",
          f"parent_artifact_id IN ({owned_artifacts}) OR child_artifact_id IN ({owned_artifacts}) "
          "OR remixed_by_user_id=?", (principal, principal, principal)),
@@ -58,12 +59,16 @@ def local_erase(ledger, *, principal, command_center):
         counts = {}
         for table, where, params in targets:
             # Accounting may never have been initialized on an empty ledger.
-            if table not in live and table.startswith("agent_request_"):
+            if table not in live and (table.startswith("agent_request_")
+                                      or table == 'browser_vault'):
                 continue
             count = conn.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
             if count:
                 counts[table] = count
-        return counts
+    from tinyassets.broker.browser_vault import key_path
+
+    key_path(ledger, principal).unlink(missing_ok=True)
+    return counts
 
 
 def erase_account(data_root, *, principal):
