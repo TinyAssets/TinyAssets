@@ -17,7 +17,9 @@ Why a SessionStart hook is the mechanism:
 Its one weakness is that it only fires when a session starts, which is why
 ``scripts/install_dev_hygiene_task.ps1`` registers an hourly Task Scheduler job
 for the full pass. Session start also inventories all classes so cleanup does not
-depend on the task having been installed. Unknown or busy resources are kept.
+depend on the task having been installed. Worktree removal stays in the full
+scheduled/manual pass: this hook must never kill a halfway-through directory
+rename. Unknown or busy resources are kept.
 
 Advisory only. Never blocks, never fails a session, never exits non-zero.
 """
@@ -94,6 +96,7 @@ def main() -> int:
         sys.executable,
         str(script),
         "--apply",
+        "--keep-worktrees",
         "--classes",
         SESSION_CLASSES,
         "--escalate-below",

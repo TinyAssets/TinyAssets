@@ -71,7 +71,8 @@ Exit codes
 What runs it, without anyone asking
 -----------------------------------
 ``.claude/hooks/dev_hygiene_hook.py`` (SessionStart) inventories all five classes,
-cleans disposable resources, and injects an escalation when free space is under
+cleans disposable resources except worktrees (the scheduled/manual full pass
+owns their removal), and injects an escalation when free space is under
 ``TINYASSETS_DEV_HYGIENE_FLOOR_GB`` (40 GB by default). The hourly unelevated
 ``TinyAssets-DevHygiene`` scheduled task also runs the full pass under disk
 pressure. The hook surfaces that task's recent escalation too. Neither can fail
@@ -2013,6 +2014,10 @@ def select_docker_objects(
             )
             labels = labels or {}
             created = docker_epoch(row.get("CreatedAt") if kind == "volume" else row.get("Created"))
+            if kind == "image":
+                # Created is the upstream build time, not when another lane pulled/built it.
+                # Missing last-tag metadata is unknown, so even a dangling image is kept.
+                created = max(created, docker_epoch((row.get("Metadata") or {}).get("LastTagTime")))
             reason = "old_unused"
             if kind != "image" and labels.get("tinyassets.disposable") != "true":
                 reason = "not_labelled_disposable"
@@ -2501,6 +2506,7 @@ def apply_removals(
     log_path: Path | None,
     max_removals: int = 0,
     preserve: PreservePolicy | None = None,
+    keep_worktrees: bool = False,
 ) -> list[str]:
     """Remove the REMOVE set, at most ``max_removals`` per class (0 = unbounded).
 
@@ -2515,6 +2521,10 @@ def apply_removals(
     order = sorted(report.items, key=lambda i: (i.kind, -i.size_bytes, i.path))
     for item in order:
         if not item.removable:
+            continue
+        if keep_worktrees and item.kind == "worktree":
+            item.verdict, item.reason = "KEEP", "worktree_removal_deferred"
+            item.detail = "inventoried; removal belongs to the scheduled/manual full pass"
             continue
         if max_removals and done.get(item.kind, 0) >= max_removals:
             item.verdict = "KEEP"
@@ -2715,6 +2725,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--docker", action="store_true", help="run only Docker hygiene")
     parser.add_argument(
+        "--keep-worktrees",
+        action="store_true",
+        help="inventory worktrees but defer removal (for timeout-bounded session hooks)",
+    )
+    parser.add_argument(
         "--defer-notices",
         action="store_true",
         help="unattended scheduler: leave the one-time Docker disk notice for the next session",
@@ -2894,6 +2909,7 @@ def main(argv: list[str] | None = None) -> int:
             log_path=log_path,
             max_removals=max(0, args.max_removals),
             preserve=preserve,
+            keep_worktrees=args.keep_worktrees,
         )
         report.applied = True
         report.free_after_gb = free_gb(repo)

@@ -2262,6 +2262,7 @@ def test_hook_injects_the_escalation_when_the_pass_escalates(
     (command,) = calls
     assert "--apply" in command
     assert "basetemp,scratch,docker,worktree,toolcache" in command
+    assert "--keep-worktrees" in command
     assert "--escalate-below" in command
 
 
@@ -2411,9 +2412,9 @@ def test_docker_any_container_reference_protects_images_and_volumes(status):
         [container],
         [volume],
         [
-            {"Id": "used", "Created": 1},
-            {"Id": "unused", "Created": 1},
-            {"Id": "young", "Created": 99999},
+            {"Id": "used", "Created": 1, "Metadata": {"LastTagTime": 1}},
+            {"Id": "unused", "Created": 1, "Metadata": {"LastTagTime": 1}},
+            {"Id": "young", "Created": 99999, "Metadata": {"LastTagTime": 1}},
         ],
         min_age_hours=6,
         now=100000,
@@ -2539,3 +2540,24 @@ def test_docker_zero_reclaim_is_not_reported_as_removed(monkeypatch):
     assert item.reason == "nothing_reclaimed"
     assert report.reclaimable_bytes == 0
     assert "KEPT docker build-cache" in lines[0]
+
+
+@pytest.mark.parametrize(
+    "last_tag,expected", [(None, False), (0, False), ("bad", False), (99999, False), (1, True)]
+)
+def test_docker_old_image_recent_pull_or_unknown_tag_time_is_kept(last_tag, expected):
+    image = {"Id": "image", "Created": 1, "Metadata": {"LastTagTime": last_tag}}
+    (item,) = dh.select_docker_objects([], [], [image], min_age_hours=6, now=100000)
+    assert item.removable is expected
+
+
+def test_timeout_bounded_hook_defers_worktree_removal(monkeypatch):
+    item = dh.Item("worktree", "lane", 1, "REMOVE", "merged_and_clean")
+    calls = []
+    monkeypatch.setattr(dh, "remove_worktree", lambda *a: calls.append(a))
+    report = dh.Report(items=[item])
+    lines = dh.apply_removals(report, _REPO, keep_gb=8, log_path=None, keep_worktrees=True)
+    assert calls == []
+    assert lines == []
+    assert not item.removable
+    assert item.reason == "worktree_removal_deferred"
