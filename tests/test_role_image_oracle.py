@@ -33,6 +33,7 @@ def test_the_serving_posture_is_the_one_compose_declares():
     assert list(ORACLE["COMPOSE_CAPS"]) == DAEMON["cap_add"]
     assert DAEMON["cap_drop"] == ["ALL"]
     assert sorted(ORACLE["COMPOSE_SECURITY"]) == sorted(DAEMON["security_opt"])
+    assert ORACLE['COMPOSE_MEMORY'] == DAEMON['mem_limit'] == DAEMON['memswap_limit']
 
 
 def test_the_serving_posture_holds_none_of_the_migration_capabilities():

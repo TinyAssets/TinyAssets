@@ -68,6 +68,42 @@ admission SHALL NOT branch on provider identity.
 - **THEN** the provider runs in a provider-exec cell under that owner's identity with its
   sealed snapshot and its pinned egress relay
 
+#### Scenario: A production-built command uses a bare executable name
+- **WHEN** the server builds a provider command using a bare CLI name
+- **THEN** the cell resolves it only in the immutable image wrapper directory and applies
+  the same shipped-executable validation before exec
+
+### Requirement: Cell refusals remain observable without disclosing owner data
+Launcher, mapper, decoder and relay failures SHALL produce bounded diagnostics containing
+only fixed operation identifiers, immutable code locations, exception classes and errno or
+exit/signal numbers. The mapper SHALL drain cell stderr without blocking on the daemon,
+and carry the diagnostic on its authenticated completion channel. Provider stream failure
+SHALL collect that completion and raise a ProviderError with the reason, rather than a bare
+socket reset. No exception message, source line, argv, environment or owner bytes SHALL enter
+the diagnostic.
+The completion authenticates which cell ended, not the truth of cell-written stderr;
+owner code can forge a bounded diagnostic for its own cell. Relay teardown notices SHALL
+NOT override native provider error classification. Undelivered stderr SHALL be bounded
+and explicitly reported as truncated.
+
+#### Scenario: A decoder rejects a provider launch after its cell proof
+- **WHEN** validation or exec fails before the CLI consumes its stdin
+- **THEN** the daemon logs the bounded reason and the ProviderError carries it even if the
+  data stream resets with unread input
+
+### Requirement: Cutover acceptance runs production-data chat
+The image acceptance SHALL restore and migrate a production backup and run real HTTP
+converse turns for Claude Code and Codex in compose posture. The real server SHALL build
+the persona, command, environment and MCP configuration. Only provider transport credentials
+and endpoint SHALL be substituted with a local streaming service through the real egress
+proxy, on a network unable to contact external APIs. Synthetic launch fixtures SHALL NOT
+substitute for this acceptance.
+
+#### Scenario: Both provider turns complete on the migrated production copy
+- **WHEN** the cutover acceptance runs for the selected command center
+- **THEN** both real CLIs receive streaming responses through egress and converse returns
+  the expected reply with the corresponding provider identity
+
 ### Requirement: Daemon readers enforce owner labels
 Daemon reads and writes inside an owner's tree SHALL use pinned no-follow descriptors. They
 SHALL refuse an entry whose UID/GID label belongs to a different owner than the request's.

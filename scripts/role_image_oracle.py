@@ -1,39 +1,18 @@
-"""The cutover image, end to end on a PR1-migrated volume (task 2.5).
+"""Cutover acceptance on a migrated copy of production data.
 
-One path only: there is no env switch, no OFF/reverse/legacy leg and no
-old-image leg. Everything below runs against ONE data volume that this script
-builds in production shape, migrates with the image's own
-``/usr/local/libexec/ta-migrate.py`` exactly as
-``docs/ops/owner-split-cutover-runbook.md`` step 4 does, and then serves.
+    python scripts/role_image_oracle.py --image <image> \
+        --backup-archive <snapshot.tar.gz> --command-center <id>
 
-    python scripts/role_image_oracle.py --image cutint-oracle:<sha>
+The default migrate,serve,chat stages restore the backup into a disposable volume,
+run the image's migration, verify the real CMD in compose posture, then drive real
+HTTP converse turns for Claude Code and Codex. The production persona, history,
+argv, environment construction and engine MCP configuration are built by the real
+server. Only vendor credentials/endpoint are replaced with a local streaming API;
+an internal Docker network and the real egress proxy prevent external API traffic.
 
-Stages, in order:
-
-1. **migrate** - a fresh named volume gets the production-shaped layout-2
-   fixture from ``scripts/role_migrate_probe.build`` (three centers, three
-   principals, a vault, ``outbound.db`` with an uncheckpointed WAL, egress
-   proxy state, liveness, sidecars, admission staging, a community pool), then
-   the runbook's ``--check`` / ``--snapshot`` / ``--check`` trio. The second
-   check must print nothing.
-2. **serve** - the image's real ``CMD`` in ``deploy/compose.yml``'s posture
-   (``user: "0:0"``, ``cap_drop: ALL``, ``cap_add: [KILL, SETGID, SETUID,
-   SETPCAP]``, the four ``security_opt`` lines) on the migrated volume. Proved
-   from the HOST, with no application import in the probe: ``docker top`` plus
-   ``/proc/<pid>/status`` for PID1, the broker and the mapper, and the compose
-   healthcheck ``ta-op pulse``.
-3. **cells** - the same image, the same posture and the same volume, with this
-   script's in-container program as PID1. It calls the image's own
-   ``ta-launch.py`` ``boot()`` - the production bootstrap, unmodified - and then
-   drives the owner-cell classes as the retired daemon, which is the only
-   identity the mapper authenticates (``SCM_CREDENTIALS`` pinned to PID 1).
-4. **providers** - ``scripts/role_provider_cell_probe.py`` against the same
-   image: the real Claude and Codex CLIs in real ``provider-exec`` cells.
-
-The in-container legs are a tuple of one-argument-free functions. A new cell
-class is one function plus its name in ``LEGS``; the host passes ``--legs`` to
-select. ``workspace-remote`` (branch ``iso/cutover-ws``) lands as
-``leg_workspace_remote``.
+Explicit cells/providers stages remain isolation diagnostics on synthetic data;
+they are not the production chat acceptance test. --keep retains only the local
+clone. Production itself is never modified by this program.
 """
 from __future__ import annotations
 
@@ -48,6 +27,7 @@ from pathlib import Path
 
 # deploy/compose.yml, daemon service: the serving posture, verbatim.
 COMPOSE_USER = "0:0"
+COMPOSE_MEMORY = '4g'
 COMPOSE_CAPS = ("KILL", "SETGID", "SETUID", "SETPCAP")
 COMPOSE_SECURITY = ("seccomp=unconfined", "apparmor=unconfined", "systempaths=unconfined",
                     "no-new-privileges=true")
@@ -1027,7 +1007,8 @@ def docker(*args, check=True, text=True, encoding="utf-8"):
 
 
 def _posture(name, image, volume, *, user, caps, entrypoint=None, extra=()):
-    command = ["docker", "run", "--name", name, "--user", user, "--cap-drop", "ALL"]
+    command = ["docker", "run", "--name", name, "--user", user, "--cap-drop", "ALL",
+               '--memory', COMPOSE_MEMORY, '--memory-swap', COMPOSE_MEMORY]
     for capability in caps:
         command += ["--cap-add", capability]
     for option in COMPOSE_SECURITY:
@@ -1185,6 +1166,10 @@ def _network(args):
     if docker("network", "inspect", args.network, check=False).returncode != 0:
         docker("network", "create", *(('--internal',) if args.backup_archive else ()),
                "--subnet", METADATA_SUBNET, args.network)
+    if args.backup_archive:
+        internal = docker('network', 'inspect', args.network,
+                          '--format', '{{.Internal}}').stdout.strip()
+        expect(internal == 'true', 'production copy network is internal')
     return args.network
 
 
@@ -1316,8 +1301,37 @@ def stage_providers(args):
     return {"probe": "PROVIDER CELL PROBE PASS"}
 
 
+def stage_chat(args):
+    """Acceptance: real HTTP converse and both CLIs on the production copy."""
+    if not args.backup_archive or not args.command_center:
+        raise SystemExit('chat acceptance requires --backup-archive and --command-center')
+    _metadata(args, start=True)
+    name = f'{args.prefix}-chat'
+    docker('rm', '-f', name, check=False)
+    program = Path(__file__).with_name('role_chat_probe.py').read_text(encoding='utf-8')
+    command = _posture(name, args.image, args.volume, user=COMPOSE_USER,
+        caps=COMPOSE_CAPS, entrypoint='/opt/venv/bin/python', extra=[
+            '--rm', '-i', '--network', args.network,
+            '-e', 'TINYASSETS_IMAGE=' + args.image,
+            '-e', 'TINYASSETS_ENGINE_MCP_TOOLS=1',
+            '-e', 'ORACLE_COMMAND_CENTER=' + args.command_center])
+    result = subprocess.run(command + ['-I', '-B', '-'], input=program,
+                            text=True, encoding='utf-8', capture_output=True, timeout=600)
+    for line in result.stdout.splitlines():
+        if line.startswith('PRODUCTION CHAT PASS '):
+            expect(result.returncode == 0, 'real HTTP converse returned both provider streams')
+            return json.loads(line.removeprefix('PRODUCTION CHAT PASS '))
+    # Logs contain owner conversation/route material: retain only fixed diagnostics.
+    import re
+
+    reasons = re.findall(r'owner cell (?:ended|refused): [A-Za-z0-9_.:=-]+',
+                         result.stderr)
+    raise RuntimeError('production chat acceptance failed: ' + '; '.join(reasons[-8:])
+                       + f'; exit={result.returncode}')
+
+
 STAGES = {"migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
-          "providers": stage_providers}
+          "providers": stage_providers, "chat": stage_chat}
 
 
 def main(argv=None):
@@ -1325,12 +1339,13 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", required=True, help="the cutover image to prove")
     parser.add_argument('--backup-archive', help='restore this full backup instead of the fixture; '
-                        'use --stages migrate,serve --legs bootstrap (no credentialed turns)')
+                        'chat acceptance uses only a local streaming endpoint')
+    parser.add_argument('--command-center', help='production command center for chat acceptance')
     parser.add_argument("--prefix", default="role-image-oracle",
                         help="name prefix for this run's volume and containers")
     parser.add_argument("--volume", help="data volume name (default <prefix>-data)")
     parser.add_argument("--network", help="docker network name (default <prefix>-net)")
-    parser.add_argument("--stages", default=",".join(STAGES),
+    parser.add_argument("--stages", default="migrate,serve,chat",
                         help="comma-separated subset of " + ",".join(STAGES))
     parser.add_argument("--legs", default=",".join(DEFAULT_LEGS),
                         help="comma-separated subset of " + ",".join(LEG_NAMES))
@@ -1341,6 +1356,8 @@ def main(argv=None):
     args.volume = args.volume or f"{args.prefix}-data"
     args.network = args.network or f"{args.prefix}-net"
     args.legs = tuple(name for name in args.legs.split(",") if name)
+    if 'chat' in args.stages.split(',') and (not args.backup_archive or not args.command_center):
+        parser.error('chat acceptance requires --backup-archive and --command-center')
     if args.backup_archive and ('providers' in args.stages.split(',') or
             ('cells' in args.stages.split(',') and args.legs != ('bootstrap',))):
         parser.error('restored backups permit migrate,serve and the bootstrap cell leg only; '
@@ -1363,7 +1380,7 @@ def main(argv=None):
             print(f"\n=== {name} ===", flush=True)
             report[name] = STAGES[name](args)
     finally:
-        for suffix in ("serve", "cells", "fixture", "migrate"):
+        for suffix in ("serve", "cells", "fixture", "migrate", "chat"):
             docker("rm", "-f", f"{args.prefix}-{suffix}", check=False)
         _metadata(args, start=False)
         if not args.keep:

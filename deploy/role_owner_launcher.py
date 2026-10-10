@@ -11,6 +11,7 @@ import ctypes
 import json
 import os
 import re
+import runpy
 import select
 import signal
 import socket
@@ -23,6 +24,9 @@ FIRST, COUNT = 300000, 100000
 MAPPING = f"0 {FIRST} {COUNT}\n"
 CAPS = (1 << 6) | (1 << 7)
 MAX_CELLS, MAX_OWNER_CELLS = 32, 4
+_diagnostic_path = Path(__file__).resolve().parent.parent / 'tinyassets/cell_diagnostics.py'
+_diagnostics = runpy.run_path(str(_diagnostic_path if _diagnostic_path.is_file()
+                                else Path('/app/tinyassets/cell_diagnostics.py')))
 
 
 class BootstrapRefused(RuntimeError):
@@ -394,6 +398,7 @@ class OwnerLauncher:
         self.overflow_uid = int(Path('/proc/sys/kernel/overflowuid').read_text())
         self.overflow_gid = int(Path('/proc/sys/kernel/overflowgid').read_text())
         self.jobs = {}
+        self.diagnostics = {}
         self.package_jobs = set()
         self.delete_fences = {}
 
@@ -468,7 +473,7 @@ class OwnerLauncher:
         if not self._alive():
             raise RuntimeError('daemon exited')
         self._service_jobs()
-        self.channel.settimeout(0.05 if self.package_jobs else 1)
+        self.channel.settimeout(0.05 if self.jobs else 1)
         try:
             packet, ancillary, flags, _ = self.channel.recvmsg(
                 4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
@@ -496,8 +501,10 @@ class OwnerLauncher:
                 self.channel.sendall(b'{"op":"STOPPED"}')
                 return False
             self._decoder(request, received)
-        except (ValueError, TypeError, KeyError, OSError):
-            self.channel.sendall(b'{"op":"REFUSED"}')
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            reason = _diagnostics['failure_reason'](exc, 'mapper')
+            os.write(2, ('owner cell refused: ' + reason + '\n').encode())
+            self.channel.sendall(json.dumps(dict(op='REFUSED', reason=reason)).encode())
         finally:
             for fd in received:
                 os.close(fd)
@@ -718,22 +725,25 @@ class OwnerLauncher:
             except BaseException:
                 status_channel.close()
                 raise
+        error_read, error_write = os.pipe2(os.O_CLOEXEC)
+        os.set_blocking(error_read, False)
         try:
             if kind in ('owner-delete', 'owner-delete-subtree'):
                 self.delete_fences[machine] = (request['principal'],
                     request['command_center'], request['delete_token'])
             pid = os.fork()
         except BaseException:
+            os.close(error_read)
+            os.close(error_write)
             if status_channel is not None:
                 status_channel.close()
             raise
         if pid == 0:
             try:
-                stderr_copy = None
-                if kind == 'provider-exec':
-                    import fcntl
+                import fcntl
 
-                    stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
+                stderr_copy = fcntl.fcntl(error_write, fcntl.F_DUPFD_CLOEXEC, 20)
+                os.dup2(stderr_copy, 2)
                 retained = (3,) if mounted else ()
                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
                              'package', 'workspace-remote', 'workspace-provision') and (
@@ -763,9 +773,7 @@ class OwnerLauncher:
                         retained.append(6)
                 os.dup2(fd, 0)
                 os.dup2(fd, 1)
-                error = (os.open('/dev/null', os.O_WRONLY) if stderr_copy is None
-                         else stderr_copy)
-                os.dup2(error, 2)
+                os.dup2(stderr_copy, 2)
                 if mounted and not (socket_count or extension_count):
                     os.dup2(received[1], 3)
                 self.launch['close_descriptors'](retained)
@@ -835,8 +843,15 @@ class OwnerLauncher:
                 os.execve('/opt/venv/bin/python', ['/opt/venv/bin/python', '-I', '-B', *command],
                     {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/tmp',
                      'PYTHONDONTWRITEBYTECODE': '1'})
-            except BaseException:
+            except BaseException as exc:
+                _diagnostics['report_failure'](exc, 'launcher')
                 os._exit(126)
+        os.close(error_write)
+        error_sink = (socket.socket(fileno=os.dup(received[-2]))
+                      if kind == 'provider-exec' else None)
+        # At most 256 KiB of pending stderr per cell; capture never blocks the
+        # mapper. A slow consumer receives an explicit truncation completion.
+        self.diagnostics[pid] = [error_read, error_sink, b'', None, bytearray(), False, None]
         # A provider turn or package server runs until it finishes: lifetime is
         # the daemon's revocation (EOF), daemon death or the RSS/process guard,
         # never a clock.
@@ -859,6 +874,7 @@ class OwnerLauncher:
                 raise
             return
         while True:
+            self._drain_diagnostics(pid)
             waited, status = os.waitpid(pid, os.WNOHANG)
             if waited:
                 break
@@ -880,9 +896,10 @@ class OwnerLauncher:
                 break
             time.sleep(0.01)
         assert_mapper(self.launch)
+        reason = self._finish_diagnostics(pid, os.waitstatus_to_exitcode(status))
         self.channel.sendall(json.dumps({'op': 'SPAWN_DONE',
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
-            'gid': machine}).encode())
+            'gid': machine, 'stop_reason': reason}).encode())
 
     @staticmethod
     def _scope(principal, center):
@@ -1005,8 +1022,68 @@ class OwnerLauncher:
                     (self.daemon_pid, self.overflow_uid, self.overflow_gid)):
                 raise ValueError('owner endpoint is not daemon-owned')
 
+    def _drain_diagnostics(self, pid):
+        state = self.diagnostics[pid]
+        for _ in range(16):
+            try:
+                chunk = os.read(state[0], 4096)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            data = state[2] + chunk
+            matches = _diagnostics['PATTERN'].findall(data)
+            for match in matches:
+                reason = match.decode('ascii')
+                if reason.startswith('relay:') and not reason.startswith('relay:bootstrap:'):
+                    state[6] = reason  # One bounded notice; never a terminal verdict.
+                else:
+                    state[3] = reason
+            if not matches and b'bwrap:' in data and state[3] is None:
+                number = next((code for message, code in (
+                    (b'Permission denied', 13), (b'Operation not permitted', 1),
+                    (b'No such file or directory', 2), (b'Invalid argument', 22),
+                    (b'No space left on device', 28)) if message in data), None)
+                state[3] = f'bwrap:bootstrap-refused:errno={number}'
+            state[2] = data[-256:]
+            if state[1] is not None:
+                room = 256 * 1024 - len(state[4])
+                state[4].extend(chunk[:room])
+                state[5] |= len(chunk) > room
+                self._flush_stderr(state)
+        self._flush_stderr(state)
+
+    @staticmethod
+    def _flush_stderr(state):
+        if state[1] is not None and state[4]:
+            try:
+                sent = state[1].send(state[4], socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL)
+                del state[4][:sent]
+            except BlockingIOError:
+                pass  # Retry on the next mapper iteration, retaining every byte.
+            except (BrokenPipeError, ConnectionResetError):
+                state[5] = True
+
+    def _finish_diagnostics(self, pid, code, stop_reason=None):
+        self._drain_diagnostics(pid)
+        fd, sink, _, reason, pending, truncated, relay = self.diagnostics.pop(pid)
+        os.close(fd)
+        if sink is not None:
+            sink.close()
+        if relay:
+            os.write(2, ('owner cell relay notice: ' + relay + '\n').encode())
+        reason = stop_reason or reason or (
+            f'cell:signal={-code}' if code < 0 else f'cell:exit={code}')
+        if truncated or pending:
+            reason += ';stderr_truncated'
+            os.write(2, b'owner cell stderr truncated: consumer did not drain bounded buffer\n')
+        if code or reason.startswith(('decoder:', 'launcher:', 'bwrap:')):
+            os.write(2, ('owner cell ended: ' + reason + '\n').encode())
+        return reason
+
     def _service_jobs(self):
         for pid, (inner, machine, deadline, channel) in list(self.jobs.items()):
+            self._drain_diagnostics(pid)
             waited, status = os.waitpid(pid, os.WNOHANG)
             cancel_sent = False
             reason = 'deadline' if time.monotonic() >= deadline else None
@@ -1052,8 +1129,8 @@ class OwnerLauncher:
                 try:
                     receipt = dict(op='SPAWN_DONE', returncode=os.waitstatus_to_exitcode(status),
                                    uid=machine, gid=machine)
-                    if reason and cancel_sent:
-                        receipt['stop_reason'] = reason
+                    receipt['stop_reason'] = self._finish_diagnostics(
+                        pid, receipt['returncode'], reason if cancel_sent else None)
                     channel.sendall(json.dumps(receipt).encode())
                 except (BrokenPipeError, ConnectionResetError):
                     pass

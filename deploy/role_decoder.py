@@ -372,6 +372,8 @@ def center_root_handoff(staging):
 
 
 if __name__ == "__main__":
+    # Immutable stdlib-only code; do not print traceback source/owner bytes.
+    sys.excepthook = runpy.run_path('/app/tinyassets/cell_diagnostics.py')['exception_hook']
     if (len(sys.argv) == 5 and sys.argv[1] in ('enter-provider', 'enter-provider-exec')
             and sys.argv[2] in ('-', 'e', 'eg') and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True,
