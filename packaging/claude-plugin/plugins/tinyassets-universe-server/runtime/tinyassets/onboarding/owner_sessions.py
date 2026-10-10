@@ -19,6 +19,8 @@ from urllib.parse import urlencode, urlsplit
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from tinyassets.capability_health import observed
+
 COOKIE = "__Host-ta-owner"
 FLOW_COOKIE = "__Host-ta-owner-login"
 HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -180,6 +182,7 @@ async def complete(request):
     return await callback(request, completion=True)
 
 
+@observed('owner_sign_in', error_code='authentication_failed')
 async def callback(request, *, completion=False):
     import httpx
     from starlette.concurrency import run_in_threadpool

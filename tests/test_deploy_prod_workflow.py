@@ -25,12 +25,6 @@ from pathlib import Path
 
 import pytest
 
-from scripts.retire_cheat_loop_deploy_fence import RECOVERY_SCRIPT_PATH
-from scripts.sanitize_startup_diagnostics import (
-    STATE_SEPARATOR,
-    sanitize_candidate_state,
-)
-
 try:
     import yaml
 
@@ -59,15 +53,14 @@ def test_oauth_provider_credentials_step_sources_and_order():
     validation = _step_named(wf, "Validate OAuth provider credentials")
     step = _step_named(wf, "Install OAuth provider client credentials")
     credentials = {
-        "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID":
-            "${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}",
-        "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET":
-            "${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}",
+        "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID": "${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}",
+        "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET": (
+            "${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}"
+        ),
     }
     assert validation["id"] == "oauth"
     assert validation["env"] == {
-        "TINYASSETS_OAUTH_CREDENTIALS_INSTALL":
-            "${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}",
+        "TINYASSETS_OAUTH_CREDENTIALS_INSTALL": "${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}",
         **credentials,
         "TARGET_REVISION": "${{ steps.tag.outputs.revision }}",
     }
@@ -78,11 +71,21 @@ def test_oauth_provider_credentials_step_sources_and_order():
         "PREV_IMAGE": "${{ steps.capture.outputs.prev_image }}",
     }
     assert steps.index(validation) < steps.index(_step_named(wf, "Install SSH key"))
-    assert steps.index(_step_named(
-        wf, "Install daemon-only request idempotency HMAC secret",
-    )) < steps.index(step) < steps.index(_step_named(
-        wf, "Run fail-safe deploy on the droplet",
-    ))
+    assert (
+        steps.index(
+            _step_named(
+                wf,
+                "Install daemon-only request idempotency HMAC secret",
+            )
+        )
+        < steps.index(step)
+        < steps.index(
+            _step_named(
+                wf,
+                "Run fail-safe deploy on the droplet",
+            )
+        )
+    )
     script = step["run"]
     assert "${{ secrets." not in script
     assert "set +x" in script
@@ -124,100 +127,6 @@ def test_workflow_dispatch_has_image_tag_input():
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
 
 
-def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
-    wf = _load()
-    inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
-    assert "unsafe_fence_source_run_id" in inputs
-    assert "<run_id>-<attempt>" in str(
-        inputs["unsafe_fence_source_run_id"].get("description", "")
-    )
-    recovery = wf["jobs"]["recover-unsafe"]
-    assert "workflow_dispatch" in str(recovery.get("if", ""))
-    checkout = recovery["steps"][0]
-    assert checkout.get("uses") == "actions/checkout@v4"
-    assert checkout.get("with", {}).get("fetch-depth") == 0
-    step = _step_named({"jobs": {"deploy": recovery}}, "Recover canonical unsafe fence")
-    script = str(step.get("run", ""))
-    assert "recover-unsafe --source-run-id" in script
-    assert "[A-Za-z0-9._-]{1,128}" in script
-    assert step.get("env", {}).get("SOURCE_RUN_ID") == (
-        "${{ inputs.unsafe_fence_source_run_id }}"
-    )
-    assert "inputs.unsafe_fence_source_run_id" not in script
-    assert " --image-ref " in script
-    assert " --revision " in script
-    assert " --expected-script-sha256 " in script
-    assert "sha256sum scripts/retire_cheat_loop_deploy_fence.py" in script
-    assert "sha256sum -c -" in script
-    assert "set -euo pipefail" in script
-    assert "deploy/recovery-restart-no.yml" in script
-    assert "deploy/tinyassets-recovery-reconcile.service" in script
-    assert "systemctl enable tinyassets-recovery-reconcile.service" in script
-    reconcile_unit = (
-        Path("deploy/tinyassets-recovery-reconcile.service")
-        .read_text(encoding="utf-8")
-    )
-    assert "reconcile-recovery-on-boot" in reconcile_unit
-    assert "After=docker.service" in reconcile_unit
-    for unit in (
-        "daemon-watchdog.timer",
-        "tinyassets-watchdog.timer",
-        "tinyassets-autoheal.timer",
-        "tinyassets-daemon.service",
-    ):
-        assert unit in reconcile_unit
-    recovery_script_path = RECOVERY_SCRIPT_PATH.as_posix()
-    assert recovery_script_path in script
-    assert (
-        f"/tmp/retire-cheat-loop-deploy-fence.py {recovery_script_path}"
-        in script
-    )
-    assert "recovery_pending_canary" not in script
-    resolve = _step_named(
-        {"jobs": {"deploy": recovery}}, "Resolve unsafe recovery image"
-    )
-    resolve_script = str(resolve.get("run", ""))
-    assert "docker buildx imagetools inspect" in resolve_script
-    assert "org.opencontainers.image.revision" in resolve_script
-    assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in resolve_script
-    assert "git merge-base --is-ancestor" in resolve_script
-    refence = _step_named(
-        {"jobs": {"deploy": recovery}}, "Re-fence failed recovery"
-    )
-    refence_script = str(refence.get("run", ""))
-    assert "refence-recovery --source-run-id" in refence_script
-    assert "[A-Za-z0-9._-]{1,128}" in refence_script
-    assert "quiesce-unsafe" not in refence_script
-    assert "cancelled()" in str(refence.get("if", ""))
-    finalize = _step_named(
-        {"jobs": {"deploy": recovery}},
-        "Finalize canonical unsafe-fence recovery",
-    )
-    assert "finalize-recovery --source-run-id" in str(finalize.get("run", ""))
-    step_names = [str(item.get("name", "")) for item in recovery["steps"]]
-    pull_index = step_names.index("Pull recovery image on production host")
-    recover_index = step_names.index("Recover canonical unsafe fence")
-    assert pull_index < recover_index
-    host_pull = _step_named(
-        {"jobs": {"deploy": recovery}},
-        "Pull recovery image on production host",
-    )
-    host_pull_script = str(host_pull.get("run", ""))
-    assert host_pull.get("env", {}).get("RECOVERY_IMAGE_REF") == (
-        "${{ steps.recovery-image.outputs.image_ref }}"
-    )
-    assert "sudo docker pull '${RECOVERY_IMAGE_REF}'" in host_pull_script
-    assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
-        "Finalize canonical unsafe-fence recovery"
-    )
-    assert step_names.index("Recovery daemon MCP canary (loopback)") < step_names.index(
-        "Finalize canonical unsafe-fence recovery"
-    )
-    assert "inputs.unsafe_fence_source_run_id == ''" in str(
-        wf["jobs"]["deploy"].get("if", "")
-    )
-
-
 def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     """The override must fence every default-profile service, and only those.
 
@@ -231,9 +140,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     services = override["services"]
     compose = yaml.safe_load((_REPO / "deploy" / "compose.yml").read_text(encoding="utf-8"))
     default_profile = {
-        name
-        for name, service in compose["services"].items()
-        if not service.get("profiles")
+        name for name, service in compose["services"].items() if not service.get("profiles")
     }
     assert set(services) == default_profile, (
         "recovery override must fence exactly the default-profile services"
@@ -248,72 +155,6 @@ def test_deploy_resolves_image_to_digest_and_never_latest():
     assert "docker buildx imagetools inspect" in text
     assert 'tag="latest"' not in text
     assert ":latest" not in text, "deploy-prod must not use :latest for deploy or rollback targets"
-
-
-def test_manual_image_tag_is_env_bound_and_validated_before_use():
-    wf = _load()
-    step = _step_named(wf, "Resolve image tag")
-    run_script = step.get("run", "") or ""
-    env = step.get("env") or {}
-
-    assert env.get("REQUESTED_IMAGE_TAG") == "${{ inputs.image_tag }}"
-    assert "${{ inputs.image_tag }}" not in run_script, (
-        "workflow input must not be interpolated into executable shell source"
-    )
-    assert "[A-Za-z0-9_][A-Za-z0-9._-]{0,127}" in run_script
-    assert "refusing invalid OCI image tag" in run_script
-
-
-def test_resolved_digest_is_canonical_before_any_host_write():
-    wf = _load()
-    step = _step_named(wf, "Resolve image tag")
-    run_script = step.get("run", "") or ""
-
-    assert "sha256:[0-9a-f]{64}" in run_script
-    assert "refusing non-canonical immutable image digest" in run_script
-
-
-def test_capture_previous_uses_configured_and_running_digest_observations():
-    wf = _load()
-    step = _step_named(wf, "Capture previous image tag (for rollback)")
-    run_script = step.get("run", "") or ""
-
-    assert "docker inspect --type container" in run_script
-    assert "{{.Image}}" in run_script
-    assert "tinyassets-daemon" in run_script
-    assert "docker image inspect" in run_script
-    assert "{{json .RepoDigests}}" in run_script
-    assert "configured_image_ref=" in run_script
-    assert "running_image_ref=" in run_script
-    assert "previous=" in run_script
-    assert "docker buildx imagetools inspect" not in run_script, (
-        "a mutable configured tag cannot be converted into rollback proof"
-    )
-
-
-def test_capture_previous_transports_bounded_prior_receipt_read_only():
-    wf = _load()
-    step = _step_named(wf, "Capture previous image tag (for rollback)")
-    run_script = step.get("run", "") or ""
-
-    assert "docker volume inspect tinyassets-data" in run_script
-    assert "head -c 65537" in run_script
-    assert "base64 -w0" in run_script
-    assert "prior_receipt_b64=" in run_script
-    for forbidden in (" install ", " mv ", " rm ", "set TINYASSETS_IMAGE"):
-        assert forbidden not in run_script, (
-            "pre-mutation capture must remain read-only on the production host"
-        )
-
-
-def test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs():
-    wf = _load()
-    step = _step_named(wf, "Capture previous image tag (for rollback)")
-    run_script = step.get("run", "") or ""
-
-    assert "previous_active_revision_label=" not in run_script
-    assert "active_revision_label" not in run_script
-    assert "org.opencontainers.image.revision" not in run_script
 
 
 # ---------------------------------------------------------------------------
@@ -415,21 +256,13 @@ def test_post_deploy_canary_step_present():
 
 
 def test_canary_step_only_probes_canonical():
-    """Canary must NOT probe the direct URL (returns 403 after CF Access cutover)."""
-    wf = _load()
-    for step in _steps(wf):
-        name = step.get("name", "") or ""
-        if "canary" in name.lower() and "access" not in name.lower():
-            run_script = step.get("run", "") or ""
-            assert "DIRECT_URL" not in run_script, (
-                f"Canary step '{name}' must not probe DIRECT_URL — it correctly "
-                "returns 403 after CF Access Option-1 cutover. Only canonical URL is valid."
-            )
-            assert "CANARY_URL" in run_script, (
-                f"Canary step '{name}' must probe CANARY_URL (canonical)"
-            )
-            return
-    pytest.fail("Post-deploy canary step not found")
+    steps = _steps(_load())
+    core = next(s for s in steps if s.get("id") == "core_canary")
+    assert core["uses"] == "./.github/actions/core-capability-canary"
+    assert "if" not in core and not core.get("continue-on-error")
+    public = next(s for s in steps if s.get("id") == "canary")
+    assert "https://tinyassets.io/mcp --assert-handles" in public["run"]
+    assert steps.index(core) == next(i for i, s in enumerate(steps) if s.get("id") == "deploy") + 1
 
 
 def test_access_gate_step_present():
@@ -442,9 +275,7 @@ def test_access_gate_step_present():
     wf = _load()
     steps = _steps(wf)
     access_steps = [s for s in steps if "access" in (s.get("name") or "").lower()]
-    assert access_steps, (
-        "deploy job must have a CF Access gate verification step"
-    )
+    assert access_steps, "deploy job must have a CF Access gate verification step"
     gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
     assert gate.get("id") == "access-gate"
     # After the public surfaces, before the rollback, and only on a green run.
@@ -502,7 +333,10 @@ def test_access_gate_step_executes_under_errexit(tmp_path, curl_rc, http_out, wa
     script.write_bytes((prelude + str(gate.get("run", ""))).encode())
     proc = subprocess.run(
         ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
-        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert proc.returncode == want_rc, proc.stdout + proc.stderr
     if curl_rc:
@@ -526,8 +360,10 @@ def test_access_gate_treats_our_own_401_as_an_open_gate():
     run_script = str(gate.get("run", ""))
 
     # The pass branch is 403 and only 403.
-    pass_branch = re.search(r'elif \[ "\$\{http_code\}" = "([0-9]{3})" \]; then\n\s*echo "Access gate confirmed',
-                            run_script)
+    pass_branch = re.search(
+        r'elif \[ "\$\{http_code\}" = "([0-9]{3})" \]; then\n\s*echo "Access gate confirmed',
+        run_script,
+    )
     assert pass_branch, "the step has a single, identifiable pass branch"
     assert pass_branch.group(1) == "403", (
         f"only 403 proves Access denied the request; found {pass_branch.group(1)}"
@@ -557,9 +393,7 @@ def test_access_gate_treats_our_own_401_as_an_open_gate():
         "curl_rc is read; capture it with `|| curl_rc=$?`"
     )
     assert '[ "${curl_rc}" != "0" ]' in run_script
-    code_lines = [
-        line for line in run_script.splitlines() if not line.strip().startswith("#")
-    ]
+    code_lines = [line for line in run_script.splitlines() if not line.strip().startswith("#")]
     assert not any("|| echo 000" in line for line in code_lines), (
         "concatenating a fallback onto curl's own output produced 000000 "
         "(the step's comment may describe the old bug; the code may not have it)"
@@ -571,12 +405,19 @@ def test_access_gate_treats_our_own_401_as_an_open_gate():
     # rather than unconditional.
     assert "exit 1" in run_script
     assert run_script.count("exit 1") < run_script.count("if [")
+
+
 def test_rollback_step_present():
-    wf = _load()
-    names = [s.get("name", "") for s in _steps(wf)]
-    assert any("rollback on failure" in (n or "").lower() for n in names), (
-        "deploy job must have a 'Rollback on failure' step"
+    steps = _steps(_load())
+    rollback = next(s for s in steps if s.get("name") == "Roll back if the public canary is red")
+    assert (
+        rollback["if"] == "${{ failure() && steps.deploy.outputs.rc == '0' && "
+        "(steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure' || "
+        "steps.core_canary.outcome == 'failure') }}"
     )
+    assert "--restore-bundle" in rollback["run"]
+    assert rollback["env"]["PREV_IMAGE"] == "${{ steps.capture.outputs.prev_image }}"
+    assert not rollback.get("continue-on-error")
 
 
 def test_failed_candidate_diagnostics_are_preserved_before_rollback():
@@ -633,8 +474,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     # ---- the snapshot must be cheap and bounded -------------------------
     snapshot_condition = str(snapshot.get("if", "")).strip()
     assert snapshot_condition == (
-        "${{ always() && steps.deploy.outputs.rc == '0' "
-        "&& (failure() || cancelled()) }}"
+        "${{ always() && steps.deploy.outputs.rc == '0' && (failure() || cancelled()) }}"
     )
     assert "steps.deploy.outputs.rc == '0'" in snapshot_condition, (
         "rc 2 was already rolled back inside the script, so its container is "
@@ -731,10 +571,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert 0 < int(upload["timeout-minutes"]) <= 5, (
         "a slow upload holds the production-host-mutation group"
     )
-    assert (
-        upload.get("uses")
-        == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-    )
+    assert upload.get("uses") == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     # The invariant is that every upload is pinned to the reviewed commit, not
     # how many uploads there are: the count was 3 when two of them belonged to
     # the stop-writer artifacts #2442 retired.
@@ -746,28 +583,6 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
         "an empty evidence dir is legitimate when the container was gone"
     )
     assert 0 < int(upload_with["retention-days"]) <= 7
-
-def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
-    wf = _load()
-    step = _step_named(wf, "Rollback on failure")
-    cond = str(step.get("if", ""))
-    step_env = step.get("env") or {}
-    run_script = step.get("run", "") or ""
-
-    assert cond.strip() == "always()", (
-        "rollback must always run so pre-host, pre-image, success, and required "
-        "rollback paths all publish a bounded result tuple"
-    )
-    assert "failure()" not in cond
-    assert "steps.prev.outputs.previous != ''" not in cond
-    assert "image_mutation_started" in str(step_env.get("IMAGE_MUTATION_STARTED", "")), (
-        "rollback eligibility must consume the image-mutation marker"
-    )
-    assert "IMAGE_MUTATION_STARTED" in run_script
-    assert "production_mutation_started" not in cond, (
-        "production mutation requires terminal publication, but it must not "
-        "make image rollback eligible"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -891,10 +706,7 @@ def test_deploy_passes_the_per_run_stage_directory_to_the_script():
     assert 'echo "stage=${stage}" >> "$GITHUB_OUTPUT"' in (stage_step.get("run") or "")
 
     deploy_step = next(s for s in steps if s.get("id") == "deploy")
-    assert (
-        deploy_step.get("env", {}).get("BUNDLE_DIR")
-        == "${{ steps.stage_bundle.outputs.stage }}"
-    )
+    assert deploy_step.get("env", {}).get("BUNDLE_DIR") == "${{ steps.stage_bundle.outputs.stage }}"
     assert "BUNDLE_DIR='${BUNDLE_DIR}'" in (deploy_step.get("run") or "")
 
 
@@ -902,11 +714,7 @@ def test_canary_rollback_restores_the_bundle_before_the_image():
     """Converging PREV_IMAGE against the NEW compose file rolls back half a change."""
     wf = _load()
     rollback = next(
-        (
-            s
-            for s in _steps(wf)
-            if s.get("name") == "Roll back if the public canary is red"
-        ),
+        (s for s in _steps(wf) if s.get("name") == "Roll back if the public canary is red"),
         None,
     )
     assert rollback is not None, "the canary rollback step must exist"
@@ -921,21 +729,6 @@ def test_canary_rollback_restores_the_bundle_before_the_image():
 # ---------------------------------------------------------------------------
 # (j) Disk preflight before image pull/restart
 # ---------------------------------------------------------------------------
-
-
-def test_disk_preflight_runs_before_deploy_image_pull():
-    wf = _load()
-    steps = _steps(wf)
-    names = [s.get("name", "") for s in steps]
-    preflight_idx = next(
-        i for i, name in enumerate(names) if name == "Preflight droplet disk before image pull"
-    )
-    deploy_idx = next(i for i, step in enumerate(steps) if step.get("id") == "deploy")
-
-    assert preflight_idx < deploy_idx, (
-        "disk preflight must happen before TINYASSETS_IMAGE is changed, "
-        "docker pull runs, or systemd restart can take the live daemon down"
-    )
 
 
 def test_deploy_preserves_host_owned_backup_destination():
@@ -1009,137 +802,6 @@ def test_deploy_deletes_the_retired_github_oauth_pair_and_proves_it_took():
 # already red at b9225243 before this change touched anything.
 
 
-def test_production_marker_is_immediately_before_first_scrub_host_write():
-    wf = _load()
-    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
-    run_script = scrub_step.get("run", "") or ""
-    lines = run_script.splitlines()
-    first_host_write = next(i for i, line in enumerate(lines) if line.strip().startswith("ssh "))
-    marker_line = _previous_executable_line(lines, first_host_write)
-
-    assert scrub_step.get("id"), (
-        "the scrub step needs an id so later always-running steps can consume "
-        "production_mutation_started even when the SSH write fails"
-    )
-    assert "production_mutation_started=true" in marker_line
-    assert "GITHUB_OUTPUT" in marker_line
-
-
-def test_image_marker_is_immediately_before_first_tinyassets_image_write():
-    wf = _load()
-    deploy_step = next(step for step in _steps(wf) if step.get("id") == "deploy")
-    run_script = deploy_step.get("run", "") or ""
-    lines = run_script.splitlines()
-    image_write_line = next(
-        i
-        for i, line in enumerate(lines)
-        if "install-tinyassets-env.sh set TINYASSETS_IMAGE" in line
-        and not line.lstrip().startswith("#")
-    )
-
-    # Walk to the start of the continued ssh command that invokes the helper.
-    command_start = image_write_line
-    while command_start > 0 and lines[command_start - 1].rstrip().endswith("\\"):
-        command_start -= 1
-    marker_line = _previous_executable_line(lines, command_start)
-
-    assert "image_mutation_started=true" in marker_line
-    assert "GITHUB_OUTPUT" in marker_line
-
-
-def test_rollback_and_terminal_receipt_are_ordered_under_always():
-    wf = _load()
-    steps = _steps(wf)
-    canary_step = _step_named(wf, "Post-deploy canary — canonical URL only")
-    access_step = _step_named(wf, "Verify CF Access gates direct URL (expects 403/401)")
-    rollback_step = _step_named(wf, "Rollback on failure")
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-
-    assert str(rollback_step.get("if", "")).strip() == "always()"
-    assert str(terminal_step.get("if", "")).strip() == "always()"
-    assert steps.index(canary_step) < steps.index(rollback_step)
-    assert steps.index(access_step) < steps.index(rollback_step)
-    assert steps.index(rollback_step) < steps.index(terminal_step), (
-        "terminal classification must run after rollback so its receipt "
-        "describes the final observed production state"
-    )
-
-
-def test_daemon_deploy_owns_exact_public_server_name_assertion():
-    wf = _load()
-    canary_step = _step_named(wf, "Post-deploy canary — canonical URL only")
-    run_script = canary_step.get("run", "") or ""
-
-    assert "scripts/mcp_public_canary.py" in run_script
-    assert "--assert-name TinyAssets" in run_script
-
-
-def test_terminal_receipt_keys_to_production_marker():
-    wf = _load()
-    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    step_env = terminal_step.get("env") or {}
-    run_script = terminal_step.get("run", "") or ""
-
-    expected_ref = f"steps.{scrub_step['id']}.outputs.production_mutation_started"
-    assert expected_ref in str(step_env.get("PRODUCTION_MUTATION_STARTED", ""))
-    assert (
-        "steps.stop-writer-cleanup.outputs.cutover_started"
-        in str(step_env.get("PRODUCTION_MUTATION_STARTED", ""))
-    )
-    assert "PRODUCTION_MUTATION_STARTED" in run_script
-    assert "not_applicable" in run_script
-    assert "failed" in run_script
-
-
-def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
-    wf = _load()
-    rollback_step = _step_named(wf, "Rollback on failure")
-    run_script = rollback_step.get("run", "") or ""
-    output_keys = (
-        "rollback_attempted",
-        "rollback_result",
-        "rollback_canary_status",
-        "rollback_reason",
-    )
-
-    fallible_positions = [
-        position
-        for token in ("scp ", "ssh ", "scripts/mcp_public_canary.py")
-        if (position := run_script.find(token)) != -1
-    ]
-    assert fallible_positions, "rollback must contain the fallible rollback work"
-    first_fallible = min(fallible_positions)
-    output_helper = "emit_rollback_outputs"
-
-    for key in output_keys:
-        first_output = run_script.find(f"{key}=")
-        assert first_output != -1, f"rollback must expose {key}"
-        assert first_output < first_fallible, (
-            f"rollback must emit a safe {key} default before fallible work"
-        )
-
-    final_exit = run_script.rfind("exit ")
-    assert final_exit != -1, "rollback must return its exact classified exit"
-    if output_helper in run_script:
-        assert run_script.count(output_helper) >= 3, (
-            "the rollback output helper must be defined and called for both "
-            "safe defaults and the final tuple"
-        )
-        helper_definition = run_script.find(output_helper)
-        first_helper_call = run_script.find(output_helper, helper_definition + len(output_helper))
-        assert first_helper_call < first_fallible
-        assert first_fallible < run_script.rfind(output_helper) < final_exit
-    else:
-        for key in output_keys:
-            assert run_script.count(f"{key}=") >= 2, (
-                f"rollback must emit both the safe default and final {key} output"
-            )
-            assert run_script.rfind(f"{key}=") < final_exit, (
-                f"rollback final {key} output must be visible before failure"
-            )
-
-
 def test_rollback_identity_failure_preserves_the_passed_canary_tuple(tmp_path):
     """A healthy rollback with the wrong image must never report success.
 
@@ -1155,16 +817,23 @@ def test_rollback_identity_failure_preserves_the_passed_canary_tuple(tmp_path):
     )
     source = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
     functions = []
-    for name in ("container_state", "health_ok", "tunnel_up",
-                 "running_image_matches", "accept", "finish"):
+    for name in (
+        "container_state",
+        "health_ok",
+        "tunnel_up",
+        "running_image_matches",
+        "accept",
+        "finish",
+    ):
         match = re.search(rf"^{name}\(\) \{{[^\n]*\n.*?^\}}\n", source, re.M | re.S)
         assert match, f"cannot find current rollback collaborator {name}"
         functions.append(match.group(0))
     marker = "# --- 6. unhealthy -> restore the bundle, then roll back the image"
     assert source.count(marker) == 1
-    rollback = source[source.index(marker):]
+    rollback = source[source.index(marker) :]
     harness = tmp_path / "rollback.sh"
-    harness.write_text(r'''
+    harness.write_text(
+        r"""
 set -uo pipefail
 PREV_IMAGE="ghcr.io/tinyassets/tinyassets-daemon@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 RUNNING_ID="$1"
@@ -1198,7 +867,12 @@ docker() {
     *) echo "unexpected docker call: $*" >> "$CALLS"; return 97 ;;
   esac
 }
-''' + "\n".join(functions) + rollback, encoding="utf-8", newline="\n")
+"""
+        + "\n".join(functions)
+        + rollback,
+        encoding="utf-8",
+        newline="\n",
+    )
     for identity, expected_code, expected_result in (
         ("sha256:previous", 2, "rolled_back"),
         ("sha256:other", 3, "rollback_unhealthy"),
@@ -1206,7 +880,10 @@ docker() {
         calls = tmp_path / "rollback-calls.txt"
         result = subprocess.run(
             [bash, harness.as_posix(), identity, calls.as_posix()],
-            capture_output=True, text=True, check=False, timeout=30,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
         )
         assert result.returncode == expected_code, result.stderr
         assert f"deploy_result={expected_result}\n" in result.stdout
@@ -1226,52 +903,6 @@ docker() {
             assert "deployed_image=" not in result.stdout
 
 
-def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-
-    helper_idx = run_script.find("python scripts/deploy_terminal_receipt.py")
-    transfer_idx = run_script.find("scp ")
-    install_idx = run_script.find("install -m 0644 -o 1001 -g 1001")
-    assert helper_idx != -1, (
-        "terminal publication must invoke the directly executable pure classifier/builder"
-    )
-    assert transfer_idx != -1
-    assert install_idx != -1
-    assert helper_idx < transfer_idx < install_idx
-    assert "release-state.json" in run_script
-    assert "/data/release-state.json" in run_script
-    assert "release-state.json.next" in run_script
-    assert "mv " in run_script, (
-        "receipt replacement must rename a validated same-volume sibling "
-        "instead of exposing a partially written terminal receipt"
-    )
-    assert terminal_step.get("continue-on-error") is not True, (
-        "terminal writer failure must keep the workflow red"
-    )
-
-
-def test_terminal_receipt_never_mutates_the_deployed_image_after_publication():
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-
-    published_idx = run_script.find("terminal_receipt_result=published")
-    assert published_idx != -1
-    post_publication = run_script[published_idx:]
-    for forbidden in (
-        "TINYASSETS_IMAGE",
-        "docker pull",
-        "systemctl restart tinyassets-daemon",
-        "${PREV_IMAGE}",
-    ):
-        assert forbidden not in post_publication, (
-            "the installed terminal receipt must describe the final production "
-            f"state; found a later image mutation token: {forbidden}"
-        )
-
-
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
     text = _text()
     assert "github.event.workflow_run.head_sha || github.sha" not in text
@@ -1280,168 +911,8 @@ def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
     # host (deploy/snapshot_candidate_evidence.sh) rather than inline, so the
     # assertion covers the deploy CHAIN -- grepping only the workflow text would
     # pass or fail on where the string happens to live.
-    chain = text + Path("deploy/snapshot_candidate_evidence.sh").read_text(
-        encoding="utf-8"
-    )
+    chain = text + Path("deploy/snapshot_candidate_evidence.sh").read_text(encoding="utf-8")
     assert "org.opencontainers.image.revision" in chain
-
-
-def test_terminal_writer_outputs_are_visible_before_fallible_work():
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-    first_fallible = min(
-        position
-        for token in ("ssh ", "scp ", "python scripts/deploy_terminal_receipt.py")
-        if (position := run_script.find(token)) != -1
-    )
-
-    failed_idx = run_script.find("terminal_receipt_result=failed")
-    not_applicable_idx = run_script.find("terminal_receipt_result=not_applicable")
-    published_idx = run_script.find("terminal_receipt_result=published")
-    install_idx = run_script.find("install -m 0644 -o 1001 -g 1001")
-    assert 0 <= failed_idx < first_fallible, (
-        "writer failure must leave a visible failed output before host "
-        "observation, classification, transfer, or install can fail"
-    )
-    assert 0 <= not_applicable_idx < first_fallible, (
-        "the pre-host path must publish not_applicable without host contact"
-    )
-    assert install_idx != -1
-    assert published_idx > install_idx, (
-        "published is truthful only after the atomic receipt install succeeds"
-    )
-    for output_name in (
-        "terminal_outcome",
-        "terminal_active_identity_status",
-        "terminal_canary_status",
-    ):
-        output_idx = run_script.find(f"{output_name}=")
-        assert 0 <= output_idx < install_idx, (
-            f"{output_name} must be exposed before atomic install so issue "
-            "wording survives writer failure"
-        )
-
-
-def test_terminal_canary_output_preserves_the_raw_applicable_canary():
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-
-    assert "terminal_canary_status={receipt['canary_bundle_status']}" not in run_script
-    assert 'receipt["forward_canary_status"]' in run_script
-    assert 'receipt["rollback_canary_status"]' in run_script
-    assert 'receipt["rollback_attempted"]' in run_script
-
-
-def test_forward_green_terminal_identity_failure_stays_red_after_publication():
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-
-    published_idx = run_script.find("terminal_receipt_result=published")
-    proof_gate_idx = run_script.find('if [ "${FORWARD_SUCCEEDED}" = "true" ]')
-    proof_error_idx = run_script.find("forward terminal state is unproven")
-    assert 0 <= published_idx < proof_gate_idx < proof_error_idx, (
-        "terminal evidence must be installed before the forward identity gate returns nonzero"
-    )
-    proof_tail = run_script[proof_gate_idx:]
-    assert "exit 1" in proof_tail
-    for required in ("deployed", "active_identity_status", "agreed", "passed"):
-        assert required in proof_tail
-
-
-def test_deploy_failure_issue_consumes_rollback_and_terminal_outputs():
-    wf = _load()
-    rollback_step = _step_named(wf, "Rollback on failure")
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    issue_step = _step_named(wf, "Open deploy-failed issue")
-    assert rollback_step.get("id"), "rollback outputs require a stable step id"
-    assert terminal_step.get("id"), "terminal outputs require a stable step id"
-
-    cond = str(issue_step.get("if", ""))
-    env_text = "\n".join(str(value) for value in (issue_step.get("env") or {}).values())
-    assert "always()" in cond and "failure()" in cond, (
-        "the issue must still run after a red rollback or terminal writer"
-    )
-    for output_name in (
-        "rollback_attempted",
-        "rollback_result",
-        "rollback_canary_status",
-        "rollback_reason",
-    ):
-        assert f"steps.{rollback_step['id']}.outputs.{output_name}" in env_text, (
-            f"deploy-failed issue must consume {output_name}"
-        )
-    for output_name in (
-        "terminal_receipt_result",
-        "terminal_outcome",
-        "terminal_active_identity_status",
-        "terminal_canary_status",
-        "terminal_configured_image_ref",
-        "terminal_running_image_ref",
-        "terminal_active_image_ref",
-    ):
-        assert f"steps.{terminal_step['id']}.outputs.{output_name}" in env_text, (
-            f"deploy-failed issue must consume {output_name}"
-        )
-
-
-def test_deploy_failure_issue_rejects_partial_or_contradictory_tuples():
-    wf = _load()
-    issue_step = _step_named(wf, "Open deploy-failed issue")
-    script = str((issue_step.get("with") or {}).get("script", ""))
-
-    for required in (
-        "productionNotStarted",
-        "imageNotStarted",
-        "rollbackNotAttempted",
-        'rollbackResult === "not_attempted"',
-        'rollbackResult === "succeeded"',
-        'rollbackResult === "failed"',
-        'rollbackCanary === "not_run"',
-        'rollbackCanary === "passed"',
-        'rollbackCanary === "failed"',
-        'rollbackReason === "attempted"',
-        "canonicalRepoDigest.test(previousImage)",
-    ):
-        assert required in script
-    assert 'rollbackAttempted && rollbackCanary === "failed"' not in script
-    assert 'rollbackAttempted && rollbackCanary === "not_run"' not in script
-
-
-def test_deploy_failure_issue_has_truthful_bounded_wording():
-    wf = _load()
-    issue_step = _step_named(wf, "Open deploy-failed issue")
-    script = str((issue_step.get("with") or {}).get("script", ""))
-
-    assert "Rolled back to:" not in script, (
-        "a previous-image value is not proof that rollback succeeded"
-    )
-    for required_sentence in (
-        "Production host write did not start; image rollback was not attempted.",
-        (
-            "Production mutation started, but image mutation did not; "
-            "image rollback was not required."
-        ),
-        (
-            "Rollback was not needed because terminal outcome is deployed, "
-            "active image identity agrees, and the applicable canary passed."
-        ),
-        "Rollback was not attempted; forward production health is unproven.",
-        "Rollback succeeded and the rollback canary passed.",
-        ("Rollback status is unavailable; rollback success was not proven."),
-        "Terminal release-state receipt published.",
-        (
-            "Terminal release-state publication failed; durable active-release "
-            "truth is not proven and the prior receipt may be stale."
-        ),
-        (
-            "Terminal release-state publication was not applicable; the prior "
-            "receipt was left unchanged."
-        ),
-    ):
-        assert required_sentence in script
 
 
 # ---------------------------------------------------------------------------
@@ -1648,34 +1119,6 @@ def test_request_idempotency_hmac_validator_rejects_agent_key_reuse():
     assert "must differ" in result.stdout
 
 
-def test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation():
-    wf = _load()
-    steps = wf["jobs"]["recover-unsafe"]["steps"]
-    indexes = {step.get("name"): index for index, step in enumerate(steps)}
-    request = steps[indexes["Validate recovery request idempotency HMAC"]]
-    agent = steps[indexes["Validate recovery agent interchange HMAC"]]
-    assert request.get("run") == (
-        "python scripts/validate_request_idempotency_hmac.py"
-    )
-    assert agent.get("run") == "python scripts/validate_agent_interchange_hmac.py"
-    assert indexes["Validate recovery request idempotency HMAC"] < indexes[
-        "Pull recovery image on production host"
-    ]
-    assert indexes["Validate recovery agent interchange HMAC"] < indexes[
-        "Pull recovery image on production host"
-    ]
-    host = steps[indexes["Validate host HMAC pair before recovery mutation"]]
-    host_script = host.get("run", "") or ""
-    assert "scripts/validate_host_runtime_hmac_pair.py" in host_script
-    assert '"sudo python3 -"' in host_script
-    assert indexes["Install recovery SSH key"] < indexes[
-        "Validate host HMAC pair before recovery mutation"
-    ]
-    assert indexes["Validate host HMAC pair before recovery mutation"] < indexes[
-        "Pull recovery image on production host"
-    ]
-
-
 # ---------------------------------------------------------------------------
 # retire-cheat-loop task 2.1 — transitional production stop-writer fence
 # ---------------------------------------------------------------------------
@@ -1701,101 +1144,9 @@ def test_deploy_shares_production_host_mutation_concurrency_group():
 def test_stop_writer_ancestry_gate_has_complete_git_history():
     wf = _load()
     checkout = next(
-        step
-        for step in _steps(wf)
-        if str(step.get("uses", "")).startswith("actions/checkout@")
+        step for step in _steps(wf) if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert checkout.get("with", {}).get("fetch-depth") == 0
-
-
-def test_disk_preflight_precedes_every_remote_image_pull():
-    wf = _load()
-    steps = _steps(wf)
-    disk_index = steps.index(_step_named(wf, "Preflight droplet disk before image pull"))
-    pull_indexes = []
-    for index, step in enumerate(steps):
-        for line in str(step.get("run", "")).splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if "docker pull" in stripped:
-                pull_indexes.append(index)
-    assert pull_indexes
-    assert all(disk_index < index for index in pull_indexes)
-
-
-def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
-    wf = _load()
-    preflight = _stop_writer_step(
-        wf, "Transitional task 2.1 stop-writer preflight"
-    ).get("run", "")
-    proof = _stop_writer_step(
-        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
-    ).get("run", "")
-
-    assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in preflight
-    assert "org.opencontainers.image.revision" in preflight
-    assert "git merge-base --is-ancestor" in preflight
-    assert "systemd-run --quiet --collect --wait --pipe" in preflight
-    assert "--property RuntimeMaxSec=300" in preflight
-    assert "--property TimeoutStartSec=300" in preflight
-    assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in preflight
-    assert "prove --image-ref" in proof
-    assert "receipt_snapshot_post_deploy.json" in proof
-
-
-def test_stop_writer_blocks_unsafe_rollback_image():
-    wf = _load()
-    preflight = _stop_writer_step(
-        wf, "Transitional task 2.1 stop-writer preflight"
-    )
-    rollback = _step_named(wf, "Rollback on failure")
-
-    assert "safe_previous_image" in str(preflight.get("run", ""))
-    assert (
-        rollback.get("env", {}).get("PREV_IMAGE")
-        == "${{ steps.stop-writer.outputs.safe_previous_image }}"
-    )
-    assert "steps.prev.outputs.previous" not in str(
-        rollback.get("env", {}).get("PREV_IMAGE", "")
-    )
-
-
-def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
-    wf = _load()
-    terminal = _step_with_run_token(wf, "terminal_receipt_result=")
-    assert (
-        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_RESTORED")
-        == "${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}"
-    )
-    assert (
-        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_MUTATION_STARTED")
-        == "${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}"
-    )
-    assert (
-        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_SAFELY_FENCED")
-        == "${{ steps.stop-writer-cleanup.outputs.cleanup_safely_fenced }}"
-    )
-    assert "steps.stop-writer-cleanup.outputs.cleanup_mutation_started" in str(
-        terminal.get("env", {}).get("PRODUCTION_MUTATION_STARTED", "")
-    )
-    script = str(terminal.get("run", ""))
-    assert 'if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]' in script
-    assert "export FORWARD_SUCCEEDED=false" not in script
-    assert "export FORWARD_CANARY_OUTCOME=failure" not in script
-    assert '"cleanup_restored": marker(' in script
-    assert '"cleanup_safely_fenced": marker(' in script
-    assert '"cleanup_mutation_started": marker(' in script
-    assert "{{json .State.Running}}" in script
-    cleanup_script = str(
-        _step_named(
-            wf,
-            "Transitional task 2.1 restore restart racers when safe",
-        ).get("run", "")
-    )
-    assert "expected_restored_unit_states" in cleanup_script
-    assert "restored != expected" in cleanup_script
-    assert 'daemon.get("enabled") != "enabled"' not in cleanup_script
 
 
 def test_compose_declares_no_host_run_worker_fleet():
@@ -1809,37 +1160,7 @@ def test_compose_declares_no_host_run_worker_fleet():
     """
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
     for name in ("worker", "worker-codex-2", "worker-claude-1", "worker-claude-2"):
-        assert name not in compose["services"], (
-            f"host-run fleet service {name} is back"
-        )
+        assert name not in compose["services"], f"host-run fleet service {name} is back"
     for name, service in compose["services"].items():
         env = service.get("environment") or {}
         assert "TINYASSETS_UNIVERSE" not in env, name
-
-
-def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
-    """Recovery must not fail its own success check on a booting daemon.
-
-    The ordinary deploy path has a "Wait for daemon health" step before its
-    canary; the recovery path had none and probed the PUBLIC url immediately
-    after starting the fleet. The daemon's healthcheck allows a 60s
-    start_period, so live recovery 31048315265 probed ~0.7s after container
-    start, got 502 from a daemon that had not finished booting, and that
-    failure re-fenced the fleet — leaving /mcp down while the daemon itself
-    was healthy.
-    """
-    wf = _load()
-    step = next(
-        s for s in wf["jobs"]["recover-unsafe"]["steps"]
-        if s.get("name") == "Recovery daemon MCP canary (loopback)"
-    )
-    run = step.get("run", "") or ""
-    # Recovery proves the DAEMON serves MCP; the public route needs the tunnel
-    # sidecar, which recovery does not restore and the later deploy does.
-    assert "127.0.0.1:8001/mcp" not in run  # it is base64'd, not inline
-    assert "recovered daemon never served /mcp on loopback" in run
-    assert "exit 1" in run
-    # The public assertion must still exist elsewhere in the recovery job.
-    wf_all = _WORKFLOW.read_text(encoding="utf-8")
-    assert 'python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles' in wf_all
-

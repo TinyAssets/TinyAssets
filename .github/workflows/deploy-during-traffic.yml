@@ -5,6 +5,8 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
   merge_group:
     types: [checks_requested]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,6 +18,7 @@ concurrency:
 
 jobs:
   deploy-during-traffic:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

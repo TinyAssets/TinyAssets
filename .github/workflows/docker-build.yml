@@ -61,13 +61,8 @@ concurrency:
 
 jobs:
   build-smoke:
-    # Drafts do not spend a runner here (this was the single largest
-    # pull_request consumer measured 2026-10-03, median 11 min per run);
-    # `ready_for_review` above runs it for real as soon as the PR is ready.
-    # Not a branch-protection context, which is what makes skipping safe -- a
-    # skipped job reports `conclusion=skipped` and branch protection accepts
-    # that as satisfied (see tests.yml's note on `required-tests`).
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Optional heavy proof after merge; PRs use the required production-image gate.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

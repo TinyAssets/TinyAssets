@@ -5,10 +5,12 @@ from starlette.responses import JSONResponse
 
 from tinyassets import bound_requests
 from tinyassets.auth.middleware import current_identity, identity_context
+from tinyassets.capability_health import observed
 from tinyassets.onboarding.owner_sessions import HEADERS, require
 from tinyassets.owner_control import ControlUnavailable
 
 
+@observed('approval')
 async def handle_approval(request):
     from tinyassets.api.pending_requests import _owner_gate
     from tinyassets.onboarding import _app_identity_required, _read_small_json, onboarding_enabled

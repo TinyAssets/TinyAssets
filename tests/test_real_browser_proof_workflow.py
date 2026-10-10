@@ -58,7 +58,9 @@ def _step(wf: dict, needle: str) -> dict:
 
 def test_triggers_are_pull_request_paths_plus_dispatch_only():
     triggers = _triggers(_load())
-    assert set(triggers) == {"pull_request", "workflow_dispatch"}
+    assert set(triggers) == {"pull_request", "push", "workflow_dispatch"}
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["paths"] == triggers["pull_request"]["paths"]
     paths = triggers["pull_request"]["paths"]
     for required in (
         ".github/workflows/real-browser-proof.yml",
@@ -177,9 +179,9 @@ def test_the_proofs_run_in_the_jail_proofs_venue_and_nowhere_weaker():
     assert "scripts/linux_oracle.py" in paths and "docker/linux-oracle.Dockerfile" in paths
 
 
-def test_ordinary_pull_requests_still_trigger_it():
+def test_browser_proof_runs_after_merge_while_prs_use_the_image_gate():
     assert _job(_load())["if"] == (
-        "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
+        "github.event_name != 'pull_request'"
     )
 
 

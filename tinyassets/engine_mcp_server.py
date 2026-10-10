@@ -4818,14 +4818,30 @@ async def _universe_tool(op, /, **kwargs) -> str:
     from tinyassets.auth.middleware import _current_identity
 
     token = _bind_founder_identity(_RUN_CAPABILITIES)
+    from pathlib import PurePosixPath
+
+    from tinyassets.capability_health import RATES, result_error
+    from tinyassets.core_capabilities import failure_code
+
+    capability = required
+    if required == 'read' and PurePosixPath(str(kwargs.get('path', ''))).suffix.lower() in (
+            '.png', '.jpg', '.jpeg', '.webp', '.gif'):
+        capability = 'read_image'
     try:
         udir = _universe_dir(_GRAPH_ID)
-        return await asyncio.to_thread(op, udir, **kwargs)
+        result = await asyncio.to_thread(op, udir, **kwargs)
+        error = result_error(result)
+        RATES.record(capability, failure_code(error) if error else 'ok')
+        return result
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
         from tinyassets.engine_tool_activity import note_refusal
 
         note_refusal(str(exc))
+        RATES.record(capability, failure_code(exc))
         return f"error: {exc}"
+    except Exception as exc:
+        RATES.record(capability, failure_code(exc))
+        raise
     finally:
         _current_identity.reset(token)
 

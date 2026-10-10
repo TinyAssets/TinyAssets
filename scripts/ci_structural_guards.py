@@ -13,6 +13,10 @@ import pytest
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
 GUARDS = {
+    "test_capability_health": (
+        'Keep the capability report complete and the image check on real broker, cell, '
+        'launcher and relay paths; only the model transport may be substituted. '
+    ),
     'test_role_production_acceptance_integrity': (
         'Remove broker, cell, launcher or relay substitutions from the production-copy '
         'acceptance. Use a real isolated network peer and normal authority checks. '

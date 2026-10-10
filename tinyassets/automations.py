@@ -2288,8 +2288,15 @@ def run_due_automation(
 
     try:
         with automation_identity(base_path, automation):
-            return _run_due_automation(base_path, automation, due_at, **kwargs)
+            from tinyassets.capability_health import wake_outcome
+
+            reason = _run_due_automation(base_path, automation, due_at, **kwargs)
+            wake_outcome(reason)
+            return reason
     except (PermissionError, ValueError, OSError, sqlite3.Error):
+        from tinyassets.capability_health import RATES
+
+        RATES.record('scheduled_wake', 'authority_refused')
         reason = "outside_client_authority_refused"
         _record_refusal(base, automation, reason, moment, str(kwargs.get("consumer_id") or ""))
         return reason

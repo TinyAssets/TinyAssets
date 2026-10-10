@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets import rpc_frames as rf
+from tinyassets.capability_health import observed
 
 MAX_WINDOW = 256 * 1024
 _STREAM_ID = 1
@@ -323,6 +324,7 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker capability response")
         return answer["result"]
 
+    @observed('connected_service')
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
                 inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
