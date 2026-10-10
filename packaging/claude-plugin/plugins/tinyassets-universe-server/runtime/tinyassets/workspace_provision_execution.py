@@ -38,7 +38,7 @@ def execute_provision(manifests, *, lease_fd, repo_fd, max_transfer_bytes,
     if (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s)
             or not 0 < timeout_s <= MAX_WORKSPACE_TIMEOUT_SECONDS or not callable(cancelled)):
         raise ValueError('invalid provisioning deadline or cancellation')
-    client, center, identity = _scope(universe_dir, principal)
+    client, center, principal, identity = _scope(universe_dir, principal)
     lease, repo = os.fstat(lease_fd), os.fstat(repo_fd)
     for info in (lease, repo):
         if (not stat.S_ISDIR(info.st_mode)

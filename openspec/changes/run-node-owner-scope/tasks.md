@@ -8,4 +8,4 @@
 
 - [x] 2.1 Pass restored/migrated real-server acceptance and targeted Linux tests.
 - [x] 2.2 Pass ruff, structural guards, plugin build and hygiene; sync spec.
-- [ ] 2.3 Commit explicit paths with trailer, push, open non-draft PR and complete cross-family floor review.
+- [x] 2.3 Commit explicit paths with trailer, push, open non-draft PR and complete cross-family floor review.

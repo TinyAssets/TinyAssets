@@ -138,6 +138,49 @@ async def prove_runs(client, center, owner):
                     owner_user_id=owner, _enqueue_universe_id=center)
             await terminal(started.run_id)
             assert any(seen == actor and success for name, seen, success in node_calls)
+
+        # The workspace provisioner also consumes the shared remote-git scope.
+        # Exercise both real cells with an empty lockfile: no registry fixture
+        # or external network is needed, and npm still acquires then installs.
+        from tinyassets import role_remote_git, workspace_fs, workspace_owner_pool
+        from tinyassets.workspace_provision import admit_node
+        from tinyassets.workspace_provision_execution import execute_provision
+        from tinyassets.workspace_resolver import ProvisionManifests
+
+        actor = 'command_center:' + center
+        parts = list(workspace_owner_pool.pool_parts('scratch', ''))
+        name = secrets.token_hex(12)
+        answer = role_remote_git.run(
+            dict(op='create', timeout_s=60, options=[], storage='scratch',
+                 lease_parent=parts, lease_name=name),
+            universe_dir=root / center, principal=actor, egress_socket=None)
+        assert answer['ok'], answer
+        lease_fd = workspace_fs.open_dir_nofollow(root / center / Path(*parts) / name)
+        repo_fd = workspace_fs.open_subdir_nofollow(lease_fd, 'repo')
+        try:
+            plan = admit_node('{"name":"oracle","version":"1.0.0"}',
+                '{"name":"oracle","version":"1.0.0","lockfileVersion":3,"packages":{}}')
+            # Provisioning overlays the checkout's original manifest files.
+            # Create that input in the actor's descriptor-bound workspace node;
+            # the general tool cell correctly sees workspaces read-only.
+            with identity_context(Identity(actor, actor)):
+                seeded = node_sandbox.NodeSandbox(universe_dir=root / center).run_sync(
+                    'workspace-fixture', 'def run(state):\n'
+                    '    ws.write("package.json", state["package"])\n'
+                    '    ws.write("package-lock.json", state["lock"])\n'
+                    '    return {}',
+                    {'package': plan.normalized_package_json, 'lock': plan.normalized_lockfile},
+                    ['package', 'lock'], [], workspace=node_sandbox.WorkspaceMount(
+                        f'/proc/self/fd/{repo_fd}', pass_fds=(repo_fd,)))
+            assert seeded.success, seeded
+            provisioned = execute_provision(ProvisionManifests(None, plan),
+                lease_fd=lease_fd, repo_fd=repo_fd, universe_dir=root / center, principal=actor,
+                max_transfer_bytes=1024 * 1024, storage_bound=128 * 1024 * 1024,
+                timeout_s=120, cancelled=lambda: False)
+            assert provisioned.failure is None and provisioned.bytes_to_charge == 0, provisioned
+        finally:
+            os.close(repo_fd)
+            os.close(lease_fd)
         for actor in ('oracle-foreign-owner', 'universe:foreign', 'command_center:foreign'):
             with identity_context(Identity(actor, actor)):
                 try:
@@ -149,7 +192,8 @@ async def prove_runs(client, center, owner):
                     raise AssertionError('cross-owner scope admitted')
         return dict(background=background['status'], automation=automated['status'],
                     patch_intake=patched['status'], github_calls=len(wire_calls),
-                    nodes=[name for name, actor, success in node_calls], cross_owner='refused')
+                    nodes=[name for name, actor, success in node_calls], cross_owner='refused',
+                    workspace_provision='completed')
     finally:
         outbound_connections._broker_channel = real_channel
         role_node.run = real_node
