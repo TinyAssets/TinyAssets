@@ -310,10 +310,12 @@ class Browser:
                     try:
                         result = await self.command(command, playwright)
                     except Exception as exc:  # noqa: BLE001 - no traces/URLs/values leave cell
-                        # Read-only frames can race a redirect's renderer replacement.
+                        # Read-only frames can race a redirect's renderer replacement, and
+                        # Chromium cannot capture while a navigation swaps the page surface.
                         # Refresh the view; never replay input or agent actions.
                         navigating = command.get('action') == 'frame' and any(
                             phrase in str(exc) for phrase in (
+                                'Unable to capture screenshot',
                                 'Execution context was destroyed',
                                 'Cannot find context with specified id',
                                 'Unable to adopt element handle from a different document',

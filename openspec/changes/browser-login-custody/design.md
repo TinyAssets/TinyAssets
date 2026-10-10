@@ -45,3 +45,7 @@ F3/F4 AGREE — revalidate retained state after an abandoned capture and publish
 only fully written, fsynced vault keys with an atomic no-replace link. Native
 autofill remains an explicit gap. Generated browser-proof trigger additions
 only include marked test files; they do not weaken or skip any gate.
+
+Repeated navigation-failure handoff: Chromium can reject a screenshot during a
+page-surface swap. Refresh that read-only frame; never replay login input or
+agent actions. No raw browser exceptions or diagnostic credentials are logged.
