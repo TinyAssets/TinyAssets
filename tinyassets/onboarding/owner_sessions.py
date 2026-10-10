@@ -195,6 +195,16 @@ async def callback(request, *, completion=False):
     row = None
 
     def refused(reason, *, upstream_status=None):
+        # User/CSRF/expired-flow refusals are 403s and never outage samples.
+        # These failures occur after normal flow custody and concern our server
+        # or its trusted identity provider, despite the same public 403 shape.
+        if reason in {
+            'token_transport_error', 'verifier_decryption_failed', 'invalid_token_response',
+            'identity_unresolved', 'app_refresh_missing_or_invalid',
+        } or (reason == 'token_http_error' and (upstream_status or 0) >= 500):
+            from tinyassets.capability_health import RATES
+
+            RATES.record('owner_sign_in', 'authentication_failed')
         # Never log URLs, codes, cookies, tokens, state, or exception strings.
         try:
             referer = urlsplit(request.headers.get("referer", ""))

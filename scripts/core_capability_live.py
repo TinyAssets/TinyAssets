@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -110,11 +112,12 @@ async def health(http, report):
     report["rate_window"] = {
         key: rates[key] for key in ("boot_id", "observed_seconds", "window_seconds", "outcomes")
     }
+    return rates
 
 
 async def exercise(config, http, token, report):
     from fastmcp import Client
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
 
     universe = config["universe_id"]
     nonce = secrets.token_hex(12)
@@ -168,10 +171,11 @@ async def exercise(config, http, token, report):
             raise ProbeFailure("protected approval was not answered")
         passed(report, "approval", {"request_id": request_id, "decision": "allowed"})
 
-        colors = ("red", "green", "blue", "yellow")
-        expected = secrets.choice(colors)
-        picture = Image.new("RGB", (96, 64), "white")
-        ImageDraw.Draw(picture).rectangle((12, 12, 83, 51), fill=expected)
+        expected = secrets.token_hex(4).upper()
+        picture = Image.new("RGB", (256, 64), "white")
+        ImageDraw.Draw(picture).text(
+            (8, 8), expected, fill="black", font=ImageFont.load_default(size=32)
+        )
         output = io.BytesIO()
         picture.save(output, format="PNG")
         encoded = base64.b64encode(output.getvalue()).decode()
@@ -185,14 +189,15 @@ async def exercise(config, http, token, report):
             "Use read on that file and retain its returned text. Use edit to change before- "
             "to after-. Use bash to cat the file and retain stdout, then use bash to decode "
             "this PNG into /u/capability.png: " + encoded + ". Use read to view the PNG and name "
-            "the rectangle color. Through bash run ta connection:"
+            "the eight characters printed in it. Through bash run ta connection:"
             + config["connection_id"]
             + ":POST --json "
             + shlex.quote(connection_request)
             + ". Then use ta write_graph "
             'target=patch_request operation=send with title "Synthetic canary ' + nonce + '" '
             'and details "Synthetic verification ' + nonce + '". Reply ONLY with JSON keys '
-            "read, bash, image_color, service_nonce (from the HTTP response), delivery_id. "
+            "read, bash, image_text, service_hmac (from the HTTP response's hmac field), "
+            "delivery_id. "
             "Never infer a success or invent an output."
         )
         report["active_capability"] = "chat_stream"
@@ -204,8 +209,13 @@ async def exercise(config, http, token, report):
         checks = {
             "read": observed.get("read") == "before-" + nonce,
             "bash": str(observed.get("bash", "")).strip() == "after-" + nonce,
-            "read_image": observed.get("image_color", "").lower() == expected,
-            "connected_service": observed.get("service_nonce") == nonce,
+            "read_image": observed.get("image_text", "").strip().upper() == expected,
+            "connected_service": hmac.compare_digest(
+                str(observed.get("service_hmac", "")),
+                hmac.new(
+                    config["service_hmac_key"].encode(), nonce.encode(), hashlib.sha256
+                ).hexdigest(),
+            ),
         }
         stored = await call(
             "read_graph", target="universe_file", graph_id=universe, query="capability.txt"
@@ -326,7 +336,7 @@ async def run(report):
         headers={"Origin": ORIGIN, "User-Agent": "tinyassets-core-canary/1.0"},
     ) as http:
         try:
-            await health(http, report)
+            before = await health(http, report)
         except Exception as exc:
             report["health_failure"] = dict(
                 capability="public_mcp",
@@ -344,6 +354,7 @@ async def run(report):
             "universe_id",
             "connection_id",
             "service_path",
+            "service_hmac_key",
             "intake_receiver_id",
             "branch_id",
         ):
@@ -354,7 +365,17 @@ async def run(report):
         passed(report, "owner_sign_in", {"callback": "verified", "home": "dedicated canary"})
         await exercise(config, http, token, report)
         report["active_capability"] = "public_mcp"
-        await health(http, report)
+        after = await health(http, report)
+        if report.get("health_failure"):
+            return
+        if before["boot_id"] != after["boot_id"]:
+            raise ProbeFailure("daemon restarted during capability evidence collection")
+        for name in CAPABILITIES:
+            if after["capability_successes"][name] <= before["capability_successes"][name]:
+                report["capabilities"] = [
+                    r for r in report["capabilities"] if r["capability"] != name
+                ]
+                report.setdefault("missing_runtime_success", []).append(name)
 
 
 def main():

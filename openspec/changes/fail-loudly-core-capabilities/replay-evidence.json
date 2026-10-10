@@ -2061,7 +2061,7 @@
         "status": "passed",
         "evidence": "answered_request",
         "observation": {
-          "request_id": "req_79529dad205a429d8f84e503",
+          "request_id": "req_fd6778d9ba284fedaf19965e",
           "decision": "allowed"
         }
       },
@@ -2071,7 +2071,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2080,7 +2080,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2089,7 +2089,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2098,7 +2098,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2107,7 +2107,7 @@
         "evidence": "image_content",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2116,7 +2116,7 @@
         "evidence": "completed_capability",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2125,7 +2125,7 @@
         "evidence": "http_effect",
         "observation": {
           "model_received_result": true,
-          "nonce": "2821edfb1825e490114ba788"
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2133,7 +2133,7 @@
         "status": "passed",
         "evidence": "reply_deltas",
         "observation": {
-          "reply": "CAPABILITY-REPLY-2821edfb1825e490114ba788",
+          "reply": "CAPABILITY-REPLY-04d5ec8968da29931a4cd42b",
           "model_sse_deltas": 2
         }
       },
@@ -2142,8 +2142,8 @@
         "status": "passed",
         "evidence": "filed_request",
         "observation": {
-          "delivery_id": "26971ce11458498e8525b37b48ab0247",
-          "nonce": "2821edfb1825e490114ba788"
+          "delivery_id": "604185ac0f8845a1bdb591a33fee8aeb",
+          "nonce": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2151,8 +2151,8 @@
         "status": "passed",
         "evidence": "completed_run",
         "observation": {
-          "run_id": "36e8e4c2eda5450c",
-          "echo": "2821edfb1825e490114ba788"
+          "run_id": "a441111b03f44ca2",
+          "echo": "04d5ec8968da29931a4cd42b"
         }
       },
       {
@@ -2160,24 +2160,24 @@
         "status": "passed",
         "evidence": "consumed_wake",
         "observation": {
-          "automation_id": "b0a95585eaf74d39bbe59d10b6b9eeb1",
-          "run_id": "1eab22176b5148cd",
-          "echo": "2821edfb1825e490114ba788"
+          "automation_id": "b8905a8ef8d54f9ba87a8b08a3a8a1a8",
+          "run_id": "e1096da7ff2545fd",
+          "echo": "04d5ec8968da29931a4cd42b"
         }
       }
     ],
-    "image": "ta-core-capabilities:latest",
+    "image": "ta-core-capabilities:cached",
     "runtime_rates": {
       "schema": 1,
-      "boot_id": "3b9bda3ca3cb48d3b1a9d58f6b621809",
+      "boot_id": "0a4e18dfe5514602aa009fabc106f5f5",
       "pid": 1,
-      "observed_seconds": 40,
+      "observed_seconds": 31,
       "window_seconds": 300,
       "history_seconds": 1200,
-      "outcomes": 39,
+      "outcomes": 35,
       "capability_outcomes": {
         "owner_sign_in": 1,
-        "chat_stream": 2,
+        "chat_stream": 1,
         "bash": 3,
         "read": 2,
         "write": 1,
@@ -2189,7 +2189,23 @@
         "background_run": 3,
         "scheduled_wake": 1,
         "patch_request": 1,
-        "public_mcp": 17
+        "public_mcp": 14
+      },
+      "capability_successes": {
+        "owner_sign_in": 1,
+        "chat_stream": 1,
+        "bash": 3,
+        "read": 2,
+        "write": 1,
+        "edit": 1,
+        "ta": 4,
+        "connected_service": 1,
+        "read_image": 1,
+        "approval": 1,
+        "background_run": 3,
+        "scheduled_wake": 1,
+        "patch_request": 1,
+        "public_mcp": 14
       },
       "failures": [],
       "alarms": []
@@ -2277,5 +2293,12 @@
       "failed": 0,
       "seconds": 4.71
     }
+  },
+  "validation": {
+    "linux_oracle": "318 passed, no skips, 15.27 seconds",
+    "structural_guards": "pending current final completion",
+    "plugin_build": "726 files, import probe passed",
+    "ruff": "passed",
+    "dockerfile": "production image built with dependency/browser cache layers; all 14 capabilities and protected pulse passed"
   }
 }

@@ -225,6 +225,10 @@ async def exercise(connection, report):
 
     context = ssl.create_default_context(cafile="/fixture/ca.pem")
     async with httpx.AsyncClient(verify=context, timeout=180, follow_redirects=True) as http:
+        for _ in range(3):
+            refused = await http.get("https://tinyassets.io/app?code=invalid&state=oa_app_invalid")
+            if refused.status_code != 403:
+                raise RuntimeError("invalid owner callback was not refused")
         response = await http.get(
             "https://tinyassets.io/app/owner-sign-in?app=1",
             headers={"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},
@@ -468,10 +472,24 @@ def inside():
             worker.join(10)
         if worker.is_alive() or churn_errors:
             raise RuntimeError("process churn did not complete: " + str(churn_errors))
-        from tinyassets.capability_health import RATES
         from tinyassets.core_capabilities import CAPABILITIES
 
-        report["runtime_rates"] = RATES.snapshot()
+        async def pulse_rates():
+            import httpx
+
+            async with httpx.AsyncClient(verify="/fixture/ca.pem") as client:
+                response = await client.get(
+                    "https://tinyassets.io/mcp/pulse",
+                    headers={
+                        "Authorization": "Bearer " + os.environ["TINYASSETS_WIKI_CANARY_TOKEN"]
+                    },
+                )
+                response.raise_for_status()
+                return response.json()["capability_health"]
+
+        report["runtime_rates"] = asyncio.run(pulse_rates())
+        if report["runtime_rates"]["alarms"]:
+            raise RuntimeError("client refusals or healthy operations triggered an outage alarm")
         for name in CAPABILITIES:
             if not report["runtime_rates"]["capability_outcomes"].get(name):
                 raise RuntimeError("daemon did not observe capability: " + name)
@@ -497,6 +515,11 @@ def image_check(args):
     with tempfile.TemporaryDirectory(prefix="ta-core-") as temporary:
         directory = Path(temporary)
         fixture.prepare(directory)
+        # Synthetic fixture only. Linux mkdtemp is 0700; the capability-stripped
+        # sidecar's root cannot bypass the host runner's directory ownership.
+        directory.chmod(0o755)
+        for path in directory.iterdir():
+            path.chmod(0o644)
         try:
             image.stage_migrate(options)
             # The migration fixture deliberately contains malformed vault bytes.
@@ -559,6 +582,19 @@ def image_check(args):
                 "-c",
                 service,
             )
+            for _ in range(60):
+                ready = image.docker(
+                    "exec", "--user", "0", prefix + "-upstream", "/opt/venv/bin/python",
+                    "-c", "import urllib.request; "
+                    "assert urllib.request.urlopen('http://169.254.169.254/metadata/v1/id', "
+                    "timeout=1).read() == b'4242424242'", check=False,
+                )
+                if ready.returncode == 0:
+                    break
+                time.sleep(0.2)
+            else:
+                logs = image.docker("logs", prefix + "-upstream", check=False)
+                raise RuntimeError("synthetic upstream did not start: " + logs.stderr[-4000:])
             env = dict(
                 TINYASSETS_IMAGE=args.image,
                 UNIVERSE_SERVER_AUTH="workos",
@@ -569,6 +605,7 @@ def image_check(args):
                 TINYASSETS_ENGINE_MCP_TOOLS="1",
                 TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED="1",
                 TINYASSETS_ASSIGNED_QUEUE_CONSUMER="1",
+                TINYASSETS_WIKI_CANARY_TOKEN=secrets.token_hex(32),
                 SSL_CERT_FILE="/fixture/ca.pem",
                 REQUESTS_CA_BUNDLE="/fixture/ca.pem",
             )

@@ -32,6 +32,7 @@ class CapabilityRates:
         self.boot_id = uuid.uuid4().hex
         self.lock = threading.Lock()
         self.buckets: dict[int, Counter] = {}
+        self.successes = Counter()
 
     def record(self, capability: str, code: str = "ok") -> None:
         if capability not in CAPABILITIES or (code != "ok" and code not in ERROR_CODES):
@@ -40,6 +41,8 @@ class CapabilityRates:
         with self.lock:
             self._prune(minute)
             self.buckets.setdefault(minute, Counter())[(capability, code)] += 1
+            if code == "ok":
+                self.successes[capability] += 1
         if code != "ok":
             _LOG.error("capability_failure capability=%s code=%s", capability, code)
 
@@ -54,6 +57,7 @@ class CapabilityRates:
         recent, baseline = Counter(), Counter()
         with self.lock:
             self._prune(minute)
+            successes = dict(self.successes)
             for stamp, bucket in self.buckets.items():
                 (recent if stamp > minute - WINDOW // 60 else baseline).update(bucket)
         rows, alarms = [], []
@@ -100,31 +104,76 @@ class CapabilityRates:
                 cap: sum(n for (name, _), n in recent.items() if name == cap)
                 for cap in CAPABILITIES
             },
+            capability_successes={cap: successes.get(cap, 0) for cap in CAPABILITIES},
             failures=rows,
             alarms=alarms,
         )
 
 
 RATES = CapabilityRates()
+IGNORED = object()
+
+
+def client_refusal(error):
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "not found",
+            "no such file",
+            "does not exist",
+            "unknown target",
+            "invalid target",
+            "old_text matches",
+            "is required",
+            "permission denied",
+            "access denied",
+            "invalid_request",
+            "not_authorized",
+            "not authorized",
+            "too large to show",
+            "not utf-8",
+            "byte write limit",
+            "byte edit limit",
+        )
+    )
 
 
 def result_error(result):
-    """Recognize existing error return contracts, not just raised exceptions."""
+    """Separate expected client refusals from server failures and successes."""
+    status = getattr(result, "status_code", 0)
+    if 400 <= status < 500:
+        return IGNORED
+    if status >= 500:
+        return "HTTP operation failed"
     if isinstance(result, str) and result.startswith("{"):
         try:
             result = json.loads(result)
         except ValueError:
             pass
     if isinstance(result, dict):
-        if result.get("error") or result.get("isError") or result.get("status") == "failed":
-            return result.get("error") or "operation failed"
-        if isinstance(result.get("status"), int) and result["status"] >= 400:
+        status = result.get("status")
+        if isinstance(status, int) and 400 <= status < 500:
+            return IGNORED
+        if isinstance(status, int) and status >= 500:
             return "HTTP operation failed"
+        if result.get("error") or result.get("isError") or result.get("status") == "failed":
+            error = result.get("error") or "operation failed"
+            return IGNORED if client_refusal(error) else error
     if isinstance(result, str) and result.startswith("error:"):
-        return result
-    if getattr(result, "status_code", 0) >= 400:
-        return "HTTP operation failed"
+        return IGNORED if client_refusal(result) else result
     return None
+
+
+def record_exception(capability, exc, error_code=None):
+    code = failure_code(exc)
+    if type(exc).__name__ in {
+        "UniverseToolError",
+        "PermissionError",
+        "GrantResolutionError",
+    } and code in {"operation_failed", "authority_refused"}:
+        return
+    RATES.record(capability, error_code or code)
 
 
 def wake_outcome(reason: str) -> None:
@@ -143,7 +192,8 @@ def observed(capability, *, error_code=None):
     def decorate(function):
         def finish(result):
             error = result_error(result)
-            RATES.record(capability, (error_code or failure_code(error)) if error else "ok")
+            if error is not IGNORED:
+                RATES.record(capability, (error_code or failure_code(error)) if error else "ok")
             return result
 
         if inspect.iscoroutinefunction(function):
@@ -153,7 +203,7 @@ def observed(capability, *, error_code=None):
                 try:
                     result = await function(*args, **kwargs)
                 except Exception as exc:
-                    RATES.record(capability, error_code or failure_code(exc))
+                    record_exception(capability, exc, error_code)
                     raise
                 return finish(result)
 
@@ -164,7 +214,7 @@ def observed(capability, *, error_code=None):
             try:
                 result = function(*args, **kwargs)
             except Exception as exc:
-                RATES.record(capability, error_code or failure_code(exc))
+                record_exception(capability, exc, error_code)
                 raise
             return finish(result)
 

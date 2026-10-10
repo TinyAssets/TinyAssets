@@ -478,14 +478,14 @@ jobs:
   # Required through the required-tests aggregate: a failed, skipped or cancelled
   # PR shard blocks admission. The queue still checks the combined commit.
   affected-tests:
-    name: affected-tests ${{ matrix.shard }}/2
+    name: affected-tests ${{ matrix.shard }}/4
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -520,7 +520,7 @@ jobs:
             --junit "shard-out/junit-affected-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
             --affected affected.txt \
-            --shard "${{ matrix.shard }}/2" --profile affected
+            --shard "${{ matrix.shard }}/4" --profile affected
 
       - name: Publish the runner's summary
         if: always()
@@ -570,7 +570,7 @@ jobs:
           CAPABILITY_RESULT: ${{ needs.core-capabilities.result }}
         run: |
           if [ "$STRUCTURAL_RESULT" != success ] || [ "$CAPABILITY_RESULT" != success ]; then
-            echo "::error::Fix structural-guards using its repair instructions, then rerun Tests; it must finish successfully."
+            echo "::error::Required checks failed (structural=$STRUCTURAL_RESULT, capabilities=$CAPABILITY_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 

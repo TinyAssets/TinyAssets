@@ -761,7 +761,7 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
     assert len(n) == 1
     assert job["strategy"]["matrix"]["shard"] == list(range(1, int(n[0]) + 1))
     assert re.findall(r"/(\d+)$", str(job["name"])) == n
-    assert job["strategy"]["matrix"]["shard"] == [1, 2]
+    assert job["strategy"]["matrix"]["shard"] == [1, 2, 3, 4]
 
 
 # ---- the conservative merge gate (round-2 fixes from the #4359 review) ------

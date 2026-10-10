@@ -57,6 +57,18 @@ def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     assert snapshot["outcomes"] == 4
     assert snapshot["alarms"][0]["failures"] == 3
     assert snapshot["alarms"][0]["samples"] == 4
+    from types import SimpleNamespace
+
+    for expected_refusal in (
+        SimpleNamespace(status_code=403),
+        {"status": 404},
+        {"error": "unknown target"},
+        "error: file not found",
+    ):
+        assert read(expected_refusal) is expected_refusal
+    assert rates.snapshot()["outcomes"] == 4
+    assert read(SimpleNamespace(status_code=503)).status_code == 503
+    assert rates.snapshot()["failures"][-1]["code"] == "http_failed"
 
 
 def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():
