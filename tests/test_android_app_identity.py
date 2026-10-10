@@ -361,12 +361,9 @@ def test_app_sign_in_refuses_visibly_when_the_install_is_unknown(
 
 def _native_sign_in(get_info: str) -> str:
     html = _app_html()
-    table = re.search(r"  const APP_RETURN_PACKAGES = \{[^\n]*\};", html)
-    assert table, "app.html has no APP_RETURN_PACKAGES table"
     return "\n".join(
         (
             _SHIM,
-            table.group(0),
             "const NATIVE = true;",
             "window.Capacitor={getPlatform:()=> 'android'};",
             "async function fetch(url,options){const body=JSON.parse(options.body);"
@@ -382,45 +379,6 @@ def _native_sign_in(get_info: str) -> str:
             "  console.log(JSON.stringify(out)); })();",
         )
     )
-
-
-@pytest.mark.parametrize(
-    "state,package",
-    [
-        ("app.RANDOM", PLAY_ID),
-        ("appdebug.RANDOM", DEBUG_ID),
-        # Anything else is a web sign-in, never a bounce to a URL-chosen app.
-        ("appevil.RANDOM", None),
-        ("io.evil.RANDOM", None),
-    ],
-)
-def test_browser_callback_bounces_only_to_a_known_package(
-    tmp_path: Path, state: str, package: str | None
-) -> None:
-    html = _app_html()
-    table = re.search(r"  const APP_RETURN_PACKAGES = \{[^\n]*\};", html)
-    assert table
-    program = "\n".join(
-        (
-            _SHIM,
-            table.group(0),
-            "const NATIVE = false;",
-            f"window.location.search = '?code=CODE&state={state}';",
-            _js_function(html, "bounceToApp"),
-            _js_function(html, "completeSignInIfCallback"),
-            "(async()=>{ await completeSignInIfCallback();",
-            "  out.href = window.location.href; console.log(JSON.stringify(out)); })();",
-        )
-    )
-    result = _run_node(tmp_path, program)
-    if package is None:
-        assert not result["href"].startswith("intent://")
-        assert "exchanged" not in result  # no verifier stored: the web flow refuses
-    else:
-        assert result["href"] == (
-            f"intent://auth?code=CODE&state={state}"
-            f"#Intent;scheme=tinyassets;package={package};end"
-        )
 
 
 # --- the website's install path -------------------------------------------------

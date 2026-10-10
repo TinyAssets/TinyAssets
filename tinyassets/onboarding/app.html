@@ -409,8 +409,7 @@
     #request-rail .rtab>h3{display:none}
     .browser-login{min-width:0;overflow-wrap:anywhere}
     .browser-login input,.browser-login textarea{display:block;width:100%;font:inherit;font-size:16px;min-height:44px;margin:.5rem 0;padding:.65rem;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);scroll-margin:1rem}
-    .browser-login form,.browser-login-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
-    .browser-login form input{flex:1 1 14rem;min-width:0}
+    .browser-login-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
     .browser-login button{min-height:44px}
     .inline-approval h3,.inline-approval p{overflow-wrap:anywhere}
     .request-sheet .inline-approval{padding-top:.5rem}
@@ -922,12 +921,6 @@
   // Native opens every OAuth page in an in-app Chrome tab and the callback
   // bounces back into the app through the tinyassets:// scheme.
   const NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform==="function" && window.Capacitor.isNativePlatform());
-  // An app-initiated sign-in marks `state` with the install it came from, and
-  // the callback bounces ONLY to that entry's fixed package — never one named by
-  // the URL. The debug/sideload build is a separate install
-  // (io.tinyassets.app.debug) so it can never block a Play update, and it must
-  // sign back into itself rather than into the Play app.
-  const APP_RETURN_PACKAGES = {"app.": "io.tinyassets.app", "appdebug.": "io.tinyassets.app.debug"};
   // The desktop app is Electron over this page. Its shell refuses every
   // permission request and Electron has no push service, so web push cannot
   // work there: nothing offers it.
@@ -1038,34 +1031,7 @@
     }finally{nativeSignInBusy=false;}
   }
 
-  // The AuthKit callback landed in a real browser tab for an APP-initiated
-  // sign-in (state carries the app marker, and this page is not the app's
-  // WebView). The PKCE verifier lives only in the app, so do NOT exchange here:
-  // hand the code back to the app. ONLY the package-qualified intent:// form is
-  // used — never a bare tinyassets:// URL, which any rogue app could register
-  // to harvest the (verifier-less, but still) code + state. Android's Chrome
-  // honours an intent:// navigation from the redirect chain; the button is the
-  // fallback when it wants a tap first.
-  function bounceToApp(code, state, androidPackage){
-    const qs = "code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
-    const intent = "intent://auth?" + qs + "#Intent;scheme=tinyassets;package=" + androidPackage + ";end";
-    const notice = document.getElementById("signin-notice");
-    notice.textContent = "";
-    const p = document.createElement("p"); p.textContent = "Signed in. Returning you to the TinyAssets app…";
-    const a = document.createElement("a"); a.className = "btn btn--primary"; a.href = intent; a.textContent = "Open the TinyAssets app";
-    notice.appendChild(p); notice.appendChild(a);
-    try{ window.location.href = intent; }catch(_e){}
-  }
-
-  async function exchangeCode(code, state){
-    const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
-    if(!saved.verifier || saved.state !== state){
-      document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
-      return false;
-    }
-    return finishExchange(code, saved);
-  }
-
+  // The AuthKit callback is handled server-side; native returns carry only a reference.
   // Native: the app was (re)opened through tinyassets://auth?code=…&state=…
   // Step trace for the in-app OAuth hand-offs: one short line per step to the
   // daemon log (identity-scoped, never a secret). Lets the flow be debugged
@@ -1087,15 +1053,7 @@
       if(token()) await refreshRail();
       return true; // Observation only. Cold boot also refreshes after restoring sign-in.
     }
-    // A provider-tagged link belonged to a vendor sign-in card that no longer
-    // exists (vendor-neutral slice 6). It is never an app sign-in.
-    if(u.searchParams.get("provider")) return false;
-    const code = u.searchParams.get("code"), state = u.searchParams.get("state") || "";
-    if(!code) return false;
-    await closeExternal();
-    const ok = await exchangeCode(code, state);
-    if(ok) enterSignedIn();
-    return ok;
+    return false;
   }
   function wireNativeReturn(){
     if(NATIVE||DESKTOP_SHELL){
@@ -1158,50 +1116,11 @@
       history.replaceState({}, "", redirectUri());
       return false;
     }
-    const code = q.get("code");
-    if(!code) return false;
-    const state = q.get("state") || "";
-    history.replaceState({}, "", redirectUri());   // strip code/state from the URL
-    const appPrefix = Object.keys(APP_RETURN_PACKAGES).find((prefix)=>state.startsWith(prefix));
-    if(!NATIVE && appPrefix){ bounceToApp(code, state, APP_RETURN_PACKAGES[appPrefix]); return false; }
-    const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
-    if(!saved.verifier || saved.state !== state){
-      document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
-      return false;
+    if(q.get('code')){
+      history.replaceState({}, '', redirectUri());
+      document.getElementById('signin-notice').textContent='Sign-in expired. Start again in the app.';
     }
-    return finishExchange(code, saved);
-  }
-
-  async function finishExchange(code, saved){
-    // Exchange the code SAME-ORIGIN through the daemon proxy (/app/token).
-    // The cross-origin AuthKit token endpoint fails inside an app WebView
-    // ("Failed to fetch"); the proxy does the PKCE exchange server-side and
-    // returns the access token. redirect_uri + code_verifier are re-checked there.
-    let tokens;
-    try{
-      // Under the same cross-document lock as refresh/logout: every mutation
-      // of the refresh cookie is serialized, so a late refresh can never
-      // overwrite a fresh login.
-      tokens = await withRefreshLock(async()=>{
-        const r = await fetch("/app/token", {
-          method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({code, code_verifier:saved.verifier, redirect_uri:redirectUri()}),
-        });
-        return r.json();
-      });
-    }catch(e){
-      document.getElementById("signin-notice").textContent = "Token exchange failed: " + e.message;
-      return false;
-    }
-    if(!tokens.access_token){
-      document.getElementById("signin-notice").textContent =
-        "Token exchange failed: " + (tokens.error_description || tokens.error || "no token");
-      return false;   // keep the PKCE state: a retry of the same sign-in can still complete
-    }
-    pkceStore.removeItem(PKCE_KEY);
-    storeAccessToken(tokens.access_token, tokens.expires_in);
-    storeSessionRef(tokens.session_ref);   // WebView-persistent renewal handle
-    return true;
+    return false;
   }
 
   function token(){ return sessionStorage.getItem(TOKEN_KEY); }
@@ -9349,12 +9268,12 @@
       const image=document.createElement('img'), typing=document.createElement('textarea');
       const credential=document.createElement('input'), fill=document.createElement('button');
       box.className='browser-login';
-      const privateForm=document.createElement('form');privateForm.autocomplete='on';
-      credential.type='password';credential.name='password';credential.autocomplete='current-password';credential.hidden=true;
+      const privateForm=document.createElement('div');
+      credential.type='password';credential.autocomplete='off';credential.hidden=true;
       credential.autocapitalize='none';credential.spellcheck=false;
       credential.enterKeyHint='go';credential.maxLength=4096;
       credential.setAttribute('aria-label','Private input for the displayed website');
-      fill.type='submit';fill.className='btn';fill.hidden=true;
+      fill.type='button';fill.className='btn';fill.hidden=true;
       image.alt='Live website sign-in';image.tabIndex=0;
       image.style.cssText='display:none;width:100%;touch-action:none;border:1px solid var(--line)';
       typing.setAttribute('aria-label','Type into the website');typing.autocomplete='off';
@@ -9398,7 +9317,9 @@
           credential.hidden=!boundField;fill.hidden=credential.hidden;
           const hint=boundField?.autocomplete||(boundField?.type==='password'?'current-password':'off');
           credential.type=boundField?.type==='password'?'password':boundField?.type==='email'?'email':'text';
-          credential.autocomplete=hint;credential.name=hint==='username'?'username':hint==='current-password'?'password':'private-input';
+          // Device managers bind saved credentials to THIS page, not the remote site.
+          // Never suggest/save a foreign password as a TinyAssets login.
+          credential.autocomplete=hint==='one-time-code'?'one-time-code':'off';
           credential.inputMode=hint==='one-time-code'?'numeric':boundField?.type==='email'?'email':'text';
           credential.setAttribute('aria-label','Private '+(hint==='off'?'input':hint.replaceAll('-',' '))+' for '+(boundField?.origin||currentOrigin));
           fill.textContent='Fill on '+(boundField?.origin||currentOrigin);
@@ -9423,7 +9344,7 @@
       button('Disconnect',async()=>{clear();await post('revoke');note.textContent='Disconnected.';});
       const input=event=>{if(active){event.origin=currentOrigin;
         chain=chain.then(()=>post('input',{event})).catch(fail);}};
-      privateForm.onsubmit=event=>{event.preventDefault();if(!active||!boundField)return;
+      fill.onclick=()=>{if(!active||!boundField)return;
         const fields={token:boundField.token,origin:boundField.origin,value:credential.value};
         credential.value='';boundField=null;fill.hidden=true;credential.hidden=true;
         chain=chain.then(()=>post('fill_private',fields)).catch(fail).finally(()=>{fields.value='';});};

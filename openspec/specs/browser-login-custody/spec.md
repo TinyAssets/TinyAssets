@@ -71,7 +71,7 @@ retain their original exposure.
 - **THEN** agent observations preserve ordinary text and redact the session token while retaining the untrusted flag
 
 ### Requirement: Private input fits owner devices
-The protected browser login view SHALL support phone and desktop viewports, touch input, keyboard resizing, rotation and safe areas, with semantic password-manager input hints and truthful passkey availability.
+The protected browser login view SHALL support phone and desktop viewports, touch input, keyboard resizing, rotation and safe areas, with private-input semantics, OTP suggestions and truthful password-manager/passkey availability.
 
 #### Scenario: Phone keyboard entry
 - **WHEN** an owner edits private input on a phone
@@ -80,3 +80,5 @@ The protected browser login view SHALL support phone and desktop viewports, touc
 #### Scenario: Foreign-origin passkey
 - **WHEN** a relying site has not authorized the TinyAssets origin
 - **THEN** the app does not request or claim to forward that site's passkey
+
+Passwords for a foreign website must not be offered for saving or filling as TinyAssets credentials. Native password-manager and passkey forwarding requires origin authorization and remains unsupported for arbitrary foreign sites.

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import time
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -80,6 +81,31 @@ def test_system_callback_is_opaque_and_redeemed_once(login, platform, scheme):
             assert calls[0]["code_verifier"] == [VERIFIER]
             assert (await client.post("/app/token", headers=ORIGIN, json=body)).status_code == 400
             assert len(calls) == 1
+
+    asyncio.run(run())
+
+
+def test_pending_and_rejected_polls_preserve_existing_approval_session(login):
+    from tinyassets.onboarding.owner_sessions import lookup, store
+
+    cookie = "existing-protected-browser"
+    with store() as conn:
+        conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                     (hashed(cookie), '{"user_id":"owner"}', time.time() + 600))
+
+    async def run():
+        async with browser() as client:
+            client.cookies.set(COOKIE, cookie, domain="tinyassets.io", path="/")
+            ref, state = await start(client, "desktop")
+            data = {"native_ref": ref, "code_verifier": VERIFIER}
+            assert (await client.post("/app/token", headers=ORIGIN, json=data)).status_code == 202
+            assert lookup(cookie)
+            denied = await client.post("/app/token", headers=ORIGIN,
+                                       json={**data, "code_verifier": "w" * 64})
+            assert denied.status_code == 400 and lookup(cookie)
+            await client.get("/app", params={"state": state, "code": "ready"})
+            assert (await client.post("/app/token", headers=ORIGIN, json=data)).status_code == 200
+            assert lookup(cookie) is None
 
     asyncio.run(run())
 

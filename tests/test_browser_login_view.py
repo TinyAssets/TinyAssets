@@ -92,8 +92,8 @@ def test_private_fill_controls_fit_keyboard_rotation_and_clear_on_cancel(app_url
         page.locator('#browser-signins button').click()
         field = page.locator('.browser-login input')
         expect(field).to_be_visible()
-        assert field.get_attribute('autocomplete') == 'current-password'
-        assert field.get_attribute('name') == 'password'
+        assert field.get_attribute('autocomplete') == 'off'
+        assert field.get_attribute('name') is None
         field.fill('owner-only-example')
         page.get_by_role('button', name='Fill on https://site.example').click()
         page.wait_for_function("() => document.querySelector('.browser-login input').value === ''")

@@ -389,7 +389,7 @@ async def _handle_token(request: Any) -> Any:
     session_ref = str(data.get("session_ref", "")).strip()
     if not _valid_handle(session_ref):
         session_ref = ""
-    if grant in ("logout", "authorization_code"):
+    if grant == "logout":
         from tinyassets.onboarding.owner_sessions import COOKIE, revoke
         revoke(request.cookies.get(COOKIE, ""))
     if grant == "logout":
@@ -438,6 +438,8 @@ async def _handle_token(request: Any) -> Any:
             if callback_data is None:
                 return JSONResponse({"pending": True}, status_code=202, headers=_NO_STORE)
             data.update(callback_data)
+        from tinyassets.onboarding.owner_sessions import COOKIE, revoke
+        revoke(request.cookies.get(COOKIE, ""))
         code = str(data.get("code", "")).strip()
         verifier = str(data.get("code_verifier", "")).strip()
         redirect_uri = str(data.get("redirect_uri", "")).strip()

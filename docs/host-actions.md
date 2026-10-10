@@ -12,6 +12,10 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Device sign-in store updates (2026-10-10)
+
+After [PR #4594](https://github.com/TinyAssets/TinyAssets/pull/4594) merges and its web routes deploy, run the existing main-only signing workflows. Upload Android `app-release.aab` (package `io.tinyassets.app`, code **8**, version **1.0.7**) from `android-release.yml` to the Play closed-testing track. Upload the exported `.ipa` named in `release-manifest.json` from the `tinyassets-ios-1.0.1-<build>` artifact of `ios-release.yml` (version **1.0.1**, next unused build number) to App Store Connect, select it for review and submit. The feature branch cannot produce signed store files: Android requires main history; Apple's `app-store` environment rejects feature branches. Do not upload the debug APK or an unsigned bundle. Verify Google sign-in, return, and password suggestions on a physical Android/iPhone before submission. [Build/proof details](../openspec/changes/all-devices-polish/design.md).
+
 ## Connector directory submissions (2026-10-10)
 
 Packet: [requirements, form answers, assets and isolated reviewer plan](ops/connector-directory-listings.md).

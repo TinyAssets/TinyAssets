@@ -16,6 +16,8 @@ on:
     paths:
       - "desktop-app/**"
       - "assets/brand/tinyassets-app.ico"
+      - "assets/brand/tinyassets-app.icns"
+      - "assets/icon.png"
       - ".github/workflows/desktop-chat-app.yml"
   # No `pull_request` trigger (2026-09-27 lean pipeline): no platform builds on
   # PRs. The main push above builds every change that lands; a PR that changes
@@ -105,7 +107,7 @@ jobs:
             platform: mac
             target: dmg
             arch: arm64
-          - os: macos-15-intel
+          - os: macos-15
             platform: mac
             target: dmg
             arch: x64

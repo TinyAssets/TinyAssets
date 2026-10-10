@@ -49,6 +49,7 @@ async def begin(request):
     data = await _read_small_json(request)
     if (
         not isinstance(data, dict)
+        or not isinstance(data.get("client"), str)
         or data.get("client") not in CLIENTS
         or not isinstance(data.get("code_challenge"), str)
         or not HANDLE.fullmatch(data["code_challenge"])
