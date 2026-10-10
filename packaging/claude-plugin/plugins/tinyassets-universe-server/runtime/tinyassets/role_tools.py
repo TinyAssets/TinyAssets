@@ -51,15 +51,8 @@ def _tool_cell(client, **kwargs):
         # Forced budget polling can run a nested maintenance cell. Its error
         # already carries that cell's reason; the outer jail is awaiting us.
         raise
-    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
-        try:
-            code = cell.wait(5)
-            reason = cell.stop_reason or f'exit={code}'
-        except (OSError, RuntimeError):
-            reason = 'completion-unavailable'
-        raise tools.UniverseToolError(
-            'tool cell failed: ' + failure_reason(exc, 'decoder')
-            + ' (owner cell: ' + reason + ')') from None
+    except Exception as exc:
+        raise tools.UniverseToolError(cell.failure(exc)) from None
     finally:
         pending = sys.exc_info()[1]
         try:
@@ -73,14 +66,18 @@ def _tool_cell(client, **kwargs):
 
 def _files(client, *, principal, center, identity, fd, agent_id):
     from tinyassets import storage_accounting
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
 
     try:
         result = _files_exchange(client, principal=principal, center=center,
                                  identity=identity, fd=fd, agent_id=agent_id)
-        from tinyassets.role_content import promote_brains
+        from tinyassets.role_content import promote_brains, repair_empty_wiki_categories
 
         promote_brains(center, fd, identity, result, agent_id=agent_id)
+        repair_empty_wiki_categories(client, center, fd, principal=principal, identity=identity)
         return result
+    except OwnerLaunchRefused as exc:
+        raise tools.UniverseToolError(str(exc)) from exc
     finally:
         # Preparation can publish bytes before open_budget succeeds. Keep
         # those stores dirty even on a failed admission or lost receipt.

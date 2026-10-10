@@ -75,11 +75,17 @@ def test_deployed_diagnostic_filename_is_canonical_and_secret_free():
                                    ConnectionResetError('private-data'),
                                    TimeoutError('private-data')])
 def test_tool_transport_failure_and_failed_cleanup_preserve_safe_error(failure):
-    def unavailable(*args):
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    def unavailable(*args, **kwargs):
         raise TimeoutError('private-completion-data')
 
-    cell = SimpleNamespace(wait=unavailable, close=unavailable)
-    with pytest.raises(universe_tools.UniverseToolError) as caught:
+    stream, peer = socket.socketpair()
+    status, mapper = socket.socketpair()
+    cell = OwnerCell(SimpleNamespace(_reply=unavailable), stream, status,
+                     OwnerIdentity(300001, 300001), kind='tool-jail')
+    with peer, mapper, pytest.raises(universe_tools.UniverseToolError) as caught:
         with role_tools._tool_cell(SimpleNamespace(start_cell=lambda **kwargs: cell)):
             raise failure
     assert type(failure).__name__ in str(caught.value)

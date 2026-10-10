@@ -202,6 +202,51 @@ def ensure_directories(center, parts, *, machine):
              expected_machine=machine)
 
 
+def repair_empty_wiki_categories(client, center, root, *, principal, identity):
+    """Replace empty daemon mkdir debris; never relabel or remove user bytes.
+
+    The old wiki writer made category directories before owner publication.
+    Only these two fixed category parents are inspected, through pinned owner
+    descriptors. rmdir is the kernel's atomic empty check; no recursive removal
+    or privilege is needed. A concurrent owner creator wins publication.
+    """
+    try:
+        wiki = _directory(root, 'wiki')
+    except FileNotFoundError:
+        return
+    try:
+        _check_owner_directory(wiki, identity.uid)
+        for branch in ('drafts', 'pages'):
+            try:
+                parent = _directory(wiki, branch)
+            except FileNotFoundError:
+                continue
+            try:
+                _check_owner_directory(parent, identity.uid)
+                with os.scandir(parent) as entries:
+                    for index, entry in enumerate(entries):
+                        if index >= 10000:
+                            raise OSError('wiki category recovery exceeds its walk bound')
+                        info = entry.stat(follow_symlinks=False)
+                        if ((info.st_uid, info.st_gid) != (1001, 1001)
+                                or not stat.S_ISDIR(info.st_mode)):
+                            continue
+                        with _staging(center.parent, identity.uid) as staging:
+                            _materialize(client, staging, principal=principal, center=center,
+                                         identity=identity, data=None, directories=1)
+                            # A nonempty directory refuses here, preserving every byte.
+                            os.rmdir(entry.name, dir_fd=parent)
+                            try:
+                                admission._renameat2(staging, 'dir-0', parent, entry.name)
+                            except FileExistsError:
+                                pass
+                            os.fsync(parent)
+            finally:
+                os.close(parent)
+    finally:
+        os.close(wiki)
+
+
 def _publish(center, parts, data, *, make_parents, mode, expected_machine=None):
     """Create owner inodes in one cell and publish names from pinned parents."""
     from tinyassets import role_decoder

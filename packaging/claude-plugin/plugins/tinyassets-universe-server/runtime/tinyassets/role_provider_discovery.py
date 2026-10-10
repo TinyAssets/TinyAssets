@@ -179,5 +179,6 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
             proc.close_stdio()
         if not isinstance(exc, Exception):
             raise
-        raise ProviderError('provider cell startup failed' + disk_stop_note(proc)) from exc
+        raise ProviderError('provider cell startup failed: ' + cell.failure(exc)
+                            + disk_stop_note(proc)) from exc
     return proc
