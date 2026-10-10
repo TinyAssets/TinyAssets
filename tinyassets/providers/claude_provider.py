@@ -416,22 +416,17 @@ def _no_window_kwargs() -> dict:
 
 
 def _resolve_claude_cmd() -> tuple[list[str], bool]:
-    """Resolve the claude command to the installed executable's absolute path.
+    """Resolve the claude command, handling Windows .cmd/.bat wrappers.
 
-    Returns (base_cmd, use_shell) where base_cmd is the command prefix and
-    use_shell indicates whether to use shell execution (Windows .cmd/.bat).
-
-    The path matters: every launch runs in an owner cell whose admission is
-    the image layout alone (``role_provider_cell.shipped_executable``), and
-    whose fixed ``PATH`` has no ``/usr/local/bin``. A bare ``claude`` is
-    refused there before the CLI exists, which is how every served turn after
-    the isolation cutover ended (live 2026-10-09) while each fixture, naming
-    the full path, passed.
+    Returns (base_cmd, use_shell) where base_cmd is the command prefix
+    and use_shell indicates whether to use shell execution. A served turn
+    runs in an owner cell, which resolves the bare name itself against the
+    image's wrapper directory (``role_provider_cell.resolve_executable``).
     """
     claude_path = shutil.which("claude")
     if claude_path and sys.platform == "win32" and claude_path.lower().endswith((".cmd", ".bat")):
         return [claude_path], True
-    return [claude_path or "claude"], False
+    return ["claude"], False
 
 
 def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
@@ -937,7 +932,6 @@ class ClaudeProvider(BaseProvider):
                 "(idle watchdog fired; no provider cooldown)" + said
             ))
 
-        stream_fault = ""
         try:
             while True:
                 now = time.monotonic()
@@ -987,12 +981,6 @@ class ClaudeProvider(BaseProvider):
                     raise _attach(ProviderProtocolError(
                         "claude -p stream line exceeded the reader buffer limit"
                     ))
-                except OSError as exc:
-                    # A transport fault on stdout is the END of the stream, not
-                    # a verdict: the exit code and stderr below say what the
-                    # CLI did, which a bare ConnectionResetError never could.
-                    stream_fault = f"{type(exc).__name__}: {exc}"[:200]
-                    break
                 if not line:
                     break  # EOF
                 events, malformed = self._parse_line(line)
@@ -1182,7 +1170,6 @@ class ClaudeProvider(BaseProvider):
                 raise _attach(ProviderUnavailableError(
                     "claude -p returned exit code 1 quickly -- API likely unavailable"
                     f"{disk_stop_note(proc)}: {stderr_excerpt(stderr_text)}"
-                    + (f" [stdout {stream_fault}]" if stream_fault else "")
                 ))
             if returncode in _WINDOWS_CRASH_CODES:
                 raise _attach(ProviderUnavailableError(
@@ -1207,7 +1194,6 @@ class ClaudeProvider(BaseProvider):
                 raise _attach(ProviderError(
                     f"claude -p exit {returncode}{disk_stop_note(proc)}: "
                     f"{stderr_excerpt(stderr_text)}"
-                    + (f" [stdout {stream_fault}]" if stream_fault else "")
                 ))
             # EOF with a clean/absent exit but NO terminal result: the stream was
             # truncated (blocker J). Classify it as a protocol error rather than a
@@ -1215,7 +1201,6 @@ class ClaudeProvider(BaseProvider):
             raise _attach(ProviderProtocolError(
                 "claude -p stream ended without a terminal result event "
                 "(truncated stream)"
-                + (f"{disk_stop_note(proc)}; stdout {stream_fault}" if stream_fault else "")
                 + (f"; stderr: {stderr_excerpt(stderr_text)}" if stderr_text.strip() else "")
             ))
         finally:

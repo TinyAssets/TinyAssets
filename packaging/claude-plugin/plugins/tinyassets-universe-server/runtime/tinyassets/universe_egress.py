@@ -76,6 +76,10 @@ JAIL_ENGINE_SOCKET = "/tmp/.ta-engine.sock"
 #: command. The child dies with the jail.
 FORWARDER = r'''
 import os, socket, sys, threading
+def report(exc, operation):
+    number = exc.errno if isinstance(exc, OSError) else None
+    os.write(2, ('TA_CELL_FAILURE relay:' + operation + ':errno=' + str(number) + '\n').encode())
+sys.excepthook = lambda kind, exc, trace: report(exc, 'bootstrap')
 args = sys.argv[1:]
 sep = args.index("--")
 servers = []
@@ -92,7 +96,7 @@ if os.fork():
         srv.close()
     os.execvp(command[0], command)
 null = os.open(os.devnull, os.O_RDWR)
-for fd in (0, 1, 2):
+for fd in (0, 1):
     os.dup2(null, fd)
 threading.stack_size(256 * 1024)
 def pump(a, b):
@@ -102,7 +106,8 @@ def pump(a, b):
             if not data:
                 break
             b.sendall(data)
-    except OSError:
+    except OSError as exc:
+        report(exc, 'pump')
         for s in (a, b):
             try:
                 s.shutdown(socket.SHUT_RDWR)
@@ -113,13 +118,15 @@ def pump(a, b):
     # closes either socket, including when the requester half-closes first.
     try:
         b.shutdown(socket.SHUT_WR)
-    except OSError:
+    except OSError as exc:
+        report(exc, 'half-close')
         pass
 def serve(c, path, slots):
     u = socket.socket(socket.AF_UNIX)
     try:
         u.connect(path)
-    except OSError:
+    except OSError as exc:
+        report(exc, 'connect')
         c.close(); u.close(); slots.release(); return
     t = threading.Thread(target=pump, args=(u, c), daemon=True)
     t.start()

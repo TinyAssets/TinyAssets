@@ -13,7 +13,8 @@ daemon retirement), then, as the retired daemon:
   cell, egress and stream reader are the production ones;
 * asserts the streamed answer came back through the reader, then that the
   two refusal shapes that used to surface as ``ConnectionResetError`` now
-  reach the daemon as the CLI's own words or the cell's one bounded line.
+  reach the daemon as the CLI's own words or the cell's bounded failure
+  marker (``tinyassets/cell_diagnostics.py``, carried as ``stop_reason``).
 
     python scripts/role_provider_turn_proof.py --image <cutover image>
 """
@@ -216,7 +217,9 @@ async def main():
                   flush=True)
             raise
         argv = LAUNCHES[-1]
-        assert argv[:2] == ['/usr/local/bin/claude', '-p'] and '--output-format' in argv, argv
+        # The daemon names the bare CLI; the cell resolves it in the image's
+        # wrapper directory (role_provider_cell.resolve_executable).
+        assert argv[:2] == ['claude', '-p'] and '--output-format' in argv, argv
         assert '--include-partial-messages' in argv and '--permission-mode' in argv, argv
         assert response.text == ANSWER, response.text
         # The reader revokes the cell once the terminal result is in; the CLI
@@ -250,8 +253,9 @@ async def main():
         assert 'unknown option' in message or 'error' in message.lower(), message
         report['cli_refusal'] = message
 
-        # Refusal 2: the cell itself refuses the launch. Its one bounded line
-        # is the reason the daemon reports.
+        # Refusal 2: the cell itself refuses the launch. The decoder's failure
+        # marker (file, line, type, errno; never a byte of the exception) is
+        # parsed by the mapper and reaches the daemon as the stop reason.
         with provider_launch_scope(center, credential_dir=snapshot):
             proc = await owned_process.aspawn_owned(['/bin/sh', '-c', 'exit 3'], env={}, **PIPES)
         try:
@@ -260,8 +264,9 @@ async def main():
             message = str(exc)
         else:
             raise AssertionError('a foreign executable was admitted')
-        assert 'exit 78' in message and 'provider cell refused: ' in message, message
-        assert 'shipped install trees' in message, message
+        assert 'ConnectionResetError' not in message, message
+        assert 'provider cell ended (owner cell: decoder:role_provider_cell.py:' in message, message
+        assert ':ValueError:errno=None)' in message, message
         report['cell_refusal'] = message
     print(json.dumps(report, indent=1), flush=True)
 

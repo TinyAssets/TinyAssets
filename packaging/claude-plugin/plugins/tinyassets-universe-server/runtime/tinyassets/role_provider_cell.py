@@ -13,10 +13,6 @@ import stat
 
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_ARGS = 32
-#: A cell that refuses to start its CLI says so in ONE stderr line and exits
-#: with this code, so the daemon reports the reason instead of a bare exit.
-REFUSAL_PREFIX = 'provider cell refused: '
-REFUSAL_EXIT = 78
 # Served tool policies have more arguments than discovery commands. The whole
 # launch still fits MAX_CONFIG_BYTES; this is not a process/resource limit.
 MAX_EXEC_ARGS = 128
@@ -122,6 +118,15 @@ def shipped_executable(path):
             and not info.st_mode & 0o022)
 
 
+def resolve_executable(command):
+    """Resolve bare CLI names only in the immutable image wrapper directory."""
+    if '/' not in command and re.fullmatch(r'[A-Za-z0-9_.-]+', command):
+        command = WRAPPER_DIR + command
+    if not command or not shipped_executable(command):
+        raise ValueError('provider executable is outside the shipped install trees')
+    return command
+
+
 def validate(raw, data_root, *, execution=False):
     config = json.loads(raw)
     if (type(config) is not dict or not {'argv', 'env'} <= set(config)
@@ -144,8 +149,7 @@ def validate(raw, data_root, *, execution=False):
     # No host data path survives into the cell; the snapshot is pre-rewritten.
     if any(data_root in item for item in (*argv, *env.values())):
         raise ValueError('provider config names a host data path')
-    if not argv[0] or not shipped_executable(argv[0]):
-        raise ValueError('provider executable is outside the shipped install trees')
+    argv[0] = resolve_executable(argv[0])
     return argv, {**safe_environment(env, file_values(SNAPSHOT)), **FIXED_ENV}, engine_port
 
 

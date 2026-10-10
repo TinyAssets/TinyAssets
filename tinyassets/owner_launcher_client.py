@@ -138,6 +138,16 @@ def _pipe():
 
 
 class OwnerLauncherClient:
+    @staticmethod
+    def _refusal(reply):
+        if reply.get('op') != 'REFUSED':
+            return
+        reason = reply.get('reason', 'scope refused')
+        if (type(reason) is not str or not reason.isascii() or not reason.isprintable()
+                or len(reason) > 256 or set(reply) - {'op', 'reason'}):
+            raise RuntimeError('invalid owner launcher refusal')
+        raise OwnerLaunchRefused('owner launcher: ' + reason)
+
     def __init__(self, channel: socket.socket, launcher_pid: int):
         if (os.getuid() != 1001 or channel.family != socket.AF_UNIX
                 or channel.type != socket.SOCK_SEQPACKET
@@ -279,8 +289,7 @@ class OwnerLauncherClient:
                     self._channel.sendmsg([json.dumps(document).encode()], [(
                         socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', handles))])
                     reply = self._reply()
-                    if reply == {'op': 'REFUSED'}:
-                        raise OwnerLaunchRefused('owner launcher refused cell scope')
+                    self._refusal(reply)
                     if (set(reply) != {'op', 'uid', 'gid'} or reply['op'] != 'STARTED'
                             or type(reply['uid']) is not int or type(reply['gid']) is not int
                             or reply['uid'] != reply['gid']
@@ -347,7 +356,8 @@ class OwnerLauncherClient:
                 data_failure = True
             code = job.wait(timeout)
             if data_failure or (not output and code != 0):
-                raise OwnerLaunchRefused('decoder ended before returning its cell proof')
+                raise OwnerLaunchRefused('decoder ended before returning its cell proof: '
+                                         + str(job.stop_reason))
             header, _, payload = bytes(output).partition(b'\n')
             cell = json.loads(header)['cell']
             inner = identity.uid - 300000
@@ -357,7 +367,8 @@ class OwnerLauncherClient:
                     or cell.get('profile') != profile
                     or (source is not None and cell.get('source') != source)):
                 raise RuntimeError('dedicated decoder cell proof is absent')
-            return SimpleNamespace(returncode=code, stdout=payload, cell=cell)
+            return SimpleNamespace(returncode=code, stdout=payload, cell=cell,
+                                   stop_reason=job.stop_reason)
 
     def write_preview(self, data, ui_id, *, directory_fd, principal, command_center, identity):
         from tinyassets.ui_preview import MAX_CHILD_OUTPUT
@@ -376,8 +387,7 @@ class OwnerLauncherClient:
                 self._channel.sendall(json.dumps(dict(op='DELETE_DONE', principal=principal,
                     command_center=command_center, delete_token=token)).encode())
                 answer = self._reply()
-                if answer == {'op': 'REFUSED'}:
-                    raise OwnerLaunchRefused('owner deletion finish refused')
+                self._refusal(answer)
                 if answer != {'op': 'DELETE_FINISHED'}:
                     raise RuntimeError('invalid owner deletion finish receipt')
             except OwnerLaunchRefused:
@@ -395,8 +405,7 @@ class OwnerLauncherClient:
                               array.array('i', handles))] if handles else []
                 self._channel.sendmsg([json.dumps(document).encode()], ancillary)
                 answer = self._reply()
-                if answer == {'op': 'REFUSED'}:
-                    raise OwnerLaunchRefused('owner launcher refused the admission')
+                self._refusal(answer)
                 if answer != {'op': receipt}:
                     raise RuntimeError('invalid owner admission receipt')
             except OwnerLaunchRefused:

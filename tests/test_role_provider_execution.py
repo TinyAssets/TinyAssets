@@ -12,7 +12,6 @@ import pytest
 from tinyassets import role_decoder, role_provider_discovery, role_provider_execution
 from tinyassets.broker import supervisor
 from tinyassets.providers import owned_process, provider_jail
-from tinyassets.role_provider_cell import REFUSAL_EXIT, REFUSAL_PREFIX
 
 
 def test_shared_spawn_refuses_an_unbound_launch_before_any_process(monkeypatch):
@@ -251,64 +250,32 @@ def test_stdin_close_is_only_the_cli_input_side():
     asyncio.run(run())
 
 
-def test_stderr_excerpt_prefers_the_cell_refusal_then_the_verdict_tail():
-    refusal = f'{REFUSAL_PREFIX}provider executable is outside the shipped install trees'
-    assert owned_process.stderr_excerpt('Traceback...\n' + refusal + '\n') == refusal
+def test_stderr_excerpt_is_the_bounded_verdict_tail():
     long = 'started\n' + 'x' * 1000 + '\nerror: unknown option --bogus'
     excerpt = owned_process.stderr_excerpt(long)
     assert excerpt.startswith('...') and excerpt.endswith('error: unknown option --bogus')
     assert len(excerpt) <= 403
     assert owned_process.stderr_excerpt('  short verdict\n') == 'short verdict'
-    assert REFUSAL_EXIT == 78
 
 
-def test_stdout_reset_is_reported_with_exit_code_and_stderr():
-    """A stdout transport fault ends the stream; the CLI's verdict still arrives."""
+def test_cell_refusal_reaches_the_reader_as_the_decoder_marker():
+    """On pipes a refused launch is a clean EOF; the mapper's stop reason names it."""
     from tinyassets.exceptions import ProviderError
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import ClaudeProvider
 
-    class Stdout:
-        async def readline(self):
-            raise ConnectionResetError(104, 'Connection reset by peer')
-
-    class Stderr:
-        sent = False
-        async def read(self, _n):
-            if self.sent:
-                return b''
-            self.sent = True
-            return b'error: unknown option --bogus\n'
-
-    class Stdin:
-        def write(self, _b): ...
-        async def drain(self): ...
-        def close(self): ...
-
-    class Proc:
-        returncode = None
-        stdout, stderr, stdin = Stdout(), Stderr(), Stdin()
-        def kill(self):
-            pass
-        async def wait(self):
-            self.returncode = 1
+    class Cell:
+        stop_reason = 'decoder:role_provider_cell.py:153:ValueError:errno=None'
+        revoke_caller = None
+        def wait(self, timeout):
             return 1
-
-    with pytest.raises(ProviderError) as failure:
-        asyncio.run(ClaudeProvider()._read_stream(Proc(), 'prompt', ModelConfig(
-            init_timeout_s=1, first_progress_s=1, idle_timeout_s=1, absolute_cap_s=5)))
-    message = str(failure.value)
-    assert 'exit code 1' in message and 'unknown option --bogus' in message
-    assert 'ConnectionResetError' in message
-
-
-def test_served_claude_launch_names_the_installed_executable(monkeypatch):
-    """The cell admits the image's shipped path, never a bare name (live 2026-10-09)."""
-    from tinyassets.providers import claude_provider
-
-    monkeypatch.setattr(claude_provider.sys, 'platform', 'linux')
-    monkeypatch.setattr(claude_provider.shutil, 'which',
-                        lambda name: '/usr/local/bin/claude' if name == 'claude' else None)
-    assert claude_provider._resolve_claude_cmd() == (['/usr/local/bin/claude'], False)
-    monkeypatch.setattr(claude_provider.shutil, 'which', lambda name: None)
-    assert claude_provider._resolve_claude_cmd() == (['claude'], False)
+        def close(self):
+            pass
+    async def scenario():
+        stdout = asyncio.StreamReader()
+        stdout.feed_eof()
+        process = role_provider_execution.ExecutionProcess(
+            Cell(), stdout, SimpleNamespace(transport=None, close=lambda: None),
+            asyncio.StreamReader())
+        with pytest.raises(ProviderError, match='provider cell ended') as failure:
+            await process.stdout.readline()
+        assert Cell.stop_reason in str(failure.value)
+    asyncio.run(scenario())

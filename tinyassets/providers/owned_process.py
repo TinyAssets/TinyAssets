@@ -91,20 +91,11 @@ async def aspawn_owned(
 
 
 def stderr_excerpt(stderr_text: str, limit: int = 400) -> str:
-    """The part of a CLI's stderr that names its failure, bounded.
-
-    A cell that refused to start the CLI wrote exactly one
-    ``provider cell refused: ...`` line (``tinyassets.role_provider_cell``);
-    that line is the reason. Otherwise the TAIL carries the verdict: a CLI's
-    (or a traceback's) last lines say why it exited, its first lines only
-    that it started.
+    """The TAIL of a CLI's stderr, bounded: its last lines say why it exited,
+    its first lines only that it started. (A cell that never started the CLI
+    reports through the mapper's ``stop_reason`` instead: ``disk_stop_note``.)
     """
-    from tinyassets.role_provider_cell import REFUSAL_PREFIX
-
     text = stderr_text.strip()
-    for line in text.splitlines():
-        if line.startswith(REFUSAL_PREFIX):
-            return line[:limit]
     return text if len(text) <= limit else "..." + text[-limit:]
 
 
@@ -136,7 +127,7 @@ class OwnerCellProcess:
     pid = None
 
     def __init__(self, cell, reader, writer):
-        self.cell, self.stdout, self.stdin = cell, reader, CellStdin(writer)
+        self.cell, self.stdout, self.stdin = cell, CellOutput(self, reader), CellStdin(writer)
         self._transport = writer.transport
         self.returncode = None
         self._waiter = None
@@ -161,6 +152,52 @@ class OwnerCellProcess:
             self._waiter = asyncio.create_task(asyncio.to_thread(reap))
         self.returncode = await asyncio.shield(self._waiter)
         return self.returncode
+
+
+class CellOutput:
+    """Collect the independent lifetime reason before surfacing a stream reset."""
+
+    def __init__(self, process, reader):
+        self.process, self.reader = process, reader
+
+    def __getattr__(self, name):
+        return getattr(self.reader, name)
+
+    async def _read(self, method, *args):
+        try:
+            result = await getattr(self.reader, method)(*args)
+            if not result and not (method == 'read' and args == (0,)):
+                code = await self.process.wait()
+                reason = getattr(self.process.cell, 'stop_reason', '') or ''
+                # Relay/bwrap stderr is only diagnostic context. In particular,
+                # routine relay teardown must not replace native auth/rate-limit
+                # classification performed by the provider's protocol reader.
+                if code < 0 or (code and reason.startswith(('decoder:', 'launcher:'))):
+                    from tinyassets.exceptions import ProviderError
+
+                    message = 'provider cell ended' + disk_stop_note(self.process)
+                    logger.error('%s', message)
+                    raise ProviderError(message)
+            return result
+        except (ConnectionResetError, BrokenPipeError) as exc:
+            from tinyassets.exceptions import ProviderError
+
+            try:
+                # Bound this observer, not the cached authenticated receipt read.
+                # wait() shields its waiter, so cleanup can still collect it.
+                await asyncio.wait_for(self.process.wait(None), 6)
+                reason = disk_stop_note(self.process)
+            except (OSError, RuntimeError, TimeoutError):
+                reason = ' (owner cell: completion unavailable)'
+            message = 'provider cell stream failed' + reason
+            logger.error('%s', message)
+            raise ProviderError(message) from exc
+
+    async def readline(self):
+        return await self._read('readline')
+
+    async def read(self, size=-1):
+        return await self._read('read', size)
 
 
 def kill_owned_tree(proc) -> None:

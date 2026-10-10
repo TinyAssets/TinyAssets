@@ -14,7 +14,9 @@ import os
 import stat
 from pathlib import Path
 
+from tinyassets.owner_launcher_client import OwnerLaunchRefused
 from tinyassets.providers.owned_process import OwnerCellProcess
+from tinyassets.providers.provider_jail import ProviderConfinementError
 from tinyassets.role_provider_cell import safe_environment
 
 MAX_PROOF_BYTES = 65536
@@ -133,11 +135,14 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
             extra={'egress': True, 'engine': 'g' in sockets} if execution
             else {'egress': True},
             directory_fd=descriptor, socket_fds=tuple(relay_fds))
+    except OwnerLaunchRefused as exc:
+        # The client already verified this bounded reason's authenticated sender.
+        raise ProviderConfinementError(str(exc)) from exc
     finally:
         os.close(descriptor)
         for relay_fd in relay_fds:
             os.close(relay_fd)
-    writer = error_writer = None
+    writer = None
     data_socket = None
     try:
         if execution:
@@ -155,25 +160,29 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
             reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)
             proc = OwnerCellProcess(cell, reader, writer)
     except BaseException:
-        for opened in (writer, error_writer):
-            if opened is not None:
-                opened.close()
+        if writer is not None:
+            writer.close()
         if data_socket is not None:
             data_socket.close()
         cell.close()
         raise
     try:
-        header = await reader.readline()
+        header = await proc.stdout.readline()
         if not header.endswith(b'\n') or len(header) > MAX_PROOF_BYTES:
             raise RuntimeError('provider discovery cell ended before its proof')
         check_proof(json.loads(header).get('cell'), identity, source, sockets=sockets)
         writer.write(config)
         await writer.drain()
-    except BaseException:
+    except BaseException as exc:
+        from tinyassets.exceptions import ProviderError
+        from tinyassets.providers.owned_process import disk_stop_note
+
+        proc.revoke()
+        await proc.wait()
         writer.close()
         if execution:
             proc.close_stdio()
-        proc.revoke()
-        await proc.wait()
-        raise
+        if not isinstance(exc, Exception):
+            raise
+        raise ProviderError('provider cell startup failed' + disk_stop_note(proc)) from exc
     return proc
