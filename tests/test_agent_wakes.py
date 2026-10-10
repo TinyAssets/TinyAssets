@@ -13,6 +13,7 @@ from tinyassets import agent_wakes as wakes
 from tinyassets import request_continuations, runs
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
+from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 from tinyassets.storage import pending_requests
 from tinyassets.ta_capabilities import Capabilities, ExecutionContext
 
@@ -101,6 +102,7 @@ def test_release_contains_commit_or_pr(home, tmp_path, monkeypatch):
         "git_sha": sha, "commits": [sha, ancestor], "prs": [4584]}}))
     assert wakes.recover(home, run=run, now=1030) == 2
     assert set(calls) == keys
+    assert "containment" not in api_status._load_release_state().get("extra", {})
 
 
 def test_release_manifest_excludes_unmerged_history(tmp_path):
@@ -132,7 +134,7 @@ def test_probe_bound_unknown_retry_expiry_and_cancel_race(home):
                    max_checks=2, backoff_seconds=10)
     for instant in (1000, 1010, 1030, 1070):
         assert wakes.recover(home, probe=probe, now=instant) == 0
-    assert attempts == [1, 1, 2]
+    assert attempts == [1, 2]
     assert status(home, key)["status"] == "exhausted"
     cancelled = register(home, condition={"kind": "probe", "command": "true"})
     def cancel_during_probe(*_):
@@ -171,7 +173,7 @@ def test_foreign_authority_refused(home, operation):
 
 def test_blocked_turn_registers_through_ta_and_worker_resumes_after_restart(home, monkeypatch):
     backend = Capabilities(home, ExecutionContext(home.name, OWNER, "main"), [],
-                           None, lambda: None, capability_grant=["bash"])
+                           None, lambda: None, capability_grant=BACKEND_ENGINE_CAPABILITIES)
     ready = False
     turns = []
     def converse(**kwargs):
@@ -195,6 +197,7 @@ def test_blocked_turn_registers_through_ta_and_worker_resumes_after_restart(home
     monkeypatch.setattr(wakes.time, "time", lambda: 1030)
     request_continuations.tick(home.parent)
     assert len(turns) == 2 and turns[-1]["agent_id"] == "main"
+    assert turns[-1]["input_method"] == "unknown"
     assert wakes.listing(home, OWNER)[0]["status"] == "done"
     request_continuations.tick(home.parent)
     assert len(turns) == 2
@@ -207,6 +210,15 @@ def test_owed_turn_survives_uncertain_delivery(home):
     importlib.reload(wakes)
     assert wakes.recover(home, now=1030, run=lambda *_: {"status": "completed"}) == 1
     assert status(home, key)["fires"] == 1
+
+
+def test_narrowed_launch_cannot_schedule_wider_chat_authority(home):
+    backend = Capabilities(home, ExecutionContext(home.name, OWNER, "main"), [],
+                           None, lambda: None, capability_grant=["read", "bash"])
+    result = asyncio.run(backend.dispatch({"op": "call", "name": "wake:register",
+        "arguments": {"note": "Run with more authority later", "after_seconds": 0}}))
+    assert "full serving-owner launch" in result["error"]
+    assert wakes.listing(home, OWNER) == []
 
 
 def test_resumed_turn_uses_real_owner_provider_admission(home, monkeypatch):
@@ -230,22 +242,17 @@ def test_resumed_turn_uses_real_owner_provider_admission(home, monkeypatch):
     assert status(home, key)["status"] == "done"
 
 
-def test_probe_uses_owner_box_and_stable_attempt_id(home, monkeypatch):
-    from tests.agent_loop_fakes import FakeBox
-    from tinyassets.wake_conditions import run_probe
-
-    box = FakeBox(lambda argv, stdin: (b"ready", 0))
-    monkeypatch.setattr("tinyassets.agent_loop.served_chat.configured_box_provider",
-                        lambda: (box, None))
-    key = register(home, condition={"kind": "probe", "command": "test -f ready"})
-    row = status(home, key)
-    row["checks"] = 1
-    assert run_probe(home, row, row["condition"])
-    assert run_probe(home, row, row["condition"])
-    assert len(box.execs) == 1
-    assert all(cc == home.name and owner == OWNER for cc, owner, _ in box.binds)
-    execution, = box.execs.values()
-    assert execution.argv == ["/bin/bash", "-c", "test -f ready"]
+def test_uncertain_probe_consumes_bound_across_restart(home):
+    attempts = []
+    def unavailable(*_):
+        attempts.append(1)
+        raise OSError("lost execution result")
+    key = register(home, condition={"kind": "probe", "command": "test -f ready"}, max_checks=1)
+    assert wakes.recover(home, now=1000, probe=unavailable) == 0
+    importlib.reload(wakes)
+    assert wakes.recover(home, now=1060, probe=unavailable) == 0
+    assert attempts == [1]
+    assert status(home, key)["status"] == "exhausted"
 
 
 def test_fresh_process_recovers_persisted_follow_up(home):

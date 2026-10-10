@@ -18,6 +18,10 @@ The platform SHALL derive authority from the launch or signed-in owner, recheck 
 - **WHEN** an agent names another owner's run, request, wake or agent
 - **THEN** access is refused and no foreign turn starts.
 
+#### Scenario: Narrowed launch
+- **WHEN** an outside-client or narrowed workflow launch tries to register a wake
+- **THEN** registration is refused; it cannot gain the full serving-owner authority of a later chat turn.
+
 #### Scenario: Cancel pending work
 - **WHEN** the owner cancels a pending wake
 - **THEN** subsequent sweeps cannot dispatch it.

@@ -368,7 +368,7 @@ def _release_state_path() -> Path:
     return _base_path() / "release-state.json"
 
 
-def _load_release_state() -> dict[str, Any]:
+def _load_release_state(*, include_containment: bool = False) -> dict[str, Any]:
     """Read the deploy-published release receipt for public status.
 
     The deploy pipeline owns writes. This status helper is deliberately
@@ -403,7 +403,7 @@ def _load_release_state() -> dict[str, Any]:
     extra = {
         str(key): value
         for key, value in payload.items()
-        if key not in _RELEASE_STATE_FIELDS
+        if key not in _RELEASE_STATE_FIELDS and (key != "containment" or include_containment)
     }
     if extra:
         out["extra"] = extra

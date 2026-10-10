@@ -33,6 +33,8 @@ def call(backend, name, arguments):
     from tinyassets import agent_wakes
 
     context = backend.context
+    if not backend.wakes_granted:
+        raise PermissionError("wake requires the agent's full serving-owner launch")
     # An outside-client launch must not turn a one-call capability into durable
     # unattended authority. Serving-owner bash is the registration authority.
     identity = backend.outside_identity

@@ -1,8 +1,8 @@
 """Wake predicates read authoritative state; commands execute only in owner boxes."""
 from __future__ import annotations
 
-import asyncio
 import re
+import shutil
 
 
 def _run(home, owner, run_id):
@@ -94,7 +94,7 @@ def matches(home, row, condition, *, probe=None):
     if kind == "release":
         from tinyassets.api.status import _load_release_state
 
-        release = _load_release_state()
+        release = _load_release_state(include_containment=True)
         # The manifest is scoped to the exact running revision in the receipt.
         manifest = release.get("extra", {}).get("containment", {})
         if not release.get("receipt_available"):
@@ -109,21 +109,20 @@ def matches(home, row, condition, *, probe=None):
 
 
 def run_probe(home, row, condition):
-    from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor
-    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets import universe_egress, universe_tools
     from tinyassets.api.permissions import owner_run_identity
 
-    provider, limits = configured_box_provider()
-    if provider is None:
-        raise LookupError("wake probe needs the owner's box provider")
-    attempt = f"wake:{row['wake_id']}:probe:{row['fires']}:{row['checks']}"
+    # The production four-tool path: owner tool cell, nested jail, storage
+    # accounting and the owner's checking egress proxy. Never a daemon shell.
     with owner_run_identity(home.parent, home.name, row["owner"]) as authorized:
         if not authorized:
             raise PermissionError("wake probe owner unavailable")
-        handle = provider.bind(home.name, account_id=row["owner"], turn_id=attempt)
-        executor = BoxExecutor(provider, handle, limits=limits,
-                               cwd=getattr(handle, "root", None) or BOX_ROOT)
-        outcome = asyncio.run(executor.run(
-            attempt, ["/bin/bash", "-c", condition["command"]],
-            wall_seconds=condition.get("timeout_seconds", 60)))
+        argv = [universe_tools._system_binary("bash"), "-c", condition["command"]]
+        socket = universe_tools._egress_socket(home)
+        python = shutil.which("python3", path="/usr/bin:/bin")
+        if socket is not None and python:
+            argv = universe_egress.forwarder_argv(python, argv)
+        outcome = universe_tools.run_jailed(
+            home, argv, agent_id=row["agent"], egress_socket=socket,
+            wall_seconds=condition.get("timeout_seconds", 60))
     return outcome.exit_code == 0 and not outcome.killed

@@ -463,7 +463,7 @@ def test_unrestricted_launch_keeps_every_served_capability_and_connections(
                                      platform_call("write_graph"), platform_call("run_graph"))
     assert [item["name"] for item in catalog["capabilities"]] == [
         t for t in BACKEND_ENGINE_CAPABILITIES if t not in FILE_TOOLS
-    ] + ["connection:conn-http:POST"]
+    ] + ["wake:register", "wake:list", "wake:cancel", "connection:conn-http:POST"]
     assert wrote == {"result": {"called": "write_graph"}}
     assert ran == {"result": {"called": "run_graph"}} and calls == ["write_graph", "run_graph"]
 

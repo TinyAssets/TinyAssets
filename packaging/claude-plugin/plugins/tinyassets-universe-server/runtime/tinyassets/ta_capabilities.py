@@ -65,6 +65,10 @@ class Capabilities:
         self.connections_granted = connections_granted
         self.mutations_granted = bool(MUTATION_GRANTS.intersection(capability_grant))
         self.shell_granted = "bash" in capability_grant
+        from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+        # A narrowed workflow launch cannot schedule an unrestricted chat turn.
+        self.wakes_granted = set(BACKEND_ENGINE_CAPABILITIES).issubset(capability_grant)
         self.review_provider = review_provider
         # An activity's launch: every request is refused once it stops running
         # (tinyassets/activity_fence.py), connection calls included.
@@ -128,7 +132,7 @@ class Capabilities:
         if message.get("op") == "catalog" and set(message) == {"op"}:
             from tinyassets.wake_capabilities import CATALOG
 
-            items = list(self.platform.values()) + CATALOG
+            items = list(self.platform.values()) + (CATALOG if self.wakes_granted else [])
             for name, (_grant, view, verb) in self.connections().items():
                 items.append({
                     "name": name, "description": f"{view.destination}: {verb}",

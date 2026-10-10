@@ -108,6 +108,10 @@ on:
       # the served turn that indexes its skills, and their real-jail proof.
       - "tests/test_universe_tools_jail.py"
       - "tests/test_ta_capabilities_jail.py"
+      - "tests/test_agent_wakes_jail.py"
+      - "tests/test_agent_wakes.py"
+      - "tinyassets/agent_wakes.py"
+      - "tinyassets/wake_conditions.py"
       - "tests/test_remote_box_ta.py"
       - "tests/test_remote_box_extensions.py"
       - "tinyassets/agent_loop/box_ta.py"

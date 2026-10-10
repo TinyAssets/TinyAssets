@@ -354,7 +354,7 @@ OWNER_ANSWER_SOURCE = ("tinyassets.owner-answer.v1", "tinyassets.request_answers
                        "owner_answer")
 
 
-def owner_turn(home, owner, *, event, message, agent):
+def owner_turn(home, owner, *, event, message, agent, input_method="app_action"):
     """Run the asking agent's turn for an owner's answer, under the owner's authority.
 
     This runs on the continuation thread, after the owner's own session answered
@@ -383,7 +383,7 @@ def owner_turn(home, owner, *, event, message, agent):
         capability = claim_provider_request(reserve, tool_name=tool)
         try:
             result = converse(message=message, graph_id=home.name, agent_id=agent,
-                              input_method="app_action")
+                              input_method=input_method)
         finally:
             revoke_provider_request(capability)
     return json.loads(result) if isinstance(result, str) else result

@@ -170,16 +170,14 @@ def recover(home, *, run=None, probe=None, now=None):
                 condition = json.loads(row["condition_json"])
                 if row["status"] in {"pending", "probing"}:
                     is_probe = condition.get("kind") == "probe"
-                    if (is_probe and row["status"] == "pending"
-                            and row["checks"] >= row["max_checks"]):
+                    if is_probe and row["checks"] >= row["max_checks"]:
                         _update(conn, key, status="exhausted", reason="probe attempts exhausted")
                         continue
                     # Reserve the check before executing. A restart never grants
                     # extra probes beyond the explicitly registered bound.
                     delay = min(row["max_backoff_seconds"],
                                 row["backoff_seconds"] * 2 ** min(row["checks"], 30))
-                    if row["status"] == "pending":
-                        row["checks"] += 1
+                    row["checks"] += 1
                     _update(conn, key, checks=row["checks"], next_check=now + delay,
                             status="probing" if is_probe else "pending")
                     if not matches(home, row, condition, probe=probe):
@@ -213,7 +211,8 @@ def recover(home, *, run=None, probe=None, now=None):
             except Exception:
                 _LOG.exception("Wake %s failed; retained for retry", key)
                 _update(conn, key, reason="condition or turn unavailable; retry pending",
-                        next_check=now + row["backoff_seconds"])
+                        next_check=now + min(row["max_backoff_seconds"],
+                            row["backoff_seconds"] * 2 ** min(row["checks"], 30)))
     return count
 
 
@@ -228,4 +227,4 @@ def _run(home, row):
                    "condition": json.loads(row["condition_json"]),
                    "occurrence": row["fires"] + 1}))
     return owner_turn(home, row["owner"], event=f"wake:{row['wake_id']}:{row['fires']}",
-                      message=message, agent=row["agent"])
+                      message=message, agent=row["agent"], input_method="unknown")
