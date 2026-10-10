@@ -30,6 +30,26 @@ def test_fresh_provision_delivers_once_and_never_reseeds_deletions(center):
     assert len(list_pending(center)) == 1
 
 
+def test_previous_release_upgrades_stock_and_keeps_owner_customizations(center):
+    from tinyassets.starter_manifest import SeedFile, SeedManifest
+    from tinyassets.starter_release import starter_manifest
+
+    current = starter_manifest()
+    old = SeedManifest(current.bundle_id, '1', tuple(
+        SeedFile(file.path, b'previous stock', file.predecessors, file.historically_seeded)
+        for file in current.files))
+    with seed_store(center, owner_id='alice', center_id=center.name) as seeds:
+        seeds.install(old, fresh=True)
+    customized = center / 'starter/hooks.md'
+    customized.write_text('Owner instructions')
+    result = prepare_center_starter(center)
+    assert result['version'] == '2'
+    assert (center / 'AGENTS.md').read_bytes() == next(
+        file.content for file in current.files if file.path == 'AGENTS.md')
+    assert customized.read_text() == 'Owner instructions'
+    assert prepare_center_starter(center)['transaction_id'] == result['transaction_id']
+
+
 def test_notice_survives_delivery_failure_and_replays(center, monkeypatch):
     from tinyassets.storage import pending_requests
 

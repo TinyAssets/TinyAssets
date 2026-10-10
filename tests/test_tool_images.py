@@ -215,12 +215,24 @@ def _universe(tmp_path: Path) -> Path:
 
 
 def test_an_image_is_read_whole_inside_the_jail_with_its_own_output_cap(tmp_path, monkeypatch):
+    from tinyassets import role_decoder
+
     data = _png(10, 10)
     spy = _Spy(ToolRun(0, data, None, 0.0))
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
+    root = _universe(tmp_path)
+    decode = role_decoder.decode
+    scopes = []
+
+    def scoped_decode(data, mime, universe_dir):
+        scopes.append(universe_dir)
+        return decode(data, mime, universe_dir)
+
+    monkeypatch.setattr(role_decoder, 'decode', scoped_decode)
     shown = universe_tools.read_file(
-        _universe(tmp_path), "previews/village.png", agent_id="main",
+        root, "previews/village.png", agent_id="main",
     )
+    assert scopes == [root]
     assert isinstance(shown, ToolImage) and (shown.width, shown.height) == (10, 10)
     call = spy.calls[0]
     assert call["inner"][-1] == "/u/previews/village.png"
