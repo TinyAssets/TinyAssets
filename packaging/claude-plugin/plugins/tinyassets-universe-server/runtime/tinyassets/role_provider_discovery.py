@@ -142,29 +142,28 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
         os.close(descriptor)
         for relay_fd in relay_fds:
             os.close(relay_fd)
-    writer = error_writer = None
-    data_socket = error_socket = None
+    writer = None
+    data_socket = None
     try:
-        cell.stream.setblocking(False)
-        data_socket = cell.stream.dup() if execution else cell.stream
-        reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)
         if execution:
-            from tinyassets.role_provider_execution import ExecutionProcess
+            from tinyassets.role_provider_execution import ExecutionProcess, pipe_streams
 
-            cell.stderr.setblocking(False)
-            error_socket = cell.stderr.dup()
-            error_reader, error_writer = await asyncio.open_connection(
-                sock=error_socket, limit=limit)
-            proc = ExecutionProcess(cell, reader, writer, error_reader, error_writer)
+            # Three ordinary pipes, read and written exactly as asyncio reads
+            # and writes a local subprocess. The transports own duplicates, so
+            # reaping (which closes the cell's own ends) never discards bytes
+            # still queued for a reader.
+            reader, writer, error_reader = await pipe_streams(cell, limit)
+            proc = ExecutionProcess(cell, reader, writer, error_reader)
         else:
+            cell.stream.setblocking(False)
+            data_socket = cell.stream
+            reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)
             proc = OwnerCellProcess(cell, reader, writer)
     except BaseException:
-        for opened in (writer, error_writer):
-            if opened is not None:
-                opened.close()
-        for opened in (data_socket, error_socket):
-            if opened is not None:
-                opened.close()
+        if writer is not None:
+            writer.close()
+        if data_socket is not None:
+            data_socket.close()
         cell.close()
         raise
     try:
@@ -181,8 +180,8 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
         proc.revoke()
         await proc.wait()
         writer.close()
-        if error_writer is not None:
-            error_writer.close()
+        if execution:
+            proc.close_stdio()
         if not isinstance(exc, Exception):
             raise
         raise ProviderError('provider cell startup failed' + disk_stop_note(proc)) from exc

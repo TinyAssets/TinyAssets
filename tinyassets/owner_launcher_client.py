@@ -32,11 +32,21 @@ if hasattr(os, 'register_at_fork'):
 
 
 class OwnerCell:
-    """One mapper-owned process lifetime; caller owns its bidirectional stream."""
+    """One mapper-owned process lifetime; caller owns its data endpoints.
 
-    def __init__(self, client, stream, status, identity, *, stderr=None):
+    A data cell's ``stream`` is one duplex socket. A ``provider-exec`` cell
+    instead gets three ordinary pipes, exactly like a local subprocess:
+    ``stdin`` (the daemon's write end), ``stream`` (stdout, read end) and
+    ``stderr`` (read end). Pipes are one-directional, so closing the CLI's
+    input can never discard its output, and a CLI that exits with unread
+    input leaves the daemon a clean stdout EOF (plus EPIPE on its own write)
+    instead of ECONNRESET on a shared socket.
+    """
+
+    def __init__(self, client, stream, status, identity, *, stderr=None, stdin=None):
         self.stream, self._status = stream, status
         self.stderr = stderr
+        self.stdin = stdin
         self._client, self._identity = client, identity
         self._pid = os.getpid()
         self._result = None
@@ -46,9 +56,9 @@ class OwnerCell:
         _live_cells.add(self)
 
     def _after_fork(self):
-        self.stream.close()
-        if self.stderr is not None:
-            self.stderr.close()
+        for endpoint in (self.stream, self.stderr, self.stdin):
+            if endpoint is not None:
+                endpoint.close()
         self._status.close()
         self._closed = True
 
@@ -103,9 +113,9 @@ class OwnerCell:
             try:
                 self.cancel()
             finally:
-                self.stream.close()
-                if self.stderr is not None:
-                    self.stderr.close()
+                for endpoint in (self.stream, self.stderr, self.stdin):
+                    if endpoint is not None:
+                        endpoint.close()
                 self._status.close()
                 self._closed = True
                 _live_cells.discard(self)
@@ -119,6 +129,12 @@ class OwnerCell:
 
 class OwnerLaunchRefused(RuntimeError):
     """One completed authenticated exchange was refused; channel remains usable."""
+
+
+def _pipe():
+    """(read end, write end) of one anonymous pipe, both close-on-exec."""
+    read_fd, write_fd = os.pipe()
+    return os.fdopen(read_fd, 'rb', buffering=0), os.fdopen(write_fd, 'wb', buffering=0)
 
 
 class OwnerLauncherClient:
@@ -225,6 +241,10 @@ class OwnerLauncherClient:
         ``extension_fd`` is the daemon's materialised extension tree for ONE
         tool call. It follows the relay sockets in the descriptor order, so the
         mapper's fixed slots stay stable when a call has no relay.
+
+        A ``provider-exec`` cell receives pipes, not a duplex socket: its
+        stdin read end first, then (after the relays) its stdout and stderr
+        write ends, then the status channel. The daemon keeps the other ends.
         """
         if (type(identity) is not OwnerIdentity or identity.uid != identity.gid
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
@@ -242,10 +262,15 @@ class OwnerLauncherClient:
         if extension_fd is not None and kind != 'tool-jail':
             raise ValueError('unsupported cell extension mount')
         document.update(op='START', kind=kind, principal=principal, command_center=command_center)
-        data, child = socket.socketpair()
         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        stderr, child_stderr = socket.socketpair() if kind == 'provider-exec' else (None, None)
         status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        stdin = stderr = child_stdout = child_stderr = None
+        if kind == 'provider-exec':
+            child, stdin = _pipe()
+            data, child_stdout = _pipe()
+            stderr, child_stderr = _pipe()
+        else:
+            data, child = socket.socketpair()
         try:
             with self._lock:
                 self._check()
@@ -256,7 +281,8 @@ class OwnerLauncherClient:
                 handles.extend(socket_fds)
                 if extension_fd is not None:
                     handles.append(extension_fd)
-                if child_stderr is not None:
+                if child_stdout is not None:
+                    handles.append(child_stdout.fileno())
                     handles.append(child_stderr.fileno())
                 handles.append(child_status.fileno())
                 try:
@@ -271,7 +297,8 @@ class OwnerLauncherClient:
                         raise RuntimeError('invalid owner launcher start receipt')
                     if reply['uid'] != identity.uid:
                         actual = OwnerIdentity(reply['uid'], reply['gid'])
-                        with OwnerCell(self, data, status, actual, stderr=stderr) as refused:
+                        with OwnerCell(self, data, status, actual, stderr=stderr,
+                                       stdin=stdin) as refused:
                             refused.cancel()  # Reap before returning a reusable refusal.
                         raise OwnerLaunchRefused('owner launcher refused cell identity')
                 except OwnerLaunchRefused:
@@ -279,18 +306,16 @@ class OwnerLauncherClient:
                 except BaseException:
                     self._close()
                     raise
-            return OwnerCell(self, data, status, identity, stderr=stderr)
+            return OwnerCell(self, data, status, identity, stderr=stderr, stdin=stdin)
         except BaseException:
-            data.close()
-            status.close()
-            if stderr is not None:
-                stderr.close()
+            for endpoint in (data, status, stderr, stdin):
+                if endpoint is not None:
+                    endpoint.close()
             raise
         finally:
-            child.close()
-            child_status.close()
-            if child_stderr is not None:
-                child_stderr.close()
+            for endpoint in (child, child_status, child_stdout, child_stderr):
+                if endpoint is not None:
+                    endpoint.close()
 
     def preview(self, spec, wall_seconds, *, principal, command_center, identity):
         from tinyassets.ui_preview import MAX_CHILD_OUTPUT

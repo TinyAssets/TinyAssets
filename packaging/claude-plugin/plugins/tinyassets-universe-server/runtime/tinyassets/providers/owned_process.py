@@ -90,6 +90,15 @@ async def aspawn_owned(
                        nested_sandbox=nested_sandbox, options=kwargs)
 
 
+def stderr_excerpt(stderr_text: str, limit: int = 400) -> str:
+    """The TAIL of a CLI's stderr, bounded: its last lines say why it exited,
+    its first lines only that it started. (A cell that never started the CLI
+    reports through the mapper's ``stop_reason`` instead: ``disk_stop_note``.)
+    """
+    text = stderr_text.strip()
+    return text if len(text) <= limit else "..." + text[-limit:]
+
+
 def disk_stop_note(proc) -> str:
     """Authenticated cell stop diagnostics, shared by every CLI adapter."""
     if isinstance(proc, OwnerCellProcess):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,19 +11,81 @@ from tinyassets.providers.owned_process import OwnerCellProcess
 from tinyassets.providers.provider_jail import ProviderConfinementError
 
 
-class ExecutionProcess(OwnerCellProcess):
-    """Async process shape with independent stderr and mapper-owned lifetime."""
+class _PipeWriterProtocol(asyncio.streams.FlowControlMixin):
+    """What ``asyncio.subprocess`` gives a child's stdin: a flow-controlled
+    writer whose ``drain`` raises once the reader (the CLI) is gone."""
 
-    def __init__(self, cell, reader, writer, error_reader, error_writer):
+    def __init__(self, loop):
+        super().__init__(loop=loop)
+        self._closed = loop.create_future()
+
+    def connection_lost(self, exc):
+        super().connection_lost(exc)
+        if not self._closed.done():
+            if exc is None:
+                self._closed.set_result(None)
+            else:
+                self._closed.set_exception(exc)
+
+    def _get_close_waiter(self, stream):
+        return self._closed
+
+    def __del__(self):
+        # Match asyncio.streams: an unretrieved close exception is not a warning.
+        try:
+            if self._closed.done() and not self._closed.cancelled():
+                self._closed.exception()
+        except Exception:  # noqa: BLE001 - interpreter shutdown
+            pass
+
+
+async def pipe_streams(cell, limit):
+    """(stdout reader, stdin writer, stderr reader) over the cell's three pipes.
+
+    The read transports take duplicates of the cell's descriptors, so the
+    authenticated reap can close the cell's own ends without discarding bytes
+    still queued for a reader. The write transport takes the cell's stdin end
+    ITSELF: a pipe reader sees EOF only when every write end is closed, so the
+    daemon must hold exactly one, and closing the writer must be that close.
+    """
+    loop = asyncio.get_running_loop()
+    readers = []
+    for source in (cell.stream, cell.stderr):
+        reader = asyncio.StreamReader(limit=limit, loop=loop)
+        protocol = asyncio.StreamReaderProtocol(reader, loop=loop)
+        await loop.connect_read_pipe(lambda protocol=protocol: protocol,
+                                     os.fdopen(os.dup(source.fileno()), 'rb', buffering=0))
+        readers.append(reader)
+    stdin_fd = os.dup(cell.stdin.fileno())
+    cell.stdin.close()
+    cell.stdin = None
+    transport, protocol = await loop.connect_write_pipe(
+        lambda: _PipeWriterProtocol(loop), os.fdopen(stdin_fd, 'wb', buffering=0))
+    writer = asyncio.StreamWriter(transport, protocol, None, loop)
+    return readers[0], writer, readers[1]
+
+
+class ExecutionProcess(OwnerCellProcess):
+    """Async process shape over three real pipes, with a mapper-owned lifetime.
+
+    ``stdin`` is an ordinary pipe writer: ``close()`` ends only the CLI's
+    input, and a CLI that exits without reading it costs the writer an EPIPE
+    and nothing else. Stdout and stderr are read to their own EOFs.
+    """
+
+    def __init__(self, cell, reader, writer, error_reader):
         super().__init__(cell, reader, writer)
+        self.stdin = writer  # a one-directional pipe: no half-close shim
         self.stderr = error_reader
-        self._error_writer = error_writer
-        self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer, error_writer)
+        self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer)
 
     @staticmethod
     def _close_stdio(*writers):
         for writer in writers:
             writer.close()
+
+    def close_stdio(self):
+        self._stdio_finalizer()
 
     async def wait(self, timeout=None):
         # No wall-clock ceiling: the cell lives until it exits or is revoked.
@@ -48,7 +111,7 @@ class ExecutionProcess(OwnerCellProcess):
                 if input:
                     self.stdin.write(input)
                     await self.stdin.drain()
-                self.stdin.write_eof()
+                self.stdin.close()
             except (BrokenPipeError, ConnectionResetError):
                 pass
 

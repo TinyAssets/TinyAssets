@@ -40,9 +40,9 @@ def test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow():
     launcher = object.__new__(scope['OwnerLauncher'])
     reader, writer = os.pipe()
     os.set_blocking(reader, False)
-    sink, consumer = socket.socketpair()
-    sink.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
-    consumer.setblocking(False)
+    consumer, sink = os.pipe()  # the daemon's stderr pipe, as the mapper holds it
+    os.set_blocking(sink, False)
+    os.set_blocking(consumer, False)
     state = [reader, sink, b'', None, bytearray(), False, None]
     launcher.diagnostics = {1: state}
     try:
@@ -54,14 +54,14 @@ def test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow():
         received = bytearray()
         for _ in range(100):
             try:
-                received.extend(consumer.recv(65536))
+                received.extend(os.read(consumer, 65536))
             except BlockingIOError:
                 pass
             launcher._flush_stderr(state)
             if len(received) == len(expected):
                 break
         assert bytes(received) == expected and not state[4]
-        for _ in range(80):
+        for _ in range(120):  # beyond the pipe's capacity plus the 256 KiB buffer
             os.write(writer, b'x' * 4096)
             launcher._drain_diagnostics(1)
         assert len(state[4]) <= 256 * 1024 and state[5]
@@ -70,7 +70,7 @@ def test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow():
         os.close(writer)
         if launcher.diagnostics:
             launcher._finish_diagnostics(1, 1)
-        consumer.close()
+        os.close(consumer)
 
 
 def test_relay_teardown_does_not_replace_the_cell_exit():
