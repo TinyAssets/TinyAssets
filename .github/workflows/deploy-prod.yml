@@ -811,6 +811,7 @@ jobs:
           cat > release-state.json <<EOF
           {"receipt_available":true,"git_sha":"${GIT_SHA}","image_tag":"${IMAGE_TAG}","image_digest":"${IMAGE_DIGEST}","build_run_id":"${BUILD_RUN_ID}","build_run_url":"https://github.com/${{ github.repository }}/actions/runs/${BUILD_RUN_ID}","deploy_run_id":"${{ github.run_id }}","deploy_run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}","schema_migration_rev":"not_applicable","canary_bundle_status":"not_run","deployed_at":"${now}","rollback_target":"","actor":"${{ github.actor }}","repository":"${{ github.repository }}","workflow_event":"${{ github.event_name }}","extra":{"active_git_sha":"${GIT_SHA}","active_identity_status":"running_healthy","active_image_digest":"${IMAGE_DIGEST}","active_image_ref":"${DEPLOYED_IMAGE}","active_source_provenance":"digest_revision_label","image_ref":"${IMAGE_REF}","image_mutation_started":true,"outcome":"succeeded","production_mutation_started":true,"release_state_version":2,"rollback_attempted":false,"rollback_reason":"not_needed","rollback_result":"not_attempted","running_image_ref":"${DEPLOYED_IMAGE}","forward_canary_status":"passed","forward_deploy_status":"succeeded","terminal_at":"${now}"}}
           EOF
+          python scripts/release_containment.py release-state.json
           scp -i ~/.ssh/do_deploy -o BatchMode=yes release-state.json \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/release-state.json"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \

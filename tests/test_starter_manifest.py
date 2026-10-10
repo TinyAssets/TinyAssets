@@ -10,7 +10,7 @@ def test_published_starter_release_is_immutable():
 
     manifest = starter_manifest()
     assert (manifest.version, manifest.sha256) == (
-        '2', 'fff85c4ef80823313398df8f991ab42f175be2e07c328206a55e753bc9c5b18c',
+        '2-wake-when', 'a00b36f7ef39005da172f24108f60bef9bf5d3dfe8143c1af536a2034f75c935',
     ), 'Starter content changed: publish a new version and update its hash together.'
 
 

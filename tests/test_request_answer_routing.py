@@ -103,7 +103,7 @@ def test_cross_owner_refused_before_answer_mutation(world, attack):
             origin = {**row["asking_context"], "owner": OTHER}
             conn.execute("UPDATE pending_requests SET asking_context_json=? WHERE request_id=?",
                          (json.dumps(origin), row["request_id"]))
-    actor = OTHER if attack == "answer_owner" else OWNER
+    actor = OTHER if attack in {"answer_owner", "binding_owner"} else OWNER
     with identity_context(Identity(user_id=actor, username=actor, capabilities=[])):
         result = answer_request(universe_id=home.name, payload={
             "request_id": row["request_id"], "values": {"reply": "steal"}})
@@ -301,6 +301,40 @@ def unrecorded(home, row):
     with closing(store._db(home)) as conn, conn:
         conn.execute("UPDATE pending_requests SET asking_context_json='{}' WHERE request_id=?",
                      (row["request_id"],))
+
+
+@pytest.mark.parametrize("unrecorded_origin", [False, True])
+@pytest.mark.parametrize("decision", ["answer", "reply", "dismiss"])
+def test_recorded_owner_can_settle_old_foreign_binding(world, unrecorded_origin, decision):
+    from tinyassets.custom_agents import _agent_connect
+
+    home, agent = world
+    row = ask(home, agent)
+    if unrecorded_origin:
+        connection_owned(home, row)
+        unrecorded(home, row)
+    with _agent_connect(home.parent) as conn:
+        conn.execute("UPDATE agent_bindings SET created_by=? WHERE agent_binding_id=?",
+                     (OTHER, agent))
+    co_admin(home)
+    payload = {"answer": {"values": {"reply": "Keep my answer"}},
+               "reply": {"reply": "Keep my answer", "reply_id": "legacy"},
+               "dismiss": {"dismiss": True}}[decision]
+    with as_other():
+        refused = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], **payload})
+    assert refused["error"] == "not_found"
+    assert store.get_request(home, row["request_id"])["status"] == "pending"
+    result = answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], **payload})
+    assert not result.get("error"), result
+    saved = store.get_request(home, row["request_id"])
+    assert saved["asking_context"]["owner"] == OWNER
+    assert request_answers.destination(home, saved["asking_context"])[0] == "main"
+    if decision == "reply" or not unrecorded_origin:
+        received, = drain(home)
+        assert (received["owner"], received["agent"]) == (OWNER, "main")
+        assert received["routing_note"]
 
 
 def as_other():

@@ -32,9 +32,10 @@ def recover(home, run=None):
         os.close(fd)
         return 0
     try:
-        from tinyassets import request_answers
+        from tinyassets import agent_wakes, request_answers
 
-        return request_answers.recover(home, run) + _recover(home, run or _run)
+        return (request_answers.recover(home, run) + _recover(home, run or _run)
+                + agent_wakes.recover(home))
     finally:
         _unlock_fd(fd)
         os.close(fd)

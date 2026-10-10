@@ -191,7 +191,11 @@ def claude_retained_text(stdout: str) -> str:
             # payloads, and future metadata rather than rendering them.
             continue
         if terminal is not None:
-            raise ValueError("Claude text/result event after terminal result")
+            print(
+                f"[peer_agent] ignored Claude {kind} event after terminal result "
+                f"at line {line_number}", file=sys.stderr,
+            )
+            continue
         if kind == "assistant":
             message = obj.get("message")
             content = message.get("content") if isinstance(message, dict) else None

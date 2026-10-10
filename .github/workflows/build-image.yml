@@ -80,6 +80,7 @@ on:
       - 'scripts/validate_oauth_provider_credentials.py'
       - 'scripts/validate_host_runtime_hmac_pair.py'
       - 'scripts/deployed_sha.py'
+      - 'scripts/release_containment.py'
       # Run inside the live container before every swap (deploy-prod.yml
       # "Wait for in-flight turns").
       - 'scripts/turns_in_flight.py'

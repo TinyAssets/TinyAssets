@@ -868,7 +868,8 @@ class OwnerLauncher:
             os.set_blocking(error_sink, False)
         # At most 256 KiB of pending stderr per cell; capture never blocks the
         # mapper. A slow consumer receives an explicit truncation completion.
-        self.diagnostics[pid] = [error_read, error_sink, b'', None, bytearray(), False, None]
+        self.diagnostics[pid] = [error_read, error_sink, b'', None, bytearray(), False, None,
+                                 kind]
         # A provider turn or package server runs until it finishes: lifetime is
         # the daemon's revocation (EOF), daemon death or the RSS/process guard,
         # never a clock.
@@ -915,10 +916,11 @@ class OwnerLauncher:
                 break
             time.sleep(0.01)
         assert_mapper(self.launch)
+        tail = self._stderr_tail(pid)
         reason = self._finish_diagnostics(pid, os.waitstatus_to_exitcode(status))
         self.channel.sendall(json.dumps({'op': 'SPAWN_DONE',
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
-            'gid': machine, 'stop_reason': reason}).encode())
+            'gid': machine, 'stop_reason': reason, 'stderr_tail': tail}).encode())
 
     @staticmethod
     def _scope(principal, center):
@@ -1080,7 +1082,7 @@ class OwnerLauncher:
                     (b'No such file or directory', 2), (b'Invalid argument', 22),
                     (b'No space left on device', 28)) if message in data), None)
                 state[3] = f'bwrap:bootstrap-refused:errno={number}'
-            state[2] = data[-256:]
+            state[2] = data[-_diagnostics['STDERR_TAIL_BYTES']:]
             if state[1] is not None:
                 room = 256 * 1024 - len(state[4])
                 state[4].extend(chunk[:room])
@@ -1099,9 +1101,13 @@ class OwnerLauncher:
             except BrokenPipeError:
                 state[5] = True  # The daemon stopped reading; nothing to deliver to.
 
+    def _stderr_tail(self, pid):
+        self._drain_diagnostics(pid)
+        return self.diagnostics[pid][2].decode('utf-8', 'replace')
+
     def _finish_diagnostics(self, pid, code, stop_reason=None):
         self._drain_diagnostics(pid)
-        fd, sink, _, reason, pending, truncated, relay = self.diagnostics.pop(pid)
+        fd, sink, tail, reason, pending, truncated, relay, kind = self.diagnostics.pop(pid)
         os.close(fd)
         if sink is not None:
             os.close(sink)
@@ -1113,7 +1119,8 @@ class OwnerLauncher:
             reason += ';stderr_truncated'
             os.write(2, b'owner cell stderr truncated: consumer did not drain bounded buffer\n')
         if code or reason.startswith(('decoder:', 'launcher:', 'bwrap:')):
-            os.write(2, ('owner cell ended: ' + reason + '\n').encode())
+            os.write(2, (f'owner cell ended: {reason} kind={kind} exit={code} '
+                         f'stderr_tail={tail.decode("utf-8", "replace")!r}\n').encode())
         return reason
 
     def _service_jobs(self):
@@ -1138,15 +1145,30 @@ class OwnerLauncher:
             if not waited and select.select([channel], [], [], 0)[0]:
                 # EOF revokes this launch. Any malformed or forged control
                 # also cancels only this cell; it can never select another PID.
-                _, ancillary, _, _ = channel.recvmsg(
+                packet, ancillary, flags, _ = channel.recvmsg(
                     32, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
+                credentials, unknown = [], False
                 for level, kind, payload in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                        credentials.append(struct.unpack('3i', payload))
+                    else:
+                        unknown = True
                     if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                         handles = array.array('i')
                         handles.frombytes(payload[:len(payload) - len(payload) % handles.itemsize])
                         for handle in handles:
                             os.close(handle)
-                reason = reason or 'revoked'
+                if (not reason and packet == b'PULSE' and not unknown
+                        and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+                        and credentials == [(self.daemon_pid,
+                                             self.overflow_uid, self.overflow_gid)]):
+                    try:
+                        channel.sendall(json.dumps(dict(
+                            op='SPAWN_ALIVE', uid=machine, gid=machine)).encode())
+                    except (BlockingIOError, BrokenPipeError, ConnectionResetError):
+                        reason = 'liveness_channel_unavailable'
+                else:
+                    reason = reason or 'revoked'
             if not waited and reason:
                 try:
                     os.kill(pid, signal.SIGKILL)
@@ -1166,6 +1188,7 @@ class OwnerLauncher:
                 try:
                     receipt = dict(op='SPAWN_DONE', returncode=os.waitstatus_to_exitcode(status),
                                    uid=machine, gid=machine)
+                    receipt['stderr_tail'] = self._stderr_tail(pid)
                     receipt['stop_reason'] = self._finish_diagnostics(
                         pid, receipt['returncode'], reason if cancel_sent else None)
                     channel.sendall(json.dumps(receipt).encode())

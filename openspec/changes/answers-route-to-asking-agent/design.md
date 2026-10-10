@@ -10,7 +10,7 @@ Route every answer surface by server-captured provenance; preserve existing cons
 
 Store immutable asking provenance alongside each request in the existing protected database. Commit an answer delivery receipt in the answer transaction and drain it through the existing continuation sweep. Keep protected action/connection execution continuations as their existing single wake, avoiding duplicate turns. Plain replies use the same owner-gated answer door and leave the request open. Clients never pick the destination.
 
-Recheck current home ownership and binding ownership before delivery. A foreign binding is refused; an absent or retired same-owner binding falls back to main with an explicit note. Preserve run/workflow provenance as data, never as caller-supplied authority.
+Recheck the recorded owner's admin access and binding ownership before delivery. An absent, retired or now-foreign binding falls back to the recorded owner's main with an explicit note; it never changes the answer's owner or delivers to the foreign binding. Another owner's answer or dismissal is refused before mutation. Preserve run/workflow provenance as data, never as caller-supplied authority.
 
 ## Risks / Trade-offs
 

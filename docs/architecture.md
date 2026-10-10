@@ -78,6 +78,7 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/runs.py`, `tinyassets/run_*` | Run storage, events, run files and inputs. |
 | `tinyassets/node_sandbox.py`, `tinyassets/sandbox/` | The sandboxed code node and sandbox detection. |
 | `tinyassets/scheduler.py`, `tinyassets/automations.py` | Event subscriptions, cron, user-owned automations. |
+| `tinyassets/agent_wakes.py`, `tinyassets/wake_conditions.py` | Saved agent follow-ups through `ta`, checked by the protected request continuation worker. |
 | `tinyassets/branch_tasks.py`, `tinyassets/branch_tasks_v2.py` | The file-locked branch task queue and its transactional successor. |
 | `tinyassets/workspace_*.py` | Workspace pool, provisioning, staging and git for workspace jobs. |
 | `tinyassets/effectors/`, `tinyassets/delivery_runtime.py` | External effects and their delivery. |
