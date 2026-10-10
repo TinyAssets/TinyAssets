@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
-    "start_activity", "approve_action",
+    "start_activity", "approve_action", "architecture_approval",
 })
 # System-created approve_action and notify use dedicated branches before the
 # general gate; classify them too so creation paths cannot escape the inventory.
@@ -260,6 +260,10 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == "architecture_approval":
+        from tinyassets.architecture_approval import validate_action
+
+        return validate_action(action)
     if kind == "bind_model_access":
         from tinyassets.api.model_access_requests import validate_action
 
@@ -910,7 +914,7 @@ def _validated_fields(
                 "not one unlabelled box for the owner to work out"
             )
         if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent",
-                              PATCH_INTAKE_ACTION, "publish", "install"):
+                              PATCH_INTAKE_ACTION, "publish", "install", "architecture_approval"):
             # Nothing to type. For extend_http the key is already in the vault
             # and for remove_http it is on its way out; either way this is a
             # yes/no, and a paste box on a removal would be nonsense.
@@ -1218,7 +1222,7 @@ def request_from_user(
             return capture(udir, document["action"].get("pending_action"))
         except (RequestRefused, ValueError) as exc:
             return _bad(str(exc))
-    if raw_type in _PINNED_ACTIONS:
+    if raw_type in _PINNED_ACTIONS or raw_type == "architecture_approval":
         # The platform writes these tabs itself; whatever the agent sent is replaced.
         kind, title = kind or raw_type, title or raw_type
     if not kind:
@@ -1260,6 +1264,12 @@ def request_from_user(
     except ValueError as exc:
         return _refused(exc)
 
+    if action.get("type") == "architecture_approval":
+        from tinyassets.architecture_approval import tab_text
+
+        if fields or items:
+            return _bad("architecture approval is a fieldless owner confirmation")
+        kind, title, body = tab_text(action)
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import capture_action
         from tinyassets.storage.current_home import CurrentHomeChanged
@@ -2993,6 +3003,23 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
             "that feedback looks like it contains a credential; it is stored in "
             "the clear, so say it in words instead"
         )
+
+    if action.get("type") == "architecture_approval":
+        from tinyassets.architecture_approval import approve
+
+        if row["fields"] or values:
+            return _bad("architecture approval is a fieldless owner confirmation")
+        try:
+            attestation = approve(action, request_id=request_id, owner_session=owner_session)
+        except (ValueError, KeyError, PermissionError, RuntimeError, OSError) as exc:
+            return {"error": "architecture_approval_unavailable", "detail": str(exc),
+                    "request_pending": True}
+        if not resolve_request(udir, request_id, status="answered", answer=attestation,
+                               feedback=feedback, dont_ask_again=False, decision="allowed"):
+            return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        return {"status": "answered", "request_id": request_id, "attestation": attestation,
+                "receipt": "Architecture agreement recorded for this exact PR scope.",
+                "suppressed": False}
 
     if row["kind"] == "proposal":
         if values:

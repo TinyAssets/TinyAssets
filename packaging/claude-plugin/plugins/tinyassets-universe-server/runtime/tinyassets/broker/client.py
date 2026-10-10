@@ -183,6 +183,28 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker catalog response")
         return answer["result"]
 
+    def architecture(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Owner-channel typed attestation operation; never returns signing material."""
+        generation, token = self._fence()
+        wire = {"op": "ARCHITECTURE", "generation": generation, "token": token,
+                "document": document}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid architecture response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise RuntimeError("architecture broker unavailable") from None
+        if answer.get("op") != "ARCHITECTURE_RESULT" or not isinstance(answer.get("result"), dict):
+            raise BrokerRefused("architecture signing requires the configured founder and key")
+        return answer["result"]
+
     def http_policy(self, document: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.http_policy import validate
         from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError

@@ -181,7 +181,7 @@ jobs:
           # can rewrite the thing judging it while keeping the check name green.
           # Workflow files were already covered; without these two entries the
           # same neutering could be done one directory over, undeclared.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
+          SENSITIVE_RE='^(\.github/workflows/|\.github/architecture-approval-key\.json$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
@@ -413,10 +413,27 @@ jobs:
           # cannot clear this cap. Founder decision 2026-10-09: the SAME cited,
           # trusted, head/diff-bound approval may explicitly declare the exact
           # count. Reuse the blocking decision and its frozen comment inventory.
+          # Founder decision 2026-10-10 additionally requires signed proof of
+          # briefing and architectural agreement through the protected app.
           MAX_SENSITIVE=8
           if [ "$HIT_COUNT" -gt "$MAX_SENSITIVE" ]; then
+            # A shared GitHub token proves no human agreement. Only the
+            # platform signature under the trusted BASE key is approval proof.
+            printf '%s\n' "$HITS" | jq -Rsc 'split("\n") | map(select(length > 0))' \
+              > "$RUNNER_TEMP/release-critical-files.json"
+            ATTESTATION="$RUNNER_TEMP/architecture-attestation.json"
+            rm -f "$ATTESTATION"
+            if ! curl --fail --silent --show-error --max-time 20 --max-filesize 16384 \
+                "https://tinyassets.io/app/attestations/architecture/${PR}" \
+                --output "$ATTESTATION"; then
+              rm -f "$ATTESTATION"
+            fi
+            python -m pip install --disable-pip-version-check 'cryptography==50.0.2'
             if ! python scripts/drain_review_gate.py --blocking-review \
                 --release-critical-count "$HIT_COUNT" \
+                --release-critical-files "$RUNNER_TEMP/release-critical-files.json" \
+                --architecture-attestation "$ATTESTATION" \
+                --architecture-trust .github/architecture-approval-key.json \
                 --head "${HEAD_OID}" \
                 --diff-key "${DIFF_KEY}" \
                 --body-file "$RUNNER_TEMP/pr-body-gate.md" \
@@ -430,12 +447,14 @@ jobs:
                 echo "\`Drain-Review-Release-Critical: ${HIT_COUNT}\` as its THIRD non-blank line,"
                 echo "immediately after its APPROVE verdict and current head/diff binding."
                 echo "Missing or unequal counts, other comments, and declarations below the top receipt do not count."
+                echo "Also raise an architecture_approval pending request in TinyAssets with the exact PR scope and briefing."
+                echo "The founder must read it and agree through the protected app session; a valid unexpired platform signature is required."
                 echo "Rebase or split unintended scope; the \`infra-change\` label alone cannot clear this cap."
               } >> "$GITHUB_STEP_SUMMARY"
-              echo "scope guard: BLOCKED -- cited receipt does not declare exactly ${HIT_COUNT} release-critical files"
+              echo "scope guard: BLOCKED -- exact-count receipt and protected founder architecture agreement required"
               exit 1
             fi
-            echo "The cited approval receipt explicitly declares all ${HIT_COUNT} release-critical files; default cap ${MAX_SENSITIVE} cleared." >> "$GITHUB_STEP_SUMMARY"
+            echo "Receipt declares all ${HIT_COUNT} release-critical files and platform signature proves founder architecture agreement; default cap ${MAX_SENSITIVE} cleared." >> "$GITHUB_STEP_SUMMARY"
           fi
 
           LARGE_TOTAL=150

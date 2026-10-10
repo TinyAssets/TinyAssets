@@ -149,7 +149,7 @@ class BrokerServer:
                  dispatch_for: Callable[..., Callable[..., Any]],
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
                  uid_of: Callable[[socket.socket], int] = peer_uid,
-                 owner_identities: Any = None) -> None:
+                 owner_identities: Any = None, architecture_signer: Any = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
@@ -157,6 +157,7 @@ class BrokerServer:
         self._roles = dict(roles)
         self._uid_of = uid_of
         self._owner_identities = owner_identities
+        self._architecture_signer = architecture_signer
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
@@ -316,7 +317,10 @@ class _Connection:
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "OWNER_IDENTITY":
+        if op == "ARCHITECTURE":
+            answer = await asyncio.to_thread(self._architecture, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CENTER_ADMISSION":
@@ -368,6 +372,20 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _architecture(self, doc: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if (set(doc) != {"op", "generation", "token", "document"}
+                    or type(doc["generation"]) is not int or not isinstance(doc["token"], str)
+                    or not isinstance(doc["document"], dict)):
+                raise ValueError("invalid architecture operation")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._server._architecture_signer is None:
+                    raise RuntimeError("architecture signer not configured")
+                result = self._server._architecture_signer.execute(doc["document"])
+                return {"op": "ARCHITECTURE_RESULT", "result": result}
+        except Exception:  # noqa: BLE001 - never disclose key or configuration in RPC errors
+            return {"op": "ARCHITECTURE_REFUSED"}
 
     def _owner_identity(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.owner_identities import validate_principal

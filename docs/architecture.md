@@ -90,6 +90,7 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/providers/` | Owner binding, model selection, discovery, wire codecs, `provider_jail.py`. |
 | `tinyassets/connection_oauth/` | Generic OAuth 2.0: discovery, PKCE, refresh. |
 | `tinyassets/credential_vault.py`, `tinyassets/broker/` | Per-command-center credentials and the broker process that alone holds them. |
+| `tinyassets/architecture_approval.py`, `tinyassets/broker/architecture.py` | Protected owner architecture consent, broker-signed attestations and public proof reads; CI verifies in `scripts/drain_review_gate.py`. |
 
 ### Isolation and the target architecture
 

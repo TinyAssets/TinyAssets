@@ -109,6 +109,7 @@ async def serve(args: argparse.Namespace) -> None:
                                allow_test_fixtures=args.allow_test_fixtures)
     # Initialization belongs to the privileged, fenced volume migration. A
     # missing map must never silently restart allocation at the first UID.
+    from tinyassets.broker.architecture import ArchitectureSigner
     from tinyassets.broker.owner_identities import OwnerIdentities
 
     identity_path = state / "owner-identities.db"
@@ -128,6 +129,7 @@ async def serve(args: argparse.Namespace) -> None:
                     lease_sha256=args.proof_sha256),
         roles={int(args.owner_uid): OWNER},
         owner_identities=identities,
+        architecture_signer=ArchitectureSigner(state),
     )
     socket_path = Path(args.socket)
     socket_path.unlink(missing_ok=True)

@@ -270,6 +270,18 @@ def _run_blocking(
     ]
     if release_critical_count is not None:
         cmd += ["--release-critical-count", str(release_critical_count)]
+        if release_critical_count > 8:
+            from tests.support.architecture import action, signed
+
+            ask = action(release_critical_count, repo=repo, pr=pr, head=head,
+                         diff=diff_key or "")
+            _, trust, envelope = signed(ask)
+            for flag, value in (("architecture-trust", trust),
+                                ("architecture-attestation", envelope),
+                                ("release-critical-files", ask["release_critical_files"])):
+                path = tmp_path / (flag + ".json")
+                path.write_text(json.dumps(value), encoding="utf-8")
+                cmd += ["--" + flag, str(path)]
     if diff_key is not None:
         cmd += ["--diff-key", diff_key]
     return subprocess.run(cmd, text=True, capture_output=True, check=False)

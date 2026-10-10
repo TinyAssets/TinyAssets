@@ -21,11 +21,13 @@ exact head its reviewer had BLOCKED.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -328,6 +330,65 @@ def diff_key_from_raw(raw: bytes) -> str:
 _REGULAR_BLOB_MODES = frozenset({"100644", "100755"})
 
 
+def architecture_allows_merge(
+    envelope: object, *, trust: dict, repo: str, pr: int, head: str,
+    diff_key: str | None, files: list[str], now: int | None = None,
+) -> bool:
+    """Verify founder agreement, independent of its HTTP/GitHub transport.
+
+    Canonical JSON: ASCII escapes, sorted keys, no whitespace, no NaN. The file
+    digest is SHA-256 of the sorted unique path array in that same encoding.
+    A supplied diff binding is authoritative (even if the head still matches).
+    Head-only attestations are also understood; every push then invalidates it.
+    """
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    def canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=True, allow_nan=False).encode("ascii")
+
+    try:
+        if not isinstance(envelope, dict) or set(envelope) != {"payload", "signature"}:
+            return False
+        payload = envelope["payload"]
+        expected = {"purpose", "repo", "pr", "head_sha", "diff_key", "release_critical_count",
+                    "files_digest", "approver_owner_id", "approved_at", "expiry"}
+        if not isinstance(payload, dict) or set(payload) != expected:
+            return False
+        if (set(trust) != {"repo", "owner_id", "public_key"} or not trust["owner_id"]
+                or trust["repo"].lower() != repo.lower()
+                or payload["purpose"] != "tinyassets.architecture-approval.v1"
+                or payload["repo"] != repo.lower() or type(payload["pr"]) is not int
+                or payload["pr"] != pr or payload["approver_owner_id"] != trust["owner_id"]):
+            return False
+        if not _SHA_RE.fullmatch(head) or not _SHA_RE.fullmatch(payload["head_sha"]):
+            return False
+        binding = payload["diff_key"]
+        if binding:
+            if not _DIFF_KEY_RE.fullmatch(binding) or binding != diff_key:
+                return False
+        elif binding != "" or payload["head_sha"] != head:
+            return False
+        if (not isinstance(files, list) or not files or len(files) != len(set(files))
+                or any(not isinstance(p, str) or not p for p in files)
+                or type(payload["release_critical_count"]) is not int
+                or payload["release_critical_count"] != len(files)
+                or payload["files_digest"] != hashlib.sha256(canonical(sorted(files))).hexdigest()):
+            return False
+        approved, expiry = payload["approved_at"], payload["expiry"]
+        clock = int(time.time()) if now is None else now
+        if (type(approved) is not int or type(expiry) is not int
+                or not 0 < approved <= clock < expiry or expiry - approved > 86400):
+            return False
+        public = Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(trust["public_key"], validate=True))
+        public.verify(base64.b64decode(envelope["signature"], validate=True), canonical(payload))
+        return True
+    except (InvalidSignature, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return False
+
+
 def _read_text(path: Path | None) -> str | None:
     if path is None:
         return None
@@ -346,6 +407,24 @@ def _blocking_review(args: argparse.Namespace) -> int:
     )
 
     body = _read_text(args.body_file)
+    if args.release_critical_count is not None and args.release_critical_count > 8:
+        try:
+            files = json.loads(args.release_critical_files.read_text(encoding="utf-8"))
+            valid = len(files) == args.release_critical_count and architecture_allows_merge(
+                json.loads(args.architecture_attestation.read_text(encoding="utf-8")),
+                trust=json.loads(args.architecture_trust.read_text(encoding="utf-8")),
+                repo=args.review_repo, pr=args.review_pr, head=args.head,
+                diff_key=args.diff_key or None, files=files,
+            )
+        except (OSError, ValueError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            print("Over-cap PR: raise an architecture_approval pending request in TinyAssets. "
+                  "The founder must read the briefing and agree through the protected app "
+                  "session. A matching unexpired platform signature AND the exact-count "
+                  "Drain-Review receipt are required.", file=sys.stderr)
+            print("deny")
+            return 2
     comments = _read_text(args.review_comments_file)
     key = args.diff_key or None
     trusted = (
@@ -407,9 +486,15 @@ def main() -> int:
     parser.add_argument(
         "--release-critical-count", type=int,
         help="With --blocking-review, also require the cited approval comment's "
-        "third non-blank line to be Drain-Review-Release-Critical: <this count>.",
+        "third non-blank line to be Drain-Review-Release-Critical: <this count>. "
+        "Above eight also requires --architecture-attestation, --architecture-trust "
+        "and --release-critical-files, verified against this PR's exact scope.",
     )
     parser.add_argument("--review-pr", type=int, help="This PR's number.")
+    parser.add_argument("--architecture-attestation", type=Path)
+    parser.add_argument("--release-critical-files", type=Path, help="JSON array of exact paths")
+    parser.add_argument("--architecture-trust", type=Path,
+                        default=Path(".github/architecture-approval-key.json"))
     parser.add_argument(
         "--review-comments-file",
         type=Path,

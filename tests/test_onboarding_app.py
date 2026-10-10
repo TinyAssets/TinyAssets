@@ -220,6 +220,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app", "/app/token", "/app/me", "/app/ui-frame",
         "/app/run/{listing}", "/app/run/{listing}/preview.png", "/app/unread",
         "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/approvals/{operation}",
+        "/app/attestations/architecture/{pr:int}",
         "/app/approval-handoff", "/app/approval-handoff/{ref}",
         # K1: owner-session-only grant/revoke control for outside clients.
         "/app/outside-clients",
@@ -248,6 +249,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/api/file",
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
+    assert by_path["/app/attestations/architecture/{pr:int}"].methods == {"GET", "HEAD"}
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
     assert by_path["/app/api/ui-asset"].methods == {"POST"}

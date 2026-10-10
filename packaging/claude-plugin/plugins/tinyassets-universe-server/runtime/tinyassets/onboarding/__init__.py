@@ -2570,6 +2570,7 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.architecture_approval import public_attestation
     from tinyassets.onboarding import approval_handoff
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.connections import handle_connections
@@ -2602,6 +2603,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/unread", handle_unread, methods=["GET", "POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
+        Route("/app/attestations/architecture/{pr:int}", public_attestation, methods=["GET"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
         Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),

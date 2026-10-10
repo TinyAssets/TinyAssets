@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import weakref
@@ -576,6 +577,8 @@ def _auth_challenge_path(path: str) -> bool:
         return False
     from tinyassets.onboarding.public_run import public_path
 
+    if re.fullmatch(r"/app/attestations/architecture/[1-9][0-9]{0,9}", path):
+        return False  # Read-only signed proof; no owner data or issuance operation.
     if public_path(path):
         return False
     from tinyassets.onboarding.approval_handoff import HANDLE, PREFIX
