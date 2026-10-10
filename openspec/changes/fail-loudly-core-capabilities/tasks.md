@@ -1,6 +1,6 @@
 ## 0. Measure before replacing coverage
 
-- [ ] 0.1 Replay the seven merged cutover fixes and three current regressions on isolated scratch revisions; retain baseline, failing node IDs, counts and timings. Delete or fold redundant seam-mocked capability tests only after replacement proof; reduce net test count and PR time.
+- [x] 0.1 Replay the seven merged cutover fixes and three current regressions on isolated scratch revisions; retain baseline, failing node IDs, counts and timings. Delete or fold redundant seam-mocked capability tests only after replacement proof; reduce net test count and PR time.
 
 ## 1. Capability contract and runtime evidence
 
@@ -20,5 +20,7 @@
 
 ## 4. Verification and delivery
 
-- [ ] 4.1 Run affected tests, Ruff, structural guards, plugin build, hygiene and Linux/image acceptance; resolve the cross-family floor review.
-- [ ] 4.2 Sync the implemented spec, commit explicit paths with attribution, push and open the non-draft infra-change PR.
+- [x] 4.1 Run affected tests, Ruff, structural guards, plugin build, hygiene and Linux/image acceptance; resolve the cross-family floor review.
+- [x] 4.2 Sync the implemented spec, commit explicit paths with attribution, push and open the non-draft infra-change PR.
+
+PR #4598 remains stacked on #4597 and #4596. Production canary activation and positive live proof require the dedicated account/secret in `docs/host-actions.md` before merge. No deployment is claimed. The founder requested no receipt; the scope guard therefore remains blocked. Hosted behavioral proof and timings are recorded for 71f0fede04b in `replay-evidence.json`.

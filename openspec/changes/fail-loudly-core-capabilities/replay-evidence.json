@@ -2061,7 +2061,7 @@
         "status": "passed",
         "evidence": "answered_request",
         "observation": {
-          "request_id": "req_fd6778d9ba284fedaf19965e",
+          "request_id": "req_05b0edfb57b2404892ed84ab",
           "decision": "allowed"
         }
       },
@@ -2071,7 +2071,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2080,7 +2080,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2089,7 +2089,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2098,7 +2098,7 @@
         "evidence": "tool_result",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2107,7 +2107,7 @@
         "evidence": "image_content",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2116,7 +2116,7 @@
         "evidence": "completed_capability",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2125,7 +2125,7 @@
         "evidence": "http_effect",
         "observation": {
           "model_received_result": true,
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2133,7 +2133,7 @@
         "status": "passed",
         "evidence": "reply_deltas",
         "observation": {
-          "reply": "CAPABILITY-REPLY-04d5ec8968da29931a4cd42b",
+          "reply": "CAPABILITY-REPLY-64e1db9fe9fd78d297dd9f25",
           "model_sse_deltas": 2
         }
       },
@@ -2142,8 +2142,8 @@
         "status": "passed",
         "evidence": "filed_request",
         "observation": {
-          "delivery_id": "604185ac0f8845a1bdb591a33fee8aeb",
-          "nonce": "04d5ec8968da29931a4cd42b"
+          "delivery_id": "cd7a603c615e47c9840a99c3bbbb9b85",
+          "nonce": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2151,8 +2151,8 @@
         "status": "passed",
         "evidence": "completed_run",
         "observation": {
-          "run_id": "a441111b03f44ca2",
-          "echo": "04d5ec8968da29931a4cd42b"
+          "run_id": "4ba8e18dccc5440b",
+          "echo": "64e1db9fe9fd78d297dd9f25"
         }
       },
       {
@@ -2160,24 +2160,24 @@
         "status": "passed",
         "evidence": "consumed_wake",
         "observation": {
-          "automation_id": "b8905a8ef8d54f9ba87a8b08a3a8a1a8",
-          "run_id": "e1096da7ff2545fd",
-          "echo": "04d5ec8968da29931a4cd42b"
+          "automation_id": "9f4b6ba4d68a49e7afc931be776a4d96",
+          "run_id": "9401a9d4af6d464e",
+          "echo": "64e1db9fe9fd78d297dd9f25"
         }
       }
     ],
-    "image": "ta-core-capabilities:cached",
+    "image": "ta-core-capabilities:verified",
     "runtime_rates": {
       "schema": 1,
-      "boot_id": "0a4e18dfe5514602aa009fabc106f5f5",
+      "boot_id": "6b75ef1a1e0846018c6fd240f14e74c1",
       "pid": 1,
-      "observed_seconds": 31,
+      "observed_seconds": 30,
       "window_seconds": 300,
       "history_seconds": 1200,
-      "outcomes": 35,
+      "outcomes": 37,
       "capability_outcomes": {
         "owner_sign_in": 1,
-        "chat_stream": 1,
+        "chat_stream": 2,
         "bash": 3,
         "read": 2,
         "write": 1,
@@ -2189,11 +2189,11 @@
         "background_run": 3,
         "scheduled_wake": 1,
         "patch_request": 1,
-        "public_mcp": 14
+        "public_mcp": 15
       },
       "capability_successes": {
         "owner_sign_in": 1,
-        "chat_stream": 1,
+        "chat_stream": 2,
         "bash": 3,
         "read": 2,
         "write": 1,
@@ -2205,7 +2205,7 @@
         "background_run": 3,
         "scheduled_wake": 1,
         "patch_request": 1,
-        "public_mcp": 14
+        "public_mcp": 15
       },
       "failures": [],
       "alarms": []
@@ -2280,9 +2280,62 @@
   },
   "timings": {
     "old_hosted_tests_run": 38023768139,
-    "old_hosted_wall_seconds": 435,
-    "old_hosted_runner_seconds_excluding_aggregate": 1729,
-    "new_hosted": "pending PR run",
+    "old_hosted_wall_seconds": 434,
+    "old_hosted_runner_seconds_excluding_aggregate": 1728,
+    "new_hosted": {
+      "runner_seconds": 1325.0,
+      "max_wall_seconds": 319.0,
+      "runs": [
+        {
+          "name": "Tests",
+          "headSha": "71f0fede04b31ba65a6e2aa50d81f08498544b4c",
+          "url": "https://github.com/TinyAssets/TinyAssets/actions/runs/38091074179",
+          "conclusion": "success",
+          "runner_seconds": 1228.0,
+          "wall_seconds": 319.0
+        },
+        {
+          "name": "Docker build smoke",
+          "headSha": "71f0fede04b31ba65a6e2aa50d81f08498544b4c",
+          "url": "https://github.com/TinyAssets/TinyAssets/actions/runs/38091074119",
+          "conclusion": "skipped",
+          "runner_seconds": 0,
+          "wall_seconds": 0
+        },
+        {
+          "name": "Deploy during traffic",
+          "headSha": "71f0fede04b31ba65a6e2aa50d81f08498544b4c",
+          "url": "https://github.com/TinyAssets/TinyAssets/actions/runs/38091074264",
+          "conclusion": "skipped",
+          "runner_seconds": 0,
+          "wall_seconds": 0
+        },
+        {
+          "name": "Build packaging artifacts",
+          "headSha": "71f0fede04b31ba65a6e2aa50d81f08498544b4c",
+          "url": "https://github.com/TinyAssets/TinyAssets/actions/runs/38091074279",
+          "conclusion": "success",
+          "runner_seconds": 58.0,
+          "wall_seconds": 61.0
+        },
+        {
+          "name": "preview-security",
+          "headSha": "71f0fede04b31ba65a6e2aa50d81f08498544b4c",
+          "url": "https://github.com/TinyAssets/TinyAssets/actions/runs/38091074190",
+          "conclusion": "success",
+          "runner_seconds": 22.0,
+          "wall_seconds": 25.0
+        },
+        {
+          "name": "invariants",
+          "headSha": "71f0fede04b31ba65a6e2aa50d81f08498544b4c",
+          "url": "https://github.com/TinyAssets/TinyAssets/actions/runs/38091074156",
+          "conclusion": "success",
+          "runner_seconds": 17.0,
+          "wall_seconds": 20.0
+        }
+      ]
+    },
     "deploy_test_pair_before": {
       "passed": 59,
       "failed": 30,
@@ -2292,13 +2345,51 @@
       "passed": 61,
       "failed": 0,
       "seconds": 4.71
-    }
+    },
+    "old_comparable_workflows_runner_seconds": 2279,
+    "old_comparable_workflows": [
+      "Tests",
+      "Docker build smoke",
+      "Deploy during traffic",
+      "Build packaging artifacts",
+      "preview-security",
+      "invariants"
+    ],
+    "source_only_cached_image_build_seconds": 12.799,
+    "selected_fast_files_before": 1182,
+    "selected_fast_files_after": 546,
+    "duration_refresh": {
+      "run_ids": [
+        38089449415,
+        38090433431
+      ],
+      "method": "Median measured per-file JUnit times; exclude any file with failed, errored or skipped cases; retain prior values for unmeasured files; unchanged five-second PR threshold.",
+      "updated_files": 1157,
+      "sample_counts": {
+        "ta-core-ci-shards-before": 1181,
+        "ta-core-ci-shards": 645
+      },
+      "green_files": {
+        "ta-core-ci-shards-before": 1154,
+        "ta-core-ci-shards": 632
+      }
+    },
+    "comparison_limits": "One observed completed run before and after, not a controlled benchmark or future timing guarantee. Cache warmth and changed workload vary. Tests includes the new real-image acceptance; comparable total also includes packaging, preview-security, invariants and the formerly duplicated Docker/traffic jobs. Administrative metadata/actionlint workflows are excluded on both sides."
   },
   "validation": {
     "linux_oracle": "318 passed, no skips, 15.27 seconds",
-    "structural_guards": "pending current final completion",
+    "structural_guards": "597 passed, 12 warnings, 97.89 seconds; hosted check also required on final head",
     "plugin_build": "726 files, import probe passed",
     "ruff": "passed",
-    "dockerfile": "production image built with dependency/browser cache layers; all 14 capabilities and protected pulse passed"
+    "dockerfile": "production image built with dependency/browser cache layers; all 14 capabilities and protected pulse passed",
+    "affected_contracts": "181 passed, 34.55 seconds",
+    "linux_rate_scheduler": "134 passed, no skips, 47.66 seconds",
+    "linux_execution_tier": "47 passed, 1 existing manual-only public GitHub clone probe skipped, 34.82 seconds; skipped probe is not a pass",
+    "cross_family_review": "Claude resolution pass approved b887c54f867 with stack/setup/green-CI conditions; remaining OS permission, chat-content and scheduler attribution notes resolved in 54ee68bab28; Claude PR selector implementation reviewed by Codex and 23 existing selector tests passed",
+    "runner_contracts": "163 passed via the required runner; no new failures",
+    "final_tier_review": "Claude APPROVE of 71f0fede04b: preserved conservative queue, required image/structural contexts, PR fallback rules and dependency availability. AGREE unused --image-output removed; indirect optional-browser imports remain a stated PR-selection limit covered by the Linux queue. No review receipt generated.",
+    "final_selector": "23 passed, 10.42 seconds after deleting unused CLI option",
+    "hosted_image": "38091074179: production image and all 14 capability steps passed on GitHub-hosted Ubuntu",
+    "hosted_required_tests": "38091074179: SUCCESS on 71f0fede04b, all four affected shards, structural guards, real-image check and aggregate green"
   }
 }

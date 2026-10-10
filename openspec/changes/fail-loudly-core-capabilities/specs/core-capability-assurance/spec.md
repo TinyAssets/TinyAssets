@@ -36,6 +36,10 @@ The system SHALL run live checks after every deploy and every five minutes on ho
 - **WHEN** a capability fails or credentials required to probe it are absent
 - **THEN** the workflow fails, opens or updates a labelled GitHub issue and sends the existing Pushover alert containing capability, error code and revision
 
+#### Scenario: Model claims success without executing
+- **WHEN** a model reports a successful operation
+- **THEN** the live probe requires independent file, image, service HMAC, delivery and run observations and successful daemon counter increments for every capability in the same process lifetime; model prose alone cannot pass
+
 #### Scenario: Fresh deployment loses a capability
 - **WHEN** post-deploy capability acceptance fails after successful image convergence
 - **THEN** the deploy fails and invokes its existing previous-image rollback decision
@@ -50,3 +54,7 @@ The daemon SHALL record stable failure codes and success denominators for core c
 #### Scenario: Diagnostic privacy
 - **WHEN** runtime diagnostics are returned
 - **THEN** they contain no owner identity, prompt, credential or raw exception text and identify the observation window and running revision
+
+#### Scenario: Expected client refusal
+- **WHEN** invalid client input or an expected authority refusal is rejected
+- **THEN** it does not count as a systemic outage; unexpected OS permission errors and trusted upstream authentication failures still count

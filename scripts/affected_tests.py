@@ -492,7 +492,6 @@ def main() -> int:
     ap.add_argument("--changed", nargs="*", help="explicit changed paths instead of --base")
     ap.add_argument("--out", help="write the selection here; ALL means the whole suite")
     ap.add_argument('--pr', action='store_true', help='select affected fast units for a PR')
-    ap.add_argument('--image-output', help='write true/false for the real-image gate')
     ap.add_argument(
         "--gate",
         action="store_true",
@@ -509,8 +508,6 @@ def main() -> int:
     if args.pr and args.gate:
         raise SystemExit("--pr and --gate are separate tiers; pass one")
     changed = args.changed if args.changed is not None else changed_files(args.base)
-    if args.image_output:
-        Path(args.image_output).write_text(str(needs_image(changed)).lower()+'\n')
     try:
         selected, reasons = (
             gate_selection(changed) if args.gate else select(changed, pr=args.pr))
