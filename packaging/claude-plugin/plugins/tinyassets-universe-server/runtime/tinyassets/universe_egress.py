@@ -103,12 +103,18 @@ def pump(a, b):
                 break
             b.sendall(data)
     except OSError:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        return
+    # EOF is directional. The other pump must drain the response before serve
+    # closes either socket, including when the requester half-closes first.
+    try:
+        b.shutdown(socket.SHUT_WR)
+    except OSError:
         pass
-    for s in (a, b):
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
 def serve(c, path, slots):
     u = socket.socket(socket.AF_UNIX)
     try:
