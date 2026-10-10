@@ -11,8 +11,11 @@ from tinyassets.storage.outbound_connections import ConnectionLedger
 
 
 @pytest.fixture
-def vault(tmp_path):
-    ledger = ConnectionLedger(tmp_path / '.broker' / 'outbound.db', data_root=tmp_path)
+def vault(tmp_path, monkeypatch):
+    monkeypatch.setattr('tinyassets.broker.browser_vault.SECRET_ROOT',
+                        tmp_path / 'secrets', raising=False)
+    ledger = ConnectionLedger(tmp_path / 'data' / '.broker' / 'outbound.db',
+                              data_root=tmp_path / 'data')
 
     def call(action, owner='alice', home='home-a', **kwargs):
         if action == 'create':
@@ -20,6 +23,154 @@ def vault(tmp_path):
         return local_operation(ledger, principal=owner, command_center=home,
                                document=dict(action=action, **kwargs))
     return ledger, call
+
+
+def test_short_storage_values_preserve_untrusted_page_text():
+    from unittest.mock import AsyncMock
+
+    from tinyassets.browser_cell import Browser
+
+    state = {'cookies': [{'value': '1'}, {'value': 'en'},
+                         {'value': 'session-6a7f925bc013'}],
+             'origins': [{'localStorage': [{'value': 'false'}],
+                          'indexedDB': [{'value': 'on'}, {'value': 'undefined'}]}]}
+    browser = Browser()
+    browser.capture = False
+    browser.page = SimpleNamespace(is_closed=lambda: False,
+        locator=lambda _: SimpleNamespace(inner_text=AsyncMock(
+            return_value='$1,234 English undefined session-6a7f925bc013')))
+    browser.context = SimpleNamespace(storage_state=AsyncMock(return_value=state))
+    browser.challenged = AsyncMock(return_value=False)
+    result = asyncio.run(browser.command({'action': 'steps', 'steps': []}, None))
+    assert result['untrusted'] is True
+    assert result['text'] == '$1,234 English undefined [private]'
+
+
+def test_vault_key_is_outside_data_and_legacy_key_migrates(vault):
+    from tinyassets.broker.browser_vault import key_path
+
+    ledger, call = vault
+    row = call('create', url='https://example.com/')
+    state = {'cookies': [{'value': 'secret-123456789'}]}
+    call('save', id=row['id'], revision=1, state=state)
+    path = key_path(ledger, 'alice')
+    assert not path.is_relative_to(ledger._db_path.parent.parent)
+    legacy = ledger._db_path.parent / 'browser-vault' / path.name
+    legacy.parent.mkdir(exist_ok=True)
+    original = path.read_bytes()
+    path.replace(legacy)
+    assert call('read', id=row['id'])['state'] == state
+    assert path.read_bytes() == original
+    assert not legacy.exists()
+    assert call('read', id=row['id'])['state'] == state
+
+
+def test_vault_refuses_secret_root_inside_data(vault, monkeypatch):
+    ledger, call = vault
+    monkeypatch.setattr('tinyassets.broker.browser_vault.SECRET_ROOT',
+                        ledger._db_path.parent / 'keys', raising=False)
+    with pytest.raises(ValueError, match='outside'):
+        call('create', url='https://example.com/')
+
+
+@pytest.mark.parametrize('conflict', [False, True])
+def test_interrupted_legacy_migration_preserves_keys(vault, conflict):
+    from tinyassets.broker.browser_vault import key_path
+
+    ledger, call = vault
+    row = call('create', url='https://example.com/')
+    path = key_path(ledger, 'alice')
+    legacy = ledger._db_path.parent / 'browser-vault' / path.name
+    legacy.parent.mkdir()
+    legacy.write_bytes(b'x' * 32 if conflict else path.read_bytes())
+    if conflict:
+        with pytest.raises(ValueError, match='conflicting'):
+            call('read', id=row['id'])
+        assert legacy.read_bytes() == b'x' * 32
+        assert path.read_bytes() != legacy.read_bytes()
+    else:
+        assert call('read', id=row['id'])['state'] == {}
+        assert not legacy.exists()
+
+
+def test_migration_syncs_new_directory_before_unlink(vault, monkeypatch):
+    from tinyassets.broker import browser_vault
+
+    ledger, call = vault
+    row = call('create', url='https://example.com/')
+    path = browser_vault.key_path(ledger, 'alice')
+    legacy = ledger._db_path.parent / 'browser-vault' / path.name
+    legacy.parent.mkdir()
+    path.replace(legacy)
+    synced = []
+
+    def sync(directory):
+        if directory == path.parent.parent:
+            assert legacy.exists()
+        synced.append(directory)
+
+    monkeypatch.setattr(browser_vault, '_sync_directory', sync)
+    call('read', id=row['id'])
+    assert synced == [path.parent, path.parent.parent, legacy.parent]
+    assert not legacy.exists()
+
+
+def test_concurrent_steps_reuse_rotated_cookie(vault, tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tinyassets import browser_sessions, singleton_lock
+
+    _, call = vault
+    row = call('create', url='https://example.com/')
+    call('save', id=row['id'], revision=1, state={'cookie': 0})
+    opened, release, contended = threading.Event(), threading.Event(), threading.Event()
+    seen = []
+    real_lock = singleton_lock._lock_fd
+
+    def observe(fd):
+        acquired = real_lock(fd)
+        if not acquired:
+            contended.set()
+        return acquired
+
+    class Cell:
+        def __init__(self, *args):
+            pass
+
+        def call(self, command, checkpoint):
+            if command['action'] == 'open':
+                self.cookie = command['state']['cookie']
+                seen.append(self.cookie)
+                opened.set()
+                assert release.wait(10)
+                return {'status': 'ready'}
+            return {'untrusted': True, 'state': {'cookie': self.cookie + 1}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(singleton_lock, '_lock_fd', observe)
+    monkeypatch.setattr(browser_sessions, 'Cell', Cell)
+    monkeypatch.setattr(browser_sessions, '_vault',
+        lambda root, owner, home, action, **values: call(action, **values))
+    monkeypatch.setattr('tinyassets.effectors.authenticated_external_call._rule_refusal',
+                        lambda *args, **kwargs: None)
+    monkeypatch.setenv('TINYASSETS_OWNER_CONTROL_WAIT_S', '30')
+    context = SimpleNamespace(owner='alice', universe='home-a', initiating_agent='main')
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(browser_sessions.agent, tmp_path, context,
+                            {'action': 'steps', 'id': row['id']})
+        try:
+            assert opened.wait(10)
+            second = pool.submit(browser_sessions.agent, tmp_path, context,
+                                 {'action': 'steps', 'id': row['id']})
+            assert contended.wait(10)
+        finally:
+            release.set()
+        assert first.result()['untrusted'] and second.result()['untrusted']
+    assert seen == [0, 1]
+    assert call('read', id=row['id'])['state'] == {'cookie': 2}
 
 
 def test_encrypted_roundtrip_and_revocation_fence(vault):

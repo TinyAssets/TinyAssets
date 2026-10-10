@@ -7,18 +7,62 @@ import os
 import re
 import secrets
 import socket
+from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets import rpc_frames as rf
 
 MAX_STATE = 2 * 1024 * 1024
+SECRET_ROOT = Path('/var/lib/ta-broker/browser-vault')
 
 
 def key_path(ledger, principal):
-    directory = ledger._db_path.parent / 'browser-vault'
-    directory.mkdir(mode=0o700, exist_ok=True)
-    return directory / (hashlib.sha256(principal.encode()).hexdigest() + '.key')
+    if SECRET_ROOT.resolve().is_relative_to(ledger._db_path.parent.parent.resolve()):
+        raise ValueError('browser key root must be outside backed-up data')
+    return SECRET_ROOT / (hashlib.sha256(principal.encode()).hexdigest() + '.key')
+
+
+def _sync_directory(path):
+    if os.name == 'posix':
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _owner_key(ledger, principal):
+    """Migrate under the ledger write lock; publish durably before removing legacy."""
+    path = key_path(ledger, principal)
+    legacy = ledger._db_path.parent / 'browser-vault' / path.name
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    old = legacy.read_bytes() if legacy.exists() else None
+    if old is not None and len(old) != 32:
+        raise ValueError('invalid legacy browser key')
+    if not path.exists():
+        temporary = path.with_name('.key-' + secrets.token_hex(16))
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(old if old is not None else AESGCM.generate_key(bit_length=256))
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            temporary.unlink()
+    current = path.read_bytes()
+    if old is not None and current != old:
+        raise ValueError('conflicting browser keys; migration refused')
+    _sync_directory(path.parent)
+    _sync_directory(path.parent.parent)  # Persist a newly created key directory too.
+    if old is not None:
+        legacy.unlink()
+        _sync_directory(legacy.parent)
+    return current
 
 
 def local_operation(ledger, *, principal, command_center, document):
@@ -80,28 +124,7 @@ def local_operation(ledger, *, principal, command_center, document):
                     and document.get('revision') != revision):
                 raise PermissionError('browser connection changed')
             revision += 1
-        path = key_path(ledger, principal)
-        if not path.exists():
-            temporary = path.with_name('.key-' + secrets.token_hex(16))
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(fd, 'wb') as stream:
-                    stream.write(AESGCM.generate_key(bit_length=256))
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                try:
-                    os.link(temporary, path)  # Publish only complete bytes; never replace a key.
-                except FileExistsError:
-                    pass
-            finally:
-                temporary.unlink()
-            if os.name == 'posix':
-                directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-        cipher = AESGCM(path.read_bytes())
+        cipher = AESGCM(_owner_key(ledger, principal))
         aad = json.dumps([1, principal, command_center, ident, revision]).encode()
         status = row['status']
         if action in {'save', 'capture', 'cancel'}:

@@ -46,3 +46,21 @@ Browser state SHALL be encrypted in broker custody bound to owner/home/connectio
 #### Scenario: Expiry or challenge
 - **WHEN** authentication expires or a site needs CAPTCHA, MFA or unsupported device authentication
 - **THEN** the same protected live view offers takeover and reports unsupported device flows truthfully
+
+### Requirement: Separate browser encryption keys from data backups
+Per-owner keys SHALL live in broker-only `/var/lib/ta-broker/browser-vault` on
+`tinyassets-browser-keys`, separately from the backed-up data volume. Data
+backups SHALL exclude legacy `.broker/browser-vault` keys in every tier and
+SHALL NOT back up the key volume. Encryption protects data-only theft, not
+compromise of the running trusted processes or theft of both volumes. Loss of
+the unbacked-up key volume requires new sign-in. Older backups containing keys
+retain their original exposure.
+
+#### Scenario: Migrate or erase an existing owner key
+- **WHEN** custody encounters a legacy key
+- **THEN** it durably publishes the same key outside the data volume before removing the old copy, resumes matching partial migration, and refuses conflicting copies
+- **AND** account erasure destroys both possible owner key copies without touching other owners
+
+#### Scenario: Small storage values occur in page text
+- **WHEN** storage contains short values such as `1` or `en`, common tokens such as `undefined`, and a long session token
+- **THEN** agent observations preserve ordinary text and redact the session token while retaining the untrusted flag

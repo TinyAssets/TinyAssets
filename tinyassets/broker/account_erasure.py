@@ -67,7 +67,9 @@ def local_erase(ledger, *, principal, command_center):
                 counts[table] = count
     from tinyassets.broker.browser_vault import key_path
 
-    key_path(ledger, principal).unlink(missing_ok=True)
+    path = key_path(ledger, principal)
+    path.unlink(missing_ok=True)
+    (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
     return counts
 
 

@@ -193,7 +193,9 @@ def owner_action(root, owner, home, session, data):
             _drop(key)
             return result
         row = _vault(root, owner, home, 'read', id=ident)
-        if action == 'frame' and row['status'] == 'connected' and key not in _captures:
+        with _guard:
+            capturing = key in _captures
+        if action == 'frame' and row['status'] == 'connected' and not capturing:
             return public(row)  # Recover a lost response/continuation commit, never re-login.
         if action == 'begin':
             _drop(key)
@@ -236,8 +238,9 @@ def owner_action(root, owner, home, session, data):
             if not verify_state(root, owner, home, row, result['state'], checkpoint):
                 return {'needs_login': True}
             checkpoint()
-            if capture['expires'] <= time.time() or _captures.get(key) is not capture:
-                raise PermissionError('browser capture expired')
+            with _guard:
+                if capture['expires'] <= time.time() or _captures.get(key) is not capture:
+                    raise PermissionError('browser capture expired')
             saved = _vault(root, owner, home, 'save', id=ident, revision=row['revision'],
                            state=result['state'])
             _drop(key)

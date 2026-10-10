@@ -103,7 +103,11 @@ class Browser:
     def remember(self, state):
         def values(value):
             if isinstance(value, str):
-                yield value
+                if len(value) >= 8 and value.casefold() not in {
+                    'undefined', 'disabled', 'enabled', 'anonymous', 'necessary',
+                    'functional', 'analytics', 'essential', 'true', 'false', 'null',
+                }:
+                    yield value
             elif isinstance(value, dict):
                 for item in value.values():
                     yield from values(item)
@@ -111,9 +115,9 @@ class Browser:
                 for item in value:
                     yield from values(item)
 
-        self.held.update(cookie['value'] for cookie in state.get('cookies', []))
+        self.held.update(values([cookie['value'] for cookie in state.get('cookies', [])]))
         for record in state.get('origins', []):
-            self.held.update(item['value'] for item in record.get('localStorage', []))
+            self.held.update(values([item['value'] for item in record.get('localStorage', [])]))
             self.held.update(values(record.get('indexedDB', [])))
 
     def opened(self, page):

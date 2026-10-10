@@ -204,6 +204,8 @@ services:
       - /etc/tinyassets/app-ingress.env
     volumes:
       - tinyassets-data:/data
+      # Separate broker-only keys. Never included in data-volume backups.
+      - tinyassets-browser-keys:/var/lib/ta-broker
     healthcheck:
       # Liveness from release facts as the canary service principal. The token
       # is installed in /etc/tinyassets/env by deploy-prod before compose starts;
@@ -412,6 +414,8 @@ services:
       org.tinyassets.role: chat-transport
 
 volumes:
+  tinyassets-browser-keys:
+    name: tinyassets-browser-keys
   tinyassets-data:
     name: tinyassets-data
     # Local named volume backed by Docker's default driver. Backups
