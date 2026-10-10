@@ -94,52 +94,24 @@ def _validate_http_grant(
                 "secure browser form / connect_http first)"
             ),
         }
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.ledger_queries import granted_resource_row
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
-    if broker_selected():
-        return _validate_http_grant_broker(
-            base=base, universe_id=universe_id, actor=actor, grant_id=grant_id)
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(grant_id)
     # Uniform absent-resource envelope for EVERY inaccessible grant (Codex adapt #1):
     # absent, revoked, foreign-universe, foreign-owner, or backed by a
     # non-http/revoked connection ALL return the SAME not_found — so the surface is
     # never an existence/ownership oracle (a non-empty ref must not reveal WHICH
-    # condition failed).
-    if grant is None or getattr(grant, "revoked_at", None) is not None:
-        return dict(_NOT_FOUND)
-    if getattr(grant, "universe_id", "") != universe_id:
-        return dict(_NOT_FOUND)
-    if getattr(grant, "owner_user_id", "") != actor:
-        return dict(_NOT_FOUND)
-    # Connection-class + liveness gate (Codex adapt #2): a grant is only valid as an
-    # api_key_http compute ref if it is backed by a LIVE, HTTP-class connection.
-    # Without this, any same-owner/same-universe grant (e.g. one issued for a
-    # different, non-http connection type) could be confused into a compute ref.
-    resource = ledger._get_connection_resource(getattr(grant, "connection_id", ""))
-    if (
-        resource is None
-        or getattr(resource, "connection_type", "") != "http"
-        or getattr(resource, "revoked_at", None) is not None
-    ):
-        return dict(_NOT_FOUND)
-    return None
-
-
-def _validate_http_grant_broker(
-    *, base: Path, universe_id: str, actor: str, grant_id: str
-) -> dict[str, Any] | None:
-    """The selected broker's projection of the same uniform not_found gate."""
-    from tinyassets.broker.ledger_queries import granted_resource_row
-    from tinyassets.storage.outbound_connections import GrantResolutionError
-
+    # condition failed). The broker resolves the grant against the caller's
+    # admitted scope, so a foreign universe or owner never reaches a row.
     try:
         resource = granted_resource_row(base, principal=actor, command_center=universe_id,
                                         grant_id=grant_id)
     except GrantResolutionError:
         return dict(_NOT_FOUND)
+    # Connection-class + liveness gate (Codex adapt #2): a grant is only valid as an
+    # api_key_http compute ref if it is backed by a LIVE, HTTP-class connection.
+    # Without this, any same-owner/same-universe grant (e.g. one issued for a
+    # different, non-http connection type) could be confused into a compute ref.
     if (
         resource is None
         or resource.get("connection_type", "") != "http"

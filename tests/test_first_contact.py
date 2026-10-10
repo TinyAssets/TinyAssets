@@ -483,8 +483,9 @@ def test_concurrent_first_contact_births_single_home(data_dir):
 
 
 def test_first_contact_birth_failure_is_graceful(data_dir, monkeypatch):
-    # If creation fails after mkdir, conversation entry must not return a broken
-    # home. The partial dir is rolled back and the retained binding self-heals.
+    # If creation fails after admission, conversation entry must not return a
+    # broken home. DA4 keeps the published root for an in-place retry; it holds
+    # no soul.md, so it never reads as a home, and the binding self-heals.
     from tinyassets.api import universe as universe_api
     from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
@@ -498,7 +499,7 @@ def test_first_contact_birth_failure_is_graceful(data_dir, monkeypatch):
 
     _login("founder-1")
     assert ensure_founder_home(data_dir, "founder-1") == ""
-    assert _serial_dirs(data_dir) == []                         # partial dir rolled back
+    assert all(not (d / "soul.md").is_file() for d in _serial_dirs(data_dir))
     # No COMPLETE home exists even if a home id was reserved (self-heals on retry).
     bound = get_founder_home(data_dir, "founder-1")
     if bound:

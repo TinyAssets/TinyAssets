@@ -20,8 +20,11 @@ from datetime import datetime, timezone
 
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
-from tinyassets.providers.owned_process import FamilyAnchorError, aspawn_owned, kill_owned_tree
-from tinyassets.providers.provider_jail import metadata_view, provider_launch_scope
+from tinyassets.providers.owned_process import (
+    FamilyAnchorError,
+    kill_owned_tree,
+)
+from tinyassets.providers.provider_jail import metadata_view
 
 
 class NativeMetadataUnsupported(ProviderError):
@@ -47,26 +50,23 @@ _REAP_TIMEOUT = 1
 _log = logging.getLogger(__name__)
 
 
-async def _close_metadata_process(proc):
-    """Release pipes and the owned family, including after launcher exit."""
+async def _close_cell_process(proc):
+    """Revoke a D82 owner cell; its authenticated receipt is authoritative."""
     proc.stdin.close()
-    # The live family anchor owns its group identity. Closing its handle is
-    # synchronous, including when cancellation interrupts the following await.
-    kill_owned_tree(proc)
+    kill_owned_tree(proc)  # Revocation through the lifetime channel only.
     try:
-        # wait() alone returns early when the launcher was already reaped.
-        # Observe inherited-pipe EOF too, with the same byte/time ceilings.
-        await asyncio.wait_for(
-            asyncio.gather(proc.wait(), proc.stdout.read(_MAX_BYTES + 1)),
-            timeout=_REAP_TIMEOUT,
-        )
-    except TimeoutError:
-        # An executor that escapes its session must not wedge metadata reads.
-        # Closing our pipe ends also releases transport references on the loop.
-        _log.warning("native metadata process cleanup exceeded its bound")
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT + 5)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        raise ProviderError("native model discovery cell receipt unavailable") from None
     finally:
-        # Also synchronous on a second cancellation during reaping.
         proc._transport.close()
+
+
+async def _close_metadata_process(proc):
+    """Release the cell's stream and revoke it, including after its own exit."""
+    await _close_cell_process(proc)
 
 
 def _check_keys(required, optional):
@@ -371,19 +371,18 @@ async def read_native_catalogue(
             raise ValueError("native metadata requires a registered protocol")
         if universe_dir is None:
             raise ValueError("native metadata requires its owning command center")
+        del spawn_kwargs, install_mounts
         view = metadata_view(universe_dir, cwd, env, auth_env_names)
-        process_options = dict(spawn_kwargs or {})
-        # Session ownership belongs to the shared family launcher. Adapters
-        # cannot replace its view, scope, shell mode or confinement requirement.
-        process_options.pop("start_new_session", None)
+        from tinyassets.role_provider_discovery import aspawn_cell
+
         async with asyncio.timeout(timeout):
-            with provider_launch_scope(universe_dir, credential_dir=cwd):
-                proc = await aspawn_owned(
-                    argv, env=env, cwd=cwd, stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                    limit=_MAX_BYTES, universe_view=view, require_confinement=True,
-                    install_mounts=install_mounts, **process_options,
-                )
+            # D82: metadata runs only in the owner's provider-discovery cell;
+            # refusal, never a daemon subprocess.
+            try:
+                proc = await aspawn_cell(argv, env=env, view=view, universe_dir=universe_dir,
+                                         snapshot_dir=cwd, limit=_MAX_BYTES)
+            except (PermissionError, RuntimeError, KeyError) as exc:
+                raise ProviderError("native model discovery cell refused") from exc
             consumed = 0
 
             async def send(message):

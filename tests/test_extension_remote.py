@@ -100,7 +100,7 @@ def test_binding_incarnation_fences_replaced_connection(tmp_path):
     service, extensions, args = setup(tmp_path)
     name = activate(service, extensions, args)
     import sqlite3
-    with sqlite3.connect(service.root.parent / "outbound.db") as conn:
+    with sqlite3.connect(service.root.parent / ".broker" / "outbound.db") as conn:
         conn.execute("UPDATE outbound_connections SET incarnation='replacement'")
     assert "incarnation" in call(service, name, {"action": "discover"})["error"]
     assert asyncio.run(service.dispatch({"op": "catalog"}))["extension_capabilities"]
@@ -216,7 +216,7 @@ def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, 
         resolver=lambda h, p: ["127.0.0.1"], validator=lambda addr: addr,
         open_socket=open_socket, ssl_context=_PassThroughTLS()))
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
-    _install_inprocess_proxy(monkeypatch, db_path=tmp_path / "outbound.db",
+    _install_inprocess_proxy(monkeypatch, db_path=tmp_path / ".broker" / "outbound.db",
         universe_dir=service.root, grant_id="grant-http", provider="http",
         destination="api.example.com", runtime_root=tmp_path / "runtime")
     try:

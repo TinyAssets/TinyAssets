@@ -20,9 +20,10 @@ from tinyassets.providers.discovery_protocols import DiscoveryProtocol
 from tinyassets.providers.model_policy import ConnectionModels
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.outbound_connections import (
-    ConnectionLedger,
+    GrantResolutionError,
     ModelDiscoveryCapability,
     ModelUseCapability,
+    ProxyRequestError,
     _resource_from_row,
     _validate_connection_capability,
     _verb_within_scopes,
@@ -84,111 +85,8 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
             or definition.access_method != "api_key_http"
         ):
             raise ModelDiscoveryUnavailable("source_revoked")
-        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.broker.ledger_queries import DISCOVERY_FACTS, query_ledger
 
-        if broker_selected():
-            return _broker_context(base, owner, uid, definition)
-        ledger = ConnectionLedger(base / "outbound.db")
-        with ledger._connect() as conn:
-            conn.execute("BEGIN")
-            grant = conn.execute(
-                "SELECT * FROM outbound_connection_grants WHERE grant_id = ?",
-                (definition.ref,),
-            ).fetchone()
-            if (
-                grant is None
-                or grant["revoked_at"] is not None
-                or grant["owner_user_id"] != owner
-                or grant["universe_id"] != uid
-            ):
-                raise ModelDiscoveryUnavailable("source_revoked")
-            row = conn.execute(
-                "SELECT * FROM outbound_connections WHERE connection_id = ?",
-                (grant["connection_id"],),
-            ).fetchone()
-            if row is None:
-                raise ModelDiscoveryUnavailable("source_revoked")
-            resource = _resource_from_row(row)
-            if (
-                resource.revoked_at is not None
-                or resource.owner_user_id != owner
-                or resource.connection_type != "http"
-            ):
-                raise ModelDiscoveryUnavailable("source_revoked")
-            # A priced catalogue ALWAYS wins over a declared list (money floor):
-            # a declaration's billing is the requester's word, the catalogue's
-            # prices are what spend caps enforce. A declared model use (static
-            # list, no fetch) needs POST scope only, and applies only where
-            # the connection has no catalogue at all.
-            priced = conn.execute(
-                "SELECT 1 FROM connection_capabilities WHERE connection_id = ? "
-                "AND capability_kind = 'model_discovery'",
-                (resource.connection_id,),
-            ).fetchone()
-            use_row = None if priced is not None else conn.execute(
-                "SELECT descriptor_json FROM connection_capabilities WHERE connection_id = ? "
-                "AND capability_kind = 'model_use'",
-                (resource.connection_id,),
-            ).fetchone()
-            if use_row is not None:
-                profile = _validate_connection_capability(
-                    resource.connection_id, "model_use", json.loads(use_row[0])
-                )
-                if not isinstance(profile, ModelUseCapability):
-                    raise ValueError("wrong profile kind")
-                if not _verb_within_scopes("POST", resource.scopes, resource.access_mode):
-                    raise ModelDiscoveryUnavailable("missing_discovery_scope")
-                if not same_dialect(definition.protocol, profile.wire):
-                    raise ModelDiscoveryUnavailable("protocol_mismatch")
-            else:
-                if not _verb_within_scopes("GET", resource.scopes, resource.access_mode):
-                    raise ModelDiscoveryUnavailable("missing_discovery_scope")
-                profile_row = conn.execute(
-                    "SELECT descriptor_json FROM connection_capabilities WHERE connection_id = ? "
-                    "AND capability_kind = 'model_discovery'",
-                    (resource.connection_id,),
-                ).fetchone()
-                if profile_row is None:
-                    raise ModelDiscoveryUnavailable("missing_discovery_scope")
-                profile = _validate_connection_capability(
-                    resource.connection_id, "model_discovery", json.loads(profile_row[0])
-                )
-                if not isinstance(profile, ModelDiscoveryCapability):
-                    raise ValueError("wrong profile kind")
-                if resource.auth_scheme != profile.execution_contract().auth_scheme:
-                    raise ModelDiscoveryUnavailable("protocol_mismatch")
-            # Existing custody identity, not a new secret hash or permission.
-            identity = _connection_grant_record_digest(
-                grant_id=definition.ref,
-                connection_id=resource.connection_id,
-                credential_ref=resource.credential_ref,
-                owner_user_id=owner,
-                universe_id=uid,
-            )
-            material = {
-                "definition_id": definition.id,
-                "grant_identity": identity,
-                "granted_at": grant["granted_at"],
-                "view": resource.to_view().as_dict(),
-                "profile": profile.descriptor(),
-            }
-            digest = hashlib.sha256(
-                json.dumps(
-                    material, sort_keys=True, separators=(",", ":"), allow_nan=False
-                ).encode()
-            ).hexdigest()
-            return _Context(definition, profile, digest, resource.auth_scheme)
-    except (LookupError, OSError, TypeError, ValueError):
-        raise ModelDiscoveryUnavailable("discovery_unavailable") from None
-
-
-def _broker_context(base: Path, owner: str, uid: str, definition) -> _Context:
-    """The selected broker's discovery facts, read in one broker transaction."""
-    from tinyassets.broker.ledger_queries import DISCOVERY_FACTS, query_ledger
-    from tinyassets.credential_vault import _connection_grant_record_digest
-    from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
-
-    try:
         facts = query_ledger(base, query=DISCOVERY_FACTS, principal=owner,
                              command_center=uid, grant_id=definition.ref)
         resource = _resource_from_row(facts["resource"])

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyassets import workspace_fs as fs
+from tinyassets import workspace_owner_pool as owner_pool
 from tinyassets import workspace_pool as pool
 from tinyassets.ttl_memo import TTLMemo, read_ttl
 
@@ -73,7 +74,7 @@ class _Walker:
             raise _BoundReached
 
     def child(self, parent: int, name: str, category: str, depth: int = 0,
-              *, missing_is_absent: bool = False):
+              *, missing_is_absent: bool = False, exclude=()):
         self.check()
         self.entries += 1
         observed = False
@@ -97,7 +98,7 @@ class _Walker:
                         self.reasons.add("directory_changed")
                         return
                     self.seen.add(identity)
-                    self.walk(child, category, depth + 1)
+                    self.walk(child, category, depth + 1, exclude=exclude)
                 finally:
                     os.close(child)
             else:
@@ -135,7 +136,7 @@ class _Walker:
         }
 
 
-def _scratch(walker: _Walker, root_fd: int, root: Path, uid: str, readonly):
+def _scratch(walker: _Walker, universe_fd: int, root: Path, uid: str, readonly):
     try:
         with readonly(root / uid / ".runs.db") as conn:
             rows = conn.execute(
@@ -160,9 +161,16 @@ def _scratch(walker: _Walker, root_fd: int, root: Path, uid: str, readonly):
             continue
         generation = int(generation)
         # Derive names using the canonical layout, never database path strings.
-        source, quarantine = pool.scratch_paths(Path("scratch"), lease_id, generation)
+        source, quarantine = pool.scratch_paths(Path(owner_pool.SCRATCH_DIR),
+                                                lease_id, generation)
         try:
-            scratch_fd = fs.open_subdir_nofollow(root_fd, "scratch")
+            # Since the owner split the pool is inside the command center:
+            # ``workspaces/scratch``, beside the permanent generations.
+            workspaces_fd = fs.open_subdir_nofollow(universe_fd, pool.WORKSPACES_DIR)
+            try:
+                scratch_fd = fs.open_subdir_nofollow(workspaces_fd, owner_pool.SCRATCH_DIR)
+            finally:
+                os.close(workspaces_fd)
             try:
                 walker.child(scratch_fd, source.name, "scratch", missing_is_absent=True)
                 try:
@@ -194,12 +202,13 @@ def _measure(root: Path, uid: str, identity: tuple[int, int], readonly) -> dict:
                     return _unavailable("directory_changed")
                 try:
                     walker.child(universe_fd, pool.WORKSPACES_DIR, "permanent_workspaces",
-                                 missing_is_absent=True)
+                                 missing_is_absent=True,
+                                 exclude=(owner_pool.SCRATCH_DIR,))
                     walker.child(universe_fd, ".credentials", "provider_runtime",
                                  missing_is_absent=True)
                     walker.walk(universe_fd, "other_universe_files",
                                 exclude=(pool.WORKSPACES_DIR, ".credentials"))
-                    _scratch(walker, root_fd, root, uid, readonly)
+                    _scratch(walker, universe_fd, root, uid, readonly)
                 except _BoundReached:
                     pass
                 return walker.result()

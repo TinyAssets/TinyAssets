@@ -72,6 +72,7 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, read_canon_bytes, safe_canon_path
+from tinyassets.role_center_admission import ensure_center_dir as _ensure_center_dir
 from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_files import (
@@ -2546,7 +2547,7 @@ def _action_submit_request(
     existing.append(request_obj)
 
     try:
-        udir.mkdir(parents=True, exist_ok=True)
+        _ensure_center_dir(udir)
         write_data_path(requests_path, json.dumps(existing, indent=2, default=str))
     except OSError as exc:
         return json.dumps({"error": f"Failed to write request: {exc}"})
@@ -3940,7 +3941,7 @@ def _action_set_tier_config(
     existing[field_name] = bool(enabled)
 
     try:
-        udir.mkdir(parents=True, exist_ok=True)
+        _ensure_center_dir(udir)
         write_data_path(
             cfg_path,
             _yaml.safe_dump(existing, sort_keys=True, default_flow_style=False),
@@ -4441,7 +4442,7 @@ def _action_give_direction(
                 return json.dumps({"error": "anchor_json must be a JSON object."})
             anchor = parsed_anchor
 
-        udir.mkdir(parents=True, exist_ok=True)
+        _ensure_center_dir(udir)
         note = _add_note(
             udir,
             source="user",
@@ -4719,7 +4720,7 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": "Premise text cannot be empty."})
     text = _normalize_escaped_text(text)
     try:
-        udir.mkdir(parents=True, exist_ok=True)
+        _ensure_center_dir(udir)
         soul = write_universe_soul(
             udir, purpose=text, lineage="created-from-premise",
         )
@@ -5251,7 +5252,7 @@ def _action_control_daemon(
 
     if action == "pause":
         try:
-            udir.mkdir(parents=True, exist_ok=True)
+            _ensure_center_dir(udir)
             write_data_path(pause_path, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
@@ -5622,7 +5623,10 @@ def _action_create_universe(
     # Sanitize
     if "/" in uid or "\\" in uid or uid.startswith("."):
         return json.dumps({"error": "Invalid universe_id."})
-    if udir.exists():
+    # owner-dynamic-admission DA4: an incomplete root left by a failed create
+    # resumes in place (same id); the ownership grant below still refuses
+    # another account's id.
+    if udir.exists() and (udir / "soul.md").is_file():
         return json.dumps({"error": f"Command center '{uid}' already exists."})
 
     from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
@@ -5663,7 +5667,10 @@ def _action_create_universe(
         # universe is never granted but unowned (account-storage-quota D2).
         grant_universe_ownership(base, universe_id=uid, owner_id=founder)
 
-        udir.mkdir(parents=True, exist_ok=True)
+        # Reserve, label, publish, log, bind; usable only once bound.
+        from tinyassets.role_center_admission import admit_center
+
+        admit_center(base, principal=founder, center=uid)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
         # universe-creation D4/D5: seed the linked OKF soul bundle. Creation
@@ -5760,24 +5767,19 @@ def _action_create_universe(
 
         return json.dumps(result)
     except Exception as exc:  # noqa: BLE001 - roll back a partial create
-        # Atomic create: a failure AFTER mkdir (e.g. seed_okf_bundle raising
-        # mid-bundle, or a grant/bind error) must NOT leave a bare/partial
-        # universe dir — it would read as a "living" home (.is_dir()) and
-        # get_status would announce a broken universe (Codex 2026-07-15). We only
-        # reach mkdir when the dir did not pre-exist (guarded above), so the dir
-        # is ours to remove. Preserve prior behavior: OSError → error envelope,
-        # anything else re-raises (after the partial dir is cleaned up).
-        import shutil
-
+        # DA4: a published root is never removed here; it keeps its root and
+        # grant, and the next create with the same id resumes in place. Only
+        # whole-center deletion removes it (DA6). An incomplete root has no
+        # soul.md, so it never reads as a living home. Preserve prior
+        # behavior: OSError → error envelope, anything else re-raises.
         if founder and not seed_sidecar_preexisted:
             from tinyassets.starter_release import abandon_new_provision
 
             abandon_new_provision(udir, owner_id=founder)
-        try:
-            if udir.is_dir():
-                shutil.rmtree(udir)
-        except OSError:
-            pass
+        published = udir.exists()
+        if published:
+            logger.warning("create of %s failed after its root was published; "
+                           "kept for an in-place retry", uid, exc_info=True)
         # ...and the grant written before it, so a failed create leaves neither a
         # bare directory nor an ownership row for a universe that never existed.
         # An owner left holding an admin grant on a nonexistent universe has to be
@@ -5787,7 +5789,7 @@ def _action_create_universe(
         try:
             from tinyassets.daemon_server import revoke_universe_ownership
 
-            if founder:
+            if founder and not published:
                 revoke_universe_ownership(base, universe_id=uid, owner_id=founder)
         except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
             logger.exception("rollback: could not revoke the create grant for %s", uid)

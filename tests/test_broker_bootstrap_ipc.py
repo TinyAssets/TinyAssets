@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.broker.ledger_queries import BOOTSTRAP_RECOVERY, query_ledger
 from tinyassets.onboarding.hosted_model_auth import HostedAuthError, load_preset

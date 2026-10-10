@@ -29,8 +29,9 @@ them from ``blob:`` URLs. Only the parent is a stand-in, playing the app's part:
   ``emit``, ``setConversationDesign``) is refused as a preview, and each call is
   reported so the agent sees what its UI tried.
 
-It runs as a short-lived subprocess tree (``python -m tinyassets.ui_preview``, its
-Playwright driver and Chromium) in a PID namespace, watched from outside: a
+Inside the admitted owner cell it runs as a short-lived subprocess tree
+(``python -m tinyassets.role_preview_cell``, its Playwright driver and Chromium)
+in a PID namespace, watched by the fixed cell supervisor: a
 wall clock, a resident-memory budget summed over the whole tree and a process
 count, and on any breach -- or when the render ends -- the whole namespace is
 killed and reaped before the slot frees. One render per HOST (a lock file the
@@ -45,8 +46,6 @@ import base64
 import contextlib
 import json
 import math
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -278,8 +277,12 @@ def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
 
 
 def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+    """The render happens in the owner's preview cell and nowhere else."""
+    from tinyassets.role_preview import render
+
     with _host_slot():
-        out, err, code, breach = _supervised(json.dumps(spec).encode("utf-8"), wall_seconds)
+        result = render(spec, wall_seconds)
+        out, err, code, breach = result.stdout, b'', result.returncode, ''
     if breach:
         raise PreviewUnavailable(f"ui_preview_{breach}")
     lines = [line for line in out.decode("utf-8", "replace").splitlines()
@@ -324,162 +327,11 @@ def _host_slot():
             os.close(fd)
 
 
-def _proc_snapshot() -> dict[int, tuple[int, int, bool, int]]:
-    """Host PID -> (parent PID, RSS bytes, zombie, starttime) from Linux /proc."""
-    import os
-
-    snapshot = {}
-    page = os.sysconf("SC_PAGE_SIZE")
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/stat", "rb") as handle:
-                fields = handle.read().rsplit(b")", 1)[1].split()
-        except OSError:
-            continue
-        snapshot[int(entry)] = (int(fields[1]), int(fields[21]) * page,
-                                fields[0] == b"Z", int(fields[19]))
-    return snapshot
-
-
-def _descendants(root: int, snapshot: dict[int, tuple[int, int, bool, int]]) -> set[int]:
-    # Traverse zombies too: their live children still belong to this tree.
-    children: dict[int, list[int]] = {}
-    for pid, (ppid, _, _, _) in snapshot.items():
-        children.setdefault(ppid, []).append(pid)
-    found = set()
-    pending = list(children.get(root, []))
-    while pending:
-        pid = pending.pop()
-        if pid not in found:
-            found.add(pid)
-            pending.extend(children.get(pid, []))
-    return found
-
-
-def _supervised(stdin: bytes, wall_seconds: float,
-                argv: list[str] | None = None) -> tuple[bytes, bytes, int, str]:
-    """Contain even detached Chromium processes in a Linux PID namespace."""
-    global _POISONED
-    import os
-    import signal
-
-    posix = os.name == "posix"
-    linux = sys.platform == "linux"
-    command = argv or [sys.executable, "-m", "tinyassets.ui_preview"]
-    if linux:
-        bwrap = shutil.which("bwrap")
-        if not bwrap:
-            raise PreviewUnavailable("ui_preview_unavailable: previews need bubblewrap")
-        # No filesystem isolation: bwrap contains the PID tree only. Chromium's
-        # own sandbox remains enabled and nests inside bwrap's user namespace.
-        command = [bwrap, "--unshare-pid", "--die-with-parent", "--bind", "/", "/",
-                   "--dev", "/dev", "--proc", "/proc", "--", *command]
-    elif posix:
-        raise PreviewUnavailable("ui_preview_unavailable: previews need Linux")
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=str(Path(__file__).resolve().parents[1]),
-        start_new_session=posix,
-        creationflags=0 if posix else getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-    )
-    chunks: dict[str, list[bytes]] = {"out": [], "err": []}
-    sizes = {"out": 0, "err": 0}
-
-    def drain(name: str, stream: Any, cap: int) -> None:
-        for chunk in iter(lambda: stream.read(65536), b""):
-            if sizes[name] < cap:
-                chunks[name].append(chunk[: cap - sizes[name]])
-            sizes[name] += len(chunk)
-
-    readers = [threading.Thread(target=drain, args=("out", process.stdout, MAX_CHILD_OUTPUT),
-                                daemon=True),
-               threading.Thread(target=drain, args=("err", process.stderr, 65536), daemon=True)]
-    for reader in readers:
-        reader.start()
-    try:
-        process.stdin.write(stdin)
-        process.stdin.close()
-    except OSError:
-        pass
-    deadline = time.monotonic() + wall_seconds
-    breach = ""
-    seen: dict[int, int] = {}
-    try:
-        while (os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-               if linux else process.poll()) is None:
-            if linux:
-                snapshot = _proc_snapshot()
-                descendants = _descendants(process.pid, snapshot)
-                seen.update({pid: snapshot[pid][3] for pid in descendants})
-                members = [info for pid, info in snapshot.items()
-                           if not info[2] and seen.get(pid) == info[3]]
-                if sum(rss for _, rss, _, _ in members) > TREE_MEMORY_BYTES:
-                    breach = "memory: the render used more memory than a preview may"
-                elif len(members) > TREE_PROCESSES:
-                    breach = "processes: the render started more processes than a preview may"
-            if time.monotonic() > deadline:
-                breach = f"timeout: the render did not finish in {wall_seconds:.0f} s"
-            if sizes["out"] > MAX_CHILD_OUTPUT:
-                breach = "failed: the render printed more than a preview may"
-            if breach:
-                break
-            time.sleep(0.25)
-    finally:
-        if linux:
-            # Keep bwrap unreaped: its PID cannot be reused while cleanup runs.
-            # Its parent-death signal kills namespace init, and the kernel then
-            # kills every namespace member. Never signal another numeric PID.
-            settle = time.monotonic() + 10
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(process.pid, signal.SIGKILL)
-            while True:
-                snapshot = _proc_snapshot()
-                # Once bwrap is dead its children re-parent away from it, so a
-                # member still dying is found by identity (pid + starttime) too.
-                alive = {pid for pid in _descendants(process.pid, snapshot)
-                         if not snapshot[pid][2]}
-                alive |= {pid for pid, start in seen.items()
-                          if pid in snapshot and snapshot[pid][3] == start
-                          and not snapshot[pid][2]}
-                if not alive or time.monotonic() >= settle:
-                    break
-                time.sleep(0.1)
-            for reader in readers:
-                reader.join(timeout=max(0, settle - time.monotonic()))
-            contained = not alive and not any(reader.is_alive() for reader in readers)
-            # Reaping is the final cleanup operation, after all tree walks.
-            try:
-                process.wait(timeout=max(0, settle - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                contained = False
-            if not contained:
-                _POISONED = _CONTAINMENT_FAILURE
-                raise PreviewUnavailable(_POISONED)
-        else:
-            # Windows is a dev host only; production containment requires Linux.
-            _kill_tree_windows(process.pid)
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            process.wait()
-            for reader in readers:
-                reader.join(timeout=5)
-
-    return b"".join(chunks["out"]), b"".join(chunks["err"]), process.returncode, breach
-
-
-def _kill_tree_windows(pid: int) -> None:  # pragma: no cover - dev hosts only
-    try:
-        import psutil
-    except ImportError:
-        return
-    with contextlib.suppress(Exception):
-        parent = psutil.Process(pid)
-        for child in parent.children(recursive=True):
-            with contextlib.suppress(Exception):
-                child.kill()
+def _assert_browser_sandbox(browser):
+    session = browser.new_browser_cdp_session()
+    arguments = session.send('Browser.getBrowserCommandLine')['arguments']
+    if '--no-sandbox' in arguments:
+        raise RuntimeError('preview Chromium sandbox is disabled')
 
 
 def _child(spec: dict[str, Any]) -> dict[str, Any]:
@@ -497,8 +349,12 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
         served["/__preview/lib/" + name] = ui_library_set.library_bytes(name)
     missing = []
     for path, sha in spec["hashes"].items():
-        found = read_app_ui_asset(spec["base_path"], owner_user_id=spec["owner_user_id"],
-                                  sha256=sha)
+        if 'asset_bytes' in spec:
+            encoded = spec['asset_bytes'].get(path)
+            found = None if encoded is None else base64.b64decode(encoded, validate=True)
+        else:
+            found = read_app_ui_asset(spec["base_path"], owner_user_id=spec["owner_user_id"],
+                                      sha256=sha)
         if found is None:
             missing.append(path)
         else:
@@ -560,6 +416,7 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
         except PlaywrightError as exc:
             return {"unavailable": str(exc).splitlines()[0][:300]}
         try:
+            _assert_browser_sandbox(browser)
             # No service_workers="block": its injected shim throws inside a
             # sandboxed frame and would be reported as the UI's own error.
             context = browser.new_context(
@@ -606,6 +463,7 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
         "bridge_calls": calls, "bridge_actions_dropped": int(state.get("dropped") or 0),
         "blocked_requests": blocked,
         "missing_assets": missing, "delivery_error": state.get("error") or "",
+        "chromium_sandbox": True,
         "png_base64": base64.b64encode(png).decode("ascii"),
     }
 
@@ -624,8 +482,41 @@ if __name__ == "__main__":
 PREVIEW_DIR = "previews"
 
 
+def _checked_ui_id(ui_id: str) -> str:
+    """The app's own id shape, so nothing like ``../x`` ever names a file."""
+    import re
+
+    ui_id = str(ui_id)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", ui_id) or ui_id in _RESERVED:
+        raise PreviewUnavailable(
+            f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
+    return ui_id
+
+
 def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     """Put ``png`` at ``/u/previews/<ui_id>.png``; the path as the agent sees it.
+
+    Daemon side: nothing is written here. The bytes and the id go to the
+    owner's preview-write cell (:func:`tinyassets.role_preview.write`), which
+    runs :func:`write_preview_in_cell` against the pinned center descriptor.
+    """
+    ui_id = _checked_ui_id(ui_id)
+    name = f"{ui_id}.png"
+    try:
+        from tinyassets.role_preview import write
+
+        return write(universe_dir, ui_id, png)
+    except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
+        # UniverseFileError (a link or a non-directory on the path), a directory
+        # at the target, permissions: the screenshot is not written, and the
+        # agent is told why.
+        raise PreviewUnavailable(
+            f"ui_preview_failed: /u/{PREVIEW_DIR}/{name} could not be written "
+            f"({type(exc).__name__}: {str(exc)[:200]})") from None
+
+
+def write_preview_in_cell(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
+    """Write the screenshot. The only caller is the owner preview-write cell.
 
     The folder is the agent's own and the agent can change it WHILE this runs,
     so the bytes go through the one universe writer,
@@ -639,33 +530,20 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     The universe root is checked here, not there. ``write_universe_file``
     resolves its root before the no-follow walk, so that walk is link-free only
     BELOW the root and cannot refuse a link at or above the universe dir itself
-    (``docs/concerns/2026-10-02-universe-files-resolves-its-root.md``). Today
-    the only caller hands over an already-resolved path -- ``api/helpers``'
-    ``_universe_dir`` does ``(base / universe_id).resolve()`` -- so this cannot
-    fire through ``api/app_ui``; it is here so a future caller that passes an
-    unresolved path does not silently write through a linked ancestor.
+    (``docs/concerns/2026-10-02-universe-files-resolves-its-root.md``).
     """
     import os
-    import re
 
     from tinyassets import workspace_fs as fs
     from tinyassets.universe_files import write_universe_file
 
-    # The server stores any non-empty ui_id; only the app's own id shape names
-    # a file, so nothing like "../x" ever becomes a path.
-    ui_id = str(ui_id)
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", ui_id) or ui_id in _RESERVED:
-        raise PreviewUnavailable(
-            f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
+    ui_id = _checked_ui_id(ui_id)
     name = f"{ui_id}.png"
     try:
         if fs._POSIX:
             os.close(fs.open_dir_nofollow(universe_dir))
         write_universe_file(universe_dir, f"{PREVIEW_DIR}/{name}", png)
     except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
-        # UniverseFileError (a link or a non-directory on the path), a directory
-        # at the target, permissions: the screenshot is not written, and the
-        # agent is told why.
         raise PreviewUnavailable(
             f"ui_preview_failed: /u/{PREVIEW_DIR}/{name} could not be written "
             f"({type(exc).__name__}: {str(exc)[:200]})") from None

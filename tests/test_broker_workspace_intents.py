@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_broker_workspace_consumers import rig  # noqa: F401
 from tinyassets import runs
@@ -44,10 +44,14 @@ def test_reconcile_uses_persisted_run_and_broker_not_injected_custody(pending):
         requests.append(request)
         return {"ok": True, "observed_sha": "a" * 40}
 
-    answer = intents.reconcile_push_intents(
-        pending.base, execute=execute, credential_ref_for=lambda cid: "vault://foreign")
+    answer = intents.reconcile_push_intents(pending.base, execute=execute)
     assert answer == [(pending.intent, "done")]
-    assert requests[0]["credential_ref"] == "vault://http/synthetic"
+    # The owner comes from the persisted run and the broker's live grant; the
+    # credential does not come at all, because the probe runs in that owner's
+    # own cell and only the broker resolves a token.
+    assert requests[0]["principal"] == "alice"
+    assert (requests[0]["grant_id"], requests[0]["connection_id"]) == ("grant-a", "conn-a")
+    assert "credential_ref" not in requests[0]
     assert not (pending.root / "outbound.db").exists()
 
 
@@ -70,20 +74,23 @@ def test_unadmitted_or_changed_intent_never_contacts_remote(pending, change):
     sent = []
     assert intents.reconcile_push_intents(
         pending.base, execute=lambda request: sent.append(request),
-        credential_ref_for=lambda cid: "vault://bypass", revalidate=lambda intent: True,
+        revalidate=lambda intent: True,
     ) == [(pending.intent, "sent")]
     assert not sent
     assert intents.open_intents(pending.base)[0].attempts == 1
     assert not (pending.root / "outbound.db").exists()
 
 
-def test_broker_outage_defers_and_unscoped_helper_refuses(pending, monkeypatch):
+def test_broker_outage_defers_and_never_borrows_custody(pending, monkeypatch):
     from tinyassets.broker import supervisor
     monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
     sent = []
     assert intents.reconcile_push_intents(
         pending.base, execute=lambda request: sent.append(request)) == [(pending.intent, "sent")]
     assert not sent
-    with pytest.raises(RuntimeError, match="admitted intent scope"):
-        intents._credential_ref(pending.base, "conn-a")
+    # The helper itself refuses without the run's admitted scope: there is no
+    # second route to the owner's authority to fall back to.
+    with pytest.raises(Exception, match="admitted run scope|not running"):
+        intents._intent_principal(
+            pending.base, intents.open_intents(pending.base)[0])
     assert not (pending.root / "outbound.db").exists()

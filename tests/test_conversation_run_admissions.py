@@ -184,6 +184,16 @@ def _projection_process(base, admission_id, entered, release, result):
 
 
 def _deletion_process(base, result):
+    # Spawn does not inherit pytest's runtime doubles. Install the same venue
+    # in this child; the real account-deletion/projection barrier remains intact.
+    from tests.support.admission_double import install
+    from tests.support.broker_double import _Registry
+    from tinyassets.broker import supervisor
+
+    registry = _Registry()
+    patch = pytest.MonkeyPatch()
+    install(patch)
+    patch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
     try:
         receipt = account_deletion.delete_account(
             base, founder_sub=OWNER, cancel_billing=lambda _: "none",
@@ -193,6 +203,10 @@ def _deletion_process(base, result):
         result.put("deleted")
     except Exception as exc:
         result.put(type(exc).__name__ + ": " + str(exc))
+
+    finally:
+        registry.close()
+        patch.undo()
 
 
 def test_two_process_delete_cannot_overtake_terminal_projection(store):

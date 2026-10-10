@@ -11,10 +11,8 @@ This transport alone does not enable workspace provisioning.
 
 from __future__ import annotations
 
-import array
 import ipaddress
 import math
-import os
 import select
 import socket
 import threading
@@ -29,84 +27,10 @@ _HEADER_BOUND = 16 * 1024
 _BUFFER_BOUND = 64 * 1024
 _CONNECTED = b"HTTP/1.1 200 Connection Established\r\n\r\n"
 _REFUSED = b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
-_RELAY_MESSAGE = b"registry-relay-v1"
 
 
 class RegistryRefused(RuntimeError):
     """A fixed, non-secret transport classification; no upstream error body."""
-
-
-def _check_control(control: socket.socket) -> None:
-    if os.name != "posix" or not hasattr(socket, "SCM_RIGHTS"):
-        raise NotImplementedError("registry descriptor relay requires POSIX")
-    if (control.family != socket.AF_UNIX
-            or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET):
-        raise ValueError("registry control must be a private Unix packet socket")
-
-
-def send_relay(control: socket.socket, endpoint: socket.socket) -> None:
-    """Namespace side: send ONLY the local Unix relay endpoint to the broker.
-
-    Ownership of this process's descriptor remains with the caller, who closes
-    it after sending. No host-network descriptor is ever sent in the reverse
-    direction. Package-manager children must not inherit the control socket.
-    """
-    _check_control(control)
-    if (endpoint.family != socket.AF_UNIX
-            or endpoint.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM):
-        raise ValueError("registry relay must be a connected Unix stream")
-    endpoint.getpeername()  # Refuse listening/unconnected sockets before handoff.
-    descriptors = array.array("i", [endpoint.fileno()])
-    count = control.sendmsg([_RELAY_MESSAGE], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, descriptors)])
-    if count != len(_RELAY_MESSAGE):
-        raise RegistryRefused("transport_failed")
-
-
-def receive_relay(control: socket.socket) -> socket.socket | None:
-    """Broker side: admit one connected local relay; close every malformed fd.
-
-    A truncated ancillary message is a refusal, never a usable partial list.
-    Received fds are close-on-exec before exposure. No filenames, bind paths,
-    upstream destination sockets or caller-selected executables are accepted.
-    EOF means revoke/stop; the supervisor must also cancel established relays.
-    """
-    _check_control(control)
-    descriptors = array.array("i")
-    stream = None
-    try:
-        data, ancillary, flags, _ = control.recvmsg(
-            len(_RELAY_MESSAGE), socket.CMSG_SPACE(16 * descriptors.itemsize),
-            getattr(socket, "MSG_CMSG_CLOEXEC", 0),
-        )
-        unknown = False
-        for level, kind, payload in ancillary:
-            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                descriptors.frombytes(payload[:len(payload) - len(payload) % descriptors.itemsize])
-            else:
-                unknown = True
-        if not data and not ancillary:
-            return None
-        if (unknown or flags & (socket.MSG_CTRUNC | socket.MSG_TRUNC)
-                or data != _RELAY_MESSAGE or len(descriptors) != 1):
-            raise RegistryRefused("bad_connect")
-        descriptor = descriptors[0]
-        os.set_inheritable(descriptor, False)
-        stream = socket.socket(fileno=descriptor)
-        descriptors.pop()  # Socket wrapper owns it, including validation failure.
-        if (stream.family != socket.AF_UNIX
-                or stream.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM):
-            raise RegistryRefused("bad_connect")
-        stream.getpeername()
-        stream.setblocking(True)
-        admitted, stream = stream, None
-        return admitted
-    except (OSError, ValueError):
-        raise RegistryRefused("bad_connect") from None
-    finally:
-        if stream is not None:
-            stream.close()
-        for descriptor in descriptors:
-            os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -260,13 +184,15 @@ def _pump(client: socket.socket, upstream: socket.socket, budget: TransferBudget
     pending = {client: bytearray(), upstream: bytearray()}
     readable = set(sockets)
     write_shutdown: set[socket.socket] = set()
+    client_gone = False
     for stream in sockets:
         stream.setblocking(False)
     while readable or any(pending.values()):
         budget.check()
         for destination in sockets:
             if (peer[destination] not in readable and not pending[destination]
-                    and destination not in write_shutdown):
+                    and destination not in write_shutdown
+                    and not (destination is client and client_gone)):
                 destination.shutdown(socket.SHUT_WR)
                 write_shutdown.add(destination)
         readers = [s for s in readable if len(pending[peer[s]]) < _BUFFER_BOUND]
@@ -281,13 +207,27 @@ def _pump(client: socket.socket, upstream: socket.socket, budget: TransferBudget
             except BlockingIOError:
                 continue
             if chunk:
-                pending[destination].extend(chunk)
+                # Once the client has fully closed, drain the upstream to a
+                # clean EOF. receive() still charges every discarded byte.
+                if not (destination is client and client_gone):
+                    pending[destination].extend(chunk)
             else:
                 readable.remove(source)
         for destination in ready_write:
             try:
                 sent = destination.send(pending[destination])
             except BlockingIOError:
+                continue
+            except BrokenPipeError:
+                if destination is not client or client in readable or pending[upstream]:
+                    raise
+                # pip closes its tunnel after consuming its response; a final
+                # opaque TLS record can arrive afterwards. Client EOF and no
+                # outstanding request bytes establish downstream retirement.
+                # Do not declare success yet: upstream must drain to clean EOF
+                # under the same byte/deadline budget. Resets still fail closed.
+                client_gone = True
+                pending[client].clear()
                 continue
             if not sent:
                 raise RegistryRefused("transport_failed")

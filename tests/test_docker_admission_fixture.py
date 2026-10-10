@@ -55,12 +55,21 @@ def test_docker_ci_preserves_unmodified_refusal_and_authenticated_protocol():
     assert "--mount" not in refusal
     assert "-p " not in refusal
     assert 'test "$EXIT_CODE" = 78' in refusal
-    assert "platform_not_cloud" in refusal
+    # Owner split: PID1 refuses an unmigrated volume before the app loads.
+    assert "startup refused: the data volume is not migrated.*run ta-migrate" in refusal
+    assert "tinyassets-daemon-layout2-ci:/data" in refusal
+    assert "--cap-add SETPCAP" in refusal and "--user 0:0" in refusal
     assert "timeout 60 docker wait" in refusal
     positive = commands["Start isolated protocol fixture with simulated admission"]
+    profile = commands["Permit the smoke container's user namespace"]
+    assert "profile ta-smoke-userns flags=(unconfined)" in profile and "  userns," in profile
+    assert "sudo apparmor_parser -r" in profile and "sysctl" not in profile
+    assert 'apparmor=${TINYASSETS_SMOKE_APPARMOR}' in positive
     assert "127.0.0.1:8001:8001" in positive
     assert "docker_admitted_process.py,dst=/ci/admitted_process.py,readonly" in positive
-    assert "tinyassets-daemon:ci python /ci/admitted_process.py" in positive
+    assert "tinyassets-daemon:ci python -I -B /ci/admitted_process.py" in positive
+    assert "tinyassets-daemon-fresh-ci:/data" in positive
+    assert "--cap-add SETPCAP" in positive and "--user 0:0" in positive
     assert "TINYASSETS_WIKI_CANARY_TOKEN" in positive
     assert "UNIVERSE_SERVER_URL=http://localhost:8001/mcp" in positive
     assert "python tests/fixtures/docker_protocol_probe.py" in commands["MCP initialize smoke"]

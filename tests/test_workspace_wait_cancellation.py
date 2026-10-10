@@ -43,10 +43,12 @@ def test_cancelled_wait_unwinds_without_lease_population_or_later_effects(
         return stopped[0]
 
     def forbidden_population(*_, **__):
-        pytest.fail("cancelled admission reached filesystem population or worker")
+        pytest.fail("cancelled admission reached the owner cell or a lease handle")
 
     monkeypatch.setattr(workspace_pool, "admit", controlled_admit)
-    monkeypatch.setattr(workspace_effect, "_make_scratch_lease_dir", forbidden_population)
+    # Nothing the daemon does after admission may run: the cell is what makes
+    # the lease now, and the daemon only OPENS what it answered for.
+    monkeypatch.setattr(workspace_effect, "_open_cell_lease", forbidden_population)
     later_effects = []
     monkeypatch.setitem(
         effectors._EFFECTORS, "authenticated_external_call",

@@ -71,7 +71,7 @@ def test_another_file_in_the_sidecar_folder_is_refused(command_center: Path):
     socket = _sidecar_dir(command_center) / "egress.sock"
     socket.write_bytes(b"")
 
-    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
+    with pytest.raises(ProviderConfinementError, match="may not bind platform sidecar state"):
         _argv(
             command_center,
             [JailMount("bind", "/u/notes", other)],
@@ -80,7 +80,7 @@ def test_another_file_in_the_sidecar_folder_is_refused(command_center: Path):
 
 
 def test_the_sidecar_folder_itself_is_refused(command_center: Path):
-    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
+    with pytest.raises(ProviderConfinementError, match="may not bind platform sidecar state"):
         _argv(command_center, [JailMount("bind", "/u/notes", _sidecar_dir(command_center))])
 
 
@@ -92,7 +92,7 @@ def test_with_no_constructed_sockets_nothing_in_the_sidecar_is_bindable(
     socket = _sidecar_dir(command_center) / "egress.sock"
     socket.write_bytes(b"")
 
-    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
+    with pytest.raises(ProviderConfinementError, match="may not bind platform sidecar state"):
         _argv(command_center, [JailMount("bind", "/run/egress.sock", socket)])
 
 
@@ -119,7 +119,7 @@ def test_a_swapped_link_to_the_sidecar_folder_is_refused(command_center: Path):
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
 
-    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
+    with pytest.raises(ProviderConfinementError, match="may not bind platform sidecar state"):
         _argv(command_center, [mount], platform_sources=frozenset({socket.resolve()}))
 
 

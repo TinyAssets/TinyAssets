@@ -143,15 +143,12 @@ def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
     """
     from tinyassets.api.model_access_requests import grant_sentence
     from tinyassets.broker.ledger_queries import BOOTSTRAP_RECOVERY, query_ledger
-    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.providers.definition import get_definition
-    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.outbound_connections import ProxyRequestError
     from tinyassets.storage.pending_requests import list_pending
 
     matches = []
-    selected = broker_selected()
-    ledger = None if selected else ConnectionLedger(base / "outbound.db")
     for request in list_pending(universe):
         action = request.get("action") or {}
         if action.get("type") != "bind_model_access":
@@ -164,39 +161,24 @@ def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
         if (definition is None or definition.owner_user_id != owner
                 or definition.access_method != "api_key_http"):
             continue
-        if selected:
-            from tinyassets.storage.outbound_connections import ProxyRequestError
-
-            facts = query_ledger(base, query=BOOTSTRAP_RECOVERY, principal=owner,
-                                 command_center=uid, grant_id=definition.ref)
-            if not isinstance(facts, dict) or set(facts) != {"recovery"}:
-                raise ProxyRequestError("invalid bootstrap recovery projection")
-            recovery = facts["recovery"]
-            if recovery is None:
-                continue
-            if (not isinstance(recovery, dict)
-                    or set(recovery) != {"destination", "descriptor"}
-                    or not isinstance(recovery["destination"], str)
-                    or recovery["descriptor"] is not None
-                    and not isinstance(recovery["descriptor"], dict)):
-                raise ProxyRequestError("invalid bootstrap recovery projection")
-            if (recovery["destination"] == "model:" + preset.id
-                    and recovery["descriptor"] == {"protocol": preset.id,
-                        "catalogue_url": preset.catalogue_url,
-                        "benchmark_url": preset.benchmark_url}):
-                matches.append({**request, "grant_sentence": grant_sentence(action)})
+        facts = query_ledger(base, query=BOOTSTRAP_RECOVERY, principal=owner,
+                             command_center=uid, grant_id=definition.ref)
+        if not isinstance(facts, dict) or set(facts) != {"recovery"}:
+            raise ProxyRequestError("invalid bootstrap recovery projection")
+        recovery = facts["recovery"]
+        if recovery is None:
             continue
-        grant = ledger.get_grant(definition.ref)
-        if grant is None or grant.owner_user_id != owner or grant.universe_id != uid:
-            continue
-        connection = ledger.get_connection(grant.connection_id)
-        profile = ledger.get_connection_capability(grant.connection_id, "model_discovery")
-        if (connection is None or connection.owner_user_id != owner
-                or connection.destination != "model:" + preset.id or profile is None
-                or profile.descriptor() != {"protocol": preset.id,
-                    "catalogue_url": preset.catalogue_url, "benchmark_url": preset.benchmark_url}):
-            continue
-        matches.append({**request, "grant_sentence": grant_sentence(action)})
+        if (not isinstance(recovery, dict)
+                or set(recovery) != {"destination", "descriptor"}
+                or not isinstance(recovery["destination"], str)
+                or recovery["descriptor"] is not None
+                and not isinstance(recovery["descriptor"], dict)):
+            raise ProxyRequestError("invalid bootstrap recovery projection")
+        if (recovery["destination"] == "model:" + preset.id
+                and recovery["descriptor"] == {"protocol": preset.id,
+                    "catalogue_url": preset.catalogue_url,
+                    "benchmark_url": preset.benchmark_url}):
+            matches.append({**request, "grant_sentence": grant_sentence(action)})
     if len(matches) > 1:
         raise HostedAuthError("model_confirmation_requires_review", 409)
     if not matches:

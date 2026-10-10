@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import hashlib
 import inspect
 import json
@@ -58,12 +57,12 @@ class _JsonlAudit:
 
 def _runtime_log(tmp_path, grant_id, filename):
     runtime_id = hashlib.sha256(grant_id.encode("utf-8")).hexdigest()
-    return tmp_path / ".outbound-proxy" / runtime_id / filename
+    return tmp_path / ".broker" / ".outbound-proxy" / runtime_id / filename
 
 
 def test_connection_and_per_universe_grant_persist_with_revocation(tmp_path):
-    db_path = tmp_path / "boundary.db"
-    ledger = ConnectionLedger(db_path)
+    db_path = tmp_path / ".broker" / "outbound.db"
+    ledger = ConnectionLedger(db_path, data_root=tmp_path)
 
     connection = ledger.create_connection(
         connection_id="conn-github",
@@ -81,7 +80,7 @@ def test_connection_and_per_universe_grant_persist_with_revocation(tmp_path):
         universe_id="universe-1",
     )
 
-    reopened = ConnectionLedger(db_path)
+    reopened = ConnectionLedger(db_path, data_root=tmp_path)
     assert reopened.get_connection("conn-github") == connection
     assert reopened.get_grant("grant-u1") == grant
     assert reopened.revoke_grant("grant-u1", revoked_at=123.0) is True
@@ -90,7 +89,7 @@ def test_connection_and_per_universe_grant_persist_with_revocation(tmp_path):
 
 def test_revoking_connection_invalidates_all_grants_and_cap_evaluation(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(ledger)
@@ -104,9 +103,9 @@ def test_revoking_connection_invalidates_all_grants_and_cap_evaluation(tmp_path)
             action_unit="pull_requests",
         )
     with pytest.raises(GrantResolutionError, match="revoked"):
-        ledger.resolve_scoped_proxy(
+        ledger.resolve_exact_scoped_proxy(
             universe_id="universe-1",
-            connection_class="pull-request-writer",
+            grant_id="grant-github", connection_id="conn-github",
         )
 
 
@@ -151,9 +150,16 @@ def _grant_github_connection(
     )
 
 
-def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
+def test_resolve_exact_scoped_proxy_uses_only_current_exact_grant(tmp_path, monkeypatch):
+    from tinyassets.storage import outbound_connections as oc
+
+    original = oc._TestFixtureNetworkDriver.__call__
+    def http_envelope(self, **kwargs):
+        result = original(self, **kwargs)
+        return {"status": 201, "reason": "Created", "headers": {}, "body": json.dumps(result)}
+    monkeypatch.setattr(oc._TestFixtureNetworkDriver, "__call__", http_envelope)
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -162,23 +168,24 @@ def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
         str(_runtime_log(tmp_path, "grant-github", "network.jsonl"))
     )
 
-    proxy = ledger.resolve_scoped_proxy(
+    proxy = ledger.resolve_exact_scoped_proxy(
         universe_id="universe-1",
-        connection_class="pull-request-writer",
+        grant_id="grant-github", connection_id="conn-github",
     )
 
     assert proxy.provider == "test-fixture.created"
     assert proxy.destination == "github.com/acme/widgets"
-    assert proxy.request("pull_requests:write", {"title": "Ship"}) == {
-        "status": "created"
-    }
+    response = proxy.request("pull_requests:write", {"title": "Ship"})
+    assert response["status"] == 201
+    assert json.loads(response["body"]) == {"status": "created"}
+    proxy.close()
     assert dispatched.records() == [{
         "provider": "test-fixture.created",
         "destination": "github.com/acme/widgets",
         "verb": "pull_requests:write",
         "request": {"title": "Ship"},
     }]
-    parameters = inspect.signature(ledger.resolve_scoped_proxy).parameters
+    parameters = inspect.signature(ledger.resolve_exact_scoped_proxy).parameters
     assert "dispatch" not in parameters
     assert "dispatch_factory" not in parameters
     assert "dispatch_config" not in parameters
@@ -187,7 +194,7 @@ def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
 
 def test_resolve_exact_scoped_proxy_uses_named_grant_not_class_ambiguity(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -209,76 +216,80 @@ def test_resolve_exact_scoped_proxy_uses_named_grant_not_class_ambiguity(tmp_pat
     proxy.close()
 
 
-def test_resolve_scoped_proxy_refuses_caller_supplied_owner_identity(tmp_path):
+def test_resolve_exact_scoped_proxy_refuses_caller_supplied_owner_identity(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
     )
     _grant_github_connection(ledger)
     forged_owner = ledger.get_grant("grant-github").owner_user_id
 
     with pytest.raises(TypeError, match="owner_user_id"):
-        ledger.resolve_scoped_proxy(
+        ledger.resolve_exact_scoped_proxy(
             owner_user_id=forged_owner,
             universe_id="universe-1",
-            connection_class="pull-request-writer",
+            grant_id="grant-github", connection_id="conn-github",
         )
 
 
-def test_resolve_scoped_proxy_fails_closed_without_principal_verifier(tmp_path):
+def test_resolve_exact_scoped_proxy_fails_closed_without_principal_verifier(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
     )
     _grant_github_connection(ledger)
 
     with pytest.raises(PermissionError, match="principal verifier"):
-        ledger.resolve_scoped_proxy(
+        ledger.resolve_exact_scoped_proxy(
             universe_id="universe-1",
-            connection_class="pull-request-writer",
+            grant_id="grant-github", connection_id="conn-github",
         )
 
 
 def test_proxy_api_rejects_caller_supplied_factory_or_config(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(ledger)
     with pytest.raises(TypeError, match="dispatch_factory"):
-        ledger.resolve_scoped_proxy(
+        ledger.resolve_exact_scoped_proxy(
             universe_id="universe-1",
-            connection_class="pull-request-writer",
+            grant_id="grant-github", connection_id="conn-github",
             dispatch_factory="evil.module:leak_secret",
         )
     with pytest.raises(TypeError, match="dispatch_config"):
-        ledger.resolve_scoped_proxy(
+        ledger.resolve_exact_scoped_proxy(
             universe_id="universe-1",
-            connection_class="pull-request-writer",
+            grant_id="grant-github", connection_id="conn-github",
             dispatch_config={"payload": "raw-secret"},
         )
 
 
-def test_test_fixture_transport_is_disabled_by_default(tmp_path):
+def test_test_fixture_transport_is_disabled_by_default(tmp_path, monkeypatch):
+    from tinyassets.broker import supervisor
+
+    broker = supervisor.get_supervisor(tmp_path)
+    monkeypatch.setattr(broker._dispatchers, "_allow_test_fixtures", False)
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(ledger)
-    proxy = ledger.resolve_scoped_proxy(
+    proxy = ledger.resolve_exact_scoped_proxy(
         universe_id="universe-1",
-        connection_class="pull-request-writer",
+        grant_id="grant-github", connection_id="conn-github",
     )
 
     with pytest.raises(ProxyRequestError, match="outbound request failed"):
         proxy.request("pull_requests:write", {"title": "Must fail closed"})
 
 
-@pytest.mark.parametrize("case", ["absent", "revoked", "ambiguous"])
-def test_resolve_scoped_proxy_fails_closed_without_fallback(tmp_path, case):
+@pytest.mark.parametrize("case", ["absent", "revoked"])
+def test_resolve_exact_scoped_proxy_fails_closed_without_fallback(tmp_path, case):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -286,17 +297,10 @@ def test_resolve_scoped_proxy_fails_closed_without_fallback(tmp_path, case):
         _grant_github_connection(ledger)
     if case == "revoked":
         ledger.revoke_grant("grant-github")
-    if case == "ambiguous":
-        _grant_github_connection(
-            ledger,
-            connection_id="conn-github-2",
-            grant_id="grant-github-2",
-        )
-
     with pytest.raises(GrantResolutionError, match=case):
-        ledger.resolve_scoped_proxy(
+        ledger.resolve_exact_scoped_proxy(
             universe_id="universe-1",
-            connection_class="pull-request-writer",
+            grant_id="grant-github", connection_id="conn-github",
         )
 
 
@@ -307,7 +311,7 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
     vault_path = tmp_path / "vault-secret.txt"
     vault_path.write_text(secret, encoding="utf-8")
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -319,9 +323,9 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
     audit = _JsonlAudit(
         str(_runtime_log(tmp_path, "grant-github", "audit.jsonl"))
     )
-    proxy = ledger.resolve_scoped_proxy(
+    proxy = ledger.resolve_exact_scoped_proxy(
         universe_id="universe-1",
-        connection_class="pull-request-writer",
+        grant_id="grant-github", connection_id="conn-github",
     )
     graph_state = {"connection": proxy}
     request_metadata = {
@@ -331,20 +335,15 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
     }
     assert not hasattr(proxy, "_dispatch")
     assert not hasattr(proxy, "_dispatch_handle")
-    assert proxy._channel._process.pid != os.getpid()
-    assert not hasattr(proxy._channel._process, "_args")
+    assert not hasattr(proxy._channel, "_process")
+    assert not hasattr(proxy._channel, "_dispatch")
+    assert not hasattr(proxy._channel._client, "_dispatch")
     assert "_PROXY_DISPATCHERS" not in vars(
         __import__(
             "tinyassets.storage.outbound_connections",
             fromlist=["outbound_connections"],
         )
     )
-    gc.collect()
-    assert not any(
-        isinstance(candidate, CredentialBlindBroker)
-        for candidate in gc.get_objects()
-    )
-
     with pytest.raises(ProxyRequestError) as raised:
         proxy.request("pull_requests:write", {"title": "Ship"})
 
@@ -379,7 +378,7 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
     vault_path = tmp_path / "vault-secret.txt"
     vault_path.write_text(secret, encoding="utf-8")
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -391,9 +390,9 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
     audit = _JsonlAudit(
         str(_runtime_log(tmp_path, "grant-github", "audit.jsonl"))
     )
-    proxy = ledger.resolve_scoped_proxy(
+    proxy = ledger.resolve_exact_scoped_proxy(
         universe_id="universe-1",
-        connection_class="pull-request-writer",
+        grant_id="grant-github", connection_id="conn-github",
     )
 
     with pytest.raises(ProxyRequestError) as raised:
@@ -406,7 +405,7 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
 
 def test_ambiguous_transport_error_cannot_leak_credential_material(tmp_path):
     secret = "transport-echoed-bearer-secret"
-    ledger = ConnectionLedger(tmp_path / "boundary.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     _grant_github_connection(ledger)
 
     def raise_secret_bearing_error(**_kwargs):
@@ -433,7 +432,7 @@ def test_ambiguous_transport_error_cannot_leak_credential_material(tmp_path):
 def test_connector_definition_and_mcp_config_are_attributed_remixable_artifacts(
     tmp_path,
 ):
-    ledger = ConnectionLedger(tmp_path / "boundary.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     original = ledger.create_connector_artifact(
         artifact_id="connector-github-v1",
         owner_user_id="creator",
@@ -564,7 +563,7 @@ def _make_http_ledger_with_vault(tmp_path, *, credential_ref="vault://http/anthr
         }],
     )
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "user-1",
     )
     ledger.create_connection(
@@ -594,7 +593,7 @@ def test_http_broker_composition_resolves_through_real_general_vault_resolver(
     tmp_path, monkeypatch
 ):
     # THE real end-to-end composition (Codex FIX 4/finding 2): a credential stored
-    # in the ACTUAL vault -> ledger -> grant -> spawned credential-blind broker ->
+    # in the ACTUAL vault -> ledger -> grant -> shared credential-blind broker ->
     # _GeneralVaultCredentialResolver -> HTTP driver. NO fixture resolver, NO
     # plaintext injection, NO fake _http. The request targets a non-allowlisted
     # host so the real driver's allowlist refuses it — proving the credential was
@@ -608,7 +607,7 @@ def test_http_broker_composition_resolves_through_real_general_vault_resolver(
         grant_id="grant-http",
         connection_id="conn-http",
     )
-    assert proxy._channel._process.pid != os.getpid()  # a real spawned child
+    assert not hasattr(proxy._channel, "_process")  # shared authenticated broker channel
     try:
         with pytest.raises(ProxyRequestError):
             proxy.request(
@@ -632,7 +631,7 @@ def test_forged_foreign_scheme_row_never_vends_a_token_to_the_http_driver(
 ):
     # Confused-deputy end-to-end (Codex FIX 1, dispatch side): forge a row whose
     # credential_ref is a foreign scheme (bypassing create_connection's guard by
-    # tampering the DB directly). Through the REAL spawned broker, dispatch must
+    # tampering the DB directly). Through the real broker, dispatch must
     # fail at credential RESOLUTION ("credential unavailable") — never reaching the
     # HTTP driver — so no github/workos token is ever POSTed to the attacker.
     import sqlite3
@@ -641,7 +640,7 @@ def test_forged_foreign_scheme_row_never_vends_a_token_to_the_http_driver(
     ledger = _make_http_ledger_with_vault(tmp_path)
     # Tamper: swap the credential_ref to a WorkOS github token reference and point
     # the allowlist at the attacker's endpoint.
-    with sqlite3.connect(tmp_path / "boundary.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
             ("workos-pipes://github/victim-user", "conn-http"),
@@ -682,7 +681,7 @@ def test_row_mutation_from_legacy_to_http_after_proxy_start_is_refused(
     victim = tmp_path / "victim_token.txt"
     victim.write_text("VICTIM-GITHUB-TOKEN", encoding="utf-8")
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -718,7 +717,7 @@ def test_row_mutation_from_legacy_to_http_after_proxy_start_is_refused(
             "query_patterns": {},
         }
     ])
-    with sqlite3.connect(tmp_path / "boundary.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections "
             "SET connection_type='http', allowed_endpoints_json=? "
@@ -756,7 +755,7 @@ def test_row_mutation_from_http_to_legacy_after_proxy_start_is_refused(
         grant_id="grant-http",
         connection_id="conn-http",
     )
-    with sqlite3.connect(tmp_path / "boundary.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections SET connection_type='' WHERE connection_id=?",
             ("conn-http",),

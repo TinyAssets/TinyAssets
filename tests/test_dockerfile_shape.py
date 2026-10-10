@@ -492,7 +492,7 @@ def test_codex_provider_flag_is_on_exec_command():
     assert '"exec"' in cmd_block
     assert "--skip-git-repo-check" in cmd_block
     assert "*sandbox_args" in cmd_block
-    assert '"--sandbox", "workspace-write"' in text
+    assert '"--sandbox", "workspace-write"' not in text
     assert '"--full-auto"' not in text
     assert "--dangerously-bypass-approvals-and-sandbox" in text
 
@@ -552,11 +552,10 @@ def test_dockerfile_copies_entrypoint():
 
 def test_dockerfile_entrypoint_uses_entrypoint_script():
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "docker-entrypoint.sh" in text, (
-        "Dockerfile ENTRYPOINT must invoke docker-entrypoint.sh"
-    )
-    # tini must still be PID 1
-    assert "tini" in text, "tini must remain as PID 1 in ENTRYPOINT"
+    assert "COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh" in text
+    # The owner-split bootstrap must itself be PID 1: no tini in front of it.
+    assert 'ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]' in text
+    assert 'CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]' in text
 
 
 def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app():
@@ -573,7 +572,7 @@ def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app
     """
     text = DOCKERFILE.read_text(encoding="utf-8")
     build = text.index("COPY deploy/native/ta_op.c /tmp/ta_op.c")
-    venv = text.index("RUN python -m venv /opt/venv")
+    venv = text.index("RUN python -m venv --copies /opt/venv")
     assert build < venv, "the wrapper must compile in the builder stage, before the venv"
     assert "gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c" in text
     assert "ldd /tmp/ta-op 2>&1 | grep -q 'not a dynamic executable'" in text

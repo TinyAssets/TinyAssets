@@ -14,7 +14,9 @@ from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 
 
 @pytest.mark.usefixtures("cloud_runtime")
-def test_main_sweeps_before_spawning_engines_or_the_consumer(tmp_path, monkeypatch):
+def test_main_sweeps_before_spawning_engines_or_the_consumer(
+    tmp_path, monkeypatch, in_process_broker,
+):
     import threading
 
     from tinyassets import delivery_runtime, engine_mcp_http, provider_assignment
@@ -44,6 +46,7 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(tmp_path, monkeypat
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(session_store, "arm", lambda: None)
+    in_process_broker.supervisor_for(tmp_path)
     monkeypatch.setattr(threading, "Thread", _Thread)
 
     def _maintenance_fails(_base):

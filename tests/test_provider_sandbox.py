@@ -33,33 +33,25 @@ def test_non_granted_served_provider_launches_have_no_tools(tmp_path):
     codex = asyncio.run(codex_tools())
     launch = thread_start_params(agent_definition(codex.tools if codex else (), ""),
                                  model=None, cwd=str(tmp_path), ephemeral=True)
-    flags, cwd = _sandbox_cli_args(config, tmp_path)
+    flags = _sandbox_cli_args(config, tmp_path)
     assert codex is None
     assert launch["dynamicTools"] == []
     assert "--tools" in flags and flags[flags.index("--tools") + 1] == ""
     assert config.allowed_tools == () and "--allowedTools" not in flags
     assert "WebFetch" in config.disallowed_tools
-    assert cwd == str(tmp_path) and not config.engine_mcp_enabled
+    assert not config.engine_mcp_enabled
+    assert str(tmp_path) not in flags
 
 
-def test_default_config_is_noop_for_host_trusted_roles():
-    # A plain ModelConfig (branch runs, judges, etc.) must NOT be sandboxed —
-    # no tool flags, no cwd override.
-    flags, run_cwd = _sandbox_cli_args(ModelConfig(), Path("C:/repo"))
-    assert flags == []
-    assert run_cwd is None
-
-
-def test_sandbox_emits_variadic_tool_flags_and_isolated_cwd(tmp_path):
+def test_sandbox_emits_variadic_tool_flags(tmp_path):
     cfg = ModelConfig(
         sandbox_workspace=True,
         allowed_tools=("WebFetch",),
         disallowed_tools=("Bash", "Read", "Write"),
     )
-    flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
+    flags = _sandbox_cli_args(cfg, tmp_path)
 
     # cwd pinned to the universe's own dir (not the daemon checkout)
-    assert run_cwd == str(tmp_path)
     # user-tier settings (MCP servers + bypassPermissions) are stripped so the
     # universe can't reach ambient MCP tools (e.g. mcp__codex → code exec)
     assert "--setting-sources" in flags
@@ -105,7 +97,7 @@ def test_codex_refuses_a_sandboxed_founder_turn():
 def test_disallow_only_still_emits_deny_floor(tmp_path):
     # The deny floor is emitted even without an allowlist.
     cfg = ModelConfig(sandbox_workspace=True, disallowed_tools=("Bash",))
-    flags, _ = _sandbox_cli_args(cfg, tmp_path)
+    flags = _sandbox_cli_args(cfg, tmp_path)
     assert "--disallowedTools" in flags
     assert "Bash" in flags
     assert "--allowedTools" not in flags
@@ -156,14 +148,13 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     # turn, not out of it), so it pins "the node's own denies are kept, first"
     # without colliding with the dedupe that the next test covers.
     cfg = ModelConfig(workflow_node=True, disallowed_tools=("ReportFindings",))
-    flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
-
-    assert run_cwd == str(tmp_path)
+    flags = _sandbox_cli_args(cfg, tmp_path)
     assert flags[flags.index("--setting-sources") + 1] == ""
     denied = flags[flags.index("--disallowedTools") + 1:]
     assert denied == ["ReportFindings", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
     assert "--allowedTools" not in flags
-    assert "WebSearch" not in denied and "WebFetch" not in denied
+    assert "WebSearch" not in denied
+    assert "WebFetch" not in denied
 
 
 def test_workflow_node_call_without_a_universe_fails_closed():
@@ -189,7 +180,7 @@ def test_confined_turns_state_the_permission_mode_explicitly(tmp_path):
         ModelConfig(workflow_node=True),
     )
     for cfg in configs:
-        flags, _cwd = _sandbox_cli_args(cfg, tmp_path)
+        flags = _sandbox_cli_args(cfg, tmp_path)
         assert "--permission-mode" in flags, flags
         assert flags[flags.index("--permission-mode") + 1] == "default"
         # Before the variadic tool flags: --allowedTools/--disallowedTools take
@@ -202,7 +193,7 @@ def test_confined_turns_state_the_permission_mode_explicitly(tmp_path):
 
 def test_host_trusted_roles_keep_their_permission_mode(tmp_path):
     # The explicit mode is scoped to confined turns; a plain config stays a no-op.
-    flags, _cwd = _sandbox_cli_args(ModelConfig(), tmp_path)
+    flags = _sandbox_cli_args(ModelConfig(), tmp_path)
     assert flags == []
 
 
@@ -261,7 +252,7 @@ def test_account_reach_tools_are_denied_on_both_confined_paths(tmp_path):
 
     assert ACCOUNT_REACH_TOOLS, "the constant must not be empty"
 
-    node_flags, _cwd = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
+    node_flags = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
     node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
     for tool in ACCOUNT_REACH_TOOLS:
         assert tool in node_denied, f"{tool} callable on a workflow node"
@@ -297,7 +288,7 @@ def test_the_engine_denylist_has_no_duplicate_names(tmp_path):
     })
     assert duplicated == [], duplicated
 
-    node_flags, _cwd = _sandbox_cli_args(
+    node_flags = _sandbox_cli_args(
         ModelConfig(workflow_node=True, disallowed_tools=("Artifact",)), tmp_path,
     )
     node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
@@ -331,7 +322,7 @@ def test_session_local_and_strict_mcp_bounded_tools_stay_allowed_on_a_node(tmp_p
     """
     from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
 
-    node_flags, _cwd = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
+    node_flags = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
     node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
     still_allowed = (
         "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
@@ -373,8 +364,8 @@ def test_the_universe_the_agent_writes_is_no_setting_source(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("planted", encoding="utf-8")
     (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
     for config in (ModelConfig(sandbox_workspace=True), ModelConfig(workflow_node=True)):
-        flags, run_cwd = _sandbox_cli_args(config, tmp_path)
-        assert run_cwd == str(tmp_path)
+        flags = _sandbox_cli_args(config, tmp_path)
         sources = [value for flag, value in zip(flags, flags[1:])
                    if flag == "--setting-sources"]
         assert sources == [""]
+        assert str(tmp_path) not in flags

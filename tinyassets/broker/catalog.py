@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from pathlib import Path
 
 PAGE_SIZE = 64
 
@@ -49,11 +48,11 @@ def local_page(ledger, *, principal, command_center, cursor, limit):
 
 def connections(data_root, *, principal, command_center, limit=None):
     """Yield (grant, redacted view, incarnation); no silent catalog truncation."""
-    from tinyassets.broker.supervisor import broker_selected, get_supervisor
+    from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.supervisor import get_supervisor
     from tinyassets.storage.outbound_connections import (
         ActionCap,
         ConnectionGrant,
-        ConnectionLedger,
         ConnectionView,
         ProxyRequestError,
         _parse_allowed_endpoints,
@@ -62,23 +61,15 @@ def connections(data_root, *, principal, command_center, limit=None):
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("invalid connection catalog limit")
     cursor, count = "", 0
-    selected = broker_selected()
-    if selected:
-        from tinyassets.broker.client import BrokerClient
-
-        supervisor = get_supervisor(data_root)
-        if supervisor is None:
-            raise ProxyRequestError("credential broker is selected but not running")
-        client = BrokerClient(supervisor.socket_path, principal=principal,
-                              command_center=command_center, fence=supervisor.fence,
-                              verify_peer=supervisor.verify_broker, timeout=30)
-    else:
-        ledger = ConnectionLedger(Path(data_root) / "outbound.db")
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("the credential broker is not running")
+    client = BrokerClient(supervisor.socket_path, principal=principal,
+                          command_center=command_center, fence=supervisor.fence,
+                          verify_peer=supervisor.verify_broker, timeout=30)
     while limit is None or count < limit:
         page_size = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - count)
-        answer = (client.connection_catalog(cursor=cursor, limit=page_size) if selected
-                  else local_page(ledger, principal=principal, command_center=command_center,
-                                  cursor=cursor, limit=page_size))
+        answer = client.connection_catalog(cursor=cursor, limit=page_size)
         try:
             if (not isinstance(answer, dict) or set(answer) != {"items", "next_cursor"}
                     or not isinstance(answer["items"], list)

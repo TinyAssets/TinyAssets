@@ -126,9 +126,8 @@ def read_universe_file(
     """
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
-        # Selected, a symlinked root is refused rather than resolved (D60).
-        root_fd = fs.open_dir_nofollow(
-            root.absolute() if fs._reader_guards_selected() else root.resolve(strict=False))
+        # A symlinked root is refused rather than resolved (D60).
+        root_fd = fs.open_dir_nofollow(root.absolute())
         try:
             return fs.read_regular_file_beneath(root_fd, relpath, max_bytes=max_bytes)
         finally:
@@ -225,14 +224,34 @@ def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:
     return current
 
 
+def _refuse_unadmitted_root(root: Path, current: int, part: str) -> None:
+    """A command-center root comes only from admission (owner-dynamic-admission
+    DA4), never from a write's implicit parent creation. Dot-named platform
+    directories are not centers."""
+    if part.startswith("."):
+        return
+    try:
+        os.stat(part, dir_fd=current, follow_symlinks=False)
+        return
+    except FileNotFoundError:
+        pass
+    from tinyassets.storage import data_dir
+
+    if root.resolve(strict=False) == Path(data_dir()).resolve(strict=False):
+        raise UniverseFileError(
+            f"{part!r}: a command-center root is created only by admission")
+
+
 def _parent_dir_fd(root: Path, parts: list[str], *, create: bool) -> int:
     """POSIX: a descriptor for the directory holding ``parts[-1]``, every
     component opened (and, with ``create``, made) with no link followed."""
     current = fs.open_dir_nofollow(root.resolve(strict=False))
     try:
-        for part in parts[:-1]:
+        for index, part in enumerate(parts[:-1]):
             _check_component(part)
             if create:
+                if index == 0:
+                    _refuse_unadmitted_root(root, current, part)
                 try:
                     os.mkdir(part, 0o777, dir_fd=current)
                     os.fsync(current)
@@ -300,6 +319,13 @@ def write_universe_file(
     root = Path(universe_dir)
     parts = _split(relpath)
     name = parts[-1]
+    if getattr(fs, "_POSIX", False):
+        from tinyassets import role_content
+
+        selected = role_content.locate(root, parts)
+        if selected is not None:
+            role_content.write(*selected, data, make_parents=make_parents, mode=mode)
+            return
     nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     if not getattr(fs, "_POSIX", False):
         parent = _windows_parent(root, parts, create=make_parents)

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.broker.connection_authority import ConnectionAuthority, read_authority
-from tinyassets.broker.supervisor import broker_selected
 from tinyassets.storage.external_write_receipts import (
     STATUS_FAILED,
     STATUS_HELD,
@@ -54,17 +53,10 @@ def confirm_held_effect(
     confirmed_at: float | None = None,
 ) -> dict[str, Any]:
     """Record explicit authorization on an existing held effect."""
-    if broker_selected():
-        try:
-            authorized_by, grant, _ = read_authority(ledger, grant_id, universe_dir=universe_dir)
-        except RuntimeError as exc:
-            raise PermissionError("confirmation requires a current grant") from exc
-    else:
-        authorized_by = ledger.require_authenticated_principal_id()
-        try:
-            grant = ledger.require_active_grant(grant_id)
-        except RuntimeError as exc:
-            raise PermissionError("confirmation requires a current grant") from exc
+    try:
+        authorized_by, grant, _ = read_authority(ledger, grant_id, universe_dir=universe_dir)
+    except RuntimeError as exc:
+        raise PermissionError("confirmation requires a current grant") from exc
     if grant.owner_user_id != authorized_by:
         raise PermissionError(
             "confirmation must come from the authenticated grant owner"
@@ -116,18 +108,10 @@ def execute_capped_action(
     """Execute an authorized below-cap action or persist an actionable hold."""
     if not tool_authorized:
         raise PermissionError("tool authorization is required")
-    selected = broker_selected()
-    if selected:
-        try:
-            principal_id, grant, _ = read_authority(ledger, grant_id, universe_dir=universe_dir)
-        except RuntimeError as exc:
-            raise PermissionError("effect requires a current grant") from exc
-    else:
-        principal_id = ledger.require_authenticated_principal_id()
-        try:
-            grant = ledger.require_active_grant(grant_id)
-        except RuntimeError as exc:
-            raise PermissionError("effect requires a current grant") from exc
+    try:
+        principal_id, grant, _ = read_authority(ledger, grant_id, universe_dir=universe_dir)
+    except RuntimeError as exc:
+        raise PermissionError("effect requires a current grant") from exc
     if grant.owner_user_id != principal_id:
         raise PermissionError(
             "effect requires the authenticated grant owner"
@@ -136,10 +120,6 @@ def execute_capped_action(
         raise PermissionError("proxy grant does not match the evaluated grant")
     decision = evaluate_action_cap(
         grant.unprompted_action_cap,
-        action_value=action_value,
-        action_unit=action_unit,
-    ) if selected else ledger.evaluate_unprompted_action_cap(
-        grant_id=grant_id,
         action_value=action_value,
         action_unit=action_unit,
     )

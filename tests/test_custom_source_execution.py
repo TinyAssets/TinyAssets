@@ -270,6 +270,6 @@ def test_revoked_source_is_revalidated_before_tool_dispatch(running):
     running.response.before_reply = lambda: running.agent.served.rig.ledger.revoke_grant(
         "grant-models",
     )
-    with pytest.raises(PermissionError, match="revoked"):
+    with pytest.raises(PermissionError, match="^open provider connection authority unavailable$"):
         interactive.run(running.agent)
     assert len(running.agent.wires) == 1 and not running.agent.tools

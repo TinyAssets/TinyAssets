@@ -70,7 +70,7 @@ def _connection(basedir, uid, actor="alice"):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, _ = _ids(universe_id=uid, destination="github")
-    ledger = ConnectionLedger(basedir / "outbound.db",
+    ledger = ConnectionLedger(basedir / ".broker" / "outbound.db", data_root=basedir,
                               verify_authenticated_principal=lambda: actor)
     return ledger._get_connection_resource(conn_id)
 

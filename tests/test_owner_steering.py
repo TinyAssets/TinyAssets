@@ -200,9 +200,15 @@ def test_claude_launches_of_different_sessions_never_share_a_config(tmp_path, mo
                                                       secret="s"))
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path / "data")
 
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr("tinyassets.credential_vault._write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
+
     def launch(key):
         config = SimpleNamespace(engine_mcp_actor_id="owner-1", engine_mcp_graph_id="u-alpha",
-                                 agent_session=SimpleNamespace(key=key), selected_model=None)
+                                 agent_session=SimpleNamespace(key=key), selected_model=None,
+                                 credential_snapshot_dir=snapshot)
         flags = claude_provider._engine_mcp_flags(config, universe)
         return flags[flags.index("--mcp-config") + 1]
 

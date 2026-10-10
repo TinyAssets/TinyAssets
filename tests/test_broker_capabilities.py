@@ -7,7 +7,8 @@ from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResol
 
 @pytest.fixture
 def ledger(tmp_path):
-    value = ConnectionLedger(tmp_path / "outbound.db")
+    """The ledger where it actually lives: only the broker opens this path."""
+    value = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     value.create_connection(
         connection_id="conn-a", owner_user_id="alice", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"),

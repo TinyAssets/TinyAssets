@@ -1,38 +1,28 @@
-"""Daemon-side broker acquisition. The privileged launcher owns its lifecycle.
+"""Daemon-side broker adoption. The PID1 bootstrap owns its lifecycle.
 
-The lease proof and fence stay in this process; no owner-channel file exists.
-Production startup remains unavailable until the launcher admits the daemon.
+The bootstrap forks the broker before it retires and hands the daemon the
+lease proof in memory; the fence stays in this process and no owner-channel
+file exists. There is no other way to reach the broker.
 """
 from __future__ import annotations
 
 import ctypes
-import json
 import os
-import secrets
 import select
 import socket
 import struct
 import threading
-from hashlib import sha256
 from pathlib import Path
 
 from tinyassets import rpc_frames as rf
 
-ENV_SWITCH = "TINYASSETS_CREDENTIAL_BROKER"
-PROCESS = "process"
-LAUNCHER_SOCKET = Path("/run/tinyassets/launcher.sock")
-BROKER_SOCKET = Path("/run/tinyassets/broker/broker.sock")
 _START_TIMEOUT_S = 35.0
 _registry: dict[Path, BrokerSupervisor] = {}
 _registry_lock = threading.RLock()
 
 
 class BrokerUidSplitRequired(RuntimeError):
-    """The daemon has no authenticated role launcher/broker boundary."""
-
-
-def broker_selected() -> bool:
-    return (os.environ.get(ENV_SWITCH) or "").strip().lower() == PROCESS
+    """The daemon cannot reach the bootstrapped broker over its authenticated boundary."""
 
 
 def _peer(sock: socket.socket) -> tuple[int, int, int]:
@@ -65,15 +55,19 @@ def _protect_daemon() -> None:
 
 
 class BrokerSupervisor:
-    def __init__(self, data_root: Path) -> None:
+    def __init__(self, data_root: Path, *, broker_pid: int, socket_path: Path,
+                 proof: str) -> None:
         _protect_daemon()
+        if (type(broker_pid) is not int or broker_pid <= 0
+                or not isinstance(proof, str) or len(proof) < 32):
+            raise BrokerUidSplitRequired("invalid broker bootstrap")
         self._root = Path(data_root).resolve()
         self._pid = os.getpid()
-        self._proof = secrets.token_urlsafe(32)
+        self._proof = proof
         self._pair: tuple[int, str] | None = None
-        self._socket = BROKER_SOCKET
-        self._bootstrap_pid: int | None = None
-        self._bootstrap_pidfd: int | None = None
+        self._socket = Path(socket_path)
+        self._bootstrap_pid = broker_pid
+        self._bootstrap_pidfd = os.pidfd_open(broker_pid)
 
     @classmethod
     def from_bootstrap(cls, data_root: Path, *, broker_pid: int,
@@ -81,17 +75,9 @@ class BrokerSupervisor:
         """Adopt the broker forked before host authority was retired.
 
         Startup-only memory handoff, never discovered from an environment value.
-        This instance cannot use the legacy launcher or restart a dead broker.
+        This instance cannot restart a dead broker.
         """
-        if (type(broker_pid) is not int or broker_pid <= 0
-                or not isinstance(proof, str) or len(proof) < 32):
-            raise BrokerUidSplitRequired("invalid broker bootstrap")
-        result = cls(data_root)
-        result._bootstrap_pid = broker_pid
-        result._bootstrap_pidfd = os.pidfd_open(broker_pid)
-        result._proof = proof
-        result._socket = Path(socket_path)
-        return result
+        return cls(data_root, broker_pid=broker_pid, socket_path=socket_path, proof=proof)
 
     @property
     def socket_path(self) -> Path:
@@ -100,34 +86,8 @@ class BrokerSupervisor:
     def _same_process(self) -> None:
         if os.getpid() != self._pid:
             raise BrokerUidSplitRequired("broker owner state cannot be inherited by a child")
-        if (self._bootstrap_pidfd is not None
-                and select.select([self._bootstrap_pidfd], [], [], 0)[0]):
+        if select.select([self._bootstrap_pidfd], [], [], 0)[0]:
             raise BrokerUidSplitRequired("bootstrapped broker exited; container restart required")
-
-    def _acquire(self) -> None:
-        self._same_process()
-        if self._bootstrap_pid is not None:
-            # Startup already proved listening readiness. Fence only this exact
-            # live process; there is no retained authority to start another one.
-            return
-        with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as sock:
-            sock.settimeout(_START_TIMEOUT_S)
-            sock.connect(str(LAUNCHER_SOCKET))
-            # Only our actual launcher parent may receive the lease hash.
-            if _peer(sock) != (os.getppid(), 0, 0):
-                raise BrokerUidSplitRequired("launcher peer is not the daemon parent")
-            sock.sendall(json.dumps({"op": "START_BROKER", "proof_sha256":
-                                    sha256(self._proof.encode()).hexdigest()}).encode())
-            payload, ancillary, flags, _ = sock.recvmsg(4096, 0)
-            if ancillary or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
-                raise BrokerUidSplitRequired("malformed launcher response")
-            try:
-                answer = json.loads(payload)
-            except (ValueError, UnicodeError, RecursionError):
-                raise BrokerUidSplitRequired("malformed launcher response") from None
-            if (not isinstance(answer, dict) or answer.get("op") != "BROKER_READY"
-                    or answer.get("socket") != str(self._socket)):
-                raise BrokerUidSplitRequired("launcher refused broker acquisition")
 
     def _fence(self) -> None:
         self._same_process()
@@ -147,8 +107,7 @@ class BrokerSupervisor:
     def verify_broker(self, sock: socket.socket) -> None:
         self._same_process()
         peer = _peer(sock)
-        if (peer[1:] != (1002, 1002)
-                or (self._bootstrap_pid is not None and peer[0] != self._bootstrap_pid)):
+        if peer != (self._bootstrap_pid, 1002, 1002):
             raise BrokerUidSplitRequired("broker peer does not have the broker identity")
 
     def fence(self) -> tuple[int, str]:
@@ -167,20 +126,13 @@ class BrokerSupervisor:
             if _registry:
                 raise BrokerUidSplitRequired("this daemon already holds a broker acquisition")
             try:
-                self._acquire()
+                # Startup already proved listening readiness. Fence only this
+                # exact live process; nothing here can start another one.
                 self._fence()
             except (OSError, rf.FrameError) as exc:
                 raise BrokerUidSplitRequired(
                     "credential broker needs the per-role uid split") from exc
             _registry[self._root] = self
-
-    def stop(self) -> None:
-        """Forget this process's authority; never signal or unlink across uids."""
-        self._same_process()
-        with _registry_lock:
-            if _registry.get(self._root) is self:
-                del _registry[self._root]
-            self._pair = None
 
 
 def get_supervisor(data_root: Path) -> BrokerSupervisor | None:
@@ -189,19 +141,3 @@ def get_supervisor(data_root: Path) -> BrokerSupervisor | None:
         if result is not None:
             result._same_process()
         return result
-
-
-def start_broker(data_root: Path | None = None) -> BrokerSupervisor | None:
-    if not broker_selected():
-        return None
-    if data_root is None:
-        from tinyassets.storage import data_dir
-
-        data_root = data_dir()
-    with _registry_lock:
-        current = get_supervisor(data_root)
-        if current is not None:
-            return current
-        supervisor = BrokerSupervisor(data_root)
-        supervisor.start()
-        return supervisor

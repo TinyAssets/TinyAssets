@@ -39,7 +39,7 @@ def _arrange(monkeypatch, tmp_path, *, connection_owner="founder-1"):
             grant_id="grant-voice",
         ),
     )
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     ledger.create_connection(
         connection_id="conn-voice",
         owner_user_id=connection_owner,

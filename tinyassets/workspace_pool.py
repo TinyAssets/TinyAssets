@@ -223,6 +223,8 @@ class PoolFilesystem(Protocol):
 
     def remove_tree_no_follow(self, path: Path) -> None: ...
 
+    def owner_scoped(self, path: Path) -> bool: ...
+
 
 # --------------------------------------------------------------------------
 # schema
@@ -1683,13 +1685,18 @@ def _reconcile_filesystem(fs: PoolFilesystem, src: Path, quarantine: Path) -> No
 
     present/absent -> rename then delete; absent/present -> delete; absent/absent
     -> done; present/present -> delete the stale quarantine first, then rename
-    and delete. Deletion never follows links.
+    and delete. Deletion never follows links. Inside a command center the
+    source is deleted in place (two passes), never renamed.
     """
     src_present = fs.exists(src)
     quarantine_present = fs.exists(quarantine)
     if quarantine_present:
         fs.remove_tree_no_follow(quarantine)
-    if src_present:
+    if src_present and fs.owner_scoped(src):
+        # The daemon cannot move an owner's directory; the two-pass deletion
+        # is resumable in place, and the lease row already names it reclaiming.
+        fs.remove_tree_no_follow(src)
+    elif src_present:
         fs.rename(src, quarantine)
         fs.remove_tree_no_follow(quarantine)
 
@@ -1845,12 +1852,20 @@ def periodic_sweep(
     Unlike the startup sweep this respects a live claim: another processor's
     fresh claim is left alone. Returns the number processed.
     """
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
+
     processed = 0
     while True:
         entry = claim_next(db, claimant=claimant, claim_ttl_s=claim_ttl_s, now=now)
         if entry is None:
             return processed
-        process_entry(db, entry, fs=fs, now=now)
+        try:
+            process_entry(db, entry, fs=fs, now=now)
+        except OwnerLaunchRefused:
+            # A busy owner cannot admit the deletion fence. Keep this durable
+            # entry pending and its bytes charged; claim expiry retries it.
+            # Continue with other owners instead of aborting the whole sweep.
+            continue
         processed += 1
 
 

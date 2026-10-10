@@ -49,7 +49,7 @@ def rig(tmp_path, monkeypatch):
         "resolve_current_serving_provider_authority",
         must_not_need_serving,
     )
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     ledger.create_connection(
         connection_id="conn-models",
         owner_user_id="owner",

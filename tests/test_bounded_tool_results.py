@@ -103,7 +103,8 @@ def test_structured_content_is_capped_alongside_the_text(monkeypatch):
     assert huge not in rendered
 
 
-def test_the_ceiling_holds_over_the_real_loopback_http_route(monkeypatch):
+@pytest.mark.parametrize("window", [None, 32_000, 128_000, 10_000_000])
+def test_the_ceiling_holds_over_the_real_loopback_http_route(monkeypatch, window):
     """The transport production actually uses, not just the in-process object.
 
     ``engine_mcp_http`` serves this server over loopback streamable-HTTP, and a
@@ -118,23 +119,29 @@ def test_the_ceiling_holds_over_the_real_loopback_http_route(monkeypatch):
     from fastmcp.client.transports import StreamableHttpTransport
 
     from tinyassets import engine_result_bounds as bounds
+    from tinyassets.engine_endpoint import EngineEndpoint
 
     huge = json.dumps({"rows": ["x" * 64 for _ in range(4_000)]})
     s = _bind(monkeypatch, huge)
     monkeypatch.delenv(bounds.CEILING_ENV, raising=False)
     monkeypatch.delenv(bounds.CONTEXT_TOKENS_ENV, raising=False)
     app = s.mcp.http_app()
+    endpoint = object.__new__(EngineEndpoint)
+    endpoint.module, endpoint.secret, endpoint.key = s, "test-secret", "test-key"
+    endpoint.app = app
+    url = "http://engine/mcp" + (f"?context_tokens={window}" if window else "")
 
     def asgi_client(**_ignored):
         return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
+            transport=httpx.ASGITransport(app=endpoint),
+            headers={"Authorization": "Bearer test-secret"},
             base_url="http://engine", timeout=30.0,
         )
 
     async def drive() -> str:
         async with app.router.lifespan_context(app):
             transport = StreamableHttpTransport(
-                "http://engine/mcp", httpx_client_factory=asgi_client,
+                url, httpx_client_factory=asgi_client,
             )
             async with Client(transport) as client:
                 result = await client.call_tool("read_graph", {"target": "graph"})
@@ -144,7 +151,8 @@ def test_the_ceiling_holds_over_the_real_loopback_http_route(monkeypatch):
     marker = json.loads(text)
     assert marker["truncated"] is True
     assert marker["original_bytes"] == len(huge.encode())
-    assert len(text.encode()) <= bounds.DEFAULT_CEILING_BYTES
+    assert marker["ceiling_bytes"] == bounds.ceiling_for_context(window)
+    assert len(text.encode()) <= bounds.ceiling_for_context(window)
 
 
 def test_the_capped_result_uses_the_budget_it_was_given(monkeypatch):
@@ -318,33 +326,51 @@ def test_resolve_ceiling_prefers_the_override_then_the_window_then_the_default()
         )
 
 
-def test_the_engine_turn_passes_the_selected_window_to_its_server(monkeypatch, tmp_path):
-    """The scaling input has to actually reach the server, or it is decoration."""
+@pytest.mark.asyncio
+async def test_the_engine_turn_passes_the_selected_window_to_its_server(monkeypatch, tmp_path):
+    """The HTTP request carries the selected window without changing daemon env."""
+    from pathlib import Path
     from types import SimpleNamespace
+    from urllib.parse import urlsplit
 
-    from tinyassets.engine_result_bounds import CONTEXT_TOKENS_ENV
+    from tinyassets import credential_vault, engine_endpoint, engine_mcp_http, storage
+    from tinyassets import engine_result_bounds as bounds
     from tinyassets.providers import claude_provider
+    from tinyassets.providers.base import ModelConfig
 
-    captured: dict = {}
-    monkeypatch.setattr(
-        claude_provider, "read_engine_mcp_route", lambda **kw: None, raising=False,
-    )
-    monkeypatch.setattr(claude_provider, "data_dir", lambda: tmp_path, raising=False)
+    route = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="secret", grant_key="key")
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **kw: route)
+    monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                        lambda path, data: path.write_bytes(data))
+    monkeypatch.delenv(bounds.CEILING_ENV, raising=False)
+    monkeypatch.delenv(bounds.CONTEXT_TOKENS_ENV, raising=False)
 
-    config = SimpleNamespace(
-        engine_mcp_actor_id="sub-1", engine_mcp_graph_id="u-pinned",
-        selected_model=SimpleNamespace(context_tokens=128_000),
-    )
-    claude_provider._engine_mcp_flags(config, tmp_path)
-    written = json.loads(
-        (tmp_path / ".runtime" / "engine-mcp-config.json").read_text(encoding="utf-8")
-    )
-    captured = written["mcpServers"]["tinyassets"]["env"]
-    assert captured[CONTEXT_TOKENS_ENV] == "128000"
+    endpoint = object.__new__(engine_endpoint.EngineEndpoint)
+    endpoint.module = SimpleNamespace(_bearer_ok=lambda value, secret: value == "Bearer " + secret)
+    endpoint.secret, endpoint.key = "secret", "key"
+    observed = {}
 
-    config.selected_model = None
-    claude_provider._engine_mcp_flags(config, tmp_path)
-    written = json.loads(
-        (tmp_path / ".runtime" / "engine-mcp-config.json").read_text(encoding="utf-8")
-    )
-    assert CONTEXT_TOKENS_ENV not in written["mcpServers"]["tinyassets"]["env"]
+    async def app(scope, receive, send):
+        await asyncio.sleep(0)
+        observed[scope["query_string"]] = bounds.resolve_ceiling()
+
+    endpoint.app = app
+    scopes = []
+    for window in (128_000, 32_000, None):
+        selected = SimpleNamespace(context_tokens=window) if window else None
+        config = ModelConfig(engine_mcp_actor_id="sub-1", engine_mcp_graph_id="u-pinned",
+                             credential_snapshot_dir=tmp_path,
+                             selected_model=selected)
+        flags = claude_provider._engine_mcp_flags(config, tmp_path)
+        written = json.loads(Path(flags[1]).read_text())
+        server = written["mcpServers"]["tinyassets"]
+        assert server["type"] == "http" and "env" not in server
+        query = urlsplit(server["url"]).query.encode()
+        scopes.append((window, {"type": "http", "query_string": query,
+                                "headers": [(b"authorization", b"Bearer secret")]}))
+    await asyncio.gather(*(endpoint(scope, None, None) for _, scope in scopes))
+    for window, scope in scopes:
+        assert observed[scope["query_string"]] == bounds.ceiling_for_context(window)
+    assert engine_endpoint.model_context() is None
+    assert bounds.resolve_ceiling() == bounds.DEFAULT_CEILING_BYTES

@@ -765,9 +765,16 @@ def _execute_draft_nodes(
             })
             break
 
-        sandbox_runtime = NodeSandbox(
-            timeout=remaining_wall, max_output_bytes=policy.max_output_bytes
-        )
+        from tinyassets.daemon_server import get_founder_home
+        from tinyassets.storage import data_dir
+
+        # The draft node runs in this owner's node cell, so it needs the
+        # owner's command center: there is no unscoped draft execution.
+        root = data_dir().resolve()
+        home = get_founder_home(root, session.owner_id)
+        owner_scope = (root / home) if home else None
+        sandbox_runtime = NodeSandbox(timeout=remaining_wall,
+            max_output_bytes=policy.max_output_bytes, universe_dir=owner_scope)
         started = time.monotonic()
         try:
             outcome = asyncio.run(

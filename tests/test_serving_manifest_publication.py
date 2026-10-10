@@ -25,7 +25,7 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 def scene(tmp_path, monkeypatch):
     universe, agent, first = _setup(tmp_path, monkeypatch)
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         verify_authenticated_principal=lambda: "owner-1",
     )
     ledger.create_connection(
@@ -234,7 +234,7 @@ def test_member_live_custody_rechecked(scene, mutation):
     if mutation == "revoke":
         scene[2].revoke_grant(_GRANT_ID)
     else:
-        with sqlite3.connect(scene[0] / "outbound.db") as conn:
+        with sqlite3.connect(scene[0] / ".broker" / "outbound.db") as conn:
             conn.execute(
                 "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
                 ("vault://http/rotated", _CONN_ID),

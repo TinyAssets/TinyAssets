@@ -12,13 +12,11 @@ from __future__ import annotations
 import json
 import math
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from tinyassets import node_sandbox as sandbox
-from tinyassets.workspace_registry_process import BrokerReceipt, RegistryBrokerProcess
 
 _BOOTSTRAP = """
 import json, resource, sys
@@ -37,7 +35,6 @@ class StageResult:
     failure: str | None
     stdout: bytes
     stderr: bytes
-    broker: BrokerReceipt | None
 
 
 def run_provision_stage(
@@ -49,24 +46,15 @@ def run_provision_stage(
     storage_bound: int,
     storage_usage: Callable[[], int],
     cancelled: Callable[[], bool],
-    broker: RegistryBrokerProcess | None = None,
 ) -> StageResult:
-    """Own the jail and optional started broker until verified terminal state.
+    """Run inside the owner cell, supervising one nested stage until it is dead.
 
-    An acquisition requires a started broker; offline installation prohibits
-    one. This function takes broker ownership only after argument validation.
-    The caller must close it if validation raises. Measurement errors refuse
-    the stage, rather than silently removing its resource guard. Callbacks are
-    trusted, bounded host measurements, never supplied by workflow authors.
+    Acquisition gets only the fixed registry socket. Offline installation gets
+    no relay. Measurement errors refuse the stage and teardown errors propagate.
     """
     if type(launcher) is not sandbox.BwrapLauncher or launcher.provision_mount is None:
         raise ValueError("provisioning requires a typed bubblewrap launcher")
     acquire = launcher.provision_mount.phase == "acquire"
-    if acquire != (broker is not None):
-        raise ValueError("only acquisition may receive a registry broker")
-    if broker is not None and (type(broker) is not RegistryBrokerProcess
-                               or broker.process is None or broker.control is None):
-        raise ValueError("acquisition requires a started registry broker")
     if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
             or not math.isfinite(timeout_s)
             or not 0 < timeout_s <= sandbox.MAX_WORKSPACE_TIMEOUT_SECONDS):
@@ -84,7 +72,6 @@ def run_provision_stage(
     drains = []
     breaches: list[str] = []
     failure = None
-    receipt = None
 
     def check() -> str | None:
         try:
@@ -105,7 +92,7 @@ def run_provision_stage(
         if used > storage_bound:
             return "storage_limit"
         rss = 0
-        for child in (process, broker.process if broker else None):
+        for child in (process,):
             if child is None or child.poll() is not None:
                 continue
             try:
@@ -124,15 +111,19 @@ def run_provision_stage(
         if failure is None:
             settings = {"timeout": timeout_s, "profile": limits.rlimit_profile(),
                         "rlimit_helper": sandbox._RLIMIT_HELPER}
+            command = launcher.build_argv(_BOOTSTRAP, [json.dumps(settings), source, *args])
+            if acquire:
+                # Only the fixed registry relay enters the acquisition namespace.
+                # The installer namespace receives no relay at all.
+                boundary = command.index('--')
+                command[boundary:boundary] = ['--ro-bind', '/registry.sock', '/registry.sock']
             process = subprocess.Popen(
-                launcher.build_argv(_BOOTSTRAP, [json.dumps(settings), source, *args]),
+                command,
                 pass_fds=launcher.pass_fds, close_fds=True,
-                stdin=broker.control if broker else subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=launcher.env("/tmp"), cwd="/", start_new_session=True,
             )
-            if broker:
-                broker.release_control()
             for stream, label in ((process.stdout, "provision-stdout"),
                                   (process.stderr, "provision-stderr")):
                 drain = sandbox._BoundedDrain(stream, limits.max_output_bytes, label, breaches)
@@ -155,31 +146,19 @@ def run_provision_stage(
             if process is not None:
                 sandbox._terminate_child(process, launcher)
         finally:
-            try:
-                for drain in drains:
-                    drain.join(timeout=1)
-                if any(drain.is_alive() for drain in drains):
-                    raise sandbox.SandboxTerminationError("provisioning output drain still alive")
-                if process is not None:
-                    process.stdout.close()
-                    process.stderr.close()
-                failure = failure or check()
-                if failure is None and (process is None or process.returncode != 0):
-                    failure = "process_failed"
-            finally:
-                if broker:
-                    try:
-                        if failure or sys.exc_info()[0] is not None:
-                            broker.close()
-                        receipt = broker.finish(deadline=deadline)
-                    finally:
-                        broker.close()
-
-    if failure is None and receipt is not None and receipt.failure:
-        failure = "registry_failed"
+            for drain in drains:
+                drain.join(timeout=1)
+            if any(drain.is_alive() for drain in drains):
+                raise sandbox.SandboxTerminationError("provisioning output drain still alive")
+            if process is not None:
+                process.stdout.close()
+                process.stderr.close()
+            failure = failure or check()
+            if failure is None and (process is None or process.returncode != 0):
+                failure = "process_failed"
     # Keep at most ONE cumulative cap, not one full cap per stream. Untrusted
     # package logs must never be attached to a public receipt by the caller.
     stdout = drains[0].data if drains else b""
     remaining = max(0, limits.max_output_bytes - len(stdout))
     stderr = drains[1].data[:remaining] if len(drains) > 1 else b""
-    return StageResult(failure, stdout, stderr, receipt)
+    return StageResult(failure, stdout, stderr)

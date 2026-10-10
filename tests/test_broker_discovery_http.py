@@ -51,7 +51,6 @@ def discovery(broker, tmp_path, monkeypatch):  # noqa: F811 - imported pytest fi
 
     broker.server._ledger_for = ledger_for
     broker.upstreams["next"] = lambda: Script([b'{"data":', b'["alice"]}'])
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
 
     def verify_peer(sock):
         import struct

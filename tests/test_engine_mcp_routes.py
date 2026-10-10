@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -94,16 +95,23 @@ def _codex_dials(config=None, *, child_env=None):
 def _cli_uses_http(kind, tmp_path, *, root=None):
     if kind == "codex":
         return bool(_codex_dials())
+    from dataclasses import replace
+
+    from tinyassets import credential_vault
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
-    _engine_mcp_flags(_config(), tmp_path)
-    config_path = tmp_path / ".runtime" / "engine-mcp-config.json"
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-    server = data["mcpServers"]["tinyassets"]
-    if "url" not in server:
-        assert server["env"]["TINYASSETS_ENGINE_ACTOR_ID"] == "actor-a"
-        assert server["env"]["TINYASSETS_ENGINE_GRAPH_ID"] == "u-a"
-    return "url" in server
+    snapshot = tmp_path / "u-a" / ".runtime" / "provider-launch-credentials" / "claude-1"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(credential_vault, "_write_exclusive_snapshot_file",
+                      lambda path, data: path.write_bytes(data))
+        flags = _engine_mcp_flags(replace(_config(), credential_snapshot_dir=snapshot),
+                                  tmp_path / "u-a")
+    # No route is no engine at all: there is no stdio fallback to run instead.
+    if not flags:
+        return False
+    data = json.loads(Path(flags[1]).read_text(encoding="utf-8"))
+    return "url" in data["mcpServers"]["tinyassets"]
 
 
 @pytest.mark.parametrize("kind", ["claude", "codex"])
@@ -282,32 +290,30 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
     chosen = tmp_path / "chosen"
     chosen.mkdir()
     seed_engine_authority(chosen)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(chosen))
     observed = []
     original = http._serving_universe_owners
     def observed_owners(root, **kwargs):
         observed.append(root)
         return original(root, **kwargs)
     monkeypatch.setattr(http, "_serving_universe_owners", observed_owners)
-    child_envs = []
+    endpoints = []
 
-    def spawn_without_process(*args, **kwargs):
-        # Record only fixture identity/root values, not the inherited environment
-        # or generated bearer. No real subprocess is launched.
-        child_envs.append({key: kwargs["env"][key] for key in (
-            "TINYASSETS_DATA_DIR", "TINYASSETS_ENGINE_ACTOR_ID", "TINYASSETS_ENGINE_GRAPH_ID",
-        )})
-        return SimpleNamespace(poll=lambda: None)
+    def record_endpoint(actor, graph, secret, key):
+        endpoints.append((actor, graph))
+        return SimpleNamespace(close=lambda: None)
 
-    monkeypatch.setattr(http.subprocess, "Popen", spawn_without_process)
+    from tinyassets import engine_endpoint
+    monkeypatch.setattr(engine_endpoint, "EngineEndpoint", record_endpoint)
+    from tinyassets.broker import supervisor
+
+    monkeypatch.setattr(supervisor, "_protect_daemon", lambda: None)
     # Capture the supervisor without starting a background thread or a real CLI.
     monkeypatch.setattr(http.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
     [server] = http.start_engine_mcp_http_servers(chosen)
     assert observed == [chosen]
     assert server._data_dir == str(chosen)
-    assert child_envs == [{
-        "TINYASSETS_DATA_DIR": str(chosen), "TINYASSETS_ENGINE_ACTOR_ID": "actor-a",
-        "TINYASSETS_ENGINE_GRAPH_ID": "u-a",
-    }]
+    assert endpoints == [("actor-a", "u-a")]
     assert _read(root=chosen).actor_id == "actor-a"
 
 

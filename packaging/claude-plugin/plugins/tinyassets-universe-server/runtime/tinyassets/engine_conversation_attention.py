@@ -46,7 +46,9 @@ def with_count(text, count):
 
 def _scope():
     """(universe root, owner thread) from the verified server pins, or None."""
-    from tinyassets import engine_mcp_server as server
+    from tinyassets.engine_endpoint import current_server
+
+    server = current_server()
 
     if server._binding_error():
         return None

@@ -335,26 +335,11 @@ def metadata_snapshot(universe):
     return str(snapshot)
 
 
-#: Every case below that spawns a real metadata child. The transport requires
-#: confinement, so without this seam each one refuses on "no OS sandbox on this
-#: host" wherever bubblewrap is absent -- which is most CI runners and every
-#: Windows box. `metadata_transport_processes` (tests/test_native_model_discovery.py)
-#: substitutes `confine_launch` with one that still asserts the launch scope
-#: and view bind to the same command center, so the protocol, the decoder and
-#: the owned-process family are all real.
-#:
-#: It drops more than the isolation, so do not read it as "only the sandbox is
-#: stubbed": the bwrap argv, the launch disk budget and bwrap's own
-#: cwd/environment setup go with it, and the child runs from `/` rather than the
-#: snapshot. Those live where they belong -- tests/test_native_metadata_jail.py
-#: runs the real jail under `linux-jail-proof`, and
-#: tests/test_native_metadata_confinement.py proves a missing, redirected or
-#: foreign snapshot refuses before any process is created.
-#:
-#: The NEGATIVE cases need it most: they assert
-#: `ProviderError("native model discovery unavailable")`, which the confinement
-#: refusal also raises, so without the seam they pass on a jail that never ran
-#: instead of the refusal they name.
+#: Every case below that spawns a real metadata child. In production the
+#: transport starts it in the owner's provider-discovery cell;
+#: `metadata_transport_processes` (tests/test_native_model_discovery.py) stands a
+#: plain child in for the cell, so the protocol and the decoder are real. The
+#: cell itself is proven in tests/test_role_provider_discovery.py.
 real_metadata_child = pytest.mark.usefixtures("metadata_transport_processes")
 
 

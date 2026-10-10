@@ -32,6 +32,19 @@ from tinyassets.storage.outbound_connections import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fixture_stream_envelope(monkeypatch):
+    from tinyassets.storage import outbound_connections as outbound
+
+    original = outbound._TestFixtureNetworkDriver.__call__
+
+    def response(self, **kwargs):
+        result = original(self, **kwargs)
+        return {"status": 201, "reason": "Created", "headers": {}, "body": json.dumps(result)}
+
+    monkeypatch.setattr(outbound._TestFixtureNetworkDriver, "__call__", response)
+
+
 @dataclass
 class _RecordedDispatch:
     path: str
@@ -68,7 +81,7 @@ def _ledger_with_cap(
     runtime_id = hashlib.sha256(b"grant-1").hexdigest()
     dispatch_class = type(dispatch) if dispatch is not None else _RecordedDispatch
     calls = dispatch_class(
-        str(tmp_path / ".outbound-proxy" / runtime_id / "network.jsonl")
+        str(tmp_path / ".broker" / ".outbound-proxy" / runtime_id / "network.jsonl")
     )
     mode = (
         "fail-once"
@@ -78,7 +91,7 @@ def _ledger_with_cap(
         else "issue"
     )
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=(
             verify_authenticated_principal or (lambda: "user-1")
@@ -104,11 +117,18 @@ def _ledger_with_cap(
             unit="issues",
         ),
     )
-    proxy = ledger.resolve_scoped_proxy(
+    proxy = ledger.resolve_exact_scoped_proxy(
         universe_id="universe-1",
-        connection_class="issue-writer",
+        grant_id="grant-1", connection_id="conn-1",
     )
     return ledger, (proxy, calls)
+
+
+def _authority(ledger):
+    from tinyassets.broker.connection_authority import BrokerConnectionAuthority
+
+    return BrokerConnectionAuthority(
+        ledger._data_root, "universe-1", ledger.require_authenticated_principal_id)
 
 
 def test_unprompted_cap_is_machine_readable_and_a_separate_authority_axis(tmp_path):
@@ -142,11 +162,11 @@ def test_above_cap_holds_without_execution_or_consumption_until_confirmation(
     tmp_path,
 ):
     ledger, (proxy, calls) = _ledger_with_cap(tmp_path)
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
 
     held = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -178,14 +198,14 @@ def test_above_cap_holds_without_execution_or_consumption_until_confirmation(
 
     confirm_held_effect(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         effect_key="effect-1",
         sink="github_issue",
     )
     executed = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -202,7 +222,7 @@ def test_above_cap_holds_without_execution_or_consumption_until_confirmation(
 
     replay = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -221,7 +241,7 @@ def test_above_cap_holds_without_execution_or_consumption_until_confirmation(
 
 def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "boundary.db",
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
         allow_test_fixtures=True,
         verify_authenticated_principal=lambda: "user-1",
     )
@@ -245,14 +265,14 @@ def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
             unit="actions",
         ),
     )
-    proxy = ledger.resolve_scoped_proxy(
+    proxy = ledger.resolve_exact_scoped_proxy(
         universe_id="universe-1",
-        connection_class="repository-writer",
+        grant_id="grant-1", connection_id="conn-1",
     )
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     held = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -266,7 +286,7 @@ def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
     )
     confirmation = confirm_held_effect(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         effect_key="effect-reviewed",
         sink="github_repository",
@@ -282,7 +302,7 @@ def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
     with pytest.raises(PermissionError, match="held decision"):
         execute_capped_action(
             universe_dir=universe,
-            ledger=ledger,
+            ledger=_authority(ledger),
             grant_id="grant-1",
             proxy=proxy,
             tool_authorized=True,
@@ -300,8 +320,8 @@ def test_same_action_at_cap_executes_without_hold(tmp_path):
     ledger, (proxy, calls) = _ledger_with_cap(tmp_path)
 
     result = execute_capped_action(
-        universe_dir=tmp_path / "universe",
-        ledger=ledger,
+        universe_dir=tmp_path / "universe-1",
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -318,8 +338,8 @@ def test_same_action_at_cap_executes_without_hold(tmp_path):
     assert calls == [{"title": "At cap"}]
 
     replay = execute_capped_action(
-        universe_dir=tmp_path / "universe",
-        ledger=ledger,
+        universe_dir=tmp_path / "universe-1",
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -339,10 +359,10 @@ def test_confirmed_cap_execution_is_acquired_once_under_concurrent_replay(
     tmp_path,
 ):
     ledger, (proxy, calls) = _ledger_with_cap(tmp_path)
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -356,7 +376,7 @@ def test_confirmed_cap_execution_is_acquired_once_under_concurrent_replay(
     )
     confirm_held_effect(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         effect_key="effect-concurrent",
         sink="github_issue",
@@ -365,7 +385,7 @@ def test_confirmed_cap_execution_is_acquired_once_under_concurrent_replay(
     def execute(run_id):
         return execute_capped_action(
             universe_dir=universe,
-            ledger=ledger,
+            ledger=_authority(ledger),
             grant_id="grant-1",
             proxy=proxy,
             tool_authorized=True,
@@ -394,10 +414,10 @@ def test_confirmed_cap_execution_is_acquired_once_under_concurrent_replay(
 def test_confirmed_cap_failure_can_retry_without_losing_confirmation(tmp_path):
     dispatch = _FailOnceDispatch(str(tmp_path / "calls.jsonl"))
     ledger, (proxy, calls) = _ledger_with_cap(tmp_path, dispatch)
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -411,7 +431,7 @@ def test_confirmed_cap_failure_can_retry_without_losing_confirmation(tmp_path):
     )
     confirm_held_effect(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         effect_key="effect-retry",
         sink="github_issue",
@@ -419,7 +439,7 @@ def test_confirmed_cap_failure_can_retry_without_losing_confirmation(tmp_path):
 
     failed = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -433,7 +453,7 @@ def test_confirmed_cap_failure_can_retry_without_losing_confirmation(tmp_path):
     )
     retried = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -455,10 +475,10 @@ def test_confirmed_cap_failure_can_retry_without_losing_confirmation(tmp_path):
 def test_confirmed_cap_ambiguous_hold_preserves_grant_and_confirmation(tmp_path):
     dispatch = _AmbiguousDispatch(str(tmp_path / "calls.jsonl"))
     ledger, (proxy, _calls) = _ledger_with_cap(tmp_path, dispatch)
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -472,7 +492,7 @@ def test_confirmed_cap_ambiguous_hold_preserves_grant_and_confirmation(tmp_path)
     )
     confirm_held_effect(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         effect_key="effect-ambiguous-cap",
         sink="github_issue",
@@ -480,7 +500,7 @@ def test_confirmed_cap_ambiguous_hold_preserves_grant_and_confirmation(tmp_path)
 
     held = execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -503,8 +523,8 @@ def test_tool_authorization_denial_is_not_overridden_by_cap(tmp_path):
 
     with pytest.raises(PermissionError, match="tool authorization"):
         execute_capped_action(
-            universe_dir=tmp_path / "universe",
-            ledger=ledger,
+            universe_dir=tmp_path / "universe-1",
+            ledger=_authority(ledger),
             grant_id="grant-1",
             proxy=proxy,
             tool_authorized=False,
@@ -539,8 +559,8 @@ def test_cap_cannot_be_evaluated_for_a_different_grant_than_proxy(tmp_path):
 
     with pytest.raises(PermissionError, match="proxy grant"):
         execute_capped_action(
-            universe_dir=tmp_path / "universe",
-            ledger=ledger,
+            universe_dir=tmp_path / "universe-1",
+            ledger=_authority(ledger),
             grant_id="grant-uncapped",
             proxy=proxy,
             tool_authorized=True,
@@ -585,10 +605,10 @@ def test_caller_supplied_grant_owner_cannot_confirm_held_effect(tmp_path):
         tmp_path,
         verify_authenticated_principal=lambda: principal["user_id"],
     )
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     execute_capped_action(
         universe_dir=universe,
-        ledger=ledger,
+        ledger=_authority(ledger),
         grant_id="grant-1",
         proxy=proxy,
         tool_authorized=True,
@@ -605,27 +625,28 @@ def test_caller_supplied_grant_owner_cannot_confirm_held_effect(tmp_path):
     with pytest.raises(TypeError, match="authorized_by"):
         confirm_held_effect(
             universe_dir=universe,
-            ledger=ledger,
+            ledger=_authority(ledger),
             grant_id="grant-1",
             effect_key="effect-owner",
             sink="github_issue",
             authorized_by=forged_owner,
         )
     principal["user_id"] = "attacker"
-    with pytest.raises(PermissionError, match="authenticated grant owner"):
+    with pytest.raises(PermissionError, match="confirmation requires a current grant"):
         confirm_held_effect(
             universe_dir=universe,
-            ledger=ledger,
+            ledger=_authority(ledger),
             grant_id="grant-1",
             effect_key="effect-owner",
             sink="github_issue",
         )
+    assert _calls == []
 
 
 def test_effect_intent_is_journaled_before_fire_and_replay_consults_journal(
     tmp_path,
 ):
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     calls: list[str] = []
 
     def invoke():
@@ -664,7 +685,7 @@ def test_effect_intent_is_journaled_before_fire_and_replay_consults_journal(
 def test_ambiguous_outcome_reconciles_with_destination_and_persists_terminal(
     tmp_path,
 ):
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
 
     def invoke():
         raise AmbiguousEffectOutcome("connection dropped after send")
@@ -697,7 +718,7 @@ def test_ambiguous_outcome_reconciles_with_destination_and_persists_terminal(
 def test_pending_replay_without_reconciliation_interface_holds_for_remediation(
     tmp_path,
 ):
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     try_reserve_receipt(
         universe,
         idempotency_hint="effect:v1:pending",
@@ -730,7 +751,7 @@ def test_pending_replay_without_reconciliation_interface_holds_for_remediation(
 def test_receipt_finalize_failure_is_persisted_as_actionable_terminal_hold(
     tmp_path,
 ):
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     try_reserve_receipt(
         universe,
         idempotency_hint="effect:v1:finalize-race",
@@ -762,7 +783,7 @@ def test_receipt_finalize_failure_is_persisted_as_actionable_terminal_hold(
 
 
 def test_known_effect_failure_persists_terminal_result(tmp_path):
-    universe = tmp_path / "universe"
+    universe = tmp_path / "universe-1"
     calls = 0
 
     def fail():

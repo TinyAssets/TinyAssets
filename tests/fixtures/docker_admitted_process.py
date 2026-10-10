@@ -1,12 +1,20 @@
 """CI FIXTURE ONLY: simulated process admission for image protocol checks.
 
 Mounted read-only by docker-build.yml, never copied into a release image.
-The separate unmodified-image test must refuse with exit 78. This harness
+The separate unmodified-image test on layout-2 must refuse with exit 78. This harness
 proves the image's HTTP/auth/catalog wiring, not actual cloud provenance.
 """
 
 import runpy
+import sys
 from pathlib import Path
+
+# Exercise the real fresh-volume bootstrap before any application import.
+# Only cloud provenance is simulated, after PID1 has retired its authority.
+if __name__ == "__main__":
+    launch = runpy.run_path("/usr/local/libexec/ta-launch.py")
+    launch["boot"](launch)
+    sys.path.insert(0, "/app")
 
 import tinyassets.platform_runtime_provenance as provenance
 

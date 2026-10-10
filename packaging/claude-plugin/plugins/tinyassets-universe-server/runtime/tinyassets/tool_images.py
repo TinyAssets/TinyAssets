@@ -31,7 +31,6 @@ import base64
 import io
 import json
 import struct
-import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -170,7 +169,8 @@ class ToolImage:
         return ToolResult(content=self.content_blocks())
 
 
-def bound_image(data: bytes, path: str = "") -> ToolImage | str:
+def bound_image(data: bytes, path: str = "", *,
+                universe_dir: Path | None = None) -> ToolImage | str:
     """``data`` as a :class:`ToolImage` the model can take, or a refusal line."""
     name = path or "image"
     if len(data) > MAX_IMAGE_SOURCE_BYTES:
@@ -189,7 +189,7 @@ def bound_image(data: bytes, path: str = "") -> ToolImage | str:
     if not _DECODE_SLOTS.acquire(timeout=DECODE_WALL_SECONDS):
         return f"error: {name} could not be shown now: image decoding is busy, try again"
     try:
-        answer = _decode_in_child(data, mime)
+        answer = _decode_in_child(data, mime, universe_dir=universe_dir)
     finally:
         _DECODE_SLOTS.release()
     if isinstance(answer, str):
@@ -217,16 +217,16 @@ def _limit_self(memory_bytes: int, cpu_seconds: int) -> None:
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def _decode_in_child(data: bytes, mime: str) -> tuple[dict, bytes] | str:
+def _decode_in_child(data: bytes, mime: str, *, universe_dir=None) -> tuple[dict, bytes] | str:
+    """The decode runs in the owner's decoder cell; there is no daemon-uid decode."""
+    from tinyassets.role_decoder import decode
+
     try:
-        done = subprocess.run(
-            [sys.executable, "-m", "tinyassets.tool_images", mime,
-             str(DECODE_MEMORY_BYTES), str(DECODE_CPU_SECONDS)],
-            input=data, capture_output=True, timeout=DECODE_WALL_SECONDS,
-            cwd=str(Path(__file__).resolve().parents[1]),
-        )
-    except subprocess.TimeoutExpired:
+        done = decode(data, mime, universe_dir)
+    except TimeoutError:
         return f"took longer than {DECODE_WALL_SECONDS:.0f} s to decode"
+    except (OSError, RuntimeError, ValueError):
+        return "could not enter the admitted image decoder cell"
     head, _, body = done.stdout.partition(b"\n")
     try:
         meta = json.loads(head.decode("utf-8")) if head else {}
@@ -243,9 +243,11 @@ def _shown(data: bytes, mime: str) -> tuple[dict, bytes]:
     """Child side: decode with exactly one decoder, orient, scale, re-encode."""
     from PIL import Image, ImageOps
 
+    from tinyassets.image_bytes import open_image_bytes
+
     formats, allowed = _PILLOW[mime]
     Image.MAX_IMAGE_PIXELS = MAX_SOURCE_PIXELS
-    with Image.open(io.BytesIO(data), formats=formats) as image:
+    with open_image_bytes(data, formats=formats) as image:
         if image.format not in allowed:
             raise ValueError(f"opened as {image.format}, not {mime}")
         source = image.size
@@ -354,8 +356,4 @@ def main() -> int:  # pragma: no cover - exercised through bound_image
     out.write(json.dumps(meta).encode() + b"\n" + encoded)
     out.flush()
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 

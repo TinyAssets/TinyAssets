@@ -40,7 +40,6 @@ def case(tmp_path, monkeypatch):
             return ledger_queries.local_query(ledger, principal=self.principal,
                                               command_center=self.center, **kwargs)
 
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: SimpleNamespace(
         socket_path=tmp_path / "broker.sock", fence=lambda: (1, "synthetic"), verify_broker=None))
     monkeypatch.setattr("tinyassets.broker.client.BrokerClient", Client)
@@ -105,7 +104,7 @@ def test_custody_digest_is_recomputed_from_broker_resource(case):
 
 def test_serving_broker_outage_has_no_local_fallback(case, monkeypatch):
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: None)
-    with pytest.raises(ProxyRequestError, match="selected but not running"):
+    with pytest.raises(ProxyRequestError, match="not running"):
         serving._open_serving_context(case.root, "cc-alice", "alice", case.definitions["alice"].id)
 
 

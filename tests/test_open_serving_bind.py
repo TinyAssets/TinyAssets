@@ -38,7 +38,8 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-1"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-1"
     )
     ledger.create_connection(
         connection_id=_CONN_ID, owner_user_id="owner-1", connection_class="http",
@@ -101,7 +102,8 @@ def test_bind_open_provider_refuses_cross_universe_grant(tmp_path, monkeypatch) 
     # bind for u-owner: the grant used by definition is bound to u-owner, so this checks
     # the happy path stays owned/bound. Now revoke and expect failure.
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-1"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-1"
     )
     ledger.revoke_grant(_GRANT_ID)
     with pytest.raises(PermissionError):
@@ -210,7 +212,7 @@ def test_current_serving_authority_refuses_credential_reference_rotation(
     )
 
     universe_dir, _serving, _definition = _bound_and_serving(tmp_path, monkeypatch)
-    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+    with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as raw:
         raw.execute(
             "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
             ("vault://http/rotated", _CONN_ID),

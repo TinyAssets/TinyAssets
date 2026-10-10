@@ -328,35 +328,6 @@ def test_the_owners_own_removal_waits_for_a_user_then_queues_it(tmp_path):
 
 
 @_POSIX_ONLY
-def test_the_worker_hands_its_share_to_every_git(tmp_path, monkeypatch):
-    from tinyassets import workspace_git, workspace_worker
-
-    monkeypatch.setattr(workspace_git, "_INHERITED_FDS", ())
-    path = ws.create(tmp_path, "run", "node")
-    workspace_worker._mark_staging_in_use({"op": "checkout", "staging_dir": str(path)})
-    (fd,) = workspace_git._INHERITED_FDS
-    seen = {}
-
-    def _launcher(command, **kwargs):
-        seen.update(kwargs)
-
-        class _Done:
-            returncode, stdout, stderr = 0, b"", b""
-
-        return _Done()
-
-    home = tmp_path / "git-home"
-    home.mkdir()
-    workspace_git.run_git(
-        ["--version"], cwd=path, home_dir=home, path="/usr/bin",
-        timeout_s=5, launcher=_launcher,
-    )
-    assert fd in seen["pass_fds"]
-    os.close(fd)
-    ws.remove(path)
-
-
-@_POSIX_ONLY
 def test_an_uninspectable_lock_keeps_the_tree(tmp_path, monkeypatch):
     """Fail closed (round 2): an .inuse we cannot open may be a live worker's."""
     root = ws.staging_root(tmp_path)
@@ -399,13 +370,24 @@ def test_an_uninspectable_tree_is_logged_every_pass(tmp_path, monkeypatch, caplo
     assert caplog.text.count("locks uninspectable") == 2
 
 
-def test_a_scoped_inheritance_reaches_only_gits_inside_the_block(tmp_path, monkeypatch):
+@_POSIX_ONLY
+def test_a_cell_git_inherits_only_the_descriptors_its_own_operation_passes(tmp_path):
+    """The staging in-use share this file used to test is gone.
+
+    It existed so a git outliving a killed worker kept the staging tree marked
+    in use; there is no daemon-side git and no staging to mark. What a git
+    inherits now is exactly what ITS operation passed -- and a process-wide
+    share is impossible, because the store it came from no longer exists.
+    """
     from tinyassets import workspace_git
 
-    monkeypatch.setattr(workspace_git, "_INHERITED_FDS", ())
-    fd = os.open(str(tmp_path / "share"), os.O_RDWR | os.O_CREAT)
+    assert not hasattr(workspace_git, "inheriting")
+    assert not hasattr(workspace_git, "inherit_descriptor")
+    fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
     home = tmp_path / "git-home"
     home.mkdir()
+    other = tmp_path / "git-home-2"
+    other.mkdir()
     seen: list = []
 
     def _launcher(command, **kwargs):
@@ -416,48 +398,18 @@ def test_a_scoped_inheritance_reaches_only_gits_inside_the_block(tmp_path, monke
 
         return _Done()
 
-    def _git():
-        workspace_git.run_git(
+    try:
+        workspace_git.run_git_in_cell(
             ["--version"], cwd=tmp_path, home_dir=home, path="/usr/bin",
+            timeout_s=5, launcher=_launcher, pass_fds=(fd,),
+        )
+        workspace_git.run_git_in_cell(
+            ["--version"], cwd=tmp_path, home_dir=other, path="/usr/bin",
             timeout_s=5, launcher=_launcher,
         )
-
-    try:
-        with workspace_git.inheriting(fd):
-            _git()
-        _git()
     finally:
         os.close(fd)
-    if os.name == "posix":
-        assert fd in seen[0]
-    assert fd not in seen[1], "a scoped share must not leak into later gits"
-
-
-@_POSIX_ONLY
-def test_the_parent_populate_git_inherits_the_staging_share(tmp_path, monkeypatch):
-    """Round 3: the PARENT runs populate's git against staging, in its own
-    session; it must carry the share too."""
-    import tinyassets.workspace_git as wg
-    from tests.test_workspace_effector import _packet, _run, _setup
-    from tinyassets.effectors import EffectChain
-
-    _root, universe_dir = _setup(tmp_path)
-    chain = EffectChain(run_id="run-1", base_path=str(tmp_path), universe_id="universe-1")
-    captured = {}
-
-    def _populate(bundle, dest, ref_name, checkout_ref, *, home_dir, **_kw):
-        staging = Path(bundle).parent
-        captured["scoped"] = wg._SCOPED_FDS.get()
-        captured["held"] = ws.in_use_fd(staging)
-        Path(dest).mkdir(parents=True, exist_ok=True)
-        return "c" * 40
-
-    monkeypatch.setattr(wg, "populate_workspace_from_bundle", _populate)
-    monkeypatch.setattr("tinyassets.effectors.workspace._git_path", lambda: "/usr/bin")
-    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-
-    assert captured["held"] is not None
-    assert captured["held"] in captured["scoped"]
+    assert seen == [(fd,), ()], seen
 
 
 @_POSIX_ONLY
@@ -478,42 +430,6 @@ def test_an_unwalkable_tree_is_kept(tmp_path, monkeypatch):
 
     assert report.removed == 0
     assert (tree / "credential-ish").is_file()
-
-
-def test_a_worker_that_cannot_mark_its_staging_refuses(tmp_path, monkeypatch):
-    from tinyassets import workspace_worker
-
-    def _cannot(_dir):
-        raise OSError("gone")
-
-    monkeypatch.setattr(ws, "hold_in_use", _cannot)
-    assert workspace_worker._mark_staging_in_use(
-        {"op": "checkout", "staging_dir": str(tmp_path)}
-    ) is False
-
-    class _Channel:
-        sent: list = []
-
-        def send(self, message):
-            self.sent.append(message)
-
-        def recv(self):
-            return {"op": "checkout", "staging_dir": str(tmp_path)}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        workspace_worker, "handle_request",
-        lambda _r: (_ for _ in ()).throw(AssertionError("must not run unmarked")),
-    )
-    monkeypatch.setattr(
-        "tinyassets.storage.outbound_connections._sanitize_child_environment", lambda: None,
-    )
-    channel = _Channel()
-    workspace_worker.run_workspace_worker(channel)
-    assert channel.sent[-1]["ok"] is False
-    assert "marked in use" in channel.sent[-1]["error"]
 
 
 def test_the_boot_sweeper_sweeps_at_once_and_runs_once(tmp_path):
@@ -578,3 +494,32 @@ def test_another_live_processs_staging_survives_until_it_dies(tmp_path):
     report = ws.sweep(tmp_path)
     assert report.removed == 1
     assert not live.exists()
+
+
+# --------------------------------------------------------------------------- #
+# The broker-private tree is another identity's; the daemon never enters it
+# --------------------------------------------------------------------------- #
+
+
+@_POSIX_ONLY
+def test_the_boot_sweep_never_enters_the_broker_private_tree(tmp_path, caplog):
+    """After the owner split `.broker` is 1002:1101 2700 and the daemon holds no
+    access to it. The data-root sweep listed it as a staging candidate, so every
+    boot logged a PermissionError traceback and reported a `failed` count that
+    could never reach zero (found by scripts/role_image_oracle.py on a migrated
+    volume). No workspace operation runs as the broker, so there is nothing
+    there to sweep.
+    """
+    private = tmp_path / ws.BROKER_PRIVATE_DIR
+    (private / ws.STAGING_DIR).mkdir(parents=True)
+    (tmp_path / "u-alice").mkdir()
+    private.chmod(0o000)  # what 2700 looks like to a process that is not 1002
+    try:
+        with caplog.at_level("ERROR", logger="tinyassets.workspace_staging"):
+            report = ws.sweep_data_root(tmp_path)
+    finally:
+        private.chmod(0o700)
+
+    assert report.failed == 0, report
+    assert "PermissionError" not in caplog.text
+    assert ws.BROKER_PRIVATE_DIR not in caplog.text

@@ -52,7 +52,8 @@ def _seed(base: Path, *, owner: str = "founder", universe: str = "u-x") -> None:
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: owner
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: owner
     )
     ledger.create_connection(
         connection_id=_CONN_ID,
@@ -93,7 +94,8 @@ def _definition(protocol: str = "openai_chat", *, ref: str = _GRANT_ID) -> Provi
 
 
 def _config() -> Any:
-    return SimpleNamespace(temperature=0.2, timeout=60, max_tokens=1024)
+    return SimpleNamespace(temperature=0.2, timeout=60, max_tokens=1024,
+                           invocation_owner_user_id="founder")
 
 
 def _run(provider: ApiKeyHttpProvider, universe_dir: Path) -> Any:
@@ -331,7 +333,8 @@ def _seed_single_path(base: Path, path: str, *, owner: str = "founder",
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     ledger = ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: owner
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: owner
     )
     ledger.create_connection(
         connection_id=_CONN_ID,

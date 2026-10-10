@@ -42,7 +42,6 @@ def case(tmp_path, monkeypatch):
             return ledger_queries.local_query(ledger, principal=self.principal,
                                               command_center=self.center, **kwargs)
 
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: SimpleNamespace(
         socket_path=tmp_path / "broker.sock", fence=lambda: (1, "synthetic"), verify_broker=None))
     monkeypatch.setattr("tinyassets.broker.client.BrokerClient", Client)
@@ -51,7 +50,7 @@ def case(tmp_path, monkeypatch):
         raise AssertionError("daemon constructed a local ledger")
 
     monkeypatch.setattr("tinyassets.storage.outbound_connections.ConnectionLedger", no_local)
-    args = dict(db_path=tmp_path / "outbound.db", grant_id="grant-alice",
+    args = dict(data_root=tmp_path, grant_id="grant-alice",
                 connection_id="conn-alice", universe_id="cc-alice", principal="alice")
     return SimpleNamespace(root=tmp_path, ledger=ledger, calls=calls, args=args)
 
@@ -98,7 +97,7 @@ def test_proxy_rechecks_revocation_after_effector_snapshot(case, kind):
 
 def test_unavailable_broker_never_opens_daemon_ledger(case, monkeypatch):
     monkeypatch.setattr(supervisor, "get_supervisor", lambda _: None)
-    with pytest.raises(ProxyRequestError, match="selected but not running"):
+    with pytest.raises(ProxyRequestError, match="not running"):
         effector._read_connection_context(**case.args)
 
 

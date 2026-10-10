@@ -69,9 +69,9 @@ def test_categories_measure_files_not_transport_and_never_read_contents(home, mo
     put(home, f"{UID}/workspaces/.quarantine/old/two", b"12345")
     put(home, f"{UID}/.runtime/provider-child/config", b"1234567")
     put(home, f"{UID}/note", b"hello-world")
-    put(home, "scratch/own-lease/file", b"1234567890123")
-    put(home, "scratch/.quarantine/own-lease.1/file", b"12345678901234567")
-    put(home, "scratch/foreign-lease/private", b"x" * 1000)
+    put(home, f"{UID}/workspaces/scratch/own-lease/file", b"1234567890123")
+    put(home, f"{UID}/workspaces/scratch/.quarantine/own-lease.1/file", b"12345678901234567")
+    put(home, f"{UID}/workspaces/scratch/foreign-lease/private", b"x" * 1000)
     lease(home)
     lease(home, name="foreign-lease", uid="foreign-universe")
     db_bytes = (home / UID / ".runs.db").stat().st_size

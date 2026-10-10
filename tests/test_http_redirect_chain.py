@@ -317,7 +317,7 @@ def test_reflected_path_segment_capability_is_refused(chain, encoded):
 
 @pytest.mark.parametrize("change", ["connection", "grant", "incarnation", "policy", "mode"])
 def test_real_broker_rechecks_the_original_ledger_authority_between_hops(chain, tmp_path, change):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     ledger.create_connection(
         connection_id="download",
         owner_user_id="alice",
@@ -496,7 +496,7 @@ def test_followup_still_enforces_the_pinned_peer(chain):
 
 
 def test_authority_database_wait_is_bounded_by_the_chain_deadline(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     blocker = ledger._connect()
     blocker.execute("BEGIN EXCLUSIVE")
     started = time.monotonic()

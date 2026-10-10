@@ -141,6 +141,75 @@ fi
 
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
+# ----- 2b. cutover snapshot (BACKUP_MODE=snapshot) ----------------------
+# The owner-split window's rollback point (docs/ops/owner-split-cutover-runbook.md):
+# a full-volume tar taken with every writer stopped, numeric owners, ACLs and
+# xattrs kept, a local copy and an upload, then its id, sha256, size and name
+# count. The count must match a fresh census of the volume.
+if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
+    if [[ -n "$(docker ps -q --filter "volume=${BACKUP_VOLUME}")" ]]; then
+        log "ERROR: snapshot needs every container on ${BACKUP_VOLUME} stopped"
+        exit 2
+    fi
+    SNAPSHOT_DIR="${BACKUP_SNAPSHOT_DIR:-/var/backups/tinyassets}"
+    SNAPSHOT_NAME="tinyassets-snapshot-${TS}.tar.gz"
+    SNAPSHOT_PATH="${SNAPSHOT_DIR}/${SNAPSHOT_NAME}"
+    mkdir -p "${SNAPSHOT_DIR}"
+    chmod 0700 "${SNAPSHOT_DIR}"
+    log "creating cutover snapshot ${SNAPSHOT_PATH}..."
+    if ! tar -czf "${SNAPSHOT_PATH}" --numeric-owner --acls --xattrs \
+            -C "${VOLUME_DIR}" .; then
+        log "ERROR: snapshot tar failed"
+        rm -f "${SNAPSHOT_PATH}"
+        exit 2
+    fi
+    if ! names="$(python3 - "${VOLUME_DIR}" "${SNAPSHOT_PATH}" <<'INVENTORY_PY'
+import os
+import re
+import stat
+import sys
+import tarfile
+from collections import Counter
+
+root, archive = sys.argv[1:]
+# Exactly role_migrate.py's disposable stopped-daemon relay socket set.
+relay = re.compile(r"\.universe-sidecars/[A-Za-z0-9_-]{1,128}/"
+                   r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12})\.sock")
+expected = []
+def fail_walk(error):
+    raise error
+for parent, directories, files in os.walk(root, onerror=fail_walk):
+    for name in directories + files:
+        path = os.path.join(parent, name)
+        relative = os.path.relpath(path, root)
+        if stat.S_ISSOCK(os.lstat(path).st_mode):
+            if relay.fullmatch(relative):
+                continue
+            raise SystemExit('unrecognized socket in snapshot inventory: ' + ascii(relative))
+        expected.append(relative)
+with tarfile.open(archive, 'r:gz') as handle:
+    actual = [member.name.removeprefix('./').rstrip('/') for member in handle
+              if member.name not in ('.', './')]
+if Counter(actual) != Counter(expected):
+    raise SystemExit('snapshot restorable inventory mismatch (missing, extra or duplicate names)')
+print(len(expected))
+INVENTORY_PY
+)"; then
+        log "ERROR: snapshot does not match the restorable inventory"
+        exit 2
+    fi
+    sha="$(sha256sum "${SNAPSHOT_PATH}" | cut -d' ' -f1)"
+    bytes="$(stat -c %s "${SNAPSHOT_PATH}")"
+    printf '%s  %s\n' "${sha}" "${SNAPSHOT_NAME}" > "${SNAPSHOT_PATH}.sha256"
+    if ! rclone copyto --contimeout 60s --timeout 3600s \
+            "${SNAPSHOT_PATH}" "${BACKUP_DEST}/${SNAPSHOT_NAME}"; then
+        log "ERROR: snapshot upload failed (local copy kept)"
+        exit 3
+    fi
+    log "SNAPSHOT id=${SNAPSHOT_NAME} sha256=${sha} bytes=${bytes} names=${names}"
+    exit 0
+fi
+
 # ----- 3. brain tier — consistent archive of the irreplaceable subset ---
 
 BRAIN_NAME="tinyassets-brain-${TS}.tar.gz"
@@ -160,17 +229,67 @@ done
 for f in "${VOLUME_DIR}"/*.json; do
     [[ -f "${f}" ]] && cp -a "${f}" "${BRAIN_STAGE}/"
 done
-for db in "${VOLUME_DIR}"/*.db "${VOLUME_DIR}/.outside-client-authority.sqlite3"; do
+# The D12 relocated ledger remains part of the strict brain tier. The host
+# backup holds the layout lock; this does not grant the daemon file authority.
+if [[ -L "${VOLUME_DIR}/.broker" ]]; then
+    log "ERROR: broker backup directory is a symlink"
+    exit 2
+fi
+if [[ -e "${VOLUME_DIR}/.broker" && ( ! -d "${VOLUME_DIR}/.broker" \
+        || ! -r "${VOLUME_DIR}/.broker" || ! -x "${VOLUME_DIR}/.broker" ) ]]; then
+    log "ERROR: broker backup directory is not accessible"
+    exit 2
+fi
+for db in "${VOLUME_DIR}"/*.db "${VOLUME_DIR}/.broker/outbound.db"; do
+    if [[ -L "${db}" ]]; then
+        log "ERROR: sqlite backup source is a symlink: ${db}"
+        exit 2
+    fi
+    if [[ -e "${db}" && ! -f "${db}" ]]; then
+        log "ERROR: sqlite backup source is not a regular file: ${db}"
+        exit 2
+    fi
     [[ -f "${db}" ]] || continue
-    if ! python3 - "${db}" "${BRAIN_STAGE}/$(basename "${db}")" <<'PY'
+    relative="${db#"${VOLUME_DIR}/"}"
+    if ! python3 - "${db}" "${BRAIN_STAGE}/${relative}" <<'PY'
+import os
 import sqlite3
+import stat
 import sys
+from pathlib import Path
 
-src = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
-dst = sqlite3.connect(sys.argv[2])
-src.backup(dst)
-dst.close()
-src.close()
+source, target = Path(sys.argv[1]), Path(sys.argv[2])
+info = source.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+    raise RuntimeError("unsafe sqlite backup source")
+if source.parent.name == ".broker":
+    parent = source.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode):
+        raise RuntimeError("unsafe broker backup parent")
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chown(target.parent, parent.st_uid, parent.st_gid)
+    os.chmod(target.parent, stat.S_IMODE(parent.st_mode))
+src = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
+try:
+    dst = sqlite3.connect(target)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+finally:
+    src.close()
+after = source.lstat()
+if (not stat.S_ISREG(after.st_mode)
+        or (after.st_dev, after.st_ino, after.st_nlink) != (info.st_dev, info.st_ino, 1)):
+    raise RuntimeError("sqlite backup source changed identity")
+if source.parent.name == ".broker":
+    after_parent = source.parent.lstat()
+    if (not stat.S_ISDIR(after_parent.st_mode)
+            or (after_parent.st_dev, after_parent.st_ino) != (parent.st_dev, parent.st_ino)):
+        raise RuntimeError("broker backup parent changed identity")
+# SQLite creates a new file; retain source ownership and privacy in the archive.
+os.chown(target, info.st_uid, info.st_gid)
+os.chmod(target, stat.S_IMODE(info.st_mode))
 PY
     then
         log "ERROR: consistent sqlite copy failed: $(basename "${db}")"
@@ -179,7 +298,11 @@ PY
 done
 
 log "creating brain archive ${BRAIN_PATH}..."
-if ! tar -czf "${BRAIN_PATH}" -C "${BRAIN_STAGE}" .; then
+# Omit the staging root's header: its private root:root/0700 metadata must
+# never overwrite the live volume root during brain repair. Keep staging private.
+if ! find "${BRAIN_STAGE}" -mindepth 1 -maxdepth 1 -printf './%f\0' \
+        | tar -czf "${BRAIN_PATH}" --numeric-owner --acls --xattrs \
+            -C "${BRAIN_STAGE}" --null -T -; then
     log "ERROR: brain tar failed"
     rm -f "${BRAIN_PATH}"
     exit 2
@@ -202,7 +325,9 @@ TAR_PATH="/tmp/${TAR_NAME}"
 
 log "creating archive ${TAR_PATH}..."
 set +e
-tar -czf "${TAR_PATH}" --warning=no-file-changed \
+# Owner split: owners are numeric (300001+ have no host name) and roots carry
+# ACLs, so both survive a restore only with these flags.
+tar -czf "${TAR_PATH}" --warning=no-file-changed --numeric-owner --acls --xattrs \
     -C "$(dirname "${VOLUME_DIR}")" "$(basename "${VOLUME_DIR}")"
 tar_rc=$?
 set -e

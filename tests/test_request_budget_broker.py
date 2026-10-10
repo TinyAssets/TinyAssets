@@ -1,9 +1,8 @@
-"""Real ledger, private worker/broker IPC, synthetic credential and HTTP boundaries."""
+"""Real ledger, real broker IPC, synthetic credential and HTTP boundaries."""
 from __future__ import annotations
 
 import asyncio
 import json
-import multiprocessing
 import os
 import threading
 from dataclasses import replace
@@ -32,7 +31,9 @@ BUNDLE = TokenBundle(access_token="synthetic-access-v1", refresh_token="syntheti
 @pytest.fixture
 def rig(tmp_path):
     (tmp_path / UNIVERSE).mkdir()
-    ledger = outbound.ConnectionLedger(tmp_path / "outbound.db",
+    # Where the broker opens it: the daemon side has no ledger of its own.
+    ledger = outbound.ConnectionLedger(tmp_path / ".broker" / "outbound.db",
+                                        data_root=tmp_path,
                                         verify_authenticated_principal=lambda: OWNER_ID)
     ledger.create_connection(
         connection_id=CONNECTION, owner_user_id=OWNER_ID, connection_class="http",
@@ -108,7 +109,7 @@ def build_dispatch(base, *, statuses=(200,), events=None, refresh_failure=False,
             return (stream_factory or SyntheticStream)(status, body.encode())
         return {"status": status, "body": body}
 
-    ledger = outbound.ConnectionLedger(base / "outbound.db",
+    ledger = outbound.ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                                         verify_authenticated_principal=lambda: OWNER_ID)
     config = ledger.broker_dispatch_config(grant_id=GRANT, universe_id=UNIVERSE,
                                            provider="http", destination="compute:synthetic",
@@ -236,39 +237,6 @@ def test_paid_and_local_policy_does_not_acquire_a_low_free_cap(rig):
     assert budget.receipt()["dispatched"] == 10
 
 
-def worker_main(channel, base, statuses):
-    # A spawned fixture process uses the production worker loop and the same
-    # real dispatcher factory, with only local synthetic IO injected above.
-    factories = {"credential_broker_v1": lambda config: build_dispatch(base, statuses=statuses)}
-    with patch.dict(outbound._TRUSTED_DISPATCH_FACTORIES, factories):
-        outbound._run_proxy_worker(channel, "credential_broker_v1", {}, GRANT, ("POST",))
-
-
-@pytest.mark.parametrize("limit,expected", [(1, "stopped"), (2, "success")])
-def test_spawned_worker_consumes_reference_and_preserves_typed_stop(rig, limit, expected):
-    budget, ordinal, reference = reserve(rig, limit=limit)
-    context = multiprocessing.get_context("spawn")
-    client, server = context.Pipe()
-    process = context.Process(target=worker_main, args=(server, rig.base, (401, 200)))
-    process.start()
-    server.close()
-    assert client.poll(10)
-    assert outbound._receive_message(client) == {"op": "ready"}
-    proxy = outbound._ProxyChannel(client, process)
-    try:
-        if expected == "stopped":
-            with pytest.raises(InferenceUsageStopped) as stopped:
-                proxy.request("POST", WIRE, inference_usage=reference)
-            assert stopped.value.usage_id == budget.usage_id
-        else:
-            assert proxy.request("POST", WIRE, inference_usage=reference)["status"] == 200
-        budget.settle_invocation(ordinal, "succeeded" if expected == "success" else "failed")
-        assert budget.receipt()["dispatched"] == limit
-    finally:
-        proxy.close()
-    assert not process.is_alive()
-
-
 def test_direct_broker_without_factory_still_requires_usage_before_credentials(rig):
     events = []
     broker = outbound.CredentialBlindBroker(
@@ -293,25 +261,6 @@ def test_missing_inference_usage_explains_recovery_before_credentials(rig):
     assert invoke(dispatch, reference)["status"] == 200
     budget.settle_invocation(ordinal, "succeeded")
     assert events.count("send") == 1
-
-
-def test_worker_pipe_preserves_missing_accounting_recovery(rig):
-    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
-
-    context = multiprocessing.get_context("spawn")
-    client, server = context.Pipe()
-    process = context.Process(target=worker_main, args=(server, rig.base, (200,)))
-    process.start()
-    server.close()
-    assert client.poll(10)
-    assert outbound._receive_message(client) == {"op": "ready"}
-    proxy = outbound._ProxyChannel(client, process)
-    try:
-        with pytest.raises(InferenceUsageRequired, match="write_graph.connections"):
-            proxy.request("POST", WIRE)
-    finally:
-        proxy.close()
-    assert not process.is_alive()
 
 
 @pytest.mark.parametrize("boundary", ["checkpoint", "on_connect"])
@@ -377,7 +326,8 @@ def uds_broker(rig):
     state = {}
     server = BrokerServer(
         ledger_for=lambda principal: outbound.ConnectionLedger(
-            rig.base / "outbound.db", verify_authenticated_principal=lambda: principal),
+            rig.base / ".broker" / "outbound.db", data_root=rig.base,
+            verify_authenticated_principal=lambda: principal),
         dispatch_for=lambda *args: state["dispatch"], ops=ops, fence=fence,
         roles={os.getuid(): OWNER},
     )

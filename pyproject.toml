@@ -164,4 +164,5 @@ markers = [
     "slow: stress/race tests; opt-in via `pytest -m slow`",
     "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
     "real_browser: needs a real Chromium; run by .github/workflows/real-browser-proof.yml, which fails on any skip",
+    "role_split: exercises the real broker, launcher or cells; no test double is installed",
 ]
