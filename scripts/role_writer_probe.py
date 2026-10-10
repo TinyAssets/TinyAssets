@@ -19,12 +19,27 @@ def exercise(base, center, principal):
     from tinyassets.broker.owner_identities import owner_identity
     from tinyassets.role_content import _owner_entry
     from tinyassets.role_storage import measure
+    from tinyassets.universe_owner import owner_of
 
     root = base / center
-    machine = owner_identity(base, principal=principal).uid
     passed = []
 
-    def check(name, operation, *, produces=()):
+    def custody(name, target):
+        owner = owner_of(base, target.name)
+        assert owner is not None, (name, target.name, 'missing recorded owner')
+        machine = owner_identity(base, principal=owner).uid
+        for child in target.iterdir():
+            if not _owner_entry(child.name):
+                continue
+            for path in [child, *child.rglob('*')] if child.is_dir() else [child]:
+                info = path.lstat()
+                assert (info.st_uid, info.st_gid) == (machine, machine), (
+                    name, target.name, path.relative_to(target).as_posix(),
+                    info.st_uid, info.st_gid)
+        for scope in ('jail', 'universe', 'workspaces'):
+            measure(target, scope)
+
+    def check(name, operation, *, produces=(), all_centers=False):
         result = operation()
         if isinstance(result, str) and result.startswith('{'):
             result = json.loads(result)
@@ -35,15 +50,12 @@ def exercise(base, center, principal):
             assert (root / relative).is_file(), (name, 'missing output', relative)
         # Inspect EVERY descendant of visible content, including dotfiles below
         # visible directories. Only platform top-level entries are excluded.
-        for child in root.iterdir():
-            if not _owner_entry(child.name):
-                continue
-            for path in [child, *child.rglob('*')] if child.is_dir() else [child]:
-                info = path.lstat()
-                assert (info.st_uid, info.st_gid) == (machine, machine), (
-                    name, path.relative_to(root).as_posix(), info.st_uid, info.st_gid)
-        for scope in ('jail', 'universe', 'workspaces'):
-            measure(root, scope)
+        targets = ([path for path in base.iterdir()
+                    if path.is_dir() and owner_of(base, path.name) is not None]
+                   if all_centers else [root])
+        assert root in targets
+        for target in targets:
+            custody(name, target)
         passed.append(name)
         print('OWNER WRITER PASS ' + name, flush=True)
 
@@ -98,12 +110,14 @@ def exercise(base, center, principal):
         from domains.fantasy_daemon.phases.worldbuild import _write_canon_file
         state = {'_universe_path': str(root)}
         check('activity-log', lambda: activity_log(state, 'ORACLE'), produces=('activity.log',))
+        check('activity-append', lambda: activity_log(state, 'ORACLE second line'))
+        assert len((root / 'activity.log').read_text().splitlines()) == 2
         check('phase-status', lambda: update_phase(state, 'oracle'), produces=('status.json',))
         check('scene-prose', lambda: _export_prose(state, 'ORACLE prose'),
             produces=('output/book-1/chapter-01/scene-01.md',))
         check('worldbuild-canon', lambda: _write_canon_file(
             root / 'canon', 'oracle-world.md', 'ORACLE canon'),
-            produces=('canon/oracle-world.md', 'canon/.oracle-world.md.reviewed'))
+            produces=('canon/oracle_world.md', 'canon/.oracle_world.md.reviewed'))
 
         from tinyassets.bid.node_bid import NodeBid
         from tinyassets.branches import NodeDefinition
@@ -134,9 +148,15 @@ def exercise(base, center, principal):
         ('delivery-tick', reconcile_deliveries),
         ('workspace-sweep', sweep_data_root),
     ):
-        check(name, lambda operation=operation: operation(base))
+        check(name, lambda operation=operation: operation(base), all_centers=True)
     check('subscriptions', lambda: subscribe(root, 'oracle'))
     check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}))
+    from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
+    check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
+        ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')))
+    check('auto-ship-append', lambda: record_attempt(root, ShipAttempt(
+        ship_attempt_id='oracle-second', created_at='', updated_at='', ship_status='skipped')))
+    check('auto-ship-rewrite', lambda: update_attempt(root, 'oracle', error_message='ORACLE'))
     return passed
 
 
@@ -150,7 +170,8 @@ def main():
     from tinyassets.role_center_admission import admit_center
 
     base = Path('/data')
-    principal, center = 'oracle-writer-owner', 'u-oracle-writers-' + secrets.token_hex(6)
+    nonce = secrets.token_hex(6)
+    principal, center = 'oracle-writer-owner-' + nonce, 'u-oracle-writers-' + nonce
     require_process_cloud_admission(surface='owner writer oracle')
     grant_universe_ownership(base, universe_id=center, owner_id=principal)
     admit_center(base, principal=principal, center=center)

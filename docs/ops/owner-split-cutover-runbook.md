@@ -163,6 +163,10 @@ checks owner custody, and repeats migration to require zero changes. The
 writers stage runs common requests and periodic maintenance under the real
 daemon UID, checking visible custody and owner-measure after each operation.
 Neither test changes production. Keep the repair blocked if either check fails.
+If a newer backup already has owner-owned history, add
+`--reproduce-daemon-soul-history` to replay the old daemon labels on the fresh
+disposable restore before migration. This preserves the copied history bytes;
+the report explicitly distinguishes reproduced damage from damage in the backup.
 
 ## 5. Start
 

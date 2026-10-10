@@ -30,14 +30,35 @@ def raw_creates(tree):
         if not isinstance(node, ast.Call):
             continue
         function = node.func
+        if isinstance(function, ast.Attribute) and function.attr in {'rename', 'replace'}:
+            # String replacement is not filesystem publication.
+            if (function.attr == 'rename' or len(node.args) < 2
+                    or isinstance(function.value, ast.Name) and function.value.id == 'os'):
+                yield node.lineno, function.attr
         if isinstance(function, ast.Attribute) and function.attr in CREATES:
             yield node.lineno, function.attr
         if ((isinstance(function, ast.Name) and function.id == 'open') or
                 (isinstance(function, ast.Attribute) and function.attr == 'open')):
-            modes = [*node.args[1:], *(kw.value for kw in node.keywords if kw.arg == 'mode')]
+            if (isinstance(function, ast.Attribute) and isinstance(function.value, ast.Name)
+                    and function.value.id == 'os'):
+                if any(isinstance(flag, ast.Attribute) and flag.attr in {'O_CREAT', 'O_TMPFILE'}
+                       for flag in ast.walk(node)):
+                    yield node.lineno, 'os.open creation'
+                continue
+            modes = [*node.args, *(kw.value for kw in node.keywords if kw.arg == 'mode')]
             if any(isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                   and set(mode.value) <= set('rwax+bt')
                    and set(mode.value) & set('wax+') for mode in modes):
                 yield node.lineno, 'open for writing'
+
+
+@pytest.mark.parametrize('source', [
+    'path.open("a")', 'path.open(mode="w")', 'open(path, "x")',
+    'os.open(path, os.O_WRONLY | os.O_CREAT)', 'path.rename(destination)',
+    'os.replace(source, destination)', 'path.replace(destination)',
+])
+def test_raw_creation_guard_catches_alternate_write_forms(source):
+    assert list(raw_creates(ast.parse(source)))
 
 
 @pytest.mark.parametrize('filename', CONTENT_MODULES)
