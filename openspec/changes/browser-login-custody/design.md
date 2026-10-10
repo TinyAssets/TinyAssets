@@ -13,9 +13,9 @@ Protected filling binds an opaque, one-use field handle to the exact document,
 frame and origin shown to the owner. Navigation or document replacement revokes
 that handle. Credentials travel only through the interactive owner endpoint,
 never through ta. The sheet shows account and origin and says **session
-remembered; password not stored**. Device password-manager selection can fill
-the protected password field where supported; the form cannot request another
-site's saved credentials or passkeys using TinyAssets' origin. WebAuthn requires
+remembered; password not stored**. The protected password field provides private
+input; it cannot request another site's saved credentials or passkeys using
+TinyAssets' origin. WebAuthn requires
 the site's RP ID/origin; iOS associated-domain autofill requires site cooperation.
 Universal native autofill/passkey forwarding is an explicit unbuilt acceptance
 item, not something a screenshot stream provides. Local-browser attach remains
@@ -35,3 +35,13 @@ Sites can block remote browsers. Device-bound passkeys, native authenticator for
 ## Verification
 
 Real Chromium in the production image: password and distinct-origin redirect login through frames/input, fresh-cell later `ta` action, revoke, foreign owner, capture observation refusal, secret suppression and egress denial. Run touched tests, Linux oracle, Ruff, structural guards, plugin build and hygiene; one cross-family floor review after PR creation.
+
+Review disposition (Claude, 2026-10-10): F1/F2 DISAGREE_EVIDENCE — both
+`agent` and `owner_action`, and the HTTP `perform`, hold the same existing
+`owner_control.control(home)` kernel lock throughout each cell exchange/action.
+Concurrent readers cannot interleave; revoke cannot return success while an
+older action holds that lock (it instead returns a retryable busy failure).
+F3/F4 AGREE — revalidate retained state after an abandoned capture and publish
+only fully written, fsynced vault keys with an atomic no-replace link. Native
+autofill remains an explicit gap. Generated browser-proof trigger additions
+only include marked test files; they do not weaken or skip any gate.

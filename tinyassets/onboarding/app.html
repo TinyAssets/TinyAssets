@@ -796,6 +796,10 @@
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Website sessions</h3>
+        <button id="btn-refresh-browser-sessions" class="btn btn--ghost" type="button">Refresh website sessions</button>
+        <div id="browser-session-list"></div>
+        <div id="browser-session-status" class="notice" role="status"></div>
         <h3>Your agent</h3>
         <p id="profile-name"></p>
         <p id="profile-responsibility"></p>
@@ -7640,7 +7644,7 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadSoul(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadBrowserSessions(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadSoul(); }
     async function loadProfile(){
       const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
       const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
@@ -7995,9 +7999,23 @@
         if(!response.ok||doc.error||!Array.isArray(doc.connections))throw new Error("unavailable");
         status.textContent=doc.connections.length?"":"No HTTP connections are saved for this command center.";
         for(const row of doc.connections) list.append(connectionRow(doc.universe_id,row,generation));
+
+      }catch(_e){
+        if(!live())return;
+        status.textContent="Could not load your connections. Sign in again if your session expired, then refresh.";
+      }
+      finally{ releaseConnections(ticket); if(live()) $("btn-refresh-connections").disabled=false; }
+    }
+    $('btn-refresh-browser-sessions').onclick=loadBrowserSessions;
+    async function loadBrowserSessions(){
+      const home=queueScope, epoch=MCP._loginEpoch, generation=viewGeneration;
+      const list=$('browser-session-list'),status=$('browser-session-status');
+      const live=()=>home===queueScope&&epoch===MCP._loginEpoch&&generation===viewGeneration;
+      list.replaceChildren();status.textContent='Checking website sessions?';
+      try{
         const browserResponse=await fetch('/app/browser-login',{method:'POST',credentials:'same-origin',
           headers:{...authHeaders(),'Content-Type':'application/json'},
-          body:JSON.stringify({action:'list',universe_id:doc.universe_id})});
+          body:JSON.stringify({action:'list',universe_id:home})});
         const browsers=await browserResponse.json();if(!live())return;
         if(!browserResponse.ok)throw new Error('Protected browser sessions unavailable');
         for(const row of browsers.items){
@@ -8009,17 +8027,13 @@
             if(!live())return;revoke.disabled=true;
             try{const result=await fetch('/app/browser-login',{method:'POST',credentials:'same-origin',
               headers:{...authHeaders(),'Content-Type':'application/json'},
-              body:JSON.stringify({action:'revoke',id:row.id,universe_id:doc.universe_id})});
+              body:JSON.stringify({action:'revoke',id:row.id,universe_id:home})});
               if(!live())return;if(!result.ok)throw new Error('Could not clear the session.');item.remove();
             }catch(error){if(live()){detail.textContent=error.message;revoke.disabled=false;}}
           };item.append(label,detail,revoke);list.appendChild(item);
         }
-        if(browsers.items.length)status.textContent='';
-      }catch(_e){
-        if(!live())return;
-        status.textContent="Could not load your connections. Sign in again if your session expired, then refresh.";
-      }
-      finally{ releaseConnections(ticket); if(live()) $("btn-refresh-connections").disabled=false; }
+        status.textContent=browsers.items.length?'':'No remembered website sessions.';
+      }catch(_error){if(live())status.textContent='Sign in to the protected view, then refresh website sessions.';}
     }
     // One row: the connection, the control that reveals what disconnecting it
     // would do, and the confirmation itself.
@@ -9330,6 +9344,8 @@
           if(value.status==='connected'){clear();note.textContent='Session remembered. Password not stored by TinyAssets.';
             ApprovalHandoff.completed({request_id:req.request_id});refreshRail();return;}
           if(value.blocked){clear();note.textContent='This website blocked the browser. Your task is still waiting.';return;}
+          if(value.navigating){boundField=null;credential.value='';credential.hidden=true;fill.hidden=true;
+            if(active)setTimeout(frame,350);return;}
           if(value.needs_login){note.textContent='Finish any verification on the website.';
             if(active)setTimeout(frame,350);return;}
           currentOrigin=value.origin;
@@ -9684,11 +9700,12 @@
       }
       const pending=visible.filter(row=>!isOptionalRequest(row));
       let signins=$('browser-signins');
-      if(!signins){signins=document.createElement('div');signins.id='browser-signins';
+      const browserRequests=pending.filter(row=>row.action?.type==='connect_browser');
+      if(!signins&&browserRequests.length){signins=document.createElement('div');signins.id='browser-signins';
         signins.setAttribute('aria-label','Website sign-in');
         $('needs-you-open').parentElement.appendChild(signins);}
-      signins.replaceChildren();
-      for(const row of pending.filter(row=>row.action?.type==='connect_browser')){
+      if(signins)signins.replaceChildren();
+      for(const row of browserRequests){
         const button=document.createElement('button');button.type='button';button.className='btn';
         button.textContent=row.title;button.onclick=()=>this.open(row.request_id);
         signins.appendChild(button);

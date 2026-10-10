@@ -178,3 +178,61 @@ def test_verification_is_required_and_same_origin(vault, verify):
     _, call = vault
     with pytest.raises(ValueError):
         call('create', url='https://example.com/', verify=verify)
+
+
+def test_abandoned_capture_revalidates_retained_session(vault, tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from tinyassets import browser_sessions
+
+    _, call = vault
+    state = {'cookies': [{'name': 'session', 'value': 'private'}], 'origins': []}
+    row = call('create', url='https://example.com/')
+    row = call('save', id=row['id'], revision=1, state=state)
+    row = call('capture', id=row['id'], revision=row['revision'])
+    row = call('cancel', id=row['id'], revision=row['revision'])
+    checked = []
+
+    class Cell:
+        def __init__(self, *args):
+            pass
+
+        def call(self, command, checkpoint):
+            checked.append(command['action'])
+            return {'state': state} if command['action'] == 'verify' else {'status': 'ready'}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(browser_sessions, 'Cell', Cell)
+    monkeypatch.setattr(browser_sessions, 'control', lambda _: nullcontext())
+    monkeypatch.setattr(browser_sessions, '_vault',
+        lambda root, owner, home, action, **values: call(action, owner=owner, home=home, **values))
+    monkeypatch.setattr('tinyassets.effectors.authenticated_external_call._rule_refusal',
+                        lambda *args, **kwargs: None)
+    result = browser_sessions.agent(tmp_path, SimpleNamespace(owner='alice', universe='home-a',
+        initiating_agent='main'), {'action': 'connect', 'url': 'https://example.com/'})
+    assert result['remembered'] and result['status'] == 'connected'
+    assert checked == ['open', 'verify']
+    assert call('read', id=row['id'])['state'] == state
+
+
+def test_interrupted_key_write_never_publishes_partial_key(vault, monkeypatch):
+    import os
+
+    from tinyassets.broker.browser_vault import key_path
+
+    ledger, call = vault
+    real_fsync = os.fsync
+
+    def crash(_):
+        raise OSError('interrupted write')
+
+    monkeypatch.setattr(os, 'fsync', crash)
+    with pytest.raises(OSError):
+        call('create', url='https://example.com/')
+    assert not key_path(ledger, 'alice').exists()
+    monkeypatch.setattr(os, 'fsync', real_fsync)
+    row = call('create', url='https://example.com/')
+    assert len(key_path(ledger, 'alice').read_bytes()) == 32
+    assert call('read', id=row['id'])['status'] == 'needs_login'

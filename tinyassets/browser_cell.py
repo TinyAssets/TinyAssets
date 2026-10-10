@@ -34,6 +34,8 @@ class Browser:
         self.held = set()
         self.navigation_failed = False
         self.blocked = False
+        self.needs_owner = False
+        self.completed_steps = 0
         self.field = None
 
     async def receive(self):
@@ -58,6 +60,7 @@ class Browser:
             request = event['request']
             target = origin(request['url'])
             if not self.capture and event['resourceType'] == 'Document' and target != self.site:
+                self.needs_owner = True
                 raise PermissionError('navigation outside connected site')
             self.sequence += 1
             number = self.sequence
@@ -118,6 +121,11 @@ class Browser:
         self.hooks[page] = asyncio.create_task(self.hook(page))
         page.set_default_timeout(10000)
         page.on('dialog', lambda dialog: dialog.dismiss())
+        page.on('framenavigated', self.navigated)
+
+    def navigated(self, frame):
+        if self.field and self.field['frame'] == frame:
+            self.field = None
 
     async def challenged(self):
         if self.navigation_failed or origin(self.page.url) != self.site:
@@ -146,8 +154,11 @@ class Browser:
         if focused is None:
             self.field = None
             return None
-        if self.field and await focused.evaluate('(node, old) => node === old', self.field['node']):
-            return {key: self.field[key] for key in ('token', 'origin', 'type')}
+        previous = self.field
+        if (previous and previous['page'] == self.page and previous['frame'] == frame
+                and await focused.evaluate('(node, old) => node === old', previous['node'])
+                and self.field is previous):
+            return {key: previous[key] for key in ('token', 'origin', 'type')}
         kind = await focused.get_attribute('type') or 'text'
         self.field = dict(node=focused, page=self.page, frame=frame, token=secrets.token_hex(24),
                           origin=origin(frame.url), type=kind)
@@ -277,6 +288,7 @@ class Browser:
             elif kind != 'read':
                 raise ValueError('unsupported browser step')
             await self.page.wait_for_load_state('networkidle', timeout=10000)
+            self.completed_steps += 1
         if await self.challenged():
             return {'needs_login': True}
         state = await self.context.storage_state(indexed_db=True)
@@ -297,8 +309,26 @@ class Browser:
                 while (command := await self.queue.get()) is not None:
                     try:
                         result = await self.command(command, playwright)
-                    except Exception:  # noqa: BLE001 - no Playwright traces/URLs/values
-                        result = {'error': 'browser operation failed; outcome may be unknown'}
+                    except Exception as exc:  # noqa: BLE001 - no traces/URLs/values leave cell
+                        # Read-only frames can race a redirect's renderer replacement.
+                        # Refresh the view; never replay input or agent actions.
+                        navigating = command.get('action') == 'frame' and any(
+                            phrase in str(exc) for phrase in (
+                                'Execution context was destroyed',
+                                'Cannot find context with specified id',
+                                'Unable to adopt element handle from a different document',
+                                'JSHandles can be evaluated only in the context',
+                            ))
+                        if navigating:
+                            self.field = None
+                            result = {'navigating': True}
+                        else:
+                            result = ({'needs_login': True} if self.needs_owner else
+                                      {'error': 'browser operation failed; outcome may be unknown'})
+                    if command.get('action') == 'steps':
+                        result['completed_steps'] = self.completed_steps
+                        if result.get('error') or result.get('needs_login'):
+                            result['replay'] = 'Do not replay prior steps; reconcile outcomes.'
                     emit({'result': result})
         finally:
             reader.cancel()

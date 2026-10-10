@@ -119,7 +119,10 @@ def agent(root, context, arguments, checkpoint=lambda: None):
         if action not in {'steps', 'connect'}:
             raise ValueError('unsupported browser capability')
         if row['status'] != 'connected':
-            return request_login(row)
+            with _guard:
+                capturing = (str(root), owner, home, ident) in _captures
+            if capturing or not row['state']:
+                return request_login(row)
         from tinyassets.effectors.authenticated_external_call import _rule_refusal
 
         refusal = _rule_refusal(Path(root) / home, ident, 'BROWSER',
@@ -132,6 +135,8 @@ def agent(root, context, arguments, checkpoint=lambda: None):
         try:
             opened = cell.call(dict(action='open', capture=False, url=row['verify']['url'],
                                     verify=row['verify'], state=row['state']), checkpoint)
+            if opened.get('needs_login'):
+                return request_login(row)
             if opened.get('error') or opened.get('blocked'):
                 return opened
             verified = cell.call({'action': 'verify'}, checkpoint)
@@ -140,11 +145,15 @@ def agent(root, context, arguments, checkpoint=lambda: None):
             if 'state' not in verified:
                 return {k: v for k, v in verified.items() if k != 'state'}
             if action == 'connect':
+                if row['status'] != 'connected':
+                    row = _vault(root, owner, home, 'save', id=ident,
+                                 revision=row['revision'], state=verified['state'])
                 return {**public(row), 'remembered': True}
             result = cell.call(dict(action='steps', steps=arguments.get('steps', [])), checkpoint)
             state = result.pop('state', None)
             if result.get('needs_login'):
-                return request_login(row)
+                return {**request_login(row), 'completed_steps': result.get('completed_steps', 0),
+                        'replay': 'Do not replay prior steps; reconcile their outcomes.'}
             if state is not None:
                 checkpoint()
                 _vault(root, owner, home, 'save', id=ident, revision=row['revision'], state=state)
@@ -179,13 +188,13 @@ def owner_action(root, owner, home, session, data):
         checkpoint()
         if action == 'list':
             return _vault(root, owner, home, 'list')
+        if action == 'revoke':
+            result = _vault(root, owner, home, 'revoke', id=ident)
+            _drop(key)
+            return result
         row = _vault(root, owner, home, 'read', id=ident)
         if action == 'frame' and row['status'] == 'connected' and key not in _captures:
             return public(row)  # Recover a lost response/continuation commit, never re-login.
-        if action == 'revoke':
-            result = _vault(root, owner, home, 'revoke', id=ident, revision=row['revision'])
-            _drop(key)
-            return result
         if action == 'begin':
             _drop(key)
             if verify_state(root, owner, home, row, None, checkpoint):

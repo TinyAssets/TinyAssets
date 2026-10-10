@@ -33,6 +33,7 @@ def browser_proof(root, owner, home, other, other_home):
     hops = []
     password = "oracle-password-only"
     cookie = "oracle-cookie-" + secrets.token_hex(16)
+    expiry_redirect = False
     form = """<style>input,button,a{position:absolute;left:20px;width:240px;height:40px}
     #user{top:20px}#pass{top:80px}button{top:140px}a{top:210px}</style>
     <form method="post" action="/login"><input id="user" name="user" aria-label="User">
@@ -55,7 +56,9 @@ def browser_proof(root, owner, home, other, other_home):
             self.wfile.write(body.encode())
 
         def do_GET(self):
-            if self.path == "/start":
+            if self.path == '/blocked':
+                self.reply(403, 'Remote browser access denied')
+            elif self.path == "/start":
                 self.reply(200, form)
             elif self.path == "/callback":
                 self.reply(
@@ -74,7 +77,10 @@ def browser_proof(root, owner, home, other, other_home):
                     + "</p>",
                 )
             else:
-                self.reply(200, form)
+                if expiry_redirect and self.headers['X-Fixture-Host'] == 'site.example':
+                    self.reply(302, Location='https://identity.example/start')
+                else:
+                    self.reply(200, form)
 
         def do_POST(self):
             data = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
@@ -149,6 +155,7 @@ def browser_proof(root, owner, home, other, other_home):
     try:
         with identity_context(Identity(owner, owner, capabilities=["read", "write", "list"])):
             for redirect in (False, True):
+                expiry_redirect = False
                 with turn_interrupt.interactive_turn(owner, home):
                     row = ta(
                         {
@@ -243,6 +250,7 @@ def browser_proof(root, owner, home, other, other_home):
                 for _ in range(10):
                     if saved.get("status") == "connected":
                         break
+                    time.sleep(0.35)  # Match the live view's bounded frame-poll cadence.
                     saved = view("frame")
                 assert saved.get("status") == "connected", (saved, hops)
                 assert (str(root), owner, home, ident) not in browser_sessions._captures
@@ -284,11 +292,13 @@ def browser_proof(root, owner, home, other, other_home):
                 else:
                     raise AssertionError("foreign owner read browser custody")
                 cookie = "expired-" + secrets.token_hex(16)
+                expiry_redirect = redirect
                 with turn_interrupt.interactive_turn(owner, home):
                     expired = ta({"action": "steps", "id": ident, "steps": [{"kind": "read"}]})
                 assert expired.get("needs_login") and expired["id"] == ident, expired
                 row = expired
                 assert view("begin").get("status") == "login"
+                view("frame")
                 view("input", event={"kind": "click", "x": 100, "y": 40})
                 view("input", event={"kind": "text", "text": "person"})
                 view("input", event={"kind": "key", "key": "Tab"})
@@ -297,7 +307,13 @@ def browser_proof(root, owner, home, other, other_home):
                     "fill_private", token=binding["token"], origin=binding["origin"], value=password
                 )
                 view("input", event={"kind": "click", "x": 100, "y": 160})
-                assert view("frame").get("status") == "connected"
+                saved = view('frame')
+                for _ in range(10):
+                    if saved.get('status') == 'connected':
+                        break
+                    time.sleep(0.35)  # Match the live view's bounded frame-poll cadence.
+                    saved = view('frame')
+                assert saved.get('status') == 'connected', saved.get('status', list(saved))
                 relogin_results = []
 
                 def resume_read(_, outcome):
@@ -324,8 +340,39 @@ def browser_proof(root, owner, home, other, other_home):
                         "foreign_refused": True,
                     }
                 )
+            from contextlib import closing
+
+            from tinyassets import bound_requests
+            from tinyassets.storage.pending_requests import get_request
+
+            with turn_interrupt.interactive_turn(owner, home):
+                row = ta({'action': 'connect', 'url': 'https://site.example/blocked',
+                    'account': 'Blocked', 'verify': {'url': 'https://site.example/blocked',
+                                                   'selector': '#account'}})
+            ident = row['id']
+            assert view('begin').get('blocked')
+            requests_before = len(hops)
+            duplicate = ta({'action': 'connect', 'url': 'https://site.example/blocked',
+                            'account': 'Blocked'})
+            assert duplicate['request']['request_id'] == row['request']['request_id']
+            assert len(hops) == requests_before  # No hidden retry after the detected block.
+            with closing(bound_requests.connect(root / home)) as conn:
+                context = json.loads(conn.execute(
+                    'SELECT context_json FROM pending_requests WHERE request_id=?',
+                    (row['request']['request_id'],)).fetchone()[0])
+                assert context['kind'] == 'connection'
+                conn.execute("UPDATE activities SET status='paused',"
+                             'task_generation=task_generation+1 '
+                             'WHERE activity_id=?', (context['task_id'],))
+                conn.commit()
+            view('begin', refused=True)
+            assert len(hops) == requests_before  # Stop refuses before starting a browser.
+            assert view('revoke')['status'] == 'revoked'
+            assert view('revoke')['status'] == 'revoked'  # Lost-response retry is safe.
+            assert get_request(root / home, row['request']['request_id'])['status'] == 'dismissed'
         assert len(actions) == 2
-        return {"scenarios": evidence, "actions": len(actions)}
+        return {"scenarios": evidence, "actions": len(actions), 'blocked_no_retry': True,
+                'stopped_capture_refused': True}
     finally:
         browser_egress.fetch = real_fetch
         server.shutdown()

@@ -40,12 +40,8 @@ def local_operation(ledger, *, principal, command_center, document):
             site = origin(document['url'])
             account = document.get('account', '')
             verify = document.get('verify', {})
-            if (not isinstance(account, str) or len(account) > 200
-                    or not isinstance(verify, dict) or set(verify) != {'url', 'selector'}
-                    or origin(verify['url']) != site
-                    or not isinstance(verify['selector'], str)
-                    or not 1 <= len(verify['selector']) <= 500):
-                raise ValueError('an authenticated-page verification URL and selector are required')
+            if not isinstance(account, str) or len(account) > 200:
+                raise ValueError('invalid account label')
             existing = conn.execute(
                 "SELECT id,url,revision,status,account FROM browser_vault "
                 "WHERE owner=? AND home=? AND status<>'revoked'",
@@ -56,6 +52,11 @@ def local_operation(ledger, *, principal, command_center, document):
                 return {'accounts': matches, 'needs_account': True}
             if matches:
                 return matches[0]
+            if (not isinstance(verify, dict) or set(verify) != {'url', 'selector'}
+                    or origin(verify['url']) != site
+                    or not isinstance(verify['selector'], str)
+                    or not 1 <= len(verify['selector']) <= 500):
+                raise ValueError('an authenticated-page verification URL and selector are required')
             ident = secrets.token_hex(16)
             conn.execute('INSERT INTO browser_vault VALUES (?,?,?,?,?,?,?,?,?)',
                          (ident, principal, command_center, document['url'], 1, 'needs_login',
@@ -67,20 +68,39 @@ def local_operation(ledger, *, principal, command_center, document):
                 (principal, command_center))]}
         row = conn.execute('SELECT * FROM browser_vault WHERE id=? AND owner=? AND home=?',
                            (ident, principal, command_center)).fetchone()
-        if row is None or row['status'] == 'revoked':
+        if row is None:
+            raise PermissionError('browser connection unavailable')
+        if row['status'] == 'revoked':
+            if action == 'revoke':
+                return {key: row[key] for key in ('id', 'url', 'revision', 'status', 'account')}
             raise PermissionError('browser connection unavailable')
         revision = row['revision']
         if action in {'save', 'revoke', 'capture', 'cancel'}:
-            if document.get('revision') != revision:
+            if ((action != 'revoke' or 'revision' in document)
+                    and document.get('revision') != revision):
                 raise PermissionError('browser connection changed')
             revision += 1
         path = key_path(ledger, principal)
         if not path.exists():
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(AESGCM.generate_key(bit_length=256))
-                stream.flush()
-                os.fsync(stream.fileno())
+            temporary = path.with_name('.key-' + secrets.token_hex(16))
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(AESGCM.generate_key(bit_length=256))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    os.link(temporary, path)  # Publish only complete bytes; never replace a key.
+                except FileExistsError:
+                    pass
+            finally:
+                temporary.unlink()
+            if os.name == 'posix':
+                directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         cipher = AESGCM(path.read_bytes())
         aad = json.dumps([1, principal, command_center, ident, revision]).encode()
         status = row['status']

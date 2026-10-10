@@ -1,6 +1,6 @@
 ---
 name: connect
-description: Connect any website through browser sign-in; use setup-free OAuth or API connections when appropriate.
+description: Connect any service, platform, API or remote MCP server; default to owner browser sign-in.
 ---
 
 # Connect anything

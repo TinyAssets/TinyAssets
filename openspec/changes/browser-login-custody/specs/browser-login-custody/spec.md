@@ -28,7 +28,7 @@ origin restrictions; unsupported passkeys/autofill SHALL be reported honestly.
 The system SHALL offer normal website login through a protected live owner view without developer registration or provider-specific code. The browser SHALL run in the owner's isolated cell with no agent-accessible profile or control channel.
 
 #### Scenario: Password or redirect login
-- **WHEN** the owner taps Connect and completes normal login, including an identity-provider redirect or popup
+- **WHEN** the owner taps Sign in and completes normal login, including an identity-provider redirect or popup
 - **THEN** only the protected view receives frames and input, and the broker seals reusable state for that owner
 - **AND** a later `ta` call can act through a fresh browser using that state
 

@@ -13,7 +13,7 @@ def perform(root, owner, home, session, data):
     from tinyassets import bound_requests
     from tinyassets.browser_sessions import owner_action
     from tinyassets.owner_control import control
-    from tinyassets.storage.pending_requests import get_request, resolve_request
+    from tinyassets.storage.pending_requests import get_request, list_pending, resolve_request
 
     with control(root / home):
         action = data.get('action')
@@ -24,8 +24,12 @@ def perform(root, owner, home, session, data):
                                              'connection_id': data.get('id')}
                     or row['status'] not in {'pending', 'answered'}):
                 raise PermissionError('browser request ended')
-            context = row.get('asking_context', {})
-            if context.get('kind') == 'connection':
+            with closing(bound_requests.connect(root / home)) as conn:
+                stored = conn.execute('SELECT context_json FROM pending_requests '
+                                      'WHERE request_id=?',
+                                      (row['request_id'],)).fetchone()
+            context = json.loads(stored[0]) if stored else {}
+            if context.get('kind') == 'connection' and row['status'] == 'pending':
                 with closing(bound_requests.connect(root / home)) as conn:
                     task = conn.execute('SELECT * FROM activities WHERE activity_id=?',
                                         (context['task_id'],)).fetchone()
@@ -37,6 +41,12 @@ def perform(root, owner, home, session, data):
             if row['status'] == 'answered' and action != 'frame':
                 raise PermissionError('browser request already completed')
         result = owner_action(root, owner, home, session, data)
+        if action == 'revoke' and result.get('status') == 'revoked':
+            for pending in list_pending(root / home):
+                if pending['action'] == {'type': 'connect_browser', 'connection_id': data['id']}:
+                    if not resolve_request(root / home, pending['request_id'],
+                                           status='dismissed', decision='declined'):
+                        raise RuntimeError('revocation completion pending')
         if action == 'frame' and result.get('status') == 'connected' and row:
             if row['status'] == 'pending' and not resolve_request(
                     root / home, row['request_id'], status='answered', decision='allowed',
