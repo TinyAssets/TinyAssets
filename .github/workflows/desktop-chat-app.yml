@@ -1,4 +1,4 @@
-name: Desktop chat app (Windows)
+name: Desktop chat app (Windows, macOS, Linux)
 
 # Builds the Electron chat app in desktop-app/ - the Tier-1 client that wraps
 # https://tinyassets.io/app. Not the PyInstaller server tray, which
@@ -93,5 +93,51 @@ jobs:
           path: |
             desktop-app/dist/TinyAssetsChatSetup-*-x64.exe
             desktop-app/dist/TinyAssetsChat-*-x64-win.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  build-unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+          - os: macos-15-intel
+            platform: mac
+            target: dmg
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            target: AppImage
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+      - name: Install JS deps (lockfile-pinned)
+        working-directory: desktop-app
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build desktop package (unsigned)
+        working-directory: desktop-app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx --no-install electron-builder --${{ matrix.platform }} ${{ matrix.target }} --${{ matrix.arch }} --publish never
+      - name: Upload unsigned CI artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-chat-${{ matrix.platform }}-${{ matrix.arch }}
+          path: desktop-app/dist/*.${{ matrix.target }}
           if-no-files-found: error
           retention-days: 14

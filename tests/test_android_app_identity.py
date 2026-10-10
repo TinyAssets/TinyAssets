@@ -313,8 +313,10 @@ const document = {getElementById(){ return notice; },
 const window = {location:{href:"", origin:"https://tinyassets.io", pathname:"/app",
   search:""}};
 const history = {replaceState(){}};
-const store = {}; const pkceStore = {setItem(k,v){ store[k]=v; }, getItem(k){ return store[k]; }};
+const store = {}; const pkceStore = {setItem(k,v){ store[k]=v; },
+  getItem(k){ return store[k]; }, removeItem(k){delete store[k];}};
 const sessionStorage = {getItem(){ return null; }, removeItem(){}};
+const localStorage=sessionStorage;let logoutPending=false;
 const PKCE_KEY = "pkce";
 const CFG = {configured:true, client_id:"c", scopes:"s", resource:"r",
   authorization_endpoint:"https://auth.example/authorize"};
@@ -328,15 +330,16 @@ async function finishExchange(){ out.exchanged = true; return true; }
 
 @pytest.mark.parametrize(
     "app_id,prefix",
-    [(PLAY_ID, "app."), (DEBUG_ID, "appdebug.")],
+    [(PLAY_ID, "android"), (DEBUG_ID, "android-debug")],
 )
 def test_app_sign_in_returns_to_the_install_it_started_in(
     tmp_path: Path, app_id: str, prefix: str
 ) -> None:
     get_info = f"async getInfo(){{ return {{id:{json.dumps(app_id)}}}; }}"
     result = _run_node(tmp_path, _native_sign_in(get_info))
-    assert result["state"] == prefix + "RANDOM"
-    assert f"&state={prefix}RANDOM&" in result["opened"]
+    assert result["client"] == prefix
+    assert result["state"] == "r" * 43 and result["opened"] == "https://auth.example/authorize"
+    assert result["verifier"] == "RANDOM" and result["challenge"] == "challenge"
 
 
 @pytest.mark.parametrize(
@@ -365,10 +368,16 @@ def _native_sign_in(get_info: str) -> str:
             _SHIM,
             table.group(0),
             "const NATIVE = true;",
+            "window.Capacitor={getPlatform:()=> 'android'};",
+            "async function fetch(url,options){const body=JSON.parse(options.body);"
+            "out.client=body.client;out.challenge=body.code_challenge;"
+            "return {ok:true,json:async()=>({ref:'r'.repeat(43),url:'https://auth.example/authorize'})};}",
+            "function resumeNativeSignIn(){}",
             f"function nativePlugin(){{ return {{ {get_info} }}; }}",
             _js_function(html, "beginSignIn"),
             "(async()=>{ await beginSignIn();",
-            "  out.state = store.pkce ? JSON.parse(store.pkce).state : null;",
+            "  out.state = store.pkce ? JSON.parse(store.pkce).native_ref : null;",
+            "  out.verifier = store.pkce ? JSON.parse(store.pkce).verifier : null;",
             "  out.notice = notice.textContent;",
             "  console.log(JSON.stringify(out)); })();",
         )

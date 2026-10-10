@@ -293,6 +293,9 @@ async def _handle_app(request: Any) -> Any:
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
+    if getattr(request, "query_params", {}).get("state", "").startswith("na_"):
+        from tinyassets.onboarding.native_sign_in import callback
+        return await callback(request)
     if getattr(request, "query_params", {}).get("state", "").startswith("oa_"):
         from tinyassets.onboarding.owner_sessions import callback
         return await callback(request)
@@ -426,6 +429,15 @@ async def _handle_token(request: Any) -> Any:
             "resource": cfg["resource"],
         }
     elif grant == "authorization_code":
+        if "native_ref" in data:
+            from tinyassets.onboarding.native_sign_in import consume
+            try:
+                callback_data = consume(data["native_ref"], data.get("code_verifier"))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400, headers=_NO_STORE)
+            if callback_data is None:
+                return JSONResponse({"pending": True}, status_code=202, headers=_NO_STORE)
+            data.update(callback_data)
         code = str(data.get("code", "")).strip()
         verifier = str(data.get("code_verifier", "")).strip()
         redirect_uri = str(data.get("redirect_uri", "")).strip()
@@ -2570,7 +2582,7 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
-    from tinyassets.onboarding import approval_handoff
+    from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.browser_login import handle as handle_browser_login
     from tinyassets.onboarding.connections import handle_connections
@@ -2601,6 +2613,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/run/{listing}", handle_public_run, methods=["GET", "HEAD"]),
         Route("/app/run/{listing}/preview.png", handle_public_run, methods=["GET", "HEAD"]),
         Route("/app/unread", handle_unread, methods=["GET", "POST"]),
+        Route("/app/native-sign-in", native_sign_in.begin, methods=["POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),

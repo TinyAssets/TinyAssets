@@ -1,6 +1,6 @@
 {
   "name": "tinyassets-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "TinyAssets desktop app — a thin Electron shell over the live TinyAssets web app (https://tinyassets.io/app), mirroring the Android Capacitor shell so all surfaces share one synced universe.",
   "main": "src/main.js",
@@ -17,7 +17,14 @@
   "build": {
     "appId": "io.tinyassets.app",
     "productName": "TinyAssets",
-    "protocols": [{"name": "TinyAssets approval return", "schemes": ["tinyassets-desktop"]}],
+    "protocols": [
+      {
+        "name": "TinyAssets approval return",
+        "schemes": [
+          "tinyassets-desktop"
+        ]
+      }
+    ],
     "files": [
       "src/**/*",
       "config.js",

@@ -92,6 +92,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/onboarding/inline_model_connect.py",
     "tinyassets/onboarding/approval_handoff.py",
     "tinyassets/onboarding/owner_sessions.py",
+    "tinyassets/onboarding/native_sign_in.py",
     "tinyassets/outcomes/schema.py",
     "tinyassets/payments/actions.py",
     "tinyassets/payments/escrow.py",

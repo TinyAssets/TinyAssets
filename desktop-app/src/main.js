@@ -214,9 +214,9 @@ function isApprovalReturn(value) {
   try {
     const url = new URL(value);
     return url.protocol === 'tinyassets-desktop:' && url.host === 'auth'
-      && !url.username && !url.password && !url.hash
+      && !url.username && !url.password && !url.hash && !url.pathname
       && [...url.searchParams.keys()].length === 1
-      && /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('completion') || '');
+      && /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('completion') || url.searchParams.get('signin') || '');
   } catch { return false; }
 }
 app.on('second-instance', () => focusApp());
