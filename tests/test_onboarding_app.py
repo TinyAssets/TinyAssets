@@ -233,7 +233,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/timezone", "/app/ui-prefs",
-        "/app/rules", "/app/profile", "/app/memory", "/app/soul",
+        "/app/rules", "/app/profile", "/app/memory", "/app/soul", "/app/wakes",
         "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
         # The activities live projection (harness D2a).
         "/app/live",
@@ -248,6 +248,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/api/file",
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
+    assert by_path["/app/wakes"].methods == {"GET", "HEAD", "POST"}
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
     assert by_path["/app/api/ui-asset"].methods == {"POST"}

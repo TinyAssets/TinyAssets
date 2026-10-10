@@ -816,6 +816,11 @@
         <button id="btn-memory-undo" class="btn btn--link" type="button" disabled>Undo latest change</button>
         <div id="memory-status" class="notice" role="status"></div>
         <div id="starter-updates" aria-label="Starter file updates"></div>
+        <h3>Saved follow-ups</h3>
+        <p>Your agents resume these tasks automatically, using your connected compute.</p>
+        <div id="wakes-list"></div>
+        <button id="btn-wakes-reload" class="btn btn--link" type="button">Refresh follow-ups</button>
+        <div id="wakes-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
@@ -6339,6 +6344,7 @@
     clearMemoryState();
   }
   function clearMemoryState(){
+    $("wakes-list").textContent=""; $("wakes-status").textContent="";
     const editors=$("soul-editors");
     if(editors){ clearTypedValues(editors); editors.textContent=""; }
     const soulStatus=$("soul-status"); if(soulStatus) soulStatus.textContent="";
@@ -7640,7 +7646,7 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadSoul(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadWakes(); loadSoul(); }
     async function loadProfile(){
       const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
       const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
@@ -7817,6 +7823,37 @@
       }catch(e){ if(ownsMemory(context)) $("memory-status").textContent="Memory was not saved."; }
     }
     $("btn-memory-add").addEventListener("click",()=>saveMemory({text:$("memory-new").value}));
+    async function loadWakes(wakeId=null,context=memoryContext()){
+      if(!ownsMemory(context)) return;
+      const host=$("wakes-list"), status=$("wakes-status");
+      if(!wakeId){host.textContent="";status.textContent="";}
+      try{
+        const init={method:wakeId?"POST":"GET",credentials:"same-origin",
+          headers:Object.assign({"Content-Type":"application/json"},authHeaders())};
+        if(wakeId) init.body=JSON.stringify({wake_id:wakeId});
+        const res=await fetch("/app/wakes",init), doc=await res.json();
+        if(!ownsMemory(context)) return;
+        if(!res.ok){
+          status.textContent=res.status===403?"Sign in to manage your follow-ups.":"Follow-ups could not be loaded.";
+          return;
+        }
+        host.textContent="";
+        for(const wake of doc.wakes||[]){
+          const row=document.createElement("div"), text=document.createElement("p");
+          text.textContent=wake.agent+": "+wake.note+" — "+wake.status+" ("+wake.fires+"/"+wake.max_fires+")";
+          row.appendChild(text);
+          if(["pending","probing","firing"].includes(wake.status)){
+            const cancel=document.createElement("button");cancel.type="button";
+            cancel.className="btn btn--link";cancel.textContent="Cancel follow-up";
+            cancel.onclick=()=>loadWakes(wake.wake_id,context);row.appendChild(cancel);
+          }
+          host.appendChild(row);
+        }
+        if(!host.childNodes.length) host.textContent="No saved follow-ups.";
+        status.textContent=wakeId?"Follow-up cancelled.":"";
+      }catch(e){if(ownsMemory(context)) status.textContent="Follow-ups could not be loaded.";}
+    }
+    $("btn-wakes-reload").addEventListener("click",()=>loadWakes());
     // ---- Your agent's rules (harness D1a/D1b) ---------------------------
     // The owner's Custom Rules, read and written through /app/rules, which only
     // ever addresses the signed-in owner's own home. Loosening a hand-back is
