@@ -222,7 +222,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/approvals/{operation}",
         "/app/approval-handoff", "/app/approval-handoff/{ref}",
         # K1: owner-session-only grant/revoke control for outside clients.
-        "/app/outside-clients",
+        "/app/outside-clients", "/app/browser-login",
         "/app/model-connect/{operation}", "/app/model-callback/{flow}",
         # The public OAuth client metadata document a sign-in source names.
         "/app/oauth/client-metadata.json",
@@ -249,6 +249,7 @@ def test_route_is_apex_app_get(monkeypatch):
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
     assert by_path["/app/wakes"].methods == {"GET", "HEAD", "POST"}
+    assert by_path["/app/browser-login"].methods == {"POST"}
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
     assert by_path["/app/api/ui-asset"].methods == {"POST"}

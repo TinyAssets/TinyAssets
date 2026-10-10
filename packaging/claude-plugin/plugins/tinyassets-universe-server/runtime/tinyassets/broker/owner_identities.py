@@ -194,6 +194,17 @@ class OwnerIdentities:
                 "SELECT event FROM center_admissions WHERE center=?", (center,))}
         return "retired" if "retire" in events else "admitted" if events else "unadmitted"
 
+    def admitted_owner(self, center: str) -> str:
+        """The mapper's live owner binding; no allocation or inferred grants."""
+        validate_center(center)
+        with closing(self._connect(write=False)) as db:
+            rows = dict(db.execute(
+                "SELECT event, principal FROM center_admissions WHERE center=?", (center,)))
+        if 'admit' not in rows or 'retire' in rows:
+            raise PermissionError('center has no live owner admission')
+        validate_principal(rows['admit'])
+        return rows['admit']
+
     def admission_row(self, generation: int) -> AdmissionRow | None:
         if type(generation) is not int or generation < 1:
             raise ValueError("invalid admission generation")
@@ -277,3 +288,13 @@ def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -
             or not OWNER_ID_FIRST <= answer["uid"] <= OWNER_ID_LAST):
         raise RuntimeError("owner identity refused")
     return OwnerIdentity(answer["uid"], answer["gid"])
+
+
+def admitted_owner(data_root: Path, *, center: str) -> str:
+    """Read the mapper's owner binding through authenticated broker IPC."""
+    validate_center(center)
+    answer = _owner_request(data_root, {'op': 'ADMITTED_OWNER', 'center': center})
+    if set(answer) != {'op', 'principal'} or answer['op'] != 'ADMITTED_OWNER_IS':
+        raise PermissionError('center owner admission refused')
+    validate_principal(answer['principal'])
+    return answer['principal']

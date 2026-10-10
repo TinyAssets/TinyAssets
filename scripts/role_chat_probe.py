@@ -32,12 +32,18 @@ def main():
     import json
     import os
     import runpy
+    import shlex
+    import ssl
     import sys
     import threading
     import time
     from pathlib import Path
 
     sys.path.insert(0, "/app")
+    if os.environ.get('ORACLE_ISOLATED_NETWORK') == '1':
+        import socket
+
+        assert {name for index, name in socket.if_nameindex()} == {'lo'}
     launch = runpy.run_path("/usr/local/libexec/ta-launch.py")
     bindings, services = launch["boot"](launch)
     center = os.environ["ORACLE_COMMAND_CENTER"]
@@ -66,6 +72,13 @@ def main():
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def do_GET(self):
+            body = b'ORACLE curl egress succeeded'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_POST(self):
             try:
@@ -113,6 +126,10 @@ def main():
                 assert returned, 'oracle tool result missing'
                 # edit reads then rewrites the file: two real jail runs.
                 runs = active['runs'][active['mark']:]
+                for run in runs:
+                    if run.exit_code != 0 or run.killed is not None:
+                        print('ORACLE TOOL FAILURE ' + repr((run.exit_code, run.killed,
+                              run.output[-2000:])), flush=True)
                 assert len(runs) == (2 if step == 3 else 1), 'oracle real tool execution missing'
                 assert all(run.exit_code == 0 and run.killed is None for run in runs), (
                     'oracle tool execution failed')
@@ -129,7 +146,15 @@ def main():
                               new_text=active['after'])),
                 ('bash', dict(command='cat ' + active['path']
                     + '; test ! -e /data && test ! -e /app && test ! -e /snapshot'
-                    + ' && test "$(id -u)" -ne 0')),
+                    + ' && test "$(id -u)" -ne 0'
+                    + ' && curl --fail --silent --show-error --max-time 15 '
+                    + base + '/curl && test -s /etc/ssl/certs/ca-certificates.crt'
+                    + ' && printf %s ' + shlex.quote(certificate)
+                    + ' > /tmp/oracle-ca.pem && curl --fail --silent --show-error --max-time 15'
+                    + ' --cacert /tmp/oracle-ca.pem ' + secure_base + '/curl'
+                    + '; status=$?; test "$status" -eq 0 || exit "$status"'
+                    + '; if curl --fail --silent --max-time 5 --noproxy "" '
+                    + f'http://127.0.0.1:{server.server_port}/curl; then exit 91; fi')),
             ]
             tool = None
             if conversation and step < len(calls):
@@ -272,12 +297,45 @@ def main():
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    # Local TLS, with certificate validation enabled. The private key never
+    # enters a cell; curl receives only this fixture's public certificate.
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'stream.oracle.test')])
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(hours=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName('stream.oracle.test')]), False)
+            .sign(key, hashes.SHA256()))
+    certificate = cert.public_bytes(serialization.Encoding.PEM).decode()
+    tls_files = tempfile.TemporaryDirectory(prefix='oracle-tls-')
+    cert_path, key_path = Path(tls_files.name) / 'cert.pem', Path(tls_files.name) / 'key.pem'
+    cert_path.write_text(certificate)
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(cert_path, key_path)
+    secure = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    secure.socket = tls.wrap_socket(secure.socket, server_side=True)
+    threading.Thread(target=secure.serve_forever, daemon=True).start()
     from tinyassets import universe_egress
 
     base = f"http://stream.oracle.test:{server.server_port}"
+    secure_base = f'https://stream.oracle.test:{secure.server_port}'
+    original_checked = universe_egress._checked_addresses
 
     def checked(host, port):
-        if host != "stream.oracle.test" or port != server.server_port:
+        if host != "stream.oracle.test" or port not in (server.server_port, secure.server_port):
+            if host == '127.0.0.1':
+                original_checked(host, port)  # the real SSRF refusal, not the fixture policy
             raise universe_egress.EgressRefused("oracle endpoint only")
         return ["127.0.0.1"]
 
@@ -362,11 +420,26 @@ def main():
     import asyncio
 
     from fastmcp import Client
+    from role_run_probe import prove_runs
 
     async def chat():
         results = {}
         async with Client("http://127.0.0.1:8001/mcp", auth="oracle-local", timeout=180) as client:
-            for provider in ("claude-code", "codex"):
+            from tinyassets.custom_agents import create_binding, publish_definition
+
+            definition = publish_definition(Path('/data'), author_id=owner, payload={
+                'schema_version': 1, 'name': 'Oracle sub-agent', 'components': {
+                    'identity': {'kind': 'soul', 'config': {
+                        'instructions': 'Follow the test request.'}}}})
+            binding = create_binding(Path('/data'), universe_id=center,
+                definition_id=definition['agent_definition_id'], created_by=owner,
+                payload={'schema_version': 1, 'name': 'Oracle sub-agent'})
+            turns = (("claude-code", 'main'), ("codex", 'main'),
+                     ('claude-code', binding['agent_binding_id']))
+            if os.environ.get('ORACLE_RUNS_ONLY') == '1':
+                turns = ()
+                active.update(step=4, runs=[], path='/u/oracle-unused', before='', after='')
+            for provider, agent in turns:
                 import secrets
 
                 nonce = secrets.token_hex(12)
@@ -384,18 +457,23 @@ def main():
                         "fallbacks": [],
                         "efforts": [],
                     }
+                arguments['agent_id'] = agent
                 result = await client.call_tool("converse", arguments)
                 document = result.data
                 assert document.get("reply") == answer, 'oracle reply mismatch'
                 assert document["execution"]["provider"] == provider, 'oracle provider mismatch'
                 assert active['step'] == 4 and len(active['runs']) == 5, 'oracle tools incomplete'
                 assert len(requests) > before, "reply did not reach the local streaming endpoint"
-                results[provider] = dict(reply=document["reply"], requests=len(requests) - before,
+                assert b'ORACLE curl egress succeeded' in active['runs'][-1].output
+                results[provider + ':' + agent] = dict(
+                    reply=document["reply"], requests=len(requests) - before,
                     tools=['write', 'read', 'edit', 'bash'],
                     side_requests=active.get('side', 0),
                     exit_codes=[run.exit_code for run in active['runs']])
+            graph_runs = await prove_runs(client, center, owner)
         print(
-            "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results, launches=launches)),
+            "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results, launches=launches,
+                                                     graph_runs=graph_runs)),
             flush=True,
         )
 
@@ -405,6 +483,7 @@ def main():
         from tinyassets.cell_diagnostics import failure_reason
 
         print('ORACLE FAILURE ' + failure_reason(exc, 'decoder'), flush=True)
+        print('ORACLE DETAIL ' + str(exc), flush=True)
         raise
 
 

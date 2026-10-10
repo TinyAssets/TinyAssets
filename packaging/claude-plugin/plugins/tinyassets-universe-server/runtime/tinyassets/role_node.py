@@ -54,9 +54,8 @@ def _workspace_fd(workspace):
 
 def run(instance, *, invoke, workspace, **request):
     from tinyassets import role_decoder
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
 
     client = role_decoder._bounded_client
@@ -64,11 +63,7 @@ def run(instance, *, invoke, workspace, **request):
         raise RuntimeError('node requires its bounded owner launcher and command center')
     root = data_dir().resolve()
     center = Path(instance.universe_dir)
-    principal = current_identity().user_id
-    if (center.parent != root or center.resolve() != center
-            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
-                root, universe_id=center.name, actor_id=principal) == 'admin')):
-        raise PermissionError('node owner scope is not admitted')
+    principal = owner_principal(center)
     if instance.launcher is not None and type(instance.launcher) is not sandbox.BwrapLauncher:
         raise ValueError('node cell cannot replace the fixed nested jail')
     timeout = request['timeout']

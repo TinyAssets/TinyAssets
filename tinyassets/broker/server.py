@@ -322,6 +322,9 @@ class _Connection:
         elif op == "CENTER_ADMISSION":
             answer = await asyncio.to_thread(self._center_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "ADMITTED_OWNER":
+            answer = await asyncio.to_thread(self._admitted_owner, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -345,6 +348,9 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CONNECTION_CATALOG":
             answer = await asyncio.to_thread(self._connection_catalog, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "BROWSER_VAULT":
+            answer = await asyncio.to_thread(self._browser_vault, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "FENCE":
             try:
@@ -384,6 +390,17 @@ class _Connection:
                 return {"op": "OWNER_IDENTITY_IS", "uid": identity.uid, "gid": identity.gid}
         except Exception:  # noqa: BLE001 - no identity, path or persisted state on refusal
             return {"op": "OWNER_IDENTITY_REFUSED"}
+
+    def _admitted_owner(self, doc: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if (set(doc) != {'op', 'center', 'generation', 'token'}
+                    or type(doc['generation']) is not int or type(doc['token']) is not str):
+                raise ValueError('invalid admitted owner request')
+            with self._server._fence.send(doc['generation'], doc['token']):
+                principal = self._server._owner_identities.admitted_owner(doc['center'])
+                return {'op': 'ADMITTED_OWNER_IS', 'principal': principal}
+        except Exception:  # noqa: BLE001 - do not expose broker state on refusal
+            return {'op': 'ADMITTED_OWNER_REFUSED'}
 
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
@@ -455,6 +472,21 @@ class _Connection:
                 "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                 else "refused")
             return {"op": "LEDGER_REFUSED", "error_class": error}
+
+    def _browser_vault(self, doc):
+        from tinyassets.broker.browser_vault import local_operation
+
+        try:
+            if set(doc) != {'op', 'principal', 'command_center', 'generation', 'token', 'document'}:
+                raise ValueError('invalid browser custody fields')
+            _namespace(doc['principal'], doc['command_center'])
+            with self._server._fence.send(doc['generation'], doc['token']):
+                result = local_operation(self._server._ledger_for(doc['principal']),
+                    principal=doc['principal'], command_center=doc['command_center'],
+                    document=doc['document'])
+                return {'op': 'BROWSER_RESULT', 'result': result}
+        except Exception:  # noqa: BLE001 - credentials never enter error payloads
+            return {'op': 'BROWSER_REFUSED'}
 
     def _connection_catalog(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.catalog import local_page, validate

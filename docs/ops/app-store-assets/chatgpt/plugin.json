@@ -1,0 +1,37 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tinyassets",
+  "version": "0.1.0",
+  "description": "Work with your TinyAssets command center, inspect workflows, and manage shared knowledge from chat.",
+  "author": {
+    "name": "TinyAssets",
+    "email": "ops@tinyassets.io",
+    "url": "https://tinyassets.io"
+  },
+  "homepage": "https://tinyassets.io",
+  "repository": "https://github.com/TinyAssets/TinyAssets",
+  "license": "MIT",
+  "keywords": ["workflows", "knowledge", "command center"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "TinyAssets",
+        "shortDescription": "Inspect workflows and work with your command center.",
+        "longDescription": "Connect your assistant to your own TinyAssets command center. Inspect workflow graphs and run status, read shared knowledge, edit workflows and pages, and send requests to your command-center agent. Writes can modify or publish data. Workflow execution and agent messages can use connected compute and external services. Requires a TinyAssets account; execution requires a configured model source and available compute.",
+        "developerName": "TinyAssets",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://tinyassets.io",
+        "privacyPolicyURL": "https://tinyassets.io/legal/#privacy",
+        "termsOfServiceURL": "https://tinyassets.io/legal/#terms",
+        "defaultPrompt": [
+          "Check my TinyAssets connection and show my workflows.",
+          "Read the notes in my TinyAssets command center.",
+          "Show the status of my latest TinyAssets workflow run."
+        ],
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
+      }
+    }
+  }
+}

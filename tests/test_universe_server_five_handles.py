@@ -34,11 +34,11 @@ CANONICAL_PUBLIC_TOOLS = {
 
 EXPECTED_ANNOTATIONS = {
     "read_graph": {"readOnlyHint": True, "idempotentHint": True},
-    "write_graph": {"readOnlyHint": False, "openWorldHint": False},
-    "run_graph": {"readOnlyHint": False, "openWorldHint": False},
+    "write_graph": {"readOnlyHint": False, "openWorldHint": True},
+    "run_graph": {"readOnlyHint": False, "openWorldHint": True},
     "read_page": {"readOnlyHint": True, "idempotentHint": True},
     "write_page": {"readOnlyHint": False, "openWorldHint": True},
-    "converse": {"readOnlyHint": False, "openWorldHint": False},
+    "converse": {"readOnlyHint": False, "openWorldHint": True},
     "get_status": {"readOnlyHint": True, "idempotentHint": True},
 }
 

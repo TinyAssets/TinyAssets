@@ -244,7 +244,7 @@ RUN set -e; \
         -o /tmp/gh.deb; \
     echo "${gh_sha}  /tmp/gh.deb" | sha256sum -c -; \
     apt-get install -y --no-install-recommends /tmp/gh.deb; \
-    apt-get purge -y curl gnupg; \
+    apt-get purge -y gnupg; \
     rm -f /tmp/nodesource-repo.gpg.key /tmp/gh.deb; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 1001 tinyassets; \
