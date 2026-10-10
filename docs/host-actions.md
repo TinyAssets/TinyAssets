@@ -12,6 +12,21 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Connector directory submissions (2026-10-10)
+
+Packet: [requirements, form answers, assets and isolated reviewer plan](ops/connector-directory-listings.md).
+Engineering readiness gaps are listed there; do not attest they are resolved yet.
+
+| Submission | Smallest founder-only action |
+|---|---|
+| Meta Muse (first) | Open [Connector Platform](https://muse.ai/platform) with the company account; supply actual legal identity and a separate reviewer identity, accept Meta's terms and submit the packet once its prerequisites pass. Custom-connector access is not required for this submission route. |
+| ChatGPT | Open [Plugins](https://platform.openai.com/plugins), verify the publishing identity, supply the domain challenge to engineering and a separate reviewer identity; upload the prepared packet/package, accept terms and submit after review tests pass; publish when approved. |
+| Claude | Open [directory management](https://claude.ai/directory/manage) on a paid account; choose MCP connector, supply actual company identity and separate reviewer identity, accept the directory terms and submit the packet after tool tests and policy checks pass. |
+
+Never provide the founder's account, command center or model credentials to reviewers.
+
+---
+
 ## Delete the GitHub OAuth App (2026-10-03)
 
 **Why:** `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` are removed from the
