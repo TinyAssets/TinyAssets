@@ -152,7 +152,6 @@ PINNED: dict[str, list[str]] = {
         "put_file_handle: .write_bytes()",
     ],
     "tinyassets/auto_ship_ledger.py": [
-        "_file_lock: os.open()",
         "_read_raw: .open()",
         "_write_raw: .open()",
         "_write_raw: os.replace()",
@@ -162,7 +161,6 @@ PINNED: dict[str, list[str]] = {
         "_brain: .open()",
     ],
     "tinyassets/bid/execution_log.py": [
-        "_exec_log_lock: os.open()",
         "append_execution_log_entry: .write_text()",
         "append_execution_log_entry: os.replace()",
         "read_execution_log: .read_text()",
@@ -180,12 +178,6 @@ PINNED: dict[str, list[str]] = {
         "_rollback_yaml: .write_bytes()",
         "_snapshot_paths: .read_bytes()",
         "_write_yaml: .write_text()",
-    ],
-    "tinyassets/config.py": [
-        "write_provider_assignment_projection: os.replace()",
-        "write_provider_assignment_projection: os.unlink()",
-        "write_universe_config_fields: os.replace()",
-        "write_universe_config_fields: os.unlink()",
     ],
     "tinyassets/credential_refresh.py": [
         "file_lock: .open()",
@@ -402,7 +394,6 @@ PINNED: dict[str, list[str]] = {
         "adopt_newer_on_disk_document: .read_bytes()",
     ],
     "tinyassets/subscriptions.py": [
-        "_file_lock: os.open()",
         "_read_raw: .read_text()",
         "_write_raw: .write_text()",
         "_write_raw: os.replace()",

@@ -46,7 +46,9 @@ from pathlib import Path
 from typing import Iterator
 
 LEDGER_FILENAME = "auto_ship_attempts.jsonl"
-LOCK_FILENAME = "auto_ship_attempts.jsonl.lock"
+# Dotted: a platform coordination file, never owner content
+# (command_center_layout.PLATFORM_LOCK_NAMES).
+LOCK_FILENAME = ".auto_ship_attempts.jsonl.lock"
 
 #: Valid ``ship_status`` values across Phase 1-3 (§10).
 VALID_SHIP_STATUSES: frozenset[str] = frozenset({
@@ -190,14 +192,15 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
 
     Same primitive as ``tinyassets.branch_tasks._file_lock`` — kept as a
     private mirror rather than importing it because the lock is
-    namespaced to ``auto_ship_attempts.jsonl.lock``, not to the queue
+    namespaced to ``.auto_ship_attempts.jsonl.lock``, not to the queue
     file. Two concurrent ledger writes serialize; ledger writes do
     NOT serialize against branch_tasks writes (they touch different
-    files anyway).
+    files anyway). Opened link-free through ``universe_files.open_lock_file``.
     """
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lock_file = _lock_path(universe_path)
-    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_path, LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt
