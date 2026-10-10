@@ -1668,7 +1668,7 @@ const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
   } finally { active--; }
 }};
 MCP.callTool=async(name,args)=>{statusCalls.push({name,args});return SCENARIO.consumerStatus;};
-const CFG={build: SCENARIO.build||"b1"};
+const CFG={build: SCENARIO.build||"b1",shell_version:SCENARIO.shellVersion};
 const token=()=>"t";
 Owner.getConversation=async()=>{
   if(SCENARIO.historyError) throw new Error("peek failed");
@@ -1684,7 +1684,8 @@ function enterSignedOut(){ messages.push({role:"signed-out"}); }
 let reloaded=false; const location={reload:()=>{ reloaded=true; }};
 const AppRecovery={upgrade:()=>location.reload()};
 let fetched=0;
-async function fetch(){ fetched++; return {ok:true,headers:{get:()=>SCENARIO.liveBuild||null}}; }
+async function fetch(){ fetched++; return {ok:true,headers:{get:name=>
+  name==="X-TinyAssets-Shell" ? SCENARIO.liveShell||null : SCENARIO.liveBuild||null}}; }
 __APP_FUNCTIONS__
 (async()=>{
   const out={};

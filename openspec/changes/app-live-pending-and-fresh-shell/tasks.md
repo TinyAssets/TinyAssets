@@ -6,5 +6,5 @@
 ## 2. Verification and delivery
 
 - [x] 2.1 Prove cache/version, cross-window pending/final behavior and draft upgrade in Chromium; connector and isolation tests.
-- [ ] 2.2 Run touched tests, ruff, structural guards, plugin build and hygiene; obtain required floor review.
-- [ ] 2.3 Sync spec, commit explicit paths, push and open non-draft PR.
+- [x] 2.2 Run touched tests, ruff, structural guards, plugin build and hygiene; obtain required floor review.
+- [x] 2.3 Sync spec, commit explicit paths, push and open non-draft PR.

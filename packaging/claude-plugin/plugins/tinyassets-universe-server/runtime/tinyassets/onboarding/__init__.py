@@ -159,6 +159,7 @@ def app_config(build: str | None = None) -> dict[str, Any]:
         # itself (the desktop app loads this page once at startup and otherwise
         # keeps showing the form it started with).
         "build": build_sha() if build is None else build,
+        "shell_version": shell_version(),
         "issuer": issuer,
         "authorization_endpoint": f"{issuer}/oauth2/authorize" if issuer else "",
         "token_endpoint": f"{issuer}/oauth2/token" if issuer else "",
@@ -278,10 +279,20 @@ def request_theme() -> dict[str, str]:
 
 
 def build_sha() -> str:
-    """Version the bytes being served, independent of the deploy receipt timing."""
-    from tinyassets.onboarding.app_modules import shell_version
+    """The deployed git SHA: also consumed by scripts/deployed_sha.py."""
+    try:
+        from tinyassets.api.status import _load_release_state
 
-    return shell_version(_HTML_PATH)
+        return str(_load_release_state().get("git_sha") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing receipt must never break the page
+        return ""
+
+
+def shell_version() -> str:
+    """Version served bytes independently of the deploy receipt timing."""
+    from tinyassets.onboarding.app_modules import shell_version as content_version
+
+    return content_version(_HTML_PATH)
 
 
 async def _handle_app(request: Any) -> Any:
@@ -311,6 +322,7 @@ def app_response(build: str | None = None) -> Any:
             "Cache-Control": "no-store",
             # Same value the page embeds; a HEAD probe compares the two.
             "X-TinyAssets-Build": build,
+            "X-TinyAssets-Shell": shell_version(),
         },
     )
 

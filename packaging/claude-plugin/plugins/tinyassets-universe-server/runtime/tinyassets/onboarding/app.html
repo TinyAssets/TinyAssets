@@ -10672,9 +10672,9 @@
   // The desktop app loads this page once at startup; without this a user could keep
   // looking at a form from before the latest deploy (it happened). Compare the
   // build we were served with the build the server serves NOW; reload on change.
-  // Never reloads mid-typing: only when nothing is being entered in a field.
+  // Composer drafts survive via AppRecovery; other editors and active sends hold the update.
   async function checkForNewBuild(){
-    if(!CFG.build) return;
+    if(!CFG.build&&!CFG.shell_version) return;
     // Every hold is asked TWICE: before the probe and again when it answers.
     // The probe can take seconds (a tab waking from sleep reopens its
     // connections), and a founder who started typing and sent in the meantime
@@ -10695,7 +10695,7 @@
     // settles is cut by the proxy long before that, so the bound only has to
     // exist, not be tight. Past it a reload IS the recovery - the message
     // survives in the in-flight record and is offered back after it. A failed
-    // message holds the update ~20 minutes (plus at most one 10-minute tick).
+    // message holds the update ~20 minutes (plus at most one minute's tick).
       if($("btn-send").disabled && (Date.now()-turnStartedAt) < 3*60*60*1000) return true;
       const pending=readInflight();
       if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return true;
@@ -10706,7 +10706,9 @@
       const r=await fetch("/app",{method:"HEAD",cache:"no-store",credentials:"omit",
         signal:AbortSignal.timeout(10000)});
       const live=r.headers.get("X-TinyAssets-Build");
-      if(r.ok && live && live!==CFG.build && !held()) AppRecovery.upgrade();
+      const shell=r.headers.get("X-TinyAssets-Shell");
+      if(r.ok && ((live&&live!==CFG.build)||
+         (CFG.shell_version&&shell&&shell!==CFG.shell_version)) && !held()) AppRecovery.upgrade();
     }catch(_e){ /* offline or blocked: try again next time */ }
   }
 

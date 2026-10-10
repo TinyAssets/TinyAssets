@@ -11,10 +11,16 @@ window.AppRecovery=(()=>{
   function notice(){node("app-recovery-failed").hidden=false;}
   function saveDraft(){
     const input=node("composer-input");
-    if(!input||!input.value) return true;
+    if(!input||(!input.value&&!leaving)) return true;
     try{
       const scope=hooks&&hooks.scope();
       if(!scope||!scope.owner||!scope.home) return false;
+      if(!input.value){
+        const saved=JSON.parse(sessionStorage.getItem(draftKey));
+        if(saved&&saved.owner===scope.owner&&saved.home===scope.home&&saved.agent===scope.agent)
+          sessionStorage.removeItem(draftKey);
+        return true;
+      }
       sessionStorage.setItem(draftKey,JSON.stringify({...scope,text:input.value}));
       return true;
     }catch(_e){return false;}
@@ -85,15 +91,17 @@ window.AppRecovery=(()=>{
     }
   }
   async function checkBuild(){
-    if(!cfg.build||probing) return;
+    if((!cfg.build&&!cfg.shell_version)||probing) return;
     probing=true;
     try{
       const response=await fetch("/app",{method:"HEAD",cache:"no-store",credentials:"omit",
         signal:AbortSignal.timeout(10000)});
       const live=response.headers.get("X-TinyAssets-Build");
+      const shell=response.headers.get("X-TinyAssets-Shell");
       // A broken page never consults the turn/typing hold. The durable turn
       // record already belongs to the app; save only the unsent draft here.
-      if(response.ok&&live&&live!==cfg.build){
+      if(response.ok&&((live&&live!==cfg.build)||
+         (cfg.shell_version&&shell&&shell!==cfg.shell_version))){
         const state=health();
         if(booted&&!failed&&(!state.expected||state.healthy)&&hooks&&hooks.holdUpdate())return;
         notice();
@@ -128,6 +136,9 @@ window.AppRecovery=(()=>{
   setInterval(checkBuild,60000);
   window.addEventListener("online",checkBuild);
   window.addEventListener("focus",checkBuild);
+  // The old document stays editable until navigation commits. Capture its
+  // latest text before the main page's pagehide handlers retire voice/input.
+  window.addEventListener("pagehide",()=>{if(leaving)saveDraft();});
   return {attach(value){hooks=value;},started(){booted=true;restoreDraft();},
     fail,restoreDraft,checkBuild,upgrade:()=>navigate(),broken:()=>failed};
 })();

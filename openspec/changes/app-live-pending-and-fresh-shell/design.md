@@ -10,7 +10,7 @@ Make accepted conversation intent and completion visible across surfaces and upd
 
 Read pending canonical intent from the existing admission/run records under the verified home and principal. Expose pending entries separately from paged terminal rows, with admission identity and live state. Exclude terminal projections using their durable marker, including the crash window before the admission projection flag updates. Preserve connector fencing. Merge both sets in the browser by stable identity; poll with owner/home/agent/login checks and no overlapping reads.
 
-Use a hash of served shell assets/config as the build identity, retaining no-store for shell and immutable content-keyed modules. Reuse the existing session-scoped draft recovery for automatic updates. Avoid reload while an in-flight send or attachment cannot be recovered safely.
+Use a hash of served shell assets in X-TinyAssets-Shell alongside the unchanged deployment SHA in X-TinyAssets-Build, retaining no-store for shell and immutable content-keyed modules. Reuse session-scoped draft recovery for automatic updates; the departing page cannot consume its saved record and captures late edits again on pagehide. Avoid reload while an in-flight send or attachment cannot be recovered safely.
 
 ## Risks / Trade-offs
 
