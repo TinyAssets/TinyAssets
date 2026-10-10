@@ -935,10 +935,14 @@ def _read_connection_context(
     if not principal:
         return None, None, "no_universe_authority"
     try:
+        if principal in (f'universe:{universe_id}', f'command_center:{universe_id}'):
+            from tinyassets.role_scope import owner_principal
+
+            principal = owner_principal(Path(data_root) / universe_id, actor=principal)
         grant, resource, _incarnation = authorized_connection(
             Path(data_root), principal=principal, command_center=universe_id,
             grant_id=grant_id, connection_id=connection_id)
-    except GrantResolutionError:
+    except (GrantResolutionError, PermissionError):
         return None, None, "connection_authority_unavailable"
     return grant, resource.to_view(), ""
 

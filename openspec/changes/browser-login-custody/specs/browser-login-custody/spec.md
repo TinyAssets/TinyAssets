@@ -1,34 +1,66 @@
 ## ADDED Requirements
 
-### Requirement: Browser login keeps reusable credentials out of agent context
-Browser login SHALL reuse the D5 context and protected owner takeover with an owner/session/draft/origin/expiry binding. Passwords, MFA values, cookies and reusable session credentials SHALL remain in daemon custody; agent code SHALL receive only scoped surrogate handles. Agent observation/control and login artifact capture SHALL be suspended during credential entry, and credential-bearing data SHALL be excluded when returning control.
+### Requirement: One interruption and remembered account custody
+The inline action SHALL be labelled Sign in with its exact origin and open owner
+takeover directly. Authentication SHALL require a read-only authenticated-page
+check at that origin. Success SHALL seal the session and atomically resolve the
+existing request with its durable continuation wake, without a second tap or
+message. A valid remembered site/account session SHALL require zero connection
+taps. Ambiguous accounts SHALL require selection, never arbitrary reuse.
 
-The credentialed context SHALL be isolated from the agent shell/filesystem and expose only structured actions and sanitized page observations. It SHALL NOT expose arbitrary evaluation, DevTools, cookie/storage exports, profile files, raw network bodies/headers or credential-bearing input/URL fields. A site whose safe observations cannot be established SHALL remain owner-only with an explicit limitation.
+#### Scenario: Reuse, expiry and revoke
+- **WHEN** a later task uses a remembered account
+- **THEN** a fresh browser verifies its authenticated page before acting
+- **AND** expiry returns a one-tap login on the same connection, while revocation clears custody and fences old captures
 
-#### Scenario: Agent tries to read credentials after takeover ends
-- **WHEN** an agent attempts script evaluation, document.cookie/localStorage access, profile-file reads or a network trace in the credentialed context
-- **THEN** the broker refuses those operations and exposes only sanitized permitted page observations
-- **AND** a surface it cannot safely expose remains in owner-only control
+### Requirement: Protected filling binds the destination
+Credentials SHALL reach only the owner-bound browser document and origin shown
+in the protected sheet. The model SHALL have no filling or observation access
+during takeover. Device password-manager integration SHALL respect OS and web
+origin restrictions; unsupported passkeys/autofill SHALL be reported honestly.
 
-#### Scenario: Owner logs into a site without an API
-- **WHEN** the owner completes the protected login view from the inline card
-- **THEN** the broker stores the session in daemon custody, activates the owner-bound connection and returns ordinary authenticated page access under current permission
-- **AND** chat, screenshots, DOM snapshots, logs, network traces and extension inputs contain no captured credentials
+#### Scenario: Navigation races a credential fill
+- **WHEN** the destination document, frame or origin changes after a field is displayed
+- **THEN** the stale field handle is refused without sending its credential
+- **AND** a detected site block stays blocked with no stealth retries
 
-#### Scenario: Login redirects or requires a passkey
-- **WHEN** credential entry targets a new origin or the site needs owner-only challenge completion
-- **THEN** the broker requests the new origin binding or keeps owner takeover waiting with an honest status
-- **AND** it never forwards existing credentials to an unbound origin or pretends login succeeded
+### Requirement: Any website can be offered as a browser connection
+The system SHALL offer normal website login through a protected live owner view without developer registration or provider-specific code. The browser SHALL run in the owner's isolated cell with no agent-accessible profile or control channel.
 
-### Requirement: Connection finalization and removal are recoverable and scoped
-New connection shapes SHALL reuse the existing coordinator, request idempotency, incarnation fencing and durable continuation with processed-ack. Cancellation, Stop, expiry, logout/account switch or a changed request SHALL invalidate pending capture/finalization. Revocation SHALL prevent further calls before cleanup and SHALL preserve unrelated connections. Schema migration SHALL preserve existing HTTP records and fail visibly on unsupported versions without deleting new-shape custody records.
+#### Scenario: Password or redirect login
+- **WHEN** the owner taps Sign in and completes normal login, including an identity-provider redirect or popup
+- **THEN** only the protected view receives frames and input, and the broker seals reusable state for that owner
+- **AND** a later `ta` call can act through a fresh browser using that state
 
-#### Scenario: Login completion races Stop or restart
-- **WHEN** a late callback arrives after Stop, or a process restarts between credential deposit and activation
-- **THEN** cancelled work cannot activate, and valid recovery reconciles the same draft with at most one active grant and one committed continuation result
-- **AND** abandoned staged custody is cleaned without leaking secrets or waking another owner's task
+### Requirement: Session custody is private and revocable
+Browser state SHALL be encrypted in broker custody bound to owner/home/connection/revision, never exported to model, agent filesystem or logs. Agent calls SHALL expose structured actions and sanitized untrusted observations only. Network destinations SHALL be validated and DNS-pinned to public addresses.
 
-#### Scenario: Disconnect and reconnect use the same endpoint
-- **WHEN** an owner removes an attachment/browser connection and reconnects later
-- **THEN** old approvals, surrogates and transport sessions cannot authorize the new incarnation
-- **AND** removing an attachment preserves an independent backing HTTP connection while removing that backing connection fences its dependents
+#### Scenario: Foreign owner or credential inspection
+- **WHEN** another owner names the connection, or an agent requests capture frames, credentials, evaluate, CDP or storage export
+- **THEN** access is refused without returning private state
+
+#### Scenario: Revoke races completion
+- **WHEN** an owner revokes while an older capture or action is completing
+- **THEN** the connection is fenced and ciphertext removed; stale completion cannot restore access
+
+#### Scenario: Expiry or challenge
+- **WHEN** authentication expires or a site needs CAPTCHA, MFA or unsupported device authentication
+- **THEN** the same protected live view offers takeover and reports unsupported device flows truthfully
+
+### Requirement: Separate browser encryption keys from data backups
+Per-owner keys SHALL live in broker-only `/var/lib/ta-broker/browser-vault` on
+`tinyassets-browser-keys`, separately from the backed-up data volume. Data
+backups SHALL exclude legacy `.broker/browser-vault` keys in every tier and
+SHALL NOT back up the key volume. Encryption protects data-only theft, not
+compromise of the running trusted processes or theft of both volumes. Loss of
+the unbacked-up key volume requires new sign-in. Older backups containing keys
+retain their original exposure.
+
+#### Scenario: Migrate or erase an existing owner key
+- **WHEN** custody encounters a legacy key
+- **THEN** it durably publishes the same key outside the data volume before removing the old copy, resumes matching partial migration, and refuses conflicting copies
+- **AND** account erasure destroys both possible owner key copies without touching other owners
+
+#### Scenario: Small storage values occur in page text
+- **WHEN** storage contains short values such as `1` or `en`, common tokens such as `undefined`, and a long session token
+- **THEN** agent observations preserve ordinary text and redact the session token while retaining the untrusted flag

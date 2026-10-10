@@ -77,6 +77,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(('0.0.0.0', 80), Handler).serve_forever()
 """
 
+# An oracle may share this isolated namespace with its own metadata sidecar.
+# Only loopback exists, so concurrent oracles need no shared Docker subnet.
+# NET_ADMIN belongs solely to the fixture that assigns the fixed metadata IP;
+# the daemon still starts with exactly COMPOSE_CAPS and COMPOSE_SECURITY.
+ISOLATED_METADATA_SETUP = """
+import fcntl, socket, struct
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
+    fcntl.ioctl(channel, 0x8916, struct.pack('16sH2s4s8s', b'lo:oracle',
+        socket.AF_INET, b'\\0' * 2, socket.inet_aton('169.254.169.254'), b'\\0' * 8))
+"""
+
 
 # --------------------------------------------------------------------------- #
 # in-container program: PID1 runs the production bootstrap, then the legs
@@ -1183,8 +1194,17 @@ def _metadata(args, *, start):
     name = f"{args.prefix}-metadata"
     docker("rm", "-f", name, check=False)
     if not start:
-        docker("network", "rm", args.network, check=False)
+        if not args.isolated_metadata:
+            docker("network", "rm", args.network, check=False)
         return None
+    if args.isolated_metadata:
+        started = docker('run', '-d', '--name', name, '--network', 'none', '--user', '0',
+            '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_BIND_SERVICE',
+            '--entrypoint', '/opt/venv/bin/python', args.image, '-I', '-B', '-c',
+            ISOLATED_METADATA_SETUP + METADATA_SERVER.format(body=METADATA_INSTANCE_ID))
+        args.network = 'container:' + name
+        expect(started.returncode == 0, 'isolated metadata namespace (loopback only)')
+        return name
     _network(args)
     started = subprocess.run(
         ["docker", "run", "-d", "--name", name, "--network", args.network,
@@ -1302,19 +1322,26 @@ def stage_providers(args):
     return {"probe": "PROVIDER CELL PROBE PASS"}
 
 
-def stage_chat(args):
+def stage_chat(args, *, runs_only=False):
     """Acceptance: real HTTP converse and both CLIs on the production copy."""
     if not args.backup_archive or not args.command_center:
         raise SystemExit('chat acceptance requires --backup-archive and --command-center')
     _metadata(args, start=True)
     name = f'{args.prefix}-chat'
     docker('rm', '-f', name, check=False)
-    program = Path(__file__).with_name('role_chat_probe.py').read_text(encoding='utf-8')
+    run_probe = Path(__file__).with_name('role_run_probe.py').read_text(encoding='utf-8')
+    program = ('import sys, types\n'
+               'probe = types.ModuleType("role_run_probe")\n'
+               f'exec({run_probe!r}, probe.__dict__)\n'
+               'sys.modules["role_run_probe"] = probe\n'
+               + Path(__file__).with_name('role_chat_probe.py').read_text(encoding='utf-8'))
     command = _posture(name, args.image, args.volume, user=COMPOSE_USER,
         caps=COMPOSE_CAPS, entrypoint='/opt/venv/bin/python', extra=[
             '--rm', '-i', '--network', args.network,
             '-e', 'TINYASSETS_IMAGE=' + args.image,
             '-e', 'TINYASSETS_ENGINE_MCP_TOOLS=1',
+            '-e', 'ORACLE_RUNS_ONLY=' + ('1' if runs_only else '0'),
+            '-e', 'ORACLE_ISOLATED_NETWORK=' + ('1' if args.isolated_metadata else '0'),
             '-e', 'ORACLE_COMMAND_CENTER=' + args.command_center])
     result = subprocess.run(command + ['-I', '-B', '-'], input=program,
                             text=True, encoding='utf-8', capture_output=True, timeout=600)
@@ -1328,12 +1355,18 @@ def stage_chat(args):
     reasons = re.findall(r'owner cell (?:ended|refused): [A-Za-z0-9_.:=-]+',
                          result.stderr)
     reasons += re.findall(r'ORACLE FAILURE [A-Za-z0-9_.:=-]+', result.stdout)
+    reasons += re.findall(r'^ORACLE (?:TOOL FAILURE|DETAIL) .*$', result.stdout, re.M)
     raise RuntimeError('production chat acceptance failed: ' + '; '.join(reasons[-8:])
                        + f'; exit={result.returncode}')
 
 
+def stage_runs(args):
+    """Targeted run iteration; the default chat stage proves these plus all tools."""
+    return stage_chat(args, runs_only=True)
+
+
 STAGES = {"migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
-          "providers": stage_providers, "chat": stage_chat}
+          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs}
 
 
 def main(argv=None):
@@ -1347,6 +1380,8 @@ def main(argv=None):
                         help="name prefix for this run's volume and containers")
     parser.add_argument("--volume", help="data volume name (default <prefix>-data)")
     parser.add_argument("--network", help="docker network name (default <prefix>-net)")
+    parser.add_argument('--isolated-metadata', action='store_true',
+                        help='use isolated loopback metadata for concurrent oracles')
     parser.add_argument("--stages", default="migrate,serve,chat",
                         help="comma-separated subset of " + ",".join(STAGES))
     parser.add_argument("--legs", default=",".join(DEFAULT_LEGS),
@@ -1358,7 +1393,8 @@ def main(argv=None):
     args.volume = args.volume or f"{args.prefix}-data"
     args.network = args.network or f"{args.prefix}-net"
     args.legs = tuple(name for name in args.legs.split(",") if name)
-    if 'chat' in args.stages.split(',') and (not args.backup_archive or not args.command_center):
+    if ({'chat', 'runs'} & set(args.stages.split(','))
+            and (not args.backup_archive or not args.command_center)):
         parser.error('chat acceptance requires --backup-archive and --command-center')
     if args.backup_archive and ('providers' in args.stages.split(',') or
             ('cells' in args.stages.split(',') and args.legs != ('bootstrap',))):

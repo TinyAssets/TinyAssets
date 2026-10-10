@@ -2569,7 +2569,8 @@ def _build_source_code_node(
             result = NodeSandbox(
                 timeout=timeout_s,
                 should_cancel=should_cancel,
-                universe_dir=base_path,
+                universe_dir=(effect_chain.base_path if effect_chain is not None
+                              and effect_chain.base_path is not None else base_path),
             ).run_sync(
                 node_id=node.node_id,
                 source_code=src,

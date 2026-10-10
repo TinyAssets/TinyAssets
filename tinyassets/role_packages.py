@@ -63,10 +63,9 @@ def start(universe_dir, revision, *, slots=None, capabilities=None, egress=False
     it exits, the consumer revokes it or a resource guard ends it.
     """
     from tinyassets import role_decoder, role_relays, universe_egress, workspace_fs
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
     from tinyassets.ta_capabilities import Capabilities, JailBridge
 
@@ -77,11 +76,7 @@ def start(universe_dir, revision, *, slots=None, capabilities=None, egress=False
         raise PermissionError('package requires its bounded owner launcher')
     supervisor._protect_daemon()
     root, center = data_dir().resolve(), Path(universe_dir)
-    principal = current_identity().user_id
-    if (center.parent != root or center.resolve() != center
-            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
-                root, universe_id=center.name, actor_id=principal) == 'admin')):
-        raise PermissionError('package owner scope is not admitted')
+    principal = owner_principal(center)
     identity = owner_identity(root, principal=principal)
     source = center / '.runtime' / 'package-cells' / revision
     descriptor = workspace_fs.open_dir_nofollow(source)

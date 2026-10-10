@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
-    "start_activity", "approve_action",
+    "start_activity", "approve_action", "connect_browser",
 })
 # System-created approve_action and notify use dedicated branches before the
 # general gate; classify them too so creation paths cannot escape the inventory.
@@ -260,6 +260,11 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == 'connect_browser':
+        ident = action.get('connection_id', '')
+        if not isinstance(ident, str) or not re.fullmatch('[a-f0-9]{32}', ident):
+            raise ValueError('invalid browser connection')
+        return {'type': kind, 'connection_id': ident}
     if kind == "bind_model_access":
         from tinyassets.api.model_access_requests import validate_action
 
@@ -909,7 +914,8 @@ def _validated_fields(
                 "'help' saying where to find it and a 'url' to that page) -- "
                 "not one unlabelled box for the owner to work out"
             )
-        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent",
+        if action["type"] in ("connect_browser", "extend_http", "remove_http",
+                              "grant_workspace_consent",
                               PATCH_INTAKE_ACTION, "publish", "install"):
             # Nothing to type. For extend_http the key is already in the vault
             # and for remove_http it is on its way out; either way this is a
@@ -1426,7 +1432,7 @@ def request_from_user(
     # request was raised" from "the one you raised before is still waiting".
     # Only the first is something to put on the owner's phone.
     created = row.pop("created", True)
-    if action.get("type") in {"connect", "connect_http"}:
+    if action.get("type") in {"connect", "connect_http", "connect_browser"}:
         from tinyassets.connection_continuations import bind
 
         try:
@@ -2811,6 +2817,9 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
+    if row['action'].get('type') == 'connect_browser':
+        return {'error': 'interactive_approval_required',
+                'detail': 'Use the protected browser Connect card.'}
     if row["action"].get("type") == "approve_action" and (
             "reply" not in document or owner_session is None):
         # Even a reply needs the owner session here: words in the asker's
