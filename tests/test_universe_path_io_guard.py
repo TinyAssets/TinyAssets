@@ -152,7 +152,6 @@ PINNED: dict[str, list[str]] = {
         "put_file_handle: .write_bytes()",
     ],
     "tinyassets/auto_ship_ledger.py": [
-        "_file_lock: os.open()",
         "_read_raw: .open()",
         "_write_raw: .open()",
         "_write_raw: os.replace()",
@@ -180,12 +179,6 @@ PINNED: dict[str, list[str]] = {
         "_rollback_yaml: .write_bytes()",
         "_snapshot_paths: .read_bytes()",
         "_write_yaml: .write_text()",
-    ],
-    "tinyassets/config.py": [
-        "write_provider_assignment_projection: os.replace()",
-        "write_provider_assignment_projection: os.unlink()",
-        "write_universe_config_fields: os.replace()",
-        "write_universe_config_fields: os.unlink()",
     ],
     "tinyassets/credential_refresh.py": [
         "file_lock: .open()",

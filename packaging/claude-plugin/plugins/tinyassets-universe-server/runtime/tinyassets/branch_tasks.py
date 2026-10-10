@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 QUEUE_FILENAME = "branch_tasks.json"
 ARCHIVE_FILENAME = "branch_tasks_archive.json"
-LOCK_FILENAME = "branch_tasks.json.lock"
+# Dotted: a platform coordination file, never owner content
+# (command_center_layout.PLATFORM_LOCK_NAMES).
+LOCK_FILENAME = ".branch_tasks.json.lock"
 # Lease window. INVARIANT: must comfortably exceed the worst-case time between
 # heartbeat refreshes, which happen per graph node (not on an independent
 # timer). A single writer node can run the whole provider fallback chain, each

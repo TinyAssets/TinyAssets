@@ -81,7 +81,8 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
 
 #: Locks a creator writes as an entry OF a home: the admission lock
 #: provider_assignment.py joins onto the universe directory, and
-#: SOUL_LOCK_FILENAME (soul_edit.py). Bare lock is NOT here: its creator puts it
+#: SOUL_LOCK_FILENAME (soul_edit.py), and the queue and auto-ship ledger locks
+#: (branch_tasks.py / auto_ship_ledger.py LOCK_FILENAME). Bare lock is NOT here: its creator puts it
 #: inside a credential snapshot directory beside auth.json (credential_vault.py),
 #: so a home holding one at the top level is something nobody writes, and stays
 #: unknown. (Spelled without a path join on purpose -- test_storage_registry
@@ -89,6 +90,7 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
 #: would read the example as a real on-disk name nobody accounts for.)
 PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
     ".provider-assignment-admission.lock", ".soul.lock",
+    ".branch_tasks.json.lock", ".auto_ship_attempts.jsonl.lock",
 })
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({

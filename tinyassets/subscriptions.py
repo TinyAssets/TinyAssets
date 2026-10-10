@@ -6,7 +6,7 @@ pool directories to scan (``<repo_root>/goal_pool/<goal_slug>/``).
 
 File-locked via a **separate** sidecar
 `<universe>/subscriptions.json.lock` — deliberately distinct from
-`branch_tasks.json.lock` so subscription mutations don't contend
+`.branch_tasks.json.lock` so subscription mutations don't contend
 with dispatcher-cycle queue writes.
 
 Fresh-install default: if the file is missing, the daemon behaves
