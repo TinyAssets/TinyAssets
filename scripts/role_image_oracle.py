@@ -1166,6 +1166,10 @@ def _network(args):
     if docker("network", "inspect", args.network, check=False).returncode != 0:
         docker("network", "create", *(('--internal',) if args.backup_archive else ()),
                "--subnet", METADATA_SUBNET, args.network)
+    if args.backup_archive:
+        internal = docker('network', 'inspect', args.network,
+                          '--format', '{{.Internal}}').stdout.strip()
+        expect(internal == 'true', 'production copy network is internal')
     return args.network
 
 

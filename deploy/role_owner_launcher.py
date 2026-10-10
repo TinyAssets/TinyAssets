@@ -849,7 +849,9 @@ class OwnerLauncher:
         os.close(error_write)
         error_sink = (socket.socket(fileno=os.dup(received[-2]))
                       if kind == 'provider-exec' else None)
-        self.diagnostics[pid] = [error_read, error_sink, b'', None]
+        # At most 256 KiB of pending stderr per cell; capture never blocks the
+        # mapper. A slow consumer receives an explicit truncation completion.
+        self.diagnostics[pid] = [error_read, error_sink, b'', None, bytearray(), False, None]
         # A provider turn or package server runs until it finishes: lifetime is
         # the daemon's revocation (EOF), daemon death or the RSS/process guard,
         # never a clock.
@@ -1031,9 +1033,13 @@ class OwnerLauncher:
                 break
             data = state[2] + chunk
             matches = _diagnostics['PATTERN'].findall(data)
-            if matches:
-                state[3] = matches[-1].decode('ascii')
-            elif b'bwrap:' in data and state[3] is None:
+            for match in matches:
+                reason = match.decode('ascii')
+                if reason.startswith('relay:') and not reason.startswith('relay:bootstrap:'):
+                    state[6] = reason  # One bounded notice; never a terminal verdict.
+                else:
+                    state[3] = reason
+            if not matches and b'bwrap:' in data and state[3] is None:
                 number = next((code for message, code in (
                     (b'Permission denied', 13), (b'Operation not permitted', 1),
                     (b'No such file or directory', 2), (b'Invalid argument', 22),
@@ -1041,19 +1047,36 @@ class OwnerLauncher:
                 state[3] = f'bwrap:bootstrap-refused:errno={number}'
             state[2] = data[-256:]
             if state[1] is not None:
-                try:
-                    state[1].send(chunk, socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL)
-                except (BlockingIOError, BrokenPipeError, ConnectionResetError):
-                    pass  # Diagnostic capture never waits for a stderr consumer.
+                room = 256 * 1024 - len(state[4])
+                state[4].extend(chunk[:room])
+                state[5] |= len(chunk) > room
+                self._flush_stderr(state)
+        self._flush_stderr(state)
+
+    @staticmethod
+    def _flush_stderr(state):
+        if state[1] is not None and state[4]:
+            try:
+                sent = state[1].send(state[4], socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL)
+                del state[4][:sent]
+            except BlockingIOError:
+                pass  # Retry on the next mapper iteration, retaining every byte.
+            except (BrokenPipeError, ConnectionResetError):
+                state[5] = True
 
     def _finish_diagnostics(self, pid, code, stop_reason=None):
         self._drain_diagnostics(pid)
-        fd, sink, _, reason = self.diagnostics.pop(pid)
+        fd, sink, _, reason, pending, truncated, relay = self.diagnostics.pop(pid)
         os.close(fd)
         if sink is not None:
             sink.close()
+        if relay:
+            os.write(2, ('owner cell relay notice: ' + relay + '\n').encode())
         reason = stop_reason or reason or (
             f'cell:signal={-code}' if code < 0 else f'cell:exit={code}')
+        if truncated or pending:
+            reason += ';stderr_truncated'
+            os.write(2, b'owner cell stderr truncated: consumer did not drain bounded buffer\n')
         if code or reason.startswith(('decoder:', 'launcher:', 'bwrap:')):
             os.write(2, ('owner cell ended: ' + reason + '\n').encode())
         return reason

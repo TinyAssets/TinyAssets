@@ -81,6 +81,10 @@ and carry the diagnostic on its authenticated completion channel. Provider strea
 SHALL collect that completion and raise a ProviderError with the reason, rather than a bare
 socket reset. No exception message, source line, argv, environment or owner bytes SHALL enter
 the diagnostic.
+The completion authenticates which cell ended, not the truth of cell-written stderr;
+owner code can forge a bounded diagnostic for its own cell. Relay teardown notices SHALL
+NOT override native provider error classification. Undelivered stderr SHALL be bounded
+and explicitly reported as truncated.
 
 #### Scenario: A decoder rejects a provider launch after its cell proof
 - **WHEN** validation or exec fails before the CLI consumes its stdin

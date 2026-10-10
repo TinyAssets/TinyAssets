@@ -14,7 +14,9 @@ import os
 import stat
 from pathlib import Path
 
+from tinyassets.owner_launcher_client import OwnerLaunchRefused
 from tinyassets.providers.owned_process import OwnerCellProcess
+from tinyassets.providers.provider_jail import ProviderConfinementError
 from tinyassets.role_provider_cell import safe_environment
 
 MAX_PROOF_BYTES = 65536
@@ -133,6 +135,9 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
             extra={'egress': True, 'engine': 'g' in sockets} if execution
             else {'egress': True},
             directory_fd=descriptor, socket_fds=tuple(relay_fds))
+    except OwnerLaunchRefused as exc:
+        # The client already verified this bounded reason's authenticated sender.
+        raise ProviderConfinementError(str(exc)) from exc
     finally:
         os.close(descriptor)
         for relay_fd in relay_fds:

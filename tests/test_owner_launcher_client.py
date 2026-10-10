@@ -32,6 +32,61 @@ def test_cell_diagnostics_never_echo_exception_material():
     assert not PATTERN.search(b'TA_CELL_FAILURE decoder:secret.py:1:ValueError:errno=None\n')
 
 
+def test_mapper_stderr_backpressure_preserves_bytes_and_reports_overflow():
+    import runpy
+
+    scope = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                              / 'deploy/role_owner_launcher.py'))
+    launcher = object.__new__(scope['OwnerLauncher'])
+    reader, writer = os.pipe()
+    os.set_blocking(reader, False)
+    sink, consumer = socket.socketpair()
+    sink.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    consumer.setblocking(False)
+    state = [reader, sink, b'', None, bytearray(), False, None]
+    launcher.diagnostics = {1: state}
+    try:
+        expected = b''.join(bytes([number]) * 4096 for number in range(20))
+        for offset in range(0, len(expected), 4096):
+            os.write(writer, expected[offset:offset + 4096])
+            launcher._drain_diagnostics(1)
+        assert state[4] and not state[5]
+        received = bytearray()
+        for _ in range(100):
+            try:
+                received.extend(consumer.recv(65536))
+            except BlockingIOError:
+                pass
+            launcher._flush_stderr(state)
+            if len(received) == len(expected):
+                break
+        assert bytes(received) == expected and not state[4]
+        for _ in range(80):
+            os.write(writer, b'x' * 4096)
+            launcher._drain_diagnostics(1)
+        assert len(state[4]) <= 256 * 1024 and state[5]
+        assert 'stderr_truncated' in launcher._finish_diagnostics(1, 1)
+    finally:
+        os.close(writer)
+        if launcher.diagnostics:
+            launcher._finish_diagnostics(1, 1)
+        consumer.close()
+
+
+def test_relay_teardown_does_not_replace_the_cell_exit():
+    import runpy
+
+    scope = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                              / 'deploy/role_owner_launcher.py'))
+    launcher = object.__new__(scope['OwnerLauncher'])
+    reader, writer = os.pipe()
+    os.set_blocking(reader, False)
+    launcher.diagnostics = {1: [reader, None, b'', None, bytearray(), False, None]}
+    os.write(writer, b'TA_CELL_FAILURE relay:half-close:errno=107\n')
+    os.close(writer)
+    assert launcher._finish_diagnostics(1, 1) == 'cell:exit=1'
+
+
 def test_daemon_uid_cannot_impersonate_owner_launcher():
     assert os.getuid() == 1001  # linux_oracle.py's unprivileged venue
     daemon, impostor = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -154,7 +209,7 @@ def test_mapper_resource_kills_have_authenticated_completion_reason(monkeypatch,
     error_read, error_write = os.pipe()
     os.close(error_write)
     os.set_blocking(error_read, False)
-    launcher.diagnostics = {child: [error_read, None, b'', None]}
+    launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False, None]}
     launcher.package_jobs = {child}
     launcher.launch = None
     try:

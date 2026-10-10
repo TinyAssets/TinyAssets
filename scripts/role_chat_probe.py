@@ -4,6 +4,8 @@ The real bootstrap and HTTP server build every command, persona and MCP config.
 Only auth transport material and the vendor endpoint are replaced locally. The
 Docker network is internal and the real egress proxy admits only this endpoint.
 No provider, authority check, launcher, model catalogue or engine route is mocked.
+The isolated server uses its local development identity verifier for the snapshot's
+owner; HTTP request-authority middleware is real, external OAuth verification is not tested.
 """
 
 

@@ -160,7 +160,10 @@ class CellOutput:
             if not result and not (method == 'read' and args == (0,)):
                 code = await self.process.wait()
                 reason = getattr(self.process.cell, 'stop_reason', '') or ''
-                if code and reason.startswith(('decoder:', 'launcher:', 'bwrap:', 'relay:')):
+                # Relay/bwrap stderr is only diagnostic context. In particular,
+                # routine relay teardown must not replace native auth/rate-limit
+                # classification performed by the provider's protocol reader.
+                if code and reason.startswith(('decoder:', 'launcher:')):
                     from tinyassets.exceptions import ProviderError
 
                     message = 'provider cell ended' + disk_stop_note(self.process)
@@ -171,7 +174,9 @@ class CellOutput:
             from tinyassets.exceptions import ProviderError
 
             try:
-                await asyncio.wait_for(self.process.wait(5), 6)
+                # Bound this observer, not the cached authenticated receipt read.
+                # wait() shields its waiter, so cleanup can still collect it.
+                await asyncio.wait_for(self.process.wait(None), 6)
                 reason = disk_stop_note(self.process)
             except (OSError, RuntimeError, TimeoutError):
                 reason = ' (owner cell: completion unavailable)'
