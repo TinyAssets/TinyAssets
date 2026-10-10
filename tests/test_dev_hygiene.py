@@ -2628,3 +2628,11 @@ def test_background_pass_saves_summary_for_next_hook(monkeypatch, tmp_path):
     )
     assert classes == [("docker", "worktree", "toolcache")]
     assert "ESCALATION" in hook._full_pass_escalation(tmp_path, "background")
+
+
+def test_session_background_worker_never_opens_console_windows():
+    # A DETACHED_PROCESS worker makes Windows open a visible console for each
+    # docker/git child; the founder saw windows flashing until a reboot.
+    source = (Path(__file__).resolve().parents[1] / ".claude/hooks/dev_hygiene_hook.py").read_text()
+    assert "subprocess.CREATE_NO_WINDOW" in source
+    assert "subprocess.DETACHED_PROCESS" not in source
