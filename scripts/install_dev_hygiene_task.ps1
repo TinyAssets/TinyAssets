@@ -4,11 +4,8 @@ Register (or remove) the hourly Windows Task Scheduler job that runs the full
 dev-box hygiene pass.
 
 .DESCRIPTION
-The SessionStart hook (.claude/hooks/dev_hygiene_hook.py) covers the two cheap
-classes every time an agent session starts. It cannot cover the rest: a full
-pass walks ~330 git worktrees and takes a couple of minutes (measured 2m23s on
-2026-09-26), and the box also fills while long background lanes run with no
-session starting. This task closes that gap.
+The SessionStart hook (.claude/hooks/dev_hygiene_hook.py) inventories all classes.
+This hourly task also covers long-running lanes when no new session starts.
 
 What the task runs, hourly:
 

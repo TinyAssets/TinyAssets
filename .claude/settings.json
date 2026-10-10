@@ -42,7 +42,7 @@
             "type": "command",
             "command": "python \".claude/hooks/dev_hygiene_hook.py\"",
             "shell": "powershell",
-            "timeout": 50
+            "timeout": 310
           }
         ]
       }

@@ -72,6 +72,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path, PurePosixPath
 
 IMAGE_REPO = "tinyassets-linux-oracle"
@@ -315,7 +316,9 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     # Named, so a lane can stop its own run by name; Docker is shared across lanes.
     # Reap orphaned jail descendants during a full required shard. Without an
     # init, runuser becomes PID 1 and hundreds of exited children accumulate.
-    run = ["docker", "run", "--init", "--rm", "--name", f"ta-oracle-{os.getpid()}",
+    run = ["docker", "run", "--label", "tinyassets.disposable=true",
+           "--label", f"tinyassets.created-at={int(time.time())}",
+           "--init", "--rm", "--name", f"ta-oracle-{os.getpid()}",
            "-v", f"{_docker_path(root)}:/src:ro"]
     for pair in args.env:
         if "=" not in pair:

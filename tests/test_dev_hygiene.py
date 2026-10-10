@@ -1009,7 +1009,8 @@ def test_budget_marks_the_rest_not_inventoried(repo: Path) -> None:
 
 
 def test_apply_removes_a_merged_worktree_and_leaves_the_kept_one(
-    repo: Path, monkeypatch: pytest.MonkeyPatch,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end: the remover runs through git and the refusals hold."""
     # Reproduce the CI collision without depending on Python's random hash seed.
@@ -2260,7 +2261,7 @@ def test_hook_injects_the_escalation_when_the_pass_escalates(
     assert "C:/x" in injected["additionalContext"], "the founder needs the concrete list"
     (command,) = calls
     assert "--apply" in command
-    assert "basetemp,scratch" in command, "a session start must not pay for the git walk"
+    assert "basetemp,scratch,docker,worktree,toolcache" in command
     assert "--escalate-below" in command
 
 
@@ -2363,3 +2364,166 @@ def test_hook_floor_is_env_overridable(monkeypatch: pytest.MonkeyPatch) -> None:
     assert hook._floor_gb() == 75.0
     monkeypatch.setenv("TINYASSETS_DEV_HYGIENE_FLOOR_GB", "not-a-number")
     assert hook._floor_gb() == hook.DEFAULT_FLOOR_GB, "a bad value must not break a session start"
+
+
+@pytest.mark.parametrize("kind", ["container", "volume"])
+@pytest.mark.parametrize(
+    "labels,age,used,expected",
+    [
+        ({}, 1, False, False),
+        ({"tinyassets.disposable": "false", "tinyassets.created-at": "1"}, 1, False, False),
+        ({"tinyassets.disposable": "true"}, 1, False, False),
+        ({"tinyassets.disposable": "true", "tinyassets.created-at": "bad"}, 1, False, False),
+        ({"tinyassets.disposable": "true", "tinyassets.created-at": "nan"}, 1, False, False),
+        ({"tinyassets.disposable": "true", "tinyassets.created-at": "1"}, 1, False, True),
+        ({"tinyassets.disposable": "true", "tinyassets.created-at": "1"}, 99999, False, False),
+        ({"tinyassets.disposable": "true", "tinyassets.created-at": "99999"}, 1, False, False),
+        ({"tinyassets.disposable": "true", "tinyassets.created-at": "1"}, 1, True, False),
+    ],
+)
+def test_docker_disposable_selection(kind, labels, age, used, expected):
+    container = {
+        "Id": "c",
+        "Image": "i",
+        "Created": age,
+        "Config": {"Labels": labels},
+        "State": {"Status": "running" if used else "exited", "Running": used, "FinishedAt": 1},
+        "Mounts": [{"Type": "volume", "Name": "v"}] if used else [],
+    }
+    volume = {"Name": "v", "CreatedAt": age, "Labels": labels}
+    items = dh.select_docker_objects([container], [volume], [], min_age_hours=6, now=100000)
+    item = next(i for i in items if i.path.startswith(kind + ":"))
+    assert item.removable is expected
+
+
+@pytest.mark.parametrize("status", ["running", "paused", "restarting", "created", "exited"])
+def test_docker_any_container_reference_protects_images_and_volumes(status):
+    container = {
+        "Id": "c",
+        "Image": "used",
+        "Created": 1,
+        "State": {"Status": status},
+        "Mounts": [{"Type": "volume", "Name": "v"}],
+    }
+    labels = {"tinyassets.disposable": "true", "tinyassets.created-at": "1"}
+    volume = {"Name": "v", "CreatedAt": 1, "Labels": labels}
+    items = dh.select_docker_objects(
+        [container],
+        [volume],
+        [
+            {"Id": "used", "Created": 1},
+            {"Id": "unused", "Created": 1},
+            {"Id": "young", "Created": 99999},
+        ],
+        min_age_hours=6,
+        now=100000,
+    )
+    assert {i.path for i in items if i.removable} == {"image:unused"}
+
+
+def test_docker_recently_stopped_old_container_is_kept():
+    container = {
+        "Id": "c",
+        "Created": 1,
+        "Config": {"Labels": {"tinyassets.disposable": "true", "tinyassets.created-at": "1"}},
+        "State": {"Status": "exited", "Running": False, "FinishedAt": 99999},
+    }
+    (item,) = dh.select_docker_objects([container], [], [], min_age_hours=6, now=100000)
+    assert item.reason == "recently_stopped"
+    assert not item.removable
+
+
+def test_docker_rechecks_before_nonforced_removal(monkeypatch):
+    item = dh.Item("docker", "volume:v", 0, "REMOVE", "old_unused", head="1")
+    calls = []
+    monkeypatch.setattr(dh, "collect_docker_objects", lambda **kw: [item])
+    monkeypatch.setattr(
+        dh,
+        "run",
+        lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0, "v", ""),
+    )
+    assert dh.prune_docker(item, keep_gb=8)[0]
+    assert calls == [["docker", "volume", "rm", "v"]]
+    monkeypatch.setattr(dh, "collect_docker_objects", lambda **kw: [])
+    assert not dh.prune_docker(item, keep_gb=8)[0]
+    assert len(calls) == 1
+
+
+def test_docker_cache_prune_has_age_filter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dh,
+        "run",
+        lambda args, **kw: (
+            calls.append(args) or subprocess.CompletedProcess(args, 0, "reclaimed", "")
+        ),
+    )
+    item = dh.Item(
+        "docker",
+        "build-cache",
+        0,
+        "REMOVE",
+        "docker_build_cache",
+        prune_flag="--keep-storage",
+        docker_age_hours=24,
+    )
+    assert dh.prune_docker(item, keep_gb=8)[0]
+    assert calls[0][-2:] == ["--filter", "until=24h"]
+
+
+def test_docker_desktop_warns_once_and_rearms(monkeypatch, tmp_path):
+    root = tmp_path / "Docker" / "wsl" / "disk"
+    root.mkdir(parents=True)
+    disk = root / "docker_data.vhdx"
+    disk.touch()
+    actual_stat = Path.stat
+    oversized = [True]
+
+    def fake_stat(path, *args, **kw):
+        if path == disk:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(st_size=(100 if oversized[0] else 1) * 1024**3)
+        return actual_stat(path, *args, **kw)
+
+    monkeypatch.setattr(dh, "local_docker", lambda: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(dh, "git_ok", lambda *a, **kw: str(tmp_path))
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(
+        dh,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess([], 0, '{"Type":"Images","Size":"1GB"}', ""),
+    )
+    first = dh.docker_desktop_notice(tmp_path)
+    assert len(first) == 1 and "Purge" in first[0] and "compaction" in first[0]
+    assert dh.docker_desktop_notice(tmp_path) == []
+    oversized[0] = False
+    assert dh.docker_desktop_notice(tmp_path) == []
+    oversized[0] = True
+    assert len(dh.docker_desktop_notice(tmp_path)) == 1
+
+
+def test_docker_remote_endpoint_refused(monkeypatch):
+    monkeypatch.setattr(dh, "_DOCKER_HOST", None)
+    monkeypatch.setenv("DOCKER_HOST", "ssh://production")
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    with pytest.raises(dh.Undecidable, match="not a local"):
+        dh.local_docker()
+
+
+def test_docker_endpoint_is_pinned_across_context_changes(monkeypatch):
+    monkeypatch.setattr(dh, "_DOCKER_HOST", None)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    dh.local_docker()
+    monkeypatch.setenv("DOCKER_HOST", "ssh://production")
+    dh.local_docker()
+    calls = []
+    monkeypatch.setattr(
+        dh.subprocess,
+        "run",
+        lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    dh.run(["docker", "image", "ls"])
+    assert calls == [["docker", "--host", "unix:///var/run/docker.sock", "image", "ls"]]

@@ -16,10 +16,8 @@ Why a SessionStart hook is the mechanism:
 
 Its one weakness is that it only fires when a session starts, which is why
 ``scripts/install_dev_hygiene_task.ps1`` registers an hourly Task Scheduler job
-for the full pass. This hook deliberately runs only the two cheap classes
-(measured 2026-09-26: basetemp 3.4s, scratch 0.3s on the real box) and reads the
-scheduled job's summary for the rest, so a session start never waits on a
-two-minute git walk.
+for the full pass. Session start also inventories all classes so cleanup does not
+depend on the task having been installed. Unknown or busy resources are kept.
 
 Advisory only. Never blocks, never fails a session, never exits non-zero.
 """
@@ -33,10 +31,10 @@ import sys
 import time
 from pathlib import Path
 
-# Cheap classes only: worktree + docker inventory takes minutes on this box.
-SESSION_CLASSES = "basetemp,scratch"
+# Inventory all local disk consumers at session start.
+SESSION_CLASSES = "basetemp,scratch,docker,worktree,toolcache"
 DEFAULT_FLOOR_GB = 40.0
-HOOK_TIMEOUT = 45
+HOOK_TIMEOUT = 300
 # A stale escalation is noise; the scheduled pass runs hourly.
 FULL_SUMMARY_MAX_AGE_HOURS = 12.0
 
@@ -101,7 +99,7 @@ def main() -> int:
         "--escalate-below",
         f"{floor:g}",
         "--budget-seconds",
-        "20",
+        "180",
         "--quiet",
         "--repo",
         str(project),
@@ -120,7 +118,7 @@ def main() -> int:
             timeout=HOOK_TIMEOUT,
             cwd=str(project),
         )
-        session_escalation = (proc.stdout or "").strip() if proc.returncode == 3 else ""
+        session_escalation = (proc.stdout or "").strip()
     except (subprocess.SubprocessError, OSError):
         # A hygiene pass is never worth a failed session start.
         session_escalation = ""
