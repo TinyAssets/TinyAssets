@@ -528,24 +528,160 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
 
 
 def leg_provider_turns():
-    """Real network turns with dummy credentials during unrelated process exit.
+    """Real CLI streams over the cell egress relay on the migrated fixture.
 
-    No provider response is faked: both shipped CLIs must reach the public API
-    through the confined egress relay and report authentication rejection.
+    Only the fixture hostname's DNS answer is substituted to loopback. The
+    real HTTP proxy, pinned socket, in-cell forwarder and CLI remain intact.
+    No real credentials or external API calls are used.
     """
+    import http.server
     import subprocess
+    import time
     from tinyassets.credential_vault import _write_exclusive_snapshot_file
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.claude_provider import ClaudeProvider
+    from tinyassets.providers import codex_app_server as app
+    from tinyassets.agent_definition import agent_definition
 
+    requests = []
+    answer = 'ORACLE streamed response'
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            requests.append((self.path, body))
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            if '/messages' in self.path:
+                events = [
+                    ('message_start', dict(type='message_start', message=dict(
+                        id='msg_oracle', type='message', role='assistant', content=[],
+                        model=body['model'], stop_reason=None, stop_sequence=None,
+                        usage=dict(input_tokens=12, output_tokens=0)))),
+                    ('content_block_start', dict(type='content_block_start', index=0,
+                        content_block=dict(type='text', text=''))),
+                    ('content_block_delta', dict(type='content_block_delta', index=0,
+                        delta=dict(type='text_delta', text=answer))),
+                    ('content_block_stop', dict(type='content_block_stop', index=0)),
+                    ('message_delta', dict(type='message_delta',
+                        delta=dict(stop_reason='end_turn', stop_sequence=None),
+                        usage=dict(output_tokens=4))),
+                    ('message_stop', dict(type='message_stop')),
+                ]
+            else:
+                message = dict(id='msg_oracle', type='message', role='assistant',
+                    status='completed', content=[dict(type='output_text', text=answer,
+                                                      annotations=[])])
+                response = dict(id='resp_oracle', object='response', model='gpt-5',
+                    status='completed', output=[message],
+                    usage=dict(input_tokens=12, output_tokens=4, total_tokens=16))
+                events = [
+                    ('response.created', dict(type='response.created',
+                        response={**response, 'status': 'in_progress', 'output': []})),
+                    ('response.output_item.added', dict(type='response.output_item.added',
+                        output_index=0, item={**message, 'status': 'in_progress', 'content': []})),
+                    ('response.output_text.delta', dict(type='response.output_text.delta',
+                        item_id='msg_oracle', output_index=0, content_index=0, delta=answer)),
+                    ('response.output_item.done', dict(type='response.output_item.done',
+                        output_index=0, item=message)),
+                    ('response.completed', dict(type='response.completed', response=response)),
+                ]
+            try:
+                for event, payload in events:
+                    time.sleep(0.15)  # output arrives after the adapter closes stdin
+                    self.wfile.write(('event: ' + event + '\ndata: ' +
+                                      json.dumps(payload) + '\n\n').encode())
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    port = server.server_port
+    original = universe_egress._checked_addresses
+    def fixture_addresses(host, target_port):
+        if host != 'stream.oracle.test' or target_port != port:
+            raise universe_egress.EgressRefused('oracle permits only its fixture endpoint')
+        return ['127.0.0.1']
+    universe_egress._checked_addresses = fixture_addresses
     principal = 'bob'
     center = center_of(principal)
-    with identity_context(Identity(principal, principal)):
-        snapshot = snapshot_dir(center)
-        key = 'sk-invalid-owner-cell-oracle'
-        _write_exclusive_snapshot_file(snapshot / 'dummy-key', key.encode())
-        _write_exclusive_snapshot_file(snapshot / 'auth.json',
-                                      json.dumps({'OPENAI_API_KEY': key}).encode())
+    results = {}
+    async def run():
+        with identity_context(Identity(principal, principal)):
+            snapshot = snapshot_dir(center)
+            base = f'http://stream.oracle.test:{port}'
+            key = 'sk-oracle-fixture-only'
+            for name, value in [('stream-key', key), ('stream-url', base)]:
+                _write_exclusive_snapshot_file(snapshot / name, value.encode())
+            commands = {
+                'claude': ([CLAUDE, '-p', '--model', 'claude-sonnet-4-5',
+                    '--output-format', 'stream-json', '--verbose',
+                    '--include-partial-messages', '--max-turns', '1'],
+                    dict(ANTHROPIC_API_KEY=key, ANTHROPIC_BASE_URL=base,
+                         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')),
+                'codex': (['/usr/local/bin/codex', 'exec', '--skip-git-repo-check',
+                    '--json', '--sandbox', 'read-only', '-m', 'gpt-5',
+                    '-c', 'model_provider="oracle"',
+                    '-c', 'model_providers.oracle.name="Oracle"',
+                    '-c', f'model_providers.oracle.base_url="{base}/v1"',
+                    '-c', 'model_providers.oracle.wire_api="responses"',
+                    '-c', 'model_providers.oracle.env_key="OPENAI_API_KEY"', '-'],
+                    dict(OPENAI_API_KEY=key, CODEX_HOME=str(snapshot))),
+            }
+            # Equivalent CLI spellings keep the fixture's extra endpoint config
+            # inside the cell's unchanged argument-count bound.
+            flags = app.SERVED_LAUNCH_ARGS
+            compact = [flags[0], *(('--config' if flags[i] == '-c' else flags[i])
+                + '=' + flags[i + 1] for i in range(1, len(flags), 2))]
+            commands['codex-app-server'] = ([commands['codex'][0][0],
+                *compact, *commands['codex'][0][8:-1]], commands['codex'][1])
+            for name, (argv, env) in commands.items():
+                with provider_launch_scope(DATA / center, credential_dir=snapshot):
+                    proc = await aspawn_owned(argv, env=env,
+                        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE, limit=4 * 1024 * 1024)
+                try:
+                    async with asyncio.timeout(120):
+                        if name == 'claude':
+                            result = await ClaudeProvider()._read_stream(
+                                proc, 'Say hello', ModelConfig(init_timeout_s=60,
+                                    first_progress_s=60, idle_timeout_s=60))
+                            assert answer in result.text, result
+                        elif name == 'codex-app-server':
+                            drain = asyncio.create_task(proc.stderr.read())
+                            try:
+                                turn = app.AppServerTurn(proc, tools=None,
+                                    profile=ModelConfig().stream_timeout_profile(),
+                                    start=time.monotonic(), turn_wait=60, tool_wait=60)
+                                outcome = await turn.run(thread=('thread/start',
+                                    app.thread_start_params(agent_definition((), 'Say hello'),
+                                        model='gpt-5', cwd='/tmp/workspace', ephemeral=True)),
+                                    input_text='Say hello', effort=None)
+                                assert outcome.status == 'completed', outcome
+                                assert answer in outcome.messages[-1], outcome
+                                assert outcome.usage_seen, outcome
+                            finally:
+                                proc.revoke()
+                                await proc.wait()
+                                error = await drain
+                                if error:
+                                    print('APP SERVER STDERR',
+                                          error.decode(errors='replace')[-3000:])
+                        else:
+                            out, err = await proc.communicate(b'Say hello')
+                            assert proc.returncode == 0 and answer.encode() in out, (
+                                proc.returncode, out[-3000:], err[-3000:])
+                    results[name] = dict(streamed=True, exit=proc.returncode)
+                finally:
+                    proc.revoke()
+                    await proc.wait()
     stop = threading.Event()
-    errors = []
+    churn_errors = []
     def churn():
         try:
             while not stop.is_set():
@@ -553,31 +689,22 @@ def leg_provider_turns():
                 for child in children:
                     child.wait()
         except BaseException as exc:
-            errors.append(type(exc).__name__)
-    worker = threading.Thread(target=churn)
-    worker.start()
-    results = {}
+            churn_errors.append(type(exc).__name__)
+    churn_worker = threading.Thread(target=churn)
+    churn_worker.start()
     try:
-        commands = {
-            'claude': ([CLAUDE, '-p', 'Say hello', '--output-format', 'stream-json',
-                        '--verbose', '--max-turns', '1'],
-                       {'ANTHROPIC_API_KEY': key, 'CLAUDE_CODE_MAX_RETRIES': '0'}),
-            'codex': (['/usr/local/bin/codex', 'exec', '--skip-git-repo-check',
-                       '--json', '--sandbox', 'read-only', 'Say hello'],
-                      {'CODEX_HOME': str(snapshot), 'CODEX_API_KEY': key}),
-        }
-        for name, (argv, env) in commands.items():
-            out, err, code = in_provider_cell(principal, center, argv, env=env)
-            text = (out + err).decode(errors='replace')
-            assert code == 1 and any(marker in text.lower() for marker in (
-                'authentication_failed', '401 unauthorized', 'invalid_api_key',
-                'incorrect api key')), (name, code, text[-3000:])
-            results[name] = dict(exit=code, authentication_rejected=True)
+        asyncio.run(run())
+        assert any('/messages' in path for path, _ in requests), requests
+        assert any('/responses' in path for path, _ in requests), requests
+        return dict(results=results, requests=[path for path, _ in requests])
     finally:
         stop.set()
-        worker.join(10)
-    assert not worker.is_alive() and not errors, errors
-    return results
+        churn_worker.join(10)
+        universe_egress._checked_addresses = original
+        server.shutdown()
+        server.server_close()
+        worker.join(5)
+        assert not churn_worker.is_alive() and not churn_errors, churn_errors
 
 
 def leg_engine_http():

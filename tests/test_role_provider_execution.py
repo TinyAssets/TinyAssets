@@ -142,3 +142,36 @@ def test_exec_mapper_requires_the_independent_stderr_descriptor():
                    command_center='alice', egress=True, engine=False)
     with pytest.raises(ValueError, match='unsupported'):
         mapper._decoder(request, [0, 1, 2, 3])
+
+
+def test_stdin_close_keeps_delayed_stdout_and_stderr_until_reap():
+    """A real duplex socket must behave like independent subprocess pipes."""
+    import socket
+
+    async def run():
+        daemon, child = socket.socketpair()
+        daemon.setblocking(False)
+        child.setblocking(False)
+        reader, writer = await asyncio.open_connection(sock=daemon)
+        peer_reader, peer_writer = await asyncio.open_connection(sock=child)
+        cell = SimpleNamespace()
+        proc = owned_process.OwnerCellProcess(cell, reader, writer)
+        try:
+            proc.stdin.write(b'prompt')
+            await proc.stdin.drain()
+            proc.stdin.close()
+            proc.stdin.close()
+            await proc.stdin.wait_closed()
+            assert proc.stdin.is_closing()
+            assert await peer_reader.read() == b'prompt'
+            # Child responds only AFTER it has observed stdin EOF.
+            peer_writer.write(b'delayed streamed answer\n')
+            await peer_writer.drain()
+            peer_writer.write_eof()
+            assert await reader.read() == b'delayed streamed answer\n'
+        finally:
+            writer.close()
+            peer_writer.close()
+            await writer.wait_closed()
+            await peer_writer.wait_closed()
+    asyncio.run(run())

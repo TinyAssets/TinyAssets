@@ -161,3 +161,27 @@ def test_mapper_resource_kills_have_authenticated_completion_reason(monkeypatch,
             os.waitpid(child, 0)
         except ChildProcessError:
             pass
+
+
+def test_revoke_reports_first_callsite_without_replacing_mapper_reason():
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+    from tinyassets.providers.owned_process import OwnerCellProcess, disk_stop_note
+
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    stream, peer = socket.socketpair()
+    with status, mapper, stream, peer:
+        cell = OwnerCell(None, stream, status, OwnerIdentity(300001, 300001))
+        process = OwnerCellProcess(cell, None, SimpleNamespace(transport=None))
+        process.revoke()
+        caller = cell.revoke_caller
+        process.kill()
+        assert cell.revoke_caller == caller
+        assert 'test_revoke_reports_first_callsite' in caller
+        assert mapper.recv(1) == b''
+        cell.stop_reason = 'revoked'
+        assert f'revoked by {caller}' in disk_stop_note(process)
+        cell.stop_reason = 'rss_limit: bytes=600000000 limit=536870912'
+        assert 'rss_limit' in disk_stop_note(process)
+        assert caller not in disk_stop_note(process)
+        cell._after_fork()

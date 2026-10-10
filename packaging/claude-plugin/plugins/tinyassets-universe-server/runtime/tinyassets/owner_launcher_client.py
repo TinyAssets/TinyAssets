@@ -13,6 +13,7 @@ import socket
 import stat
 import struct
 import threading
+import traceback
 import weakref
 from types import SimpleNamespace
 
@@ -40,6 +41,7 @@ class OwnerCell:
         self._pid = os.getpid()
         self._result = None
         self.stop_reason = None
+        self.revoke_caller = None
         self._closed = False
         _live_cells.add(self)
 
@@ -82,6 +84,15 @@ class OwnerCell:
         if self._closed:
             raise RuntimeError('owner cell handle is unavailable')
         if self._result is None:
+            if self.revoke_caller is None:
+                # Only code locations, never locals, arguments or owner bytes.
+                frames = traceback.extract_stack()[:-1]
+                helpers = {'revoke', 'cancel', 'close', '__exit__', 'kill',
+                           'kill_owned_tree', 'akill_owned_tree', '_terminate'}
+                frame = next((item for item in reversed(frames)
+                              if item.name not in helpers), frames[-1])
+                self.revoke_caller = (
+                    f'{os.path.basename(frame.filename)}:{frame.lineno}:{frame.name}')
             try:
                 self._status.shutdown(socket.SHUT_WR)
             except (BrokenPipeError, ConnectionResetError):

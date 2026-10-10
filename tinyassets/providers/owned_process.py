@@ -27,6 +27,29 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+class CellStdin:
+    """Pipe-like stdin over a duplex socket: close only the writing half."""
+
+    def __init__(self, writer):
+        self._writer = writer
+        self._closed = False
+
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._writer.write_eof()
+
+    def is_closing(self):
+        return self._closed or self._writer.is_closing()
+
+    async def wait_closed(self):
+        # A half-close has no transport-close handshake to await.
+        return
+
+
 class FamilyAnchorError(RuntimeError):
     """A provider process could not be given an owner for its whole family.
 
@@ -72,6 +95,9 @@ def disk_stop_note(proc) -> str:
     if isinstance(proc, OwnerCellProcess):
         reason = getattr(proc.cell, 'stop_reason', None)
         if reason:
+            caller = getattr(proc.cell, 'revoke_caller', None)
+            if reason == 'revoked' and caller:
+                reason += f' by {caller}'
             return f' (owner cell: {reason})'
         if proc.returncode is not None and proc.returncode < 0:
             try:
@@ -92,7 +118,7 @@ class OwnerCellProcess:
     pid = None
 
     def __init__(self, cell, reader, writer):
-        self.cell, self.stdout, self.stdin = cell, reader, writer
+        self.cell, self.stdout, self.stdin = cell, reader, CellStdin(writer)
         self._transport = writer.transport
         self.returncode = None
         self._waiter = None
