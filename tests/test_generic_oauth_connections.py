@@ -293,7 +293,10 @@ def app(monkeypatch, universes):
 
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     real = onboarding.app_config
-    monkeypatch.setattr(onboarding, "app_config", lambda: {**real(), "resource": RESOURCE})
+    monkeypatch.setattr(
+        onboarding, "app_config",
+        lambda build=None: {**real(build=build), "resource": RESOURCE},
+    )
     homes = {OWNER: UID, OTHER: OTHER_UID}
     monkeypatch.setattr(onboarding, "_read_home",
                         lambda identity, **kw: homes.get(identity.user_id, ""))
