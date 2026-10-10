@@ -1005,7 +1005,7 @@ def _read_image(
     if run.killed or run.exit_code != 0:
         return (f"error: {note}"
                 f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
-    shown = bound_image(run.output, target)
+    shown = bound_image(run.output, target, universe_dir=universe_dir)
     if isinstance(shown, ToolImage) and note:
         return replace(shown, text=note + shown.text)
     return shown

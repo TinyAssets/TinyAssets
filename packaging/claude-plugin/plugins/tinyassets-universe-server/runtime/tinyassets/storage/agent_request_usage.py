@@ -171,13 +171,11 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
         # inference sources; a request cannot evade this by omitting model/body.
         is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None
                        for kind in ("model_use", "model_discovery"))
+        from tinyassets.broker.provider_metadata import read_definitions
         from tinyassets.providers.definition import _verified_definition
-        from tinyassets.universe_files import read_universe_file
 
         try:
-            definitions = json.loads(read_universe_file(
-                store.base, f"{universe}/provider_definitions.json",
-            ))
+            definitions = read_definitions(store.base, universe)
         except FileNotFoundError:
             definitions = ()
         except (OSError, ValueError, TypeError) as exc:
@@ -388,11 +386,9 @@ class UsageStore:
                     or not isinstance(request.get("body"), dict)
                     or request["body"].get("model") != attempt.model):
                 raise ValueError("source or model mismatch")
-            from tinyassets.universe_files import read_universe_file
+            from tinyassets.broker.provider_metadata import read_definitions
 
-            rows = json.loads(read_universe_file(
-                self.base, f"{scope[1]}/provider_definitions.json",
-            ))
+            rows = read_definitions(self.base, scope[1])
             definition = next(_verified_definition(row, expect_universe=scope[1])
                               for row in rows
                               if row.get("id") == attempt.source_ref.removeprefix("api_key_http:"))
