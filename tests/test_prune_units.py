@@ -151,7 +151,7 @@ def test_deploy_runs_retention_after_canary_and_receipt_are_green():
     for gate in (
         "Run fail-safe deploy on the droplet",
         "Public MCP canary (--assert-handles)",
-        "Roll back if the public canary is red",
+        "Roll back a reproduced platform regression",
         "Verify protected receipt contains target revision",
     ):
         assert names.index(gate) < index, f"retention must run after {gate!r}"

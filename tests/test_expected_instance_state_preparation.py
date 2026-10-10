@@ -220,7 +220,7 @@ def test_preparation_shell_propagates_failures_before_candidate_start(
 
 def test_receipt_and_rollback_preserve_the_expected_state(deploy_steps) -> None:
     receipt = deploy_steps[_index(deploy_steps, "Publish release-state receipt")]
-    rollback = deploy_steps[_index(deploy_steps, "Roll back if the public canary")]
+    rollback = deploy_steps[_index(deploy_steps, "Roll back a reproduced platform regression")]
     for step in (receipt, rollback):
         run = str(step.get("run", ""))
         # The receipt is rewritten whole every deploy; a separate file cannot be
