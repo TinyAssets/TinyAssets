@@ -84,7 +84,8 @@ def test_login_pins_query_response_mode_and_keeps_verifier_in_server_custody(set
     )
     req.query_params = {"state": params["state"][0], "code": "copied-code"}
     refused = asyncio.run(sessions.callback(req))
-    assert refused.status_code == 403  # Correct state, missing flow cookie: no exchange.
+    assert refused.status_code == 303  # Stages completion only; still no owner proof.
+    assert refused.headers["location"].startswith("/app#owner_completion=")
     assert b"copied-code" not in refused.body
 
 

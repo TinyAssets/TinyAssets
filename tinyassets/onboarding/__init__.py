@@ -2588,6 +2588,7 @@ def onboarding_routes() -> list[Any]:
     )
     from tinyassets.onboarding.outside_clients import handle as handle_outside_clients
     from tinyassets.onboarding.owner_sessions import begin as owner_sign_in
+    from tinyassets.onboarding.owner_sessions import complete as owner_sign_in_complete
     from tinyassets.onboarding.owner_unread import handle_unread
     from tinyassets.onboarding.public_run import handle_public_run
     from tinyassets.onboarding.soul import handle_soul
@@ -2600,6 +2601,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/run/{listing}/preview.png", handle_public_run, methods=["GET", "HEAD"]),
         Route("/app/unread", handle_unread, methods=["GET", "POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
+        Route("/app/owner-sign-in/complete", owner_sign_in_complete, methods=["POST"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
         Route("/app/approval-handoff", approval_handoff.handle, methods=["POST"]),
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),
