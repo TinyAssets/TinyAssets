@@ -4,7 +4,7 @@ window.AppRecovery=(()=>{
   "use strict";
   const cfg=__TA_ONBOARDING_CONFIG__, key="ta_app_recovery", draftKey="ta_recovery_draft";
   const node=id=>document.getElementById(id);
-  let hooks=null, booted=false, failed=false, frameTried=false, timer=null;
+  let hooks=null, booted=false, failed=false, frameTried=false, timer=null, leaving=false;
   let badSince=0, goodSince=0, probing=false;
   const read=()=>{try{return JSON.parse(sessionStorage.getItem(key))||{attempts:0,next:0};}
     catch(_e){return {attempts:2,next:0};}};
@@ -20,6 +20,9 @@ window.AppRecovery=(()=>{
     }catch(_e){return false;}
   }
   function restoreDraft(){
+    // Navigation is asynchronous. The departing page must not consume the
+    // record it just saved for its successor while waiting for the response.
+    if(leaving) return;
     try{
       const saved=JSON.parse(sessionStorage.getItem(draftKey)),scope=hooks&&hooks.scope();
       if(!saved||!scope||!scope.owner||!scope.home) return;
@@ -31,8 +34,10 @@ window.AppRecovery=(()=>{
     }catch(_e){}
   }
   function navigate(manual=false){
+    if(leaving) return;
     const saved=saveDraft();
     if(!saved&&!manual){notice();return;}
+    leaving=true;
     if(manual){try{sessionStorage.removeItem(key);}catch(_e){}}
     const url=new URL(location.href);
     url.searchParams.set("_ta_recover",String(Date.now()));
@@ -124,5 +129,5 @@ window.AppRecovery=(()=>{
   window.addEventListener("online",checkBuild);
   window.addEventListener("focus",checkBuild);
   return {attach(value){hooks=value;},started(){booted=true;restoreDraft();},
-    fail,restoreDraft,checkBuild,broken:()=>failed};
+    fail,restoreDraft,checkBuild,upgrade:()=>navigate(),broken:()=>failed};
 })();

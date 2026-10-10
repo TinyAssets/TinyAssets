@@ -1682,8 +1682,9 @@ MCP.answerRequest=async(payload)=>{
 let refreshed=0; async function refreshRail(){ refreshed++; }
 function enterSignedOut(){ messages.push({role:"signed-out"}); }
 let reloaded=false; const location={reload:()=>{ reloaded=true; }};
+const AppRecovery={upgrade:()=>location.reload()};
 let fetched=0;
-async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||null}}; }
+async function fetch(){ fetched++; return {ok:true,headers:{get:()=>SCENARIO.liveBuild||null}}; }
 __APP_FUNCTIONS__
 (async()=>{
   const out={};
