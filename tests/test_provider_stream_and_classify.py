@@ -1738,3 +1738,38 @@ async def test_caller_cancellation_kills_the_subprocess_even_with_blocking_pipes
     with pytest.raises(asyncio.CancelledError):
         await task
     assert proc.killed, "subprocess must be killed on caller-cancellation"
+
+
+def test_quiet_claude_turn_survives_with_independent_cell_heartbeats(monkeypatch):
+    from tinyassets.providers import owned_process
+
+    pulses = []
+    async def pulse(proc):
+        pulses.append(proc)
+        if len(pulses) == 2:
+            proc.stdout.feed_data(_line(_result("finished quietly")))
+            proc.stdout.feed_eof()
+        return True
+    monkeypatch.setattr(owned_process, "cell_heartbeat", pulse)
+    async def scenario():
+        proc = FakeStreamProcess([])
+        proc.stdout = asyncio.StreamReader()
+        proc.stdout.feed_data(_line(INIT))
+        response = await ClaudeProvider()._read_stream(proc, "prompt", ModelConfig(
+            first_progress_s=0.01, idle_timeout_s=0.01, absolute_cap_s=10,
+        ))
+        assert response.text == "finished quietly"
+        assert pulses == [proc, proc]
+    asyncio.run(scenario())
+
+
+def test_cell_heartbeats_do_not_extend_claude_absolute_cap(monkeypatch):
+    from tinyassets.providers import owned_process
+
+    async def pulse(proc):
+        return True
+    monkeypatch.setattr(owned_process, "cell_heartbeat", pulse)
+    proc = FakeStreamProcess([_line(INIT), (1, _line(_result("too late")))])
+    with pytest.raises(InteractiveDeadlineError):
+        _run_stream(proc, ModelConfig(first_progress_s=0.02, absolute_cap_s=0.08))
+    assert proc.killed
