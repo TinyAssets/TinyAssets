@@ -59,7 +59,10 @@ def package_usage(pid, proc='/proc'):
             raw = Path(proc, name, 'stat').read_text()
             fields = raw[raw.rfind(')') + 2:].split()
             records[int(name)] = (int(fields[1]), int(fields[21]))
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # procfs can return ESRCH after open but before read when a task
+            # exits. Like ENOENT, that is a vanished process, not failed
+            # accounting. Unrelated daemon children race this scan too.
             continue  # A process that exited holds no resident memory.
     if pid not in records:
         raise RuntimeError('package root is unmeasurable')
@@ -1005,13 +1008,19 @@ class OwnerLauncher:
     def _service_jobs(self):
         for pid, (inner, machine, deadline, channel) in list(self.jobs.items()):
             waited, status = os.waitpid(pid, os.WNOHANG)
-            cancel = time.monotonic() >= deadline
+            cancel_sent = False
+            reason = 'deadline' if time.monotonic() >= deadline else None
             if not waited and pid in self.package_jobs:
                 try:
                     count, rss = package_usage(pid)
-                    cancel |= count > 68 or rss > 512 * 1024 * 1024
-                except (OSError, ValueError, IndexError, RuntimeError):
-                    cancel = True  # Never run a package with unmeasurable usage.
+                    if count > 68:
+                        reason = f'process_limit: count={count} limit=68'
+                    elif rss > 512 * 1024 * 1024:
+                        reason = f'rss_limit: bytes={rss} limit=536870912'
+                except (OSError, ValueError, IndexError, RuntimeError) as exc:
+                    # No arbitrary exception text: it can contain owner data.
+                    reason = (f'usage_unavailable: {type(exc).__name__} '
+                              f'errno={getattr(exc, "errno", None)}')
             if not waited and select.select([channel], [], [], 0)[0]:
                 # EOF revokes this launch. Any malformed or forged control
                 # also cancels only this cell; it can never select another PID.
@@ -1023,14 +1032,16 @@ class OwnerLauncher:
                         handles.frombytes(payload[:len(payload) - len(payload) % handles.itemsize])
                         for handle in handles:
                             os.close(handle)
-                cancel = True
-            if not waited and cancel:
+                reason = reason or 'revoked'
+            if not waited and reason:
                 try:
                     os.kill(pid, signal.SIGKILL)
+                    cancel_sent = True
                 except PermissionError:
                     os.seteuid(inner)
                     try:
                         os.kill(pid, signal.SIGKILL)
+                        cancel_sent = True
                     finally:
                         os.seteuid(0)
                 except ProcessLookupError:
@@ -1041,6 +1052,8 @@ class OwnerLauncher:
                 try:
                     receipt = dict(op='SPAWN_DONE', returncode=os.waitstatus_to_exitcode(status),
                                    uid=machine, gid=machine)
+                    if reason and cancel_sent:
+                        receipt['stop_reason'] = reason
                     channel.sendall(json.dumps(receipt).encode())
                 except (BrokenPipeError, ConnectionResetError):
                     pass

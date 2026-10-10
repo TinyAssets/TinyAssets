@@ -65,8 +65,8 @@ COMPOSE_ENV = {
 MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 #: Every in-container leg this script can drive, in the order it drives them.
 LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
-             "provider_exec", "workspace_remote", "workspace_provision", "engine_http",
-             "preview", "two_pass_delete")
+             "provider_exec", "provider_turns", "workspace_remote", "workspace_provision",
+             "engine_http", "preview", "two_pass_delete")
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
 #: skipped: the oracle refuses to pretend an unproven thing is proven.
@@ -314,7 +314,7 @@ def snapshot_dir(center):
     return made
 
 
-def in_provider_cell(principal, center, argv, *, engine_route=None, timeout=180):
+def in_provider_cell(principal, center, argv, *, engine_route=None, timeout=180, env=None):
     """One provider-exec cell launch through the one spawn point."""
     pipes = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                  stderr=asyncio.subprocess.PIPE)
@@ -322,9 +322,12 @@ def in_provider_cell(principal, center, argv, *, engine_route=None, timeout=180)
     async def run():
         with provider_launch_scope(DATA / center, credential_dir=snapshot_dir(center),
                                    engine_route=engine_route):
-            process = await aspawn_owned(argv, env={'TERM': 'dumb'}, **pipes)
+            process = await aspawn_owned(argv, env={'TERM': 'dumb', **(env or {})}, **pipes)
         async with asyncio.timeout(timeout):
             out, err = await process.communicate(b'')
+        assert process.returncode >= 0, (process.returncode, out[-1000:], err[-1000:])
+        # All adapters revoke in finally, including after a nonzero exit/reap.
+        process.revoke()
         return out, err, process.returncode
 
     with identity_context(Identity(principal, principal)):
@@ -522,6 +525,59 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
     return dict(center=center, cell=seen, claude=version.decode().strip(),
                 foreign_targets=targets, daemon_reaches_outside=reachable,
                 outside=list(outside))
+
+
+def leg_provider_turns():
+    """Real network turns with dummy credentials during unrelated process exit.
+
+    No provider response is faked: both shipped CLIs must reach the public API
+    through the confined egress relay and report authentication rejection.
+    """
+    import subprocess
+    from tinyassets.credential_vault import _write_exclusive_snapshot_file
+
+    principal = 'bob'
+    center = center_of(principal)
+    with identity_context(Identity(principal, principal)):
+        snapshot = snapshot_dir(center)
+        key = 'sk-invalid-owner-cell-oracle'
+        _write_exclusive_snapshot_file(snapshot / 'dummy-key', key.encode())
+        _write_exclusive_snapshot_file(snapshot / 'auth.json',
+                                      json.dumps({'OPENAI_API_KEY': key}).encode())
+    stop = threading.Event()
+    errors = []
+    def churn():
+        try:
+            while not stop.is_set():
+                children = [subprocess.Popen(['/bin/true']) for _ in range(24)]
+                for child in children:
+                    child.wait()
+        except BaseException as exc:
+            errors.append(type(exc).__name__)
+    worker = threading.Thread(target=churn)
+    worker.start()
+    results = {}
+    try:
+        commands = {
+            'claude': ([CLAUDE, '-p', 'Say hello', '--output-format', 'stream-json',
+                        '--verbose', '--max-turns', '1'],
+                       {'ANTHROPIC_API_KEY': key, 'CLAUDE_CODE_MAX_RETRIES': '0'}),
+            'codex': (['/usr/local/bin/codex', 'exec', '--skip-git-repo-check',
+                       '--json', '--sandbox', 'read-only', 'Say hello'],
+                      {'CODEX_HOME': str(snapshot), 'CODEX_API_KEY': key}),
+        }
+        for name, (argv, env) in commands.items():
+            out, err, code = in_provider_cell(principal, center, argv, env=env)
+            text = (out + err).decode(errors='replace')
+            assert code == 1 and any(marker in text.lower() for marker in (
+                'authentication_failed', '401 unauthorized', 'invalid_api_key',
+                'incorrect api key')), (name, code, text[-3000:])
+            results[name] = dict(exit=code, authentication_rejected=True)
+    finally:
+        stop.set()
+        worker.join(10)
+    assert not worker.is_alive() and not errors, errors
+    return results
 
 
 def leg_engine_http():
@@ -772,6 +828,7 @@ def leg_two_pass_delete():
 LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
         'admission': leg_admission, 'new_center_cell': leg_new_center_cell,
         'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
+        'provider_turns': leg_provider_turns,
         'workspace_remote': leg_workspace_remote,
         'workspace_provision': leg_workspace_provision,
         'engine_http': leg_engine_http, 'preview': leg_preview,

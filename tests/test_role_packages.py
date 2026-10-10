@@ -145,3 +145,28 @@ def test_mapper_counts_detached_descendants_outside_the_cell(tmp_path):
     assert scope['package_usage'](10, str(tmp_path)) == (3, 25 * os.sysconf('SC_PAGE_SIZE'))
     with pytest.raises(RuntimeError, match='unmeasurable'):
         scope['package_usage'](123, str(tmp_path))
+
+
+@pytest.mark.parametrize('failure', [FileNotFoundError, ProcessLookupError, PermissionError])
+def test_mapper_disappearing_proc_entry_preserves_live_accounting(tmp_path, monkeypatch, failure):
+    scope = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                              / 'deploy/role_owner_launcher.py'))
+    for pid, parent, pages in ((10, 1, 5), (11, 10, 140000), (99, 1, 0)):
+        folder = tmp_path / str(pid)
+        folder.mkdir()
+        fields = ['S', str(parent), *(['0'] * 19), str(pages)]
+        (folder / 'stat').write_text(str(pid) + ' (child) ' + ' '.join(fields))
+    read_text = Path.read_text
+    def read(path, *args, **kwargs):
+        if path == tmp_path / '99/stat':
+            raise failure()
+        return read_text(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', read)
+    if failure is PermissionError:
+        with pytest.raises(PermissionError):
+            scope['package_usage'](10, str(tmp_path))
+    else:
+        count, rss = scope['package_usage'](10, str(tmp_path))
+        assert count == 2
+        assert rss == 140005 * os.sysconf('SC_PAGE_SIZE')
+        assert rss > 512 * 1024 * 1024  # The live resource guard is unchanged.

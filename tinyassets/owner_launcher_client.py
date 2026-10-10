@@ -39,6 +39,7 @@ class OwnerCell:
         self._client, self._identity = client, identity
         self._pid = os.getpid()
         self._result = None
+        self.stop_reason = None
         self._closed = False
         _live_cells.add(self)
 
@@ -56,11 +57,15 @@ class OwnerCell:
             return self._result
         self._status.settimeout(timeout)
         answer = self._client._reply(channel=self._status)
-        if (set(answer) != {'op', 'returncode', 'uid', 'gid'}
+        reason = answer.get('stop_reason')
+        if (set(answer) - {'stop_reason'} != {'op', 'returncode', 'uid', 'gid'}
                 or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
                 or type(answer['uid']) is not int or type(answer['gid']) is not int
+                or (reason is not None and (type(reason) is not str
+                    or not reason.isascii() or not reason.isprintable() or len(reason) > 256))
                 or (answer['uid'], answer['gid']) != (self._identity.uid, self._identity.gid)):
             raise RuntimeError('invalid owner cell completion')
+        self.stop_reason = reason
         self._result = answer['returncode']
         return self._result
 
@@ -70,7 +75,11 @@ class OwnerCell:
 
     def revoke(self):
         """Write-side EOF revokes without racing queued completion with unread data."""
-        if os.getpid() != self._pid or self._closed:
+        if os.getpid() != self._pid:
+            raise RuntimeError('owner cell handle is unavailable')
+        if self._result is not None:
+            return  # Already authenticated and reaped, including after close().
+        if self._closed:
             raise RuntimeError('owner cell handle is unavailable')
         if self._result is None:
             try:
