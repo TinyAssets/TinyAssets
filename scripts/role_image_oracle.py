@@ -1088,6 +1088,34 @@ print(sum(1 for _ in Path('/data').rglob('*')) + 1)
 """
 
 
+def _soul_inventory(args):
+    """Hash history in the stopped clone; never expose content in reports."""
+    if not args.command_center:
+        return None
+    program = '''
+import hashlib, json, os, stat
+from pathlib import Path
+root = Path('/data') / CENTER / 'soul_versions'
+result = {}
+if root.exists():
+    for path in [root, *sorted(root.rglob('*'))]:
+        info = path.lstat()
+        assert not stat.S_ISLNK(info.st_mode), 'history link refused'
+        assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+        assert stat.S_ISDIR(info.st_mode) or info.st_nlink == 1
+        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        result[path.relative_to(root).as_posix()] = [info.st_uid, info.st_gid, digest]
+print(json.dumps(result, sort_keys=True))
+'''
+    command = _posture(f'{args.prefix}-fixture', args.image, args.volume, user='0',
+        caps=MIGRATION_CAPS, entrypoint='/opt/venv/bin/python',
+        extra=['--rm', '--network', 'none'])
+    result = subprocess.run(command + ['-I', '-B', '-c',
+        f'CENTER = {args.command_center!r}\n' + program],
+        capture_output=True, text=True, encoding='utf-8', check=True)
+    return json.loads(result.stdout)
+
+
 def stage_migrate(args):
     """The runbook's step 4, on a fresh production-shaped layout-2 volume."""
     repo = Path(__file__).resolve().parents[1]
@@ -1133,6 +1161,7 @@ def stage_migrate(args):
         return subprocess.run(run + ["-I", "-B", "/usr/local/libexec/ta-migrate.py", *flags],
                               capture_output=True, text=True, encoding="utf-8")
 
+    history_before = _soul_inventory(args)
     before = migrate("--check")
     expect(before.returncode == 1 and (args.backup_archive or
                                      "reserve identity: alice" in before.stdout),
@@ -1143,6 +1172,24 @@ def stage_migrate(args):
     after = migrate("--check")
     expect(after.returncode == 0 and after.stdout == "",
            f"--check after the apply: 0 diffs{after.stdout[-2000:]}{after.stderr[-2000:]}")
+    history_after = _soul_inventory(args)
+    history_proof = None
+    if history_before:
+        expect({key: value[2] for key, value in history_before.items()} ==
+               {key: value[2] for key, value in history_after.items()},
+               'soul history: every path and byte digest preserved')
+        owner_ids = {tuple(value[:2]) for value in history_after.values()}
+        expect(len(owner_ids) == 1 and all(uid == gid and 300000 <= uid < 400000
+                                          for uid, gid in owner_ids),
+               'soul history: all files and directories have owner custody')
+        repeated = migrate('--snapshot', args.prefix + '-snapshot', '--snapshot-bytes', '1')
+        expect(repeated.returncode == 0 and '"changed": 0' in repeated.stdout,
+               'soul history repair: repeated migration changes zero entries')
+        expect(_soul_inventory(args) == history_after, 'soul history repair is idempotent')
+        history_proof = dict(entries=len(history_before),
+            daemon_owned_before=sum(value[:2] == [1001, 1001]
+                                    for value in history_before.values()),
+            owner=list(owner_ids)[0], paths_and_hashes=history_after)
     if args.backup_archive:
         # Only the isolated clone's cloud-instance provenance is changed. Never
         # use production credentials for turns; its network is internal below.
@@ -1157,7 +1204,8 @@ def stage_migrate(args):
             capture_output=True, text=True)
         expect(configured.returncode == 0, 'clone-only metadata identity configured')
     return {"inventory": inventory, "apply": applied.stdout.strip(),
-            "check_before_diffs": len(before.stdout.splitlines())}
+            "check_before_diffs": len(before.stdout.splitlines()),
+            "soul_history_recovery": history_proof}
 
 
 #: Read every /proc identity in ONE exec, so the runbook's three roles are
@@ -1393,8 +1441,26 @@ def stage_runs(args):
     return stage_chat(args, runs_only=True)
 
 
+def stage_writers(args):
+    """Actual daemon requests/periodic bodies, followed by owner custody checks."""
+    _metadata(args, start=True)
+    program = Path(__file__).with_name('role_writer_probe.py').read_text(encoding='utf-8')
+    command = _posture(f'{args.prefix}-writers', args.image, args.volume,
+        user=COMPOSE_USER, caps=COMPOSE_CAPS, entrypoint='/opt/venv/bin/python',
+        extra=['--rm', '-i', '--network', args.network])
+    result = subprocess.run(command + ['-I', '-B', '-'], input=program,
+        text=True, encoding='utf-8', capture_output=True, timeout=600)
+    for line in result.stdout.splitlines():
+        if line.startswith('OWNER WRITER PASS '):
+            print(line, flush=True)
+        if line.startswith('OWNER WRITERS PASS ') and result.returncode == 0:
+            return json.loads(line.removeprefix('OWNER WRITERS PASS '))
+    raise RuntimeError('owner writer guard failed: ' + result.stderr[-4000:])
+
+
 STAGES = {"migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
-          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs}
+          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs,
+          "writers": stage_writers}
 
 
 def main(argv=None):
@@ -1448,7 +1514,7 @@ def main(argv=None):
             print(f"\n=== {name} ===", flush=True)
             report[name] = STAGES[name](args)
     finally:
-        for suffix in ("serve", "cells", "fixture", "migrate", "chat"):
+        for suffix in ("serve", "cells", "fixture", "migrate", "chat", "writers"):
             docker("rm", "-f", f"{args.prefix}-{suffix}", check=False)
         _metadata(args, start=False)
         if not args.keep:

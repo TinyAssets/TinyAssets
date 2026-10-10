@@ -454,7 +454,8 @@ def _write_edit_snapshot(
     # not-yet-created dir stays inside the universe; a symlink resolves out and is
     # refused.
     assert_contained(universe_dir, versions_dir)
-    versions_dir.mkdir(parents=True, exist_ok=True)
+    # The owner-content writer creates missing parents. A daemon mkdir here
+    # poisons owner-measure before the snapshot can even be published.
     existing = sorted(versions_dir.glob("[0-9][0-9][0-9][0-9].md"))
     next_number = 1
     if existing:

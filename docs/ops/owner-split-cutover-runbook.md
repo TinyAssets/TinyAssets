@@ -145,6 +145,25 @@ migrate --check                                   # must print nothing; exit 0
   it the new image refuses to serve (exit 78), and the old image must not be
   started on a migrated volume.
 
+For a later owner-content outage (for example daemon-owned nonempty
+`soul_versions/`), repeat the stopped-writer backup and migration steps above
+with the writer fixes in the image. The existing migration accepts both daemon
+and target owner labels and repairs them in place; do not delete history or
+use the empty-wiki-directory online repair for a nonempty tree. Before the
+window, prove that exact backup with:
+
+```sh
+python scripts/role_image_oracle.py --image "$IMAGE" \
+  --backup-archive "$BACKUP" --command-center "$CENTER" \
+  --stages migrate,serve,writers,chat
+```
+
+The migration stage compares every soul-history path and SHA-256 before/after,
+checks owner custody, and repeats migration to require zero changes. The
+writers stage runs common requests and periodic maintenance under the real
+daemon UID, checking visible custody and owner-measure after each operation.
+Neither test changes production. Keep the repair blocked if either check fails.
+
 ## 5. Start
 
 1. With deploy still disabled and the exclusive merge hold active, merge only

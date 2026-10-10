@@ -19,6 +19,7 @@ from tinyassets.ingestion.canon_names import (
     resolve_within_canon as _resolve_within_canon,
 )
 from tinyassets.ingestion.canon_names import safe_canon_filename, safe_canon_slug
+from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import (
     premise_from_soul,
     read_legacy_premise,
@@ -332,7 +333,7 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
 
     # Write to PROGRAM.md as compatibility mirror and soul.md as intent profile.
     try:
-        (universe_dir / "PROGRAM.md").write_text(premise, encoding="utf-8")
+        write_data_path(universe_dir / "PROGRAM.md", premise)
         write_universe_soul(
             universe_dir, purpose=premise, lineage="auto-generated-from-canon",
         )
@@ -581,7 +582,7 @@ def _handle_contradiction(
     )
     if new_content and new_content != canon_content:
         filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
-        filepath.write_text(new_content, encoding="utf-8")
+        write_data_path(filepath, new_content)
         # Update provenance marker
         _write_canon_marker(canon_dir, canon_filename, model=get_last_provider())
         logger.info(
@@ -643,7 +644,7 @@ def _handle_expansion(
     )
     if new_content and new_content != canon_content:
         filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
-        filepath.write_text(new_content, encoding="utf-8")
+        write_data_path(filepath, new_content)
         _write_canon_marker(canon_dir, canon_filename, model=get_last_provider())
         logger.info(
             "Expanded %s with: %s", canon_filename, detail[:80]
@@ -813,9 +814,7 @@ def _record_synthesis_failure(canon_dir: Path, source_file: str) -> None:
 
     manifest[source_file] = entry
     try:
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
-        )
+        write_data_path(manifest_path, json.dumps(manifest, indent=2) + "\n")
     except OSError:
         logger.debug("Failed to update manifest", exc_info=True)
 
@@ -838,10 +837,7 @@ def _write_canon_marker(
 
     marker = _resolve_within_canon(canon_dir, f".{filename}.reviewed", kind="marker")
     try:
-        marker.write_text(
-            json.dumps({"reviewed_at": _time.time(), "model": model}),
-            encoding="utf-8",
-        )
+        write_data_path(marker, json.dumps({"reviewed_at": _time.time(), "model": model}))
     except OSError:
         pass
 
@@ -1074,7 +1070,6 @@ def _write_canon_file(
     import json as _json
     import time as _time
 
-    canon_dir.mkdir(parents=True, exist_ok=True)
     safe_filename = safe_canon_filename(filename)
     filepath = _resolve_within_canon(canon_dir, safe_filename, kind="filename")
 
@@ -1083,12 +1078,9 @@ def _write_canon_file(
         canon_dir, f".{safe_filename}.reviewed", kind="marker"
     )
 
-    filepath.write_text(content, encoding="utf-8")
+    write_data_path(filepath, content)
     try:
-        marker.write_text(
-            _json.dumps({"reviewed_at": _time.time(), "model": model}),
-            encoding="utf-8",
-        )
+        write_data_path(marker, _json.dumps({"reviewed_at": _time.time(), "model": model}))
     except OSError:
         pass
 
