@@ -38,10 +38,18 @@ class Cell:
             raise RuntimeError('owner browser cell proof absent')
 
     def read(self):
-        raw = self.stream.readline(BOUND + 1)
-        if len(raw) > BOUND or not raw.endswith(b'\n'):
-            raise RuntimeError('browser outcome unknown')
-        return json.loads(raw)
+        try:
+            raw = self.stream.readline(BOUND + 1)
+            if len(raw) > BOUND or not raw.endswith(b'\n'):
+                raise RuntimeError('browser outcome unknown')
+            value = json.loads(raw)
+            if not isinstance(value, dict):
+                raise ValueError('invalid browser frame')
+            return value
+        except Exception as exc:
+            message = self.job.failure(exc)
+            self.close()
+            raise RuntimeError(message) from exc
 
     def send(self, document):
         raw = json.dumps(document).encode() + b'\n'

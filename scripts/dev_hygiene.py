@@ -138,6 +138,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
 
 CLASSES = ("basetemp", "worktree", "docker", "scratch", "toolcache")
+# Every child runs without a console window: the hook and the scheduled task
+# start this script with no visible console, and Windows would otherwise open one
+# per docker/git child.
+NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 _DOCKER_HOST: str | None = None
 
 # Temp-root directory names the agents actually produce. Measured from the repo's
@@ -344,6 +348,7 @@ def run(args: list[str], cwd: Path | None = None, timeout: float = 30.0):
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            **NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(args, 127, "", str(exc))
@@ -1624,6 +1629,7 @@ def snapshot_commit(worktree: Path, head: str, changed: list[str]) -> str:
             input=stdin.encode("utf-8"),
             capture_output=True,
             timeout=600,
+            **NO_WINDOW,
         )
         if proc.returncode != 0:
             err = proc.stderr.decode("utf-8", "replace").strip()[:200]
@@ -1766,7 +1772,8 @@ def copy_with_manifest(worktree: Path, files: list[str], dest: Path) -> int:
 def _filtered_paths(worktree: Path) -> list[str]:
     """Tracked paths with a ``filter`` attribute set. Raises Undecidable."""
     listed = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=str(worktree), capture_output=True, timeout=120
+        ["git", "ls-files", "-z"], cwd=str(worktree), capture_output=True, timeout=120,
+        **NO_WINDOW,
     )
     if listed.returncode != 0:
         raise Undecidable("git ls-files failed")
@@ -1776,6 +1783,7 @@ def _filtered_paths(worktree: Path) -> list[str]:
         input=listed.stdout,
         capture_output=True,
         timeout=300,
+        **NO_WINDOW,
     )
     if proc.returncode != 0:
         raise Undecidable(f"git check-attr -> rc={proc.returncode}")

@@ -572,6 +572,44 @@ def read_data_path(path: Path | str, *, max_bytes: int = MAX_UNIVERSE_FILE_BYTES
         raise UniverseFileError(f"{located[1]!r} was refused: {exc}") from exc
 
 
+def ensure_data_directory(path: Path | str) -> None:
+    """Create content directories under their admitted owner, never the daemon."""
+    target = Path(path)
+    if not getattr(fs, '_POSIX', False):
+        target.mkdir(parents=True, exist_ok=True)
+        return
+    located = _data_relative(target)
+    if located is None:
+        target.mkdir(parents=True, exist_ok=True)
+        return
+    root, relative = located
+    parts = _split(relative)
+    from tinyassets import role_content
+
+    content = role_content.locate(root, parts)
+    if content is not None:
+        center, content_parts = content
+        descriptor = fs.open_dir_nofollow(center)
+        try:
+            machine = os.fstat(descriptor).st_gid
+        finally:
+            os.close(descriptor)
+        try:
+            existing = fs.open_dir_nofollow(target)
+        except FileNotFoundError:
+            pass
+        else:
+            try:
+                role_content._check_owner_directory(existing, machine)
+            finally:
+                os.close(existing)
+            return
+        role_content.ensure_directories(center, content_parts, machine=machine)
+        return
+    descriptor = _parent_dir_fd(root, [*parts, 'unused'], create=True)
+    os.close(descriptor)
+
+
 def write_data_path(
     path: Path | str,
     data: bytes | str,

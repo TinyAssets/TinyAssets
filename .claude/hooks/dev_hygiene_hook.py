@@ -136,8 +136,11 @@ def main() -> int:
     try:
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / "dev-hygiene-background.log").open("ab") as output:
+            # CREATE_NO_WINDOW, never DETACHED_PROCESS: a console-less process makes
+            # Windows open a new visible console for every docker/git child it runs.
+            # A hidden console is inherited by those children, so nothing flashes.
             options = (
-                {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+                {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
                 if os.name == "nt"
                 else {"start_new_session": True}
             )
