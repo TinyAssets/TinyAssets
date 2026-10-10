@@ -45,6 +45,20 @@ def test_tool_launcher_refusal_is_a_tool_error():
             pytest.fail('refused cell ran')
 
 
+def test_outer_tool_cell_preserves_nested_maintenance_refusal():
+    closed = []
+    def waiting(*args):
+        pytest.fail('outer jail is awaiting a budget verdict, not exiting')
+
+    cell = SimpleNamespace(wait=waiting, close=lambda: closed.append(True))
+    refusal = universe_tools.UniverseToolError(
+        'tool cell failed (owner cell: decoder:role_tool_files.py:35:PermissionError:errno=13)')
+    with pytest.raises(universe_tools.UniverseToolError) as caught:
+        with role_tools._tool_cell(SimpleNamespace(start_cell=lambda **kwargs: cell)):
+            raise refusal
+    assert caught.value is refusal and closed == [True]
+
+
 def test_deployed_diagnostic_filename_is_canonical_and_secret_free():
     from tinyassets.cell_diagnostics import PATTERN, failure_reason
 

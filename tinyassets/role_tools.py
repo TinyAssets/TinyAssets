@@ -47,6 +47,10 @@ def _tool_cell(client, **kwargs):
         raise tools.UniverseToolError(str(exc)) from None
     try:
         yield cell
+    except tools.UniverseToolError:
+        # Forced budget polling can run a nested maintenance cell. Its error
+        # already carries that cell's reason; the outer jail is awaiting us.
+        raise
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
         try:
             code = cell.wait(5)
