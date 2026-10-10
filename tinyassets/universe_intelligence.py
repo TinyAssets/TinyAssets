@@ -1266,7 +1266,7 @@ def _ordinary_chat(message: str) -> bool:
     ))
 
 
-@observed('chat_stream')
+@observed('chat_stream', inspect_result=False)
 def converse(
     universe_id: str,
     founder_message: str,

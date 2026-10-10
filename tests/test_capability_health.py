@@ -69,6 +69,16 @@ def test_observation_counts_returned_failures_and_exceptions_once(monkeypatch):
     assert rates.snapshot()["outcomes"] == 4
     assert read(SimpleNamespace(status_code=503)).status_code == 503
     assert rates.snapshot()["failures"][-1]["code"] == "http_failed"
+    with pytest.raises(PermissionError):
+        read(PermissionError("OS custody failure"))
+    assert any(r["code"] == "authority_refused" for r in rates.snapshot()["failures"])
+
+    @health.observed("chat_stream", inspect_result=False)
+    def chat():
+        return '{"error":"an example the owner asked me to explain"}'
+
+    assert chat().startswith('{"error"')
+    assert rates.snapshot()["capability_successes"]["chat_stream"] == 1
 
 
 def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():

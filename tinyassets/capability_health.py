@@ -169,7 +169,6 @@ def record_exception(capability, exc, error_code=None):
     code = failure_code(exc)
     if type(exc).__name__ in {
         "UniverseToolError",
-        "PermissionError",
         "GrantResolutionError",
     } and code in {"operation_failed", "authority_refused"}:
         return
@@ -184,14 +183,14 @@ def wake_outcome(reason: str) -> None:
         RATES.record("scheduled_wake", failure_code(reason))
 
 
-def observed(capability, *, error_code=None):
+def observed(capability, *, error_code=None, inspect_result=True):
     """Observe a whole operation once; preserve its return and exception contract."""
     if capability not in CAPABILITIES:
         raise ValueError("unregistered capability")
 
     def decorate(function):
         def finish(result):
-            error = result_error(result)
+            error = result_error(result) if inspect_result else None
             if error is not IGNORED:
                 RATES.record(capability, (error_code or failure_code(error)) if error else "ok")
             return result
