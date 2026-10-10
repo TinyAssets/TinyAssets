@@ -155,6 +155,9 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
             argv.extend(['--bind-fd', '5', '/provider-engine.sock'])
     elif tool:
         argv.extend(tool_mounts(uid))
+        if 'e' in mime:
+            # Public trust roots for HTTPS through the pinned checking proxy.
+            argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
         if 'x' in mime:
             argv.extend(['--ro-bind-fd', '6', '/tool-extensions'])
         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):

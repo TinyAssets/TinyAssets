@@ -73,9 +73,8 @@ def check_proof(cell, identity, source, *, sockets=None):
 async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, execution=False,
                       engine_route=None):
     from tinyassets import role_decoder, role_relays, universe_egress
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
     from tinyassets.workspace_fs import open_dir_nofollow
 
@@ -84,11 +83,7 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
         raise PermissionError('provider discovery requires its bounded owner launcher')
     root = data_dir().resolve()
     center = Path(universe_dir)
-    principal = current_identity().user_id
-    if (center.parent != root or center.resolve() != center
-            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
-                root, universe_id=center.name, actor_id=principal) == 'admin')):
-        raise PermissionError('provider discovery owner scope is not admitted')
+    principal = owner_principal(center)
     snapshot = Path(snapshot_dir)
     expected = center / '.runtime' / 'provider-launch-credentials' / snapshot.name
     if snapshot != expected:

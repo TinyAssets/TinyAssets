@@ -13,9 +13,8 @@ MAX_RESULT_BYTES = MAX_FRAME_BYTES * MAX_FRAMES + 16384
 
 def frames(data, universe_dir):
     from tinyassets import role_decoder
-    from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
 
     client = role_decoder._bounded_client
@@ -23,11 +22,7 @@ def frames(data, universe_dir):
         raise RuntimeError('video requires its bounded owner launcher and command center')
     root = data_dir().resolve()
     center = Path(universe_dir)
-    principal = current_identity().user_id
-    if (center.parent != root or center.resolve() != center
-            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
-                root, universe_id=center.name, actor_id=principal) == 'admin')):
-        raise PermissionError('video owner scope is not admitted')
+    principal = owner_principal(center)
     if type(data) is not bytes or not 0 < len(data) <= MAX_SOURCE_BYTES:
         raise ValueError('video input exceeds its bound or is empty')
     identity = owner_identity(root, principal=principal)

@@ -24,6 +24,27 @@ def test_node_mount_refuses_unrelated_inherited_descriptors():
         role_node._workspace_fd(mount)
 
 
+def test_flat_run_store_uses_the_effect_chains_bound_center(tmp_path, monkeypatch):
+    from tinyassets import graph_compiler
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.effectors import EffectChain
+
+    center = tmp_path / 'center'
+    seen = []
+
+    def admitted(instance, **kwargs):
+        seen.append(instance.universe_dir)
+        return node_sandbox.SandboxResult(node_id='code', success=True, output_state={'ok': True})
+
+    monkeypatch.setattr(role_node, 'run', admitted)
+    node = NodeDefinition(node_id='code', display_name='Code', phase='draft',
+                          source_code='def run(s): return {"ok":True}', output_keys=['ok'])
+    fn = graph_compiler._build_source_code_node(node, event_sink=None,
+        base_path=tmp_path, effect_chain=EffectChain(base_path=center))
+    assert fn({})['ok'] is True
+    assert seen == [center]
+
+
 def test_owner_node_packet_rejects_profile_override_before_descriptor_use():
     import runpy
 
