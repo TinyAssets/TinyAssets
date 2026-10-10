@@ -41,6 +41,10 @@ class AdmissionRow:
 
 
 ADMISSION_EVENTS = ("admit", "retire")
+
+
+class CenterUnadmitted(LookupError):
+    """A retire named a center the log never admitted; nothing was appended."""
 # The bounded bootstrap's center character set (deploy/role_owner_launcher.py).
 _CENTER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -162,7 +166,7 @@ class OwnerIdentities:
                 machine = found[0]
             else:
                 if admitted is None:
-                    raise LookupError("retire requires a prior admit")
+                    raise CenterUnadmitted("retire requires a prior admit")
                 if "retire" in rows:
                     return _row(rows["retire"])
                 machine = admitted[4]
@@ -189,6 +193,17 @@ class OwnerIdentities:
             events = {row[0] for row in db.execute(
                 "SELECT event FROM center_admissions WHERE center=?", (center,))}
         return "retired" if "retire" in events else "admitted" if events else "unadmitted"
+
+    def admitted_owner(self, center: str) -> str:
+        """The mapper's live owner binding; no allocation or inferred grants."""
+        validate_center(center)
+        with closing(self._connect(write=False)) as db:
+            rows = dict(db.execute(
+                "SELECT event, principal FROM center_admissions WHERE center=?", (center,)))
+        if 'admit' not in rows or 'retire' in rows:
+            raise PermissionError('center has no live owner admission')
+        validate_principal(rows['admit'])
+        return rows['admit']
 
     def admission_row(self, generation: int) -> AdmissionRow | None:
         if type(generation) is not int or generation < 1:
@@ -249,6 +264,8 @@ def center_admission(data_root: Path, *, event: str, principal: str,
     validate_center(center)
     answer = _owner_request(data_root, {"op": "CENTER_ADMISSION", "event": event,
                                         "principal": principal, "center": center})
+    if answer == {"op": "CENTER_ADMISSION_UNADMITTED"}:
+        raise CenterUnadmitted("the admission log never admitted this center")
     if (set(answer) != {"op", "generation", "machine"}
             or answer["op"] != "CENTER_ADMISSION_IS"
             or type(answer["generation"]) is not int or answer["generation"] < 1
@@ -271,3 +288,13 @@ def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -
             or not OWNER_ID_FIRST <= answer["uid"] <= OWNER_ID_LAST):
         raise RuntimeError("owner identity refused")
     return OwnerIdentity(answer["uid"], answer["gid"])
+
+
+def admitted_owner(data_root: Path, *, center: str) -> str:
+    """Read the mapper's owner binding through authenticated broker IPC."""
+    validate_center(center)
+    answer = _owner_request(data_root, {'op': 'ADMITTED_OWNER', 'center': center})
+    if set(answer) != {'op', 'principal'} or answer['op'] != 'ADMITTED_OWNER_IS':
+        raise PermissionError('center owner admission refused')
+    validate_principal(answer['principal'])
+    return answer['principal']

@@ -76,6 +76,10 @@ JAIL_ENGINE_SOCKET = "/tmp/.ta-engine.sock"
 #: command. The child dies with the jail.
 FORWARDER = r'''
 import os, socket, sys, threading
+def report(exc, operation):
+    number = exc.errno if isinstance(exc, OSError) else None
+    os.write(2, ('TA_CELL_FAILURE relay:' + operation + ':errno=' + str(number) + '\n').encode())
+sys.excepthook = lambda kind, exc, trace: report(exc, 'bootstrap')
 args = sys.argv[1:]
 sep = args.index("--")
 servers = []
@@ -92,7 +96,7 @@ if os.fork():
         srv.close()
     os.execvp(command[0], command)
 null = os.open(os.devnull, os.O_RDWR)
-for fd in (0, 1, 2):
+for fd in (0, 1):
     os.dup2(null, fd)
 threading.stack_size(256 * 1024)
 def pump(a, b):
@@ -102,18 +106,27 @@ def pump(a, b):
             if not data:
                 break
             b.sendall(data)
-    except OSError:
+    except OSError as exc:
+        report(exc, 'pump')
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        return
+    # EOF is directional. The other pump must drain the response before serve
+    # closes either socket, including when the requester half-closes first.
+    try:
+        b.shutdown(socket.SHUT_WR)
+    except OSError as exc:
+        report(exc, 'half-close')
         pass
-    for s in (a, b):
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
 def serve(c, path, slots):
     u = socket.socket(socket.AF_UNIX)
     try:
         u.connect(path)
-    except OSError:
+    except OSError as exc:
+        report(exc, 'connect')
         c.close(); u.close(); slots.release(); return
     t = threading.Thread(target=pump, args=(u, c), daemon=True)
     t.start()
@@ -310,18 +323,26 @@ class EgressProxy:
         self._slots = _UNIVERSE_SLOTS.setdefault(
             universe, threading.BoundedSemaphore(MAX_CONNECTIONS),
         )
-        with contextlib.suppress(FileNotFoundError):
-            socket_path.unlink()
+        from tinyassets.role_relays import bind
+
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(socket_path))
-        os.chmod(socket_path, 0o600)
-        server.listen(64)
+        try:
+            self._role_identity = bind(server, socket_path)
+            server.listen(64)
+        except BaseException:
+            server.close()
+            raise
         self._server = server
         thread = threading.Thread(target=self._accept, name=f"egress-{universe}", daemon=True)
         thread.start()
 
     def alive(self) -> bool:
-        return self.socket_path.is_socket()
+        from tinyassets.role_relays import identity
+
+        try:
+            return identity(self.socket_path) == self._role_identity
+        except FileNotFoundError:
+            return False
 
     def _accept(self) -> None:
         while True:
@@ -391,7 +412,6 @@ def ensure_proxy(universe_dir: Path) -> Path | None:
         if proxy is not None and proxy.alive():
             return proxy.socket_path
         directory = root.parent / UNIVERSE_SIDECARS_DIR / root.name
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / f"egress-{os.getpid()}.sock"
         proxy = EgressProxy(path, root.name)
         _PROXIES[key] = proxy
@@ -461,7 +481,6 @@ def ensure_engine_relay(
         relay = _ENGINE_RELAYS.get(key)
         if relay is None or not relay.alive():
             directory = root.parent / UNIVERSE_SIDECARS_DIR / root.name
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             tag = hashlib.sha256(f"{actor_id}\0{graph_id}".encode()).hexdigest()[:12]
             relay = EngineRelay(
                 directory / f"engine-{os.getpid()}-{tag}.sock", root.name,

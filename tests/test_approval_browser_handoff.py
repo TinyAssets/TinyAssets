@@ -134,11 +134,25 @@ def test_missing_flow_cookie_logs_reason_without_secrets(flow, caplog):
     with TestClient(flow.app, base_url=ORIGIN) as browser:
         response = browser.get("/app/owner-sign-in", headers=NAV, follow_redirects=False)
         state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
-        browser.cookies.clear()  # Reproduces the deployed edge stripping Set-Cookie.
-        result = browser.get("/app", params={"state": state, "code": "secret-code"})
+        browser.cookies.clear()  # Real browser omits the cookie on the cross-site return.
+        browser.cookies.set("diagnostic-cookie", "secret-cookie")
+        params = {"state": state, "code": "secret-code"}
+        staged = browser.get("/app", params=params, follow_redirects=False)
+        assert staged.status_code == 303
+        assert staged.headers["location"].startswith("/app#owner_completion=")
+        result = browser.get("/app", params=params, headers={
+            "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate",
+            "referer": "https://idp.test/callback?code=referer-secret",
+        })
         assert result.status_code == 403
-        assert "missing_flow_cookie" in caplog.text
+        assert "callback_already_received" in caplog.text
         assert state not in caplog.text and "secret-code" not in caplog.text
+        record = caplog.records[-1]
+        assert record.cookie_names == ["diagnostic-cookie"]
+        assert record.sec_fetch_site == "cross-site" and record.sec_fetch_mode == "navigate"
+        assert record.referer_origin == "https://idp.test"
+        assert 0 <= record.flow_age_seconds < 600
+        assert "secret-cookie" not in caplog.text and "referer-secret" not in caplog.text
         assert not flow.exchanges
 
 

@@ -17,7 +17,6 @@ import sys
 import time
 from pathlib import Path
 
-from tinyassets import agent_sessions
 from tinyassets.exceptions import (
     ProviderAuthenticationError,
     ProviderError,
@@ -30,17 +29,16 @@ from tinyassets.providers.base import (
     ModelConfig,
     ProviderResponse,
     check_bwrap_failure,
-    get_sandbox_status,
     subprocess_env_for_provider,
 )
-from tinyassets.providers.codex_launch_contract import SERVED_HOME_FILES
 from tinyassets.providers.owned_process import (
     aspawn_owned,
     disk_stop_note,
     kill_owned_tree,
     no_window_kwargs,
 )
-from tinyassets.providers.provider_jail import JailMount, UniverseView
+from tinyassets.role_provider_cell import WORKSPACE as CELL_WORKSPACE
+from tinyassets.role_provider_execution import cell_path, seal_launch_file
 from tinyassets.served_tools import granted_tools, model_tools
 
 logger = logging.getLogger(__name__)
@@ -197,37 +195,6 @@ def _terminal_auth_failure(excerpt: str) -> bool:
     return any(phrase in lower for phrase in _TERMINAL_AUTH_PHRASES)
 
 
-#: Where the adapter's private home is mounted inside its jail.
-_JAIL_HOME = "/codex-home"
-
-_THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{0,127}")
-
-
-def _native_session_exists(store: Path, thread_id: str) -> bool:
-    """Whether ``store`` still holds the rollout file for ``thread_id``."""
-    if not _THREAD_ID.fullmatch(thread_id or ""):
-        return False
-    try:
-        return agent_sessions.native_file_exists(store, f"{thread_id}.jsonl")
-    except OSError:
-        return False
-
-
-def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
-    """A read-only bind for each credential file of the sealed snapshot, by name
-    (``codex_launch_contract.SERVED_HOME_FILES``): never its ``config.toml``,
-    never an ``AGENTS.md``, never anything else."""
-    mounts: list[JailMount] = []
-    for name in SERVED_HOME_FILES:
-        entry = codex_home / name
-        if entry.is_symlink() or not entry.is_file():
-            continue
-        mounts.append(JailMount("ro-bind", f"{_JAIL_HOME}/{name}", entry))
-    if not mounts:
-        raise ProviderError("codex served sandbox found no credential files to mount")
-    return mounts
-
-
 def _codex_sandbox_mounts(base_cmd: list[str]) -> tuple[Path, ...]:
     wrapper, real_executable = _resolved_codex_executable(base_cmd)
     candidates = [_codex_binary_tree(real_executable)]
@@ -269,14 +236,6 @@ def _codex_model() -> str:
     return os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
 
 
-def _codex_workdir() -> str:
-    """Return the source workspace Codex should inspect for coding tasks."""
-    configured = os.environ.get("TINYASSETS_CODEX_WORKDIR", "").strip()
-    if configured:
-        return configured
-    return str(Path(__file__).resolve().parents[2])
-
-
 def _terminate(proc) -> None:
     """Kill a provider subprocess tree, tolerating one that has already exited.
 
@@ -313,8 +272,6 @@ class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
     agent_execution_kind = "native_agent"
-    #: Continues a stored native session by its thread id (``agent_sessions``).
-    native_resume = True
 
     name = "codex"
     family = "openai"
@@ -361,23 +318,10 @@ class CodexProvider(BaseProvider):
 
         base_cmd, use_shell = self.native_command_resolver()
         model = _codex_model() if config.native_model_id is None else config.native_model_id
-        sandbox_status = get_sandbox_status()
-        # Our provider jail (tinyassets.providers.provider_jail) is the sandbox
-        # whenever this launch is confined. codex's OWN workspace-write sandbox
-        # is a nested bubblewrap inside ours: it adds no confinement our jail
-        # does not already give (the universe RW, nothing else writable, no
-        # network off the egress proxy), and a nested bwrap is what forced the
-        # jail's seccomp to keep user namespaces and symlinks open. So drop it
-        # and let codex run its commands directly in our jail. Off the jail (a
-        # host-authority call with no owning universe) codex keeps its own
-        # sandbox, falling back to bypass only where bwrap is unavailable.
-        if provider_jail.launch_is_confined():
-            sandbox_args = ["--dangerously-bypass-approvals-and-sandbox"]
-        else:
-            sandbox_args = (
-                ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
-                else ["--dangerously-bypass-approvals-and-sandbox"]
-            )
+        # The owner's provider cell is the sandbox: codex's own workspace-write
+        # sandbox would be a nested bubblewrap inside it that adds nothing, so
+        # codex runs its commands directly in the cell.
+        sandbox_args = ["--dangerously-bypass-approvals-and-sandbox"]
         # Prompt-node calls use Codex as a subscription-backed text model, but
         # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;
@@ -424,16 +368,8 @@ class CodexProvider(BaseProvider):
             "--skip-git-repo-check",
             "--ephemeral",
         ]
-        # A universe's call runs in that universe (the shared jail binds
-        # nothing else); only a host call keeps the source checkout.
-        workdir = str(universe_dir) if universe_dir is not None else _codex_workdir()
-        launch_cmd = [*cmd, "-C", workdir]
-        # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
-        # so teardown reaches what the CLI starts without ever naming a group
-        # integer that could have been recycled. Fails closed if it cannot.
-        # The shared spawn point jails every launch made for a universe; this
-        # adapter only names where its own install lives (the wrapper script
-        # execs a binary the generic command lookup cannot see).
+        # The cell's own empty scratch directory; it holds nothing else.
+        launch_cmd = [*cmd, "-C", CELL_WORKSPACE]
         proc = await aspawn_owned(
             launch_cmd,
             shell=use_shell,
@@ -442,7 +378,6 @@ class CodexProvider(BaseProvider):
             stderr=asyncio.subprocess.PIPE,
             limit=_STDOUT_READER_LIMIT,
             env=proc_env,
-            install_mounts=lambda: self.native_install_mounts(base_cmd),
         )
 
         # EVERY exit -- success, classified raise, cancellation -- ends the
@@ -547,107 +482,46 @@ class CodexProvider(BaseProvider):
 
         base_cmd, use_shell = self.native_command_resolver()
         model = _codex_model() if config.native_model_id is None else config.native_model_id
-        sandbox_status = get_sandbox_status()
-        if universe_dir is None or use_shell or not sandbox_status.get("bwrap_available"):
+        snapshot = config.credential_snapshot_dir
+        if universe_dir is None or use_shell or snapshot is None:
             raise ProviderError(
-                "codex served turns require the OS sandbox; refusing unconfined launch"
+                "codex served turns require their owner cell and launch credentials; "
+                "refusing unconfined launch"
             )
         proc_env = subprocess_env_for_provider(
-            self.name, universe_dir=universe_dir,
-            credential_snapshot_dir=config.credential_snapshot_dir,
+            self.name, universe_dir=universe_dir, credential_snapshot_dir=snapshot,
         )
+        # The engine route is dialled from this process; no route secret
+        # belongs in the cell, whatever the daemon's environment carries.
+        proc_env.pop("TINYASSETS_ENGINE_MCP_BEARER", None)
         codex_home = Path(proc_env.get("CODEX_HOME", "")).resolve(strict=False)
-        universe_root = universe_dir.resolve(strict=False)
-        try:
-            codex_home.relative_to(universe_root)
-        except ValueError as exc:
-            raise ProviderError("codex auth home is outside the served command center") from exc
-        if not codex_home.is_dir():
-            raise ProviderError(
-                "codex served turns require an available OS sandbox and command center auth"
-            )
+        if codex_home != Path(snapshot).resolve(strict=False) or not codex_home.is_dir():
+            raise ProviderError("codex served turns require their sealed launch credentials")
         profile = config.stream_timeout_profile()
         async with contextlib.AsyncExitStack() as stack:
             tools = await _served_engine_tools(stack, config, timeout=profile.absolute_cap_s)
             definition = agent_definition(tools.tools if tools is not None else (), system)
-            catalog = app.write_catalog(
-                app.reduced_catalog(app.bundled_catalog(base_cmd), model or None),
-                universe_root / ".runtime" / "codex-model-catalog.json",
-            )
-            # The stored thread carries the tools it started with, so a thread
-            # resumes only under the same tool set (a narrowed grant starts fresh).
-            session_model = f"{model or ''}#tools:{app.tools_digest(definition)}"
-            session_ref = getattr(config, "agent_session", None)
-            persist = (stack.enter_context(agent_sessions.exclusive(session_ref))
-                       if session_ref is not None else False)
-            resume_record: dict | None = None
-            session_store: Path | None = None
-            input_text = prompt
-            if persist:
-                session_store = agent_sessions.native_store(universe_root, self.name)
-                resume_record = agent_sessions.resumable(
-                    session_ref, adapter=self.name, model=session_model, prompt=prompt,
-                )
-                if resume_record is not None and not _native_session_exists(
-                    session_store, str(resume_record["handle"]),
-                ):
-                    logger.warning("native session for %s is gone; starting a new one",
-                                   session_ref.key)
-                    resume_record = None
-                if resume_record is not None:
-                    # The current instructions travel as the thread's own
-                    # (``thread_resume_params``), never inside the user's input.
-                    input_text = session_ref.resume_prompt
-            sandbox_chat = getattr(config, "sandbox_chat", False)
-            # A chat turn gets an empty scratch /workspace; other served turns
-            # see the universe read-only. Codex has no tool to touch either.
-            workspace_mount = (
-                JailMount("tmpfs", "/workspace") if sandbox_chat
-                else JailMount("ro-bind", "/workspace", universe_root)
-            )
-            workspace_masks: tuple[JailMount, ...] = ()
-            if not sandbox_chat:
-                from tinyassets.providers.provider_jail import (
-                    AGENT_WORKSPACE_DIR,
-                    ensure_agent_workspace,
-                )
-
-                ensure_agent_workspace(universe_root)
-                workspace_masks = (JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}"),)
-            universe_view = UniverseView(
-                universe_dir=universe_root,
-                mounts=(
-                    workspace_mount,
-                    *workspace_masks,
-                    JailMount("tmpfs", "/workspace/.runtime/provider-launch-credentials"),
-                    # CODEX_HOME is a private tmpfs with the snapshot's credential
-                    # FILES bound read-only into it: the launcher takes
-                    # `flock $CODEX_HOME/.lock`, so the home itself must be writable.
-                    JailMount("tmpfs", _JAIL_HOME),
-                    *_codex_home_file_mounts(codex_home),
-                    JailMount("ro-bind", f"{_JAIL_HOME}/{_CATALOG_NAME}", catalog),
-                    *((JailMount("bind", f"{_JAIL_HOME}/sessions", session_store),)
-                      if session_store is not None else ()),
-                ),
-                chdir="/workspace",
-                setenv=(("CODEX_HOME", _JAIL_HOME), ("HOME", "/tmp")),
-            )
-            proc_env["CODEX_HOME"] = _JAIL_HOME
-            proc_env["HOME"] = "/tmp"
-            # The engine route is dialled from this process; no route secret
-            # belongs in the jail, whatever the daemon's environment carries.
-            proc_env.pop("TINYASSETS_ENGINE_MCP_BEARER", None)
+            # Codex dials no tool itself: each call comes back over the stdio
+            # JSON-RPC and is forwarded from here, so its cell gets no engine relay.
+            stack.enter_context(provider_jail.provider_launch_scope(
+                universe_dir, credential_dir=snapshot))
+            catalog = seal_launch_file(snapshot, "model-catalog", ".json", json.dumps(
+                app.reduced_catalog(await app.bundled_catalog(base_cmd), model or None),
+            ).encode("utf-8"))
+            # The cell's CODEX_HOME is a private writable copy of the snapshot
+            # (the launcher takes `flock $CODEX_HOME/.lock`). No native session
+            # store survives a cell, so every thread is ephemeral and the turn's
+            # prompt carries its whole context.
             launch_cmd = [
                 *base_cmd, *app.SERVED_LAUNCH_ARGS,
                 *_reasoning_effort_args(getattr(config, "reasoning_effort", "")),
-                "-c", "model_catalog_json=" + json.dumps(f"{_JAIL_HOME}/{_CATALOG_NAME}"),
+                "-c", "model_catalog_json=" + json.dumps(cell_path(snapshot, catalog)),
             ]
             proc = await aspawn_owned(
                 launch_cmd, shell=False,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, limit=_STDOUT_READER_LIMIT,
-                env=proc_env, universe_view=universe_view,
-                install_mounts=lambda: self.native_install_mounts(base_cmd),
+                env=proc_env,
             )
             stack.callback(kill_owned_tree, proc)
             stderr_chunks: list[bytes] = []
@@ -662,17 +536,10 @@ class CodexProvider(BaseProvider):
             start = time.monotonic()
             turn = app.AppServerTurn(proc, tools=tools, profile=profile, start=start,
                                      turn_wait=_TURN_WAIT_S, tool_wait=_TOOL_WAIT_S)
-            saved = False
             try:
-                thread = (
-                    ("thread/resume", app.thread_resume_params(
-                        definition, str(resume_record["handle"])))
-                    if resume_record is not None else
-                    ("thread/start", app.thread_start_params(
-                        definition, model=model or None, cwd="/workspace",
-                        ephemeral=not persist))
-                )
-                outcome = await turn.run(thread=thread, input_text=input_text, effort=None)
+                thread = ("thread/start", app.thread_start_params(
+                    definition, model=model or None, cwd=CELL_WORKSPACE, ephemeral=True))
+                outcome = await turn.run(thread=thread, input_text=prompt, effort=None)
                 elapsed_ms = (time.monotonic() - start) * 1000
                 stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
                 if outcome.status != "completed":
@@ -684,20 +551,9 @@ class CodexProvider(BaseProvider):
                     raise ProviderError(f"codex turn {outcome.status or 'ended'}: {excerpt}")
                 if not outcome.messages or not outcome.usage_seen:
                     raise ProviderError("codex turn omitted its result or usage")
-                if persist and outcome.thread_id:
-                    agent_sessions.save(session_ref, adapter=self.name, model=session_model,
-                                        handle=outcome.thread_id, system=system)
-                    saved = True
             except ProviderError:
                 check_bwrap_failure(b"".join(stderr_chunks).decode("utf-8", errors="replace"))
                 raise
-            finally:
-                if resume_record is not None and not saved:
-                    # A resumed launch that did not finish leaves no claim that
-                    # the session is healthy: the next turn starts a new one.
-                    logger.warning("native session %s did not complete; next turn starts fresh",
-                                   session_ref.key)
-                    agent_sessions.clear(session_ref)
         from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
 
         return ProviderResponse(
@@ -715,10 +571,6 @@ class CodexProvider(BaseProvider):
             # is unchanged: a completed turn proves no absence of effects.
             native_evidence=NativeCompletionEvidence(self.name, False, True, "unknown"),
         )
-
-
-#: The reduced model catalog's name inside the jail's private codex home.
-_CATALOG_NAME = "model-catalog.json"
 
 
 async def _cancel_task(task: asyncio.Task) -> None:
@@ -748,6 +600,7 @@ async def _served_engine_tools(stack: contextlib.AsyncExitStack, config: ModelCo
             actor_id=actor_id, graph_id=graph_id, enabled_tools=enabled,
             capability_grant=granted_tools(config), timeout=timeout,
             session_key=session_of(config), turn=turn_of(),
+            context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
         ))
     except EngineToolError as exc:
         raise ProviderUnavailableError(

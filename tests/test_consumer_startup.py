@@ -12,7 +12,9 @@ from tests.test_consumer_selection import store as store
 
 
 @pytest.mark.usefixtures("cloud_runtime")
-def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(store, monkeypatch):
+def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(
+    store, monkeypatch, in_process_broker,
+):
     from tinyassets import (
         delivery_runtime,
         engine_mcp_http,
@@ -34,6 +36,7 @@ def test_actual_main_nominates_saved_consumer_on_boot_and_periodic_tick(store, m
             loops.append(self.target)
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(store))
+    in_process_broker.supervisor_for(store)
     monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
     monkeypatch.setattr(session_store, "arm", lambda: None)
     monkeypatch.setattr(threading, "Thread", CapturedThread)

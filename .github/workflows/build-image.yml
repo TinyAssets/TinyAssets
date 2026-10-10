@@ -58,6 +58,7 @@ on:
       - 'scripts/_canary_common.py'
       - 'scripts/codex_cli_smoke.py'
       - 'scripts/workspace_bwrap_oracle.py'
+      - 'scripts/check_privileged_chain.py'
       # Host inputs: installed by install-host-services.yml (the RUNTIME_FILES
       # of deploy/install-host-uptime-services.sh, the deploy fence) or, for
       # the expected-instance state, by deploy-prod.yml.

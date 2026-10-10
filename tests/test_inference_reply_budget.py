@@ -25,7 +25,7 @@ from tests import test_interactive_http_agent as integration
 from tests.inference_usage_helpers import accounting_resolver
 from tests.test_outbound_ssrf_driver import _PassThroughTLS
 from tinyassets.broker.ops import new_op_id
-from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
 from tinyassets.providers.definition import ProviderDefinition, _definition_id
 from tinyassets.request_budget import TurnRequestBudget
 from tinyassets.storage.outbound_connections import (
@@ -35,8 +35,6 @@ from tinyassets.storage.outbound_connections import (
     CredentialBlindBroker,
     OutboundDeadlineExceeded,
     ProxyRequestError,
-    _adapter_safe_proxy_error,
-    _ProxyChannel,
     _SsrfHardenedHttpDriver,
 )
 
@@ -61,7 +59,8 @@ MODEL_USE = {
 @pytest.fixture
 def broker(tmp_path):
     ledger = ConnectionLedger(
-        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner"
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner"
     )
     for connection_id, grant_id in (("conn-model", "grant-model"), ("conn-plain", "grant-plain")):
         ledger.create_connection(
@@ -155,8 +154,6 @@ def test_the_budget_never_exceeds_the_one_ceiling(broker, asked):
     # Not a number the broker will read as one.
     ("grant-model", True, "POST"),
     ("grant-model", "600", "POST"),
-    ("grant-model", math.inf, "POST"),
-    ("grant-model", math.nan, "POST"),
     # Asking for less than the ordinary bound changes nothing.
     ("grant-model", 10, "POST"),
 ])
@@ -164,6 +161,13 @@ def test_everything_else_keeps_the_ordinary_bound(broker, grant, budget, verb):
     call = _post(broker, grant, budget, verb)
     assert "reply_budget_s" not in call
     assert "reply_budget_s" not in call["request"]
+
+
+@pytest.mark.parametrize("asked", [math.inf, math.nan])
+def test_nonfinite_budget_is_refused_before_broker_dispatch(broker, asked):
+    with pytest.raises(ProviderAuthorityHeldError, match="accounting broker operation refused"):
+        _post(broker, "grant-model", asked)
+    assert broker[1] == []
 
 
 def test_a_deadline_crosses_the_broker_typed_and_fixed(broker):
@@ -177,28 +181,6 @@ def test_a_deadline_crosses_the_broker_typed_and_fixed(broker):
     with pytest.raises(ProxyRequestError) as error:
         instance.dispatch("grant-model", "POST", {"url": INFERENCE_URL, "body": {}})
     assert type(error.value) is ProxyRequestError
-
-
-def test_the_child_boundary_keeps_the_deadline_typed():
-    assert _adapter_safe_proxy_error(OutboundDeadlineExceeded("x")) == (
-        "outbound request exceeded its time budget"
-    )
-
-    class Channel:
-        def send_bytes(self, _payload):
-            pass
-
-        def recv_bytes(self, *_):
-            import json
-
-            return json.dumps({
-                "ok": False, "error_type": "OutboundDeadlineExceeded",
-                "message": "outbound request exceeded its time budget",
-            }).encode()
-
-    channel = _ProxyChannel(Channel(), process=None)
-    with pytest.raises(OutboundDeadlineExceeded):
-        channel.request("POST", {"url": INFERENCE_URL})
 
 
 # --------------------------------------------------------------------------

@@ -212,7 +212,7 @@ def test_keyless_remote_mcp_connects_with_owner_yes_and_works_next_turn(
         assert listed["url"] == URL and listed["extension"] == "deepwiki"
 
         # Turn 2: a fresh launch finds it by name and uses it, keylessly.
-        _install_inprocess_proxy(monkeypatch, db_path=home / "outbound.db",
+        _install_inprocess_proxy(monkeypatch, db_path=home / ".broker" / "outbound.db",
                                  universe_dir=home / UID, grant_id=row["grant_id"],
                                  provider="http", destination="deepwiki",
                                  runtime_root=tmp_path / "runtime")

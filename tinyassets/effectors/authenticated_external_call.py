@@ -90,11 +90,11 @@ included).
 CREDENTIAL-BLINDNESS. This effector NEVER resolves or sees the credential. It
 resolves an exact scoped proxy under the universe's own authority and hands the
 wire request to ``proxy.request(verb, request)``. The credential is applied
-INSIDE the spawned broker worker (``_run_proxy_worker`` +
-``_SsrfHardenedHttpDriver``); the secret never exists in this process. The
-effector returns the worker's sanitized ``{status, reason, headers, body}`` as
-evidence, or a secret-free error dict — it NEVER raises to the run-completion
-path.
+INSIDE the credential broker process (uid 1002, ``_SsrfHardenedHttpDriver``);
+the secret never exists in this process, and this uid cannot open the ledger or
+the vault. The effector returns the broker's sanitized
+``{status, reason, headers, body}`` as evidence, or a secret-free error dict —
+it NEVER raises to the run-completion path.
 
 ISOLATION. ``universe_id`` is derived from server-owned run context
 (``base_path``), never the packet. A packet may only name a grant that is bound
@@ -630,12 +630,12 @@ def _universe_id(base_path: str | Path | None) -> str:
         return ""
 
 
-def _ledger_db_path(base_path: str | Path | None) -> Path | None:
-    """The outbound ledger DB lives at the DATA ROOT (``base_path.parent``)."""
+def _data_root(base_path: str | Path | None) -> Path | None:
+    """The data root (``base_path.parent``); the broker's tree lives under it."""
     if base_path is None:
         return None
     try:
-        return Path(base_path).parent / "outbound.db"
+        return Path(base_path).parent
     except (TypeError, ValueError):
         return None
 
@@ -914,59 +914,42 @@ def _build_url(request: dict[str, Any], host: str) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- #
-# Proxy seam — the ONLY place the ledger is touched. Kept small + named so the
-# credential-blind spawned-worker path is the default and tests can substitute
-# an in-process loopback broker for wire-request assertions (the child re-imports
-# with production SSRF seams, so a monkeypatch cannot cross the spawn boundary —
-# exactly why the project splits "credential-blindness through the real worker"
-# from "successful wire-request assertion via an injected driver").
+# Proxy seam — the ONLY place connection authority is read. Kept small + named
+# so the credential-blind broker path is the single path, and tests can
+# substitute an injected driver for wire-request assertions without ever
+# routing a credential through this process.
 # --------------------------------------------------------------------------- #
 def _read_connection_context(
-    *, db_path: Path, grant_id: str, connection_id: str, universe_id: str,
+    *, data_root: Path, grant_id: str, connection_id: str, universe_id: str,
     principal: str = "",
 ) -> tuple[Any, Any, str]:
     """Return ``(grant, connection_view, error_kind)`` for the admitted scope.
 
-    Enforces the isolation gate: the grant must exist, be active, and be bound to
-    the RUNNING universe. ``error_kind`` empty on success.
+    The broker enforces the isolation gate inside one transaction: the grant
+    must exist, be active, be owned by ``principal``, and be bound to the
+    RUNNING universe. ``error_kind`` empty on success.
     """
-    from tinyassets.broker.supervisor import broker_selected
-    from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
+    from tinyassets.broker.ledger_queries import authorized_connection
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
-    if broker_selected():
-        from tinyassets.broker.ledger_queries import authorized_connection
+    if not principal:
+        return None, None, "no_universe_authority"
+    try:
+        if principal in (f'universe:{universe_id}', f'command_center:{universe_id}'):
+            from tinyassets.role_scope import owner_principal
 
-        if not principal:
-            return None, None, "no_universe_authority"
-        try:
-            grant, resource, _incarnation = authorized_connection(
-                Path(db_path).parent, principal=principal, command_center=universe_id,
-                grant_id=grant_id, connection_id=connection_id)
-        except GrantResolutionError:
-            return None, None, "connection_authority_unavailable"
-        return grant, resource.to_view(), ""
-
-    ledger = ConnectionLedger(db_path)
-    grant = ledger.get_grant(grant_id)
-    if grant is None:
-        return None, None, "unknown_grant"
-    if getattr(grant, "revoked_at", None) is not None:
-        return None, None, "revoked_grant"
-    if getattr(grant, "universe_id", "") != universe_id:
-        # The isolation boundary: a packet cannot select a grant from a
-        # different universe than the one running this graph.
-        return None, None, "grant_not_for_universe"
-    if getattr(grant, "connection_id", "") != connection_id:
-        return None, None, "grant_connection_mismatch"
-    view = ledger.get_connection_view(connection_id)
-    if view is None:
-        return None, None, "unknown_connection"
-    return grant, view, ""
+            principal = owner_principal(Path(data_root) / universe_id, actor=principal)
+        grant, resource, _incarnation = authorized_connection(
+            Path(data_root), principal=principal, command_center=universe_id,
+            grant_id=grant_id, connection_id=connection_id)
+    except (GrantResolutionError, PermissionError):
+        return None, None, "connection_authority_unavailable"
+    return grant, resource.to_view(), ""
 
 
 def _open_connection_proxy(
     *,
-    db_path: Path,
+    data_root: Path,
     universe_id: str,
     grant_id: str,
     connection_id: str,
@@ -974,45 +957,29 @@ def _open_connection_proxy(
 ) -> Any:
     """Resolve the exact scoped, credential-blind proxy under universe authority.
 
-    The authenticated principal is the grant's OWN stored owner (trusted grant
-    row), gated upstream by the universe match. ``resolve_exact_scoped_proxy``
-    spawns the broker worker; the credential is resolved and applied inside it.
+    The broker process holds the credential and serves every request; this
+    side carries only the grant's scope and the channel to it.
     """
-    from tinyassets.broker.supervisor import broker_selected
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    if broker_selected():
-        from tinyassets.broker.ledger_queries import authorized_connection
-        from tinyassets.storage.outbound_connections import (
-            ProxyRequestError,
-            ScopedConnectionProxy,
-            _broker_channel,
-        )
-
-        grant, resource, _incarnation = authorized_connection(
-            Path(db_path).parent, principal=owner_user_id, command_center=universe_id,
-            grant_id=grant_id, connection_id=connection_id)
-        if resource.connection_type != "http":
-            raise ProxyRequestError("credential broker requires an HTTP connection")
-        channel = _broker_channel(
-            Path(db_path).parent, principal=owner_user_id, command_center=universe_id,
-            grant_id=grant_id, connection_id=connection_id)
-        if channel is None:
-            raise ProxyRequestError("credential broker channel unavailable")
-        return ScopedConnectionProxy(
-            grant_id=grant.grant_id, provider=resource.provider,
-            destination=resource.destination, scopes=resource.scopes,
-            access_mode=resource.access_mode, _channel=channel)
-
-    ledger = ConnectionLedger(
-        db_path,
-        verify_authenticated_principal=lambda: owner_user_id,
+    from tinyassets.broker.ledger_queries import authorized_connection
+    from tinyassets.storage.outbound_connections import (
+        ProxyRequestError,
+        ScopedConnectionProxy,
+        _broker_channel,
     )
-    return ledger.resolve_exact_scoped_proxy(
-        universe_id=universe_id,
-        grant_id=grant_id,
-        connection_id=connection_id,
-    )
+
+    root = Path(data_root)
+    grant, resource, _incarnation = authorized_connection(
+        root, principal=owner_user_id, command_center=universe_id,
+        grant_id=grant_id, connection_id=connection_id)
+    if resource.connection_type != "http":
+        raise ProxyRequestError("credential broker requires an HTTP connection")
+    channel = _broker_channel(
+        root, principal=owner_user_id, command_center=universe_id,
+        grant_id=grant_id, connection_id=connection_id)
+    return ScopedConnectionProxy(
+        grant_id=grant.grant_id, provider=resource.provider,
+        destination=resource.destination, scopes=resource.scopes,
+        access_mode=resource.access_mode, _channel=channel)
 
 
 # --------------------------------------------------------------------------- #
@@ -1112,14 +1079,14 @@ def _run(
         }
 
     universe_id = _universe_id(base_path)
-    db_path = _ledger_db_path(base_path)
+    data_root = _data_root(base_path)
     if execution_context is not None:
         if (execution_context.universe != universe_id or not execution_context.owner
                 or not execution_context.initiating_agent):
             return {"error_kind": "execution_context_mismatch"}
         if execution_context.research:
             return {"error_kind": "research_is_read_only"}
-    if not universe_id or db_path is None:
+    if not universe_id or data_root is None:
         # No trusted universe context ⇒ fail closed (never borrow a default).
         return {
             "error": "no command center authority is bound to this run",
@@ -1133,7 +1100,7 @@ def _run(
     principal = (execution_context.owner if execution_context is not None
                  else identity.user_id if identity is not None else "")
     grant, view, gate_error = _read_connection_context(
-        db_path=db_path,
+        data_root=data_root,
         grant_id=grant_id,
         connection_id=connection_id,
         universe_id=universe_id,
@@ -1333,7 +1300,7 @@ def _run(
     proxy = None
     try:
         proxy = _open_connection_proxy(
-            db_path=db_path,
+            data_root=data_root,
             universe_id=universe_id,
             grant_id=grant_id,
             connection_id=connection_id,

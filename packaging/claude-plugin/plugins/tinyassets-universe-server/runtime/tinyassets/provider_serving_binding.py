@@ -264,9 +264,10 @@ def _open_serving_context(
     Returns ``(provider_name, grant_id, connection_id, credential_ref)`` or raises.
     The connection grant MUST be owned by the caller + bound to this universe + not
     revoked — the bind-time isolation gate (authorize re-checks it at call time)."""
+    from tinyassets.broker.ledger_queries import granted_resource_row
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.provider_resolver import provider_for_definition
-    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.outbound_connections import GrantResolutionError
 
     definition = get_definition(universe_id, definition_id)
     if definition is None or definition.access_method != "api_key_http":
@@ -274,35 +275,17 @@ def _open_serving_context(
             "provider must be claude-code, codex, or a registered api_key_http definition_id"
         )
     provider_name = provider_for_definition(definition).name
-    from tinyassets.broker.supervisor import broker_selected
-
-    if broker_selected():
-        from tinyassets.broker.ledger_queries import granted_resource_row
-        from tinyassets.storage.outbound_connections import GrantResolutionError
-
-        if not owner_user_id or definition.owner_user_id != owner_user_id:
-            raise ServingProviderNotOwned("open provider definition is not owned by the caller")
-        try:
-            resource = granted_resource_row(
-                base, principal=owner_user_id, command_center=universe_id,
-                grant_id=definition.ref)
-        except GrantResolutionError:
-            raise ServingProviderNotOwned(
-                "open provider connection authority unavailable") from None
-        return (provider_name, definition.ref, resource["connection_id"],
-                resource["credential_ref"])
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(definition.ref)
-    if grant is None or getattr(grant, "revoked_at", None) is not None:
-        raise ServingProviderNotOwned("open provider connection grant is absent or revoked")
-    if grant.owner_user_id != owner_user_id or grant.universe_id != universe_id:
+    if not owner_user_id or definition.owner_user_id != owner_user_id:
+        raise ServingProviderNotOwned("open provider definition is not owned by the caller")
+    try:
+        resource = granted_resource_row(
+            base, principal=owner_user_id, command_center=universe_id,
+            grant_id=definition.ref)
+    except GrantResolutionError:
         raise ServingProviderNotOwned(
-            "open provider grant is not owned by the caller / bound to this command center"
-        )
-    resource = ledger._get_connection_resource(grant.connection_id)
-    if resource is None:
-        raise ServingProviderNotOwned("open provider connection resource is absent")
-    return provider_name, grant.grant_id, grant.connection_id, resource.credential_ref
+            "open provider connection authority unavailable") from None
+    return (provider_name, definition.ref, resource["connection_id"],
+            resource["credential_ref"])
 
 
 def verify_open_grant_custody(
@@ -341,25 +324,12 @@ def verify_open_grant_custody(
 def _open_connection_id(base: Path, universe_id: str, provider_name: str, *,
                         owner_user_id: str = "") -> str:
     """The connection_id backing an open serving provider name, for the FIRST custody
-    read before the full identity revalidation (verify_open_grant_custody). Existence +
-    revocation in legacy mode; broker mode also requires the admitted owner.
+    read before the full identity revalidation (verify_open_grant_custody). The
+    caller supplies its independently admitted owner; a definition or grant's own
+    owner must never stand in for that authority.
     Callers MUST follow with verify_open_grant_custody for the rotation gate."""
-    from tinyassets.broker.supervisor import broker_selected
-    from tinyassets.providers.definition import get_definition
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
     def_id = provider_name.split("api_key_http:", 1)[-1]
-    if broker_selected():
-        # The caller supplies its independently admitted owner. A definition or
-        # grant's own owner must never stand in for that authority.
-        return _open_serving_context(base, universe_id, owner_user_id, def_id)[2]
-    definition = get_definition(universe_id, def_id)
-    if definition is None or definition.access_method != "api_key_http":
-        raise PermissionError("open provider definition is absent")
-    grant = ConnectionLedger(base / "outbound.db").get_grant(definition.ref)
-    if grant is None or getattr(grant, "revoked_at", None) is not None:
-        raise PermissionError("open provider connection grant is absent or revoked")
-    return grant.connection_id
+    return _open_serving_context(base, universe_id, owner_user_id, def_id)[2]
 
 
 @dataclass(frozen=True, slots=True)

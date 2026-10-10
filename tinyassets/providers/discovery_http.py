@@ -22,7 +22,6 @@ from tinyassets.exceptions import (
 from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.storage.outbound_connections import (
     _SSRF_MAX_BODY_BYTES,
-    ConnectionLedger,
     GrantResolutionError,
     ProxyRequestError,
     SsrfValidationError,
@@ -117,36 +116,19 @@ def read_granted_discovery_document(
         raise ValueError("invalid discovery JSON mode")
     if not owner_user_id or not universe_id or not grant_id:
         raise ModelDiscoveryUnavailable("source_revoked")
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.ledger_queries import GRANTED_RESOURCE, query_ledger
 
-    selected = broker_selected()
-    ledger = None
-    if selected:
-        from tinyassets.broker.ledger_queries import GRANTED_RESOURCE, query_ledger
-
-        try:
-            facts = query_ledger(Path(db_path).parent, query=GRANTED_RESOURCE,
-                                 principal=owner_user_id, command_center=universe_id,
-                                 grant_id=grant_id)
-            if not isinstance(facts.get("resource"), dict):
-                raise ValueError("invalid broker resource projection")
-            view = _resource_from_row(facts["resource"]).to_view()
-        except GrantResolutionError:
-            raise ModelDiscoveryUnavailable("source_revoked") from None
-        except (OSError, LookupError, TypeError, ValueError, ProxyRequestError):
-            raise ModelDiscoveryUnavailable("discovery_unavailable") from None
-    else:
-        ledger = ConnectionLedger(
-            Path(db_path), verify_authenticated_principal=lambda: owner_user_id)
-        grant = ledger.get_grant(grant_id)
-        if (
-            grant is None
-            or grant.revoked_at is not None
-            or grant.owner_user_id != owner_user_id
-            or grant.universe_id != universe_id
-        ):
-            raise ModelDiscoveryUnavailable("source_revoked")
-        view = ledger.get_connection_view(grant.connection_id)
+    try:
+        facts = query_ledger(Path(db_path).parent, query=GRANTED_RESOURCE,
+                             principal=owner_user_id, command_center=universe_id,
+                             grant_id=grant_id)
+        if not isinstance(facts.get("resource"), dict):
+            raise ValueError("invalid broker resource projection")
+        view = _resource_from_row(facts["resource"]).to_view()
+    except GrantResolutionError:
+        raise ModelDiscoveryUnavailable("source_revoked") from None
+    except (OSError, LookupError, TypeError, ValueError, ProxyRequestError):
+        raise ModelDiscoveryUnavailable("discovery_unavailable") from None
     if (
         view is None
         or view.revoked_at is not None
@@ -167,15 +149,9 @@ def read_granted_discovery_document(
     # A bounded, blocking broker operation. Async ingress must offload this call;
     # cancellation must not start a replacement until this operation settles.
     try:
-        if selected:
-            proxy = _broker_channel(Path(db_path).parent, principal=owner_user_id,
-                                    command_center=universe_id, grant_id=grant_id,
-                                    connection_id=view.connection_id)
-        else:
-            proxy = ledger.resolve_exact_scoped_proxy(
-                universe_id=universe_id, grant_id=grant_id,
-                connection_id=view.connection_id,
-            )
+        proxy = _broker_channel(Path(db_path).parent, principal=owner_user_id,
+                                command_center=universe_id, grant_id=grant_id,
+                                connection_id=view.connection_id)
         try:
             result = proxy.request("GET", {"url": _canonical_request_url(canonical)})
         finally:

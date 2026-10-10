@@ -167,7 +167,7 @@ WORKSPACE_RSS_INTERVAL_SECONDS = 0.5
 JAIL_EXIT_GRACE_SECONDS = 5.0
 
 #: Read-only system binds, when they exist on the host.
-_SYSTEM_ROBINDS = ("/usr", "/bin", "/lib", "/lib64")
+_SYSTEM_ROBINDS = ("/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache")
 
 #: PATH used only to resolve ``bwrap`` itself, never inherited from the host
 #: and never visible inside the jail (``--clearenv`` sets the child's own).
@@ -735,64 +735,6 @@ class _WsRoot(object):
             self.fd = None
 
 
-class _WsPathRoot(_WsRoot):
-    """The no-``dir_fd`` stand-in. Not a boundary: only the tests-only launcher
-    reaches it, and that launcher performs no isolation of any kind."""
-
-    def __init__(self, path):
-        self.path = os.path.realpath(path)
-        self.fd = None
-
-    def _resolve(self, parts, kind, make_parents=False):
-        target = os.path.realpath(os.path.join(self.path, *parts)) if parts else self.path
-        if target != self.path and not target.startswith(self.path + os.sep):
-            raise ValueError(
-                "workspace " + kind + " escapes the workspace: " + "/".join(parts)
-            )
-        if make_parents:
-            parent = os.path.dirname(target)
-            if parent and parent != self.path and not os.path.isdir(parent):
-                os.makedirs(parent)
-        return target
-
-    def open_leaf(self, parts, kind, flags, mode=None, make_parents=False):
-        if not parts:
-            raise ValueError("workspace " + kind + " names the workspace root")
-        target = self._resolve(parts, kind, make_parents=make_parents)
-        try:
-            if mode is None:
-                return os.open(target, flags | _WS_NOFOLLOW | _WS_BINARY)
-            return os.open(target, flags | _WS_NOFOLLOW | _WS_BINARY, mode)
-        except OSError as exc:
-            raise ValueError(
-                "workspace " + kind + " cannot be opened beneath the workspace: "
-                + str(exc)
-            )
-
-    def dir_reference(self, parts, kind):
-        return self._resolve(parts, kind), None, False
-
-    def scan(self, limit):
-        found = []
-        stack = [(self.path, "")]
-        while stack and len(found) < limit:
-            here, prefix = stack.pop()
-            try:
-                entries = list(os.scandir(here))
-            except OSError:
-                continue
-            for entry in entries:
-                if entry.is_symlink():
-                    continue
-                name = prefix + entry.name
-                found.append(name)
-                if len(found) >= limit:
-                    break
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append((entry.path, name + "/"))
-        return found
-
-
 def _ws_match(parts, pattern_parts):
     """Glob semantics where ``*`` does not cross a separator and ``**`` does."""
     if not pattern_parts:
@@ -853,7 +795,13 @@ class _WorkspaceTail(object):
 
 def _make_workspace(conf, remaining):
     """Return the `ws` object bound to one workspace root."""
-    root = _WsRoot(conf["root"]) if _WS_HAS_DIR_FD else _WsPathRoot(conf["root"])
+    if not _WS_HAS_DIR_FD:
+        # The workspace is held open by descriptor and every component is
+        # opened relative to it. A host without `dir_fd` cannot do that, and
+        # the path stand-in that used to cover it was no boundary at all.
+        raise SandboxUnavailableError(
+            "workspace nodes need a host with os.open(dir_fd=...) support")
+    root = _WsRoot(conf["root"])
     limits = conf.get("limits") or {}
     max_output = int(limits.get("max_output_bytes", 1048576))
     max_read = int(limits.get("max_read_bytes", 1048576))
@@ -1620,22 +1568,19 @@ def _validate_workspace_bind(
     realpath: Callable[[str], str],
     pass_fds: tuple[int, ...] = (),
 ) -> str:
-    """Check the one extra bind against the roots the caller vouches for.
+    """Check the one extra bind. It must be a held directory handle.
 
-    Two shapes, each vouched for by the thing that identifies it.
+    ``/proc/self/fd/<n>`` is admitted only when ``n`` is one of the descriptors
+    the child will inherit, because that is what makes the string resolve,
+    inside the bwrap process, to the directory the fd was opened on. Requiring
+    it to sit beneath a root as well would be theatre -- the path names a
+    descriptor, not a location.
 
-    ``/proc/self/fd/<n>`` is a held directory handle: it is admitted only when
-    ``n`` is one of the descriptors the child will inherit, because that is
-    what makes the string resolve, inside the bwrap process, to the directory
-    the fd was opened on. Requiring it to sit beneath a root as well would be
-    theatre -- the path names a descriptor, not a location.
-
-    Any other path must be absolute and beneath a root the caller passed in,
-    checked literally and after ``realpath``. The roots are what makes
-    ``/data/...`` bindable at all -- a universe's workspaces live under it --
-    so an empty root tuple refuses everything rather than falling back to the
-    never-bind list. A plain path is also swappable by a rename between this
-    check and the mount; the descriptor form is the one production uses.
+    A plain path is refused outright. It is swappable by a rename between the
+    check and the mount, and with per-owner isolation the kernel -- not a
+    realpath comparison against ``allowed_roots`` -- is what keeps one owner's
+    child out of another owner's tree. The descriptor form is the only form
+    production has ever used.
     """
     if not isinstance(path, str) or not path.strip():
         raise ValueError("workspace bind must be a non-empty path")
@@ -1650,34 +1595,16 @@ def _validate_workspace_bind(
     trimmed = path.rstrip("/") or "/"
 
     handle = _PROC_FD_BIND.match(trimmed)
-    if handle is not None:
-        number = int(handle.group(1))
-        if number not in tuple(pass_fds or ()):
-            raise ValueError(
-                f"workspace bind {path!r} names a descriptor the child does not "
-                f"inherit (pass_fds={tuple(pass_fds or ())!r})"
-            )
-        return trimmed
-
-    roots = tuple(
-        r for r in (allowed_roots or ())
-        if isinstance(r, str) and r.startswith("/") and r.strip()
-    )
-    if not roots:
+    if handle is None:
         raise ValueError(
-            "no allowed workspace roots were given: refusing to bind "
-            f"{path!r} into the jail"
+            f"workspace bind {path!r} is not a held directory descriptor; only "
+            "/proc/self/fd/<n> of an inherited descriptor may be bound"
         )
-    if not _beneath_any(trimmed, roots):
+    number = int(handle.group(1))
+    if number not in tuple(pass_fds or ()):
         raise ValueError(
-            f"workspace bind {path!r} is not beneath an allowed root {roots!r}"
-        )
-    # A symlinked bind source would otherwise smuggle in any directory.
-    resolved = realpath(trimmed)
-    if not _beneath_any(resolved, roots):
-        raise ValueError(
-            f"workspace bind {path!r} resolves to {resolved!r}, "
-            f"outside the allowed roots {roots!r}"
+            f"workspace bind {path!r} names a descriptor the child does not "
+            f"inherit (pass_fds={tuple(pass_fds or ())!r})"
         )
     return trimmed
 
@@ -2127,10 +2054,12 @@ class PlainSubprocessLauncher:
 
     def cleanup(self) -> None:
         """Remove the delivered script; the parent calls this when the run ends."""
+        from tinyassets.universe_files import unlink_data_path
+
         path = getattr(self, "_script_path", "")
         if path:
             try:
-                os.unlink(path)
+                unlink_data_path(path)
             except OSError:
                 pass
             self._script_path = ""
@@ -2179,32 +2108,11 @@ def _default_launcher() -> Launcher:
 DEFAULT_LAUNCHER_FACTORY: Callable[[], Launcher] = _default_launcher
 
 
-def _default_workspace_launcher(mount: WorkspaceMount) -> Launcher:
-    """The production launcher for a node that HOLDS a workspace.
-
-    A bind-less :class:`BwrapLauncher` reports ``/workspace`` as its root and
-    emits no ``--bind`` for it, so a workspace node would run against a mount
-    point that does not exist. The bind, and the roots that vouch for it, belong
-    to the RUN - which is why this is a factory the compiler calls per node
-    rather than a launcher built once at import.
-    """
-    probe = _probe() or {}
-    if probe.get("bwrap_available"):
-        # for_workspace carries the bind, the roots AND the descriptors the
-        # child must inherit: a launcher built from three loose arguments
-        # dropped pass_fds, and the bind then resolved to a path instead of
-        # the handle the checkout opened.
-        return BwrapLauncher().for_workspace(mount)
-    reason = probe.get("reason") or "bwrap unavailable"
-    raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
-
-
-#: Resolves the launcher for a node with a workspace, FROM the mount. Taking
-#: the mount rather than its pieces is what keeps ``pass_fds`` from being
-#: forgotten at a call site. Substituted by tests.
-WORKSPACE_LAUNCHER_FACTORY: Callable[[WorkspaceMount], Launcher] = (
-    _default_workspace_launcher
-)
+# The workspace launcher is resolved INSIDE the owner's node cell, from the
+# mount the cell itself opened at /workspace (`role_node.cell_main` ->
+# `_launcher_for_workspace`). The daemon no longer builds one: it holds no
+# bwrap child, and a factory the compiler called per node was the last seam
+# through which a workspace node could have run at the daemon's uid.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2232,6 +2140,8 @@ def read_process_tree(pid: int) -> tuple[int, int]:
     workspace RSS watchdog and the universe tool jail
     (:mod:`tinyassets.universe_tools`), so there is one tree walk.
     """
+    from tinyassets.universe_files import read_data_path
+
     if not os.path.isdir("/proc"):
         return -1, -1
     page = 4096
@@ -2246,8 +2156,7 @@ def read_process_tree(pid: int) -> tuple[int, int]:
         return -1, -1
     for name in entries:
         try:
-            with open(f"/proc/{name}/stat", "rb") as handle:
-                raw = handle.read()
+            raw = read_data_path(f"/proc/{name}/stat") or b""
         except OSError:
             continue
         # The comm field is parenthesised and may hold spaces; everything
@@ -2273,8 +2182,7 @@ def read_process_tree(pid: int) -> tuple[int, int]:
             continue
         seen.add(current)
         try:
-            with open(f"/proc/{current}/statm", "rb") as handle:
-                parts = handle.read().split()
+            parts = (read_data_path(f"/proc/{current}/statm") or b"").split()
             if len(parts) >= 2:
                 total += int(parts[1]) * page
         except (OSError, ValueError):
@@ -2488,6 +2396,7 @@ class NodeSandbox:
         max_output_bytes: int = MAX_OUTPUT_BYTES,
         launcher: Launcher | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        universe_dir: str | os.PathLike | None = None,
     ) -> None:
         self.default_timeout = timeout
         self.max_output_bytes = max_output_bytes
@@ -2507,6 +2416,7 @@ class NodeSandbox:
         #: cancellation is what bounds a workflow the owner did not write, so
         #: it has to reach the child.
         self.should_cancel = should_cancel
+        self.universe_dir = universe_dir
 
     def validate_source(self, source_code: str) -> list[str]:
         """Pre-validate source code before execution.
@@ -2595,6 +2505,35 @@ class NodeSandbox:
 
         Raises:
             SandboxUnavailableError: no OS sandbox and no launcher injected.
+        """
+        from tinyassets.role_node import run
+
+        return run(self, node_id=node_id, source_code=source_code,
+                   input_state=input_state, input_keys=input_keys, output_keys=output_keys,
+                   timeout=timeout or self.default_timeout, effects=effects,
+                   dependencies=dependencies, invoke=invoke, workspace=workspace)
+
+    def run_nested(
+        self,
+        node_id: str,
+        source_code: str,
+        input_state: dict[str, Any],
+        input_keys: list[str],
+        output_keys: list[str],
+        timeout: float | None = None,
+        effects: dict[str, Any] | None = None,
+        dependencies: list[str] | None = None,
+        invoke: Callable[[str, dict[str, Any]], Any] | None = None,
+        workspace: WorkspaceMount | None = None,
+    ) -> SandboxResult:
+        """Execute the node in the nested bwrap jail, HERE.
+
+        The only caller is :func:`tinyassets.role_node.cell_main`, running as
+        the owner inside that owner's cell: this is the confined execution, not
+        a daemon-uid fallback. :meth:`run_sync` never reaches it -- it hands the
+        request to the cell instead.
+
+        Arguments are :meth:`run_sync`'s; see its docstring.
         """
         timeout = timeout or self.default_timeout
         start_time = time.monotonic()
@@ -2823,7 +2762,12 @@ class NodeSandbox:
                 pass
         finally:
             _launcher_cleanup(launcher)
-            shutil.rmtree(work_dir, ignore_errors=True)
+            from tinyassets.workspace_fs import RealPoolFilesystem
+
+            try:
+                RealPoolFilesystem().remove_tree_no_follow(work_dir)
+            except OSError:
+                pass  # Preserve best-effort cleanup of this private scratch directory.
 
         duration = time.monotonic() - start_time
         stdout_text = out_drain.data.decode("utf-8", errors="replace")
@@ -3005,7 +2949,6 @@ class NodeSandbox:
 __all__ = [
     "ALLOWED_IMPORTS",
     "DEFAULT_LAUNCHER_FACTORY",
-    "WORKSPACE_LAUNCHER_FACTORY",
     "FORBIDDEN_PATTERNS",
     "MAX_INPUT_BYTES",
     "MAX_OUTPUT_BYTES",

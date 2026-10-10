@@ -13,6 +13,7 @@ def with_request_capacity(base, owner, universe, connection):
     heuristic. Missing evidence leaves the catalogue's facts unchanged. The
     budget reader also corrects declared caps when successful usage exceeds them.
     """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.request_budget import _source_budget_facts, request_budget
 
     free = tuple(m.model_id for m in connection.models
@@ -25,7 +26,16 @@ def with_request_capacity(base, owner, universe, connection):
         universe_dir=universe,
         model_selection=ModelRef(connection.connection_id, free[0]),
     )
-    facts = _source_budget_facts(context, owner=owner)
+    try:
+        facts = _source_budget_facts(context, owner=owner)
+    except ProviderAuthorityHeldError:
+        # Advisory capacity cannot turn one source's concurrent revocation
+        # into a failure of every independent source. The caller revalidates
+        # the collected authority before publication and again before launch.
+        return replace(connection, models=tuple(
+            replace(m, remaining_requests=None) if m.model_id in free else m
+            for m in connection.models
+        ))
     preset = facts[1] if facts else None
     if not preset or type(preset.get("requests_per_day")) is not int:
         return connection

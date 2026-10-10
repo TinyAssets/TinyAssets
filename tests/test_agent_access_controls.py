@@ -405,7 +405,7 @@ def _deposit(base, *, owner, uid, destination, access_mode):
     """A connection as the deposit path leaves it: ledger row + grant."""
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: owner)
     ledger.create_connection(
         connection_id=f"conn-{owner}", owner_user_id=owner,

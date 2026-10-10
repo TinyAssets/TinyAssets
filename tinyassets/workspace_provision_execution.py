@@ -1,81 +1,22 @@
-"""Compose admitted acquisition and offline installation in an unpublished lease.
+"""Admit a pinned lease to its owner's bounded provisioning cell.
 
-The workspace effector owns consent, transfer reservation and publication. This
-module owns only fresh private scratch and the two supervised stages. It never
-accepts a command, environment, registry or path from a workflow packet.
+Consent and reservations remain the workspace effector's responsibility.
+The daemon holds no package-manager process, only the fixed registry relay.
 """
-
 from __future__ import annotations
 
 import json
 import math
 import os
-import sys
+import select
+import stat
 import time
-import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
-from tinyassets import node_sandbox as sandbox
 from tinyassets import workspace_fs as fs
-from tinyassets import workspace_registry_proxy as proxy
-from tinyassets import workspace_resolver as resolver
-from tinyassets.workspace_provision_process import run_provision_stage
-from tinyassets.workspace_registry_process import RegistryBrokerProcess
-
-_MANIFESTS = Path("/provision/manifests")
-_CACHE = Path("/provision/cache")
-_NODE_NAMES = ("package.json", "package-lock.json")
-
-_VERIFY = r'''
-import hashlib, json, os, subprocess, sys
-from pathlib import Path
-settings = json.loads(sys.argv[1])
-for names, digest in settings['digests']:
-    blobs = [(Path('/provision/manifests') / name).read_bytes() for name in names]
-    if hashlib.sha256(b'\0'.join(blobs)).hexdigest() != digest:
-        raise SystemExit(65)
-def command(argv):
-    # Parent drains the inherited streams cumulatively. No package-sized
-    # capture_output buffer and no inherited broker descriptor in subprocesses.
-    subprocess.run(argv, env=settings['env'], cwd='/tmp', stdin=subprocess.DEVNULL,
-                   close_fds=True, check=True)
-'''
-
-_ACQUIRE = r'''
-if settings['python']:
-    Path('/provision/cache/python').mkdir()
-if settings['node']:
-    prefix = Path('/provision/cache/npm-acquire')
-    prefix.mkdir()
-    for name in ('package.json', 'package-lock.json'):
-        (prefix / name).write_bytes((Path('/provision/manifests') / name).read_bytes())
-    Path('/provision/cache/node').mkdir()
-manager = NamespaceRegistryProxy(socket.socket(fileno=0), timeout_s=settings['timeout'])
-try:
-    manager.start()
-    for argv in settings['commands']:
-        command(argv)
-    if manager.failure:
-        raise SystemExit(69)
-finally:
-    manager.close()
-'''
-
-_INSTALL = r'''
-if settings['python']:
-    # Exclusive creation also refuses a checkout-provided .venv or symlink.
-    os.mkdir('/workspace/.venv', 0o700)
-    command([sys.executable, '-I', '-m', 'venv', '/workspace/.venv'])
-if settings['node']:
-    for name in ('package.json', 'package-lock.json'):
-        original = (Path('/workspace') / name).read_bytes()
-        if original != (Path('/provision/manifests') / name).read_bytes():
-            raise SystemExit(65)
-for argv in settings['commands']:
-    command(argv)
-'''
+from tinyassets.node_sandbox import MAX_WORKSPACE_TIMEOUT_SECONDS
+from tinyassets.workspace_provision_cell import FRAME_BOUND
+from tinyassets.workspace_resolver import ProvisionManifests
 
 
 @dataclass(frozen=True)
@@ -84,144 +25,111 @@ class ProvisionResult:
     bytes_to_charge: int
 
 
-def execute_provision(
-    manifests: resolver.ProvisionManifests,
-    *,
-    lease_fd: int,
-    repo_fd: int,
-    max_transfer_bytes: int,
-    storage_bound: int,
-    timeout_s: float,
-    cancelled: Callable[[], bool],
-) -> ProvisionResult:
-    """Run once, after admission; never publish or retry a partial installation.
+def execute_provision(manifests, *, lease_fd, repo_fd, max_transfer_bytes,
+                      storage_bound, timeout_s, cancelled, universe_dir, principal):
+    from tinyassets.role_relays import pin_for_owner
+    from tinyassets.role_remote_git import _scope
+    from tinyassets.workspace_registry_relay import RegistryRelay
 
-    All writer processes must have verified death before scratch removal. A
-    termination failure propagates, retains scratch for lease recovery, and
-    leaves the caller's full transfer reservation untouched.
-    """
-    if sys.platform != "linux":
-        raise ValueError("provisioning requires Linux isolation")
-    if type(manifests) is not resolver.ProvisionManifests or not (
-        manifests.python or manifests.node
-    ):
-        raise ValueError("provisioning requires admitted manifests")
-    if any(type(fd) is not int or fd < 3 for fd in (lease_fd, repo_fd)):
-        raise ValueError("provisioning requires held directory descriptors")
-    if any(type(bound) is not int or bound <= 0
-           for bound in (max_transfer_bytes, storage_bound)):
-        raise ValueError("provisioning requires positive resource bounds")
-    if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
-            or not math.isfinite(timeout_s)
-            or not 0 < timeout_s <= sandbox.MAX_WORKSPACE_TIMEOUT_SECONDS):
-        raise ValueError("invalid provisioning deadline")
-    if not callable(cancelled):
-        raise ValueError("provisioning requires cancellation checking")
-
-    deadline = time.monotonic() + timeout_s
-    if cancelled():
-        return ProvisionResult("cancelled", 0)
-    # Do not reuse or delete an environment supplied by the repository.
-    if manifests.python:
-        try:
-            os.stat(".venv", dir_fd=repo_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            return ProvisionResult("existing_python_environment", 0)
-
-    attempt = "provision-" + uuid.uuid4().hex
-    handles: list[int] = []
-    attempt_created = False
-    writers_stopped = True
-    charge = 0
-
-    def usage() -> int:
-        # The lease contains checkout AND private staging/cache, so expanded
-        # tarballs and installed files share the same reservation.
-        return fs.measure_tree_beneath(lease_fd, max_bytes=storage_bound)
-
+    if type(manifests) is not ProvisionManifests or not (manifests.python or manifests.node):
+        raise ValueError('provisioning requires admitted manifests')
+    if any(type(v) is not int or v <= 0 for v in (max_transfer_bytes, storage_bound)):
+        raise ValueError('provisioning requires positive resource bounds')
+    if (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s)
+            or not 0 < timeout_s <= MAX_WORKSPACE_TIMEOUT_SECONDS or not callable(cancelled)):
+        raise ValueError('invalid provisioning deadline or cancellation')
+    client, center, principal, identity = _scope(universe_dir, principal)
+    lease, repo = os.fstat(lease_fd), os.fstat(repo_fd)
+    for info in (lease, repo):
+        if (not stat.S_ISDIR(info.st_mode)
+                or (info.st_uid, info.st_gid) != (identity.uid, identity.gid)):
+            raise PermissionError('provisioning lease is not owned by the admitted owner')
+    held = fs.open_subdir_nofollow(lease_fd, 'repo')
     try:
-        attempt_fd = fs.create_workspace_subdir(lease_fd, attempt)
-        handles.append(attempt_fd)
-        attempt_created = True
-        manifest_fd = fs.create_workspace_subdir(attempt_fd, "manifests")
-        handles.append(manifest_fd)
-        cache_fd = fs.create_workspace_subdir(attempt_fd, "cache")
-        handles.append(cache_fd)
-        staging = Path(fs.bind_target_for(manifest_fd))
-        digests = []
-        acquire_commands = []
-        install_commands = []
-        if manifests.python:
-            staged = resolver.stage_python_plan(manifests.python, staging)
-            inside = resolver.StagedManifest(_MANIFESTS / staged.path.name, staged.digest)
-            digests.append(([staged.path.name], staged.digest))
-            acquire_commands.append(resolver.pip_download_argv(
-                inside, _CACHE / "python", python=sys.executable))
-            install_commands.append(resolver.pip_offline_install_argv(
-                inside, _CACHE / "python", "/workspace/.venv/bin/python"))
-        overlays = []
-        if manifests.node:
-            staged = resolver.stage_node_plan(manifests.node, staging)
-            digests.append((_NODE_NAMES, staged.digest))
-            for prefix, commands, builder in (
-                (_CACHE / "npm-acquire", acquire_commands, resolver.npm_fetch_argv),
-                (Path("/workspace"), install_commands, resolver.npm_offline_install_argv),
-            ):
-                inside = resolver.StagedNodeManifests(
-                    prefix, prefix / _NODE_NAMES[0], prefix / _NODE_NAMES[1], staged.digest)
-                commands.append(builder(inside, _CACHE / "node"))
-            for name in _NODE_NAMES:
-                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=manifest_fd)
-                handles.append(fd)
-                overlays.append(fd)
-        environment = resolver.resolver_environment("/tmp", "/usr/local/bin:/usr/bin:/bin")
-        settings = dict(digests=digests, env=environment, python=bool(manifests.python),
-                        node=bool(manifests.node), timeout=timeout_s)
-        acquire = sandbox.BwrapLauncher().for_provision(
-            sandbox.ProvisionMount(manifest_fd, cache_fd, "acquire"))
-        install = sandbox.BwrapLauncher().for_workspace(sandbox.WorkspaceMount(
-            fs.bind_target_for(repo_fd), pass_fds=(repo_fd,))).for_provision(
-                sandbox.ProvisionMount(manifest_fd, cache_fd, "install",
-                                       tuple(overlays) if overlays else None))
-        source = Path(proxy.__file__).read_text(encoding="utf-8") + "\n" + _VERIFY + _ACQUIRE
-        if cancelled():
-            return ProvisionResult("cancelled", 0)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return ProvisionResult("timeout", 0)
-        broker = RegistryBrokerProcess(max_bytes=max_transfer_bytes, timeout_s=remaining)
-        charge = max_transfer_bytes  # Unknown/interrupted transfer keeps the maximum.
-        try:
-            writers_stopped = False
-            broker.start()
-            result = run_provision_stage(
-                acquire, source, [json.dumps(dict(settings, commands=acquire_commands))],
-                timeout_s=remaining, storage_bound=storage_bound, storage_usage=usage,
-                cancelled=cancelled, broker=broker)
-        finally:
-            broker.close()
-        writers_stopped = True
-        if result.broker is not None:
-            charge = result.broker.bytes_to_charge
-        if result.failure:
-            return ProvisionResult(result.failure, charge)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return ProvisionResult("timeout", charge)
-        writers_stopped = False
-        result = run_provision_stage(
-            install, _VERIFY + _INSTALL,
-            [json.dumps(dict(settings, commands=install_commands))],
-            timeout_s=remaining, storage_bound=storage_bound, storage_usage=usage,
-            cancelled=cancelled)
-        writers_stopped = True
-        return ProvisionResult(result.failure, charge)
-    except (OSError, resolver.ResolverError, ValueError):
-        return ProvisionResult("execution_failed", charge)
+        if not os.path.samestat(repo, os.fstat(held)):
+            raise PermissionError('provisioning checkout differs from the pinned lease')
     finally:
-        for fd in reversed(handles):
-            os.close(fd)
-        if attempt_created and writers_stopped:
-            fs._remove_beneath(lease_fd, attempt)
+        os.close(held)
+    request = dict(python=manifests.python.normalized_text if manifests.python else None,
+                   node=[manifests.node.normalized_package_json, manifests.node.normalized_lockfile]
+                   if manifests.node else None, storage_bound=storage_bound, timeout_s=timeout_s)
+    payload = json.dumps(request).encode() + b'\n'
+    if len(payload) > FRAME_BOUND:
+        raise ValueError('provisioning manifests exceed the cell frame bound')
+    if cancelled():
+        return ProvisionResult('cancelled', 0)
+    relay = RegistryRelay(center, max_bytes=max_transfer_bytes, timeout_s=timeout_s)
+    descriptor = None
+    charge = max_transfer_bytes
+    try:
+        descriptor = pin_for_owner(relay.path, center, identity.uid, kind='registry')
+        relay_info = os.fstat(descriptor)
+        with client.start_cell(kind='workspace-provision', principal=principal,
+                command_center=center.name, identity=identity, directory_fd=lease_fd,
+                socket_fds=(descriptor,)) as cell:
+            cell.stream.setblocking(False)
+            deadline = time.monotonic() + timeout_s
+            pending = bytearray()
+
+            def read():
+                while b'\n' not in pending:
+                    if cancelled():
+                        raise InterruptedError('cancelled')
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('timeout')
+                    if not select.select([cell.stream], [], [], 0.05)[0]:
+                        continue
+                    data = cell.stream.recv(16384)
+                    if not data:
+                        raise RuntimeError('provisioning cell ended without a receipt')
+                    pending.extend(data)
+                    if len(pending) > 16384:
+                        raise RuntimeError('provisioning receipt exceeds its bound')
+                line, _, rest = pending.partition(b'\n')
+                pending[:] = rest
+                return json.loads(line)
+
+            def send(data):
+                remaining = memoryview(data)
+                while remaining:
+                    if cancelled():
+                        raise InterruptedError('cancelled')
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('timeout')
+                    if select.select([], [cell.stream], [], 0.05)[1]:
+                        remaining = remaining[cell.stream.send(remaining[:65536]):]
+
+            proof = read()['cell']
+            inner = identity.uid - 300000
+            if (proof.get('uid') != inner or proof.get('gid') != inner
+                    or proof.get('source') != [lease.st_dev, lease.st_ino]
+                    or proof.get('relay') != [relay_info.st_dev, relay_info.st_ino]
+                    or proof.get('fds') != [0, 1, 2] or proof.get('groups') != []
+                    or proof.get('caps') != 'zero' or proof.get('nnp') != 1
+                    or proof.get('profile') != 'cell-nested'):
+                raise RuntimeError('provisioning cell proof is absent')
+            send(payload)
+            answer = read()
+            acquired = answer == {'acquired': True}
+            if acquired:
+                relay.close()
+                if relay.failure:
+                    cell.cancel()
+                    return ProvisionResult('registry_failed', max_transfer_bytes)
+                charge = relay.charge
+                send(b'{"install":true}\n')
+                answer = read()
+            if (set(answer) != {'failure'} or answer['failure'] is not None
+                    and (type(answer['failure']) is not str or len(answer['failure']) > 80)):
+                raise RuntimeError('invalid provisioning terminal receipt')
+            if answer['failure'] is None and not acquired:
+                raise RuntimeError('provisioning success has no acquisition receipt')
+            if cell.wait(30) != 0:
+                raise RuntimeError('provisioning cell did not terminate')
+            return ProvisionResult(answer['failure'], charge)
+    except (InterruptedError, TimeoutError) as exc:
+        return ProvisionResult(str(exc), max_transfer_bytes)
+    finally:
+        relay.close()
+        if descriptor is not None:
+            os.close(descriptor)

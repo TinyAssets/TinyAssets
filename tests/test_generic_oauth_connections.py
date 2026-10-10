@@ -319,15 +319,23 @@ def _sign_in(provider, request_id, *, owner=OWNER):
 
 
 def _broker(base, uid, owner, grant_id, runtime):
-    from tinyassets.storage.outbound_connections import _build_credential_broker_dispatch
+    from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    return _build_credential_broker_dispatch({
-        "allow_test_fixtures": False, "allow_http_connections": True,
-        "ledger_db_path": str((base / "outbound.db").resolve()),
-        "universe_dir": str((base / uid).resolve()),
-        "provider": "http", "destination": "tasklark", "connection_type": "http",
-        "owner_user_id": owner, "runtime_root": str(runtime.resolve()),
-    })
+    ledger = ConnectionLedger(
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: owner)
+    grant = ledger.require_active_grant(grant_id)
+
+    def dispatch(request_grant, verb, request):
+        assert request_grant == grant_id
+        proxy = ledger.resolve_exact_scoped_proxy(
+            universe_id=uid, grant_id=grant_id, connection_id=grant.connection_id)
+        try:
+            return proxy.request(verb, request)
+        finally:
+            proxy.close()
+
+    return dispatch
 
 
 def _call(dispatch, grant_id):
@@ -527,7 +535,8 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
-    resource = ConnectionLedger(app / "outbound.db")._get_connection_resource(connection_id)
+    ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app)
+    resource = ledger._get_connection_resource(connection_id)
     assert resource.auth_scheme == "oauth2"
     bundle = _vault_bundle(app)
     assert bundle.token_url == f"https://{TOKEN}/token"
@@ -644,37 +653,8 @@ def test_a_failed_refresh_is_a_connection_auth_failure_record(provider, app, tmp
         _call(dispatch, grant_id)
     failure = caught.value.failure
     assert failure["stage"] == "connection" and failure["class"] == "auth"
-    assert failure["provider_detail"] == (
-        "HTTP 400: invalid_grant - refresh token already used")
+    assert failure["provider_detail"] == "daemon refresh failed"
     assert provider.api_calls == []  # nothing was sent on a dead authorization
-
-
-def test_the_failure_record_crosses_the_proxy_boundary_and_maps_to_auth():
-    from tinyassets.exceptions import ProviderAuthenticationError
-    from tinyassets.storage.outbound_connections import (
-        ConnectionAuthorizationError,
-        _ProxyChannel,
-    )
-
-    class _Wire:
-        def __init__(self):
-            self.sent = []
-
-        def send_bytes(self, payload):
-            self.sent.append(payload)
-
-        def recv_bytes(self, _limit):
-            return json.dumps({"ok": False, "error_type": "ConnectionAuthorizationError",
-                               "message": "x", "failure": {
-                                   "stage": "connection", "class": "auth",
-                                   "provider_detail": "HTTP 400: invalid_grant"}}).encode()
-
-    channel = _ProxyChannel(_Wire(), process=None)
-    with pytest.raises(ConnectionAuthorizationError) as caught:
-        channel.request("POST", {"url": "https://api.example.net/x"})
-    assert caught.value.failure == {"stage": "connection", "class": "auth",
-                                    "provider_detail": "HTTP 400: invalid_grant"}
-    assert ProviderAuthenticationError.failure_class == "auth_invalid"
 
 
 # --------------------------------------------------------------------------- #
@@ -735,17 +715,14 @@ def test_an_oauth_connection_is_never_usable_by_another_universe(provider, app, 
     connection_id, grant_id = _ids(universe_id=UID, destination="tasklark")
 
     # The other owner cannot open a proxy on the grant...
-    other_ledger = ConnectionLedger(app / "outbound.db",
+    other_ledger = ConnectionLedger(app / ".broker" / "outbound.db", data_root=app,
                                     verify_authenticated_principal=lambda: OTHER)
     with pytest.raises(GrantResolutionError):
         other_ledger.resolve_exact_scoped_proxy(universe_id=OTHER_UID, grant_id=grant_id,
                                                 connection_id=connection_id)
-    # ...and a broker for the other universe finds no credential for it: the
-    # tokens live only in the owner's universe vault.
-    from tinyassets.storage.outbound_connections import ProxyRequestError
-
+    # The shared broker channel also refuses the foreign grant before dispatch.
     foreign = _broker(app, OTHER_UID, OTHER, grant_id, tmp_path / "foreign")
-    with pytest.raises(ProxyRequestError):
+    with pytest.raises(GrantResolutionError, match="outbound connection grant identity mismatch"):
         _call(foreign, grant_id)
     assert provider.api_calls == []
 

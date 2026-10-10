@@ -26,7 +26,7 @@ def rig(tmp_path, monkeypatch):
     (tmp_path / "u-owner").mkdir()
     set_founder_home(tmp_path, founder_sub="owner", universe_id="u-owner", platform_generated=True)
     grant_universe_access(tmp_path, universe_id="u-owner", actor_id="owner", permission="admin")
-    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
     ledger.create_connection(
         connection_id="bootstrap-connection", owner_user_id="owner", connection_class="http",
         connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"), provider="http",

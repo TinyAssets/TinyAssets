@@ -721,7 +721,12 @@ def test_legacy_free_classification_requires_exact_owned_host_and_model(
     context = replace(agent.served.context, model_selection=ModelRef(
         agent.served.context.model_selection.connection_id, model,
     ))
-    assert metered_free_source(context, None, owner=owner) is expected
+    if owner != "owner":
+        with pytest.raises(ProviderAuthorityHeldError,
+                           match="source budget authority is unavailable"):
+            metered_free_source(context, None, owner=owner)
+    else:
+        assert metered_free_source(context, None, owner=owner) is expected
 
 
 @pytest.mark.parametrize("billing", ["free", "flat"])

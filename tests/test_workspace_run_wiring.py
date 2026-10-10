@@ -32,6 +32,9 @@ class _NoopFs:
     def rename(self, src: Path, dst: Path) -> None:
         raise AssertionError("nothing exists, nothing to rename")
 
+    def owner_scoped(self, path: Path) -> bool:
+        return False
+
     def remove_tree_no_follow(self, path: Path) -> None:
         raise AssertionError("nothing exists, nothing to remove")
 
@@ -686,15 +689,27 @@ def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatc
     assert after is not None and after.state == "AVAILABLE"
 
 
-def test_the_scratch_root_is_created_under_the_data_root(tmp_path, monkeypatch):
-    """The adapter admits into ``<data>/scratch`` (one level above the
-    universe directory); the creator must agree (Codex code round 2, #1)."""
+def test_the_scratch_root_is_inside_the_command_center_and_startup_makes_none(
+    tmp_path, monkeypatch
+):
+    """The adapter admits into ``<center>/workspaces/scratch``, and startup
+    agrees on that one spelling without creating it (Codex code round 2, #1).
+
+    A lease has to be a directory its OWNER owns -- a node sandbox mounts
+    nothing else -- so it lives in the owner's command center and is created
+    per operation, under the admitted owner identity, by the owner's own cell.
+    Startup has nobody to name, so it creates nothing.
+    """
+    from tinyassets.effectors.workspace import scratch_pool_root
+
     universe = tmp_path / "data" / "universe-x"
     universe.mkdir(parents=True)
     monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
     assert runs.ensure_workspace_reconciled(universe, start_sweeper=False) is True
-    assert (tmp_path / "data" / "scratch").is_dir()
-    assert not (universe / "scratch").exists()
+    assert runs._ensure_scratch_root(universe) == scratch_pool_root(universe)
+    assert scratch_pool_root(universe) == universe / "workspaces" / "scratch"
+    assert not (tmp_path / "data" / "scratch").exists()
+    assert not (universe / "workspaces").exists()
 
 
 def test_a_workspace_command_timeout_keeps_its_class():

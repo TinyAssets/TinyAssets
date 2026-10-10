@@ -1070,6 +1070,35 @@
   }
 
   async function completeSignInIfCallback(){
+    const completion = new URLSearchParams((window.location.hash||'').slice(1)).get('owner_completion');
+    if(completion && !NATIVE){
+      history.replaceState({}, "", redirectUri());
+      // The code and server PKCE verifier stay on the server. Our independently
+      // signed-in identity must match the fresh interactive IdP identity.
+      try{
+        if(logoutPending || localStorage.getItem('ta_logout_pending')==='1'){
+          await endServerSession();
+          throw new Error('Sign in to this browser, then start owner sign-in again.');
+        }
+        // No signed-in identity to bind to, and this browser dropped the sign-in
+        // cookie: there is no safe way to finish, so say so instead of looping.
+        if(!token() && !(await refreshAccessToken())) throw new Error('This browser blocked the sign-in cookie, so sign-in cannot finish here. Allow cookies for tinyassets.io (or turn off strict tracking protection for it), then sign in again.');
+        const send = ()=>withRefreshLock(()=>fetch('/app/owner-sign-in/complete',{
+          method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json',...authHeaders()},
+          body:JSON.stringify({completion}),
+        }));
+        let response=await send();
+        if(response.status===401 && await refreshAccessToken()) response=await send();
+        const result=await response.json();
+        if(!response.ok) throw new Error(result.message||'Sign-in could not finish. Start sign-in again.');
+        window.location.replace(result.redirect);
+      }catch(error){
+        showView('signin');
+        document.getElementById('signin-notice').textContent=error.message;
+      }
+      return false;
+    }
     const q = new URLSearchParams(window.location.search);
     if(!NATIVE && q.get("owner_login")==="1"){
       history.replaceState({}, "", redirectUri());
@@ -10669,7 +10698,9 @@
     wireNativeReturn();
     // A vendor sign-in card once kept a verifier here; nothing reads it now.
     try{ localStorage.removeItem("ta_openai_flow"); }catch(_e){}
+    const ownerCompletion = new URLSearchParams((window.location.hash||'').slice(1)).has('owner_completion');
     const signedInNow = modelCallback ? false : await completeSignInIfCallback();
+    if(ownerCompletion) return; // Preserve refusal text or wait for the protected return navigation.
     if(ApprovalHandoff.ref){
       // Browser renewal must match the newly authenticated browser account,
       // not an old tab's sessionStorage token. The reference grants no identity.

@@ -213,6 +213,7 @@ async def open_engine_tools(
     timeout: float = 60.0,
     session_key: str = "",
     turn: str = "",
+    context_tokens: int | None = None,
 ) -> AsyncIterator[EngineToolSession]:
     """Use caller-verified identity; no caller-supplied URL, secret or transport."""
     if not isinstance(enabled_tools, Sequence) or isinstance(enabled_tools, (str, bytes)):
@@ -259,7 +260,8 @@ async def open_engine_tools(
         from tinyassets.engine_steering import route_with_session
 
         dialled = replace(route, url=route_with_session(
-            route.url, session_key, turn, grant_key=getattr(route, "grant_key", ""), tools=grant))
+            route.url, session_key, turn, grant_key=getattr(route, "grant_key", ""), tools=grant,
+            context_tokens=context_tokens))
         client = _make_client(dialled, timeout)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None

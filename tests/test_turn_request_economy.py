@@ -241,7 +241,7 @@ def test_served_request_beyond_free_estimate_updates_credit_tier(agent, monkeypa
     from tinyassets.request_budget import budget_for_context
 
     seed_budget(agent, monkeypatch, remaining=5)
-    assert budget_for_context(agent.served.context).remaining == 5
+    assert budget_for_context(agent.served.context, owner="owner").remaining == 5
     agent.requested_rounds = 12
     assert run(agent, free_requests=20) == "finished exact answer"
     assert len(agent.wires) == 13 and len(agent.tools) == 12
@@ -261,7 +261,7 @@ def test_served_request_beyond_free_estimate_updates_credit_tier(agent, monkeypa
     assert turn.rounds[-1].candidate.request_digest == (
         "sha256:" + hashlib.sha256(json.dumps(final_body).encode("utf-8")).hexdigest()
     )
-    budget = budget_for_context(agent.served.context)
+    budget = budget_for_context(agent.served.context, owner="owner")
     assert (budget.used, budget.cap, budget.remaining) == (58, 1000, 942)
 
 
@@ -296,6 +296,25 @@ def test_learning_budget_threshold(agent, monkeypatch, caplog, remaining, skippe
         assert universe_intelligence.extract_learning("hello", "reply", agent.served.context) == {}
     assert len(calls) == (0 if skipped else 1)
     assert ("Skipping learning extraction" in caplog.text) == skipped
+
+
+def test_learning_refuses_an_unissued_carrier_before_budget_or_model_call(agent, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from tinyassets import request_budget
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("unissued carrier reached budget evidence or a model")
+
+    monkeypatch.setattr(request_budget, "budget_for_context", forbidden)
+    monkeypatch.setattr(universe_intelligence, "call_provider", forbidden)
+    real = agent.served.context.provider_request
+    forged = SimpleNamespace(universe_id=real.universe_id, agent_binding_id=real.agent_binding_id,
+                             binding_revision=real.binding_revision)
+    context = replace(agent.served.context, provider_request=forged)
+    with pytest.raises(PermissionError, match="provider request carrier is not server-issued"):
+        universe_intelligence.extract_learning("hello", "reply", context)
 
 
 def test_served_converse_conserves_optional_learning_on_low_estimate(

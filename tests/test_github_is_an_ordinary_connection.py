@@ -134,41 +134,13 @@ def _connect(base, user, uid, pat):
 
 @pytest.fixture
 def broker(monkeypatch):
-    """The production broker dispatch, in process, behind the REAL authority.
+    """The real in-process broker owns admission and credential dispatch.
 
-    Patches only ``_start_scoped_proxy`` -- the spawn -- so
-    ``resolve_exact_scoped_proxy`` still checks the grant's owner, universe and
-    connection, and the vault read happens in the universe the LEDGER names.
+    Only HTTPS is redirected to the synthetic upstream; the shared broker
+    fixture supplies the isolated broker protocol and its private ledger.
     """
-    from tinyassets.storage import outbound_connections as oc
-
     loop = _Loopback(responder=lambda *_: b'{"number": 7}')
     _install_loopback_driver(monkeypatch, loop.port)
-
-    def start(self, *, grant_id, universe_id, provider, destination, scopes,
-              owner_user_id, connection_type=""):
-        dispatch = oc._build_credential_broker_dispatch({
-            "allow_test_fixtures": False,
-            "allow_http_connections": oc._outbound_http_enabled(),
-            "ledger_db_path": str(self._db_path.resolve()),
-            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
-            "provider": provider,
-            "destination": destination,
-            "connection_type": (connection_type or "").strip().lower(),
-            "owner_user_id": owner_user_id,
-            "runtime_root": str((self._db_path.parent / ".rt" / grant_id).resolve()),
-        })
-
-        class _Proxy:
-            def request(self, verb, request):
-                return dispatch(grant_id, verb, request)
-
-            def close(self):
-                return None
-
-        return _Proxy()
-
-    monkeypatch.setattr(oc.ConnectionLedger, "_start_scoped_proxy", start)
     yield loop
     loop.stop()
 
@@ -266,7 +238,7 @@ def test_without_a_connection_a_pull_request_is_refused_before_the_wire(data, br
                         grant_id="grant_nothing")
 
     assert evidence.get("delivered") is not True
-    assert evidence["error_kind"] == "unknown_grant", evidence
+    assert evidence["error_kind"] == "connection_authority_unavailable", evidence
     assert broker.recorded == []
 
 
@@ -298,12 +270,13 @@ def test_another_users_connection_is_never_used(data, broker):
     stolen = _open_pr(data, BOB_UID, connection_id=alice["connection_id"],
                       grant_id=alice["grant_id"])
     assert stolen.get("delivered") is not True
-    assert stolen["error_kind"] == "grant_not_for_universe", stolen
+    assert stolen["error_kind"] == "connection_authority_unavailable", stolen
     assert broker.recorded == []
 
     # Each universe's own call carries its own owner's key, and only that.
     assert _open_pr(data, BOB_UID, connection_id=bob["connection_id"],
                     grant_id=bob["grant_id"])["delivered"] is True
+    _login(ALICE)
     assert _open_pr(data, ALICE_UID, connection_id=alice["connection_id"],
                     grant_id=alice["grant_id"])["delivered"] is True
     keys = [w["headers"]["Authorization"] for w in broker.recorded]
@@ -345,7 +318,8 @@ def _connect_forge(base, *, git_host=None):
 def _stored(base, connection_id):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    return ConnectionLedger(base / "outbound.db")._get_connection_resource(connection_id)
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
+    return ledger._get_connection_resource(connection_id)
 
 
 def test_the_per_service_git_host_table_is_gone():

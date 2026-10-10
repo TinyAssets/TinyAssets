@@ -297,7 +297,11 @@ def test_context_is_rechecked_below_catalog_and_packet_cannot_override_it(tmp_pa
         return run_authenticated_external_call_effector(node_id="ta", output_keys=["call"],
             run_state={"call": packet}, base_path=root, execution_context=ctx)
 
-    assert run(context)["error_kind"] == "connection_owner_mismatch"
+    # The broker rejects the foreign principal before returning any connection
+    # view. Packet fields cannot override the platform-minted execution owner.
+    refused = run(context)
+    assert refused["error_kind"] == "connection_authority_unavailable"
+    assert "delivered" not in refused
     assert run(replace(context, universe="other"))["error_kind"] == "execution_context_mismatch"
     assert run(replace(context, research=True))["error_kind"] == "research_is_read_only"
 

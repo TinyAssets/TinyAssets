@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tests.test_broker_discovery_http import discovery  # noqa: F401
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import Script, broker  # noqa: F401
 from tinyassets.broker.client import BrokerClient
 from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION

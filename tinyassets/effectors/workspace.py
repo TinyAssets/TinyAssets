@@ -1,15 +1,21 @@
-"""The ``workspace`` effect sink: check out, push and discard a repository.
+"""The ``workspace`` effect sink: create, check out, push and discard a repository.
 
-Every credentialed git operation happens in a spawned worker against a
-worker-private staging directory that is never mounted into a jail. This
-adapter is the host side: it checks the connection grant's scope and the typed
-consent, admits the job against the pool, creates the lease directory through a
-no-follow directory handle, and populates it from the bundle the worker made --
-credential-free, into a fresh repository, so the workspace's ``.git`` holds no
-remote, no host path and no credential.
+Every git operation -- and every directory a run ends up holding -- happens in
+the OWNER's own cell (``workspace_worker`` -> ``role_remote_git``), because
+only that owner can make a directory a node sandbox will mount and only the
+credential broker ever holds the token. This adapter is the daemon side and
+does the parts that are the daemon's: it checks the connection grant's scope
+and the typed consent, admits the job against the pool, asks the cell to
+perform exactly one operation inside the lease the pool admitted, then opens
+that lease's descriptors and publishes the capability.
 
-Design D0/D1/D4/D5/D6 of the ``workspace-node`` change. Never raises: every
-refusal is a secret-free evidence dict carrying one actionable ``error_kind``.
+Nothing here spawns git, stages a clone or resolves a credential; a host path
+never crosses into the cell, and the lease is named relative to the command
+center.
+
+Design D0/D1/D4/D5/D6 of the ``workspace-node`` change, as rebuilt by the
+per-owner isolation cutover. Never raises: every refusal is a secret-free
+evidence dict carrying one actionable ``error_kind``.
 """
 
 from __future__ import annotations
@@ -21,7 +27,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -92,7 +97,6 @@ WORKSPACE_READ_EFFECTS = frozenset(
 _MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 #: What one checkout may move before the pool refuses it (D4's lease bound).
 _DEFAULT_MAX_CHECKOUT_BYTES = 4 * 1024 * 1024 * 1024
-_JAIL_EXPORT_DIR = ".tiny-export"
 #: The one directory inside a lease that becomes ``/workspace``. ONE name for
 #: every operation: the lease layout is what the pool wipes, the outbox
 #: reclaims and the compiler binds, and a second spelling would be a second
@@ -214,13 +218,25 @@ def workspace_key_for(slug: str) -> str:
 
 
 def scratch_pool_root(universe_dir: Path) -> Path:
-    """The shared scratch pool: ``<data>/scratch``, beside the universes.
+    """The scratch pool: ``<center>/workspaces/scratch``, INSIDE the center.
 
-    Exported because the pool ADMITS against this path and ``runs.py`` CREATES
+    It used to be ``<data>/scratch``, shared between every command center. The
+    owner split ended that: a node sandbox mounts a workspace only when the
+    directory is the owner's own, only the owner's cell can create such a
+    directory, and a cell is bound to its command center and nothing above it.
+    So the pool moved in, beside the permanent generations it has always sat
+    next to (``workspaces/<repo-key>/<gen>``) -- a repository key always
+    carries ``--`` and a created workspace's key always starts ``ws.``, so the
+    name ``scratch`` can never be either.
+
+    Exported because the pool ADMITS against this path and the cell CREATES
     against it; two spellings of one directory is a lease admitted in one place
     and written in another.
     """
-    return Path(universe_dir).parent / "scratch"
+    from tinyassets.workspace_owner_pool import SCRATCH_DIR
+    from tinyassets.workspace_pool import WORKSPACES_DIR
+
+    return Path(universe_dir) / WORKSPACES_DIR / SCRATCH_DIR
 
 
 def universe_workspace_root(universe_dir: Path) -> Path:
@@ -247,11 +263,12 @@ def _universe_id(base_path: str | Path | None) -> str:
         return ""
 
 
-def _ledger_db_path(base_path: str | Path | None) -> Path | None:
+def _data_root(base_path: str | Path | None) -> Path | None:
+    """The data root (``base_path.parent``); the broker's tree lives under it."""
     if base_path is None:
         return None
     try:
-        return Path(base_path).parent / "outbound.db"
+        return Path(base_path).parent
     except (TypeError, ValueError):
         return None
 
@@ -263,61 +280,36 @@ def _universe_short(universe_id: str) -> str:
 
 
 def _read_connection(
-    *, db_path: Path, connection_id: str, universe_id: str, grant_id: str,
+    *, data_root: Path, connection_id: str, universe_id: str, grant_id: str,
     principal: str = "",
 ) -> tuple[Any, Any]:
     """The grant and the trusted connection resource, or a refusal.
 
-    Mirrors ``authenticated_external_call``'s isolation gate exactly: the grant
-    must exist, be live, and be bound to the RUNNING universe. The resource
-    (not the redacted view) is needed for the credential REFERENCE -- never the
-    secret, which only the worker child resolves.
+    Mirrors ``authenticated_external_call``'s isolation gate exactly, because it
+    is the same broker transaction: the grant must exist, be live, be owned by
+    ``principal`` and be bound to the RUNNING universe. The resource (not the
+    redacted view) is needed for the credential REFERENCE -- never the secret,
+    which only the broker process resolves.
     """
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.broker.ledger_queries import authorized_connection
     from tinyassets.storage.outbound_connections import (
-        ConnectionLedger,
         GrantResolutionError,
         ProxyRequestError,
     )
 
-    if broker_selected():
-        from tinyassets.broker.ledger_queries import authorized_connection
-
-        if not principal:
-            raise _Refused("no_universe_authority", "workspace requires an admitted owner")
-        try:
-            grant, resource, _ = authorized_connection(
-                db_path.parent, principal=principal, command_center=universe_id,
-                grant_id=grant_id, connection_id=connection_id,
-            )
-        except GrantResolutionError:
-            raise _Refused(
-                "connection_authority_unavailable", "connection authority refused",
-            ) from None
-        except ProxyRequestError:
-            raise _Refused("broker_unavailable", "credential broker unavailable") from None
-        return grant, resource
-
-    ledger = ConnectionLedger(db_path)
-    grant = ledger.get_grant(grant_id)
-    if grant is None:
-        raise _Refused("unknown_grant", "connection authority refused: unknown_grant")
-    if getattr(grant, "revoked_at", None) is not None:
-        raise _Refused("revoked_grant", "connection authority refused: revoked_grant")
-    if getattr(grant, "universe_id", "") != universe_id:
-        raise _Refused(
-            "grant_not_for_universe", "connection authority refused: grant_not_for_universe"
+    if not principal:
+        raise _Refused("no_universe_authority", "workspace requires an admitted owner")
+    try:
+        grant, resource, _ = authorized_connection(
+            Path(data_root), principal=principal, command_center=universe_id,
+            grant_id=grant_id, connection_id=connection_id,
         )
-    if getattr(grant, "connection_id", "") != connection_id:
+    except GrantResolutionError:
         raise _Refused(
-            "grant_connection_mismatch",
-            "connection authority refused: grant_connection_mismatch",
-        )
-    resource = ledger._get_connection_resource(connection_id)
-    if resource is None:
-        raise _Refused("unknown_connection", "connection authority refused: unknown_connection")
-    if getattr(resource, "revoked_at", None) is not None:
-        raise _Refused("revoked_connection", "connection authority refused: revoked_connection")
+            "connection_authority_unavailable", "connection authority refused",
+        ) from None
+    except ProxyRequestError:
+        raise _Refused("broker_unavailable", "credential broker unavailable") from None
     return grant, resource
 
 
@@ -526,86 +518,46 @@ def _fs_refusals(what: str):
         ) from None
 
 
-def _open_permanent_parent(universe_dir: Path, lease_path: Path) -> Any:
-    """Open ``workspaces/<repo-key>``, creating it, and return ITS handle.
+def _lease_names(base_path: Path, lease_path: Path) -> tuple[list[str], str]:
+    """``(parent components, lease name)`` relative to the command center.
 
-    A universe's FIRST permanent checkout has neither directory, and the
-    no-follow layer refuses a missing parent -- so without this the first one
-    always failed (Codex round 3, P0 #3). Each component is made through the
-    handle of the one above it: ``mkdir(parents=True)`` would resolve the whole
-    path by name, which is the swap the descriptors exist to prevent.
+    The ONE place the pool's absolute lease path becomes the relative name the
+    cell is given. The cell is bound to the command center and resolves these
+    components through its own descriptors, so a host path never crosses.
+    """
+    try:
+        relative = Path(lease_path).relative_to(base_path)
+    except ValueError:
+        raise _Refused(
+            "workspace_checkout_failed",
+            "the pool admitted a lease outside this command center",
+        ) from None
+    parts = relative.parts
+    if len(parts) < 2 or any(part in ("", ".", "..") for part in parts):
+        raise _Refused(
+            "workspace_checkout_failed", "the pool admitted a lease with no owner subtree",
+        )
+    return list(parts[:-1]), parts[-1]
 
-    The LAST handle is returned rather than closed, so the generation directory
-    beneath it is created through a descriptor this process walked open itself
-    -- re-opening the parent by path afterwards would hand back the window
-    every step above just closed. Every handle above it has done its job and is
-    closed here; the caller owns the one it gets.
 
-    Idempotent: an existing component is opened rather than re-created.
+def _open_cell_lease(lease_path: Path) -> tuple[Any, Any]:
+    """Open the lease the OWNER CELL created, and its content directory.
+
+    The daemon no longer creates either: only the owner's cell can make a
+    directory the owner owns, and a node sandbox mounts nothing else. What the
+    daemon still does is hold the descriptors -- the capability the effect
+    chain hands to a node is a dup of these, so a discard racing a run closes
+    the originals rather than letting a path be re-resolved.
     """
     fs = _fs()
-    relative = lease_path.parent.relative_to(universe_dir)
-    opened: list[Any] = []
-    with _fs_refusals(f"opening {relative.as_posix()!r}"):
-        try:
-            opened.append(fs.open_dir_nofollow(str(universe_dir)))
-            for component in relative.parts:
-                try:
-                    child = fs.create_workspace_subdir(opened[-1], component)
-                except FileExistsError:
-                    # An already-created component is OPENED through the same
-                    # no-follow openat, never re-resolved by path.
-                    child = fs.open_subdir_nofollow(opened[-1], component)
-                opened.append(child)
-        except BaseException:
-            _close_handles(*opened)
-            raise
-    _close_handles(*opened[:-1])
-    return opened[-1]
-
-
-def _make_permanent_generation_dir(universe_dir: Path, lease_path: Path) -> Any:
-    """Create ``workspaces/<repo-key>/<generation>`` and return its handle.
-
-    NOT ``create_lease_dir``. That helper's rule -- a name of at least 16
-    random hex characters -- is what makes a directory in the SHARED scratch
-    pool root untargetable by another universe. A generation is a small integer
-    inside this universe's own tree, under a parent this process just walked
-    open through its own descriptors, so the rule protects nothing there and
-    refuses everything: ``'1'`` is not 16 hex characters, and every permanent
-    checkout failed on Linux until this split (Ubuntu CI run 33355481278; the
-    Windows double was permissive enough to hide it).
-
-    Same shape as ``<lease>/repo``, and for the same reason.
-    """
-    parent_fd = _open_permanent_parent(universe_dir, lease_path)
+    with _fs_refusals("opening the lease the owner cell created"):
+        lease_fd = fs.open_dir_nofollow(str(lease_path))
     try:
-        with _fs_refusals(f"creating generation {lease_path.name!r}"):
-            return _fs().create_workspace_subdir(parent_fd, lease_path.name)
-    finally:
-        _close_handles(parent_fd)
-
-
-def _make_scratch_lease_dir(lease_path: Path) -> Any:
-    """Create a lease directory in the SHARED pool root, under a no-follow handle.
-
-    This is the one the entropy rule is for: the parent is shared between
-    universes, so the name has to be one nobody could have created or targeted
-    first. ``create_lease_dir`` enforces that, and this call site is the only
-    place it is used.
-
-    The PARENT handle is closed here: it was only needed to create the child
-    safely, and leaking one per checkout exhausts the descriptor table on a
-    long-lived daemon (Codex round 2, #7).
-    """
-    fs = _fs()
-    with _fs_refusals(f"opening the pool root {lease_path.parent.name!r}"):
-        parent_fd = fs.open_dir_nofollow(str(lease_path.parent))
-    try:
-        with _fs_refusals(f"creating lease {lease_path.name!r}"):
-            return fs.create_lease_dir(parent_fd, lease_path.name)
-    finally:
-        _close_handles(parent_fd)
+        with _fs_refusals(f"opening {_CONTENT_DIR!r} in the lease"):
+            return lease_fd, fs.open_subdir_nofollow(lease_fd, _CONTENT_DIR)
+    except BaseException:
+        _close_handles(lease_fd)
+        raise
 
 
 def _operation_id(run_id: str, node_id: str, op: str) -> str:
@@ -716,68 +668,33 @@ def _owe_wipe(base_path: Path, lease: Any, *, run_id: str, universe_id: str) -> 
         logger.exception("could not enqueue the failed checkout's lease for wipe")
 
 
-def _make_repo_dir(lease_fd: Any, repo_dir: Path) -> Any:
-    """Create ``<lease>/repo`` through the lease handle and return ITS handle.
-
-    NOT ``create_lease_dir``: that one is for a name in the SHARED pool root
-    and requires an unguessable one, which ``'repo'`` is not. The parent here
-    is the private lease directory it just made, so the subdirectory helper is
-    the honest call.
-    """
-    with _fs_refusals(f"creating {repo_dir.name!r} in the lease"):
-        return _fs().create_workspace_subdir(lease_fd, repo_dir.name)
+# --------------------------------------------------------------------------- #
+# Operations
+# --------------------------------------------------------------------------- #
 
 
 def _descriptor_or_none(handle: Any) -> int | None:
     """A real POSIX descriptor, or None.
 
-    The pool's handles are ints on Linux, which is where this runs. On a
-    non-POSIX dev host there is no descriptor to pin to, and
-    ``unbundle_into_fresh_repo`` refuses one -- so the population falls back to
-    the path there. That is a dev-host difference, stated rather than hidden:
-    production is Linux and always takes the descriptor.
+    The lease handles are ints on Linux, which is where this runs. On a
+    non-POSIX dev host there is no descriptor to bind, and the mount falls back
+    to the path there. That is a dev-host difference, stated rather than
+    hidden: production is Linux and always takes the descriptor.
     """
     if os.name != "posix":
         return None
     return handle if isinstance(handle, int) and not isinstance(handle, bool) else None
 
 
-# --------------------------------------------------------------------------- #
-# Operations
-# --------------------------------------------------------------------------- #
+def _agent_for(run_id: str, node_id: str) -> str:
+    """Who the broker records as acting, for one workspace operation.
 
-
-def _staging_id(value: str) -> str:
-    """An INJECTIVE, path-safe id for a graph node or run id.
-
-    Stripping unsafe characters is not injective: ``a/b`` and ``ab`` collapse
-    to the same name, so two different nodes would share a staging directory
-    and a broker socket path (Codex round 3, P2 #11). A digest of the EXACT
-    id cannot collide by construction.
+    The route's authority check wants an acting agent, and a run's identity is
+    the honest one here: the node that declared the effect, in the run that
+    drove it. Digested so an arbitrary graph node id cannot shape the field.
     """
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:16]
-
-
-def _staging_root(base_path: Path, run_id: str, node_id: str) -> Path:
-    """The worker's private staging dir. Created by the PARENT, never by the
-    jail, and never inside a lease.
-
-    A per-operation nonce keeps two operations of the SAME node (a checkout
-    then a push, or a retry) from sharing a directory a previous one may still
-    be tearing down.
-
-    Created under this process's liveness token (`workspace_staging`), so the
-    sweep can prove whether its owner is still running. EVERY caller removes it
-    with `workspace_staging.remove` in a ``finally``: it holds a credentialed
-    clone, and a failed checkout used to leave it behind forever.
-    """
-    from tinyassets import workspace_staging
-
-    return workspace_staging.create(
-        base_path,
-        _staging_id(run_id),
-        f"{_staging_id(node_id)}-{secrets.token_hex(4)}",
-    )
+    digest = hashlib.sha256(f"{run_id}\0{node_id}".encode()).hexdigest()[:16]
+    return f"workspace-run-{digest}"
 
 
 def _pool_db(base_path: Path) -> Path:
@@ -790,6 +707,7 @@ def _provision_checkout(
     requested: Any, *, base_path: Path, resource: Any, host: str, repo: str,
     lease: Any, lease_fd: int, repo_fd: int, run_id: str, node_id: str,
     universe_id: str, timeout_seconds: float, should_cancel: Callable[[], bool] | None,
+    principal: str,
 ) -> dict[str, Any]:
     """Consent -> complete manifest admission -> fresh reservation -> execution.
 
@@ -834,6 +752,7 @@ def _provision_checkout(
         max_bytes=bound, refusal="workspace_provision_failed")
     result = execute_provision(
         manifests, lease_fd=lease_fd, repo_fd=repo_fd, max_transfer_bytes=bound,
+        universe_dir=base_path, principal=principal,
         storage_bound=bound, timeout_s=timeout_seconds,
         cancelled=should_cancel if should_cancel is not None else lambda: False)
     _reconcile_operation(base_path, operation_id, result.bytes_to_charge)
@@ -860,10 +779,10 @@ def _checkout(
     execute: Any,
     timeout_seconds: float,
     admission: AdmissionObservation,
+    principal: str = "",
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
-    from tinyassets.workspace_git import populate_workspace_from_bundle
 
     owner, name = _split_repo(repo)
     ref = _str_field(packet, "ref") or "HEAD"
@@ -958,18 +877,23 @@ def _checkout(
     owned: list[Any] = []
     published = False
     generation_bytes: int | None = None
-    staging: Path | None = None
     try:
-        staging = _staging_root(base_path, run_id, node_id)
+        lease_parent, lease_name = _lease_names(base_path, Path(lease.path))
         answer = execute(
             {
                 "op": "checkout",
                 "universe_dir": str(base_path),
-                "credential_ref": str(getattr(resource, "credential_ref", "")),
+                "principal": principal,
+                "agent": _agent_for(run_id, node_id),
+                "grant_id": _str_field(packet, "grant_id"),
+                "connection_id": str(getattr(resource, "connection_id", "")),
                 "host": host,
                 "owner_repo": repo,
                 "ref": ref,
-                "staging_dir": str(staging),
+                "storage": storage,
+                "lease_parent": lease_parent,
+                "lease_name": lease_name,
+                "checkout_ref": f"tiny/{_universe_short(universe_id)}/checkout",
             }
         )
         if not answer.get("ok"):
@@ -978,68 +902,24 @@ def _checkout(
                 str(answer.get("error") or "checkout failed"),
                 stderr_class=str(answer.get("stderr_class") or ""),
             )
-
-        bundle = staging / str(answer.get("bundle_name") or "out.bundle")
-        if storage == "universe":
-            # A permanent generation lives inside this universe's own tree
-            # (whose parents may not exist yet), so it is a SUBDIRECTORY under
-            # a handle we walked open -- not a lease in the shared pool root.
-            lease_fd = _make_permanent_generation_dir(base_path, Path(lease.path))
-        else:
-            lease_fd = _make_scratch_lease_dir(Path(lease.path))
-        owned.append(lease_fd)
-        repo_dir = Path(lease.path) / _CONTENT_DIR
-        # The repository directory is created THROUGH the lease handle and its
-        # own descriptor is what git is pointed at AND what the jail binds --
-        # binding the lease root would put the repository one level down from
-        # /workspace.
-        repo_fd = _make_repo_dir(lease_fd, repo_dir)
-        owned.append(repo_fd)
-        home = staging / "populate-home"
-        home.mkdir(parents=True, exist_ok=True)
-        checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
-        from tinyassets import workspace_git as _workspace_git
-        from tinyassets import workspace_staging as _workspace_staging
-
-        try:
-            # The git that populates reads staging's bundle and uses its HOME,
-            # in its own session: it inherits this process's in-use share, so
-            # it keeps the tree marked even if this process is killed first
-            # (gpt-6-astra, PR #4143 round 3).
-            with _workspace_git.inheriting(_workspace_staging.in_use_fd(staging)):
-                populate_workspace_from_bundle(
-                    bundle,
-                    repo_dir,
-                    str(answer.get("ref_name") or "refs/tiny/export"),
-                    checkout_ref,
-                    home_dir=home,
-                    path=_git_path(),
-                    dest_fd=_descriptor_or_none(repo_fd),
-                )
-        except _Refused:
-            raise
-        except Exception as exc:
-            raise _Refused(
-                "workspace_checkout_failed", f"workspace could not be populated: {exc}"
-            ) from None
-
-        # Staging held the credentialed clone, the bundle and the git homes. It
-        # is deleted BEFORE the capability is published, and the deletion is
-        # CHECKED: a workspace published while staging survives is a workspace
-        # published next to the material it was supposed to replace.
-        from tinyassets import workspace_staging
-
-        if not workspace_staging.remove(staging) or os.path.lexists(staging):
+        # The cell created the lease, its repository and its content as the
+        # owner, and told us the relative name it used. It must be the one the
+        # pool admitted: anything else is not the lease this run holds.
+        if str(answer.get("lease") or "") != "/".join((*lease_parent, lease_name)):
             raise _Refused(
                 "workspace_checkout_failed",
-                "staging could not be removed, so nothing was published",
+                "the owner cell answered for a different lease than the one admitted",
             )
+        repo_dir = Path(lease.path) / _CONTENT_DIR
+        lease_fd, repo_fd = _open_cell_lease(Path(lease.path))
+        owned.extend((lease_fd, repo_fd))
 
         provision_evidence = {}
         if packet.get("provision") is not None:
             provision_evidence = _provision_checkout(
                 packet["provision"], base_path=base_path, resource=resource,
                 host=host, repo=repo, lease=lease, lease_fd=lease_fd, repo_fd=repo_fd,
+                principal=principal,
                 run_id=run_id, node_id=node_id, universe_id=universe_id,
                 timeout_seconds=timeout_seconds, should_cancel=should_cancel)
         # A cancellation arriving between the final stage and publication still
@@ -1084,13 +964,6 @@ def _checkout(
         published = True
         owned.clear()
     finally:
-        # Staging goes on EVERY exit -- refusal, exception, cancellation --
-        # not only on the success path that removes it before publishing. It
-        # holds the credentialed clone; this is what leaked 2.8 GiB.
-        if staging is not None:
-            from tinyassets import workspace_staging
-
-            workspace_staging.remove(staging)
         _settle_permanent(storage_reservation, published=published, actual=generation_bytes)
         if not published:
             _close_handles(*owned)
@@ -1248,8 +1121,10 @@ def _create(
     run_id: str,
     universe_id: str,
     chain: Any,
+    execute: Any,
     timeout_seconds: float,
     admission: AdmissionObservation,
+    principal: str = "",
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """An EMPTY workspace, born from nothing but the universe's own storage.
@@ -1380,14 +1255,29 @@ def _create(
     owned: list[Any] = []
     published = False
     try:
-        if storage == "universe":
-            lease_fd = _make_permanent_generation_dir(base_path, Path(lease.path))
-        else:
-            lease_fd = _make_scratch_lease_dir(Path(lease.path))
-        owned.append(lease_fd)
+        # Even an empty workspace is created by the OWNER's cell: a node
+        # sandbox mounts a directory only when the owner owns it, and the
+        # daemon cannot make one. No connection, no route, no socket.
+        lease_parent, lease_name = _lease_names(base_path, Path(lease.path))
+        answer = execute(
+            {
+                "op": "create",
+                "universe_dir": str(base_path),
+                "principal": principal,
+                "storage": storage,
+                "lease_parent": lease_parent,
+                "lease_name": lease_name,
+            }
+        )
+        if not answer.get("ok"):
+            raise _Refused(
+                "workspace_checkout_failed",
+                str(answer.get("error") or "the workspace directory was not created"),
+                stderr_class=str(answer.get("stderr_class") or ""),
+            )
         content_dir = Path(lease.path) / _CONTENT_DIR
-        content_fd = _make_repo_dir(lease_fd, content_dir)
-        owned.append(content_fd)
+        lease_fd, content_fd = _open_cell_lease(Path(lease.path))
+        owned.extend((lease_fd, content_fd))
 
         # Nothing was transferred, and the hourly ledger has to be TOLD that:
         # the admission reserved the full lease bound, and an unreconciled
@@ -1471,103 +1361,86 @@ def _push(
     resource = _connection_for_mount(base_path, mount, fallback=resource, principal=principal)
     remote_ref = f"refs/heads/tiny/{_universe_short(universe_id)}/{slug}"
 
-    staging = _staging_root(base_path, run_id, node_id)
-    try:
-        destination = staging / "in.bundle"
-        relative = f"repo/{_JAIL_EXPORT_DIR}/{commit_sha}.bundle"
+    held_lease = getattr(mount, "lease", None)
+    if held_lease is None or not getattr(held_lease, "path", ""):
+        raise _Refused("workspace_push_refused", "this workspace holds no lease to push from")
+    lease_parent, lease_name = _lease_names(base_path, Path(held_lease.path))
 
-        # The hourly ledger sees the push BEFORE any bytes move: a push holds no
-        # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
-        operation_id = _operation_id(run_id, node_id, "push")
-        _reserve_operation(
-            base_path,
-            universe_id=universe_id,
-            run_id=run_id,
-            operation_id=operation_id,
-            max_bytes=_MAX_BUNDLE_BYTES,
-            refusal="workspace_push_refused",
-        )
+    # The hourly ledger sees the push BEFORE any bytes move: a push holds no
+    # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
+    operation_id = _operation_id(run_id, node_id, "push")
+    _reserve_operation(
+        base_path,
+        universe_id=universe_id,
+        run_id=run_id,
+        operation_id=operation_id,
+        max_bytes=_MAX_BUNDLE_BYTES,
+        refusal="workspace_push_refused",
+    )
 
-        # Hold the capability across the copy: a discard racing this must not be
-        # able to close the descriptor mid-read.
-        with _acquired(chain, mount.node_id) as held:
-            try:
-                copied = _fs().copy_regular_file_beneath(
-                    held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
-                )
-            except NotImplementedError as exc:
-                # Same permanent host property, reported against push's own class.
-                raise _Refused(
-                    "workspace_push_refused",
-                    f"the workspace sink needs POSIX openat semantics; this host is "
-                    f"{os.name!r} ({exc})",
-                ) from None
-            except Exception as exc:
-                raise _Refused(
-                    "workspace_push_refused", f"the export bundle could not be read: {exc}"
-                )
-
-        intent = record_push_intent(
-            base_path,
-            run_id=str(run_id),
-            node_id=node_id,
-            connection_id=mount.connection_id,
-            repo=repo,
-            remote_ref=remote_ref,
-            sha=commit_sha,
-            host=host,
-            grant_id=mount.grant_id,
-            universe_id=universe_id,
-            expected_old_sha=_str_field(packet, "expected_old_sha") or None,
-        )
+    intent = record_push_intent(
+        base_path,
+        run_id=str(run_id),
+        node_id=node_id,
+        connection_id=mount.connection_id,
+        repo=repo,
+        remote_ref=remote_ref,
+        sha=commit_sha,
+        host=host,
+        grant_id=mount.grant_id,
+        universe_id=universe_id,
+        expected_old_sha=_str_field(packet, "expected_old_sha") or None,
+    )
+    # Hold the capability for the whole operation: the cell reads the export
+    # bundle out of this lease, and a discard racing it must not be able to
+    # take the directory away underneath.
+    with _acquired(chain, mount.node_id):
         answer = execute(
             {
                 "op": "push",
                 "universe_dir": str(base_path),
-                "credential_ref": str(getattr(resource, "credential_ref", "")),
+                "principal": principal,
+                "agent": _agent_for(run_id, node_id),
+                "grant_id": mount.grant_id,
+                "connection_id": mount.connection_id,
                 "host": host,
                 "owner_repo": repo,
                 "remote_ref": remote_ref,
                 "commit_sha": commit_sha,
-                "bundle_path": str(destination),
-                "staging_dir": str(staging),
+                "lease_parent": lease_parent,
+                "lease_name": lease_name,
+                "max_bundle_bytes": _MAX_BUNDLE_BYTES,
             }
         )
-        # A TIMEOUT is not a failure: the send may have landed. It stays claimable
-        # as `unknown` and the startup reconciler asks the remote (P1 #5).
-        if answer.get("ok"):
-            state = "done"
-        elif str(answer.get("stderr_class") or "") == "timeout":
-            state = "unknown"
-        else:
-            state = "failed"
-        settle_push_intent(
-            base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
+    # A TIMEOUT is not a failure: the send may have landed. It stays claimable
+    # as `unknown` and the startup reconciler asks the remote (P1 #5).
+    if answer.get("ok"):
+        state = "done"
+    elif str(answer.get("stderr_class") or "") == "timeout":
+        state = "unknown"
+    else:
+        state = "failed"
+    settle_push_intent(
+        base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
+    )
+    _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or 0))
+    if not answer.get("ok"):
+        raise _Refused(
+            "workspace_push_refused",
+            str(answer.get("error") or "push refused"),
+            stderr_class=str(answer.get("stderr_class") or ""),
+            observed_sha=str(answer.get("observed_sha") or ""),
+            remote_ref=remote_ref,
+            intent_state=state,
         )
-        _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or copied or 0))
-        if not answer.get("ok"):
-            raise _Refused(
-                "workspace_push_refused",
-                str(answer.get("error") or "push refused"),
-                stderr_class=str(answer.get("stderr_class") or ""),
-                observed_sha=str(answer.get("observed_sha") or ""),
-                remote_ref=remote_ref,
-                intent_state=state,
-            )
-        return {
-            "op": "push",
-            "repo": repo,
-            "remote_ref": remote_ref,
-            "sha": commit_sha,
-            "bytes": int(answer.get("bytes") or copied or 0),
-            "reconciled": bool(answer.get("reconciled")),
-        }
-    finally:
-        # Push staging held a copy of the bundle and the git homes, and was
-        # never removed on ANY path before -- success included.
-        from tinyassets import workspace_staging
-
-        workspace_staging.remove(staging)
+    return {
+        "op": "push",
+        "repo": repo,
+        "remote_ref": remote_ref,
+        "sha": commit_sha,
+        "bytes": int(answer.get("bytes") or 0),
+        "reconciled": bool(answer.get("reconciled")),
+    }
 
 
 def _discard(
@@ -1716,11 +1589,11 @@ def _connection_for_mount(
     """
     if not mount.connection_id or not mount.grant_id:
         return fallback
-    db_path = _ledger_db_path(base_path)
-    if db_path is None:
+    data_root = _data_root(base_path)
+    if data_root is None:
         return fallback
     _grant, resource = _read_connection(
-        db_path=db_path,
+        data_root=data_root,
         connection_id=mount.connection_id,
         universe_id=_universe_id(base_path),
         grant_id=mount.grant_id,
@@ -1827,13 +1700,6 @@ def _pool_detail(exc: Exception) -> str:
     return detail or f"{type(exc).__name__}"
 
 
-def _git_path() -> str:
-    found = shutil.which("git")
-    if not found:
-        raise _Refused("workspace_checkout_failed", "git is not available on this host")
-    return str(Path(found).parent)
-
-
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -1931,8 +1797,8 @@ def _run(
 
     repo = _str_field(packet, "repo")
     universe_id = _universe_id(base_path)
-    db_path = _ledger_db_path(base_path)
-    if not universe_id or db_path is None or base_path is None:
+    data_root = _data_root(base_path)
+    if not universe_id or data_root is None or base_path is None:
         return {
             "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
@@ -1940,26 +1806,30 @@ def _run(
         }
     universe_dir = Path(base_path)
     host = ""
-    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.auth.middleware import current_identity_or_none
 
-    # The admitted owner only routes the selected broker's authority reads.
-    principal = ""
-    if broker_selected():
-        from tinyassets.auth.middleware import current_identity_or_none
-
-        identity = current_identity_or_none()
-        if execution_context is not None:
-            if (execution_context.universe_id != universe_id
-                    or not execution_context.owner_user_id):
-                raise _Refused("execution_context_mismatch", "workspace execution scope mismatch")
-            principal = execution_context.owner_user_id
-        else:
-            principal = identity.user_id if identity is not None else ""
+    # The admitted owner routes every broker authority read.
+    identity = current_identity_or_none()
+    if execution_context is not None:
+        if (execution_context.universe_id != universe_id
+                or not execution_context.owner_user_id):
+            raise _Refused("execution_context_mismatch", "workspace execution scope mismatch")
+        principal = execution_context.owner_user_id
+    else:
+        principal = identity.user_id if identity is not None else ""
 
     if chain is None:
         from tinyassets.effectors import active_effect_chain
 
         chain = active_effect_chain(str(run_id))
+
+    if execute is None:
+        # Every operation that writes a directory goes through the owner's
+        # cell, ``create`` included: the daemon cannot make a directory the
+        # owner owns, and a node sandbox mounts nothing else.
+        from tinyassets.workspace_worker import execute_workspace_operation
+
+        execute = execute_workspace_operation
 
     if op == "create":
         # No connection, no repository, no consent: everything below this line
@@ -1979,8 +1849,10 @@ def _run(
             run_id=run_id,
             universe_id=universe_id,
             chain=chain,
+            execute=execute,
             timeout_seconds=timeout_seconds,
             admission=admission,
+            principal=principal,
             should_cancel=should_cancel,
         )
         evidence["matched_output_key"] = matched_key
@@ -2029,7 +1901,7 @@ def _run(
         raise _Refused("invalid_packet", "packet.grant_id is required")
 
     _grant, resource = _read_connection(
-        db_path=db_path,
+        data_root=data_root,
         connection_id=connection_id,
         universe_id=universe_id,
         grant_id=grant_id,
@@ -2060,11 +1932,6 @@ def _run(
             "matched_output_key": matched_key,
         }
 
-    if execute is None:
-        from tinyassets.workspace_worker import execute_workspace_operation
-
-        execute = execute_workspace_operation
-
     common = {
         "packet": packet,
         "node_id": node_id,
@@ -2083,6 +1950,7 @@ def _run(
             **{k: v for k, v in common.items() if k != "ancestors"},
             timeout_seconds=timeout_seconds,
             admission=admission,
+            principal=principal,
             should_cancel=should_cancel,
         )
     else:

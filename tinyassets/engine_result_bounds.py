@@ -69,8 +69,8 @@ EXACT_BYTE_READS = frozenset({("read_graph", "run_file")})
 #: Env override for the ceiling, in bytes. A deploy-level escape hatch.
 CEILING_ENV = "TINYASSETS_ENGINE_RESULT_CEILING_BYTES"
 #: The selected model's context window in tokens, when the caller that spawned
-#: this server knew it. Absent on the persistent HTTP transport, where the
-#: server outlives any one turn's model choice -- hence the safe default.
+#: this server knew it. HTTP launches carry the window in request context
+#: because a persistent endpoint outlives any one turn's model choice.
 CONTEXT_TOKENS_ENV = "TINYASSETS_ENGINE_MODEL_CONTEXT_TOKENS"
 
 #: How to ask each tool for less, in its OWN parameters. The hint is the whole
@@ -166,6 +166,12 @@ def resolve_ceiling(env: dict[str, str] | None = None) -> int:
             override = 0
         if override > 0:
             return max(MIN_CEILING_BYTES, min(MAX_CEILING_BYTES, override))
+    if env is None:
+        from tinyassets.engine_endpoint import model_context
+
+        context = model_context()
+        if context is not None:
+            return ceiling_for_context(context)
     tokens = (source.get(CONTEXT_TOKENS_ENV) or "").strip()
     try:
         return ceiling_for_context(int(tokens) if tokens else None)

@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
+from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_disconnect import removal  # noqa: F401
-from tests.test_broker_discovery_http import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
@@ -79,9 +79,9 @@ def test_revocation_between_preview_and_write_refuses(removal, monkeypatch):
     monkeypatch.setattr(BrokerClient, "http_policy", revoked)
     before = removal.ledger._get_connection_resource(removal.connection)
     with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
-        with pytest.raises(GrantResolutionError):
-            extend_http(universe_id="cc-alice", payload={
-                "destination": "fixture", "endpoints": [ENDPOINT]})
+        result = extend_http(universe_id="cc-alice", payload={
+            "destination": "fixture", "endpoints": [ENDPOINT]})
+        assert result == {"error": "connection_conflict", "resource": "connection"}
     assert removal.ledger._get_connection_resource(removal.connection) == before
 
 

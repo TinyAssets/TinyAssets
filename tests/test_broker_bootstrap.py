@@ -1,24 +1,9 @@
-"""A pre-forked broker is pinned and never acquired through the legacy launcher."""
+"""A pre-forked broker is pinned to its exact pid and dies with the container."""
 import os
-import socket
 
 import pytest
 
 from tinyassets.broker import supervisor as module
-
-
-@pytest.mark.skipif(not hasattr(os, 'pidfd_open'), reason='Linux process handles')
-def test_bootstrapped_acquisition_never_opens_legacy_launcher(tmp_path, monkeypatch):
-    monkeypatch.setattr(module, '_protect_daemon', lambda: None)
-    instance = module.BrokerSupervisor.from_bootstrap(
-        tmp_path, broker_pid=os.getpid(), socket_path=tmp_path / 'broker.sock', proof='x' * 40)
-    try:
-        def forbidden(*args, **kwargs):
-            pytest.fail('bootstrap tried the legacy privileged launcher')
-        monkeypatch.setattr(socket, 'socket', forbidden)
-        instance._acquire()
-    finally:
-        os.close(instance._bootstrap_pidfd)
 
 
 @pytest.mark.skipif(not hasattr(os, 'pidfd_open'), reason='Linux process handles')
@@ -36,6 +21,7 @@ def test_bootstrap_rejects_same_uid_different_broker_pid(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not hasattr(os, 'pidfd_open'), reason='Linux process handles')
 def test_dead_bootstrapped_broker_cannot_be_reacquired(tmp_path, monkeypatch):
+    """This instance cannot restart a broker, so a dead one is terminal."""
     import subprocess
     import sys
 
@@ -47,7 +33,7 @@ def test_dead_bootstrapped_broker_cannot_be_reacquired(tmp_path, monkeypatch):
     try:
         child.communicate(timeout=5)
         with pytest.raises(module.BrokerUidSplitRequired, match='container restart required'):
-            instance._acquire()
+            instance.start()
         with pytest.raises(module.BrokerUidSplitRequired, match='container restart required'):
             instance.fence()
     finally:

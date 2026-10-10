@@ -112,7 +112,9 @@ def _append_ledger(
 
     ledger_path = udir / "ledger.json"
     try:
-        udir.mkdir(parents=True, exist_ok=True)
+        from tinyassets.role_center_admission import ensure_center_dir
+
+        ensure_center_dir(udir)
         existing = _read_json(ledger_path)
         if not isinstance(existing, list):
             existing = []

@@ -5,6 +5,7 @@ import os
 import sys
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -25,20 +26,24 @@ pytestmark = pytest.mark.usefixtures("metadata_transport_processes")
 
 @pytest.fixture
 def metadata_transport_processes(monkeypatch):
-    """Exercise real protocol/family children; OS isolation has separate proofs."""
-    from tinyassets.providers import owned_process, provider_jail
+    """Exercise real protocol children at the cell seam; the cell has its own proofs.
 
-    def transport_launch(argv, *, view, **kwargs):
-        scope = provider_jail._SCOPE.get()
-        assert scope.universe_dir == view.universe_dir
-        assert scope.engine_route is None
-        return provider_jail.ConfinedLaunch(list(argv), universe_dir=view.universe_dir)
+    The production transport starts the CLI in the owner's provider-discovery
+    cell (``role_provider_discovery.aspawn_cell``); this stands a plain child
+    in for the cell, so the protocol, the decoder and the bounded reads are real.
+    """
+    import asyncio as _asyncio
 
-    monkeypatch.setattr(provider_jail, "confine_launch", transport_launch)
-    monkeypatch.setattr(
-        owned_process, "_open_disk_budget", lambda _: SimpleNamespace(settle=lambda: None),
-    )
-    monkeypatch.setattr(owned_process, "_watch_disk", lambda proc, budget: budget.settle())
+    from tinyassets import role_provider_discovery
+
+    async def plain_child(argv, *, env, view, universe_dir, snapshot_dir, limit, **kw):
+        assert Path(snapshot_dir).is_relative_to(Path(universe_dir))
+        return await _asyncio.create_subprocess_exec(
+            *argv, env={**env, **dict(view.setenv)}, cwd=snapshot_dir,
+            stdin=_asyncio.subprocess.PIPE, stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.DEVNULL, limit=limit)
+
+    monkeypatch.setattr(role_provider_discovery, "aspawn_cell", plain_child)
 
 
 def metadata_snapshot(universe):
@@ -176,11 +181,8 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
                 timeout=0.2 if mode == "timeout" else 3,
             ))
             if mode == "cancel":
-                # Cancel the admitted metadata process, after its shared
-                # family handshake. Pre-handshake cancellation is owned by
-                # the launcher's separate teardown tests.
-                from tinyassets.providers import owned_process
-                while not children or owned_process._get_family(children[-1]) is None:
+                # Cancel the admitted metadata process once it exists.
+                while not children:
                     await asyncio.sleep(0.01)
                 task.cancel()
             expected = asyncio.CancelledError if mode == "cancel" else ProviderError

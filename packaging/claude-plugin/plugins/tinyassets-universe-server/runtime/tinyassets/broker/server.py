@@ -322,6 +322,9 @@ class _Connection:
         elif op == "CENTER_ADMISSION":
             answer = await asyncio.to_thread(self._center_admission, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "ADMITTED_OWNER":
+            answer = await asyncio.to_thread(self._admitted_owner, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -385,8 +388,21 @@ class _Connection:
         except Exception:  # noqa: BLE001 - no identity, path or persisted state on refusal
             return {"op": "OWNER_IDENTITY_REFUSED"}
 
+    def _admitted_owner(self, doc: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if (set(doc) != {'op', 'center', 'generation', 'token'}
+                    or type(doc['generation']) is not int or type(doc['token']) is not str):
+                raise ValueError('invalid admitted owner request')
+            with self._server._fence.send(doc['generation'], doc['token']):
+                principal = self._server._owner_identities.admitted_owner(doc['center'])
+                return {'op': 'ADMITTED_OWNER_IS', 'principal': principal}
+        except Exception:  # noqa: BLE001 - do not expose broker state on refusal
+            return {'op': 'ADMITTED_OWNER_REFUSED'}
+
     def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
         """DA1: append-only admit/retire; machine always from the reservation."""
+        from tinyassets.broker.owner_identities import CenterUnadmitted
+
         try:
             if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
                 raise ValueError("unsupported admission fields")
@@ -400,6 +416,9 @@ class _Connection:
                     doc["event"], doc["principal"], doc["center"])
                 return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
                         "machine": row.machine}
+        except CenterUnadmitted:
+            # D218 retires a tree-less center only if the log admitted it.
+            return {"op": "CENTER_ADMISSION_UNADMITTED"}
         except Exception:  # noqa: BLE001 - nothing appended or persisted on refusal
             return {"op": "CENTER_ADMISSION_REFUSED"}
 

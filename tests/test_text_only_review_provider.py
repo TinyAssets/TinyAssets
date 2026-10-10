@@ -80,6 +80,10 @@ def test_router_refuses_unsupported_selected_provider_without_fallback(rig):
             ("cancelled_before_launch",)]
 
 
+def _http_config():
+    return ModelConfig(text_only=True, invocation_owner_user_id="founder")
+
+
 @pytest.fixture
 def http(tmp_path):
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -101,7 +105,7 @@ def test_http_text_only_reaches_only_plain_text_wire(http, protocol):
     if protocol == "anthropic_messages":
         proxy.response["body"] = json.dumps({"content": [{"type": "text", "text": "ok"}]})
     provider = ApiKeyHttpProvider(_definition(protocol), proxy_override=proxy)
-    result = asyncio.run(provider.complete("review", "requirements", ModelConfig(text_only=True),
+    result = asyncio.run(provider.complete("review", "requirements", _http_config(),
                                            universe_dir=universe))
     assert result.text
     assert len(proxy.calls) == 1
@@ -121,7 +125,7 @@ def test_http_text_only_reaches_only_plain_text_wire(http, protocol):
 ])
 def test_http_conflicting_config_never_reaches_proxy(http, conflict):
     provider, proxy, universe = http
-    cfg = replace(ModelConfig(text_only=True), **conflict)
+    cfg = replace(_http_config(), **conflict)
     with pytest.raises(ProviderAuthorityHeldError, match="text-only"):
         asyncio.run(provider.complete("review", "requirements", cfg, universe_dir=universe))
     # The synchronous entry is equally restrictive.
@@ -146,7 +150,7 @@ def test_http_rejects_tool_or_unknown_wire_extensions_before_send(http, extra):
 
     provider._encode = poisoned
     with pytest.raises(ProviderAuthorityHeldError, match="HTTP request does not support"):
-        provider._complete_sync("review", "requirements", ModelConfig(text_only=True),
+        provider._complete_sync("review", "requirements", _http_config(),
                                 universe_dir=universe)
     assert not proxy.calls
 
@@ -174,7 +178,7 @@ def test_http_reply_cannot_smuggle_tool_request_alongside_verdict(http, tool):
     proxy.response["body"] = json.dumps({"choices": [{"message": {
         "content": '{"verdict":"proceed","reason":"ok"}', **tool}}]})
     with pytest.raises(ProviderAuthorityHeldError, match="returned a tool request"):
-        provider._complete_sync("review", "requirements", ModelConfig(text_only=True),
+        provider._complete_sync("review", "requirements", _http_config(),
                                 universe_dir=universe)
     assert len(proxy.calls) == 1  # Inference only; no follow-up tool dispatch exists.
 

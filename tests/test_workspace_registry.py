@@ -1,22 +1,10 @@
-"""Registry broker transport contract; local socket peers, never registry traffic."""
-
-from __future__ import annotations
-
-import array
-import contextlib
-import gc
-import os
+"""Registry relay transport: fixed hosts, pinned DNS and cumulative transfer bounds."""
 import socket
-import subprocess
-import sys
-import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
 
 from tinyassets import workspace_registry as registry
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def budget(**overrides):
@@ -151,6 +139,116 @@ class RegistryTransportTests(unittest.TestCase):
             self.assertEqual(upstream.fileno(), -1)
             self.assertEqual(relay.fileno(), -1)
 
+    def test_closed_client_tail_is_charged_and_upstream_must_drain(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget()
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.sendall(b"request")
+            self.assertEqual(server.recv(1024), b"request")
+            server.sendall(b"response")
+            self.assertEqual(client.recv(1024), b"response")
+            client.close()
+            self.assertEqual(server.recv(1024), b"")  # client EOF was propagated
+            server.sendall(b"terminal TLS record")
+            # The discarded record is accounted even though nobody receives it.
+            import time
+            end = time.monotonic() + 1
+            while transfer.snapshot().bytes_transferred < 34 and time.monotonic() < end:
+                time.sleep(0.005)
+            self.assertEqual(transfer.snapshot().bytes_transferred, 34)
+            self.assertIsNone(transfer.snapshot().failure)
+            self.assertTrue(runner.is_alive(), "cannot finish before upstream EOF")
+            server.shutdown(socket.SHUT_WR)
+            result = self.finish(runner, transfer)
+            self.assertEqual(result.bytes_transferred, 34)
+
+    def test_closed_client_drain_cannot_hide_byte_limit(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget(max_bytes=3)
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.close()
+            self.assertEqual(server.recv(1024), b"")
+            server.sendall(b"tail exceeds budget")
+            result = self.finish(runner, transfer, "byte_limit")
+            self.assertEqual(result.bytes_transferred, 3)
+
+    def test_client_read_shutdown_without_eof_remains_transport_failure(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget()
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.shutdown(socket.SHUT_RD)
+            server.sendall(b"undeliverable response")
+            result = self.finish(runner, transfer, "transport_failed")
+            self.assertEqual(result.bytes_transferred, 22)
+
+    def close_registry_relay(self, runner, transfer):
+        from tinyassets.workspace_registry_relay import RegistryRelay
+
+        # Transport is real; only the unrelated sidecar-path cleanup is absent.
+        relay = object.__new__(RegistryRelay)
+        relay.budget, relay._closed = transfer, False
+        relay._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        relay._thread = threading.Thread(target=lambda: None)
+        relay._thread.start()
+        relay._workers, relay._lock = [runner], threading.Lock()
+        relay.path, relay._identity = None, None
+        with patch('tinyassets.workspace_registry_relay.role_relays.remove'):
+            relay.close()
+        return relay
+
+    def test_retirement_charges_maximum_when_a_tunnel_has_not_drained(self):
+        client, relay = self.pair()
+        upstream, _server = self.pair()
+        transfer = budget(timeout_s=10)
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            closed = self.close_registry_relay(runner, transfer)
+        self.assertEqual(closed.failure, 'transport_failed')
+        self.assertEqual(closed.charge, transfer.max_bytes)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(closed.snapshot.active, 0)
+
+    def test_retirement_waits_for_clean_tail_and_charges_actual_bytes(self):
+        client, relay = self.pair()
+        upstream, server = self.pair()
+        transfer = budget()
+        with patch.object(registry, "_connect_pinned", return_value=upstream):
+            runner = self.start(relay, transfer, resolver=lambda *_: ["93.184.216.34"],
+                                classifier=public_only)
+            client.sendall(request())
+            self.assertEqual(client.recv(1024), registry._CONNECTED)
+            client.close()
+            self.assertEqual(server.recv(1024), b"")
+            server.sendall(b'charged tail')
+            finish = threading.Timer(0.05, server.shutdown, args=(socket.SHUT_WR,))
+            finish.start()
+            try:
+                closed = self.close_registry_relay(runner, transfer)
+            finally:
+                finish.join()
+        self.assertIsNone(closed.failure)
+        self.assertEqual(closed.charge, len(b'charged tail'))
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(closed.snapshot.active, 0)
+
     def test_byte_limit_stops_transport_without_overreading(self):
         client, relay = self.pair()
         upstream, server = self.pair()
@@ -251,161 +349,3 @@ class TransferBudgetTests(unittest.TestCase):
                 budget(**overrides)
 
 
-_FD_PROBE_FLAG = "--fd-probe"
-_PROBE_OK = "fd-probe-equal"
-_PROBE_CHANGED = "fd-probe-changed"
-_LEAK_SUFFIX = "+leak"
-
-
-def _probe_injection(scenario, endpoint, stack):
-    """Payload plus descriptor list for one refusal scenario, inside the probe."""
-    if scenario == "bad-control":
-        return b"wrong", [endpoint.fileno()]
-    if scenario == "truncated":
-        return registry._RELAY_MESSAGE + b"extra", [endpoint.fileno()]
-    if scenario.startswith("descriptors-"):
-        return registry._RELAY_MESSAGE, [endpoint.fileno()] * int(scenario.split("-")[1])
-    if scenario == "regular-file":
-        fixture = stack.enter_context(tempfile.TemporaryFile())
-        return registry._RELAY_MESSAGE, [fixture.fileno()]
-    if scenario == "missing":
-        return registry._RELAY_MESSAGE, []
-    family, kind = {
-        "inet-stream": (socket.AF_INET, socket.SOCK_STREAM),
-        "unix-stream": (socket.AF_UNIX, socket.SOCK_STREAM),
-        "unix-dgram": (socket.AF_UNIX, socket.SOCK_DGRAM),
-    }[scenario]
-    wrong = stack.enter_context(socket.socket(family, kind))
-    return registry._RELAY_MESSAGE, [wrong.fileno()]
-
-
-def _run_fd_probe(scenario):
-    """Census every descriptor the refusal path duplicates, in a clean process.
-
-    Run as ``python tests/test_workspace_registry.py --fd-probe <scenario>``.
-    ``/proc/self/fd`` is process-wide, so an in-suite census is falsified by any
-    unrelated close in the same window -- notably the GC-timed
-    ``weakref.finalize(proc, family.end)`` of ``providers/owned_process.py``,
-    whose ``os.close`` of an anchor control fd removes a descriptor the registry
-    never touched. A child process carries none of those pending finalizers, and
-    GC stays off across the window, so equality stays the assertion: a receive
-    path that duplicates *any* descriptor and fails to close it is still caught.
-
-    A ``+leak`` suffix is the negative control: it suppresses ``os.close`` for
-    the refusal call, so the real cleanup leaks the received fd and the census
-    must report it.
-    """
-    leaking = scenario.endswith(_LEAK_SUFFIX)
-    scenario = scenario[: -len(_LEAK_SUFFIX)] if leaking else scenario
-    with contextlib.ExitStack() as stack:
-        child, parent = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        local, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        for stream in (child, parent, local, endpoint):
-            stream.settimeout(2)
-            stack.enter_context(stream)
-        payload, fds = _probe_injection(scenario, endpoint, stack)
-        if fds:
-            child.sendmsg(
-                [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))]
-            )
-        else:
-            child.send(payload)
-        suppress_close = patch.object(registry.os, "close", lambda fd: None)
-        gc.collect()
-        gc.disable()
-        try:
-            before = set(os.listdir("/proc/self/fd"))
-            with suppress_close if leaking else contextlib.nullcontext():
-                try:
-                    registry.receive_relay(parent)
-                except registry.RegistryRefused as refused:
-                    if str(refused) != "bad_connect":
-                        print(f"fd-probe-wrong-refusal {refused!s}")
-                        return 3
-                else:
-                    print("fd-probe-no-refusal")
-                    return 4
-            after = set(os.listdir("/proc/self/fd"))
-        finally:
-            gc.enable()
-    if after != before:
-        print(f"{_PROBE_CHANGED} added={sorted(after - before)} removed={sorted(before - after)}")
-        return 5
-    print(f"{_PROBE_OK} {scenario}")
-    return 0
-
-
-@unittest.skipUnless(sys.platform == "linux", "Linux descriptor handoff")
-class RegistryDescriptorTests(unittest.TestCase):
-    def setUp(self):
-        self.child, self.parent = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        self.local, self.endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        for stream in (self.child, self.parent, self.local, self.endpoint):
-            stream.settimeout(2)
-            self.addCleanup(stream.close)
-
-    def run_fd_probe(self, scenario):
-        return subprocess.run(
-            [sys.executable, os.path.abspath(__file__), _FD_PROBE_FLAG, scenario],
-            capture_output=True, text=True, timeout=120,
-            env=dict(os.environ, PYTHONPATH=_REPO_ROOT),
-        )
-
-    def assert_refused_without_leak(self, scenario):
-        probe = self.run_fd_probe(scenario)
-        self.assertEqual(probe.returncode, 0, f"{probe.stdout}\n{probe.stderr}")
-        self.assertIn(_PROBE_OK, probe.stdout)
-
-    def test_connected_unix_relay_is_copied_noninheritable_and_bidirectional(self):
-        registry.send_relay(self.child, self.endpoint)
-        with registry.receive_relay(self.parent) as accepted:
-            self.endpoint.close()
-            self.assertFalse(os.get_inheritable(accepted.fileno()))
-            self.assertEqual(accepted.family, socket.AF_UNIX)
-            self.local.sendall(b"client TLS")
-            self.assertEqual(accepted.recv(1024), b"client TLS")
-            accepted.sendall(b"server TLS")
-            self.assertEqual(self.local.recv(1024), b"server TLS")
-
-    def test_eof_is_revocation_not_an_empty_relay(self):
-        self.child.close()
-        self.assertIsNone(registry.receive_relay(self.parent))
-
-    def test_bad_control_message_closes_received_descriptor(self):
-        self.assert_refused_without_leak("bad-control")
-
-    def test_truncated_message_closes_received_descriptor(self):
-        self.assert_refused_without_leak("truncated")
-
-    def test_multiple_or_truncated_descriptors_all_close(self):
-        for count in (2, 20):
-            with self.subTest(count=count):
-                self.assert_refused_without_leak(f"descriptors-{count}")
-
-    def test_regular_file_descriptor_refuses_without_leak(self):
-        self.assert_refused_without_leak("regular-file")
-
-    def test_network_and_unconnected_sockets_refuse_without_leak(self):
-        for scenario in ("inet-stream", "unix-stream", "unix-dgram"):
-            with self.subTest(scenario=scenario):
-                self.assert_refused_without_leak(scenario)
-
-    def test_leaked_descriptor_fails_the_census(self):
-        """The census is not decor: suppress the refusal path's own close, get red."""
-        probe = self.run_fd_probe("descriptors-2" + _LEAK_SUFFIX)
-        self.assertEqual(probe.returncode, 5, f"{probe.stdout}\n{probe.stderr}")
-        self.assertIn(_PROBE_CHANGED, probe.stdout)
-        self.assertNotIn("added=[]", probe.stdout)
-
-    def test_sender_rejects_wrong_control_type(self):
-        with self.assertRaisesRegex(ValueError, "private Unix packet"):
-            registry.send_relay(self.local, self.endpoint)
-
-    def test_missing_descriptor_refuses(self):
-        self.assert_refused_without_leak("missing")
-
-
-if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == _FD_PROBE_FLAG:
-        sys.exit(_run_fd_probe(sys.argv[2]))
-    unittest.main()

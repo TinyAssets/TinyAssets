@@ -27,7 +27,15 @@ _REPO = Path(__file__).resolve().parent.parent
 _PKG = _REPO / "tinyassets"
 
 #: The helpers themselves: the only modules allowed to do the raw I/O.
-_EXEMPT = {"tinyassets/universe_files.py", "tinyassets/workspace_fs.py"}
+_EXEMPT = {
+    "tinyassets/universe_files.py", "tinyassets/workspace_fs.py",
+    # Lower-level owner-inode creation/publication used by universe_files.
+    # It pins every parent, validates custody, and never follows symlinks.
+    "tinyassets/role_content.py",
+    # Fixed read-only owner-cell metadata walk: pinned/no-follow descriptors,
+    # exact owner custody, bounded traversal; no caller-selected path or file reads.
+    "tinyassets/role_storage.py",
+}
 
 _TOUCHES_UNIVERSE = re.compile(
     r"universe_dir|universe_path|\budir\b|_universe_dir|data_dir\(\)|_base_path\(\)"
@@ -121,9 +129,6 @@ PINNED: dict[str, list[str]] = {
         "save: os.replace()",
         "save: os.unlink()",
     ],
-    "tinyassets/api/first_contact.py": [
-        "ensure_founder_home: shutil.rmtree()",
-    ],
     "tinyassets/api/pending_requests.py": [
         "_first_power_preset: .read_text()",
     ],
@@ -135,7 +140,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/api/universe.py": [
         "_action_control_daemon: .unlink()",
         "_action_create_universe: .write_text()",
-        "_action_create_universe: shutil.rmtree()",
         "_action_switch_universe: .write_text()",
         "_read_founder_offers: .read_text()",
         "_write_founder_offers: os.replace()",
@@ -190,7 +194,6 @@ PINNED: dict[str, list[str]] = {
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
         "_on_disk_document_is_newer: .read_text()",
-        "_persist_credential_vault_file: open()",
         "_read_credential_material: .read_bytes()",
         "_remove_snapshot_tree: .unlink()",
         "_remove_snapshot_tree: .unlink()",
@@ -237,7 +240,6 @@ PINNED: dict[str, list[str]] = {
         "try_acquire_idle_cycle_slot: os.replace()",
     ],
     "tinyassets/ingestion/extractors.py": [
-        "_extract_pdf: .open()",
         "synthesize_source: .read_text()",
     ],
     "tinyassets/knowledge/raptor.py": [
@@ -293,7 +295,6 @@ PINNED: dict[str, list[str]] = {
         "read_expected_instance_id: .open()",
     ],
     "tinyassets/process_liveness.py": [
-        "owner_state: os.open()",
         "remove_if_dead: .unlink()",
         "remove_if_dead: .unlink()",
         "remove_if_dead: .unlink()",
@@ -322,10 +323,8 @@ PINNED: dict[str, list[str]] = {
         "_write_probe_cache_file: os.replace()",
         "subprocess_env_for_provider: .read_text()",
     ],
-    "tinyassets/providers/claude_provider.py": [
-        "_engine_mcp_flags: .unlink()",
-        "_engine_mcp_flags: .write_text()",
-    ],
+    # ``claude_provider`` had two in ``_engine_mcp_flags``; they are gone from
+    # the tree, and this ratchet only ever shrinks, so the pin goes with them.
     "tinyassets/providers/codex_provider.py": [
         "_resolved_codex_executable: .open()",
     ],
@@ -334,6 +333,14 @@ PINNED: dict[str, list[str]] = {
         "_write: .unlink()",
         "_write: os.replace()",
         "list_commons_definitions: .read_text()",
+    ],
+    # owner-dynamic-admission DA3: every call is descriptor-relative with
+    # O_NOFOLLOW; the setgid hand-off cannot go through the path helpers.
+    "tinyassets/role_center_admission.py": [
+        "_open_dir: os.open()",
+        "_remove_tree: os.unlink()",
+        "admit_center: os.open()",
+        "admit_center: os.open()",
     ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
@@ -400,9 +407,8 @@ PINNED: dict[str, list[str]] = {
         "_write_raw: .write_text()",
         "_write_raw: os.replace()",
     ],
-    "tinyassets/universe_egress.py": [
-        "__init__: .unlink()",
-    ],
+    # Fixed owner-cell supervisor reads only kernel /proc/<pid>/stat records.
+    "tinyassets/role_preview_cell.py": ["_proc_snapshot: open()"],
     "tinyassets/ui_preview.py": [
         # The host-wide render slot's flock holder at the DATA ROOT
         # (.ui-preview.lock): no jail binds the data root, and flock needs the
@@ -410,7 +416,6 @@ PINNED: dict[str, list[str]] = {
         # not hand back. Opened O_NOFOLLOW.
         "_host_slot: os.open()",
         # Linux /proc, not a data path at all: reaping the render's strays.
-        "_proc_snapshot: open()",
     ],
     "tinyassets/universe_tools.py": [
         # Direct-child removals in the validated, provider-masked workspace.
@@ -447,9 +452,11 @@ PINNED: dict[str, list[str]] = {
         "_rmtree: shutil.rmtree()",
         "hold_in_use: os.open()",
     ],
-    "tinyassets/workspace_worker.py": [
-        "_handle_checkout: shutil.rmtree()",
-    ],
+    # ``workspace_worker`` had one: the credentialed clone it deleted out of
+    # its staging directory. The daemon runs no git and stages nothing now, so
+    # the module does no file I/O at all; the clone's removal moved into the
+    # owner's cell (``workspace_remote_cell``), which touches only paths
+    # beneath the command center the launcher mounted for it.
 }
 
 

@@ -309,11 +309,11 @@ def test_crossing_the_volume_floor_mid_run_is_a_disk_limit(base, volume):
     budget.settle()
 
 
-def test_an_adapters_exit_error_says_the_disk_budget_stopped_it():
+def test_provider_cells_do_not_report_legacy_daemon_disk_watchdog_state():
     from tinyassets.providers.owned_process import disk_stop_note
 
-    assert "cloud storage" in disk_stop_note(SimpleNamespace(disk_killed="storage_limit"))
-    assert "nearly full" in disk_stop_note(SimpleNamespace(disk_killed="disk_limit"))
+    assert disk_stop_note(SimpleNamespace(disk_killed="storage_limit")) == ""
+    assert disk_stop_note(SimpleNamespace(disk_killed="disk_limit")) == ""
     assert disk_stop_note(SimpleNamespace(disk_killed=None)) == ""
     assert disk_stop_note(object()) == ""
 

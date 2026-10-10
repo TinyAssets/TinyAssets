@@ -6,10 +6,8 @@ pending messages".
 
 The served-chat cases drive the REAL writer, router, HTTP adapter, journal and
 engine client (``tests/test_interactive_http_agent.py``'s rig: only the remote
-wires are synthetic). The native case drives the REAL ``ClaudeProvider``
-against a real process tree (``tests/test_provider_real_adapter_deadline_reap``'s
-probe: only command resolution and environment are patched), so "killed
-cleanly" is observed on processes, not asserted of a mock.
+wires are synthetic). A native CLI turn runs in its owner's cell, whose
+revocation the cell tests prove (``tests/test_role_provider_execution.py``).
 """
 # ruff: noqa: F811 -- imported pytest fixtures
 
@@ -26,16 +24,10 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_interactive_http_agent import agent, reader, rig, run, served  # noqa: F401
-from tests.test_provider_real_adapter_deadline_reap import (  # noqa: F401
-    _assert_tree_is_gone,
-    _await_descendant_pid,
-    probe,
-)
 from tinyassets import engine_tool_client, turn_interrupt
-from tinyassets.agent_turn_coordinator import AgentTurnCoordinator, turn_effects
+from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.providers.base import ModelConfig
 from tinyassets.storage.agent_turn_boot import BOOT
-from tinyassets.storage.agent_turn_journal import AgentTurnJournal
 from tinyassets.turn_interrupt import TurnInterrupted, interactive_turn, request_interrupt
 
 
@@ -209,43 +201,6 @@ def _native_coordinator(base: Path, live):
     )
 
 
-def test_stop_kills_a_native_cli_turn_and_releases_it(tmp_path, probe):
-    from tinyassets.providers import claude_provider as claude_mod
-
-    probe.install(claude_mod, frame="claude", cmd_resolver="_resolve_claude_cmd",
-                  env_builder="subprocess_env_for_provider")
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(claude_mod, "_sandbox_cli_args", lambda *a, **k: ([], None))
-    base = tmp_path / "data"
-    try:
-        with interactive_turn("owner", "u-native") as live:
-            coordinator = _native_coordinator(base, live)
-
-            async def drive():
-                task = asyncio.ensure_future(coordinator.run())
-                await _await_descendant_pid(probe.pid_file)
-                assert coordinator.turn.state == "native_started"
-                started = time.monotonic()
-                # From another thread, as the app route delivers it.
-                threading.Thread(target=live.request).start()
-                with pytest.raises(TurnInterrupted) as stopped:
-                    await task
-                return time.monotonic() - started, stopped.value
-
-            elapsed, stopped = asyncio.run(drive())
-    finally:
-        monkey.undo()
-    # Promptly: the CLI streams forever, so only the stop could have ended it.
-    assert elapsed < 15, f"the stop took {elapsed:.1f}s"
-    _assert_tree_is_gone(probe, probe.procs[-1].pid)
-    turn = AgentTurnJournal(base).get("owner", "u-native", coordinator.turn.turn_id)
-    # A killed agent may have acted: recorded as indeterminate, never as done.
-    assert turn.state == "held_native_unknown"
-    assert turn.rounds[-1].reply.status == "indeterminate"
-    assert turn_effects(turn)[0] == "unknown" and stopped.turn_effects == "unknown"
-    assert ("u-native", turn.turn_id) not in BOOT._claimed
-
-
 class _ActivityNativeAdapter(_NativeAdapter):
     """The native call run for an activity, through the work adapter's own gate."""
 
@@ -256,53 +211,6 @@ class _ActivityNativeAdapter(_NativeAdapter):
         from tinyassets.workflow_agent import WorkAgentAdapter
 
         return await WorkAgentAdapter._until_activity_stops(self, super().infer(**kwargs))
-
-
-def test_an_activity_yield_kills_a_native_cli_turn_and_releases_it(tmp_path, probe):
-    """The activity twin of the owner's stop: once the activity yields to an
-    owner request, the native CLI's process tree is ended and its claim is
-    released -- no further native tool loop, no held seat."""
-    from tinyassets import activity_runner, agent_activities
-    from tinyassets.providers import claude_provider as claude_mod
-
-    probe.install(claude_mod, frame="claude", cmd_resolver="_resolve_claude_cmd",
-                  env_builder="subprocess_env_for_provider")
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(claude_mod, "_sandbox_cli_args", lambda *a, **k: ([], None))
-    base = tmp_path / "data"
-    try:
-        coordinator = _native_coordinator(base, None)
-        universe = base / "u-native"
-        record = agent_activities.create(universe, owner_principal="owner", title="t",
-                                         brief="b", origin_kind="ask")
-        aid = record["activity_id"]
-        generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
-        assert agent_activities.bind_run(universe, aid, generation, "run-1")
-        coordinator.adapter = _ActivityNativeAdapter(
-            activity_runner.ActivityRunBinding(universe, aid, generation, "run-1"))
-
-        async def drive():
-            task = asyncio.ensure_future(coordinator.run())
-            await _await_descendant_pid(probe.pid_file)
-            assert coordinator.turn.state == "native_started"
-            started = time.monotonic()
-            # The agent's own ask, as the engine route records it.
-            threading.Thread(target=agent_activities.wait_on,
-                             args=(universe, aid, "req-1", "asked")).start()
-            with pytest.raises(activity_runner.ActivityYielded):
-                await task
-            return time.monotonic() - started
-
-        elapsed = asyncio.run(drive())
-    finally:
-        monkey.undo()
-    assert elapsed < 15, f"the yield took {elapsed:.1f}s to end the native turn"
-    _assert_tree_is_gone(probe, probe.procs[-1].pid)
-    turn = AgentTurnJournal(base).get("owner", "u-native", coordinator.turn.turn_id)
-    # The agent acted before its ask: recorded as indeterminate, never as done.
-    assert turn.state == "held_native_unknown"
-    assert ("u-native", turn.turn_id) not in BOOT._claimed
-    assert agent_activities.get(universe, aid)["status"] == agent_activities.WAITING_ON_YOU
 
 
 # ---------------------------------------------------------------------------

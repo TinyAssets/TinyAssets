@@ -56,7 +56,7 @@ from tinyassets.untrusted import UNTRUSTED_NOTICE
 JsonArgument = str | dict | list
 
 # The founder + universe this engine turn is bound to. Read once at startup; the
-# daemon writes them into the server subprocess env via _engine_mcp_flags.
+# daemon installs them in each endpoint module; standalone stdio reads its environment.
 _ACTOR_ID = (os.environ.get("TINYASSETS_ENGINE_ACTOR_ID") or "").strip()
 _GRAPH_ID = (os.environ.get("TINYASSETS_ENGINE_GRAPH_ID") or "").strip()
 
@@ -4815,14 +4815,19 @@ async def _universe_tool(op, /, **kwargs) -> str:
                 universe_tools.edit_file: "edit", universe_tools.bash: "bash"}[op]
     if grant is not None and required not in grant:
         return "error: workspace operation not granted to this turn"
-    udir = _universe_dir(_GRAPH_ID)
+    from tinyassets.auth.middleware import _current_identity
+
+    token = _bind_founder_identity(_RUN_CAPABILITIES)
     try:
+        udir = _universe_dir(_GRAPH_ID)
         return await asyncio.to_thread(op, udir, **kwargs)
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
         from tinyassets.engine_tool_activity import note_refusal
 
         note_refusal(str(exc))
         return f"error: {exc}"
+    finally:
+        _current_identity.reset(token)
 
 
 # No output schema: an image comes back as [text, image] content, which a str

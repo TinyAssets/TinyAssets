@@ -69,23 +69,35 @@ def test_compose_injected_credential_requires_engine_reason(name):
         assert result == {}, f"Unclassified credential inherited by engine: {name}"
 
 
-def test_deployment_inventory_reaches_engine_launch(monkeypatch):
-    from tinyassets import engine_mcp_http
+def test_daemon_endpoint_starts_without_exporting_environment(monkeypatch, tmp_path):
+    import os
+    import subprocess
+    from types import SimpleNamespace
 
-    inventory = _deployment_inventory()
-    for name in inventory:
+    from tinyassets import engine_endpoint, engine_mcp_http
+
+    for name in _deployment_inventory():
         monkeypatch.setenv(name, "deployment-placeholder")
-    captured = {}
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    before = dict(os.environ)
+    captured = []
 
-    def capture(argv, **kwargs):
-        captured.update(kwargs["env"])
-        return object()
+    def endpoint(actor, graph, secret, key):
+        captured.append((actor, graph, secret, key))
+        return SimpleNamespace(close=lambda: None)
 
-    monkeypatch.setattr(engine_mcp_http.subprocess, "Popen", capture)
-    assert engine_mcp_http._EngineServer("u", "user:owner", 8790, "/data").start()
-    assert (set(captured) & inventory) <= (_CONFIG.keys() | ENGINE_REQUIRED_SECRET_ENV.keys())
-    assert captured["TINYASSETS_ENGINE_MCP_HTTP_SECRET"]
-    assert captured["TINYASSETS_DATA_DIR"] == "/data"
+    def forbidden(*args, **kwargs):
+        raise AssertionError("engine endpoint spawned a daemon-UID child")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(engine_endpoint, "EngineEndpoint", endpoint)
+    monkeypatch.setattr(engine_mcp_http.threading, "Thread",
+                        lambda **kw: SimpleNamespace(start=lambda: None))
+    server = engine_mcp_http._EngineServer("u", "user:owner", 8790, str(tmp_path))
+    assert server.start()
+    assert captured == [("user:owner", "u", server.secret, server.grant_key)]
+    assert server.secret and server.grant_key
+    assert dict(os.environ) == before
 
 
 def test_catalogued_daemon_credentials_are_in_deployment_inventory():

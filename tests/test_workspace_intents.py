@@ -118,7 +118,7 @@ def test_the_same_sha_already_at_the_ref_reconciles_to_done(universe: Path) -> N
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert [state for _id, state in settled] == ["done"]
     assert open_intents(universe) == []
@@ -131,7 +131,7 @@ def test_a_different_sha_at_the_ref_reconciles_to_failed_and_records_it(
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": True, "observed_sha": OTHER},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert [state for _id, state in settled] == ["failed"]
     assert _states(universe) == [("failed", OTHER)]
@@ -147,7 +147,7 @@ def test_a_transport_failure_leaves_the_intent_claimable(universe: Path) -> None
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": False, "error": "transport"},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert [state for _id, state in settled] == ["sent"]
     assert _states(universe)[0][0] == "sent"
@@ -165,7 +165,7 @@ def test_repeated_transport_failures_back_off_without_losing_the_intent(
         reconcile_push_intents(
             universe,
             execute=lambda request: {"ok": False},
-            credential_ref_for=lambda cid: "vault://http/x",
+            principal_for=lambda intent: "user-1",
         )
         current = open_intents(universe)[0]
         assert current.attempts == expected
@@ -182,7 +182,7 @@ def test_a_successful_ls_remote_with_no_ref_is_a_real_failure(universe: Path) ->
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": True, "observed_sha": ""},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert [state for _id, state in settled] == ["failed"]
     assert open_intents(universe) == []
@@ -195,7 +195,7 @@ def test_reconciliation_uses_the_intents_own_host(universe: Path) -> None:
     reconcile_push_intents(
         universe,
         execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert seen[0]["host"] == "git.example.test"
 
@@ -208,7 +208,7 @@ def test_an_intent_with_no_recorded_host_is_deferred_not_guessed(
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert [state for _id, state in settled] == ["sent"]
     assert seen == [], "no host means no contact at all"
@@ -223,7 +223,7 @@ def test_a_revoked_authority_stops_the_reconciler_before_the_host(
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
         revalidate=lambda intent: False,
     )
     assert [state for _id, state in settled] == ["sent"]
@@ -236,7 +236,7 @@ def test_a_live_authority_lets_the_reconciler_through(universe: Path) -> None:
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
         revalidate=lambda intent: True,
     )
     assert [state for _id, state in settled] == ["done"]
@@ -248,7 +248,7 @@ def test_an_execute_that_raises_leaves_the_intent_claimable(universe: Path) -> N
 
     _record(universe)
     settled = reconcile_push_intents(
-        universe, execute=explode, credential_ref_for=lambda cid: "vault://http/x"
+        universe, execute=explode, principal_for=lambda intent: "user-1"
     )
     assert [state for _id, state in settled] == ["sent"]
     assert open_intents(universe), "a crash is not an answer"
@@ -262,11 +262,16 @@ def test_reconciliation_asks_about_the_intent_s_own_ref_and_repo(
     reconcile_push_intents(
         universe,
         execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert seen[0]["op"] == "ls_remote"
     assert seen[0]["owner_repo"] == "owner/other"
     assert seen[0]["remote_ref"] == "refs/heads/tiny/u/other"
+    # ...and it names the grant it was recorded under, never a credential:
+    # the probe runs in the owner's cell and only the broker holds a token.
+    assert (seen[0]["principal"], seen[0]["grant_id"]) == ("user-1", "grant-git")
+    assert seen[0]["connection_id"] == "conn-git"
+    assert "credential_ref" not in seen[0] and "staging_dir" not in seen[0]
 
 
 def test_nothing_open_asks_the_remote_nothing(universe: Path) -> None:
@@ -291,7 +296,7 @@ def test_several_open_intents_are_all_settled(universe: Path) -> None:
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": True, "observed_sha": SHA},
-        credential_ref_for=lambda cid: "vault://http/x",
+        principal_for=lambda intent: "user-1",
     )
     assert sorted(state for _id, state in settled) == ["done", "failed"]
 

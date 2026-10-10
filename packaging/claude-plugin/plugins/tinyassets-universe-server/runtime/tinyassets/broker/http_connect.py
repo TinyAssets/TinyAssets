@@ -76,7 +76,8 @@ def local_operation(ledger, *, principal, command_center, document):
             actor=principal, uid=command_center, destination=destination,
             connection_id=connection_id, grant_id=grant_id, scheme=scheme,
             credential_ref="vault://http/" + destination, git_host=host,
-            requested_endpoints=policy["endpoints"], http_scopes=tuple(policy["scopes"]))
+            requested_endpoints=policy["endpoints"], http_scopes=tuple(policy["scopes"]),
+            access_mode=access)
         if "error" in plan:
             return plan
         if document["action"] == "prepare":
@@ -128,7 +129,7 @@ def connect_operation(data_root, *, principal, command_center, destination, poli
     validate(document)
     supervisor = get_supervisor(data_root)
     if supervisor is None:
-        raise ProxyRequestError("credential broker is selected but not running")
+        raise ProxyRequestError("the credential broker is not running")
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
                           verify_peer=supervisor.verify_broker, timeout=30)

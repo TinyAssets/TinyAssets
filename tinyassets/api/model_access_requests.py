@@ -116,30 +116,6 @@ def capture_action(uid: str, action: dict) -> dict:
 
 
 def _connection_incarnations(base, owner, uid, membership):
-    from tinyassets.broker.supervisor import broker_selected
-    from tinyassets.providers.definition import get_definition
-    from tinyassets.storage.outbound_connections import ConnectionLedger
-
-    if broker_selected():
-        return _broker_connection_incarnations(base, owner, uid, membership)
-    ledger = ConnectionLedger(base / "outbound.db")
-    captured = {}
-    for provider in membership:
-        if not provider.startswith("api_key_http:"):
-            continue
-        definition = get_definition(uid, provider.removeprefix("api_key_http:"))
-        grant = ledger.get_grant(definition.ref) if definition else None
-        if (definition is None or definition.owner_user_id != owner or grant is None
-                or grant.owner_user_id != owner or grant.universe_id != uid):
-            raise PermissionError("model connection changed")
-        incarnation = ledger.incarnation(grant.connection_id)
-        if not incarnation:
-            raise PermissionError("model connection changed")
-        captured[provider] = incarnation
-    return captured
-
-
-def _broker_connection_incarnations(base, owner, uid, membership):
     from tinyassets.broker.ledger_queries import granted_resource_row
     from tinyassets.providers.definition import get_definition
     from tinyassets.storage.outbound_connections import GrantResolutionError

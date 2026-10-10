@@ -197,7 +197,9 @@ def _soul_lock(universe_dir: Path) -> Iterator[None]:
     target outside this universe.
     """
     universe_dir = Path(universe_dir)
-    universe_dir.mkdir(parents=True, exist_ok=True)
+    from tinyassets.role_center_admission import ensure_center_dir
+
+    ensure_center_dir(universe_dir)
     fd = open_lock_file(universe_dir, SOUL_LOCK_FILENAME)
     try:
         if sys.platform == "win32":

@@ -1,8 +1,8 @@
 /* ta-op — the drop-first operational exec wrapper for the production image.
  *
  * Installed root-owned 0555 at /usr/local/libexec/ta-op, outside /app and
- * /data (Dockerfile chowns /app and /data to uid 1001; a writable directory
- * must never hold a binary that root may one day exec).
+ * /data (uid 1001 owns /data; a writable directory must never hold a binary
+ * that root may one day exec).
  *
  * WHAT IT IS: a CLOSED table of the operational routes this repo already
  * runs through `docker exec`, each reached only after the process identity
@@ -15,8 +15,9 @@
  *
  * Two entry identities, one exit invariant:
  *
- *   getuid()==0     managed-bootstrap entry. Require EXACTLY the five caps
- *                   (SYS_ADMIN, CHOWN, SETUID, SETGID, SETPCAP) permitted,
+ *   getuid()==0     managed-bootstrap entry: the owner-split container (PID1
+ *                   bootstrap, compose user 0). Require EXACTLY its four caps
+ *                   (KILL, SETGID, SETUID, SETPCAP) permitted,
  *                   effective and bounding, with inheritable and ambient
  *                   empty; then run the full retirement — NNP, keepcaps
  *                   clear, ambient clear, whole bounding set dropped,
@@ -24,11 +25,8 @@
  *                   zero — and read every one of them back before any
  *                   runtime target is reached.
  *
- *   getuid()==1001  legacy-rootless entry, which is what production is TODAY
- *                   (`deploy/compose.yml` cap_drop: ALL, no cap_add,
- *                   no-new-privileges=true; read-only production inspection
- *                   2026-09-20 returned Uid/Gid 1001 in all four positions,
- *                   Groups: 1001, all five cap sets 0, NoNewPrivs 1).
+ *   getuid()==1001  rootless entry (`docker exec --user 1001`, or a
+ *                   container started without compose's user 0).
  *                   Nothing is dropped here because nothing is held, so this
  *                   branch is LEGACY-ROOTLESS VERIFICATION and is NOT a
  *                   managed-bootstrap drop receipt. It asserts the identical
@@ -78,8 +76,10 @@
 #ifndef TA_STATUS_PATH
 #define TA_STATUS_PATH "/proc/self/status"
 #endif
-/* CAP_CHOWN(0) CAP_SETGID(6) CAP_SETUID(7) CAP_SYS_ADMIN(21) CAP_SETPCAP(8) */
-#define MASK 0x2001c1ULL
+/* CAP_KILL(5) CAP_SETGID(6) CAP_SETUID(7) CAP_SETPCAP(8): the bootstrap's set.
+ * SYS_ADMIN is never held; the migration's CHOWN/FOWNER/DAC_OVERRIDE live only
+ * in its one-shot container. deploy/role_launcher.py ENTRY_CAPS is the same. */
+#define MASK 0x1e0ULL
 #define REFUSE 78
 
 extern char **environ;
@@ -205,13 +205,13 @@ static void drop_from_root(void) {
          "trusted-binary");
     MUST(status_hex("CapEff") == MASK && status_hex("CapPrm") == MASK &&
          status_hex("CapBnd") == MASK && !status_hex("CapInh") &&
-         !status_hex("CapAmb"), "exact-five-caps");
+         !status_hex("CapAmb"), "exact-bootstrap-caps");
     MUST(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0, "set-nnp");
     MUST(prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0) == 0, "clear-keepcaps");
     MUST(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) == 0, "clear-ambient");
     read_text("/proc/sys/kernel/cap_last_cap", cap_last, sizeof(cap_last));
     int last = atoi(cap_last);
-    MUST(last >= CAP_SYS_ADMIN && last < 128, "cap-bound");
+    MUST(last >= CAP_SETPCAP && last < 128, "cap-bound");
     for (int cap = 0; cap <= last; ++cap)
         MUST(prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) == 0, "drop-bounding");
     MUST(setgroups(0, NULL) == 0, "clear-groups");

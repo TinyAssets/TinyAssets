@@ -123,7 +123,7 @@ def _assert_serves_on_its_own_connection(base):
     assignment = load_provider_assignment(base, universe_id="u-owner")
     assert assignment.state == "ready" and assignment.owner_user_id == "owner"
     assert assignment.candidates, "serving has no model source"
-    ledger = ConnectionLedger(base / "outbound.db")
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base)
     for member in assignment.candidates:
         kind, _, did = member.provider.partition(":")
         assert kind == "api_key_http"

@@ -796,8 +796,6 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("tinyassets.providers.codex_provider.get_sandbox_status",
-                  return_value={"bwrap_available": False, "reason": "test"}),
             fake_owned_spawn(
                 "tinyassets.providers.codex_provider", return_value=mock_proc,
             ) as spawn,
@@ -820,9 +818,8 @@ class TestCodexProvider:
         assert response.model == "provider-default"
 
     @pytest.mark.asyncio
-    async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
-        """BUG-060: loop investigations need repo source/tests, not an empty tempdir."""
-        import tinyassets.providers.codex_provider as codex_provider
+    async def test_runs_in_the_cells_own_empty_workspace(self):
+        """Never the platform checkout: the cell's private scratch directory."""
         from tinyassets.providers.codex_provider import CodexProvider
 
         mock_proc = AsyncMock()
@@ -834,8 +831,6 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("tinyassets.providers.codex_provider.get_sandbox_status",
-                  return_value={"bwrap_available": False, "reason": "test"}),
             fake_owned_spawn(
                 "tinyassets.providers.codex_provider", return_value=mock_proc,
             ) as spawn,
@@ -844,9 +839,7 @@ class TestCodexProvider:
             await provider.complete("prompt", "system", ModelConfig())
 
         captured_cmd = list(spawn.call_args.args)
-        repo_root = Path(codex_provider.__file__).resolve().parents[2]
-        assert "-C" in captured_cmd
-        assert captured_cmd[captured_cmd.index("-C") + 1] == str(repo_root)
+        assert captured_cmd[captured_cmd.index("-C") + 1] == "/tmp/workspace"
 
     @pytest.mark.asyncio
     async def test_model_can_be_overridden_by_env(self, monkeypatch):
@@ -863,8 +856,6 @@ class TestCodexProvider:
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
-            patch("tinyassets.providers.codex_provider.get_sandbox_status",
-                  return_value={"bwrap_available": True, "reason": None}),
             fake_owned_spawn(
                 "tinyassets.providers.codex_provider", return_value=mock_proc,
             ) as spawn,
@@ -874,38 +865,6 @@ class TestCodexProvider:
 
         captured_cmd = list(spawn.call_args.args)
         assert captured_cmd[captured_cmd.index("-m") + 1] == "future-model-2030"
-
-    @pytest.mark.asyncio
-    async def test_uses_workspace_sandbox_when_bwrap_available(self):
-        """Healthy bwrap hosts should keep Codex's sandboxed auto mode."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            patch("tinyassets.providers.codex_provider.get_sandbox_status",
-                  return_value={"bwrap_available": True, "reason": None}),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert ("--sandbox", "workspace-write") in zip(captured_cmd, captured_cmd[1:])
-        assert "--full-auto" not in captured_cmd
-        for name in ("apps", "plugins", "remote_plugin"):
-            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
-        assert "--dangerously-bypass-approvals-and-sandbox" not in captured_cmd
-        assert "--skip-git-repo-check" in captured_cmd
-        assert "--ephemeral" in captured_cmd
 
 
 # =====================================================================

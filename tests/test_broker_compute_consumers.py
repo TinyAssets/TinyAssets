@@ -95,7 +95,7 @@ def test_compute_rechecks_revocation_after_initial_read(compute, monkeypatch):
         return row
 
     monkeypatch.setattr(ledger_queries, "granted_resource_row", revoke)
-    with pytest.raises(ProviderUnavailableError, match="grant resolution failed"):
+    with pytest.raises(ProviderUnavailableError, match="compute broker admission unavailable"):
         compute.provider._complete_sync("hello", "", config(),
                                         universe_dir=compute.root / "cc-alice")
     assert not compute.scopes and not compute.sent
@@ -205,8 +205,6 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
         access_method="api_key_http", protocol="chat_messages", model="fixture",
         ref="grant-a", visibility="private", created_at="2026-10-04T00:00:00Z")
     compute = ApiKeyHttpProvider(definition)
-    monkeypatch.setenv(supervisor.ENV_SWITCH, supervisor.PROCESS)
-    monkeypatch.setattr(supervisor, "get_supervisor", lambda _: None)
     released, abandoned = [], []
     original = provider_assignment.release_served_provider_budget
 
@@ -222,7 +220,9 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
         async def complete(self, prompt, system, config, **kwargs):
             # Real provider authority lookup under the actual router's admitted
             # principal, before any HTTP stream can exist.
-            compute._connection_context(universe, config)
+            with monkeypatch.context() as outage:
+                outage.setattr(supervisor, "get_supervisor", lambda _: None)
+                compute._connection_context(universe, config)
             raise AssertionError("unavailable broker admitted a source")
 
     router = ProviderRouter(providers={"codex": Outage("codex")})

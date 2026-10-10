@@ -25,7 +25,8 @@ from tinyassets.utils.json_parsing import parse_llm_json
 logger = logging.getLogger(__name__)
 
 
-def extract_text(filename: str, data: bytes) -> str:
+def extract_text(filename: str, data: bytes, *, universe_dir: Path | None = None,
+                 describe_frame=None) -> str:
     """Extract text content from a file.
 
     Parameters
@@ -70,7 +71,8 @@ def extract_text(filename: str, data: bytes) -> str:
     if detected.file_type == FileType.VIDEO:
         from tinyassets.ingestion.video_extractor import extract_video_description
 
-        return extract_video_description(filename, data)
+        return extract_video_description(filename, data, universe_dir=universe_dir,
+                                         describe_frame=describe_frame)
 
     # Unknown -- try text decode as last resort
     if detected.file_type == FileType.UNKNOWN:
@@ -100,9 +102,9 @@ def _extract_pdf(data: bytes) -> str:
     of text-like content from raw PDF bytes.
     """
     try:
-        import fitz  # pymupdf
+        from tinyassets.ingestion.pdf_bytes import open_pdf_bytes
 
-        doc = fitz.open(stream=data, filetype="pdf")
+        doc = open_pdf_bytes(data)
         pages = []
         for page in doc:
             pages.append(page.get_text())

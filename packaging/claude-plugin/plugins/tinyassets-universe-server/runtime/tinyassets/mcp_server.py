@@ -214,7 +214,9 @@ def set_premise(text: str) -> str:
     """
     universe_dir = _universe_dir()
     try:
-        universe_dir.mkdir(parents=True, exist_ok=True)
+        from tinyassets.role_center_admission import ensure_center_dir
+
+        ensure_center_dir(universe_dir)
         write_universe_soul(
             universe_dir, purpose=text, lineage="created-from-premise",
         )

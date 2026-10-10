@@ -948,7 +948,15 @@ _AGENT_WORKSPACE_DIR = ".agent-workspace"
 def _walk_home_without_following(home: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     pending = [home]
-    home_device = home.stat().st_dev
+    home_info = home.stat()
+    home_device = home_info.st_dev
+    if 300001 <= home_info.st_gid <= 399999:
+        # An admitted center (D60 label): its owner wrote entries this
+        # operator process can neither move nor remove. Only the daemon's
+        # two-pass deletion (owner-delete cell, then the daemon pass, then the
+        # admission retire) removes it; an offline reset never half-deletes.
+        return ("home is an admitted owner tree; remove it with the daemon's "
+                "two-pass deletion (account deletion), not an offline reset",)
     while pending:
         current = pending.pop()
         try:

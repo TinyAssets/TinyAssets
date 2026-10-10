@@ -71,15 +71,26 @@ def test_is_enabled_false_outside_repo(tmp_path: Path):
     assert git_bridge.is_enabled(repo_path=tmp_path) is False
 
 
-def test_is_enabled_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_is_enabled_is_not_cached_across_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """The probe runs in the owner's git cell, so the answer is per-owner.
+
+    Caching it process-wide would let one owner's refusal (or one repository's
+    absence) disable git for the next owner the daemon serves.
+    """
     _init_repo(tmp_path)
     assert git_bridge.is_enabled(repo_path=tmp_path) is True
-    # Now break git — cached True should still be returned
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-    assert git_bridge.is_enabled(repo_path=tmp_path) is True
-    # Explicit invalidate flips it
-    git_bridge.invalidate_cache()
+    present = {"git": True}
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: real_which(name) if present.get(name, True) else None,
+    )
+    present["git"] = False
     assert git_bridge.is_enabled(repo_path=tmp_path) is False
+    present["git"] = True
+    assert git_bridge.is_enabled(repo_path=tmp_path) is True
 
 
 def test_is_enabled_false_when_git_missing(

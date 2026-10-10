@@ -42,6 +42,18 @@ def _shown(result: ToolImage) -> Image.Image:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize('value', ['/data/bob/private.png', Path('/data/bob/private.png'),
+                                  io.BytesIO(b'not a caller-owned stream')])
+def test_byte_decoder_refuses_paths_and_streams_before_pillow(value, monkeypatch):
+    from tinyassets.image_bytes import open_image_bytes
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('non-byte input reached Pillow')
+    monkeypatch.setattr(Image, 'open', forbidden)
+    with pytest.raises(TypeError, match='encoded bytes'):
+        open_image_bytes(value, formats=['PNG'])
+
+
 def test_a_small_image_is_shown_at_its_size_with_exact_pixels():
     data = _png(64, 32)
     shown = bound_image(data, "art/tile.png")
@@ -340,19 +352,20 @@ def test_an_apng_poster_is_skipped_for_the_first_animation_frame():
     assert red > 240 and green < 16, "the animation's first frame, not the poster"
 
 
-@pytest.mark.skipif(__import__("os").name != "posix", reason="rlimits are POSIX")
-def test_the_decode_runs_in_a_child_whose_memory_limit_bites(monkeypatch):
-    """The daemon never decodes: a child does, under an address-space limit. With
-    the limit shrunk below what a legitimate 4000x4000 decode needs, it is
-    refused -- proving the limit is applied, not just declared."""
-    data = _png(4000, 4000)
-    assert isinstance(bound_image(data, "ok.png"), ToolImage)
-    monkeypatch.setattr(tool_images, "DECODE_MEMORY_BYTES", 200 * 1024 * 1024)
-    # Control: the child starts and decodes a small image under the same limit,
-    # so the refusal below is the decode's memory, not a child that never ran.
-    assert isinstance(bound_image(_png(8, 8), "small.png"), ToolImage)
-    refused = bound_image(data, "big.png")
-    assert isinstance(refused, str) and refused.startswith("error:"), refused
+def test_the_daemon_never_decodes_in_a_child_of_its_own():
+    """The decode happens in the owner's decoder cell and nowhere else.
+
+    The address-space and CPU limits that used to be applied to a daemon-side
+    subprocess are now the cell's, applied by the launcher before any owner
+    bytes are read. What this module must no longer contain is a way to spawn
+    that child itself.
+    """
+    import inspect
+
+    source = inspect.getsource(tool_images)
+    assert "subprocess" not in source
+    assert "_decode_in_child" in source
+    assert "from tinyassets.role_decoder import decode" in source
 
 
 def test_a_version_one_image_row_keeps_the_rule_it_was_written_under():

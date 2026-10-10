@@ -688,7 +688,14 @@ def extract_learning(
     """
     from tinyassets.request_budget import budget_for_context, current_request_budget
 
-    budget = budget_for_context(ctx)
+    owner = None
+    if ctx.provider_request is not None:
+        from tinyassets.provider_assignment import _served_request_agent
+
+        capability, _ = _served_request_agent(
+            ctx.universe_dir.parent, ctx.universe_dir, ctx.provider_request, "writer", "converse")
+        owner = capability.principal_id
+    budget = budget_for_context(ctx, owner=owner)
     if budget is not None:
         logger.info("Skipping learning extraction: automatic metered-free extraction is disabled")
         return {}

@@ -313,6 +313,8 @@ def _run_against(tmp_path, monkeypatch, *, status, body):
         _install_loopback_driver,
         _setup,
     )
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
     from tinyassets.effectors.authenticated_external_call import (
         EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
         run_authenticated_external_call_effector,
@@ -340,11 +342,12 @@ def _run_against(tmp_path, monkeypatch, *, status, body):
                     "body": {"text": "hello"}},
     }
     try:
-        evidence = run_authenticated_external_call_effector(
-            node_id="call", output_keys=["out"],
-            run_state={"out": json.dumps(packet)},
-            base_path=str(universe_dir), run_id="r1",
-        )
+        with identity_context(Identity(user_id="user-1", username="fixture-owner")):
+            evidence = run_authenticated_external_call_effector(
+                node_id="call", output_keys=["out"],
+                run_state={"out": json.dumps(packet)},
+                base_path=str(universe_dir), run_id="r1",
+            )
     finally:
         far_side.stop()
     assert evidence["delivered"] is True, evidence
@@ -424,7 +427,7 @@ def _policy(base, uid, *, destination="acme", actor="alice"):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: actor)
     return ledger.policy_json(conn_id), ledger.get_grant(grant_id)
 
@@ -626,7 +629,7 @@ def test_a_sign_in_connection_is_not_rotated_by_pasting(base):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, _ = _ids(universe_id="u-1", destination="acme")
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
         connection.execute(
@@ -722,7 +725,7 @@ def test_a_grant_bound_to_another_universe_is_refused(base):
     _login("alice")
     _deposit("u-1")
     _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: "alice")
     with ledger._connect() as connection:
         connection.execute(
@@ -743,7 +746,7 @@ def _ledger_connection(base, *, uid, destination, actor="alice", **over):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     conn_id, grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(base / "outbound.db",
+    ledger = ConnectionLedger(base / ".broker" / "outbound.db", data_root=base,
                               verify_authenticated_principal=lambda: actor)
     fields = {
         "connection_id": conn_id,
@@ -906,7 +909,8 @@ def test_a_connection_with_no_live_grant_is_not_rotatable(base):
     _deposit("u-1")
     _conn_id, grant_id = _ids(universe_id="u-1", destination="acme")
     ConnectionLedger(
-        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+        base / ".broker" / "outbound.db", data_root=base,
+        verify_authenticated_principal=lambda: "alice",
     ).revoke_grant(grant_id)
 
     refused = rotate_http(universe_id="u-1", payload=json.dumps({

@@ -971,7 +971,11 @@ def write_graph(
     branch_version_id: str = "",
     scope: str = "",
 ) -> str:
-    """Create or queue TinyAssets graph state.
+    """Create, change, publish, or delete TinyAssets graph state.
+
+    This write tool can overwrite data, delete owned branches or credentials,
+    change visibility, and expose receivers to other users. Some operations read
+    state, but this handle is destructive-capable and not idempotent.
 
     Cross-user structured delivery: target=receiver operation=create takes
     payload_json {branch_def_id,node_id,input_keys,allowed_senders,description}
@@ -1690,9 +1694,9 @@ _mcp_write_graph = _register_structured_tool(
     annotations=ToolAnnotations(
         title="Write Graph",
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=False,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 
@@ -1858,6 +1862,11 @@ def run_graph(
     """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
     inbound triggers that let an external channel run a branch.
 
+    Execution can consume connected compute, modify data, and act on external
+    services through configured branch capabilities. Delivery sends data to
+    another command center. Repeated runs can repeat side effects; cancellation
+    does not undo completed effects.
+
     operation=deliver_output takes inputs_json {link_id,occurrence_id,outputs}
     under your graph_id. Reuse occurrence_id only to retry the same exact send;
     distinct IDs intentionally deliver again. Returns delivery_id, never the
@@ -2012,9 +2021,9 @@ _mcp_run_graph = _register_structured_tool(
     annotations=ToolAnnotations(
         title="Run Graph",
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=False,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 
@@ -2114,6 +2123,10 @@ def write_page(
     scope: str = "",
 ) -> str:
     """Write or patch a commons page, file an issue, or relay private canon.
+
+    Commons writes are shared with other users and can replace existing content.
+    This is a destructive-capable write, even when an invocation previews a
+    patch. Repeated filings can create additional records.
 
     Private canon (a command center's own brain) is written by the command center itself,
     not here: a plain page write/patch that targets a command center returns a
@@ -2305,7 +2318,7 @@ _mcp_write_page = _register_structured_tool(
     annotations=ToolAnnotations(
         title="Write Page",
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=False,
         openWorldHint=True,
     ),
@@ -2979,6 +2992,11 @@ def converse(
 ) -> str:
     """Relay a message to your command center's intelligence and return its reply.
 
+    This is a write and delegated execution, not a read-only chat lookup. It
+    stores the message and can consume connected compute, modify or delete
+    data, or act on external services using the owner's configured capabilities.
+    Repeating a message can repeat those effects.
+
     Your command center has its own personified intelligence (running on the engine
     its founder assigned). This forwards the founder's message to it and returns
     the command center's OWN first-person reply — RENDER that reply verbatim; do NOT
@@ -3482,9 +3500,9 @@ _mcp_converse = _register_structured_tool(
     annotations=ToolAnnotations(
         title="Talk With Your Command Center",
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=False,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 
@@ -4314,12 +4332,13 @@ def main(
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
     if transport == "streamable-http":
-        # The credential broker process (S6), before anything that makes an
-        # outbound call: its engine children reach it through the same socket.
-        # No-op unless TINYASSETS_CREDENTIAL_BROKER=process.
-        from tinyassets.broker.supervisor import start_broker
+        # The PID1 bootstrap adopted the credential broker before retiring;
+        # nothing outbound may run without it, so refuse to serve instead.
+        from tinyassets.broker.supervisor import BrokerUidSplitRequired, get_supervisor
+        from tinyassets.storage import data_dir
 
-        _credential_broker = start_broker()  # noqa: F841
+        if get_supervisor(data_dir()) is None:
+            raise BrokerUidSplitRequired("serve through the PID1 bootstrap")
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
         # tools are available on EVERY served turn after a clean boot — no
