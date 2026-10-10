@@ -2224,8 +2224,9 @@ hook = _load_hook()
 
 
 @pytest.fixture
-def fake_project(tmp_path: Path) -> Path:
+def fake_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A directory shaped enough for the hook: it only needs the script present."""
+    monkeypatch.setattr(hook.subprocess, "Popen", lambda *a, **kw: None)
     project = tmp_path / "p"
     (project / "scripts").mkdir(parents=True)
     (project / "scripts" / "dev_hygiene.py").write_text("# stub\n", encoding="utf-8")
@@ -2261,8 +2262,8 @@ def test_hook_injects_the_escalation_when_the_pass_escalates(
     assert "C:/x" in injected["additionalContext"], "the founder needs the concrete list"
     (command,) = calls
     assert "--apply" in command
-    assert "basetemp,scratch,docker,worktree,toolcache" in command
-    assert "--keep-worktrees" in command
+    assert "basetemp,scratch" in command
+    assert hook.HOOK_TIMEOUT == 45
     assert "--escalate-below" in command
 
 
@@ -2561,3 +2562,69 @@ def test_timeout_bounded_hook_defers_worktree_removal(monkeypatch):
     assert lines == []
     assert not item.removable
     assert item.reason == "worktree_removal_deferred"
+
+
+def test_background_lock_excludes_other_process_and_recovers(tmp_path):
+    path = tmp_path / "worker.lock"
+    code = (
+        "import sys; sys.path.insert(0, 'scripts'); import dev_hygiene as d; "
+        "f=open(sys.argv[1], 'a+b'); sys.exit(0 if d.acquire_background_lock(f) else 7)"
+    )
+    with path.open("a+b") as lock:
+        assert dh.acquire_background_lock(lock)
+        assert subprocess.run([sys.executable, "-c", code, str(path)], cwd=_REPO).returncode == 7
+    assert subprocess.run([sys.executable, "-c", code, str(path)], cwd=_REPO).returncode == 0
+
+
+def test_hook_detaches_with_permission_prefix(monkeypatch, fake_project):
+    _run_hook(monkeypatch, {"hook_event_name": "SessionStart", "cwd": str(fake_project)}, rc=0)
+    launches = []
+    monkeypatch.setattr(hook.subprocess, "Popen", lambda cmd, **kw: launches.append((cmd, kw)))
+    assert hook.main() == 0
+    command, options = launches[0]
+    assert command[:4] == ["python", "scripts/dev_hygiene.py", "--docker", "--session-background"]
+    assert options["stdin"] == subprocess.DEVNULL
+    assert options["stdout"] is options["stderr"]
+    assert options["close_fds"]
+    assert options.get("start_new_session") or options.get("creationflags")
+
+
+def test_expired_scan_budget_never_admits_partial_tree(tmp_path):
+    (tmp_path / "test_data0").mkdir()
+    (tmp_path / "test_data0" / "data").write_text("keep")
+    with pytest.raises(dh.Undecidable, match="budget"):
+        dh.tree_stats(tmp_path, deadline=time.monotonic() - 1)
+    items = dh.collect_basetemps(tmp_path, min_age_hours=6, now=time.time(), deadline=0)
+    assert items and all(not item.removable for item in items)
+
+
+def test_background_pass_saves_summary_for_next_hook(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(dh, "git_ok", lambda *a, **kw: str(tmp_path / ".git"))
+    classes = []
+
+    def inventory(**kwargs):
+        classes.append(kwargs["classes"])
+        return []
+
+    monkeypatch.setattr(dh, "inventory", inventory)
+    monkeypatch.setattr(dh, "free_gb", lambda p: 1)
+    monkeypatch.setattr(dh, "docker_desktop_notice", lambda p: [])
+    summary = tmp_path / ".claude/logs/dev-hygiene-background.json"
+    assert (
+        dh.main(
+            [
+                "--docker",
+                "--session-background",
+                "--repo",
+                str(tmp_path),
+                "--escalate-below",
+                "40",
+                "--summary-out",
+                str(summary),
+            ]
+        )
+        == 3
+    )
+    assert classes == [("docker", "worktree", "toolcache")]
+    assert "ESCALATION" in hook._full_pass_escalation(tmp_path, "background")

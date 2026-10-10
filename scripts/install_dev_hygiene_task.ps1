@@ -4,7 +4,7 @@ Register (or remove) the hourly Windows Task Scheduler job that runs the full
 dev-box hygiene pass.
 
 .DESCRIPTION
-The SessionStart hook (.claude/hooks/dev_hygiene_hook.py) inventories all classes.
+The SessionStart hook runs cheap classes and detaches Docker/worktree/toolcache.
 This hourly task also covers long-running lanes when no new session starts.
 
 What the task runs, hourly:

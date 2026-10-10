@@ -70,13 +70,20 @@ Exit codes
 
 What runs it, without anyone asking
 -----------------------------------
-``.claude/hooks/dev_hygiene_hook.py`` (SessionStart) inventories all five classes,
-cleans disposable resources except worktrees (the scheduled/manual full pass
-owns their removal), and injects an escalation when free space is under
-``TINYASSETS_DEV_HYGIENE_FLOOR_GB`` (40 GB by default). The hourly unelevated
-``TinyAssets-DevHygiene`` scheduled task also runs the full pass under disk
-pressure. The hook surfaces that task's recent escalation too. Neither can fail
-a session; ``TINYASSETS_DEV_HYGIENE_DISABLE`` no-ops the hook.
+``.claude/hooks/dev_hygiene_hook.py`` runs basetemp/scratch in the foreground
+and launches ``python scripts/dev_hygiene.py --docker --session-background``
+with apply, escalation and summary flags. The detached pass includes worktree
+and toolcache; a kernel lock in the shared git directory excludes parallel
+sessions and releases automatically on exit/crash. The hourly unelevated
+``TinyAssets-DevHygiene`` task still runs the full pass under disk pressure.
+The hook reads recent saved summaries; ``TINYASSETS_DEV_HYGIENE_DISABLE``
+no-ops the hook.
+
+Unattended permissions (local user configuration, not broad Docker access):
+Claude Code .claude/settings.local.json permissions.allow entry:
+    "Bash(python scripts/dev_hygiene.py --docker:*)"
+Codex user .rules entry:
+    prefix_rule(pattern=["python", "scripts/dev_hygiene.py", "--docker"], decision="allow")
 
 The two things it will NOT resolve alone (exit 3 names them)
 -----------------------------------------------------------
@@ -377,7 +384,9 @@ def is_link(info: os.stat_result) -> bool:
     return stat_mod.S_ISLNK(info.st_mode) or is_reparse_point(info)
 
 
-def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
+def tree_stats(
+    root: Path, budget: int = MAX_TREE_ENTRIES, *, deadline: float | None = None
+) -> tuple[int, float]:
     """Return ``(total_bytes, newest_mtime)`` for a directory tree.
 
     Raises ``Undecidable`` when the tree exceeds ``budget`` entries or cannot be
@@ -419,6 +428,8 @@ def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
         try:
             with os.scandir(current) as entries:
                 for entry in entries:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise Undecidable("inventory time budget exhausted")
                     seen += 1
                     if seen > budget:
                         raise Undecidable(f"{root} exceeds {budget} entries")
@@ -536,10 +547,12 @@ def _is_pytest_artifact(entry: os.DirEntry) -> bool:
     return name.endswith("-current")
 
 
-def suite_test_names(repo: Path) -> frozenset[str]:
+def suite_test_names(repo: Path, *, deadline: float | None = None) -> frozenset[str]:
     """Every ``def test_*`` name in ``repo/tests``: what this suite's tmp dirs are called."""
     names: set[str] = set()
     for path in (repo / "tests").rglob("*.py"):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         try:
             names.update(_TEST_DEF.findall(path.read_text(encoding="utf-8", errors="replace")))
         except OSError:
@@ -622,6 +635,7 @@ def collect_basetemps(
     now: float,
     prefixes: tuple[str, ...] = BASETEMP_PREFIXES,
     unprefixed_sessions: frozenset[str] | None = None,
+    deadline: float | None = None,
 ) -> list[Item]:
     """Inventory one temp root. ``prefixes`` is narrower for a drive root.
 
@@ -642,6 +656,9 @@ def collect_basetemps(
         return [Item("basetemp", str(temp_root), 0, "KEEP", "temp_root_unreadable", str(exc))]
 
     for child in children:
+        if deadline is not None and time.monotonic() >= deadline:
+            items.append(Item("basetemp", str(temp_root), 0, "KEEP", "inventory_budget_exhausted"))
+            break
         name = child.name
         session = False
         if not any(name.startswith(p) for p in prefixes):
@@ -680,7 +697,7 @@ def collect_basetemps(
             # Sized anyway: an unrecognized directory is exactly what the founder
             # has to make a call on, and a concrete escalation needs its size.
             try:
-                size, _ = tree_stats(child)
+                size, _ = tree_stats(child, deadline=deadline)
             except Undecidable:
                 size = 0
             items.append(
@@ -698,7 +715,7 @@ def collect_basetemps(
             items.append(Item("basetemp", str(child), 0, "KEEP", "contains_cwd"))
             continue
         try:
-            size, newest = tree_stats(child)
+            size, newest = tree_stats(child, deadline=deadline)
         except Undecidable as exc:
             items.append(keep_for("basetemp", child, exc))
             continue
@@ -2202,13 +2219,18 @@ def parse_docker_size(text: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def collect_repo_scratch(repo: Path, *, min_age_days: float, now: float) -> list[Item]:
+def collect_repo_scratch(
+    repo: Path, *, min_age_days: float, now: float, deadline: float | None = None
+) -> list[Item]:
     items: list[Item] = []
     try:
         children = sorted(repo.iterdir())
     except OSError as exc:
         return [Item("scratch", str(repo), 0, "KEEP", "repo_unreadable", str(exc))]
     for child in children:
+        if deadline is not None and time.monotonic() >= deadline:
+            items.append(Item("scratch", str(repo), 0, "KEEP", "inventory_budget_exhausted"))
+            break
         name = child.name
         if name not in SCRATCH_NAMES and not any(fnmatch.fnmatch(name, g) for g in SCRATCH_GLOBS):
             continue
@@ -2222,7 +2244,7 @@ def collect_repo_scratch(repo: Path, *, min_age_days: float, now: float) -> list
             continue
         try:
             size, newest = (
-                tree_stats(child)
+                tree_stats(child, deadline=deadline)
                 if child.is_dir()
                 else (child.stat().st_size, child.stat().st_mtime)
             )
@@ -2623,6 +2645,7 @@ def write_summary(path: Path, report: Report, *, escalation: str, classes: tuple
         "removed_count": len(removed) if report.applied else 0,
         "reclaimable_bytes": report.reclaimable_bytes,
         "escalation": escalation,
+        "notes": report.notes,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2691,14 +2714,19 @@ def inventory(
             temp_root,
             min_age_hours=min_age_hours,
             now=now,
-            unprefixed_sessions=suite_test_names(repo),
+            unprefixed_sessions=suite_test_names(repo, deadline=deadline),
+            deadline=deadline,
         )
         for root in extra_temp_roots:
             items += collect_basetemps(
-                root, min_age_hours=min_age_hours, now=now, prefixes=DRIVE_ROOT_PREFIXES
+                root,
+                min_age_hours=min_age_hours,
+                now=now,
+                prefixes=DRIVE_ROOT_PREFIXES,
+                deadline=deadline,
             )
     if "scratch" in classes:
-        items += collect_repo_scratch(repo, min_age_days=min_age_days, now=now)
+        items += collect_repo_scratch(repo, min_age_days=min_age_days, now=now, deadline=deadline)
     if "worktree" in classes:
         items += collect_worktrees(
             repo, now=now, idle_hours=idle_hours, deadline=deadline, preserve=preserve
@@ -2722,6 +2750,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="dev_hygiene.py",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--session-background",
+        action="store_true",
+        help="with --docker, run Docker/worktree/toolcache under the shared session lock",
     )
     parser.add_argument("--docker", action="store_true", help="run only Docker hygiene")
     parser.add_argument(
@@ -2835,10 +2868,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def acquire_background_lock(lock) -> bool:
+    """Nonblocking OS lock, shared across worktrees and released on process death."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     repo = Path(args.repo).resolve() if args.repo else Path(__file__).resolve().parent.parent
+    if args.session_background:
+        if not args.docker:
+            raise SystemExit("--session-background requires --docker")
+        common = Path(
+            git_ok(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).strip()
+        )
+        # Keep the file: unlinking it would let a newcomer lock a different inode.
+        with (common / "dev-hygiene-background.lock").open("a+b") as lock:
+            if not acquire_background_lock(lock):
+                return 0
+            forwarded = list(sys.argv[1:] if argv is None else argv)
+            forwarded.remove("--session-background")
+            forwarded.remove("--docker")
+            return main([*forwarded, "--classes", "docker,worktree,toolcache"])
+
     if not (repo / ".git").exists():
         print(f"[dev-hygiene] not a git repository: {repo}", file=sys.stderr)
         return 2
