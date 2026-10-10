@@ -544,12 +544,31 @@ def leg_provider_turns():
     from tinyassets.agent_definition import agent_definition
 
     requests = []
+    engine_requests = []
+    prompt = ('Persona and conversation history: preserve the owner context.\n' * 1024
+              + 'Say hello. END-OF-LARGE-PROMPT')
     answer = 'ORACLE streamed response'
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if self.path == '/mcp':
+                engine_requests.append(body['method'])
+                if 'id' not in body:
+                    self.send_response(202)
+                    self.end_headers()
+                    return
+                result = (dict(protocolVersion='2024-11-05', capabilities={'tools': {}},
+                               serverInfo=dict(name='oracle', version='1'))
+                          if body['method'] == 'initialize' else {'tools': []})
+                payload = json.dumps(dict(jsonrpc='2.0', id=body['id'], result=result)).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             requests.append((self.path, body))
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
@@ -608,6 +627,8 @@ def leg_provider_turns():
             raise universe_egress.EgressRefused('oracle permits only its fixture endpoint')
         return ['127.0.0.1']
     universe_egress._checked_addresses = fixture_addresses
+    original_route = universe_egress._route_port
+    universe_egress._route_port = lambda actor_id, graph_id: port
     principal = 'bob'
     center = center_of(principal)
     results = {}
@@ -618,12 +639,21 @@ def leg_provider_turns():
             key = 'sk-oracle-fixture-only'
             for name, value in [('stream-key', key), ('stream-url', base)]:
                 _write_exclusive_snapshot_file(snapshot / name, value.encode())
+            from tinyassets.universe_intelligence import (
+                _ENGINE_MCP_ALLOWED, _ENGINE_DISALLOWED_TOOLS_WITH_MCP)
+            mcp = snapshot / 'engine-mcp.json'
+            _write_exclusive_snapshot_file(mcp, json.dumps({'mcpServers': {'tinyassets': {
+                'type': 'http', 'url': f'http://127.0.0.1:{port}/mcp'}}}).encode())
             commands = {
                 'claude': ([CLAUDE, '-p', '--model', 'claude-sonnet-4-5',
                     '--output-format', 'stream-json', '--verbose',
-                    '--include-partial-messages', '--max-turns', '1'],
+                    '--include-partial-messages', '--max-turns', '1',
+                    '--tools', '', '--setting-sources', '', '--permission-mode', 'default',
+                    '--allowedTools', *_ENGINE_MCP_ALLOWED,
+                    '--disallowedTools', *_ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+                    '--mcp-config', str(mcp), '--strict-mcp-config'],
                     dict(ANTHROPIC_API_KEY=key, ANTHROPIC_BASE_URL=base,
-                         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')),
+                         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', ENABLE_TOOL_SEARCH='false')),
                 'codex': (['/usr/local/bin/codex', 'exec', '--skip-git-repo-check',
                     '--json', '--sandbox', 'read-only', '-m', 'gpt-5',
                     '-c', 'model_provider="oracle"',
@@ -633,15 +663,12 @@ def leg_provider_turns():
                     '-c', 'model_providers.oracle.env_key="OPENAI_API_KEY"', '-'],
                     dict(OPENAI_API_KEY=key, CODEX_HOME=str(snapshot))),
             }
-            # Equivalent CLI spellings keep the fixture's extra endpoint config
-            # inside the cell's unchanged argument-count bound.
             flags = app.SERVED_LAUNCH_ARGS
-            compact = [flags[0], *(('--config' if flags[i] == '-c' else flags[i])
-                + '=' + flags[i + 1] for i in range(1, len(flags), 2))]
             commands['codex-app-server'] = ([commands['codex'][0][0],
-                *compact, *commands['codex'][0][8:-1]], commands['codex'][1])
+                *flags, *commands['codex'][0][8:-1]], commands['codex'][1])
             for name, (argv, env) in commands.items():
-                with provider_launch_scope(DATA / center, credential_dir=snapshot):
+                with provider_launch_scope(DATA / center, credential_dir=snapshot,
+                                           engine_route=(principal, center)):
                     proc = await aspawn_owned(argv, env=env,
                         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE, limit=4 * 1024 * 1024)
@@ -649,7 +676,7 @@ def leg_provider_turns():
                     async with asyncio.timeout(120):
                         if name == 'claude':
                             result = await ClaudeProvider()._read_stream(
-                                proc, 'Say hello', ModelConfig(init_timeout_s=60,
+                                proc, prompt, ModelConfig(init_timeout_s=60,
                                     first_progress_s=60, idle_timeout_s=60))
                             assert answer in result.text, result
                         elif name == 'codex-app-server':
@@ -661,7 +688,7 @@ def leg_provider_turns():
                                 outcome = await turn.run(thread=('thread/start',
                                     app.thread_start_params(agent_definition((), 'Say hello'),
                                         model='gpt-5', cwd='/tmp/workspace', ephemeral=True)),
-                                    input_text='Say hello', effort=None)
+                                    input_text=prompt, effort=None)
                                 assert outcome.status == 'completed', outcome
                                 assert answer in outcome.messages[-1], outcome
                                 assert outcome.usage_seen, outcome
@@ -673,7 +700,7 @@ def leg_provider_turns():
                                     print('APP SERVER STDERR',
                                           error.decode(errors='replace')[-3000:])
                         else:
-                            out, err = await proc.communicate(b'Say hello')
+                            out, err = await proc.communicate(prompt.encode())
                             assert proc.returncode == 0 and answer.encode() in out, (
                                 proc.returncode, out[-3000:], err[-3000:])
                     results[name] = dict(streamed=True, exit=proc.returncode)
@@ -696,11 +723,17 @@ def leg_provider_turns():
         asyncio.run(run())
         assert any('/messages' in path for path, _ in requests), requests
         assert any('/responses' in path for path, _ in requests), requests
-        return dict(results=results, requests=[path for path, _ in requests])
+        assert 'initialize' in engine_requests and 'tools/list' in engine_requests, engine_requests
+        for marker in ('/messages', '/responses'):
+            assert any(marker in path and 'END-OF-LARGE-PROMPT' in json.dumps(body)
+                       for path, body in requests), marker
+        return dict(results=results, prompt_bytes=len(prompt.encode()),
+                    engine_requests=engine_requests, requests=[path for path, _ in requests])
     finally:
         stop.set()
         churn_worker.join(10)
         universe_egress._checked_addresses = original
+        universe_egress._route_port = original_route
         server.shutdown()
         server.server_close()
         worker.join(5)

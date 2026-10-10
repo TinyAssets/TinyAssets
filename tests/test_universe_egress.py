@@ -23,6 +23,51 @@ posix_only = pytest.mark.skipif(
 )
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_cell_forwarder_drains_reply_after_directional_eof(reverse):
+    """Run the shipped pump, with real sockets and a reply larger than one recv."""
+    import ast
+
+    definition = next(node for node in ast.parse(egress.FORWARDER).body
+                      if isinstance(node, ast.FunctionDef) and node.name == 'pump')
+    namespace = {'socket': socket}
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), '<forwarder>', 'exec'), namespace)
+    client, left = socket.socketpair()
+    right, server = socket.socketpair()
+    if reverse:
+        client, server = server, client
+    pumps = [threading.Thread(target=namespace['pump'], args=args, daemon=True)
+             for args in ((left, right), (right, left))]
+    payload = b'response after EOF\n' * 8192
+    try:
+        client.settimeout(5)
+        server.settimeout(5)
+        for pump in pumps:
+            pump.start()
+        client.sendall(b'request')
+        client.shutdown(socket.SHUT_WR)
+        assert server.recv(7) == b'request'
+        assert server.recv(1) == b''
+        writer = threading.Thread(target=server.sendall, args=(payload,), daemon=True)
+        writer.start()
+        received = bytearray()
+        while len(received) < len(payload):
+            part = client.recv(65536)
+            assert part, 'reply truncated by request EOF'
+            received.extend(part)
+        writer.join(5)
+        assert not writer.is_alive()
+        server.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b''
+        assert received == payload
+        for pump in pumps:
+            pump.join(5)
+            assert not pump.is_alive()
+    finally:
+        for stream in (client, left, right, server):
+            stream.close()
+
+
 # --- parsing --------------------------------------------------------------------
 
 

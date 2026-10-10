@@ -6,6 +6,31 @@
 
 Role-based LLM fallback chains terminating at the local model, running on user-brought compute of any allowed access method (subscription CLI, API-key HTTP, or another published standard) — never platform-supplied — with pinning, per-universe preference and privacy allowlists, auth-health quarantine, per-node policy overrides, a parallel judge ensemble, and open user-defined provider definitions that can also serve converse/writer turns.
 ## Requirements
+
+### Requirement: Served cell launch arguments and directional EOF
+
+Provider execution cells SHALL accept empty argument values (including native
+tool/settings disabling flags) and at most 128 arguments within the existing
+64 KiB serialized launch envelope. Discovery retains its 32 nonempty argument
+bound. Executable admission, NUL rejection, environment filtering, owner
+isolation and process/resource limits SHALL remain enforced.
+
+The in-cell network forwarder SHALL propagate a clean read EOF with
+`shutdown(SHUT_WR)` to its destination and drain the opposite direction before
+closing the connection. Transport errors may abort both directions.
+
+#### Scenario: A realistic served turn survives stdin EOF
+- **GIVEN** the shipped Claude or Codex CLI in an owner execution cell with the
+  engine relay mounted and a prompt exceeding 60 KiB
+- **WHEN** the daemon finishes sending stdin
+- **THEN** the complete streamed model response remains readable
+- **AND** served Claude's empty tool/settings arguments and full tool policy,
+  and Codex's unmodified app-server launch arguments, are admitted
+
+#### Scenario: Network request half-close preserves the reply
+- **WHEN** either end of the in-cell forwarder half-closes its writing direction
+- **THEN** the other end observes EOF and can still return a multi-buffer reply
+- **AND** the relay closes only after both directions finish
 ### Requirement: Every role chain terminates at the local model
 The provider router (`tinyassets/providers/router.py`) SHALL define a fallback chain for each LLM role (`writer`, `judge`, `extract`, `embed`) that ends at the `ollama-local` provider, so a call keeps producing output with zero cloud providers reachable. Roles with no explicit chain SHALL default to the `writer` chain. The system SHALL only stop for provider unavailability when the local model itself is also unavailable.
 

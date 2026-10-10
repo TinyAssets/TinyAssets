@@ -68,6 +68,38 @@ def test_cell_reads_exactly_one_config_line_and_leaves_cli_bytes(monkeypatch):
         os.close(write)
 
 
+def test_execution_admits_served_policy_arguments_without_relaxing_discovery(monkeypatch):
+    from tinyassets.providers.codex_launch_contract import SERVED_LAUNCH_ARGS
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+        _ENGINE_MCP_ALLOWED,
+    )
+
+    monkeypatch.setattr(role_provider_cell, 'shipped_executable', lambda path: bool(path))
+    commands = [
+        ['/usr/local/bin/claude', '-p', '--tools', '', '--setting-sources', '',
+         '--allowedTools', *_ENGINE_MCP_ALLOWED,
+         '--disallowedTools', *_ENGINE_DISALLOWED_TOOLS_WITH_MCP],
+        ['/usr/local/bin/codex', *SERVED_LAUNCH_ARGS],
+    ]
+    for argv in commands:
+        raw = json.dumps(dict(argv=argv, env={}))
+        assert role_provider_cell.validate(raw, '/data', execution=True)[0] == argv
+        with pytest.raises(ValueError, match='invalid provider config'):
+            role_provider_cell.validate(raw, '/data')
+
+
+@pytest.mark.parametrize('argv', [
+    ['', '-p'], ['/usr/local/bin/cli', '\0'],
+    ['/usr/local/bin/cli', 'x' * (64 * 1024 + 1)],
+    ['/usr/local/bin/cli'] + [''] * 128,
+])
+def test_execution_still_refuses_invalid_or_unbounded_arguments(monkeypatch, argv):
+    monkeypatch.setattr(role_provider_cell, 'shipped_executable', lambda path: True)
+    with pytest.raises(ValueError):
+        role_provider_cell.validate(json.dumps(dict(argv=argv, env={})), '/data', execution=True)
+
+
 @pytest.mark.parametrize('config', [
     {'argv': ['/usr/bin/sh', '-c', 'id'], 'env': {}},
     {'argv': ['/opt/codex-install/bin/codex', '/data/bob'], 'env': {}},

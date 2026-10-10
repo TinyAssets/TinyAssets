@@ -13,6 +13,9 @@ import stat
 
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_ARGS = 32
+# Served tool policies have more arguments than discovery commands. The whole
+# launch still fits MAX_CONFIG_BYTES; this is not a process/resource limit.
+MAX_EXEC_ARGS = 128
 MAX_ENV = 128
 # Shipped CLI install trees and their root-owned image wrappers; no provider
 # is named here, the image layout alone decides what a cell may exec.
@@ -125,8 +128,8 @@ def validate(raw, data_root, *, execution=False):
     if engine_port is not None and (not execution or type(engine_port) is not int
                                     or not 1024 <= engine_port <= 65535 or engine_port == 3128):
         raise ValueError('invalid provider engine port')
-    if (type(argv) is not list or not 1 <= len(argv) <= MAX_ARGS
-            or any(type(item) is not str or not 0 < len(item) <= (
+    if (type(argv) is not list or not 1 <= len(argv) <= (MAX_EXEC_ARGS if execution else MAX_ARGS)
+            or any(type(item) is not str or not (0 if execution else 1) <= len(item) <= (
                 MAX_CONFIG_BYTES if execution else 4096) or '\0' in item
                    for item in argv)
             or type(env) is not dict or len(env) > MAX_ENV
@@ -137,7 +140,7 @@ def validate(raw, data_root, *, execution=False):
     # No host data path survives into the cell; the snapshot is pre-rewritten.
     if any(data_root in item for item in (*argv, *env.values())):
         raise ValueError('provider config names a host data path')
-    if not shipped_executable(argv[0]):
+    if not argv[0] or not shipped_executable(argv[0]):
         raise ValueError('provider executable is outside the shipped install trees')
     return argv, {**safe_environment(env, file_values(SNAPSHOT)), **FIXED_ENV}, engine_port
 
