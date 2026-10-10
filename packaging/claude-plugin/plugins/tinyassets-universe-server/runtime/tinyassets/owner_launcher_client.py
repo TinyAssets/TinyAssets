@@ -178,7 +178,7 @@ class OwnerCell:
         from tinyassets.cell_diagnostics import failure_reason
 
         try:
-            code = self.wait(5)
+            code = self._result if self._result is not None else self.wait(5)
         except (OSError, RuntimeError):
             try:
                 code = self.cancel()
@@ -192,7 +192,7 @@ class OwnerCell:
 
     def __exit__(self, exc_type, exc, trace):
         error = None
-        if isinstance(exc, (OSError, ValueError, RuntimeError, KeyError, TypeError)):
+        if isinstance(exc, Exception):
             error = OwnerLaunchRefused(self.failure(exc))
         try:
             self.close()

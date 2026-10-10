@@ -51,7 +51,7 @@ def _tool_cell(client, **kwargs):
         # Forced budget polling can run a nested maintenance cell. Its error
         # already carries that cell's reason; the outer jail is awaiting us.
         raise
-    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+    except Exception as exc:
         raise tools.UniverseToolError(cell.failure(exc)) from None
     finally:
         pending = sys.exc_info()[1]

@@ -34,7 +34,8 @@ def test_cell_diagnostics_never_echo_exception_material():
 
 @pytest.mark.parametrize('kind', ['owner-content', 'owner-measure', 'tool-jail', 'image-decoder'])
 @pytest.mark.parametrize('code', [0, 1, -9])
-def test_nonframe_failure_reports_kind_exit_and_bounded_tail(kind, code, caplog):
+@pytest.mark.parametrize('payload', [b'private malformed stdout', b'{"cell": []}\n'])
+def test_nonframe_failure_reports_kind_exit_and_bounded_tail(kind, code, payload, caplog):
     import io
 
     from tinyassets.broker.owner_identities import OwnerIdentity
@@ -50,12 +51,34 @@ def test_nonframe_failure_reports_kind_exit_and_bounded_tail(kind, code, caplog)
                      OwnerIdentity(300001, 300001), kind=kind)
     with peer, mapper, pytest.raises(OwnerLaunchRefused) as caught:
         with cell:
-            _read(io.BytesIO(b'private malformed stdout'), 64)
+            _read(io.BytesIO(payload), 64)['cell'].get('uid')
     for message in (str(caught.value), caplog.text):
         assert f'kind={kind} exit={code}' in message
         assert repr(tail) in message
         assert 'private malformed stdout' not in message
     assert cell._closed
+    assert f'exit={code}' in cell.failure(AttributeError('invalid proof shape'))
+
+
+def test_browser_nonframe_failure_uses_its_cell_completion(caplog):
+    import io
+
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.browser_sessions import Cell
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    stream, peer = socket.socketpair()
+    status, mapper = socket.socketpair()
+    reply = dict(op='SPAWN_DONE', returncode=1, uid=300001, gid=300001,
+                 stderr_tail='browser child failed')
+    browser = object.__new__(Cell)
+    browser.job = OwnerCell(SimpleNamespace(_reply=lambda **kwargs: reply), stream, status,
+                            OwnerIdentity(300001, 300001), kind='browser')
+    browser.stream = io.BytesIO(b'{invalid json}\n')
+    with peer, mapper, pytest.raises(RuntimeError, match='kind=browser exit=1') as caught:
+        browser.read()
+    assert 'browser child failed' in str(caught.value) and 'browser child failed' in caplog.text
+    assert browser.job._closed
 
 
 def test_mapper_preserves_only_the_stderr_tail(capfd):
