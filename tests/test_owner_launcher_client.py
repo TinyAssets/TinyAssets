@@ -3,6 +3,7 @@ import array
 import os
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,3 +81,83 @@ def test_cell_concurrency_refuses_before_fork_or_descriptor_use(machines):
     with pytest.raises(ValueError, match='concurrency is exhausted'):
         launcher._decoder(dict(op='START', kind='image-decoder', principal='alice',
                                command_center='alice', mime='image/png'), [-1, -1])
+
+
+def test_completed_cell_revoke_is_idempotent_but_fork_copy_still_refuses(monkeypatch):
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+    from tinyassets.providers.owned_process import OwnerCellProcess, disk_stop_note
+
+    reply = dict(op='SPAWN_DONE', returncode=-9, uid=300001, gid=300001,
+                 stop_reason='rss_limit: bytes=536875008 limit=536870912')
+    client = SimpleNamespace(_reply=lambda **kwargs: reply)
+    stream, peer = socket.socketpair()
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with peer, mapper:
+        cell = OwnerCell(client, stream, status, OwnerIdentity(300001, 300001))
+        process = OwnerCellProcess(cell, None, SimpleNamespace(transport=None))
+        assert cell.wait() == -9
+        cell.close()
+        cell.revoke()
+        cell.revoke()
+        assert 'rss_limit' in disk_stop_note(process)
+        monkeypatch.setattr(cell, '_pid', -1)
+        with pytest.raises(RuntimeError, match='unavailable'):
+            cell.revoke()
+
+
+@pytest.mark.parametrize('usage,reason', [
+    ((69, 0), 'process_limit'), ((1, 536870913), 'rss_limit'),
+    (PermissionError(13, 'private path must not be returned'), 'usage_unavailable'),
+])
+def test_mapper_resource_kills_have_authenticated_completion_reason(monkeypatch, usage, reason):
+    import runpy
+
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    scope = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                              / 'deploy/role_owner_launcher.py'))
+    launcher = object.__new__(scope['OwnerLauncher'])
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    stream, peer = socket.socketpair()
+    reader, writer = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(writer)
+        os.read(reader, 1)  # Block until the real mapper's SIGKILL.
+        os._exit(0)
+    os.close(reader)
+    def measure(pid):
+        assert pid == child
+        if isinstance(usage, Exception):
+            raise usage
+        return usage
+    monkeypatch.setitem(launcher._service_jobs.__globals__, 'package_usage', measure)
+    monkeypatch.setitem(launcher._service_jobs.__globals__, 'assert_mapper', lambda launch: None)
+    launcher.jobs = {child: (1, 300001, float('inf'), mapper)}
+    launcher.package_jobs = {child}
+    launcher.launch = None
+    try:
+        launcher._service_jobs()
+        import json
+        reply = json.loads(status.recv(4096))
+        assert reply['returncode'] == -9 and reply['stop_reason'].startswith(reason)
+        assert 'private path' not in reply['stop_reason']
+        cell = OwnerCell(SimpleNamespace(_reply=lambda **kwargs: reply), stream, status,
+                         OwnerIdentity(300001, 300001))
+        assert cell.wait() == -9
+        assert cell.stop_reason == reply['stop_reason']
+        cell.close()
+        cell.revoke()
+        assert not launcher.jobs and not launcher.package_jobs
+    finally:
+        os.close(writer)
+        stream.close()
+        peer.close()
+        status.close()
+        mapper.close()
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            pass

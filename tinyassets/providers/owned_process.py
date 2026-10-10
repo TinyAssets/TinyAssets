@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import signal
 import subprocess
 import sys
 
@@ -67,8 +68,17 @@ async def aspawn_owned(
 
 
 def disk_stop_note(proc) -> str:
-    """Always empty: a cell writes only its own bounded tmpfs, never the center."""
-    del proc
+    """Authenticated cell stop diagnostics, shared by every CLI adapter."""
+    if isinstance(proc, OwnerCellProcess):
+        reason = getattr(proc.cell, 'stop_reason', None)
+        if reason:
+            return f' (owner cell: {reason})'
+        if proc.returncode is not None and proc.returncode < 0:
+            try:
+                name = signal.Signals(-proc.returncode).name
+            except ValueError:
+                name = str(-proc.returncode)
+            return f' (owner cell: signal {name}; no mapper kill recorded)'
     return ""
 
 
