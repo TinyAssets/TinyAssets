@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"Review evidence."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"VERDICT: ADAPT"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"EXTRA_SENTINEL"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"EXTRA_SENTINEL"}

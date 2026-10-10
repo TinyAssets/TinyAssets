@@ -584,3 +584,21 @@ async def test_a_callers_cancellation_propagates_through_the_reap(served):  # no
                if t is not asyncio.current_task() and not t.done()]
     assert server.killed is True
     assert not any("request" in repr(t.get_coro()) for t in pending), pending
+
+
+@pytest.mark.asyncio
+async def test_quiet_codex_turn_uses_independent_cell_heartbeat(served, monkeypatch):  # noqa: F811
+    from tinyassets.providers import owned_process
+
+    _waits(monkeypatch, turn=0.01)
+    pulses = []
+    async def pulse(proc):
+        pulses.append(proc)
+        if len(pulses) == 2:
+            for _, event in finished():
+                proc.emit(event)
+        return True
+    monkeypatch.setattr(owned_process, "cell_heartbeat", pulse)
+    response, server = await _play(served, [_STARTED])
+    assert response.text == "done"
+    assert pulses == [server, server]

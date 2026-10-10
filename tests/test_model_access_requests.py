@@ -195,8 +195,9 @@ def test_repeated_failed_publication_then_partial_reconnect_is_recoverable(rig, 
     assert len(attempts) == 3
 
 
+@pytest.mark.parametrize("error", [TypeError, KeyError, RuntimeError])
 def test_an_unexpected_crash_is_a_logged_internal_error_not_a_setup_outage(
-        rig, monkeypatch, caplog):
+        rig, monkeypatch, error):
     import sqlite3
 
     from tinyassets.api import model_access_requests
@@ -204,14 +205,13 @@ def test_an_unexpected_crash_is_a_logged_internal_error_not_a_setup_outage(
     row = ask(rig)
 
     def crash(uid, action):
-        raise TypeError("unsupported operand")
+        raise error("unsupported operand")
 
     monkeypatch.setattr(model_access_requests, "execute_action", crash)
-    with caplog.at_level("ERROR", logger="tinyassets.api.pending_requests"):
-        result = answer(row)
-    assert result == {"error": "internal_error", "request_pending": True}
-    assert any("TypeError" in r.getMessage() and row["request_id"] in r.getMessage()
-               and r.exc_info for r in caplog.records)
+    with pytest.raises(error, match="unsupported operand") as raised:
+        answer(row)
+    assert type(raised.value) is error
+    assert str(raised.value)
     assert get_request(rig[1], row["request_id"])["status"] == "pending"
 
     def locked(uid, action):
@@ -219,6 +219,21 @@ def test_an_unexpected_crash_is_a_logged_internal_error_not_a_setup_outage(
 
     monkeypatch.setattr(model_access_requests, "execute_action", locked)
     assert answer(row) == {"error": "model_setup_unavailable", "request_pending": True}
+    assert get_request(rig[1], row["request_id"])["status"] == "pending"
+
+
+def test_missing_agent_binding_is_an_expected_authority_refusal(rig, monkeypatch):
+    from tinyassets.api import model_access_requests
+    from tinyassets.provider_serving_binding import AgentBindingNotFound
+
+    row = ask(rig)
+
+    def missing(uid, action):
+        raise AgentBindingNotFound("agent binding was not found")
+
+    monkeypatch.setattr(model_access_requests, "execute_action", missing)
+    assert answer(row) == {"error": "provider_authority_denied",
+                           "detail": "agent binding was not found", "request_pending": True}
     assert get_request(rig[1], row["request_id"])["status"] == "pending"
 
 

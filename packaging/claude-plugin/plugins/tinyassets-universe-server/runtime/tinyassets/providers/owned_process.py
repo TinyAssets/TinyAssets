@@ -217,3 +217,13 @@ def kill_owned_tree(proc) -> None:
 async def akill_owned_tree(proc) -> None:
     """:func:`kill_owned_tree`, usable from an async cancellation path."""
     kill_owned_tree(proc)
+
+
+async def cell_heartbeat(proc) -> bool:
+    """Only an authenticated owner-cell reply can extend an output idle wait."""
+    if not isinstance(proc, OwnerCellProcess):
+        return False
+    try:
+        return await asyncio.to_thread(proc.cell.heartbeat)
+    except (OSError, RuntimeError, ValueError):
+        return False

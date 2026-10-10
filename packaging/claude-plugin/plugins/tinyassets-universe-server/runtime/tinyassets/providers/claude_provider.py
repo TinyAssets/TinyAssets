@@ -858,6 +858,9 @@ class ClaudeProvider(BaseProvider):
         tools_in_flight: set[str] = set()
         side_effect_state = "none"
         last_progress = start
+        # Mapper liveness is independent of provider progress telemetry.
+        last_liveness = start
+        line_task = None
         soft_slo_logged = False
         # A documented retry event carries a provider-stated wait; while it is in
         # flight the idle budget is extended to cover it so a real retry wait is
@@ -957,11 +960,16 @@ class ClaudeProvider(BaseProvider):
                 # The absolute cap below still bounds the turn.
                 if declared_busy is not None:
                     allow = max(allow, min(profile.absolute_cap_s, _BUSY_WAIT_S))
-                idle_deadline = last_progress + allow
+                idle_deadline = max(last_progress, last_liveness) + allow
                 abs_deadline = start + profile.absolute_cap_s
                 budget = min(idle_deadline, abs_deadline) - now
                 bound_is_absolute = abs_deadline <= idle_deadline
                 if budget <= 0:
+                    from tinyassets.providers.owned_process import cell_heartbeat
+
+                    if not bound_is_absolute and seen_init and await cell_heartbeat(proc):
+                        last_liveness = time.monotonic()
+                        continue
                     await _raise_timeout(bound_is_absolute, allow)
                 if not soft_slo_logged and now - start >= profile.soft_slo_s:
                     soft_slo_logged = True
@@ -970,11 +978,12 @@ class ClaudeProvider(BaseProvider):
                         "progressing", profile.soft_slo_s,
                     )
                 try:
-                    line = await asyncio.wait_for(
-                        proc.stdout.readline(), timeout=budget,
-                    )
+                    if line_task is None:
+                        line_task = asyncio.create_task(proc.stdout.readline())
+                    line = await asyncio.wait_for(asyncio.shield(line_task), timeout=budget)
+                    line_task = None
                 except asyncio.TimeoutError:
-                    await _raise_timeout(bound_is_absolute, allow)
+                    continue  # Check independent liveness without cancelling the read.
                 except (ValueError, asyncio.LimitOverrunError):
                     await self._terminate(proc)
                     await _finish_stderr()
@@ -1217,6 +1226,8 @@ class ClaudeProvider(BaseProvider):
             kill_owned_tree(proc)
             stdin_task.cancel()
             stderr_task.cancel()
+            if line_task is not None:
+                line_task.cancel()
             # BOUND the reap (Codex re-review #2 blocker E): a kill-resistant or
             # wedged ``proc.wait()`` must not hang the finally — and thus a caller
             # cancellation — forever. The process was already signalled by
@@ -1226,6 +1237,7 @@ class ClaudeProvider(BaseProvider):
                 await asyncio.wait_for(
                     asyncio.gather(
                         proc.wait(), stdin_task, stderr_task,
+                        *([line_task] if line_task is not None else []),
                         return_exceptions=True,
                     ),
                     timeout=5,

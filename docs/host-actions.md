@@ -15,6 +15,11 @@ whose next step is *"the founder logs into Cloudflare."*
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
 | Dedicated synthetic owner | Before merging #4598, create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup makes the deploy capability check fail and select rollback; no silent skip. |
+## Isolation production refusal acceptance (2026-10-10)
+
+| Item | Smallest founder-only action |
+|---|---|
+| Second owner for the post-cutover refusal probe | Supply a separately signed-in tester B account/command center. Runbook ?6.5: B?s cell attempts the founder?s tree and vault, then B?s daemon-side read names the founder?s file; both must refuse. Local UID proofs passed, but no production two-account result is claimed. |
 
 ## Connector directory submissions (2026-10-10)
 
