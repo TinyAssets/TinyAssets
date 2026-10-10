@@ -39,7 +39,7 @@ def exercise(base, center, principal):
         for scope in ('jail', 'universe', 'workspaces'):
             measure(target, scope)
 
-    def check(name, operation, *, produces=(), all_centers=False):
+    def check(name, operation, *, produces=()):
         result = operation()
         if isinstance(result, str) and result.startswith('{'):
             result = json.loads(result)
@@ -50,9 +50,8 @@ def exercise(base, center, principal):
             assert (root / relative).is_file(), (name, 'missing output', relative)
         # Inspect EVERY descendant of visible content, including dotfiles below
         # visible directories. Only platform top-level entries are excluded.
-        targets = ([path for path in base.iterdir()
-                    if path.is_dir() and owner_of(base, path.name) is not None]
-                   if all_centers else [root])
+        targets = [path for path in base.iterdir()
+                   if path.is_dir() and owner_of(base, path.name) is not None]
         assert root in targets
         for target in targets:
             custody(name, target)
@@ -148,12 +147,18 @@ def exercise(base, center, principal):
         ('delivery-tick', reconcile_deliveries),
         ('workspace-sweep', sweep_data_root),
     ):
-        check(name, lambda operation=operation: operation(base), all_centers=True)
-    check('subscriptions', lambda: subscribe(root, 'oracle'))
-    check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}))
+        check(name, lambda operation=operation: operation(base))
+    check('subscriptions', lambda: subscribe(root, 'oracle'),
+          produces=('subscriptions.json',))
+    check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}),
+          produces=('bid_execution_log.json',))
+    check('execution-log-append', lambda: append_execution_log_entry(root, {'second': True}))
+    from tinyassets.subscriptions import unsubscribe
+    check('subscriptions-remove', lambda: unsubscribe(root, 'oracle'))
     from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
     check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
-        ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')))
+        ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')),
+          produces=('auto_ship_attempts.jsonl',))
     check('auto-ship-append', lambda: record_attempt(root, ShipAttempt(
         ship_attempt_id='oracle-second', created_at='', updated_at='', ship_status='skipped')))
     check('auto-ship-rewrite', lambda: update_attempt(root, 'oracle', error_message='ORACLE'))

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Preserve owner custody when the daemon publishes content, and prove lossless offline recovery.
+Preserve owner custody when the daemon publishes content, and prove lossless online recovery.
 
 ## Requirements
 
@@ -15,15 +15,15 @@ Daemon requests and periodic loops SHALL publish visible owner-center entries th
 
 #### Scenario: Daemon lifecycle regression guard
 - **WHEN** common requests and periodic loop iterations execute on an owner-split fixture
-- **THEN** no daemon-owned visible content entry appears.
+- **THEN** no daemon-owned visible content entry appears, every recorded center passes owner measurement, and subscription/bid/auto-ship outputs exist at their intended paths after creation and subsequent mutations.
 
 ### Requirement: Nonempty soul history recovery preserves content
-Offline owner migration SHALL repair daemon-owned soul history using the recorded owner identity, without removing or changing history bytes.
+The online content repair SHALL repair daemon-owned soul history using the recorded admission identity, preserving paths, inodes, open writers and bytes. It SHALL leave platform state and already owner-owned entries unchanged, refuse foreign custody and linked repair candidates, and change zero entries on repeat.
 
 #### Scenario: Production backup contains daemon-owned history
-- **WHEN** the verified backup is restored and migrated under the exclusive layout lock
-- **THEN** all soul-history paths and hashes remain identical, their custody is the recorded owner, and a repeated migration changes nothing.
+- **WHEN** the verified backup is restored and repaired while the real server remains online
+- **THEN** all soul-history paths and hashes remain identical, their custody is the recorded owner, and a repeated online content repair changes nothing.
 
 #### Scenario: Unsafe recovery input
-- **WHEN** the migration encounters a symlink, hardlink, special file, or active layout lock
+- **WHEN** the online content repair encounters a daemon-owned symlink, multiply linked repair candidate, special file, or foreign custody
 - **THEN** it refuses without deleting content.

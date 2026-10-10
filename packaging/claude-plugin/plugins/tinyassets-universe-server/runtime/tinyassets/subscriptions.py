@@ -105,18 +105,14 @@ def _read_raw(universe_path: Path) -> list[str]:
 
 
 def _write_raw(universe_path: Path, goals: list[str]) -> None:
-    sp = _subscriptions_path(universe_path)
-    sp.parent.mkdir(parents=True, exist_ok=True)
+    from tinyassets.universe_files import write_universe_file
+
     payload = {
         "goals": goals,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    tmp = sp.with_suffix(sp.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, default=str),
-        encoding="utf-8",
-    )
-    os.replace(tmp, sp)
+    write_universe_file(Path(universe_path), SUBSCRIPTIONS_FILENAME,
+                        json.dumps(payload, indent=2, default=str).encode(), mode="replace")
 
 
 def list_subscriptions(universe_path: Path) -> list[str]:

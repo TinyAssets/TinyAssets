@@ -67,6 +67,20 @@ def test_content_writers_delegate_all_entry_creation(filename):
     assert list(raw_creates(tree)) == []
 
 
+@pytest.mark.parametrize('filename,function_name', [
+    ('tinyassets/config.py', 'write_universe_config_fields'),
+    ('tinyassets/subscriptions.py', '_write_raw'),
+    ('tinyassets/bid/execution_log.py', 'append_execution_log_entry'),
+    ('tinyassets/auto_ship_ledger.py', '_write_raw'),
+    ('tinyassets/auto_ship_ledger.py', 'record_attempt'),
+])
+def test_platform_content_writers_delegate_creation(filename, function_name):
+    tree = ast.parse((ROOT / filename).read_text(encoding='utf-8'))
+    function = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == function_name)
+    assert list(raw_creates(function)) == []
+
+
 def test_canon_request_never_precreates_owner_directory():
     tree = ast.parse((ROOT / 'tinyassets/api/universe.py').read_text(encoding='utf-8'))
     function = next(node for node in tree.body

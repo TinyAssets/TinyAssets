@@ -218,7 +218,7 @@ def _table(db, name):
     return found is not None
 
 
-def _admission_log(root):
+def _admission_log(root, *, database_reader=_database_copy):
     """(reservations principal->machine, admit center->principal, retired centers)."""
     reservations, admitted, retired = {}, {}, set()
     broker = _stat(root, BROKER_DIR)
@@ -230,7 +230,7 @@ def _admission_log(root):
         with _directory(directory, "state") as state:
             if _stat(state, IDENTITY_DB) is None:
                 return reservations, admitted, retired
-            with _database_copy(state, IDENTITY_DB) as db:
+            with database_reader(state, IDENTITY_DB) as db:
                 if _table(db, "owner_identities"):
                     for principal, machine in db.execute(
                             "SELECT principal, machine_id FROM owner_identities"):
@@ -1034,6 +1034,124 @@ def migrate(data_root, snapshot, *, snapshot_bytes, modes):
             os.close(lock)
 
 
+@contextmanager
+def _live_database(parent, name):
+    """Read the protected broker DB and live WAL in one SQLite transaction."""
+    fd = os.open(name, _LEAF, dir_fd=parent)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != BROKER):
+            raise MigrationRefused('invalid live admission database custody')
+        # The pinned parent is broker-only; owners cannot swap SQLite's path or
+        # WAL sidecars. Using the directory path keeps SQLite's WAL discovery.
+        with closing(sqlite3.connect(
+                f'file:/proc/self/fd/{parent}/{name}?mode=ro', uri=True)) as db:
+            db.execute('BEGIN')
+            after = _stat(parent, name)
+            if after is None or (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino):
+                raise MigrationRefused('live admission database changed during open')
+            yield db
+    finally:
+        os.close(fd)
+
+
+def _repair_content_tree(root, machine, *, apply, max_entries=1000000):
+    """Relabel pinned daemon inodes, without changing names or content bytes.
+
+    A concurrent writer retains its inode and ACL access. No file is read,
+    replaced or removed. Owner-owned content (including its labels) is untouched.
+    Descendant symlinks are opaque, as in owner-measure; never traverse them.
+    """
+    device = os.fstat(root).st_dev
+    visited = changed = 0
+
+    def walk(parent, depth):
+        nonlocal visited, changed
+        if depth > 64:
+            raise MigrationRefused('content repair exceeds depth bound')
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                visited += 1
+                if visited > max_entries:
+                    raise MigrationRefused('content repair exceeds entry bound')
+                if depth == 0 and (entry.name != '.agent-workspace' and
+                        (entry.name.startswith('.') or entry.name in
+                         ('owner.json', 'provider_definitions.json'))):
+                    continue
+                before = _stat(parent, entry.name)
+                if before is None:
+                    continue
+                if stat.S_ISLNK(before.st_mode):
+                    if before.st_uid == DAEMON:
+                        raise MigrationRefused('daemon content symlink requires inspection')
+                    continue
+                if not (stat.S_ISDIR(before.st_mode) or stat.S_ISREG(before.st_mode)):
+                    raise MigrationRefused('content repair refuses special entries')
+                try:
+                    fd = os.open(entry.name, _LEAF |
+                                 (os.O_DIRECTORY if stat.S_ISDIR(before.st_mode) else 0),
+                                 dir_fd=parent)
+                except FileNotFoundError:
+                    continue
+                try:
+                    info = os.fstat(fd)
+                    if ((info.st_dev, info.st_ino) != (before.st_dev, before.st_ino)
+                            or info.st_dev != device):
+                        raise MigrationRefused('content repair entry changed or crossed mount')
+                    custody = (info.st_uid, info.st_gid)
+                    if custody not in ((machine, machine), (DAEMON, DAEMON)):
+                        raise MigrationRefused('content repair refuses foreign custody')
+                    if custody == (DAEMON, DAEMON):
+                        if ((stat.S_ISREG(info.st_mode) and info.st_nlink != 1)
+                                or info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX)):
+                            raise MigrationRefused('content repair refuses aliases or special bits')
+                        # Descendant dotfiles are content too; target classifies
+                        # top-level names, so use a fixed visible content name.
+                        wanted = target('center/content', info, {'center': machine}, {})
+                        if apply:
+                            _apply(fd, wanted)
+                        changed += 1
+                    if stat.S_ISDIR(info.st_mode):
+                        walk(fd, depth + 1)
+                finally:
+                    os.close(fd)
+    walk(root, 0)
+    return changed
+
+
+def repair_content_online(data_root, *, snapshot, apply=False):
+    """Online operator recovery, using only existing admission identities.
+
+    Unlike the initial cutover this does not acquire the service's exclusive
+    layout lock or rewrite platform labels. Serving capabilities do not change.
+    """
+    if not re.fullmatch(r'[A-Za-z0-9._:-]{1,200}', snapshot or ''):
+        raise MigrationRefused('--backup must name the verified full backup')
+    if os.geteuid() != 0:
+        raise MigrationRefused('online repair runs in an operator container as root')
+    with _root(data_root) as root:
+        marker = _marker(root)
+        if (not marker or marker.get('split') != SPLIT or marker.get('layout') != LAYOUT
+                or marker.get('state') != 'stable'):
+            raise MigrationRefused('online repair requires completed owner split')
+        reservations, admitted, retired = _admission_log(root, database_reader=_live_database)
+        changed = centers = 0
+        for center, principal in sorted(admitted.items()):
+            if center in retired:
+                continue
+            machine = reservations.get(principal)
+            if not CENTER.fullmatch(center) or machine is None:
+                raise MigrationRefused('online repair requires a reserved admitted owner')
+            with _directory(root, center) as directory:
+                expected = (DAEMON, machine, 0o750, canonical_root_acl(machine), None)
+                if _label(directory) != expected:
+                    raise MigrationRefused('online repair center root is not canonical')
+                changed += _repair_content_tree(directory, machine, apply=apply)
+                centers += 1
+        return dict(centers=centers, changed=changed, applied=apply, backup=snapshot)
+
+
 def load_modes(app):
     return runpy.run_path(str(Path(app) / "tinyassets" / "role_modes.py"))
 
@@ -1046,10 +1164,20 @@ def main(argv=None):
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--manifest", action="store_true")
     mode.add_argument("--snapshot")
+    mode.add_argument('--repair-content-online', action='store_true')
+    parser.add_argument('--backup', help='verified full backup for online repair')
+    parser.add_argument('--apply', action='store_true',
+                        help='apply online repair (default: inspect)')
     parser.add_argument("--snapshot-bytes", type=int)
     args = parser.parse_args(argv)
+    if (args.apply or args.backup) and not args.repair_content_online:
+        parser.error('--apply and --backup belong to --repair-content-online')
     modes = load_modes(args.app)
     try:
+        if args.repair_content_online:
+            report = repair_content_online(args.data_root, snapshot=args.backup, apply=args.apply)
+            print(json.dumps(report, sort_keys=True))
+            return 0 if args.apply or report['changed'] == 0 else 1
         if args.manifest:
             with _root(args.data_root) as root:
                 lines = manifest(root)

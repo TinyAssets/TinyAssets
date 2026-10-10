@@ -145,29 +145,6 @@ migrate --check                                   # must print nothing; exit 0
   it the new image refuses to serve (exit 78), and the old image must not be
   started on a migrated volume.
 
-For a later owner-content outage (for example daemon-owned nonempty
-`soul_versions/`), repeat the stopped-writer backup and migration steps above
-with the writer fixes in the image. The existing migration accepts both daemon
-and target owner labels and repairs them in place; do not delete history or
-use the empty-wiki-directory online repair for a nonempty tree. Before the
-window, prove that exact backup with:
-
-```sh
-python scripts/role_image_oracle.py --image "$IMAGE" \
-  --backup-archive "$BACKUP" --command-center "$CENTER" \
-  --stages migrate,serve,writers,chat
-```
-
-The migration stage compares every soul-history path and SHA-256 before/after,
-checks owner custody, and repeats migration to require zero changes. The
-writers stage runs common requests and periodic maintenance under the real
-daemon UID, checking visible custody and owner-measure after each operation.
-Neither test changes production. Keep the repair blocked if either check fails.
-If a newer backup already has owner-owned history, add
-`--reproduce-daemon-soul-history` to replay the old daemon labels on the fresh
-disposable restore before migration. This preserves the copied history bytes;
-the report explicitly distinguishes reproduced damage from damage in the backup.
-
 ## 5. Start
 
 1. With deploy still disabled and the exclusive merge hold active, merge only
@@ -230,7 +207,7 @@ Roll back if any Verify step fails, or on a regression later.
    VOL=$(docker volume inspect -f '{{ .Mountpoint }}' tinyassets-data)
    find "$VOL" -mindepth 1 -delete
    tar -xzpf /var/backups/tinyassets/<id> -C "$VOL" \
-       --numeric-owner --acls --xattrs --same-owner
+       --numeric-owner --no-acls --xattrs --xattrs-include=system.posix_acl_* --same-owner
    ```
    `deploy/backup-restore.sh` restores the nightly full tier. It refuses link
    members, so it cannot restore a volume that holds workspace symlinks or the
@@ -262,3 +239,44 @@ Roll back if any Verify step fails, or on a regression later.
 
 Once users have written after the cutover, rollback loses those writes. Decide
 at Verify.
+
+## 8. Later daemon-writer damage: online content-only recovery
+
+Keep the daemon running after deploying the writer fixes. Verify the latest full
+backup from `gh release list -R Jonnyton/tinyassets-backups` and its release asset
+SHA-256. The existing migration executable has a separate online mode: it reads
+recorded admission identities and changes only daemon-owned owner-content inode
+labels. It never copies, replaces, deletes or truncates data, changes platform
+labels, or grants the serving daemon new capabilities. This replaces both the
+empty-wiki-category replacement and stopped-migration-rerun recovery recipes.
+
+Inspect, apply, then inspect again (the repeat reports `changed: 0`):
+
+```sh
+docker run --rm --user 0 --cap-drop ALL \
+  --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE --network none \
+  -v tinyassets-data:/data --entrypoint /opt/venv/bin/python "$IMAGE" \
+  -I -B /usr/local/libexec/ta-migrate.py --repair-content-online --backup "$BACKUP_ID"
+# Repeat that command with --apply, then without --apply.
+```
+
+An inspection with candidates exits 1; a converged inspection/apply exits 0.
+Foreign custody, aliased repair candidates and special files refuse without
+removing content. A changing tree may require another pass; repaired inodes and
+open descriptors remain valid. The initial owner split still uses the offline
+cutover above.
+
+Prove the verified backup in a disposable clone, with its archived binary ACLs
+restored verbatim (GNU tar's textual ACL parser rejects some archive records):
+
+```sh
+python scripts/role_image_oracle.py --image "$IMAGE" \
+  --backup-archive "$BACKUP" --command-center "$CONNECTED_FOUNDER_CENTER" \
+  --stages restore,repair,writers,chat
+```
+
+`repair` runs the real server throughout, checks every visible path, inode and
+content hash before/after both original-backup repair and explicit daemon-history
+replay, and requires zero changes on repeat. `chat` requires a center with the
+recorded provider sources and GitHub connection; a history-only center is not a
+chat fixture. No production data is mutated by this acceptance command.

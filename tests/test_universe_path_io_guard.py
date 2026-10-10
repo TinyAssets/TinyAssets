@@ -153,16 +153,11 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/auto_ship_ledger.py": [
         "_read_raw: .open()",
-        "_write_raw: .open()",
-        "_write_raw: os.replace()",
-        "record_attempt: .open()",
     ],
     "tinyassets/automation_context.py": [
         "_brain: .open()",
     ],
     "tinyassets/bid/execution_log.py": [
-        "append_execution_log_entry: .write_text()",
-        "append_execution_log_entry: os.replace()",
         "read_execution_log: .read_text()",
     ],
     "tinyassets/billing/stripe_adapter.py": [
@@ -395,8 +390,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/subscriptions.py": [
         "_read_raw: .read_text()",
-        "_write_raw: .write_text()",
-        "_write_raw: os.replace()",
     ],
     # Fixed owner-cell supervisor reads only kernel /proc/<pid>/stat records.
     "tinyassets/role_preview_cell.py": ["_proc_snapshot: open()"],

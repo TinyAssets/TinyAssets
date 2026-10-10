@@ -118,16 +118,13 @@ def read_execution_log(universe_path: Path) -> list[dict]:
 
 def append_execution_log_entry(universe_path: Path, entry: dict) -> None:
     """File-locked append of a single execution-log entry."""
-    p = execution_log_path(universe_path)
+    from tinyassets.universe_files import write_universe_file
+
     with _exec_log_lock(universe_path):
         data = read_execution_log(universe_path)
         data.append(dict(entry))
-        tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
-        )
-        os.replace(tmp, p)
+        write_universe_file(Path(universe_path), EXEC_LOG_FILENAME,
+                            json.dumps(data, indent=2, default=str).encode(), mode="replace")
 
 
 # Back-compat aliases — delete once all callers switch over.

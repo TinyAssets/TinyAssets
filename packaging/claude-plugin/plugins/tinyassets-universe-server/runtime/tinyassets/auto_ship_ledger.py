@@ -270,13 +270,10 @@ def _write_raw(lp: Path, rows: list[dict]) -> None:
     Used by ``update_attempt``. ``record_attempt`` uses a true append
     instead so it does not have to re-serialize the whole file.
     """
-    lp.parent.mkdir(parents=True, exist_ok=True)
-    tmp = lp.with_suffix(lp.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            fh.write(json.dumps(row, default=str))
-            fh.write("\n")
-    os.replace(tmp, lp)
+    from tinyassets.universe_files import write_universe_file
+
+    data = ''.join(json.dumps(row, default=str) + '\n' for row in rows).encode()
+    write_universe_file(lp.parent, lp.name, data, mode="replace")
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -433,11 +430,11 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
                     f"ship_attempt_id {attempt.ship_attempt_id!r} already "
                     f"recorded — use update_attempt to mutate"
                 )
-        # True append, no full rewrite — JSONL's main ergonomic win.
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        with lp.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(attempt.to_dict(), default=str))
-            fh.write("\n")
+        from tinyassets.universe_files import write_universe_file
+
+        write_universe_file(lp.parent, lp.name,
+                            (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
+                            mode="append")
 
 
 def update_attempt(
