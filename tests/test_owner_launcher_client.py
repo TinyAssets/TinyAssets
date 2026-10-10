@@ -237,6 +237,7 @@ def test_mapper_resource_kills_have_authenticated_completion_reason(monkeypatch,
     os.set_blocking(error_read, False)
     launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False, None]}
     launcher.package_jobs = {child}
+    launcher.browser_jobs = set()
     launcher.launch = None
     try:
         launcher._service_jobs()

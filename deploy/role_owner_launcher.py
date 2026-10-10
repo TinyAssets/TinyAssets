@@ -400,6 +400,7 @@ class OwnerLauncher:
         self.jobs = {}
         self.diagnostics = {}
         self.package_jobs = set()
+        self.browser_jobs = set()
         self.delete_fences = {}
 
     def _alive(self):
@@ -551,7 +552,7 @@ class OwnerLauncher:
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'workspace-remote',
-                                'workspace-provision', 'ui-preview', 'preview-write',
+                                'workspace-provision', 'ui-preview', 'browser', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
                                 'package', 'owner-delete', 'owner-delete-subtree',
@@ -842,6 +843,9 @@ class OwnerLauncher:
                 elif kind == 'ui-preview':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview',
                                self.data_root, str(inner)]
+                elif kind == 'browser':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-browser',
+                               self.data_root, str(inner)]
                 elif kind == 'preview-write':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview-write',
                                request['ui_id'], self.data_root, str(inner)]
@@ -872,12 +876,14 @@ class OwnerLauncher:
             155 if kind == 'ingestion-video' else
             1810 if kind in ('node-sandbox', 'workspace-remote', 'workspace-provision') else
             660 if kind == 'tool-jail' else
-            75 if kind == 'ui-preview' else
+            610 if kind == 'browser' else 75 if kind == 'ui-preview' else
             65 if kind == 'workspace-git' else 35)
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)
-            if kind in ('package', 'provider-exec'):
+            if kind in ('package', 'provider-exec', 'browser'):
                 self.package_jobs.add(pid)
+            if kind == 'browser':
+                self.browser_jobs.add(pid)
             try:
                 self.channel.sendall(json.dumps(
                     dict(op='STARTED', uid=machine, gid=machine)).encode())
@@ -1121,8 +1127,10 @@ class OwnerLauncher:
                     count, rss = package_usage(pid)
                     if count > 68:
                         reason = f'process_limit: count={count} limit=68'
-                    elif rss > 512 * 1024 * 1024:
-                        reason = f'rss_limit: bytes={rss} limit=536870912'
+                    else:
+                        limit = (1536 if pid in self.browser_jobs else 512) * 1024 * 1024
+                        if rss > limit:
+                            reason = f'rss_limit: bytes={rss} limit={limit}'
                 except (OSError, ValueError, IndexError, RuntimeError) as exc:
                     # No arbitrary exception text: it can contain owner data.
                     reason = (f'usage_unavailable: {type(exc).__name__} '
@@ -1182,4 +1190,5 @@ class OwnerLauncher:
                     channel.close()
                     del self.jobs[pid]
                     self.package_jobs.discard(pid)
+                    self.browser_jobs.discard(pid)
         assert_mapper(self.launch)
