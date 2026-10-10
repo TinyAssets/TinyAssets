@@ -23,8 +23,10 @@ A test file is selected when ANY of these holds:
 When unsure it selects EVERYTHING (output ``ALL``):
 
 - a conftest, pytest config, the dependency manifest or the gate's own
-  machinery changed;
-- a changed module is in a conftest's import closure (every test loads it);
+  machinery changed (PR mode selects the machinery's own contract tests
+  instead; the image gate and the conservative queue still run);
+- a changed module is in a conftest's import closure (every test loads it;
+  PR mode selects its importers, since any selected test loads it too);
 - a changed .py file outside ``tests/`` is selected by nothing, since an
   unmapped module means the static graph cannot see who loads it;
 - a non-test .py file was deleted or moved: the graph is built from the new
@@ -56,16 +58,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GRAPH_ROOTS = ("tinyassets", "scripts", "tests", "fantasy_daemon", "domains", "packaging")
 BARE_NAME_DIRS = ("", "scripts", "tests")
 
-# Any change here can move the verdict of an arbitrary test.
-FULL_SUITE_TRIGGERS = (
-    "pyproject.toml",
-    "tests/__init__.py",
+# Any change here can move the verdict of an arbitrary test. The CI machinery
+# only decides WHICH tests run and how a verdict is read, so a PR selects the
+# tests that read or import it; the queue still runs everything.
+CI_MACHINERY = (
     ".github/known-failing-tests.txt",
     ".github/heavy-test-files.txt",
     ".github/workflows/tests.yml",
     "scripts/ci_required_tests.py",
     "scripts/affected_tests.py",
 )
+FULL_SUITE_TRIGGERS = ("pyproject.toml", "tests/__init__.py", *CI_MACHINERY)
 
 # Basenames too common to mean "this test reads that file".
 GENERIC_BASENAMES = {
@@ -267,21 +270,30 @@ def select(
     root: Path = REPO_ROOT,
     graph: Graph | None = None,
     shared: set[str] | None = None,
+    pr: bool = False,
 ) -> tuple[list[str] | None, list[str]]:
     """Return (test files, reasons). ``None`` means run the whole suite.
 
     `graph` and `shared` may be passed in to reuse them across many calls
-    (measurement scripts); left out, they are built for `root`.
+    (measurement scripts); left out, they are built for `root`. `pr` maps a
+    CI_MACHINERY change, or a module in a conftest's closure, to the tests
+    that import or name it instead of ALL: a selected test still loads every
+    conftest dependency, so a startup break fails it. Conftest edits, the
+    manifest, unreached and deleted source still select ALL.
     """
     reasons: list[str] = []
     changed = sorted({c.replace("\\", "/") for c in changed if c.strip()})
     for rel in changed:
+        if pr and rel in CI_MACHINERY:
+            continue
         if rel in FULL_SUITE_TRIGGERS or rel.rsplit("/", 1)[-1] == "conftest.py":
             return None, [f"{rel}: shared test infrastructure"]
 
     graph = graph or Graph(root)
     tests = sorted(rel for rel in graph.files if is_test_file(rel))
-    if shared is None:
+    if pr:
+        shared = set()
+    elif shared is None:
         shared = loaded_by_conftests(graph, root)
     for rel in changed:
         if rel in shared:
@@ -469,11 +481,14 @@ def main() -> int:
     args = ap.parse_args()
     if (args.base is None) == (args.changed is None):
         raise SystemExit("pass exactly one of --base or --changed")
+    if args.pr and args.gate:
+        raise SystemExit("--pr and --gate are separate tiers; pass one")
     changed = args.changed if args.changed is not None else changed_files(args.base)
     if args.image_output:
         Path(args.image_output).write_text(str(needs_image(changed)).lower()+'\n')
     try:
-        selected, reasons = (gate_selection if args.gate else select)(changed)
+        selected, reasons = (
+            gate_selection(changed) if args.gate else select(changed, pr=args.pr))
     except RuntimeError as exc:
         # Unsure what is shared -> run everything, and say why. On the gate path
         # this is the ONLY safe direction, and it is loud: the reason is printed

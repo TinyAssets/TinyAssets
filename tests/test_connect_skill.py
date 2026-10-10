@@ -57,6 +57,7 @@ def test_ta_search_connect_discovers_the_skill_and_request_tool(monkeypatch, tmp
 
 
 @pytest.mark.usefixtures("cloud_runtime")
+@pytest.mark.real_jail
 def test_scripted_unknown_api_service_requests_secure_entry_not_chat(
     tmp_path, monkeypatch, authenticate_request, engine,
 ):

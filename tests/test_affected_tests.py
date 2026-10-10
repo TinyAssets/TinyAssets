@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "affected_tests.py"
 _spec = importlib.util.spec_from_file_location("affected_tests", _SCRIPT)
 assert _spec and _spec.loader
@@ -117,11 +119,28 @@ def test_an_unmentioned_non_python_change_selects_nothing(tmp_path):
 
 
 def test_shared_infrastructure_runs_everything(tmp_path):
-    root = _repo(tmp_path, {"tests/test_a.py": "import json\n"})
+    root = _repo(tmp_path, {
+        "tests/test_a.py": "import json\n",
+        "scripts/ci_required_tests.py": "",
+        "tests/test_ledger.py": 'LEDGER = ".github/known-failing-tests.txt"\n',
+        "tests/test_wf.py": 'WF = ROOT / ".github" / "workflows" / "tests.yml"\n',
+        "tests/test_req.py": "from scripts import ci_required_tests\n",
+    })
     for rel in ("tests/conftest.py", "pyproject.toml", ".github/known-failing-tests.txt"):
         selected, reasons = at.select([rel], root)
         assert selected is None, rel
         assert "shared test infrastructure" in reasons[0]
+    for rel in ("tests/conftest.py", "pyproject.toml"):
+        assert at.select([rel], root, pr=True)[0] is None, rel
+    # A PR changing CI machinery runs the tests that read or import it, not ALL;
+    # ordinary and gate mode stay ALL.
+    assert at.select([".github/known-failing-tests.txt"], root, pr=True)[0] == [
+        "tests/test_ledger.py"]
+    assert at.select([".github/workflows/tests.yml"], root, pr=True)[0] == ["tests/test_wf.py"]
+    assert at.select(["scripts/ci_required_tests.py"], root, pr=True)[0] == [
+        "tests/test_req.py"]
+    assert at.select(["scripts/ci_required_tests.py"], root)[0] is None
+    assert at.gate_selection([".github/workflows/tests.yml"], root)[0] is None
 
 
 def test_a_module_conftest_loads_at_runtime_runs_everything(tmp_path):
@@ -133,11 +152,15 @@ def test_a_module_conftest_loads_at_runtime_runs_everything(tmp_path):
             "tinyassets/shared.py": "def boot():\n    import tinyassets.lazy\n",
             "tinyassets/lazy.py": "",
             "tests/test_a.py": "import tinyassets.lazy\n",
+            "tests/test_b.py": "import json\n",
         },
     )
     selected, reasons = at.select(["tinyassets/lazy.py"], root)
     assert selected is None
     assert "conftest" in reasons[0]
+    # PR mode runs its importers; any selected test loads conftest's closure anyway.
+    assert at.select(["tinyassets/lazy.py"], root, pr=True)[0] == ["tests/test_a.py"]
+    assert at.gate_selection(["tinyassets/lazy.py"], root)[0] is None
 
 
 def test_a_conftest_that_will_not_import_raises_rather_than_guessing(tmp_path):
@@ -152,15 +175,21 @@ def test_a_conftest_that_will_not_import_raises_rather_than_guessing(tmp_path):
 
 def test_a_python_file_no_test_reaches_runs_everything(tmp_path):
     root = _repo(tmp_path, {"tinyassets/orphan.py": "", "tests/test_a.py": "import json\n"})
-    selected, reasons = at.select(["tinyassets/orphan.py"], root)
-    assert selected is None
-    assert "no test reaches" in reasons[0]
+    for pr in (False, True):
+        selected, reasons = at.select(["tinyassets/orphan.py"], root, pr=pr)
+        assert selected is None
+        assert "no test reaches" in reasons[0]
 
 
 def test_a_deleted_source_module_runs_everything(tmp_path):
     """Its importers are invisible: the graph is built from the tree without it."""
     root = _repo(tmp_path, {"tests/test_a.py": "import json\n"})
     selected, reasons = at.select(["tinyassets/gone.py"], root)
+    assert selected is None
+    assert "deleted or moved" in reasons[0]
+    # PR mode skips the machinery trigger but keeps this backoff.
+    selected, reasons = at.select(
+        [".github/known-failing-tests.txt", "tinyassets/gone.py"], root, pr=True)
     assert selected is None
     assert "deleted or moved" in reasons[0]
 
@@ -203,6 +232,9 @@ def test_cli_writes_all_for_a_full_suite_trigger(tmp_path, monkeypatch):
     )
     assert at.main() == 0
     assert out.read_text(encoding="utf-8") == "ALL\n"
+    monkeypatch.setattr("sys.argv", ["affected_tests.py", "--changed", "x", "--pr", "--gate"])
+    with pytest.raises(SystemExit, match="separate tiers"):
+        at.main()
 
 
 def test_every_full_suite_trigger_exists_in_the_repo():

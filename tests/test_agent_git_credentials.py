@@ -163,6 +163,7 @@ def synthetic(tmp_path, monkeypatch):
         http.server_close()
 
 
+@pytest.mark.real_jail
 def test_synthetic_jail_clone_push_fetch_and_no_token(synthetic):
     s = synthetic
     with git_egress.routes(s.proxy, s.client, [s.record], "developer") as prefix:

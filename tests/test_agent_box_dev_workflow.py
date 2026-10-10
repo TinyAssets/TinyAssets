@@ -13,7 +13,8 @@ import pytest
 from tinyassets import universe_egress as egress
 from tinyassets import universe_tools as tools
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux jail oracle")
+pytestmark = [pytest.mark.real_jail,
+              pytest.mark.skipif(sys.platform != "linux", reason="Linux jail oracle")]
 
 
 @pytest.fixture
