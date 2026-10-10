@@ -19,12 +19,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import runpy
 import secrets
 import subprocess
 import sys
 import tarfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+role_http_fixture = SimpleNamespace(**runpy.run_path(
+    str(Path(__file__).with_name("role_http_fixture.py"))))
 
 # deploy/compose.yml, daemon service: the serving posture, verbatim.
 COMPOSE_USER = "0:0"
@@ -1197,11 +1202,21 @@ def _metadata(args, *, start):
         if not args.isolated_metadata:
             docker("network", "rm", args.network, check=False)
         return None
+    service = METADATA_SERVER.format(body=METADATA_INSTANCE_ID)
+    if args.backup_archive:
+        if not getattr(args, 'tls_fixture', None):
+            args.tls_fixture = role_http_fixture.certificates()
+        service = service.replace("http.server.HTTPServer(",
+                                  role_http_fixture.SERVER + "\nhttp.server.HTTPServer(")
     if args.isolated_metadata:
+        setup = ISOLATED_METADATA_SETUP
+        if args.backup_archive:
+            setup += ISOLATED_METADATA_SETUP.replace('lo:oracle', 'lo:service').replace(
+                METADATA_ADDRESS, role_http_fixture.ADDRESS)
         started = docker('run', '-d', '--name', name, '--network', 'none', '--user', '0',
             '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_BIND_SERVICE',
-            '--entrypoint', '/opt/venv/bin/python', args.image, '-I', '-B', '-c',
-            ISOLATED_METADATA_SETUP + METADATA_SERVER.format(body=METADATA_INSTANCE_ID))
+            *(['-v', args.tls_fixture.name + ':/fixture:ro'] if args.backup_archive else []),
+            '--entrypoint', '/opt/venv/bin/python', args.image, '-I', '-B', '-c', setup + service)
         args.network = 'container:' + name
         expect(started.returncode == 0, 'isolated metadata namespace (loopback only)')
         return name
@@ -1338,13 +1353,18 @@ def stage_chat(args, *, runs_only=False):
     command = _posture(name, args.image, args.volume, user=COMPOSE_USER,
         caps=COMPOSE_CAPS, entrypoint='/opt/venv/bin/python', extra=[
             '--rm', '-i', '--network', args.network,
+            '-v', args.tls_fixture.name + '/hosts:/etc/hosts:ro',
+            '-v', args.tls_fixture.name + '/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro',
             '-e', 'TINYASSETS_IMAGE=' + args.image,
+            '-e', 'TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED=1',
             '-e', 'TINYASSETS_ENGINE_MCP_TOOLS=1',
             '-e', 'ORACLE_RUNS_ONLY=' + ('1' if runs_only else '0'),
             '-e', 'ORACLE_ISOLATED_NETWORK=' + ('1' if args.isolated_metadata else '0'),
             '-e', 'ORACLE_COMMAND_CENTER=' + args.command_center])
     result = subprocess.run(command + ['-I', '-B', '-'], input=program,
                             text=True, encoding='utf-8', capture_output=True, timeout=600)
+    if result.returncode == 125:
+        raise RuntimeError('oracle container did not start: ' + result.stderr)
     for line in result.stdout.splitlines():
         if line.startswith('PRODUCTION CHAT PASS '):
             expect(result.returncode == 0, 'both HTTP converse turns executed read/write/edit/bash')
@@ -1400,6 +1420,8 @@ def main(argv=None):
             ('cells' in args.stages.split(',') and args.legs != ('bootstrap',))):
         parser.error('restored backups permit migrate,serve and the bootstrap cell leg only; '
                      'run synthetic owner/provider legs on a separate fixture volume')
+    if args.backup_archive:
+        args.isolated_metadata = True
     unknown = set(args.legs) - set(LEG_NAMES)
     if unknown:
         raise SystemExit(f"unknown legs: {sorted(unknown)}")
@@ -1423,6 +1445,8 @@ def main(argv=None):
         _metadata(args, start=False)
         if not args.keep:
             docker("volume", "rm", "-f", args.volume, check=False)
+        if getattr(args, 'tls_fixture', None):
+            args.tls_fixture.cleanup()
     print("\nROLE IMAGE ORACLE REPORT " + json.dumps(report, indent=1, default=str), flush=True)
     for name, reason in sorted(blocked.items()):
         print(f"NOT PROVEN: leg {name} is blocked by {reason}", flush=True)

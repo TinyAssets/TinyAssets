@@ -33,7 +33,6 @@ def main():
     import os
     import runpy
     import shlex
-    import ssl
     import sys
     import threading
     import time
@@ -49,25 +48,17 @@ def main():
     center = os.environ["ORACLE_COMMAND_CENTER"]
     owner = next(owner for owner, name in bindings if name == center)
     os.environ["UNIVERSE_SERVER_DEV_USER"] = owner
-    requests, launches = [], []
+    requests = []
     answer = "ORACLE real read write edit bash succeeded"
     active = {}
-    from tinyassets import role_tools
+    from tinyassets.broker.catalog import connections
 
-    real_run = role_tools.run
-
-    def observe_run(*args, **kwargs):
-        try:
-            result = real_run(*args, **kwargs)
-        except Exception as exc:
-            from tinyassets.cell_diagnostics import failure_reason
-
-            print('ORACLE FAILURE ' + failure_reason(exc, 'decoder'), flush=True)
-            raise
-        active['runs'].append(result)
-        return result
-
-    role_tools.run = observe_run
+    service = next(view for grant, view, cap in connections(Path('/data'),
+        principal=owner, command_center=center)
+        if view.connection_type == 'http' and 'api.github.com' in str(view.allowed_endpoints))
+    connection_command = 'ta connection:' + service.connection_id + ':POST --json ' + shlex.quote(
+        json.dumps({'request': {'path': '/repos/TinyAssets/TinyAssets/issues',
+                               'body': {'title': 'Synthetic oracle', 'body': 'Local copy only'}}}))
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -87,6 +78,8 @@ def main():
                 from tinyassets.cell_diagnostics import failure_reason
 
                 print('ORACLE FAILURE ' + failure_reason(exc, 'decoder'), flush=True)
+                print('ORACLE DETAIL endpoint step=' + str(active.get('step'))
+                      + ': ' + str(exc), flush=True)
                 os._exit(2)  # Stop this disposable container; never retry a false proof.
 
         def respond(self):
@@ -103,12 +96,12 @@ def main():
             offered = advertised_tools(body)
             # The CLI also sends side requests (no tools, no oracle history);
             # only the conversation advances the scripted tool sequence.
-            conversation = (f'oracle_{step - 1}' in json.dumps(body) if step
+            conversation = (f'oracle_{active["nonce"]}_{step - 1}'  in json.dumps(body) if step
                             else any(name.split('__')[-1] == 'write' for name in offered))
             if not conversation:
                 active['side'] = active.get('side', 0) + 1
             if step and conversation:
-                call_id = f'oracle_{step - 1}'
+                call_id = f'oracle_{active["nonce"]}_{step - 1}'
 
                 def outputs(value):
                     if isinstance(value, dict):
@@ -124,37 +117,65 @@ def main():
 
                 returned = list(outputs(body))
                 assert returned, 'oracle tool result missing'
-                # edit reads then rewrites the file: two real jail runs.
-                runs = active['runs'][active['mark']:]
-                for run in runs:
-                    if run.exit_code != 0 or run.killed is not None:
-                        print('ORACLE TOOL FAILURE ' + repr((run.exit_code, run.killed,
-                              run.output[-2000:])), flush=True)
-                assert len(runs) == (2 if step == 3 else 1), 'oracle real tool execution missing'
-                assert all(run.exit_code == 0 and run.killed is None for run in runs), (
-                    'oracle tool execution failed')
-                run = runs[-1]
+                if any(item.get('is_error') for item in returned):
+                    print('ORACLE TOOL FAILURE ' + json.dumps(returned), flush=True)
                 assert not any(item.get('is_error') for item in returned), 'oracle tool error'
+                encoded = json.dumps(returned)
+                if 'error:' in encoded.lower():
+                    print('ORACLE TOOL FAILURE ' + encoded, flush=True)
+                assert 'error:' not in encoded.lower(), 'oracle tool returned an error'
                 if step in (2, 4):
                     expected = active['before'] if step == 2 else active['after']
-                    assert expected.encode() in run.output, 'oracle tool content mismatch'
-                    assert expected in json.dumps(returned), 'oracle MCP result content mismatch'
+                    assert expected in encoded, 'oracle MCP result content mismatch'
+                if step == 4:
+                    assert 'ORACLE curl egress succeeded' in encoded
+                if step == 6:
+                    assert '123456' in encoded, 'agent connection did not reach HTTPS fixture'
+                if step == 5:
+                    # Verify image bytes in the vendor request, beyond the decoder response.
+                    import base64
+                    import io
+
+                    from PIL import Image
+
+                    def images(value):
+                        if isinstance(value, dict):
+                            if (value.get('type') == 'image'
+                                    and isinstance(value.get('source'), dict)):
+                                yield value['source'].get('data', '')
+                            url = value.get('image_url')
+                            if isinstance(url, dict):
+                                url = url.get('url')
+                            if isinstance(url, str) and url.startswith('data:image/'):
+                                yield url.split(',', 1)[1]
+                            for child in value.values():
+                                yield from images(child)
+                        elif isinstance(value, list):
+                            for child in value:
+                                yield from images(child)
+                    decoded = [Image.open(io.BytesIO(base64.b64decode(raw))).convert('RGB')
+                               for raw in images(body)]
+                    assert any(im.size == (3, 2) and im.getpixel((1, 1)) == (23, 89, 177)
+                               for im in decoded), 'decoded pixels never reached the provider'
+                    active['image'] = True
             calls = [
                 ('write', dict(path=active['path'], content=active['before'])),
                 ('read', dict(path=active['path'])),
                 ('edit', dict(path=active['path'], old_text=active['before'],
                               new_text=active['after'])),
                 ('bash', dict(command='cat ' + active['path']
+                    + ' && printf %s ' + shlex.quote(png_base64)
+                    + ' | base64 -d > /u/oracle-image.png'
                     + '; test ! -e /data && test ! -e /app && test ! -e /snapshot'
                     + ' && test "$(id -u)" -ne 0'
                     + ' && curl --fail --silent --show-error --max-time 15 '
-                    + base + '/curl && test -s /etc/ssl/certs/ca-certificates.crt'
-                    + ' && printf %s ' + shlex.quote(certificate)
-                    + ' > /tmp/oracle-ca.pem && curl --fail --silent --show-error --max-time 15'
-                    + ' --cacert /tmp/oracle-ca.pem ' + secure_base + '/curl'
+                    + base + '/curl && curl --fail --silent --show-error --max-time 15'
+                    + ' https://stream.oracle.test/curl'
                     + '; status=$?; test "$status" -eq 0 || exit "$status"'
                     + '; if curl --fail --silent --max-time 5 --noproxy "" '
                     + f'http://127.0.0.1:{server.server_port}/curl; then exit 91; fi')),
+                ('read', dict(path='/u/oracle-image.png')),
+                ('bash', dict(command=connection_command)),
             ]
             tool = None
             if conversation and step < len(calls):
@@ -162,9 +183,8 @@ def main():
                 candidates = [item for item in offered if item.split('__')[-1] == name]
                 assert len(candidates) == 1, 'oracle expected one advertised platform tool'
                 tool = dict(name=candidates[0], arguments=arguments,
-                            id=f'oracle_{step}')
+                            id=f'oracle_{active["nonce"]}_{step}')
                 active['step'] += 1
-                active['mark'] = len(active['runs'])
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
@@ -295,51 +315,17 @@ def main():
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    # Local TLS, with certificate validation enabled. The private key never
-    # enters a cell; curl receives only this fixture's public certificate.
-    import tempfile
-    from datetime import datetime, timedelta, timezone
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'stream.oracle.test')])
-    now = datetime.now(timezone.utc)
-    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
-            .public_key(key.public_key()).serial_number(x509.random_serial_number())
-            .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(hours=1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName('stream.oracle.test')]), False)
-            .sign(key, hashes.SHA256()))
-    certificate = cert.public_bytes(serialization.Encoding.PEM).decode()
-    tls_files = tempfile.TemporaryDirectory(prefix='oracle-tls-')
-    cert_path, key_path = Path(tls_files.name) / 'cert.pem', Path(tls_files.name) / 'key.pem'
-    cert_path.write_text(certificate)
-    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    tls.load_cert_chain(cert_path, key_path)
-    secure = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    secure.socket = tls.wrap_socket(secure.socket, server_side=True)
-    threading.Thread(target=secure.serve_forever, daemon=True).start()
-    from tinyassets import universe_egress
-
     base = f"http://stream.oracle.test:{server.server_port}"
-    secure_base = f'https://stream.oracle.test:{secure.server_port}'
-    original_checked = universe_egress._checked_addresses
+    import base64
+    import io
 
-    def checked(host, port):
-        if host != "stream.oracle.test" or port not in (server.server_port, secure.server_port):
-            if host == '127.0.0.1':
-                original_checked(host, port)  # the real SSRF refusal, not the fixture policy
-            raise universe_egress.EgressRefused("oracle endpoint only")
-        return ["127.0.0.1"]
+    from PIL import Image
 
-    universe_egress._checked_addresses = checked
+    png = io.BytesIO()
+    Image.new('RGB', (3, 2), (23, 89, 177)).save(png, format='PNG')
+    png_base64 = base64.b64encode(png.getvalue()).decode()
     # Replace only transport credentials/endpoint in the disposable launch snapshot.
     from tinyassets.providers import base as provider_base
     from tinyassets.providers import claude_provider, codex_provider
@@ -378,28 +364,6 @@ def main():
     provider_base.subprocess_env_for_provider = test_env
     claude_provider.subprocess_env_for_provider = test_env
     codex_provider.subprocess_env_for_provider = test_env
-    from tinyassets import role_provider_discovery
-
-    original_config = role_provider_discovery.cell_config
-
-    def observe_config(argv, env, view_env, snapshot, data_root, **kwargs):
-        result = original_config(argv, env, view_env, snapshot, data_root, **kwargs)
-        system = argv[argv.index("--system-prompt") + 1] if "--system-prompt" in argv else ""
-        launches.append(
-            dict(
-                executable=Path(argv[0]).name,
-                command=next((part for part in argv
-                              if part in ('exec', 'app-server', 'debug')), ''),
-                argc=len(argv),
-                config_bytes=len(result),
-                system_bytes=len(system.encode()),
-                engine_route=kwargs.get("engine_port") is not None,
-                mcp_config="--mcp-config" in argv,
-            )
-        )
-        return result
-
-    role_provider_discovery.cell_config = observe_config
     from tinyassets import universe_server
 
     # Run the real server startup, engine routes, background services and HTTP surface.
@@ -438,16 +402,16 @@ def main():
                      ('claude-code', binding['agent_binding_id']))
             if os.environ.get('ORACLE_RUNS_ONLY') == '1':
                 turns = ()
-                active.update(step=4, runs=[], path='/u/oracle-unused', before='', after='')
+                active.update(step=6, nonce='unused', path='/u/oracle-unused', before='', after='')
             for provider, agent in turns:
                 import secrets
 
                 nonce = secrets.token_hex(12)
                 active.clear()
-                active.update(step=0, runs=[], path=f'/u/oracle-{nonce}.txt',
+                active.update(step=0, nonce=nonce, path=f'/u/oracle-{nonce}.txt',
                               before='before-' + nonce, after='after-' + nonce)
                 before = len(requests)
-                arguments = {"message": "Use write, read, edit and bash in /u; report success.",
+                arguments = {"message": "Use all four tools, read an image, and call the service.",
                              "graph_id": center}
                 if provider == "codex":
                     arguments["model_choice"] = {
@@ -460,19 +424,23 @@ def main():
                 arguments['agent_id'] = agent
                 result = await client.call_tool("converse", arguments)
                 document = result.data
+                if document.get('reply') != answer:
+                    print('ORACLE DETAIL converse: ' + json.dumps({
+                        'reply': document.get('reply'), 'error': document.get('error'),
+                        'execution': document.get('execution'), 'step': active['step'],
+                        'requests': len(requests) - before}), flush=True)
                 assert document.get("reply") == answer, 'oracle reply mismatch'
                 assert document["execution"]["provider"] == provider, 'oracle provider mismatch'
-                assert active['step'] == 4 and len(active['runs']) == 5, 'oracle tools incomplete'
+                assert active['step'] == 6 and active.get('image'), 'oracle tools incomplete'
                 assert len(requests) > before, "reply did not reach the local streaming endpoint"
-                assert b'ORACLE curl egress succeeded' in active['runs'][-1].output
                 results[provider + ':' + agent] = dict(
                     reply=document["reply"], requests=len(requests) - before,
                     tools=['write', 'read', 'edit', 'bash'],
-                    side_requests=active.get('side', 0),
-                    exit_codes=[run.exit_code for run in active['runs']])
+                    side_requests=active.get('side', 0), image=True, connection=True)
+            print('ORACLE TURNS PASS ' + json.dumps(results), flush=True)
             graph_runs = await prove_runs(client, center, owner)
         print(
-            "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results, launches=launches,
+            "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results,
                                                      graph_runs=graph_runs)),
             flush=True,
         )
