@@ -15,7 +15,7 @@ LAUNCHER = runpy.run_path(
     str(Path(__file__).resolve().parents[1] / "deploy/role_owner_launcher.py"))
 
 
-@pytest.mark.skipif(os.name != 'posix', reason='owner inode labels and O_PATH')
+@pytest.mark.skipif(os.name != 'posix', reason='Linux O_PATH; runs-in=linux-oracle')
 @pytest.mark.parametrize('invalid', [None, 'mount-count', 'hardlink', 'foreign-owner'])
 def test_tool_mount_budget_counts_content_and_retains_inode_guards(tmp_path, invalid):
     decoder = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'deploy/role_decoder.py'))
