@@ -20,3 +20,21 @@ Broader hints may increase confirmation prompts; truthful consent outweighs conv
 ## Verification and handoff
 
 Metadata and affected MCP tests, ruff, structural guards, plugin rebuild, hygiene gate and public canary. The packet owns remaining live review prerequisites. Founder performs company verification and accepts terms. This lane prepares a PR, not a deployment or directory approval.
+
+## Cross-family review (2026-10-10)
+
+One read-only Claude/Fable peer-agents round after PR #4587 opened; verdict ADAPT.
+Reviewer confirmed truthful aggregate hints/side effects, owner-only relay,
+synthetic reviewer privacy and explicit readiness limitations.
+
+- AGREE: committed packet referenced an upload package before the ZIP was tracked.
+  Commit the reproducible ZIP alongside its sources and verify all three entries
+  match those sources; this makes the founder's upload concrete.
+- AGREE: removing the existing verbatim-reply instruction changes client behavior
+  unnecessarily. Restored it alongside the added side-effect disclosure.
+- AGREE: task 1.5 is complete; mark it. Task 1.4 stays open because the canary is
+  credential-blocked, even though local tests and spec sync are complete.
+- DISAGREE_EVIDENCE (non-floor suggestion): deleting the historical May OpenAI
+  submission runbooks is unnecessary to this packet's correctness; its source table
+  explicitly names the current Plugins route and supersedes older route advice.
+  No runtime/auth/receipt gate was changed to turn a blocked prerequisite green.

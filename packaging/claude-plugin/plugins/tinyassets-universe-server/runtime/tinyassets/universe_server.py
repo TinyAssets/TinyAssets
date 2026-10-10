@@ -2999,8 +2999,9 @@ def converse(
 
     Your command center has its own personified intelligence (running on the engine
     its founder assigned). This forwards the founder's message to it and returns
-    the command center's first-person reply. Only its authenticated owner can
-    invoke this relay.
+    the command center's OWN first-person reply — RENDER that reply verbatim; do NOT
+    speak as the command center yourself. Founder-only: sign in as the command center's
+    founder to talk with it.
 
     When graph_id is omitted, this resolves the authenticated founder's home
     command center. On first contact it creates and binds a blank seed command center, then

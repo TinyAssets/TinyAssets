@@ -69,6 +69,10 @@ Do not substitute either platform's local-plugin directory for this remote listi
   blocked: `TINYASSETS_WIKI_CANARY_TOKEN` missing. Approved loader also failed:
   1Password CLI `op` absent; no plaintext fallback file exists. **Not a green canary.**
 
+Local installed MCP SDK supports `2024-11-05`, `2025-03-26`, `2025-06-18`,
+and `2025-11-25` (queried `mcp.shared.version.SUPPORTED_PROTOCOL_VERSIONS`).
+This is local SDK evidence, not an authenticated production negotiation result.
+
 ### Code and product gap disposition
 
 Adopt truthful safety metadata (this PR); preserve provider-neutral MCP/OAuth.
@@ -158,8 +162,8 @@ choice is a gap: current WorkOS OIDC scopes do not express it.
 ## ChatGPT packet
 
 Use the current [Plugins portal](https://platform.openai.com/plugins), verified
-publisher/project, and upload the prepared portable package under
-`docs/ops/app-store-assets/chatgpt/`. It declares the production MCP, no
+publisher/project, and upload [tinyassets-chatgpt.zip](app-store-assets/tinyassets-chatgpt.zip),
+built from `docs/ops/app-store-assets/chatgpt/`. It declares the production MCP, no
 secrets. Set OAuth / DCR in the portal. The published portable MCP JSON schema
 currently rejects per-server `extensions` although O5 documents that OpenAI
 annotation; the package uses the portable subset and leaves auth setup
@@ -270,5 +274,10 @@ search for TinyAssets finds the public listing. No receipt artifact is required.
 
 ## Validation of this PR
 
-Results are recorded in the PR body. The canary is credential-blocked as described
-above; live identity/e2e, deployment and directory listing are not asserted here.
+Local validation: 21 targeted MCP tests, 56 isolation tests, and 587 structural
+guards passed. The first structural run resolved `bash` to unavailable WSL; the
+full rerun passed with Git Bash first on PATH. Ruff, plugin rebuild/import probe,
+OpenSpec validation, portable JSON-schema checks, ZIP integrity and test hygiene
+passed. The canary is credential-blocked as described above; live identity/e2e,
+deployment and directory listing are not asserted. PR #4587 is non-draft. CI scope
+requires a Drain-Review receipt; none was created per the founder instruction.
