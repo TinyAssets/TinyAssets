@@ -9,6 +9,23 @@ as-built specification does not assert deployment or full change completion.
 
 ## Requirements
 
+### Requirement: Browser callback transport stays flow-specific
+The public edge SHALL preserve hosted model binding cookies named
+`__Host-ta-model-` followed by exactly 43 URL-safe characters, only on app routes,
+with Path=/ and the existing host-only Secure, HttpOnly and SameSite rules.
+Client-generated web sign-in states SHALL start with `web.`; the normal web
+entry point continues to use server-owned PKCE. Owner callback routing SHALL match
+only `oa_` or `oa_app_` followed by exactly 43 URL-safe characters.
+
+#### Scenario: Hosted model browser round trip
+- **WHEN** the owner launches hosted model connect and returns from the provider
+- **THEN** the binding cookie survives the edge, the callback deposits the code,
+  and the authenticated originating app can consume it once.
+
+#### Scenario: Web random suffix resembles owner state
+- **WHEN** web sign-in randomness starts with `oa_`
+- **THEN** its `web.` prefix keeps the callback in the web sign-in flow.
+
 ### Requirement: Protected literal action preview
 An eligible `ask_first` HTTP action SHALL retain its literal executable packet
 and trusted owner, agent and turn provenance in protected storage. The bubble

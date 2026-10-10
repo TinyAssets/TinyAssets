@@ -61,12 +61,14 @@ def source_display_name(*, base: Path | str, universe_id: str, provider: str) ->
         return ""
     try:
         from tinyassets.broker.ledger_queries import granted_resource_row
+        from tinyassets.broker.owner_identities import admitted_owner
         from tinyassets.providers.definition import get_definition
 
         definition = get_definition(universe_id, definition_id)
         if definition is None:
             return ""
-        row = granted_resource_row(Path(base), principal=definition.owner_user_id,
+        owner = admitted_owner(Path(base), center=universe_id)
+        row = granted_resource_row(Path(base), principal=owner,
                                    command_center=universe_id, grant_id=definition.ref)
         destination = str(row.get("destination") or "")
     except Exception:  # noqa: BLE001 - a label is never worth failing a reply over

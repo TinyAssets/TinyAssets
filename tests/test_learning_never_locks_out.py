@@ -300,10 +300,12 @@ def test_an_invalid_wait_is_dropped_not_rendered(value):
 # --------------------------------------------------------------------------
 
 
-def test_a_bootstrap_connection_resolves_to_its_installed_preset_name(agent):
+def test_a_bootstrap_connection_resolves_to_its_installed_preset_name(agent, monkeypatch):
     """``model:<preset id>`` is what the guided sign-in deposits; read its name."""
     from tinyassets.providers.source_display import source_display_name
 
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "owner")
     ledger = agent.served.rig.ledger
     with ledger._connect() as conn:
         conn.execute("UPDATE outbound_connections SET destination = ? "
@@ -316,7 +318,10 @@ def test_a_bootstrap_connection_resolves_to_its_installed_preset_name(agent):
     ) == "OpenRouter"
 
 
-def test_a_hand_made_connection_shows_the_owner_s_own_destination(agent):
+def test_a_hand_made_connection_shows_the_owner_s_own_destination(agent, monkeypatch):
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "owner")
+
     from tinyassets.providers.source_display import source_display_name
 
     assert source_display_name(
@@ -325,10 +330,13 @@ def test_a_hand_made_connection_shows_the_owner_s_own_destination(agent):
     ) == "compute:models"
 
 
-def test_a_grant_bound_elsewhere_never_lends_its_name(agent):
+def test_a_grant_bound_elsewhere_never_lends_its_name(agent, monkeypatch):
     """Never label one universe's source with another universe's connection."""
     from tinyassets.providers import definition as definitions
     from tinyassets.providers.source_display import source_display_name
+
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "owner")
 
     foreign = agent.served.rig.ledger.grant_connection(
         grant_id="grant-other", connection_id="conn-models",
@@ -353,10 +361,12 @@ def test_an_unresolvable_source_reports_no_display_name(agent, provider):
     ) == ""
 
 
-def test_the_writer_receipt_carries_the_connection_name(agent):
+def test_the_writer_receipt_carries_the_connection_name(agent, monkeypatch):
     """What the app renders: the connection's name plus the answering model."""
     from tinyassets.providers.execution_receipt import WriterExecutionReceipt
 
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "owner")
     ledger = agent.served.rig.ledger
     with ledger._connect() as conn:
         conn.execute("UPDATE outbound_connections SET destination = ? "
