@@ -29,11 +29,25 @@ itself. Directory entries, announced partnerships and community recipes must
 not be conflated. The cited vendors describe their own integrations; their
 aggregator offerings are evidence for the generic flow, not a TinyAssets dependency.
 
-**Founder direction:** copy the generic ladder: directory as data, then a custom
-MCP link with OAuth sign-in, then agent-written connectors, then browser fallback.
-No per-platform app registration and no third-party aggregators. The owner's
-agent builds its social workflow from those primitives; the platform does not
-ship a separate integration for each social network.
+**Founder direction (2026-10-09, replaces the 2026-10-05 version):** the end
+state is that a user names ANY platform, including one nobody anticipated, and
+taps straight in. Most big platforms (TikTok, LinkedIn, X, YouTube, Instagram,
+Reddit...) only run OAuth for a developer app they have approved, so no OAuth
+path can reach an unanticipated one. Therefore:
+
+1. **Browser sign-in is the universal default.** One tap opens the platform's own
+   normal login page in an owner-bound browser session; the user logs in as usual
+   (Google, passkey, password); the agent keeps that session in the owner's vault
+   and acts through the site. No developer app, no client ID, nothing pasted.
+2. **OAuth API wherever it works with no setup:** self-describing services
+   (RFC 9728 / RFC 8414 discovery with CIMD or DCR) and MCP links, shipped in #4565/#4566.
+3. **Platform-registered apps for a handful of the most-used platforms** (directory
+   entries as data, as Google already is), where the API is worth it. This replaces
+   the old "no per-platform app registration" rule for those platforms only; it is
+   data, never per-platform code.
+
+Still no third-party aggregators. The owner's agent builds its workflows from these
+primitives; the platform does not ship a separate integration per social network.
 
 ## 0. Timeline
 
