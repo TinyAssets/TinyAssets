@@ -6,7 +6,10 @@ import re
 
 MARKER = 'TA_CELL_FAILURE '
 FILES = ('role_decoder.py', 'role_owner_launcher.py', 'role_provider_cell.py',
+         'role_tools.py', 'role_tool_files.py', 'universe_tools.py', 'provider_jail.py',
          'jail_seccomp.py', 'role_git.py', 'role_provision.py', 'library')
+ALIASES = {'ta-decoder.py': 'role_decoder.py', 'ta-owner-launch.py': 'role_owner_launcher.py',
+           'ta-git.py': 'role_git.py', 'ta-provision.py': 'role_provision.py'}
 ERRORS = ('ValueError', 'TypeError', 'KeyError', 'RuntimeError', 'OSError',
           'PermissionError', 'FileNotFoundError', 'ProcessLookupError',
           'ConnectionResetError', 'BrokenPipeError', 'TimeoutError', 'Exception')
@@ -23,6 +26,7 @@ def failure_reason(exc, operation):
     while trace is not None and trace.tb_next is not None:
         trace = trace.tb_next
     filename = os.path.basename(trace.tb_frame.f_code.co_filename) if trace else 'library'
+    filename = ALIASES.get(filename, filename)
     filename = filename if filename in FILES else 'library'
     location = f'{filename}:{min(trace.tb_lineno, 999999) if trace else 0}'
     # Never include exception text, source lines, arguments or locals.

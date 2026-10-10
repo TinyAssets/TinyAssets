@@ -86,6 +86,16 @@ owner code can forge a bounded diagnostic for its own cell. Relay teardown notic
 NOT override native provider error classification. Undelivered stderr SHALL be bounded
 and explicitly reported as truncated.
 
+#### Scenario: A tool cell refuses or exits before returning a complete frame
+- **WHEN** tool maintenance or execution closes, resets or truncates its stream, or refuses launch
+- **THEN** the tool error carries the bounded mapper refusal or authenticated completion reason
+- **AND** immutable deployed script names map to source locations without exposing exception text
+
+#### Scenario: Platform entry count does not prevent an owner's tools from starting
+- **WHEN** a migrated center contains many hidden platform entries
+- **THEN** tool mounts select only owner content before applying the mount-count bound
+- **AND** owner labels, exclusive regular-file inodes and the read-only virtual center remain required
+
 #### Scenario: A decoder rejects a provider launch after its cell proof
 - **WHEN** validation or exec fails before the CLI consumes its stdin
 - **THEN** the daemon logs the bounded reason and the ProviderError carries it even if the
@@ -103,6 +113,8 @@ substitute for this acceptance.
 - **WHEN** the cutover acceptance runs for the selected command center
 - **THEN** both real CLIs receive streaming responses through egress and converse returns
   the expected reply with the corresponding provider identity
+- **AND** each turn invokes real write, read, edit and bash tools through its engine route;
+  successful process results and round-tripped unpredictable file content prove the tool cell ran
 
 ### Requirement: Daemon readers enforce owner labels
 Daemon reads and writes inside an owner's tree SHALL use pinned no-follow descriptors. They

@@ -94,6 +94,19 @@ def test_the_oracle_reuses_the_probes_it_is_built_on():
         assert (REPO / "scripts" / name).is_file(), name
 
 
+@pytest.mark.parametrize('document,expected', [
+    ({'tools': [{'name': 'mcp__engine__write'}]}, ['mcp__engine__write']),
+    ({'input': [{'type': 'additional_tools', 'tools': [
+        {'type': 'namespace', 'name': 'functions', 'tools': [
+            {'type': 'function', 'name': 'write'}, {'type': 'function', 'name': 'read'}]}]}]},
+     ['write', 'read']),
+    ({'input': [{'type': 'message', 'content': 'auxiliary request'}]}, []),
+])
+def test_chat_acceptance_reads_both_vendor_tool_envelopes(document, expected):
+    probe = runpy.run_path(str(REPO / 'scripts/role_chat_probe.py'))
+    assert probe['advertised_tools'](document) == expected
+
+
 def test_runbook_start_dispatches_only_after_enabling(tmp_path):
     start = RUNBOOK.split('## 5. Start', 1)[1].split('## 6.', 1)[0]
     blocks = re.findall(r'```sh\n(.*?)```', start, re.S)

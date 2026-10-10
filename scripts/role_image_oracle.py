@@ -5,7 +5,8 @@
 
 The default migrate,serve,chat stages restore the backup into a disposable volume,
 run the image's migration, verify the real CMD in compose posture, then drive real
-HTTP converse turns for Claude Code and Codex. The production persona, history,
+HTTP converse turns with real read/write/edit/bash for Claude Code and Codex.
+The production persona, history,
 argv, environment construction and engine MCP configuration are built by the real
 server. Only vendor credentials/endpoint are replaced with a local streaming API;
 an internal Docker network and the real egress proxy prevent external API traffic.
@@ -1319,13 +1320,14 @@ def stage_chat(args):
                             text=True, encoding='utf-8', capture_output=True, timeout=600)
     for line in result.stdout.splitlines():
         if line.startswith('PRODUCTION CHAT PASS '):
-            expect(result.returncode == 0, 'real HTTP converse returned both provider streams')
+            expect(result.returncode == 0, 'both HTTP converse turns executed read/write/edit/bash')
             return json.loads(line.removeprefix('PRODUCTION CHAT PASS '))
     # Logs contain owner conversation/route material: retain only fixed diagnostics.
     import re
 
     reasons = re.findall(r'owner cell (?:ended|refused): [A-Za-z0-9_.:=-]+',
                          result.stderr)
+    reasons += re.findall(r'ORACLE FAILURE [A-Za-z0-9_.:=-]+', result.stdout)
     raise RuntimeError('production chat acceptance failed: ' + '; '.join(reasons[-8:])
                        + f'; exit={result.returncode}')
 

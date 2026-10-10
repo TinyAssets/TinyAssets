@@ -28,9 +28,13 @@ def identity(uid):
         raise RuntimeError("decoder role retirement is absent")
 
 
-def tool_mounts(uid):
+def tool_mounts(uid, root_fd=3):
     """Pin only owner content; never mount the command-center root itself."""
-    entries = os.listdir(3)
+    # Platform history/sidecars never enter this view and must not consume its
+    # descriptor/mount budget. A migrated production center has hundreds of them.
+    entries = [name for name in os.listdir(root_fd)
+               if not ((name.startswith('.') and name != '.agent-workspace')
+                       or name in ('owner.json', 'provider_definitions.json'))]
     if len(entries) > 256:
         raise ValueError('tool center has too many immediate entries')
     required = {'.agent-workspace', 'skills', 'prompts', 'extensions',
@@ -39,10 +43,7 @@ def tool_mounts(uid):
         raise ValueError('tool center has not been prepared')
     mounts = ['--tmpfs', '/center']
     for name in sorted(entries):
-        if ((name.startswith('.') and name != '.agent-workspace')
-                or name in ('owner.json', 'provider_definitions.json')):
-            continue
-        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=3)
+        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=root_fd)
         info = os.fstat(fd)
         if stat.S_ISLNK(info.st_mode):
             os.close(fd)

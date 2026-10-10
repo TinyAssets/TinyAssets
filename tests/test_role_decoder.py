@@ -15,6 +15,48 @@ LAUNCHER = runpy.run_path(
     str(Path(__file__).resolve().parents[1] / "deploy/role_owner_launcher.py"))
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='owner inode labels and O_PATH')
+@pytest.mark.parametrize('invalid', [None, 'mount-count', 'hardlink', 'foreign-owner'])
+def test_tool_mount_budget_counts_content_and_retains_inode_guards(tmp_path, invalid):
+    decoder = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'deploy/role_decoder.py'))
+    required = ('.agent-workspace', 'skills', 'prompts', 'extensions',
+                'workflows', 'bin', 'notes', 'wiki')
+    for name in required:
+        (tmp_path / name).mkdir()
+    for index in range(600):
+        (tmp_path / f'.platform-{index}').touch()
+    for name in ('owner.json', 'provider_definitions.json'):
+        (tmp_path / name).touch()
+    (tmp_path / 'identity.md').write_text('owner content')
+    if invalid == 'mount-count':
+        for index in range(256):
+            (tmp_path / f'content-{index}').touch()
+    elif invalid == 'hardlink':
+        os.link(tmp_path / 'identity.md', tmp_path / 'alias')
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    # The decoder exec owns inherited fds. Close the descriptors opened by this
+    # in-process test on success AND refusal, without touching pytest's handles.
+    before = {name for name in os.listdir('/proc/self/fd')
+              if os.path.exists('/proc/self/fd/' + name)}
+    try:
+        if invalid:
+            with pytest.raises(ValueError, match='too many|exclusive owner content inode'):
+                decoder['tool_mounts'](os.getuid() + (invalid == 'foreign-owner'), fd)
+        else:
+            mounts = decoder['tool_mounts'](os.getuid(), fd)
+            destinations = [mounts[i + 2] for i, value in enumerate(mounts)
+                            if value == '--bind-fd']
+            assert set(destinations) == {'/center/' + name for name in (*required, 'identity.md')}
+            assert mounts[-2:] == ['--remount-ro', '/center']
+    finally:
+        for name in set(os.listdir('/proc/self/fd')) - before:
+            try:
+                os.close(int(name))
+            except OSError:
+                pass
+        os.close(fd)
+
+
 def _launcher():
     return object.__new__(LAUNCHER["OwnerLauncher"])
 

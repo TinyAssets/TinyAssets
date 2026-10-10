@@ -7,6 +7,7 @@ relay sockets retain their existing per-center and per-invocation authority.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import math
 import os
@@ -34,6 +35,38 @@ def _center_lock(center):
         return _center_locks.setdefault(center, threading.Lock())
 
 
+@contextlib.contextmanager
+def _tool_cell(client, **kwargs):
+    """Keep the authenticated completion before closing a failed tool stream."""
+    from tinyassets.cell_diagnostics import failure_reason
+    from tinyassets.owner_launcher_client import OwnerLaunchRefused
+
+    try:
+        cell = client.start_cell(**kwargs)
+    except OwnerLaunchRefused as exc:
+        raise tools.UniverseToolError(str(exc)) from None
+    try:
+        yield cell
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+        try:
+            code = cell.wait(5)
+            reason = cell.stop_reason or f'exit={code}'
+        except (OSError, RuntimeError):
+            reason = 'completion-unavailable'
+        raise tools.UniverseToolError(
+            'tool cell failed: ' + failure_reason(exc, 'decoder')
+            + ' (owner cell: ' + reason + ')') from None
+    finally:
+        pending = sys.exc_info()[1]
+        try:
+            cell.close()
+        except (OSError, RuntimeError) as exc:
+            message = 'tool cell cleanup failed: ' + failure_reason(exc, 'decoder')
+            if pending is None:
+                raise tools.UniverseToolError(message) from None
+            pending.add_note(message)
+
+
 def _files(client, *, principal, center, identity, fd, agent_id):
     from tinyassets import storage_accounting
 
@@ -53,7 +86,7 @@ def _files(client, *, principal, center, identity, fd, agent_id):
 
 def _files_exchange(client, *, principal, center, identity, fd, agent_id):
     info = os.fstat(fd)
-    with client.start_cell(kind='tool-files', principal=principal,
+    with _tool_cell(client, kind='tool-files', principal=principal,
             command_center=center.name, identity=identity, directory_fd=fd) as cell:
         cell.stream.settimeout(40)
         with cell.stream.makefile('rb') as reader:
@@ -238,7 +271,7 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                 raise tools.UniverseToolError(
                     f'{below}, so the tool jail will not start; nothing ran') from None
             try:
-                with client.start_cell(kind='tool-jail', principal=principal,
+                with _tool_cell(client, kind='tool-jail', principal=principal,
                         command_center=center.name, identity=identity, directory_fd=fd,
                         extra={'egress': egress_socket is not None, 'ta': ta_socket is not None,
                                'extensions': extension_fd is not None},
