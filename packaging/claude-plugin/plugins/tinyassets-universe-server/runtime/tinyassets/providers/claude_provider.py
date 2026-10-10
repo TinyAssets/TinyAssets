@@ -51,6 +51,7 @@ from tinyassets.providers.owned_process import (
     disk_stop_note,
     kill_owned_tree,
     no_window_kwargs,
+    stderr_excerpt,
 )
 from tinyassets.providers.protocol_encoders import model_receipt
 
@@ -415,15 +416,22 @@ def _no_window_kwargs() -> dict:
 
 
 def _resolve_claude_cmd() -> tuple[list[str], bool]:
-    """Resolve the claude command, handling Windows .cmd/.bat wrappers.
+    """Resolve the claude command to the installed executable's absolute path.
 
-    Returns (base_cmd, use_shell) where base_cmd is the command prefix
-    and use_shell indicates whether to use shell execution.
+    Returns (base_cmd, use_shell) where base_cmd is the command prefix and
+    use_shell indicates whether to use shell execution (Windows .cmd/.bat).
+
+    The path matters: every launch runs in an owner cell whose admission is
+    the image layout alone (``role_provider_cell.shipped_executable``), and
+    whose fixed ``PATH`` has no ``/usr/local/bin``. A bare ``claude`` is
+    refused there before the CLI exists, which is how every served turn after
+    the isolation cutover ended (live 2026-10-09) while each fixture, naming
+    the full path, passed.
     """
     claude_path = shutil.which("claude")
     if claude_path and sys.platform == "win32" and claude_path.lower().endswith((".cmd", ".bat")):
         return [claude_path], True
-    return ["claude"], False
+    return [claude_path or "claude"], False
 
 
 def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
@@ -915,17 +923,21 @@ class ClaudeProvider(BaseProvider):
 
         async def _raise_timeout(bound_is_absolute: bool, allow: float) -> None:
             await self._terminate(proc)
-            check_bwrap_failure(await _finish_stderr())
+            stderr_text = await _finish_stderr()
+            check_bwrap_failure(stderr_text)
+            # A silent CLI usually said why on stderr; carry its last words.
+            said = f"; stderr: {stderr_excerpt(stderr_text)}" if stderr_text.strip() else ""
             if bound_is_absolute:
                 raise _attach(InteractiveDeadlineError(
                     f"claude -p exceeded the {profile.absolute_cap_s:.0f}s "
-                    "absolute interactive cap while still streaming"
+                    "absolute interactive cap while still streaming" + said
                 ))
             raise _attach(ProviderIdleTimeoutError(
                 f"claude -p produced no protocol event for {allow:.0f}s "
-                "(idle watchdog fired; no provider cooldown)"
+                "(idle watchdog fired; no provider cooldown)" + said
             ))
 
+        stream_fault = ""
         try:
             while True:
                 now = time.monotonic()
@@ -975,6 +987,12 @@ class ClaudeProvider(BaseProvider):
                     raise _attach(ProviderProtocolError(
                         "claude -p stream line exceeded the reader buffer limit"
                     ))
+                except OSError as exc:
+                    # A transport fault on stdout is the END of the stream, not
+                    # a verdict: the exit code and stderr below say what the
+                    # CLI did, which a bare ConnectionResetError never could.
+                    stream_fault = f"{type(exc).__name__}: {exc}"[:200]
+                    break
                 if not line:
                     break  # EOF
                 events, malformed = self._parse_line(line)
@@ -1158,8 +1176,13 @@ class ClaudeProvider(BaseProvider):
                     retry_after=retry_after,
                 ))
             if returncode == 1 and elapsed_ms < 5000 and terminal is None:
+                # The verdict is a guess; the CLI's own last words are not.
+                # Without them a refused argument, a missing credential and a
+                # dead API all read as one "unavailable" (live 2026-10-09).
                 raise _attach(ProviderUnavailableError(
                     "claude -p returned exit code 1 quickly -- API likely unavailable"
+                    f"{disk_stop_note(proc)}: {stderr_excerpt(stderr_text)}"
+                    + (f" [stdout {stream_fault}]" if stream_fault else "")
                 ))
             if returncode in _WINDOWS_CRASH_CODES:
                 raise _attach(ProviderUnavailableError(
@@ -1183,7 +1206,8 @@ class ClaudeProvider(BaseProvider):
             if returncode not in (0, None):
                 raise _attach(ProviderError(
                     f"claude -p exit {returncode}{disk_stop_note(proc)}: "
-                    f"{stderr_text[:400]}"
+                    f"{stderr_excerpt(stderr_text)}"
+                    + (f" [stdout {stream_fault}]" if stream_fault else "")
                 ))
             # EOF with a clean/absent exit but NO terminal result: the stream was
             # truncated (blocker J). Classify it as a protocol error rather than a
@@ -1191,6 +1215,8 @@ class ClaudeProvider(BaseProvider):
             raise _attach(ProviderProtocolError(
                 "claude -p stream ended without a terminal result event "
                 "(truncated stream)"
+                + (f"{disk_stop_note(proc)}; stdout {stream_fault}" if stream_fault else "")
+                + (f"; stderr: {stderr_excerpt(stderr_text)}" if stderr_text.strip() else "")
             ))
         finally:
             # Every exit path — normal EOF, a classified raise, an unexpected

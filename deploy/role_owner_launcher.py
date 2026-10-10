@@ -580,7 +580,7 @@ class OwnerLauncher:
                 or not isinstance(request['command_center'], str)
                 or len(received) != (2 if mounted else 1)
                     + int(streaming) + socket_count + extension_count
-                    + int(kind == 'provider-exec')):
+                    + 2 * int(kind == 'provider-exec')):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
@@ -596,7 +596,11 @@ class OwnerLauncher:
                 raise ValueError('owner cell concurrency is exhausted')
             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)
         if kind == 'provider-exec':
-            self._daemon_endpoint(received[-2], socket.SOCK_STREAM)
+            # Ordinary pipes, as a local subprocess would get: stdin's read end
+            # in the data slot, stdout's and stderr's write ends before status.
+            self._daemon_pipe(received[0], os.O_RDONLY)
+            self._daemon_pipe(received[-3], os.O_WRONLY)
+            self._daemon_pipe(received[-2], os.O_WRONLY)
         if kind == 'preview-write':
             ui_id = request['ui_id']
             if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64
@@ -708,7 +712,8 @@ class OwnerLauncher:
                     or not re.fullmatch(r'registry-[a-f0-9]{32}\.sock', source[len(prefix):])):
                 raise ValueError('registry relay is outside the admitted center')
         fd = received[0]
-        self._daemon_endpoint(fd, socket.SOCK_STREAM)
+        if kind != 'provider-exec':
+            self._daemon_endpoint(fd, socket.SOCK_STREAM)
         status_channel = None
         if streaming:
             status_channel = socket.socket(fileno=os.dup(received[-1]))
@@ -729,10 +734,11 @@ class OwnerLauncher:
             raise
         if pid == 0:
             try:
-                stderr_copy = None
+                stdout_copy = stderr_copy = None
                 if kind == 'provider-exec':
                     import fcntl
 
+                    stdout_copy = fcntl.fcntl(received[-3], fcntl.F_DUPFD_CLOEXEC, 20)
                     stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
                 retained = (3,) if mounted else ()
                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
@@ -762,7 +768,7 @@ class OwnerLauncher:
                         os.dup2(sources[index], 6)
                         retained.append(6)
                 os.dup2(fd, 0)
-                os.dup2(fd, 1)
+                os.dup2(fd if stdout_copy is None else stdout_copy, 1)
                 error = (os.open('/dev/null', os.O_WRONLY) if stderr_copy is None
                          else stderr_copy)
                 os.dup2(error, 2)
@@ -993,6 +999,22 @@ class OwnerLauncher:
             raise ValueError('deletion finish does not match quiescent fence')
         del self.delete_fences[machine]
         self.channel.sendall(b'{"op":"DELETE_FINISHED"}')
+
+    def _daemon_pipe(self, fd, direction):
+        """One end of an anonymous pipe the daemon made, open only ``direction``.
+
+        A pipe has no peer credentials; the authenticated request already
+        proves the daemon sent it. What is checked is that it is an unnamed
+        pipe (never a FIFO on a filesystem, a socket or a file), daemon-created
+        and open only in the direction the cell's stdio slot needs.
+        """
+        import fcntl
+
+        info = os.fstat(fd)
+        if (not stat.S_ISFIFO(info.st_mode) or info.st_uid != self.overflow_uid
+                or not os.readlink(f'/proc/self/fd/{fd}').startswith('pipe:[')
+                or fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != direction):
+            raise ValueError('owner cell needs daemon pipes')
 
     def _daemon_endpoint(self, fd, kind):
         if not stat.S_ISSOCK(os.fstat(fd).st_mode):

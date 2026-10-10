@@ -90,6 +90,24 @@ async def aspawn_owned(
                        nested_sandbox=nested_sandbox, options=kwargs)
 
 
+def stderr_excerpt(stderr_text: str, limit: int = 400) -> str:
+    """The part of a CLI's stderr that names its failure, bounded.
+
+    A cell that refused to start the CLI wrote exactly one
+    ``provider cell refused: ...`` line (``tinyassets.role_provider_cell``);
+    that line is the reason. Otherwise the TAIL carries the verdict: a CLI's
+    (or a traceback's) last lines say why it exited, its first lines only
+    that it started.
+    """
+    from tinyassets.role_provider_cell import REFUSAL_PREFIX
+
+    text = stderr_text.strip()
+    for line in text.splitlines():
+        if line.startswith(REFUSAL_PREFIX):
+            return line[:limit]
+    return text if len(text) <= limit else "..." + text[-limit:]
+
+
 def disk_stop_note(proc) -> str:
     """Authenticated cell stop diagnostics, shared by every CLI adapter."""
     if isinstance(proc, OwnerCellProcess):

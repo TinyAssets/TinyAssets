@@ -398,10 +398,24 @@ if __name__ == "__main__":
         sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
         sys.stdout.buffer.flush()
         sys.path.insert(0, '/app')
-        from tinyassets.role_provider_cell import cell_main
+        from tinyassets.role_provider_cell import REFUSAL_EXIT, REFUSAL_PREFIX, cell_main
 
-        raise SystemExit(cell_main(sys.argv[4], execution=sys.argv[1] == 'inside-provider-exec',
-                                   egress='e' in sockets, engine='g' in sockets))
+        try:
+            cell_main(sys.argv[4], execution=sys.argv[1] == 'inside-provider-exec',
+                      egress='e' in sockets, engine='g' in sockets)
+        except Exception as exc:  # noqa: BLE001 - every refusal becomes one bounded line
+            # The cell has nothing to say but why it would not start the CLI.
+            # Our own refusals carry fixed texts; an OS failure (the exec itself,
+            # a snapshot copy) is reduced to its type and errno so no owner byte
+            # or path argument reaches the daemon log.
+            if isinstance(exc, (ValueError, RuntimeError)):
+                reason = str(exc)
+            else:
+                reason = f'{type(exc).__name__} errno={getattr(exc, "errno", None)}'
+            reason = ascii(reason[:200])[1:-1]
+            os.write(2, f'{REFUSAL_PREFIX}{reason}\n'.encode('ascii'))
+            raise SystemExit(REFUSAL_EXIT) from None
+        raise SystemExit(0)
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-video'
             and sys.argv[2] == 'video' and 0 < int(sys.argv[4]) < 100000):
         enter('video', sys.argv[3], int(sys.argv[4]), video=True)

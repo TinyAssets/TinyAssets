@@ -13,6 +13,10 @@ import stat
 
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_ARGS = 32
+#: A cell that refuses to start its CLI says so in ONE stderr line and exits
+#: with this code, so the daemon reports the reason instead of a bare exit.
+REFUSAL_PREFIX = 'provider cell refused: '
+REFUSAL_EXIT = 78
 # Served tool policies have more arguments than discovery commands. The whole
 # launch still fits MAX_CONFIG_BYTES; this is not a process/resource limit.
 MAX_EXEC_ARGS = 128
