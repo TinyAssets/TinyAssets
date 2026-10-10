@@ -1130,15 +1130,30 @@ class OwnerLauncher:
             if not waited and select.select([channel], [], [], 0)[0]:
                 # EOF revokes this launch. Any malformed or forged control
                 # also cancels only this cell; it can never select another PID.
-                _, ancillary, _, _ = channel.recvmsg(
+                packet, ancillary, flags, _ = channel.recvmsg(
                     32, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
+                credentials, unknown = [], False
                 for level, kind, payload in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                        credentials.append(struct.unpack('3i', payload))
+                    else:
+                        unknown = True
                     if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                         handles = array.array('i')
                         handles.frombytes(payload[:len(payload) - len(payload) % handles.itemsize])
                         for handle in handles:
                             os.close(handle)
-                reason = reason or 'revoked'
+                if (not reason and packet == b'PULSE' and not unknown
+                        and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+                        and credentials == [(self.daemon_pid,
+                                             self.overflow_uid, self.overflow_gid)]):
+                    try:
+                        channel.sendall(json.dumps(dict(
+                            op='SPAWN_ALIVE', uid=machine, gid=machine)).encode())
+                    except (BlockingIOError, BrokenPipeError, ConnectionResetError):
+                        reason = 'liveness_channel_unavailable'
+                else:
+                    reason = reason or 'revoked'
             if not waited and reason:
                 try:
                     os.kill(pid, signal.SIGKILL)

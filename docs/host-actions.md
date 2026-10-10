@@ -12,6 +12,12 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Isolation production refusal acceptance (2026-10-10)
+
+| Item | Smallest founder-only action |
+|---|---|
+| Second owner for the post-cutover refusal probe | Supply a separately signed-in tester B account/command center. Runbook ?6.5: B?s cell attempts the founder?s tree and vault, then B?s daemon-side read names the founder?s file; both must refuse. Local UID proofs passed, but no production two-account result is claimed. |
+
 ## Connector directory submissions (2026-10-10)
 
 Packet: [requirements, form answers, assets and isolated reviewer plan](ops/connector-directory-listings.md).

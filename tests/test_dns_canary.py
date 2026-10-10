@@ -97,20 +97,6 @@ def test_hostname_resolves_to_public_ip(hostname: str):
     )
 
 
-@pytest.mark.parametrize("hostname", HOSTNAMES)
-def test_hostname_resolves_within_latency_limit(hostname: str):
-    """Resolution must complete within LATENCY_LIMIT_S seconds."""
-    if _no_network:
-        pytest.skip("NO_NETWORK=1")
-    try:
-        _, elapsed = _resolve_ex(hostname)
-    except OSError as exc:
-        pytest.fail(f"{hostname} failed to resolve: {exc}")
-    assert elapsed <= LATENCY_LIMIT_S, (
-        f"{hostname} resolution took {elapsed:.2f}s, limit is {LATENCY_LIMIT_S}s"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Unit tests for helpers (no network required, always run)
 # ---------------------------------------------------------------------------

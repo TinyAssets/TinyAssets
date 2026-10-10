@@ -50,6 +50,7 @@ class OwnerCell:
         self._client, self._identity = client, identity
         self._pid = os.getpid()
         self._result = None
+        self._status_lock = threading.Lock()
         self.stop_reason = None
         self.revoke_caller = None
         self._closed = False
@@ -67,8 +68,33 @@ class OwnerCell:
             raise RuntimeError('owner cell handle is unavailable')
         if self._result is not None:
             return self._result
-        self._status.settimeout(timeout)
-        answer = self._client._reply(channel=self._status)
+        with self._status_lock:
+            if self._result is not None:
+                return self._result
+            self._status.settimeout(timeout)
+            answer = self._client._reply(channel=self._status)
+            return self._completion(answer)
+
+    def heartbeat(self):
+        """Authenticate a fresh mapper observation of this cell, never stdout."""
+        if os.getpid() != self._pid or self._closed or self._result is not None:
+            return False
+        # A completion reader already owns the channel: do not compete with it.
+        if not self._status_lock.acquire(blocking=False):
+            return False
+        try:
+            self._status.settimeout(5)
+            self._status.sendall(b'PULSE')
+            answer = self._client._reply(channel=self._status)
+            expected = dict(op='SPAWN_ALIVE', uid=self._identity.uid, gid=self._identity.gid)
+            if answer == expected and all(type(answer[k]) is int for k in ('uid', 'gid')):
+                return True
+            self._completion(answer)  # Exit may have raced the pulse.
+            return False
+        finally:
+            self._status_lock.release()
+
+    def _completion(self, answer):
         reason = answer.get('stop_reason')
         if (set(answer) - {'stop_reason'} != {'op', 'returncode', 'uid', 'gid'}
                 or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int

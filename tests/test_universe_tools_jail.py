@@ -676,11 +676,15 @@ def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkey
                              owner_id="workos|alice")
     monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(24 * _MiB / 1024**3))
     many = world.universe_a / "notes" / "many"
+    # Hold the real writer alive at 32 MiB until the polling guard kills it.
+    # A fast finite loop can finish before the first accounting scan; that
+    # exercises exit-time accounting, not this live-kill contract.
     try:
         out = tools.bash(
             world.universe_a,
             "mkdir -p notes/many && for i in $(seq 1 400); do "
-            "head -c 262144 /dev/zero > notes/many/f$i || exit 3; done; echo filled",
+            "head -c 262144 /dev/zero > notes/many/f$i || exit 3; "
+            "if [ $i -eq 128 ]; then sleep 60; fi; done; echo filled",
             agent_id="main",
             timeout=120,
         )

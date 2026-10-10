@@ -100,18 +100,44 @@ def test_daemon_uid_cannot_impersonate_owner_launcher():
             client._close()
 
 
-def test_rejected_reply_closes_all_received_descriptors(tmp_path):
+def test_rejected_reply_closes_all_received_descriptors(tmp_path, monkeypatch):
     assert os.getuid() == 1001
     daemon, impostor = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     with daemon, impostor, (tmp_path / 'private').open('wb') as private:
         client = OwnerLauncherClient(daemon, os.getpid())
         try:
-            before = len(list(Path('/proc/self/fd').iterdir()))
+            received = []
+            closed = []
+            real_recvmsg, real_close = socket.socket.recvmsg, os.close
+
+            def recvmsg(channel, *args):
+                reply = real_recvmsg(channel, *args)
+                if channel is daemon:
+                    for level, kind, data in reply[1]:
+                        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                            fds = array.array('i')
+                            fds.frombytes(data)
+                            received.extend(fds)
+                return reply
+
+            def close(fd):
+                if fd in received and fd not in closed:
+                    # Record the successful close itself; another thread may
+                    # reuse the numeric fd before a later fstat could check it.
+                    real_close(fd)
+                    closed.append(fd)
+                else:
+                    real_close(fd)
+
+            monkeypatch.setattr(socket.socket, 'recvmsg', recvmsg)
+            monkeypatch.setattr(os, 'close', close)
             impostor.sendmsg([b'{"op":"STOPPED"}'], [(
                 socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [private.fileno()]))])
             with pytest.raises(RuntimeError, match='unauthenticated'):
                 client._reply()
-            assert len(list(Path('/proc/self/fd').iterdir())) == before
+            assert len(received) == 1
+            assert closed == received
+            os.fstat(private.fileno())  # the sender still owns its descriptor
         finally:
             client._close()
 
@@ -259,3 +285,90 @@ def test_revoke_reports_first_callsite_without_replacing_mapper_reason():
         assert 'rss_limit' in disk_stop_note(process)
         assert caller not in disk_stop_note(process)
         cell._after_fork()
+
+
+@pytest.mark.parametrize("authorized", [True, False])
+def test_mapper_pulse_keeps_only_its_live_child_and_eof_still_revokes(monkeypatch, authorized):
+    import json
+    import runpy
+
+    scope = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                              / 'deploy/role_owner_launcher.py'))
+    launcher = object.__new__(scope['OwnerLauncher'])
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    mapper.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    reader, writer = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(writer)
+        os.read(reader, 1)
+        os._exit(0)
+    os.close(reader)
+    error_read, error_write = os.pipe()
+    os.close(error_write)
+    os.set_blocking(error_read, False)
+    launcher.jobs = {child: (1, 300001, float('inf'), mapper)}
+    launcher.diagnostics = {child: [error_read, None, b'', None, bytearray(), False, None]}
+    launcher.package_jobs = set()
+    launcher.launch = None
+    launcher.daemon_pid = os.getpid() if authorized else os.getpid() + 1
+    launcher.overflow_uid, launcher.overflow_gid = os.getuid(), os.getgid()
+    monkeypatch.setitem(launcher._service_jobs.__globals__, 'assert_mapper', lambda launch: None)
+    try:
+        status.sendall(b'PULSE')
+        launcher._service_jobs()
+        answer = json.loads(status.recv(4096))
+        if authorized:
+            assert answer == dict(op='SPAWN_ALIVE', uid=300001, gid=300001)
+            assert os.waitpid(child, os.WNOHANG) == (0, 0)
+            status.shutdown(socket.SHUT_WR)
+            launcher._service_jobs()
+            answer = json.loads(status.recv(4096))
+        assert answer['op'] == 'SPAWN_DONE'
+        assert answer['returncode'] == -9 and answer['stop_reason'] == 'revoked'
+        assert not launcher.jobs
+    finally:
+        os.close(writer)
+        status.close()
+        mapper.close()
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            pass
+
+
+@pytest.mark.parametrize('answer,expected', [
+    ({'op': 'SPAWN_ALIVE', 'uid': 300001, 'gid': 300001}, True),
+    ({'op': 'SPAWN_DONE', 'returncode': 0, 'uid': 300001, 'gid': 300001}, False),
+])
+def test_cell_heartbeat_retains_a_racing_completion(answer, expected):
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    stream, peer = socket.socketpair()
+    with status, mapper, stream, peer:
+        cell = OwnerCell(SimpleNamespace(_reply=lambda **kwargs: answer), stream, status,
+                         OwnerIdentity(300001, 300001))
+        assert cell.heartbeat() is expected
+        assert mapper.recv(32) == b'PULSE'
+        if not expected:
+            assert cell.wait() == 0  # cached; must not read a second receipt
+
+
+def test_heartbeat_rejects_an_unauthenticated_mapper_reply():
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    daemon, impostor = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    status, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    stream, peer = socket.socketpair()
+    with daemon, impostor, status, mapper, stream, peer:
+        client = OwnerLauncherClient(daemon, os.getpid())
+        cell = OwnerCell(client, stream, status, OwnerIdentity(300001, 300001))
+        mapper.sendall(b'{"op":"SPAWN_ALIVE","uid":300001,"gid":300001}')
+        try:
+            with pytest.raises(RuntimeError, match='unauthenticated'):
+                cell.heartbeat()
+        finally:
+            client._close()
