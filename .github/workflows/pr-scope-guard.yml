@@ -340,7 +340,10 @@ jobs:
               echo "   Drain-Review-Head: ${HEAD_OID}"
               echo '   ```'
               echo ""
-              echo "   Reasoning and evidence go BELOW them."
+              echo "   Above 8 release-critical files, the SAME comment must also have"
+              echo "   \`Drain-Review-Release-Critical: ${HIT_COUNT}\` as its THIRD non-blank line."
+              echo "   The count must match exactly; the \`infra-change\` label is still required."
+              echo "   Reasoning and evidence go BELOW the receipt lines."
               echo ""
               echo "2. The PR BODY then cites that comment. These must be its"
               echo "   FIRST three non-blank lines:"
@@ -405,31 +408,34 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "</details>" >> "$GITHUB_STEP_SUMMARY"
 
-          # HARD CAPS — no label bypasses these. A label is a declaration of intent,
-          # not authorization: it can be applied by any writer, is not bound to a head
-          # SHA, and goes stale the moment someone pushes again. PR #1491 is the case
-          # that proves it — 386 changed files and 16 release-critical, which a bare
-          # label would have waved straight through into auto-merge.
-          # The RISK is release-critical breadth, not raw size. #1491 was dangerous
-          # because it carried 16 release-critical files while claiming to be a
-          # two-file auth fix — not merely because it was large. So:
-          #
-          #   MAX_SENSITIVE is a HARD cap. No label clears it. Past this, a branch
-          #   is almost certainly dragging an unmerged lineage and must be rebased.
-          #
-          #   Total size is only a PROXY for that bloat, so it is declarable. PR
-          #   #1490 proved the difference: a legitimate 166-file recovery touching
-          #   ONE workflow was blocked by a size cap it had no way to satisfy, while
-          #   posing none of the risk the cap exists to catch.
+          # Default cap: PR #1491 claimed a two-file auth fix but carried 16
+          # release-critical files from an unmerged lineage. A label alone still
+          # cannot clear this cap. Founder decision 2026-10-09: the SAME cited,
+          # trusted, head/diff-bound approval may explicitly declare the exact
+          # count. Reuse the blocking decision and its frozen comment inventory.
           MAX_SENSITIVE=8
           if [ "$HIT_COUNT" -gt "$MAX_SENSITIVE" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Blocked — beyond the label's authority.** ${HIT_COUNT} release-critical files (hard cap ${MAX_SENSITIVE})." >> "$GITHUB_STEP_SUMMARY"
-            echo "A branch touching this many release-critical files is almost certainly" >> "$GITHUB_STEP_SUMMARY"
-            echo "carrying an unmerged lineage. Rebase onto the target branch, or split it." >> "$GITHUB_STEP_SUMMARY"
-            echo "The \`infra-change\` label cannot clear this." >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: BLOCKED — ${HIT_COUNT} release-critical files exceeds hard cap ${MAX_SENSITIVE}"
-            exit 1
+            if ! python scripts/drain_review_gate.py --blocking-review \
+                --release-critical-count "$HIT_COUNT" \
+                --head "${HEAD_OID}" \
+                --diff-key "${DIFF_KEY}" \
+                --body-file "$RUNNER_TEMP/pr-body-gate.md" \
+                --review-repo "${REPO}" \
+                --review-pr "${PR}" \
+                --review-comments-file "$COMMENTS_FILE"; then
+              {
+                echo ""
+                echo "**Blocked -- ${HIT_COUNT} release-critical files exceeds the default cap ${MAX_SENSITIVE}.**"
+                echo "The SAME approval comment cited by the PR body must declare"
+                echo "\`Drain-Review-Release-Critical: ${HIT_COUNT}\` as its THIRD non-blank line,"
+                echo "immediately after its APPROVE verdict and current head/diff binding."
+                echo "Missing or unequal counts, other comments, and declarations below the top receipt do not count."
+                echo "Rebase or split unintended scope; the \`infra-change\` label alone cannot clear this cap."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "scope guard: BLOCKED -- cited receipt does not declare exactly ${HIT_COUNT} release-critical files"
+              exit 1
+            fi
+            echo "The cited approval receipt explicitly declares all ${HIT_COUNT} release-critical files; default cap ${MAX_SENSITIVE} cleared." >> "$GITHUB_STEP_SUMMARY"
           fi
 
           LARGE_TOTAL=150

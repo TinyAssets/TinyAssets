@@ -226,6 +226,8 @@ def _run_blocking(
     pr: int = PR,
     comments: tuple[tuple[str, ...], ...] | None = TRUSTED_COMMENTS,
     comments_raw: str | None = None,
+    release_critical_count: int | None = None,
+    diff_key: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     body_path = tmp_path / "body.md"
     body_path.write_text(body, encoding="utf-8")
@@ -266,7 +268,73 @@ def _run_blocking(
         "--review-comments-file",
         str(comments_path),
     ]
+    if release_critical_count is not None:
+        cmd += ["--release-critical-count", str(release_critical_count)]
+    if diff_key is not None:
+        cmd += ["--diff-key", diff_key]
     return subprocess.run(cmd, text=True, capture_output=True, check=False)
+
+
+@pytest.mark.parametrize(
+    "binding", [f"Drain-Review-Head: {HEAD}", "Drain-Review-Diff: " + "c" * 64],
+)
+@pytest.mark.parametrize(
+    ("declaration", "allowed"),
+    [
+        ("Drain-Review-Release-Critical: 16", True),
+        ("Drain-Review-Release-Critical: 15", False),
+        ("Drain-Review-Release-Critical: 17", False),
+        ("", False),
+        ("Evidence\nDrain-Review-Release-Critical: 16", False),
+        ("```\nDrain-Review-Release-Critical: 16\n```", False),
+    ],
+)
+def test_release_critical_count_on_matched_receipt(
+    tmp_path: Path, binding: str, declaration: str, allowed: bool,
+) -> None:
+    approval = f"Drain-Review-Verdict: APPROVE\n{binding}\n"
+    completed = _run_blocking(
+        tmp_path,
+        body=approval + f"Drain-Review-Artifact: {ARTIFACT_URL}\n",
+        comments=((ARTIFACT_URL, "OWNER", approval + declaration),),
+        release_critical_count=16,
+        diff_key="c" * 64,
+    )
+    assert completed.returncode == (0 if allowed else 2)
+    assert completed.stdout.strip() == ("allow" if allowed else "deny")
+
+
+@pytest.mark.parametrize(
+    "fault", ["other-comment", "wrong-head", "wrong-diff", "untrusted", "body-only",
+              "wrong-pr", "malformed-inventory"],
+)
+def test_release_critical_declaration_cannot_borrow_authority(tmp_path: Path, fault: str) -> None:
+    approval = f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {HEAD}\n"
+    declaration = "Drain-Review-Release-Critical: 16\n"
+    comment = approval + declaration
+    url = ARTIFACT_URL
+    association = "OWNER"
+    if fault == "wrong-head":
+        comment = comment.replace(HEAD, "b" * 40)
+    elif fault == "wrong-diff":
+        comment = comment.replace(f"Drain-Review-Head: {HEAD}", "Drain-Review-Diff: " + "d" * 64)
+    elif fault == "untrusted":
+        association = "NONE"
+    elif fault in {"other-comment", "body-only"}:
+        comment = approval
+    elif fault == "wrong-pr":
+        url = f"https://github.com/{REPO}/pull/{PR + 1}#issuecomment-999"
+    comments = [(url, association, comment)]
+    if fault == "other-comment":
+        comments.append((ARTIFACT_URL + "0", "OWNER", approval + declaration))
+    completed = _run_blocking(
+        tmp_path, body=_receipt_body(url=url) + declaration,
+        comments=tuple(comments),
+        comments_raw="{" if fault == "malformed-inventory" else None,
+        release_critical_count=16, diff_key="c" * 64,
+    )
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "deny"
 
 
 def test_any_pr_without_a_receipt_is_denied_naming_what_is_missing(tmp_path: Path) -> None:
@@ -1358,7 +1426,7 @@ def test_no_step_checks_out_the_pr_head(workflow: Path) -> None:
 def test_scope_guard_passes_the_computed_key_verbatim() -> None:
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
     assert "DIFF_KEY: ${{ steps.diffkey.outputs.key }}" in text
-    assert text.count('--diff-key "${DIFF_KEY}"') == 1
+    assert text.count('--diff-key "${DIFF_KEY}"') == 2
     assert '"${BASE_OID}" "${HEAD_OID}"' in text
     assert "base.sha }}" in text and "head.sha }}" in text
 

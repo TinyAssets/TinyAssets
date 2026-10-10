@@ -195,7 +195,8 @@ def artifact_names_trusted_comment(
 
 
 def published_approval_urls(
-    stream: str, *, head: str, diff_key: str | None = None
+    stream: str, *, head: str, diff_key: str | None = None,
+    release_critical_count: int | None = None,
 ) -> frozenset[str] | None:
     """URLs of comments that PUBLISH a trusted approval of `head`.
 
@@ -210,6 +211,11 @@ def published_approval_urls(
     * the comment must itself attest `APPROVE` at this exact head. A trusted
       author's comment saying `VERDICT: BLOCK` is not an approval, and before
       this filter existed the gate accepted one as the artifact.
+
+    When a release-critical count is required, the SAME comment must declare
+    it as its third non-blank line, immediately after the approval binding.
+    Filtering this inventory keeps the PR body's artifact URL authoritative:
+    a declaration in any other comment cannot authorize the cited receipt.
 
     Returns `None` on anything unparseable — a partially understood inventory
     must deny, never silently shrink to a set that a receipt cannot match and
@@ -243,6 +249,12 @@ def published_approval_urls(
         if association in _TRUSTED_ASSOCIATIONS and comment_attests_approval(
             body, head, diff_key
         ):
+            if release_critical_count is not None:
+                lines = leading_lines(body, 3)
+                if len(lines) != 3 or lines[2] != (
+                    f"Drain-Review-Release-Critical: {release_critical_count}"
+                ):
+                    continue
             urls.add(url.lower())
     return frozenset(urls)
 
@@ -339,7 +351,10 @@ def _blocking_review(args: argparse.Namespace) -> int:
     trusted = (
         None
         if comments is None
-        else published_approval_urls(comments, head=args.head, diff_key=key)
+        else published_approval_urls(
+            comments, head=args.head, diff_key=key,
+            release_critical_count=args.release_critical_count,
+        )
     )
     if body is not None and review_allows_merge(
         head=args.head,
@@ -389,6 +404,11 @@ def main() -> int:
         "stderr. Requires --review-repo, --review-pr, --review-comments-file.",
     )
     parser.add_argument("--review-repo", default="", help="owner/repo of this PR.")
+    parser.add_argument(
+        "--release-critical-count", type=int,
+        help="With --blocking-review, also require the cited approval comment's "
+        "third non-blank line to be Drain-Review-Release-Critical: <this count>.",
+    )
     parser.add_argument("--review-pr", type=int, help="This PR's number.")
     parser.add_argument(
         "--review-comments-file",
@@ -397,6 +417,11 @@ def main() -> int:
         "reviews and review comments. Unreadable => deny.",
     )
     args = parser.parse_args()
+
+    if args.release_critical_count is not None and (
+        not args.blocking_review or args.release_critical_count < 0
+    ):
+        parser.error("--release-critical-count needs --blocking-review and a nonnegative count")
 
     if args.blocking_review:
         if args.review_pr is None or not args.review_repo:
