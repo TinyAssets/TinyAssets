@@ -163,7 +163,7 @@ class CellOutput:
                 # Relay/bwrap stderr is only diagnostic context. In particular,
                 # routine relay teardown must not replace native auth/rate-limit
                 # classification performed by the provider's protocol reader.
-                if code and reason.startswith(('decoder:', 'launcher:')):
+                if code < 0 or (code and reason.startswith(('decoder:', 'launcher:'))):
                     from tinyassets.exceptions import ProviderError
 
                     message = 'provider cell ended' + disk_stop_note(self.process)
