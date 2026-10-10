@@ -17,6 +17,21 @@ pytestmark = [
 ]
 
 
+def test_cell_diagnostics_never_echo_exception_material():
+    from tinyassets.cell_diagnostics import PATTERN, failure_reason
+
+    secret = 'owner-private-key-and-path'
+    try:
+        raise PermissionError(13, secret, '/' + secret)
+    except PermissionError as exc:
+        reason = failure_reason(exc, 'decoder')
+    assert secret not in reason
+    assert 'PermissionError:errno=13' in reason
+    assert PATTERN.fullmatch(('TA_CELL_FAILURE ' + reason + '\n').encode())
+    assert not PATTERN.search(b'TA_CELL_FAILURE owner-private-key-and-path\n')
+    assert not PATTERN.search(b'TA_CELL_FAILURE decoder:secret.py:1:ValueError:errno=None\n')
+
+
 def test_daemon_uid_cannot_impersonate_owner_launcher():
     assert os.getuid() == 1001  # linux_oracle.py's unprivileged venue
     daemon, impostor = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -136,6 +151,10 @@ def test_mapper_resource_kills_have_authenticated_completion_reason(monkeypatch,
     monkeypatch.setitem(launcher._service_jobs.__globals__, 'package_usage', measure)
     monkeypatch.setitem(launcher._service_jobs.__globals__, 'assert_mapper', lambda launch: None)
     launcher.jobs = {child: (1, 300001, float('inf'), mapper)}
+    error_read, error_write = os.pipe()
+    os.close(error_write)
+    os.set_blocking(error_read, False)
+    launcher.diagnostics = {child: [error_read, None, b'', None]}
     launcher.package_jobs = {child}
     launcher.launch = None
     try:

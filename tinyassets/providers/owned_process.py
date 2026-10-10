@@ -118,7 +118,7 @@ class OwnerCellProcess:
     pid = None
 
     def __init__(self, cell, reader, writer):
-        self.cell, self.stdout, self.stdin = cell, reader, CellStdin(writer)
+        self.cell, self.stdout, self.stdin = cell, CellOutput(self, reader), CellStdin(writer)
         self._transport = writer.transport
         self.returncode = None
         self._waiter = None
@@ -143,6 +143,47 @@ class OwnerCellProcess:
             self._waiter = asyncio.create_task(asyncio.to_thread(reap))
         self.returncode = await asyncio.shield(self._waiter)
         return self.returncode
+
+
+class CellOutput:
+    """Collect the independent lifetime reason before surfacing a stream reset."""
+
+    def __init__(self, process, reader):
+        self.process, self.reader = process, reader
+
+    def __getattr__(self, name):
+        return getattr(self.reader, name)
+
+    async def _read(self, method, *args):
+        try:
+            result = await getattr(self.reader, method)(*args)
+            if not result and not (method == 'read' and args == (0,)):
+                code = await self.process.wait()
+                reason = getattr(self.process.cell, 'stop_reason', '') or ''
+                if code and reason.startswith(('decoder:', 'launcher:', 'bwrap:', 'relay:')):
+                    from tinyassets.exceptions import ProviderError
+
+                    message = 'provider cell ended' + disk_stop_note(self.process)
+                    logger.error('%s', message)
+                    raise ProviderError(message)
+            return result
+        except (ConnectionResetError, BrokenPipeError) as exc:
+            from tinyassets.exceptions import ProviderError
+
+            try:
+                await asyncio.wait_for(self.process.wait(5), 6)
+                reason = disk_stop_note(self.process)
+            except (OSError, RuntimeError, TimeoutError):
+                reason = ' (owner cell: completion unavailable)'
+            message = 'provider cell stream failed' + reason
+            logger.error('%s', message)
+            raise ProviderError(message) from exc
+
+    async def readline(self):
+        return await self._read('readline')
+
+    async def read(self, size=-1):
+        return await self._read('read', size)
 
 
 def kill_owned_tree(proc) -> None:

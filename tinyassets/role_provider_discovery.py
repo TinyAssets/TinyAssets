@@ -163,17 +163,22 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
         cell.close()
         raise
     try:
-        header = await reader.readline()
+        header = await proc.stdout.readline()
         if not header.endswith(b'\n') or len(header) > MAX_PROOF_BYTES:
             raise RuntimeError('provider discovery cell ended before its proof')
         check_proof(json.loads(header).get('cell'), identity, source, sockets=sockets)
         writer.write(config)
         await writer.drain()
-    except BaseException:
+    except BaseException as exc:
+        from tinyassets.exceptions import ProviderError
+        from tinyassets.providers.owned_process import disk_stop_note
+
+        proc.revoke()
+        await proc.wait()
         writer.close()
         if error_writer is not None:
             error_writer.close()
-        proc.revoke()
-        await proc.wait()
-        raise
+        if not isinstance(exc, Exception):
+            raise
+        raise ProviderError('provider cell startup failed' + disk_stop_note(proc)) from exc
     return proc
