@@ -2374,7 +2374,7 @@
         "ta-core-ci-shards": 632
       }
     },
-    "comparison_limits": "One observed completed run before and after, not a controlled benchmark or future timing guarantee. Cache warmth and changed workload vary. Tests includes the new real-image acceptance; comparable total also includes packaging, preview-security, invariants and the formerly duplicated Docker/traffic jobs. Administrative metadata/actionlint workflows are excluded on both sides."
+    "comparison_limits": "Historical workload only: superseded by the fix-round restoration of PR jail/browser proofs and affected-test jail execution. These earlier speedup numbers do not describe the restored workload. Full hosted re-measurement and exact head/run IDs are maintained in PR #4598. One observed completed run before and after, not a controlled benchmark or future timing guarantee. Cache warmth and changed workload vary. Tests includes the new real-image acceptance; comparable total also includes packaging, preview-security, invariants and the formerly duplicated Docker/traffic jobs. Administrative metadata/actionlint workflows are excluded on both sides."
   },
   "validation": {
     "linux_oracle": "318 passed, no skips, 15.27 seconds",

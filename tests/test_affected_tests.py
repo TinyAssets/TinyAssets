@@ -112,7 +112,10 @@ def test_a_changed_test_runs_and_a_deleted_one_does_not(tmp_path):
     assert at.select(["tests/test_mine.py", "tests/test_gone.py"], root)[0] == [
         "tests/test_mine.py"
     ]
-    assert at.pr_tier(None, root) == ['tests/test_mine.py']
+    assert at.pr_tier(None, root) == [
+        'tests/test_browser.py', 'tests/test_cell.py', 'tests/test_cloud.py',
+        'tests/test_long.py', 'tests/test_mine.py', 'tests/test_shell.py', 'tests/test_world.py',
+    ]
     assert at.pr_tier([], root) == []
     for path in ('Dockerfile', 'tinyassets/role_tools.py', 'deploy/role_decoder.py',
                  'scripts/core_capability_image.py', '.github/workflows/tests.yml'):

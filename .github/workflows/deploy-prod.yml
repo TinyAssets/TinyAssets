@@ -73,8 +73,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    # 15 min of deploy work plus up to 55 for "Wait for in-flight turns".
-    timeout-minutes: 100
+    # 55 min for deploy/probes/rollback plus up to 55 for in-flight turns.
+    timeout-minutes: 110
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -567,6 +567,7 @@ jobs:
         id: core_canary
         uses: ./.github/actions/core-capability-canary
         continue-on-error: true
+        timeout-minutes: 10
         with:
           config: ${{ secrets.TINYASSETS_CORE_CANARY_CONFIG }}
           health-token: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
@@ -585,7 +586,7 @@ jobs:
 
       # The app is the second public surface this deploy can break, and the MCP
       # canary says nothing about it: the connector can be perfectly green while
-      # /app 404s. Folded into the same rollback condition below.
+      # /app 404s. Observations alert; paired image evidence selects rollback.
       - name: Public app-surface probe
         id: app_probe
         continue-on-error: true
@@ -629,13 +630,10 @@ jobs:
       # to a login page instead), this fails loudly and names the code rather
       # than quietly accepting a redirect our own origin could also produce.
       #
-      # No rollback either way. The rollback below keys on the canary and
-      # app-probe outcomes, not on this step, so a red gate stops the deploy
-      # without swapping a healthy image back out of production. That is
-      # detection, not containment: an image rollback would not restore a
-      # missing Cloudflare policy.
+      # Alert only: an image rollback cannot restore a missing Cloudflare policy.
       - name: Verify CF Access gates the direct origin (expects 403)
         id: access-gate
+        continue-on-error: true
         env:
           DIRECT_ORIGIN: ${{ vars.TINYASSETS_INTERNAL_ORIGIN_NAME || 'mcp.tinyassets.io' }}
         run: |
@@ -721,13 +719,13 @@ jobs:
           pip install cryptography==49.0.0
           python scripts/core_capability_regression.py
 
-      - name: Roll back if the public canary is red
+      - name: Roll back a reproduced platform regression
         if: ${{ always() && steps.deploy.outputs.rc == '0' && steps.core_regression.outputs.rollback == 'true' }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |
           set -euo pipefail
-          echo "::error::a public surface (MCP canary or app probe) went red after a fresh deploy — rolling back to the captured previous image"
+          echo "::error::platform failure reproduced only in candidate; restoring the proven previous image"
           if [ -z "${PREV_IMAGE}" ]; then
             echo "::error::no previous image captured; manual rollback required"; exit 3
           fi

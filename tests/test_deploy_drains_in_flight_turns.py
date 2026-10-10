@@ -45,7 +45,7 @@ SERVER = REPO / "tinyassets" / "universe_server.py"
 
 #: What the deploy job allows for deploy work, from `.github/workflows/deploy-prod.yml`:
 #: the job's timeout less the "Wait for in-flight turns" step's.
-DEPLOY_JOB_BUDGET_S = 15 * 60
+DEPLOY_JOB_BUDGET_S = 55 * 60
 #: How many times one run can converge, and therefore drain: the forward converge,
 #: plus the rollback converge when the new image does not become acceptable.
 #: Missing this is what made the first version's budget check wrong.
@@ -183,7 +183,13 @@ def test_the_worst_case_deploy_still_fits_inside_the_job():
     grace = _compose_grace_s()
     budget = _workflow_job_timeout_s()
     assert budget == DEPLOY_JOB_BUDGET_S, "the job budget changed; re-derive the bound"
-    worst_case = CONVERGES_PER_RUN * (grace + _health_timeout_s()) + DEPLOY_OVERHEAD_S
+    workflow = yaml.safe_load((REPO / ".github/workflows/deploy-prod.yml").read_text())
+    steps = workflow["jobs"]["deploy"]["steps"]
+    # Reserve both advisory live probing and the paired image comparison before
+    # the rollback. These must not consume the rollback's drain/health budget.
+    probes = sum(next(s for s in steps if s.get("id") == name)["timeout-minutes"] * 60
+                 for name in ("core_canary", "core_regression"))
+    worst_case = CONVERGES_PER_RUN * (grace + _health_timeout_s()) + DEPLOY_OVERHEAD_S + probes
     assert worst_case <= budget, (
         f"worst case {worst_case}s ({CONVERGES_PER_RUN} x ({grace}s drain + "
         f"{_health_timeout_s()}s health) + {DEPLOY_OVERHEAD_S}s overhead) exceeds the "

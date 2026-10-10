@@ -278,9 +278,10 @@ def test_access_gate_step_present():
     assert access_steps, "deploy job must have a CF Access gate verification step"
     gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
     assert gate.get("id") == "access-gate"
+    assert gate.get("continue-on-error") is True
     # After the public surfaces, before the rollback, and only on a green run.
     canary = _step_named(wf, "Public MCP canary (--assert-handles)")
-    rollback = _step_named(wf, "Roll back if the public canary is red")
+    rollback = _step_named(wf, "Roll back a reproduced platform regression")
     assert steps.index(canary) < steps.index(gate) < steps.index(rollback)
     assert "if" not in gate, "the gate runs only when the deploy is otherwise green"
     # A red gate must NOT revert a healthy image: an image rollback cannot
@@ -297,7 +298,7 @@ def test_access_gate_blocks_on_200():
             run_script = step.get("run", "") or ""
             assert "exit 1" in run_script, (
                 "Access gate step must exit 1 when direct URL returns 200 "
-                "(CF Access disabled — this is a deploy-blocking security failure)"
+                "(CF Access disabled — this must alert without rolling back an image)"
             )
             # The step must NOT be unconditionally blocking — tunnel-down (000)
             # is advisory. Verify exit 1 is guarded (inside an if-block).
@@ -409,7 +410,9 @@ def test_access_gate_treats_our_own_401_as_an_open_gate():
 
 def test_rollback_step_present():
     steps = _steps(_load())
-    rollback = next(s for s in steps if s.get("name") == "Roll back if the public canary is red")
+    rollback = next(
+        s for s in steps if s.get("name") == "Roll back a reproduced platform regression"
+    )
     assert (
         rollback["if"] == "${{ always() && steps.deploy.outputs.rc == '0' && "
         "steps.core_regression.outputs.rollback == 'true' }}"
@@ -449,7 +452,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     snapshot = _step_named(wf, "Snapshot failed candidate evidence (before rollback)")
     sanitize = _step_named(wf, "Sanitize failed candidate diagnostics")
     upload = _step_named(wf, "Upload failed candidate startup diagnostics")
-    rollback = _step_named(wf, "Roll back if the public canary is red")
+    rollback = _step_named(wf, "Roll back a reproduced platform regression")
     terminal = _step_named(wf, "Publish release-state receipt")
 
     # The ONLY thing between the deploy and the rollback is the raw snapshot.
@@ -713,7 +716,7 @@ def test_canary_rollback_restores_the_bundle_before_the_image():
     """Converging PREV_IMAGE against the NEW compose file rolls back half a change."""
     wf = _load()
     rollback = next(
-        (s for s in _steps(wf) if s.get("name") == "Roll back if the public canary is red"),
+        (s for s in _steps(wf) if s.get("name") == "Roll back a reproduced platform regression"),
         None,
     )
     assert rollback is not None, "the canary rollback step must exist"

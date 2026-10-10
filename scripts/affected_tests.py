@@ -44,7 +44,6 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
-import json
 import os
 import re
 import subprocess
@@ -423,15 +422,11 @@ def changed_files(base: str) -> list[str]:
 
 
 def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
-    """PRs run affected fast units; real execution belongs to the image gate.
+    """Deduplicate full structural files; retain affected execution proofs.
 
-    Slow files remain in the existing merge/deploy/scheduled tiers. This is a
-    selection rule, not a marker that lets a failed capability skip its gate.
-    Unknown durations stay selected; measured files over five seconds move out.
-    Integration fixtures and actual shell calls also require the execution
-    venue, even when old timing data is absent or was measured with seam mocks.
+    Required CI's existing heavy-file exclusion still applies. Neither duration
+    nor a jail/browser marker can remove an affected file from the PR run.
     """
-    durations = json.loads((root / '.github/test-durations.json').read_text())
     heavy = {line.split('#', 1)[0].strip() for line in
              (root / '.github/heavy-test-files.txt').read_text().splitlines()}
     # The required structural job already executes these exact full files.
@@ -445,34 +440,7 @@ def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
         structural_files = {target for target in module.targets() if '::' not in target}
     candidates = selected if selected is not None else sorted(
         p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py'))
-    result = []
-    for name in candidates:
-        if name in structural_files:
-            continue
-        source = (root / name).read_text(encoding='utf-8')
-        tree = ast.parse(source)
-        shell_modules = {
-            alias.asname or alias.name
-            for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
-            and node.module == 'tinyassets'
-            for alias in node.names if alias.name == 'universe_tools'
-        }
-        execution_tier = any(
-            isinstance(node, ast.Attribute) and node.attr in (
-                'real_jail', 'role_split', 'real_browser', 'slow')
-            or isinstance(node, ast.ImportFrom) and
-            (node.module or '').startswith((
-                'playwright', 'selenium', 'tests.cloud_runtime_fixture',
-                'tests.test_universe_tools_jail'))
-            or isinstance(node, ast.Import) and any(
-                alias.name.startswith(('playwright', 'selenium')) for alias in node.names)
-            or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr == 'bash' and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in shell_modules
-            for node in ast.walk(tree))
-        if name not in heavy and durations.get(name, 0) <= 5 and not execution_tier:
-            result.append(name)
-    return result
+    return [name for name in candidates if name not in structural_files and name not in heavy]
 
 
 def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
@@ -491,7 +459,7 @@ def main() -> int:
     ap.add_argument("--base", help="git ref to diff against (merge-base ...HEAD)")
     ap.add_argument("--changed", nargs="*", help="explicit changed paths instead of --base")
     ap.add_argument("--out", help="write the selection here; ALL means the whole suite")
-    ap.add_argument('--pr', action='store_true', help='select affected fast units for a PR')
+    ap.add_argument('--pr', action='store_true', help='select affected tests for a PR')
     ap.add_argument(
         "--gate",
         action="store_true",
@@ -520,7 +488,7 @@ def main() -> int:
         selected, reasons = None, [f"selection failed, running the whole suite: {exc}"]
     if args.pr:
         selected = pr_tier(selected)
-        reasons.append('PR tier: affected fast units; execution seams run in the image gate')
+        reasons.append('PR tier: affected tests in the jail; full structural files deduplicated')
     body = "ALL\n" if selected is None else "".join(f"{t}\n" for t in selected)
     for line in reasons:
         print(line, file=sys.stderr)

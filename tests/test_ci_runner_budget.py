@@ -52,14 +52,11 @@ def test_mobile_builds_do_not_run_on_pull_requests() -> None:
 
 #: Heavy `pull_request` workflows that skip while a PR is a draft, mapped to the
 #: job that carries the condition. Measured 2026-10-03 over the last 100
-#: completed PR runs: these five spent 311 of 436 runner-minutes, and
-#: merge-group runs queue behind them.
+#: completed PR runs. Isolation proofs run even on draft PRs.
 _DRAFT_SKIPPING = {
     "preview-security.yml": "contract",
     "build-bundle.yml": "stage-and-probe",
     "docker-build.yml": "build-smoke",
-    "real-browser-proof.yml": "real-browser-proof",
-    "linux-jail-proof.yml": "linux-jail-proof",
 }
 
 #: Branch-protection contexts on `main`, read 2026-10-03. A job whose name is

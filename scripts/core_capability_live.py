@@ -404,6 +404,13 @@ async def exercise(config, http, token, report):
         names = {tool.name for tool in await client.list_tools()}
         if {"read", "write", "edit", "bash"} <= names:
             await direct_tools(client, config, report, nonce, scratch)
+        # Model output is an advisory observation even when it claims a tool
+        # failed. Keep its missing/invalid evidence out of rollback selection.
+        report["model_dependent"] = ["chat_stream"]
+        if not report.get("direct_observations"):
+            report["model_dependent"] += [
+                "read", "write", "edit", "bash", "read_image", "ta", "connected_service"
+            ]
         try:
             await model_probe()
         except Exception as exc:
@@ -469,7 +476,11 @@ async def run(report):
                     raise DaemonRestart() from None
             raise
         report["active_capability"] = "public_mcp"
-        after = await health(http, report)
+        try:
+            after = await health(http, report)
+        except Exception:
+            # The final pulse can hit the restart window just like a tool call.
+            raise DaemonRestart() from None
         if report.get("health_failure"):
             return
         if before["boot_id"] != after["boot_id"]:
@@ -512,7 +523,13 @@ async def collect():
         if report.get("configuration_missing"):
             report["warnings"].append(dict(capability="canary", code="canary_not_provisioned"))
             return report
-        report["failures"] = validate_report(report)
+        for failure in validate_report(report):
+            destination = (
+                "warnings"
+                if failure["capability"] in report.get("model_dependent", [])
+                else "failures"
+            )
+            report[destination].append(failure)
         if report.get("health_failure"):
             report["warnings"].append(report["health_failure"])
         report["warnings"].extend(

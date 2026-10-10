@@ -180,7 +180,7 @@ jobs:
           python scripts/core_capability_image.py --image tinyassets-capability:pr --apparmor ta-capability-userns --report core-capabilities.json
       - name: Explain a runtime-equivalent change
         if: steps.tier.outputs.required == 'false'
-        run: echo 'No runtime/deploy inputs changed; fast affected units are the PR tier.'
+        run: echo 'No runtime/deploy inputs changed; affected tests run in the jail container.'
       - uses: actions/upload-artifact@v4
         if: always() && steps.tier.outputs.required == 'true'
         with:

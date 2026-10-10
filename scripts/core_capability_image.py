@@ -226,9 +226,15 @@ async def exercise(connection, report):
     context = ssl.create_default_context(cafile="/fixture/ca.pem")
     async with httpx.AsyncClient(verify=context, timeout=180, follow_redirects=True) as http:
         for _ in range(3):
-            refused = await http.get("https://tinyassets.io/app?code=invalid&state=oa_app_invalid")
+            # The frontend only routes correctly shaped states to the callback.
+            # An unknown flow must be refused there, before cookie completion.
+            refused = await http.get(
+                "https://tinyassets.io/app?code=invalid&state=oa_app_" + "A" * 43,
+            )
             if refused.status_code != 403:
-                raise RuntimeError("invalid owner callback was not refused")
+                raise RuntimeError(
+                    f"invalid owner callback was not refused: HTTP {refused.status_code}"
+                )
         response = await http.get(
             "https://tinyassets.io/app/owner-sign-in?app=1",
             headers={"Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},

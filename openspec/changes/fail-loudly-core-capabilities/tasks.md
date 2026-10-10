@@ -25,5 +25,9 @@
 
 PR #4598 fix round merges origin/main. AGREE with all six supplied cross-family findings: configuration is advisory; model/external observations cannot authorize rollback; candidate-only failures must reproduce against the previous image; unique scratch paths and restart retries prevent probe races; rate alarms require multiple owners; secrets are step-scoped and installs pinned; PR jail/browser proofs and affected-test jail execution are restored. No review receipt is requested or generated. No deployment is claimed.
 
-- [ ] Re-run touched/heavy proofs, structural guards, Ruff, actionlint and hygiene.
-- [ ] Push the corrected head and re-measure full hosted PR CI including isolation workflows.
+- [x] Re-run touched/heavy proofs, structural guards, Ruff, actionlint and hygiene.
+Pushed fix-round head `8faf9beb0f5`; final hosted results and full restored-workload timings are maintained in PR #4598. Local proof: 601 structural, 141 workflow, 99 capability/deploy and 87 Linux cases (zero Linux skips); Ruff, actionlint, mirror/import build and hygiene pass. GitHub API and Pushover failure injections warn and exit normally. Hosted release-contract coverage found the new deploy dependencies missing from the image-build prefilter; the prefilter now includes the canary action and scripts.
+
+Restart continuation: merged current origin/main (8996a96d2a1), preserving both owner-cell spec additions. Corrected hosted callback fixture and build-image input coverage, updated workflow/draft/budget contracts, and made model-dependent report evidence warning-only. Focused Linux proofs: 156 capability/workflow/tool cases plus 25 starter cases, zero skips. Full hosted re-measurement on the final pushed head is recorded in PR #4598; the earlier reduced-workload timing is explicitly superseded. No review receipt or deployment is claimed.
+
+Final local verification: 605 structural guards passed; production Docker image passed all fourteen capabilities; release contracts passed after matching the dynamic script closure in the build prefilter. Removed the remaining PR duration/execution filters (retaining only full structural deduplication and the required heavy-file exclusion); 52 selector/workflow contracts passed. Ruff and actionlint pass. Hosted timings must include this restored selection, not merely the dedicated proof jobs.

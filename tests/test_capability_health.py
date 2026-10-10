@@ -194,3 +194,60 @@ def test_only_candidate_specific_measured_image_failures_authorize_rollback():
         regressions(red, green, {"warnings": [{"capability": "bash", "code": "rate_alarm"}]}) == []
     )
     assert regressions(green, green, live) == []
+
+
+def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
+    from scripts import core_capability_live as live
+    from scripts.core_capability_regression import regressions
+
+    async def observed(report):
+        report["model_dependent"] = ["chat_stream", "read_image"]
+        for name in CAPABILITIES:
+            if name not in report["model_dependent"]:
+                live.passed(report, name, {"verified": True})
+        report["capabilities"].append(
+            dict(capability="read_image", status="failed", code="probe_failed")
+        )
+
+    monkeypatch.setattr(live, "run", observed)
+    report = asyncio.run(live.collect())
+    assert not report["failures"]
+    assert {row["capability"] for row in report["warnings"]} == {"chat_stream", "read_image"}
+    assert regressions({}, {}, report) == []
+
+
+@pytest.mark.parametrize("failure", ["github", "pushover", "report"])
+def test_alert_transport_and_report_errors_never_fail_the_step(
+    tmp_path, monkeypatch, capsys, failure
+):
+    import runpy
+    import subprocess
+    import sys
+
+    from scripts import pushover_page
+
+    report = tmp_path / "probe.json"
+    report.write_text("{" if failure == "report" else json.dumps({
+        "failures": [] if failure == "github" else [
+            {"capability": "bash", "code": "probe_failed"}
+        ]
+    }))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "test/test")
+    monkeypatch.setenv("GITHUB_RUN_ID", "1")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    monkeypatch.setattr(sys, "argv", ["core_capability_alert.py", str(report)])
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    monkeypatch.setitem(sys.modules, "pushover_page", pushover_page)
+
+    def github(command, **kwargs):
+        if failure == "github":
+            raise subprocess.CalledProcessError(1, command)
+        payload = ({"number": 1, "html_url": "https://example.invalid/issue"}
+                   if "POST" in command else [])
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(subprocess, "run", github)
+    monkeypatch.setattr(pushover_page, "send_pushover", lambda *a, **kw: (False, "unavailable"))
+    runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/core_capability_alert.py"),
+                   run_name="__main__")
+    assert "::warning::Core capability alert delivery failed:" in capsys.readouterr().out

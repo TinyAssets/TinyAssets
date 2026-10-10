@@ -95,27 +95,30 @@ if __name__ == "__main__":
     parser.add_argument("report")
     args = parser.parse_args()
     path = Path(args.report)
-    document = (
-        json.loads(path.read_text())
-        if path.exists()
-        else {
-            "failures": [
-                {
-                    "capability": "public_mcp",
-                    "code": "probe_failed",
-                    "detail": "Canary crashed before writing its report.",
-                }
-            ]
-        }
-    )
     try:
+        document = (
+            json.loads(path.read_text(encoding="utf-8"))
+            if path.exists()
+            else {
+                "failures": [
+                    {
+                        "capability": "public_mcp",
+                        "code": "probe_failed",
+                        "detail": "Canary crashed before writing its report.",
+                    }
+                ]
+            }
+        )
         alert(document)
     except Exception as exc:
         # Do not print response bodies or subprocess stderr containing secrets.
         print("::warning::Core capability alert delivery failed: " + type(exc).__name__)
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
-            with open(summary, "a", encoding="utf-8") as output:
-                output.write(
-                    "\nCore capability alert delivery failed; inspect the probe artifact.\n"
-                )
+            try:
+                with open(summary, "a", encoding="utf-8") as output:
+                    output.write(
+                        "\nCore capability alert delivery failed; inspect the probe artifact.\n"
+                    )
+            except OSError:
+                print("::warning::Core capability alert summary could not be written")
