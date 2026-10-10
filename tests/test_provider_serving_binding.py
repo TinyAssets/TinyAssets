@@ -733,3 +733,17 @@ def test_write_graph_routes_first_class_serving_operations(
     assert seen["binding_id"] == "agent-binding-1"
     assert seen["expected_revision"] == 4
     assert seen["payload"] == payload
+
+
+@pytest.mark.parametrize("operation", ["bind", "enable"])
+def test_absent_binding_has_a_dedicated_exception(tmp_path, operation):
+    from tinyassets import provider_serving_binding as serving
+
+    args = dict(base_path=tmp_path, universe_dir=tmp_path / "missing-home",
+                universe_id="missing-home", owner_user_id="owner-1",
+                agent_binding_id="missing-binding", expected_revision=1)
+    with pytest.raises(serving.AgentBindingNotFound, match="agent binding was not found"):
+        if operation == "bind":
+            serving.bind_serving_provider(**args, provider="codex")
+        else:
+            serving.set_serving(**args, enabled=True)

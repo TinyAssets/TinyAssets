@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import time
 
 CONTAINER = r'''
 import asyncio, json, os, runpy, socket, subprocess, sys, tempfile, threading
@@ -282,7 +283,9 @@ def main():
     args = parser.parse_args()
     digest = subprocess.run(['docker', 'image', 'inspect', args.image, '--format', '{{.Id}}'],
                             capture_output=True, text=True, check=True).stdout.strip()
-    command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--user', '0:0',
+    command = ['docker', 'run', '--label', 'tinyassets.disposable=true',
+           '--label', f'tinyassets.created-at={int(time.time())}',
+           '--rm', '-i', '--network', 'none', '--user', '0:0',
                '--cap-drop', 'ALL']
     for cap in ('CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID', 'SETPCAP',
                 'KILL'):

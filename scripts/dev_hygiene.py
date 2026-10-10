@@ -33,8 +33,9 @@ Five classes, each with its own proof of disposability:
     its ignored files to a sha256-manifested copy. Never pushed; a lane whose
     preservation cannot be verified, or holds over 50 MB of unique data, is kept.
 ``docker``
-    Build cache only, via ``docker builder prune`` with a keep budget, and only
-    when the engine answers. Never volumes, never images, never other projects.
+    Unused images and build cache older than ``--min-age-hours``; stopped
+    containers and unused volumes only with explicit disposable and created-at
+    labels. No forced removal, no remote engines, no unlabeled volume deletion.
 ``scratch``
     A closed allowlist of this repo's own scratch directory names, only when git
     confirms the path is ignored and it is older than ``--min-age-days``.
@@ -69,15 +70,20 @@ Exit codes
 
 What runs it, without anyone asking
 -----------------------------------
-``.claude/hooks/dev_hygiene_hook.py`` (SessionStart) applies the two cheap classes
-(``basetemp,scratch``) at every session start, ~4 s, and injects an escalation into
-session context when free space is under ``TINYASSETS_DEV_HYGIENE_FLOOR_GB``.
-``scripts/install_dev_hygiene_task.ps1`` registers ``TinyAssets-DevHygiene``, an
-hourly unelevated Task Scheduler job running the FULL pass with ``--if-low-disk``
-into ``.claude/logs/dev-hygiene-full.json``; the hook reads that summary, so an
-unattended escalation is seen at the next session start without the session paying
-for a full scan. Neither can fail a session: the hook always exits 0, and a pass
-that times out injects nothing. ``TINYASSETS_DEV_HYGIENE_DISABLE`` no-ops the hook.
+``.claude/hooks/dev_hygiene_hook.py`` runs basetemp/scratch in the foreground
+and launches ``python scripts/dev_hygiene.py --docker --session-background``
+with apply, escalation and summary flags. The detached pass includes worktree
+and toolcache; a kernel lock in the shared git directory excludes parallel
+sessions and releases automatically on exit/crash. The hourly unelevated
+``TinyAssets-DevHygiene`` task still runs the full pass under disk pressure.
+The hook reads recent saved summaries; ``TINYASSETS_DEV_HYGIENE_DISABLE``
+no-ops the hook.
+
+Unattended permissions (local user configuration, not broad Docker access):
+Claude Code .claude/settings.local.json permissions.allow entry:
+    "Bash(python scripts/dev_hygiene.py --docker:*)"
+Codex user .rules entry:
+    prefix_rule(pattern=["python", "scripts/dev_hygiene.py", "--docker"], decision="allow")
 
 The two things it will NOT resolve alone (exit 3 names them)
 -----------------------------------------------------------
@@ -115,6 +121,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -124,12 +131,14 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from git_squash_merge import is_merged_into  # noqa: E402  (sibling-script import)
 
 CLASSES = ("basetemp", "worktree", "docker", "scratch", "toolcache")
+_DOCKER_HOST: str | None = None
 
 # Temp-root directory names the agents actually produce. Measured from the repo's
 # own review docs (docs/reviews/2026-09-*.md): ta-pt-*, ta-pt2, ta-rev-*,
@@ -294,6 +303,7 @@ class Item:
     # it back out of ``detail``: a human string is not a machine contract.
     branch: str = ""  # worktree class: the local branch to delete
     prune_flag: str = ""  # docker class: the keep-budget flag this CLI has
+    docker_age_hours: float = 6.0
     tool: str = ""  # toolcache class: the tool whose own command clears it
     head: str = ""  # worktree class: HEAD at inventory, re-checked before preserving
     idle_hours: float | None = None  # worktree class: measured idleness, when known
@@ -323,6 +333,8 @@ class Report:
 
 def run(args: list[str], cwd: Path | None = None, timeout: float = 30.0):
     """Run a command, never raising. Callers treat a non-zero rc as undecidable."""
+    if args[0] == "docker" and _DOCKER_HOST:
+        args = ["docker", "--host", _DOCKER_HOST, *args[1:]]
     try:
         return subprocess.run(
             args,
@@ -372,7 +384,9 @@ def is_link(info: os.stat_result) -> bool:
     return stat_mod.S_ISLNK(info.st_mode) or is_reparse_point(info)
 
 
-def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
+def tree_stats(
+    root: Path, budget: int = MAX_TREE_ENTRIES, *, deadline: float | None = None
+) -> tuple[int, float]:
     """Return ``(total_bytes, newest_mtime)`` for a directory tree.
 
     Raises ``Undecidable`` when the tree exceeds ``budget`` entries or cannot be
@@ -414,6 +428,8 @@ def tree_stats(root: Path, budget: int = MAX_TREE_ENTRIES) -> tuple[int, float]:
         try:
             with os.scandir(current) as entries:
                 for entry in entries:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise Undecidable("inventory time budget exhausted")
                     seen += 1
                     if seen > budget:
                         raise Undecidable(f"{root} exceeds {budget} entries")
@@ -531,10 +547,12 @@ def _is_pytest_artifact(entry: os.DirEntry) -> bool:
     return name.endswith("-current")
 
 
-def suite_test_names(repo: Path) -> frozenset[str]:
+def suite_test_names(repo: Path, *, deadline: float | None = None) -> frozenset[str]:
     """Every ``def test_*`` name in ``repo/tests``: what this suite's tmp dirs are called."""
     names: set[str] = set()
     for path in (repo / "tests").rglob("*.py"):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         try:
             names.update(_TEST_DEF.findall(path.read_text(encoding="utf-8", errors="replace")))
         except OSError:
@@ -617,6 +635,7 @@ def collect_basetemps(
     now: float,
     prefixes: tuple[str, ...] = BASETEMP_PREFIXES,
     unprefixed_sessions: frozenset[str] | None = None,
+    deadline: float | None = None,
 ) -> list[Item]:
     """Inventory one temp root. ``prefixes`` is narrower for a drive root.
 
@@ -637,6 +656,9 @@ def collect_basetemps(
         return [Item("basetemp", str(temp_root), 0, "KEEP", "temp_root_unreadable", str(exc))]
 
     for child in children:
+        if deadline is not None and time.monotonic() >= deadline:
+            items.append(Item("basetemp", str(temp_root), 0, "KEEP", "inventory_budget_exhausted"))
+            break
         name = child.name
         session = False
         if not any(name.startswith(p) for p in prefixes):
@@ -675,7 +697,7 @@ def collect_basetemps(
             # Sized anyway: an unrecognized directory is exactly what the founder
             # has to make a call on, and a concrete escalation needs its size.
             try:
-                size, _ = tree_stats(child)
+                size, _ = tree_stats(child, deadline=deadline)
             except Undecidable:
                 size = 0
             items.append(
@@ -693,7 +715,7 @@ def collect_basetemps(
             items.append(Item("basetemp", str(child), 0, "KEEP", "contains_cwd"))
             continue
         try:
-            size, newest = tree_stats(child)
+            size, newest = tree_stats(child, deadline=deadline)
         except Undecidable as exc:
             items.append(keep_for("basetemp", child, exc))
             continue
@@ -1931,6 +1953,173 @@ def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple
 # --------------------------------------------------------------------------- #
 
 
+def local_docker() -> None:
+    """Pin the local endpoint for the entire pass, even if another lane switches context."""
+    global _DOCKER_HOST
+    if _DOCKER_HOST:
+        return
+    endpoint = os.environ.get("DOCKER_HOST", "")
+    if os.environ.get("DOCKER_CONTEXT") or not endpoint:
+        proc = run(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"])
+        if proc.returncode:
+            raise Undecidable("cannot determine Docker endpoint")
+        endpoint = proc.stdout.strip()
+    if not endpoint.startswith(("npipe:////./pipe/", "unix:///")):
+        raise Undecidable(f"not a local Docker endpoint: {endpoint}")
+    _DOCKER_HOST = endpoint
+
+
+def docker_json(args: list[str], docker: str = "docker") -> list[dict]:
+    proc = run([docker, *args], timeout=40)
+    if proc.returncode:
+        raise Undecidable(proc.stderr.strip()[:300] or "Docker inventory failed")
+    try:
+        rows = json.loads(proc.stdout)
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise ValueError("expected object list")
+        return rows
+    except (ValueError, TypeError) as exc:
+        raise Undecidable(f"invalid Docker inventory: {exc}") from exc
+
+
+def docker_objects(kind: str, docker: str) -> list[dict]:
+    proc = run([docker, kind, "ls", "-q", *(["--all"] if kind != "volume" else [])])
+    if proc.returncode:
+        raise Undecidable(proc.stderr.strip()[:300])
+    ids = list(dict.fromkeys(proc.stdout.split()))
+    rows = []
+    for offset in range(0, len(ids), 50):
+        rows.extend(docker_json([kind, "inspect", *ids[offset : offset + 50]], docker))
+    return rows
+
+
+def docker_epoch(value: object) -> float:
+    try:
+        stamp = float(value)
+    except (ValueError, TypeError):
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (ValueError, OverflowError, OSError):
+            return math.inf
+    return stamp if math.isfinite(stamp) and stamp > 0 else math.inf
+
+
+def select_docker_objects(
+    containers: list[dict],
+    volumes: list[dict],
+    images: list[dict],
+    *,
+    min_age_hours: float,
+    now: float,
+) -> list[Item]:
+    """Every container reference (even stopped) protects its images and volumes."""
+    cutoff = now - min_age_hours * 3600
+    used_images = {c.get("Image") for c in containers}
+    used_volumes = {
+        m.get("Name") for c in containers for m in c.get("Mounts", []) if m.get("Type") == "volume"
+    }
+    result = []
+    for kind, rows in (("container", containers), ("volume", volumes), ("image", images)):
+        for row in rows:
+            identity = row.get("Name") if kind == "volume" else row.get("Id")
+            if not identity:
+                raise Undecidable("Docker object has no identity")
+            labels = (
+                (row.get("Config") or {}).get("Labels")
+                if kind == "container"
+                else row.get("Labels")
+            )
+            labels = labels or {}
+            created = docker_epoch(row.get("CreatedAt") if kind == "volume" else row.get("Created"))
+            if kind == "image":
+                # Created is the upstream build time, not when another lane pulled/built it.
+                # Missing last-tag metadata is unknown, so even a dangling image is kept.
+                created = max(created, docker_epoch((row.get("Metadata") or {}).get("LastTagTime")))
+            reason = "old_unused"
+            if kind != "image" and labels.get("tinyassets.disposable") != "true":
+                reason = "not_labelled_disposable"
+            elif kind != "image" and docker_epoch(labels.get("tinyassets.created-at")) >= cutoff:
+                reason = "label_age_unknown_or_recent"
+            elif created >= cutoff:
+                reason = "age_unknown_or_recent"
+            elif kind == "image" and identity in used_images:
+                reason = "in_use"
+            elif kind == "volume" and identity in used_volumes:
+                reason = "in_use"
+            elif kind == "container":
+                state = row.get("State") or {}
+                if (
+                    state.get("Status") not in {"exited", "dead"}
+                    or state.get("Running") is not False
+                ):
+                    reason = "in_use"
+                elif docker_epoch(state.get("FinishedAt")) >= cutoff:
+                    reason = "recently_stopped"
+            result.append(
+                Item(
+                    "docker",
+                    f"{kind}:{identity}",
+                    int(row.get("Size") or 0),
+                    "REMOVE" if reason == "old_unused" else "KEEP",
+                    reason,
+                    head=str(row.get("CreatedAt") or row.get("Created") or ""),
+                    docker_age_hours=min_age_hours,
+                )
+            )
+    return result
+
+
+def collect_docker_objects(
+    *, min_age_hours: float, now: float, docker: str = "docker"
+) -> list[Item]:
+    return select_docker_objects(
+        docker_objects("container", docker),
+        docker_objects("volume", docker),
+        docker_objects("image", docker),
+        min_age_hours=min_age_hours,
+        now=now,
+    )
+
+
+def docker_desktop_notice(repo: Path) -> list[str]:
+    """One warning per oversized disk episode, shared by all repo worktrees."""
+    try:
+        local_docker()
+        proc = run(["docker", "system", "df", "--format", "{{json .}}"], timeout=40)
+        if proc.returncode:
+            return []
+        rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+        if not rows or any("Size" not in row for row in rows):
+            return []
+        used = sum(parse_docker_size(str(row["Size"])) for row in rows)
+        root = Path(os.environ.get("LOCALAPPDATA", "")) / "Docker" / "wsl"
+        disks = list(root.glob("**/*.vhdx")) if root.is_dir() else []
+        oversized = [p for p in disks if p.stat().st_size > max(used * 2, used + 40 * 1024**3)]
+        common = Path(git_ok(["rev-parse", "--git-common-dir"], repo))
+        if not common.is_absolute():
+            common = repo / common
+        marker = common / "dev-hygiene-docker-compaction.warned"
+        if not oversized:
+            marker.unlink(missing_ok=True)
+            return []
+        try:
+            with marker.open("x", encoding="utf-8") as handle:
+                handle.write("\n".join(str(p) for p in oversized))
+        except FileExistsError:
+            return []
+        return [
+            "Docker Desktop disk file(s) much larger than Docker usage "
+            f"({human(used)}): "
+            + ", ".join(f"{p} ({human(p.stat().st_size)})" for p in oversized)
+            + ". Deleting Docker objects does not shrink the Windows disk file. "
+            "Reclaiming host space needs Docker Desktop Clean / Purge data (destructive: "
+            "also deletes retained Docker data), or elevated offline VHDX compaction. "
+            "Hygiene does neither. This notice is shown once per oversized-disk episode."
+        ]
+    except (OSError, Undecidable, ValueError):
+        return []
+
+
 def docker_keep_flag(help_text: str) -> str:
     """Pick the keep-budget flag this Docker CLI actually has.
 
@@ -1945,7 +2134,9 @@ def docker_keep_flag(help_text: str) -> str:
     raise Undecidable("docker builder prune has neither --reserved-space nor --keep-storage")
 
 
-def collect_docker_cache(*, keep_gb: float, docker: str = "docker") -> list[Item]:
+def collect_docker_cache(
+    *, keep_gb: float, docker: str = "docker", min_age_hours: float = 6.0
+) -> list[Item]:
     probe = run([docker, "version", "--format", "{{.Server.Version}}"], timeout=20)
     server = (probe.stdout or "").strip()
     if probe.returncode != 0 or not server or "cannot find" in (probe.stderr or ""):
@@ -1984,12 +2175,13 @@ def collect_docker_cache(*, keep_gb: float, docker: str = "docker") -> list[Item
         Item(
             "docker",
             "build-cache",
-            reclaimable,
+            0,  # Docker df cannot age-filter: do not promise the unfiltered byte total.
             "REMOVE",
             "docker_build_cache",
             f"builder prune {flag}={int(keep_gb * 1024**3)} "
-            "(build cache only; never volumes or images)",
+            f"until={min_age_hours:g}h (at most {human(reclaimable)} before age filtering)",
             prune_flag=flag,
+            docker_age_hours=min_age_hours,
         )
     ]
 
@@ -2027,13 +2219,18 @@ def parse_docker_size(text: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def collect_repo_scratch(repo: Path, *, min_age_days: float, now: float) -> list[Item]:
+def collect_repo_scratch(
+    repo: Path, *, min_age_days: float, now: float, deadline: float | None = None
+) -> list[Item]:
     items: list[Item] = []
     try:
         children = sorted(repo.iterdir())
     except OSError as exc:
         return [Item("scratch", str(repo), 0, "KEEP", "repo_unreadable", str(exc))]
     for child in children:
+        if deadline is not None and time.monotonic() >= deadline:
+            items.append(Item("scratch", str(repo), 0, "KEEP", "inventory_budget_exhausted"))
+            break
         name = child.name
         if name not in SCRATCH_NAMES and not any(fnmatch.fnmatch(name, g) for g in SCRATCH_GLOBS):
             continue
@@ -2047,7 +2244,7 @@ def collect_repo_scratch(repo: Path, *, min_age_days: float, now: float) -> list
             continue
         try:
             size, newest = (
-                tree_stats(child)
+                tree_stats(child, deadline=deadline)
                 if child.is_dir()
                 else (child.stat().st_size, child.stat().st_mtime)
             )
@@ -2290,16 +2487,37 @@ def remove_worktree(repo: Path, item: Item) -> tuple[bool, str]:
 
 
 def prune_docker(item: Item, *, keep_gb: float, docker: str = "docker") -> tuple[bool, str]:
+    if item.path != "build-cache":
+        try:
+            fresh = collect_docker_objects(
+                min_age_hours=item.docker_age_hours, now=time.time(), docker=docker
+            )
+            if not any(i.path == item.path and i.removable and i.head == item.head for i in fresh):
+                return False, "Docker object changed or is now in use; kept"
+            kind, identity = item.path.split(":", 1)
+            proc = run([docker, kind, "rm", identity], timeout=120)
+            return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+        except (Undecidable, ValueError) as exc:
+            return False, str(exc)
     flag = item.prune_flag
     if not flag:
         return False, "no keep-budget flag recorded on the candidate; refusing to prune"
     proc = run(
-        [docker, "builder", "prune", "--force", flag, str(int(keep_gb * 1024**3))], timeout=600
+        [
+            docker,
+            "builder",
+            "prune",
+            "--force",
+            flag,
+            str(int(keep_gb * 1024**3)),
+            "--filter",
+            f"until={item.docker_age_hours:g}h",
+        ],
+        timeout=600,
     )
     if proc.returncode != 0:
         return False, f"docker builder prune failed: {proc.stderr.strip()[:300]}"
-    tail = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
-    return True, tail[-1].strip() if tail else "pruned"
+    return True, proc.stdout.strip() or "pruned"
 
 
 def apply_removals(
@@ -2310,6 +2528,7 @@ def apply_removals(
     log_path: Path | None,
     max_removals: int = 0,
     preserve: PreservePolicy | None = None,
+    keep_worktrees: bool = False,
 ) -> list[str]:
     """Remove the REMOVE set, at most ``max_removals`` per class (0 = unbounded).
 
@@ -2325,6 +2544,10 @@ def apply_removals(
     for item in order:
         if not item.removable:
             continue
+        if keep_worktrees and item.kind == "worktree":
+            item.verdict, item.reason = "KEEP", "worktree_removal_deferred"
+            item.detail = "inventoried; removal belongs to the scheduled/manual full pass"
+            continue
         if max_removals and done.get(item.kind, 0) >= max_removals:
             item.verdict = "KEEP"
             item.reason = "deferred_to_next_pass"
@@ -2339,7 +2562,21 @@ def apply_removals(
         elif item.kind == "worktree":
             ok, detail = remove_worktree(repo, item)
         elif item.kind == "docker":
-            ok, detail = prune_docker(item, keep_gb=keep_gb)
+            try:
+                local_docker()
+                ok, detail = prune_docker(item, keep_gb=keep_gb)
+            except Undecidable as exc:
+                ok, detail = False, str(exc)
+            if ok:
+                item.detail = detail
+                if item.path == "build-cache":
+                    total = re.search(r"(?:Total reclaimed space:|Total:)\s*(.+)", detail)
+                    if total:
+                        item.size_bytes = parse_docker_size(total.group(1))
+                        if item.size_bytes == 0:
+                            item.verdict, item.reason = "KEEP", "nothing_reclaimed"
+                            lines.append(f"{stamp} KEPT docker build-cache {detail}")
+                            continue
         elif item.kind == "toolcache":
             ok, detail = clean_tool_cache(item)
         else:
@@ -2408,6 +2645,7 @@ def write_summary(path: Path, report: Report, *, escalation: str, classes: tuple
         "removed_count": len(removed) if report.applied else 0,
         "reclaimable_bytes": report.reclaimable_bytes,
         "escalation": escalation,
+        "notes": report.notes,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2476,20 +2714,32 @@ def inventory(
             temp_root,
             min_age_hours=min_age_hours,
             now=now,
-            unprefixed_sessions=suite_test_names(repo),
+            unprefixed_sessions=suite_test_names(repo, deadline=deadline),
+            deadline=deadline,
         )
         for root in extra_temp_roots:
             items += collect_basetemps(
-                root, min_age_hours=min_age_hours, now=now, prefixes=DRIVE_ROOT_PREFIXES
+                root,
+                min_age_hours=min_age_hours,
+                now=now,
+                prefixes=DRIVE_ROOT_PREFIXES,
+                deadline=deadline,
             )
     if "scratch" in classes:
-        items += collect_repo_scratch(repo, min_age_days=min_age_days, now=now)
+        items += collect_repo_scratch(repo, min_age_days=min_age_days, now=now, deadline=deadline)
     if "worktree" in classes:
         items += collect_worktrees(
             repo, now=now, idle_hours=idle_hours, deadline=deadline, preserve=preserve
         )
     if "docker" in classes:
-        items += collect_docker_cache(keep_gb=docker_keep_gb)
+        try:
+            local_docker()
+            items += collect_docker_cache(keep_gb=docker_keep_gb, min_age_hours=min_age_hours)
+            items += collect_docker_objects(min_age_hours=min_age_hours, now=now)
+        except Undecidable as exc:
+            items.append(
+                Item("docker", "inventory", 0, "KEEP", "docker_inventory_failed", str(exc))
+            )
     if "toolcache" in classes:
         items += collect_tool_caches()
     return items
@@ -2500,6 +2750,22 @@ def build_parser() -> argparse.ArgumentParser:
         prog="dev_hygiene.py",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--session-background",
+        action="store_true",
+        help="with --docker, run Docker/worktree/toolcache under the shared session lock",
+    )
+    parser.add_argument("--docker", action="store_true", help="run only Docker hygiene")
+    parser.add_argument(
+        "--keep-worktrees",
+        action="store_true",
+        help="inventory worktrees but defer removal (for timeout-bounded session hooks)",
+    )
+    parser.add_argument(
+        "--defer-notices",
+        action="store_true",
+        help="unattended scheduler: leave the one-time Docker disk notice for the next session",
     )
     parser.add_argument(
         "--apply", action="store_true", help="remove the REMOVE set (default: dry-run)"
@@ -2514,6 +2780,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--escalate-below",
         type=float,
+        default=40.0,
         metavar="GB",
         help="exit 3 with a concrete list when free space is still below GB after the pass",
     )
@@ -2523,7 +2790,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"comma-separated subset of {','.join(CLASSES)} (default: all)",
     )
     parser.add_argument(
-        "--min-age-hours", type=float, default=6.0, help="basetemp staleness (default 6)"
+        "--min-age-hours",
+        type=float,
+        default=6.0,
+        help="basetemp and Docker minimum age (default 6)",
     )
     parser.add_argument(
         "--min-age-days", type=float, default=7.0, help="repo-scratch staleness (default 7)"
@@ -2592,14 +2862,48 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verbose", action="store_true", help="also print every KEEP with its reason"
     )
-    parser.add_argument("--quiet", action="store_true", help="print only escalations")
+    parser.add_argument(
+        "--quiet", action="store_true", help="print only escalations and actionable notices"
+    )
     return parser
+
+
+def acquire_background_lock(lock) -> bool:
+    """Nonblocking OS lock, shared across worktrees and released on process death."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     repo = Path(args.repo).resolve() if args.repo else Path(__file__).resolve().parent.parent
+    if args.session_background:
+        if not args.docker:
+            raise SystemExit("--session-background requires --docker")
+        common = Path(
+            git_ok(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).strip()
+        )
+        # Keep the file: unlinking it would let a newcomer lock a different inode.
+        with (common / "dev-hygiene-background.lock").open("a+b") as lock:
+            if not acquire_background_lock(lock):
+                return 0
+            forwarded = list(sys.argv[1:] if argv is None else argv)
+            forwarded.remove("--session-background")
+            forwarded.remove("--docker")
+            return main([*forwarded, "--classes", "docker,worktree,toolcache"])
+
     if not (repo / ".git").exists():
         print(f"[dev-hygiene] not a git repository: {repo}", file=sys.stderr)
         return 2
@@ -2620,6 +2924,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[dev-hygiene] unknown class(es): {', '.join(unknown)}", file=sys.stderr)
         return 2
 
+    if args.docker:
+        classes = ("docker",)
+    if not math.isfinite(args.min_age_hours) or args.min_age_hours <= 0:
+        print("--min-age-hours must be finite and positive", file=sys.stderr)
+        return 2
     now = time.time()
     deadline = time.monotonic() + args.budget_seconds if args.budget_seconds > 0 else None
     report = Report(free_before_gb=free_gb(repo))
@@ -2665,9 +2974,13 @@ def main(argv: list[str] | None = None) -> int:
             log_path=log_path,
             max_removals=max(0, args.max_removals),
             preserve=preserve,
+            keep_worktrees=args.keep_worktrees,
         )
         report.applied = True
         report.free_after_gb = free_gb(repo)
+
+    if "docker" in classes and os.name == "nt" and not args.defer_notices:
+        report.notes.extend(docker_desktop_notice(repo))
 
     escalating = args.escalate_below is not None and report.free_after_gb < args.escalate_below
     escalation = render_escalation(report, args.escalate_below) if escalating else ""
@@ -2692,6 +3005,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif not args.quiet:
         print(render(report, verbose=args.verbose))
+    elif report.notes:
+        print("\n".join(report.notes))
     if escalating:
         print(escalation)
         return 3

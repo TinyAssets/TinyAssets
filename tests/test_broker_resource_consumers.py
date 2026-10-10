@@ -14,6 +14,8 @@ from tinyassets.storage.outbound_connections import ConnectionLedger, ProxyReque
 @pytest.fixture
 def consumers(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
+                        lambda root, *, center: "alice")
     ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
     for owner in ("alice", "bob"):
         ledger.create_connection(
@@ -71,6 +73,27 @@ def test_all_resource_consumers_use_scoped_query_without_local_ledger(consumers)
                             "grant_id": "grant-alice", "connection_id": ""}
                for owner, center, args in c.calls)
     assert not (c.root / "outbound.db").exists()
+
+
+def test_display_uses_admitted_owner_even_when_definition_names_another(consumers):
+    c = consumers
+    definition = register_definition(
+        universe_id="cc-alice", owner_user_id="bob", access_method="api_key_http",
+        protocol="chat_messages", model="foreign-owner", ref="grant-bob",
+    )
+    assert source_display_name(base=c.root, universe_id="cc-alice",
+                               provider=f"api_key_http:{definition.id}") == ""
+    assert c.calls[-1][0] == "alice"
+
+
+def test_display_does_not_query_grants_without_owner_admission(consumers, monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError("center is retired")
+
+    monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner", denied)
+    assert source_display_name(base=consumers.root, universe_id="cc-alice",
+                               provider=consumers.provider) == ""
+    assert consumers.calls == []
 
 
 @pytest.mark.parametrize("change", [{"actor": "bob"}, {"universe_id": "cc-bob"},

@@ -150,7 +150,6 @@ def capture(home, agent):
 
 def destination(home, origin):
     from tinyassets.addressed_agents import AgentNotAddressable, resolve
-    from tinyassets.custom_agents import _agent_connect
 
     owner = origin.get("owner")
     if origin.get("home") != home.name or not _admin(home, owner):
@@ -160,13 +159,11 @@ def destination(home, origin):
         resolved = resolve(home.parent, universe_id=home.name, owner=owner, agent_id=agent)
         return (resolved.agent_id if resolved else "main"), ""
     except AgentNotAddressable:
-        with _agent_connect(home.parent) as conn:
-            binding = conn.execute("SELECT created_by,universe_id FROM agent_bindings "
-                                   "WHERE agent_binding_id=?", (agent,)).fetchone()
-        if binding and (binding[0], binding[1]) != (owner, home.name):
-            raise PermissionError("request_agent_owner_mismatch") from None
-        return "main", (f"The asking agent {agent!r} was removed or retired; "
-                        "this answer is routed to main.")
+        # An older origin can name a binding this owner can no longer address.
+        # The recorded owner still owns the answer; never deliver it to that
+        # binding or let its current owner settle the recorded owner's ask.
+        return "main", (f"The asking agent {agent!r} was removed or retired, or is no longer "
+                        "available to this owner; this answer is routed to main.")
 
 
 class UnrecordedAskerAmbiguous(PermissionError):
@@ -354,7 +351,7 @@ OWNER_ANSWER_SOURCE = ("tinyassets.owner-answer.v1", "tinyassets.request_answers
                        "owner_answer")
 
 
-def owner_turn(home, owner, *, event, message, agent):
+def owner_turn(home, owner, *, event, message, agent, input_method="app_action"):
     """Run the asking agent's turn for an owner's answer, under the owner's authority.
 
     This runs on the continuation thread, after the owner's own session answered
@@ -383,7 +380,7 @@ def owner_turn(home, owner, *, event, message, agent):
         capability = claim_provider_request(reserve, tool_name=tool)
         try:
             result = converse(message=message, graph_id=home.name, agent_id=agent,
-                              input_method="app_action")
+                              input_method=input_method)
         finally:
             revoke_provider_request(capability)
     return json.loads(result) if isinstance(result, str) else result

@@ -177,6 +177,7 @@ def _seed_universe(
     Deliberately NO saved model preference: that is the free account's state
     (it never opened a model picker) and the state the live defect needed.
     """
+    from tests.support.broker_double import seed_owner_admission
     from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import (
         grant_universe_access,
@@ -187,6 +188,7 @@ def _seed_universe(
     from tinyassets.providers.definition import register_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
+    seed_owner_admission(tmp_path, principal=owner, center=universe)
     # Registered FIRST: `set_serving` below performs real discovery readiness
     # against this owner's source, so the transport has to exist by then.
     wires[owner] = _Wire(models=models)

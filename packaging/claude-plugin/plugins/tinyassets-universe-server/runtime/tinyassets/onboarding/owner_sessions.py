@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import secrets
 import sqlite3
 import time
@@ -21,6 +22,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 COOKIE = "__Host-ta-owner"
 FLOW_COOKIE = "__Host-ta-owner-login"
+OWNER_STATE = re.compile(r"oa_(?:app_)?[A-Za-z0-9_-]{43}")
 HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
