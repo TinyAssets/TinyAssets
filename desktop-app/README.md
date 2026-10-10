@@ -3,11 +3,10 @@
 A native desktop app that wraps the live TinyAssets web app. It is a thin,
 maintainable **Electron** shell whose window loads `https://tinyassets.io/app`
 (configured in `config.js` → `APP_URL`) — the **same SPA the Android app wraps**
-(`mobile/`). Because that page, the `/mcp` API, and the WorkOS AuthKit sign-in all
-live on the same origin (`tinyassets.io`), the OAuth round-trip stays inside the
-window and Just Works — no deep-link plumbing. Web-app changes ship instantly to
-all surfaces (no rebuild); the desktop build only changes when the native shell,
-icon, or config change.
+(`mobile/`). Sign-in opens the system browser and returns through
+`tinyassets-desktop://auth` with an opaque reference and a one-time return secret.
+The app redeems both with its locally held PKCE verifier. Hosted UI changes ship
+to every surface; shell, preload, icon and config changes require a desktop rebuild.
 
 > **Why this is automatically synced with the phone + connector:** the universe
 > and the cross-turn conversation memory are keyed on the *authenticated WorkOS
@@ -25,11 +24,12 @@ icon, or config change.
 
 App shell = Electron main (`src/main.js`) + a minimal preload (`src/preload.js`).
 The main process opens a hardened `BrowserWindow` (context isolation on, no Node
-in the renderer, OS sandbox on), loads the remote SPA, keeps the app's own
-origins in-window (so the same-origin WorkOS OAuth works), and sends any external
-link to the system browser. `src/loading.html` is a local splash/offline
-fallback. iPhone is a later `npx cap add ios` on the existing `mobile/` project —
-no new client codebase.
+in the renderer, OS sandbox on) and loads the remote SPA. Only tinyassets.io
+renders in the window. The preload exposes browser launch and app-return delivery;
+main validates the exact app origin, path and top frame. Browser-launch errors
+reach the sign-in notice. Warm and cold protocol returns deliver the one-time
+secret; focus alone cannot complete sign-in. `src/loading.html` is the local
+splash/offline fallback.
 
 ## Prerequisites
 

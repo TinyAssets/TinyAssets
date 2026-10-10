@@ -183,11 +183,11 @@ def test_web_login_and_callback_use_protected_navigation_and_cookie_renewal(tmp_
     start = html.split("  async function beginSignIn(){", 1)[1].split(
         "  // The AuthKit callback", 1)[0]
     finish = html.split("  async function completeSignInIfCallback(){", 1)[1].split(
-        "  async function finishExchange", 1)[0]
+        "  function token()", 1)[0]
     script = tmp_path / "login.cjs"
     script.write_text("const pending=" + json.dumps(pending) + ";\n" + """
 const assert=require('node:assert/strict');
-const NATIVE=false, CFG={configured:true}, TOKEN_KEY='token', EXP_KEY='expiry';
+const NATIVE=false, DESKTOP_SHELL=false, CFG={configured:true}, TOKEN_KEY='token', EXP_KEY='expiry';
 const sessionStorage=new Map([['token','old-account'],['expiry','old-expiry']]);
 sessionStorage.removeItem=key=>sessionStorage.delete(key);
 const localStorage=new Map(pending==='none'?[]:[['ta_logout_pending','1']]);

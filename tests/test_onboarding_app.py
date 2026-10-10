@@ -217,7 +217,7 @@ def test_route_is_apex_app_get(monkeypatch):
     # the one-tap OpenAI device-auth broker (POST only, identity-gated) + the
     # fixed, unauthenticated bundle host a custom UI runs inside (GET).
     assert set(by_path) == {
-        "/app", "/app/token", "/app/me", "/app/ui-frame",
+        "/app", "/app/token", "/app/me", "/app/ui-frame", "/app/native-sign-in",
         "/app/run/{listing}", "/app/run/{listing}/preview.png", "/app/unread",
         "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/approvals/{operation}",
         "/app/approval-handoff", "/app/approval-handoff/{ref}",

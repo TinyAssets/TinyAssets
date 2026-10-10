@@ -21,7 +21,8 @@ def test_electron_sheet_opens_browser_handoff_only_after_click(app_url, browser)
     ))
     _enter_chat(page, app_url)
     page.evaluate("""() => {
-      window.handoffs=[];window.open=url=>window.handoffs.push(url);
+      window.handoffs=[];
+      window.tinyassetsDesktop={openExternal:async url=>window.handoffs.push(url)};
       renderRail([{request_id:'connect', title:'Connect TikTok', sticky:true,
                    action:{type:'connect'}, fields:[]}]);
     }""")

@@ -86,6 +86,7 @@ on:
       - "tests/test_custom_ui_forms_browser.py"
       - "tests/test_custom_ui_real_browser.py"
       - "tests/test_inline_approvals_real_browser.py"
+      - "tests/test_native_sign_in_browser.py"
       - "tests/test_orphan_ready_browser.py"
       - "tests/test_owner_completion_browser.py"
       - "tests/test_owner_ui_prefs_browser.py"

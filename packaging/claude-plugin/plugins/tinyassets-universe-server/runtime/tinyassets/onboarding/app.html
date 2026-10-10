@@ -399,7 +399,7 @@
     }
     dialog.request-sheet{position:fixed;inset:auto 0 0;margin:0 auto;width:min(42rem,100%);max-width:100%;max-height:88dvh;box-sizing:border-box;overflow:auto;border:1px solid var(--line);border-radius:20px 20px 0 0;padding:1.1rem;background:var(--surface);color:var(--ink);}
     dialog.request-sheet:not([open]){display:none!important}
-    dialog.request-sheet[open]{display:block!important;width:min(42rem,100%)!important;max-height:88dvh!important;padding:1.1rem!important}
+    dialog.request-sheet[open]{display:block!important;width:min(42rem,100%)!important;max-height:calc(var(--app-h,100dvh) - 1rem)!important;padding:1.1rem max(1.1rem,env(safe-area-inset-right)) max(1.1rem,env(safe-area-inset-bottom)) max(1.1rem,env(safe-area-inset-left))!important}
     dialog.request-sheet::backdrop{background:rgb(0 0 0 / .45)}
     #request-rail[open]>:not([hidden]){display:block}
     #request-rail [hidden]{display:none!important}
@@ -407,6 +407,10 @@
     #rail-head,#needs-you-title{padding-right:6rem;white-space:normal;margin-bottom:1rem}
     #request-rail .rtab{clear:both;width:100%;box-sizing:border-box}
     #request-rail .rtab>h3{display:none}
+    .browser-login{min-width:0;overflow-wrap:anywhere}
+    .browser-login input,.browser-login textarea{display:block;width:100%;font:inherit;font-size:16px;min-height:44px;margin:.5rem 0;padding:.65rem;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);scroll-margin:1rem}
+    .browser-login-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+    .browser-login button{min-height:44px}
     .inline-approval h3,.inline-approval p{overflow-wrap:anywhere}
     .request-sheet .inline-approval{padding-top:.5rem}
     #needs-you-items{display:grid;gap:.6rem;clear:both}
@@ -917,12 +921,6 @@
   // Native opens every OAuth page in an in-app Chrome tab and the callback
   // bounces back into the app through the tinyassets:// scheme.
   const NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform==="function" && window.Capacitor.isNativePlatform());
-  // An app-initiated sign-in marks `state` with the install it came from, and
-  // the callback bounces ONLY to that entry's fixed package — never one named by
-  // the URL. The debug/sideload build is a separate install
-  // (io.tinyassets.app.debug) so it can never block a Play update, and it must
-  // sign back into itself rather than into the Play app.
-  const APP_RETURN_PACKAGES = {"app.": "io.tinyassets.app", "appdebug.": "io.tinyassets.app.debug"};
   // The desktop app is Electron over this page. Its shell refuses every
   // permission request and Electron has no push service, so web push cannot
   // work there: nothing offers it.
@@ -930,7 +928,7 @@
   function nativePlugin(name){ const P=window.Capacitor&&window.Capacitor.Plugins; return (P&&P[name])||null; }
   // PKCE state lives in localStorage on native (survives the WebView being
   // backgrounded behind the tab) and sessionStorage on the web.
-  const pkceStore = NATIVE ? localStorage : sessionStorage;
+  const pkceStore = (NATIVE || DESKTOP_SHELL) ? localStorage : sessionStorage;
   // The explicit public-page Run click survives the same-tab sign-in redirect.
   const publicRunId=new URLSearchParams(window.location.search).get('run');
   if(publicRunId&&/^[A-Za-z0-9_-]{1,160}$/.test(publicRunId)){
@@ -939,9 +937,13 @@
     history.replaceState(history.state,'',next.pathname+next.search+next.hash);
   }
   async function openExternal(url){
+    if(DESKTOP_SHELL){
+      if(!window.tinyassetsDesktop)throw new Error('Update the desktop app to open the system browser.');
+      await window.tinyassetsDesktop.openExternal(url);return;
+    }
     const B = NATIVE ? nativePlugin("Browser") : null;
     if(B){ try{ await B.open({url, presentationStyle:"popover"}); return; }catch(_e){} }
-    if(NATIVE){ window.location.href = url; return; }
+    if(NATIVE) throw new Error("The system browser could not open. Update the app and try again.");
     window.open(url, "_blank", "noopener");
   }
   async function closeExternal(){ const B=NATIVE?nativePlugin("Browser"):null; if(B){ try{ await B.close(); }catch(_e){} } }
@@ -953,7 +955,7 @@
         "This app isn't configured yet (missing WorkOS client). Ask the host to set it.";
       return;
     }
-    if(!NATIVE){
+    {
       // Finish a failed sign-out BEFORE replacing its cookies. Do not clear
       // logout intent from the public callback marker: it proves nothing.
       let pendingLogout=logoutPending;
@@ -965,78 +967,75 @@
           return;
         }
       }
+    }
+    if(!NATIVE && !DESKTOP_SHELL){
       // One browser-bound, server-PKCE login establishes app renewal AND owner
       // proof. Never upgrade a page/MCP bearer into an approval session.
       window.location.href = "/app/owner-sign-in?app=1";
       return;
     }
-    const verifier = randToken(48);
-    // An app-initiated sign-in is marked in `state` so the callback page (which
-    // lands in the in-app tab, NOT the WebView) knows to bounce the code back.
-    let statePrefix = "";
-    if(NATIVE){
-      // Which install is this? Guessing would send a debug install's sign-in to
-      // the Play app, which has no verifier for it; say so instead.
-      let appId = "";
-      const A = nativePlugin("App");
-      try{ const info = A && typeof A.getInfo==="function" ? await A.getInfo() : null;
-        appId = (info && info.id) || ""; }catch(_e){}
-      if(!appId){
-        document.getElementById("signin-notice").textContent =
-          "Sign-in can't start: this app didn't say which install it is. Update the app and try again.";
-        return;
+    const notice=document.getElementById('signin-notice'),signInButton=document.getElementById('btn-signin');
+    if(signInButton.disabled)return;signInButton.disabled=true;
+    try{
+      let client='desktop';
+      if(NATIVE){
+        const A=nativePlugin('App');let info;
+        try{info=A&&await A.getInfo();}catch(_e){}
+        if(!info?.id)throw new Error("This app didn't say which install it is. Update it and try again.");
+        if(!['io.tinyassets.app','io.tinyassets.app.debug'].includes(info.id))throw new Error('Unknown app install.');
+        client=window.Capacitor.getPlatform()==='ios'?'ios':
+          (info.id==='io.tinyassets.app.debug'?'android-debug':'android');
       }
-      statePrefix = appId === APP_RETURN_PACKAGES["appdebug."] ? "appdebug." : "app.";
-    }
-    const state = statePrefix + randToken(18);
-    pkceStore.setItem(PKCE_KEY, JSON.stringify({verifier, state}));
-    const challenge = await challengeFor(verifier);
-    const p = new URLSearchParams({
-      response_type:"code", client_id:CFG.client_id, redirect_uri:redirectUri(),
-      scope:CFG.scopes, state, code_challenge:challenge, code_challenge_method:"S256",
-      resource:CFG.resource,
-    });
-    // After an explicit sign-out, force AuthKit to re-authenticate so a shared
-    // device can't silently ride the prior user's surviving SSO session.
-    if(sessionStorage.getItem("ta_force_login")){ p.set("prompt","login"); sessionStorage.removeItem("ta_force_login"); }
-    const url = CFG.authorization_endpoint + "?" + p.toString();
-    if(NATIVE){
-      document.getElementById("signin-notice").textContent = "Finish signing in, and you'll land right back here.";
-      await openExternal(url);
-      return;
-    }
-    window.location.href = url;
+      const verifier=randToken(48), code_challenge=await challengeFor(verifier);
+      const response=await fetch('/app/native-sign-in',{method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({client,code_challenge})});
+      const flow=await response.json();
+      if(!response.ok||!/^[A-Za-z0-9_-]{43}$/.test(flow.ref))throw new Error(flow.message||'Sign-in could not start. Try again.');
+      pkceStore.setItem(PKCE_KEY,JSON.stringify({verifier,native_ref:flow.ref,expires:Date.now()+600000}));
+      notice.textContent="Finish signing in in your browser, then return here.";
+      if(client==='ios'){
+        const auth=nativePlugin('SystemAuth');
+        if(!auth)throw new Error('Update the app to use secure system sign-in.');
+        const returned=await auth.open({url:flow.url});
+        if(!returned?.url || !(await handleAppReturn(returned.url)))throw new Error('Sign-in returned to a different session. Start again.');
+      }else await openExternal(flow.url);
+    }catch(error){
+      pkceStore.removeItem(PKCE_KEY);notice.textContent=error.message;
+    }finally{signInButton.disabled=false;}
   }
 
-  // The AuthKit callback landed in a real browser tab for an APP-initiated
-  // sign-in (state carries the app marker, and this page is not the app's
-  // WebView). The PKCE verifier lives only in the app, so do NOT exchange here:
-  // hand the code back to the app. ONLY the package-qualified intent:// form is
-  // used — never a bare tinyassets:// URL, which any rogue app could register
-  // to harvest the (verifier-less, but still) code + state. Android's Chrome
-  // honours an intent:// navigation from the redirect chain; the button is the
-  // fallback when it wants a tap first.
-  function bounceToApp(code, state, androidPackage){
-    const qs = "code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
-    const intent = "intent://auth?" + qs + "#Intent;scheme=tinyassets;package=" + androidPackage + ";end";
-    const notice = document.getElementById("signin-notice");
-    notice.textContent = "";
-    const p = document.createElement("p"); p.textContent = "Signed in. Returning you to the TinyAssets app…";
-    const a = document.createElement("a"); a.className = "btn btn--primary"; a.href = intent; a.textContent = "Open the TinyAssets app";
-    notice.appendChild(p); notice.appendChild(a);
-    try{ window.location.href = intent; }catch(_e){}
-  }
-
-  async function exchangeCode(code, state){
-    const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
-    if(!saved.verifier || saved.state !== state){
-      document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
-      return false;
+  let nativeSignInBusy=false, nativeSignInTimer=null;
+  async function resumeNativeSignIn(){
+    if((!NATIVE&&!DESKTOP_SHELL)||nativeSignInBusy)return;
+    clearTimeout(nativeSignInTimer);
+    let saved;try{saved=JSON.parse(pkceStore.getItem(PKCE_KEY)||'{}');}catch(_e){return;}
+    if(!saved.native_ref)return;
+    const notice=document.getElementById('signin-notice');
+    if(saved.expires<Date.now()){
+      pkceStore.removeItem(PKCE_KEY);notice.textContent='Sign-in expired. Try again.';return;
     }
-    return finishExchange(code, saved);
+    if(!saved.return_secret)return; // Focus alone is not proof of the browser return.
+    nativeSignInBusy=true;
+    try{
+      const response=await withRefreshLock(()=>fetch('/app/token',{method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({native_ref:saved.native_ref,code_verifier:saved.verifier,return_secret:saved.return_secret})}));
+      const result=await response.json();
+      // A replaced/cancelled flow must never install a late session.
+      if(pkceStore.getItem(PKCE_KEY)!==JSON.stringify(saved))return;
+      if(response.status===202){nativeSignInTimer=setTimeout(resumeNativeSignIn,1500);return;}
+      if(!response.ok||!result.access_token){
+        pkceStore.removeItem(PKCE_KEY);throw new Error('Sign-in could not finish. Start again in the app.');
+      }
+      pkceStore.removeItem(PKCE_KEY);
+      storeAccessToken(result.access_token,result.expires_in);storeSessionRef(result.session_ref);
+      await closeExternal();await enterSignedIn();
+    }catch(error){notice.textContent=error.message;
+      if(pkceStore.getItem(PKCE_KEY))nativeSignInTimer=setTimeout(resumeNativeSignIn,3000);
+    }finally{nativeSignInBusy=false;}
   }
 
-  // Native: the app was (re)opened through tinyassets://auth?code=…&state=…
+  // The AuthKit callback returns a one-time secret independently of the saved PKCE verifier.
   // Step trace for the in-app OAuth hand-offs: one short line per step to the
   // daemon log (identity-scoped, never a secret). Lets the flow be debugged
   // from a phone test without the tester narrating every screen.
@@ -1048,26 +1047,62 @@
 
   async function handleAppReturn(url){
     let u; try{ u = new URL(url); }catch(_e){ return false; }
-    if(!(u.protocol === "tinyassets:" && (u.host === "auth" || u.pathname.replace(/^\/+/,"") === "auth"))) return false;
+    if(!['tinyassets:','tinyassets-desktop:'].includes(u.protocol) || u.host!=='auth' ||
+       u.username || u.password || u.hash || u.pathname)return false;
+    let saved;try{saved=JSON.parse(pkceStore.getItem(PKCE_KEY)||'{}');}catch(_e){return false;}
+    const ref=u.searchParams.get('signin'),secret=u.searchParams.get('return_secret');
+    if(ref){
+      if(!/^[A-Za-z0-9_-]{43}$/.test(ref)||ref!==saved.native_ref||
+         !/^[A-Za-z0-9_-]{43}$/.test(secret||'')||u.searchParams.size!==2)return false;
+      pkceStore.setItem(PKCE_KEY,JSON.stringify({...saved,return_secret:secret}));
+      await closeExternal();await resumeNativeSignIn();return true;
+    }
+    // Cached Android <=1.0.6 flows may return during the two-week rollout window.
+    const legacyState=u.searchParams.get('state'),code=u.searchParams.get('code');
+    if(NATIVE && Date.now()<1792800000000 && code && code.length<=8192 &&
+       /^app(?:debug)?\.[A-Za-z0-9_-]{24}$/.test(legacyState||'') &&
+       saved.state===legacyState && saved.verifier && !saved.native_ref && u.searchParams.size===2){
+      await closeExternal();const ok=await finishLegacyExchange(code,saved);
+      if(ok)await enterSignedIn();return ok;
+    }
     if(/^[A-Za-z0-9_-]{43}$/.test(u.searchParams.get('completion')||'')){
       await closeExternal();
       if(token()) await refreshRail();
       return true; // Observation only. Cold boot also refreshes after restoring sign-in.
     }
-    // A provider-tagged link belonged to a vendor sign-in card that no longer
-    // exists (vendor-neutral slice 6). It is never an app sign-in.
-    if(u.searchParams.get("provider")) return false;
-    const code = u.searchParams.get("code"), state = u.searchParams.get("state") || "";
-    if(!code) return false;
-    await closeExternal();
-    const ok = await exchangeCode(code, state);
-    if(ok) enterSignedIn();
-    return ok;
+    return false;
+  }
+  // Legacy exchange of the exact saved verifier; the code is one-time, so any failure ends the flow.
+  async function finishLegacyExchange(code,saved){
+    if(nativeSignInBusy)return false;
+    const raw=JSON.stringify(saved),notice=document.getElementById('signin-notice');
+    nativeSignInBusy=true;
+    try{
+      const response=await withRefreshLock(()=>fetch('/app/token',{method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({code,code_verifier:saved.verifier,redirect_uri:redirectUri()})}));
+      const result=await response.json();
+      // A replaced/cancelled flow must never install a late session.
+      if(pkceStore.getItem(PKCE_KEY)!==raw)return false;
+      pkceStore.removeItem(PKCE_KEY);
+      if(!response.ok||!result.access_token)throw new Error('Sign-in could not finish. Start again in the app.');
+      storeAccessToken(result.access_token,result.expires_in);storeSessionRef(result.session_ref);
+      return true;
+    }catch(error){notice.textContent=error.message;return false;}
+    finally{nativeSignInBusy=false;}
   }
   function wireNativeReturn(){
+    if(NATIVE||DESKTOP_SHELL){
+      window.addEventListener('focus',resumeNativeSignIn);
+      resumeNativeSignIn();
+    }
+    if(DESKTOP_SHELL && window.tinyassetsDesktop){
+      window.tinyassetsDesktop.onAppReturn(url=>handleAppReturn(url));
+    }
     if(!NATIVE) return;
     const A = nativePlugin("App");
     if(!A) return;
+    try{ A.addListener('appStateChange',ev=>{if(ev.isActive)resumeNativeSignIn();}); }catch(_e){}
     try{ A.addListener("appUrlOpen", (ev)=>{ if(ev && ev.url) handleAppReturn(ev.url); }); }catch(_e){}
     // Cold start from the callback intent (the app was killed behind the tab).
     try{ if(typeof A.getLaunchUrl==="function") A.getLaunchUrl().then((r)=>{ if(r && r.url) handleAppReturn(r.url); }).catch(()=>{}); }catch(_e){}
@@ -1120,50 +1155,11 @@
       history.replaceState({}, "", redirectUri());
       return false;
     }
-    const code = q.get("code");
-    if(!code) return false;
-    const state = q.get("state") || "";
-    history.replaceState({}, "", redirectUri());   // strip code/state from the URL
-    const appPrefix = Object.keys(APP_RETURN_PACKAGES).find((prefix)=>state.startsWith(prefix));
-    if(!NATIVE && appPrefix){ bounceToApp(code, state, APP_RETURN_PACKAGES[appPrefix]); return false; }
-    const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
-    if(!saved.verifier || saved.state !== state){
-      document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";
-      return false;
+    if(q.get('code')){
+      history.replaceState({}, '', redirectUri());
+      document.getElementById('signin-notice').textContent='Sign-in expired. Start again in the app.';
     }
-    return finishExchange(code, saved);
-  }
-
-  async function finishExchange(code, saved){
-    // Exchange the code SAME-ORIGIN through the daemon proxy (/app/token).
-    // The cross-origin AuthKit token endpoint fails inside an app WebView
-    // ("Failed to fetch"); the proxy does the PKCE exchange server-side and
-    // returns the access token. redirect_uri + code_verifier are re-checked there.
-    let tokens;
-    try{
-      // Under the same cross-document lock as refresh/logout: every mutation
-      // of the refresh cookie is serialized, so a late refresh can never
-      // overwrite a fresh login.
-      tokens = await withRefreshLock(async()=>{
-        const r = await fetch("/app/token", {
-          method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({code, code_verifier:saved.verifier, redirect_uri:redirectUri()}),
-        });
-        return r.json();
-      });
-    }catch(e){
-      document.getElementById("signin-notice").textContent = "Token exchange failed: " + e.message;
-      return false;
-    }
-    if(!tokens.access_token){
-      document.getElementById("signin-notice").textContent =
-        "Token exchange failed: " + (tokens.error_description || tokens.error || "no token");
-      return false;   // keep the PKCE state: a retry of the same sign-in can still complete
-    }
-    pkceStore.removeItem(PKCE_KEY);
-    storeAccessToken(tokens.access_token, tokens.expires_in);
-    storeSessionRef(tokens.session_ref);   // WebView-persistent renewal handle
-    return true;
+    return false;
   }
 
   function token(){ return sessionStorage.getItem(TOKEN_KEY); }
@@ -7501,7 +7497,7 @@
     // pinch-zoom only rescales it, and only the keyboard should shrink the app.
     // Phones only: desktop and the Electron app keep 100dvh exactly as before.
     const vv=window.visualViewport, root=document.documentElement;
-    if(vv && window.matchMedia("(max-width:600px)").matches)
+    if(vv && (NATIVE || window.matchMedia("(pointer:coarse)").matches || window.matchMedia("(max-width:600px)").matches))
       root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
     else root.style.removeProperty("--app-h");
   }
@@ -7510,6 +7506,7 @@
     fitToVisualViewport();
     document.body.appendChild($('request-rail'));
     window.visualViewport?.addEventListener('resize',fitToVisualViewport);
+    window.addEventListener('resize',fitToVisualViewport);
     $('needs-you-open').onclick=$('bubble-needs-you').onclick=()=>RequestSheets.inbox();
     $('needs-you-close').onclick=()=>$('needs-you').close();
     $('request-sheet-close').onclick=()=>{$('request-rail').close();railOpen=null;};
@@ -9309,18 +9306,23 @@
       const box=document.createElement('div'), note=document.createElement('p');
       const image=document.createElement('img'), typing=document.createElement('textarea');
       const credential=document.createElement('input'), fill=document.createElement('button');
+      box.className='browser-login';
+      const privateForm=document.createElement('div');
       credential.type='password';credential.autocomplete='off';credential.hidden=true;
+      credential.autocapitalize='none';credential.spellcheck=false;
+      credential.enterKeyHint='go';credential.maxLength=4096;
       credential.setAttribute('aria-label','Private input for the displayed website');
       fill.type='button';fill.className='btn';fill.hidden=true;
       image.alt='Live website sign-in';image.tabIndex=0;
       image.style.cssText='display:none;width:100%;touch-action:none;border:1px solid var(--line)';
       typing.setAttribute('aria-label','Type into the website');typing.autocomplete='off';
       typing.placeholder='Type here to enter text into the website';typing.hidden=true;
-      const controls=document.createElement('div');
+      const controls=document.createElement('div');controls.className='browser-login-controls';
       const signIn=document.createElement('a');signIn.href='/app/owner-sign-in';
       signIn.target='_blank';signIn.rel='noopener';signIn.textContent='Sign in to the protected view';
       signIn.hidden=true;
-      box.append(note,image,credential,fill,typing,controls,signIn);
+      privateForm.append(credential,fill);
+      box.append(note,image,privateForm,typing,controls,signIn);
       const id=req.action.connection_id, epoch=MCP._loginEpoch, home=queueScope;
       let active=false, busy=false, chain=Promise.resolve(), boundField=null, currentOrigin='';
       const post=async(action,extra={})=>{
@@ -9351,7 +9353,14 @@
           currentOrigin=value.origin;
           if(boundField?.token!==value.field?.token)credential.value='';
           boundField=value.field;
-          credential.hidden=!boundField||boundField.type!=='password';fill.hidden=credential.hidden;
+          credential.hidden=!boundField;fill.hidden=credential.hidden;
+          const hint=boundField?.autocomplete||(boundField?.type==='password'?'current-password':'off');
+          credential.type=boundField?.type==='password'?'password':boundField?.type==='email'?'email':'text';
+          // Device managers bind saved credentials to THIS page, not the remote site.
+          // Never suggest/save a foreign password as a TinyAssets login.
+          credential.autocomplete=hint==='one-time-code'?'one-time-code':'off';
+          credential.inputMode=hint==='one-time-code'?'numeric':boundField?.type==='email'?'email':'text';
+          credential.setAttribute('aria-label','Private '+(hint==='off'?'input':hint.replaceAll('-',' '))+' for '+(boundField?.origin||currentOrigin));
           fill.textContent='Fill on '+(boundField?.origin||currentOrigin);
           image.src='data:image/jpeg;base64,'+value.image;
           note.textContent=value.origin+' · '+(value.account||'Default account')+
@@ -9370,17 +9379,23 @@
         catch(error){fail(error);}finally{busy=false;}};
       box.browserStart=start;
       button('Retry sign-in',start);
-      button('Cancel',async()=>{active=false;await post('cancel');image.removeAttribute('src');
-        image.style.display='none';typing.hidden=true;note.textContent='Cancelled. Tap Connect to try again.';});
-      button('Disconnect',async()=>{active=false;await post('revoke');image.removeAttribute('src');
-        image.style.display='none';typing.hidden=true;note.textContent='Disconnected.';});
+      button('Cancel',async()=>{clear();await post('cancel');note.textContent='Cancelled. Tap Connect to try again.';});
+      button('Disconnect',async()=>{clear();await post('revoke');note.textContent='Disconnected.';});
       const input=event=>{if(active){event.origin=currentOrigin;
         chain=chain.then(()=>post('input',{event})).catch(fail);}};
       fill.onclick=()=>{if(!active||!boundField)return;
         const fields={token:boundField.token,origin:boundField.origin,value:credential.value};
         credential.value='';boundField=null;fill.hidden=true;credential.hidden=true;
         chain=chain.then(()=>post('fill_private',fields)).catch(fail).finally(()=>{fields.value='';});};
-      image.onclick=event=>{const r=image.getBoundingClientRect();input({kind:'click',
+      let touchStart=null,swiped=false;
+      image.onpointerdown=event=>{if(event.pointerType==='touch'){
+        touchStart={x:event.clientX,y:event.clientY};swiped=false;image.setPointerCapture(event.pointerId);}};
+      image.onpointerup=event=>{if(!touchStart)return;
+        const dx=touchStart.x-event.clientX,dy=touchStart.y-event.clientY;touchStart=null;
+        if(Math.hypot(dx,dy)>8){swiped=true;const r=image.getBoundingClientRect();
+          input({kind:'scroll',x:dx*1024/r.width,y:dy*768/r.height});}};
+      image.onpointercancel=()=>{touchStart=null;};
+      image.onclick=event=>{if(swiped){swiped=false;return;}const r=image.getBoundingClientRect();input({kind:'click',
         x:(event.clientX-r.left)*1024/r.width,y:(event.clientY-r.top)*768/r.height});image.focus();};
       image.onkeydown=event=>{if(event.key.length===1&&!event.ctrlKey&&!event.metaKey){
         event.preventDefault();input({kind:'text',text:event.key});

@@ -19,7 +19,7 @@
 //   - the dev URL override is ignored in a packaged build.
 'use strict';
 
-const { app, BrowserWindow, session, shell } = require('electron');
+const { app, BrowserWindow, session, shell, ipcMain, dialog } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
@@ -92,11 +92,16 @@ function noteHandedOff(url) {
 // Route a blocked navigation target to the system browser — but ONLY if the URL
 // itself is safe to hand to the OS (HTTP(S)). file:/javascript:/data:/custom
 // schemes are dropped silently (openExternal on untrusted input is an RCE vector).
-function openExternalIfSafe(url) {
-  if (isSafeExternal(url)) {
-    noteHandedOff(url);
-    shell.openExternal(url).catch(() => {});
-  }
+async function openExternalIfSafe(url) {
+  if (!isSafeExternal(url)) throw new Error('A secure browser URL is required.');
+  noteHandedOff(url);
+  try { await shell.openExternal(url); }
+  catch { throw new Error('The system browser could not open. Check your default browser and try again.'); }
+}
+
+function handOffNavigation(url) {
+  if (!isSafeExternal(url)) return;
+  openExternalIfSafe(url).catch((error) => dialog.showErrorBox('Could not open browser', error.message));
 }
 
 // One navigation policy for EVERY WebContents in the app (main window, OAuth
@@ -116,7 +121,7 @@ function applyNavigationPolicy(contents) {
     const allowed = isMainFrame ? isAllowedNavigation(url) : isAllowedSubframe(url);
     if (allowed) return;
     event.preventDefault();
-    if (isMainFrame) openExternalIfSafe(url);
+    if (isMainFrame) handOffNavigation(url);
   };
   // will-navigate fires for the main frame only.
   contents.on('will-navigate', (event, url) => decide(event, url, true));
@@ -127,7 +132,7 @@ function applyNavigationPolicy(contents) {
   // Deny ALL new windows. An allowed HTTP(S) target opens in the system browser;
   // nothing gets a fresh, policy-less WebContents inside the app.
   contents.setWindowOpenHandler(({ url }) => {
-    openExternalIfSafe(url);
+    handOffNavigation(url);
     return { action: 'deny' };
   });
 }
@@ -156,7 +161,7 @@ function createWindow() {
     webPreferences: {
       // Hardened defaults: the window renders a remote page, so the renderer
       // gets no Node, an isolated context, and the OS sandbox. The preload
-      // exposes nothing privileged.
+      // exposes only validated browser launch and app-return delivery.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -209,20 +214,54 @@ function focusApp() {
   }
 }
 
-// A return is only a focus/refresh signal. Never navigate to or execute input.
+// Deliver only shaped app returns, never navigate to or execute protocol input.
 function isApprovalReturn(value) {
   try {
     const url = new URL(value);
+    const handle = (key) => /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get(key) || '');
     return url.protocol === 'tinyassets-desktop:' && url.host === 'auth'
-      && !url.username && !url.password && !url.hash
-      && [...url.searchParams.keys()].length === 1
-      && /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('completion') || '');
+      && !url.username && !url.password && !url.hash && !url.pathname
+      && ((url.searchParams.size === 1 && handle('completion')) ||
+          (url.searchParams.size === 2 && handle('signin') && handle('return_secret')));
   } catch { return false; }
 }
-app.on('second-instance', () => focusApp());
+function isAppFrame(event) {
+  try {
+    const url = new URL(event.senderFrame.url), expected = new URL(APP_URL);
+    return event.sender === mainWindow?.webContents && event.senderFrame === event.sender.mainFrame
+      && url.origin === expected.origin && url.pathname === expected.pathname;
+  } catch { return false; }
+}
+let pendingReturn = process.argv.find(isApprovalReturn) || null;
+let returnReceiver = null;
+function deliverReturn() {
+  if (!pendingReturn || !returnReceiver || !isAppFrame(returnReceiver)) return;
+  returnReceiver.sender.send('tinyassets:app-return', pendingReturn);
+  pendingReturn = null;
+}
+function receiveReturn(url) {
+  if (!isApprovalReturn(url)) return;
+  pendingReturn = url;
+  focusApp();
+  deliverReturn();
+}
+ipcMain.handle('tinyassets:open-external', (event, url) => {
+  if (!isAppFrame(event)) throw new Error('Only the app can open the browser.');
+  return openExternalIfSafe(url);
+});
+ipcMain.on('tinyassets:return-ready', (event) => {
+  if (!isAppFrame(event)) return;
+  returnReceiver = event;
+  deliverReturn();
+});
+app.on('second-instance', (_event, argv) => {
+  const url = argv.find(isApprovalReturn);
+  if (url) receiveReturn(url);
+  else focusApp();
+});
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  if (isApprovalReturn(url)) focusApp();
+  receiveReturn(url);
 });
 
 app.whenReady().then(() => {

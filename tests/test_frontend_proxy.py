@@ -45,6 +45,33 @@ def test_render_build(monkeypatch):
     assert '"build": "abc"' in onboarding.render_app_html(build="abc")[0]
 
 
+@pytest.mark.parametrize(
+    "state", ["oa_app_pending", "na_pending", "app.pending", "appdebug.pending"]
+)
+def test_auth_callbacks_are_forwarded_to_owner(monkeypatch, state):
+    from tinyassets.frontend import Frontend
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+
+    async def run():
+        seen = []
+
+        def owner(request):
+            seen.append(str(request.url))
+            return httpx.Response(200, stream=httpx.ByteStream(b"owner callback"))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(owner)) as upstream:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=Frontend(upstream, "test", "blue")),
+                base_url="https://tinyassets.io",
+            ) as client:
+                result = await client.get("/app", params={"state": state, "code": "test"})
+                assert result.text == "owner callback"
+                assert len(seen) == 1 and f"state={state}" in seen[0]
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("kind,scheme", [("http", "https"), ("websocket", "wss")])
 def test_socket_metadata(kind, scheme):
     scopes = []

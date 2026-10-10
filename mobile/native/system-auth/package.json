@@ -1,0 +1,6 @@
+{
+  "name": "@tinyassets/system-auth",
+  "version": "1.0.0",
+  "private": true,
+  "capacitor": {"ios": {"src": "ios"}}
+}
