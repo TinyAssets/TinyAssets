@@ -14,9 +14,6 @@ from tinyassets.broker import supervisor
 from tinyassets.providers import owned_process, provider_jail
 from tinyassets.role_provider_cell import REFUSAL_EXIT, REFUSAL_PREFIX
 
-posix_pipes = pytest.mark.skipif(sys.platform == 'win32',
-                                 reason='asyncio pipe transports and /proc are POSIX')
-
 
 def test_shared_spawn_refuses_an_unbound_launch_before_any_process(monkeypatch):
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
@@ -156,7 +153,7 @@ def test_exec_mapper_requires_stdin_stdout_and_stderr_pipes():
             mapper._decoder(request, received)
 
 
-@posix_pipes
+@pytest.mark.skipif(sys.platform == 'win32', reason='asyncio pipe transports and /proc are POSIX')
 @pytest.mark.parametrize('case', ['socket', 'named-fifo', 'wrong-direction', 'file'])
 def test_exec_mapper_admits_only_daemon_made_anonymous_pipes(tmp_path, case):
     import socket
@@ -189,7 +186,7 @@ def test_exec_mapper_admits_only_daemon_made_anonymous_pipes(tmp_path, case):
             os.close(fd)
 
 
-@posix_pipes
+@pytest.mark.skipif(sys.platform == 'win32', reason='asyncio pipe transports and /proc are POSIX')
 def test_cli_exiting_with_unread_stdin_leaves_stdout_clean_and_stderr_whole():
     """The production failure, on real pipes: no ECONNRESET, the reason survives."""
     async def run():
@@ -222,7 +219,7 @@ def test_cli_exiting_with_unread_stdin_leaves_stdout_clean_and_stderr_whole():
     asyncio.run(run())
 
 
-@posix_pipes
+@pytest.mark.skipif(sys.platform == 'win32', reason='asyncio pipe transports and /proc are POSIX')
 def test_stdin_close_is_only_the_cli_input_side():
     """Closing stdin reaches the CLI as EOF while its output keeps flowing."""
     async def run():
