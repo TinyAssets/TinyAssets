@@ -51,6 +51,20 @@ def broker_ledger_path(data_root: str | Path) -> Path:
     return Path(data_root).resolve() / ".broker" / "outbound.db"
 
 
+def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> None:
+    """Seed real mapper records before a fixture's in-process broker starts."""
+    if not SUPPORTED:
+        return  # The broker double itself is Linux-only.
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    state = Path(data_root) / ".broker"
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state.chmod(0o700)
+    identities = OwnerIdentities(state / "owner-identities.db", initialize=True)
+    identities.resolve(principal, allocate=True)
+    identities.admission("admit", principal, center)
+
+
 def _peer_uid(sock: socket.socket) -> int:
     raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
     return struct.unpack("3i", raw)[1]
