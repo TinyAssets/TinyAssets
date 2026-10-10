@@ -137,6 +137,71 @@ on:
       - "tinyassets/storage_accounting.py"
       - "tests/test_jail_disk.py"
       - "tests/test_storage_accounting.py"
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/linux-jail-proof.yml'
+      - 'docker/linux-oracle.Dockerfile'
+      - 'scripts/linux_oracle.py'
+      - 'scripts/ci_assert_junit_case.py'
+      - 'tinyassets/node_sandbox.py'
+      - 'tinyassets/graph_compiler.py'
+      - 'tinyassets/runs.py'
+      - 'tinyassets/engine_admissions.py'
+      - 'tinyassets/delivery_runtime.py'
+      - 'tinyassets/action_result_delivery.py'
+      - 'tinyassets/conversation_custody.py'
+      - 'tinyassets/run_file_*.py'
+      - 'tinyassets/api/deliveries.py'
+      - 'tinyassets/api/receiver_links.py'
+      - 'tinyassets/api/run_files.py'
+      - 'tinyassets/storage/deliveries.py'
+      - 'tinyassets/storage/delivery_lock.py'
+      - 'tinyassets/storage/receiver_links.py'
+      - 'tinyassets/storage/run_files.py'
+      - 'tinyassets/storage/run_file_lock.py'
+      - 'tinyassets/storage/conversation_custody.py'
+      - 'tests/test_delivery_node_rpc.py'
+      - 'tests/test_delivery_public.py'
+      - 'tests/test_receiver_links.py'
+      - 'tests/conftest.py'
+      - 'tinyassets/providers/codex_provider.py'
+      - 'tinyassets/providers/native_jsonrpc_discovery.py'
+      - 'tests/test_jail_seccomp_profiles.py'
+      - 'tinyassets/providers/provider_jail.py'
+      - 'tinyassets/providers/jail_seccomp.py'
+      - 'tinyassets/providers/owned_process.py'
+      - 'tinyassets/providers/router.py'
+      - 'tinyassets/providers/claude_provider.py'
+      - 'tinyassets/providers/base.py'
+      - 'tests/test_universe_tools_jail.py'
+      - 'tests/test_ta_capabilities_jail.py'
+      - 'tests/test_remote_box_ta.py'
+      - 'tests/test_remote_box_extensions.py'
+      - 'tinyassets/agent_loop/box_ta.py'
+      - 'tinyassets/agent_loop/box_ta_worker.py'
+      - 'tinyassets/agent_loop/box_tools.py'
+      - 'tinyassets/agent_loop/tool_session.py'
+      - 'tinyassets/extension_capabilities.py'
+      - 'tinyassets/extension_hooks.py'
+      - 'tests/test_ta_capabilities.py'
+      - 'tests/test_node_sandbox_workspace.py'
+      - 'tests/test_workspace_provision_mount.py'
+      - 'tests/test_sandbox_mount_handles.py'
+      - 'tests/test_node_sandbox.py'
+      - 'tests/engine_authority_helpers.py'
+      - 'tinyassets/universe_tools.py'
+      - 'tinyassets/ta_capabilities.py'
+      - 'tinyassets/ta_cli.py'
+      - 'tinyassets/engine_mcp_server.py'
+      - 'tinyassets/served_tools.py'
+      - 'tinyassets/universe_intelligence.py'
+      - 'tinyassets/universe_egress.py'
+      - 'tinyassets/workspace_fs.py'
+      - 'tinyassets/jail_disk.py'
+      - 'tinyassets/storage_accounting.py'
+      - 'tests/test_jail_disk.py'
+      - 'tests/test_storage_accounting.py'
   workflow_dispatch:
 
 permissions:
@@ -149,15 +214,8 @@ concurrency:
 jobs:
   linux-jail-proof:
     name: linux-jail-proof
-    # Drafts do not spend a runner here; `ready_for_review` above runs it for
-    # real as soon as the PR is ready, and `workflow_dispatch` is unaffected
-    # (the condition's first clause is true for every non-PR event).
-    # Deliberately NOT a branch-protection context (see the header), which is
-    # what makes skipping safe: a skipped job reports `conclusion=skipped` and
-    # branch protection accepts that as satisfied. If this proof is ever
-    # promoted to a required check, this `if:` must be removed in the same
-    # change -- otherwise the gate passes without running.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Optional heavy proof after merge; PRs use the required production-image gate.
+    if: github.event_name != 'pull_request'
     # Ephemeral GitHub-hosted VM only, never self-hosted. The jail itself runs
     # in a throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest

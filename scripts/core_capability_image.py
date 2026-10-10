@@ -596,6 +596,7 @@ def image_check(args):
                 entrypoint="/opt/venv/bin/python",
                 extra=extra,
             )
+            command[command.index("apparmor=unconfined")] = "apparmor=" + args.apparmor
             result = subprocess.run(
                 command + ["-I", "-B", "/checks/core_capability_image.py", "--inside"],
                 capture_output=True,
@@ -634,6 +635,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--image")
+    parser.add_argument("--apparmor", default="unconfined")
     parser.add_argument("--report", default="core-capabilities.json")
     args = parser.parse_args()
     if args.inside:

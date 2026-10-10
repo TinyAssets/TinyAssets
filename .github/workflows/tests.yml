@@ -161,13 +161,23 @@ jobs:
           context: .
           load: true
           tags: tinyassets-capability:pr
-          cache-from: type=gha,scope=core-capabilities
+          cache-from: |
+            type=gha,scope=core-capabilities
+            type=gha,scope=tinyassets-daemon
+            type=gha
           cache-to: type=gha,scope=core-capabilities,mode=max
+      - name: Permit user namespaces for the capability container
+        if: steps.tier.outputs.required == 'true'
+        run: |
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+            'profile ta-capability-userns flags=(unconfined) {' '  userns,' '}' \
+            > "$RUNNER_TEMP/ta-capability-userns"
+          sudo apparmor_parser -r "$RUNNER_TEMP/ta-capability-userns"
       - name: Exercise every core capability through real execution seams
         if: steps.tier.outputs.required == 'true'
         run: |
           pip install cryptography
-          python scripts/core_capability_image.py --image tinyassets-capability:pr --report core-capabilities.json
+          python scripts/core_capability_image.py --image tinyassets-capability:pr --apparmor ta-capability-userns --report core-capabilities.json
       - name: Explain a runtime-equivalent change
         if: steps.tier.outputs.required == 'false'
         run: echo 'No runtime/deploy inputs changed; fast affected units are the PR tier.'
