@@ -15,8 +15,12 @@ Every request and notification SHALL retain its server-derived asking agent and 
 Delivery SHALL recheck the recorded owner and target binding; removed or retired asking agents SHALL fall back to the same owner's main conversation with a clear note.
 
 #### Scenario: Foreign owner
-- **WHEN** a different owner attempts an answer or the destination belongs to another owner
-- **THEN** delivery is refused
+- **WHEN** a different owner attempts an answer
+- **THEN** the answer is refused before any mutation
+
+#### Scenario: Older asker binding belongs to another owner
+- **WHEN** the recorded owner answers, replies to or dismisses an older ask whose binding no longer belongs to that owner and home
+- **THEN** the request can be settled and any answer delivery targets only the recorded owner's main conversation with a routing note; the foreign binding is never used
 
 #### Scenario: Retired asker
 - **WHEN** the asking agent is retired or removed

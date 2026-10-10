@@ -236,6 +236,10 @@ class NoServingProvider(PermissionError):
     """The founder has no current serving binding."""
 
 
+class AgentBindingNotFound(LookupError):
+    """The requested agent binding is absent from this command center."""
+
+
 class ServingProviderHeld(PermissionError):
     """Readiness hold with a fixed display code; existing refusal semantics stay."""
 
@@ -537,7 +541,7 @@ def bind_serving_provider(
     universe = _canonical_universe(base, universe_dir, uid)
     agent = get_binding(base, universe_id=uid, binding_id=binding_id)
     if agent is None:
-        raise LookupError("agent binding was not found")
+        raise AgentBindingNotFound("agent binding was not found")
     if agent["created_by"] != owner:
         raise PermissionError("only the binding creator may assign its provider")
     if int(agent["revision"]) != expected_revision:
@@ -560,7 +564,7 @@ def bind_serving_provider(
     with admission.exclusive(universe):
         agent = get_binding(base, universe_id=uid, binding_id=binding_id)
         if agent is None:
-            raise LookupError("agent binding was not found")
+            raise AgentBindingNotFound("agent binding was not found")
         if (expected_binding_updated_at is not None
                 and agent["updated_at"] != expected_binding_updated_at):
             raise PermissionError("agent serving intent changed")
@@ -1020,7 +1024,7 @@ def set_serving(
     # authority transaction below.
     existing = get_binding(base_path, universe_id=uid, binding_id=binding_id)
     if existing is None:
-        raise LookupError("agent binding was not found")
+        raise AgentBindingNotFound("agent binding was not found")
     if (expected_binding_updated_at is not None
             and existing["updated_at"] != expected_binding_updated_at):
         raise PermissionError("agent serving intent changed")
@@ -1047,7 +1051,7 @@ def set_serving(
     with provider_assignment_admission().exclusive(universe):
         current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
         if current is None:
-            raise LookupError("agent binding was not found")
+            raise AgentBindingNotFound("agent binding was not found")
         if current.get("retired"):
             raise PermissionError("agent retired; restore it before changing serving state")
         if (expected_binding_updated_at is not None

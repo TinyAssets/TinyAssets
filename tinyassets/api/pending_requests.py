@@ -3014,6 +3014,7 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import execute_action
         from tinyassets.exceptions import ProviderError
+        from tinyassets.provider_serving_binding import AgentBindingNotFound
         from tinyassets.storage.current_home import CurrentHomeChanged
         from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
 
@@ -3021,7 +3022,7 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
             if row["fields"] or values:
                 return _bad("model access is a fieldless owner confirmation")
             result = execute_action(_uid, action)
-        except (ValueError, LookupError, PermissionError, ProviderError,
+        except (ValueError, AgentBindingNotFound, PermissionError, ProviderError,
                 PreferenceStoreUnavailable, CurrentHomeChanged) as exc:
             return {"error": "provider_authority_denied", "detail": str(exc),
                     "request_pending": True}
@@ -3030,10 +3031,6 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
             logger.warning("Model setup could not be confirmed; request remains pending",
                            exc_info=True)
             return {"error": "model_setup_unavailable", "request_pending": True}
-        except Exception as exc:  # noqa: BLE001 - a bug, not a setup outage; never mislabel it
-            logger.exception("Model setup failed unexpectedly (%s) for request %s in %s",
-                             type(exc).__name__, request_id, _uid)
-            return {"error": "internal_error", "request_pending": True}
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}

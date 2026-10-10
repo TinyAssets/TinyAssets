@@ -150,7 +150,6 @@ def capture(home, agent):
 
 def destination(home, origin):
     from tinyassets.addressed_agents import AgentNotAddressable, resolve
-    from tinyassets.custom_agents import _agent_connect
 
     owner = origin.get("owner")
     if origin.get("home") != home.name or not _admin(home, owner):
@@ -160,13 +159,11 @@ def destination(home, origin):
         resolved = resolve(home.parent, universe_id=home.name, owner=owner, agent_id=agent)
         return (resolved.agent_id if resolved else "main"), ""
     except AgentNotAddressable:
-        with _agent_connect(home.parent) as conn:
-            binding = conn.execute("SELECT created_by,universe_id FROM agent_bindings "
-                                   "WHERE agent_binding_id=?", (agent,)).fetchone()
-        if binding and (binding[0], binding[1]) != (owner, home.name):
-            raise PermissionError("request_agent_owner_mismatch") from None
-        return "main", (f"The asking agent {agent!r} was removed or retired; "
-                        "this answer is routed to main.")
+        # An older origin can name a binding this owner can no longer address.
+        # The recorded owner still owns the answer; never deliver it to that
+        # binding or let its current owner settle the recorded owner's ask.
+        return "main", (f"The asking agent {agent!r} was removed or retired, or is no longer "
+                        "available to this owner; this answer is routed to main.")
 
 
 class UnrecordedAskerAmbiguous(PermissionError):
