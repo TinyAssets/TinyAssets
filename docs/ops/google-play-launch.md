@@ -1,38 +1,42 @@
 # Google Play launch — drive-everything runbook
 
-Everything needed to publish the TinyAssets Android app to Google Play. As of
-2026-09-03 the app is created, the listing and declarations are filled, release
-`2 (1.0.1)` is active on the private internal track. The founder's remaining actions
-are: (1) install that release from Play and try the loop on a phone, (2) review and
-submit the foreground-service declaration staged in §8a, (3) run
-the closed test Play requires before production access, and (4) click **Roll out**
-after review. The four upload-keystore secrets are **optional**: see §0.
-All content below is copy-paste ready.
+Release preparation for the founder goal dated 2026-10-11. Latest founder-supplied
+Play Console snapshot: closed track **alpha**, build **6 / 1.0.5** (Oct 3),
+Google Group **testers-community@googlegroups.com**, **12 testers opted in for
+9 continuous days**, and **no Console notifications**. This is not evidence of
+zero crashes, zero feedback, or notification delivery in the app.
 
-Package name (permanent once published): **`io.tinyassets.app`**
-(`mobile/capacitor.config.json`). App is the Capacitor shell over
-`https://tinyassets.io/app` — see `desktop-app/README.md` + `mobile/README.md`.
+Next candidate: **1.0.7 / code 8**, package **io.tinyassets.app**, containing
+#4594's system-browser sign-in and return-secret flow. Publish it to alpha before
+**2026-10-24 00:00 UTC**. The single ordered founder checklist is in
+[host-actions.md](../host-actions.md#google-play-finish-the-closed-test-and-launch).
+Production access is expected around Oct 15–16 only if Console confirms the
+continuous-test requirement; the Oct 11 goal cannot override that gate.
 
-> **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
-> first.** This file is the procedure; that one is where both platforms actually
-> stand, what is genuinely blocked on whom, and the traps already paid for.
+## 0. Release workflow readiness
 
----
+Checked against `main` containing #4594 on 2026-10-10. Run after this PR merges:
 
-## 0. Founder-only actions (I cannot do these)
+```sh
+gh workflow run android-release.yml --ref main
+gh run download <successful-run-id> -n tinyassets-release-aab -D dist/
+```
 
-| Step | Action | Where |
-|---|---|---|
-| Account | ~~Create a Google Play Developer account.~~ **Done** — developer `8089695267825659874`, identity verified 2026-08-24 (Play Console mail). | https://play.google.com/console/developers/8089695267825659874 |
-| Phone | ~~Verify the contact phone `+12067997835`.~~ **Done 2026-09-02 — and it was never a founder action.** It took one click in the Console and sent no SMS code, despite the padlock text implying otherwise. Try such a step before handing it over. | — |
-| Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
-| Signing key | The keystore is generated (§2, 2026-09-01). Adding its 4 values as repo secrets is **optional, not blocking** — `mobile/container/` builds and signs the bundle with no secret at all, and that is how the shipped build was made. Worth doing anyway: it turns each future release into one `gh workflow run`. One command, §3; an agent cannot run it (`gh secret set` is denied to it). | your machine → GitHub secrets |
-| Console forms | Creating the app, legal/policy declarations (incl. US export laws), Data safety, content rating, tester invitations, release uploads, review submission, and rollout are consequential account actions: the agent drives them only after the required action-time confirmation. Routine store-asset safety correction is different: when a listing accidentally exposes private material, the agent may remove that exact asset, replace it with an already prepared and verified-safe asset, and save the draft without asking again. That standing authority does not extend to unrelated media, sending for review, or publishing. | Play Console (agent; consequence-gated) |
-| Internal release 2 | ~~Publish release `2 (1.0.1)` to the existing private tester list.~~ **Done 2026-09-03 21:42 PT** — Play shows Active and Available to internal testers. | — |
-| **Device check** | **The live one.** Install the internal-test build, sign in, chat once: <https://play.google.com/apps/internaltest/4701716760893982267> | your phone |
-| Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
+`android-release.yml` regenerates Android, applies `mobile/android-release.json`
+(1.0.7/code 8), registers intent filters, verifies the manifest, runs release lint,
+builds and signs the AAB, and emits its checksum. It refuses signing outside main
+history. The artifact is `app-release.aab`, not the debug APK. The four
+`ANDROID_UPLOAD_*` signing secrets and `ANDROID_GOOGLE_SERVICES_JSON_B64` exist
+(names checked via GitHub on 2026-10-10; secret values were not read). No Android
+environment approval is configured. Signing validity is proved by the release run,
+not by the existence of a secret name; no new signing setup is requested.
 
-Everything else below I build/stage.
+`add_app_scheme.py` installs the exported activity's BROWSABLE/DEFAULT VIEW filter
+for **tinyassets://auth**, plus the existing text-share callback recovery filter.
+The current sign-in uses a custom-scheme app return, not verified HTTPS App Links;
+there is no missing `autoVerify`/assetlinks prerequisite for that route.
+The hosted `/app` start/poll/redeem flow carries #4594's return secret, and the
+shell opens the system browser. Electron is not part of either store build.
 
 ---
 
@@ -107,11 +111,11 @@ name `1.0.7`, min SDK 24, target/compile SDK 36. Play has already consumed codes
 
 Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into the
 shell, so installed `1.0.3` WebViews opened a path that no longer served) plus the
-first push-notification native change. It is live on the closed **Alpha** track.
+first push-notification native change. It preceded the currently active code 6 on **alpha**.
 
 The closed test requires 12 testers opted in continuously for 14 days. The
-recorded day 1 is 2026-10-02, so production access can be applied for from
-**2026-10-15**, provided the continuous opt-in requirement is met. There is no
+latest snapshot shows 9 continuous days; expect the eligibility check around
+**2026-10-15–16**, using Console rather than an inclusive calendar count. There is no
 pre-scheduled update ladder: real native fixes ship together when ready. The
 1.0.6 build includes both offline recovery and launch-colour continuity.
 
@@ -135,7 +139,8 @@ The release gate checks the source and generated Capacitor config and requires
 the packaged page to match. Phone-width browser tests exercise retry navigation;
 the airplane-mode device check below remains required before promotion.
 
-This 1.0.6 change preserves sign-in, `server.url`, and push. Bump the code
+The 1.0.6 changes preserved sign-in, `server.url`, and push; 1.0.7 replaces
+the sign-in return with the system-browser flow from #4594. Bump the code
 and the name together, one update per bundle; a code Play has seen is refused even
 on a test track — and Play consumes a code on **upload**, not on rollout, so a
 bundle that is accepted and never published still burns its number.
@@ -669,3 +674,103 @@ only after its commit is in `main`; the signing workflow rejects refs outside ma
 history.
 
 The 1.0.7 candidate (code 8) adds system-browser sign-in with an opaque PKCE-bound return and Android Autofill hints. Upload the signed `app-release.aab` produced by `android-release.yml` after this commit lands on main; the PR unsigned AAB and debug APK are not Play uploads.
+
+## Production-access questionnaire
+
+Question topics researched **2026-10-10** for the **2026-10-11** founder goal:
+[Google Play Console Help: App testing requirements for new personal developer accounts](https://support.google.com/googleplay/android-developer/answer/14151465?hl=en),
+sections “Apply for production access” and “Next steps”. Google publishes topics,
+not a guaranteed verbatim form or field limits. Its current help covers recruitment
+difficulty, engagement, feedback, audience, value, first-year installs, changes,
+and readiness. It requires 12 continuously opted-in testers for 14 days before
+applying; review usually takes seven days or less, sometimes longer. Check the
+actual unlocked form before pasting. Recruitment details below are also prepared
+in case Console asks separately. **Replace every [FOUNDER FACT] before submission.**
+
+### Closed test: recruitment and difficulty
+
+**Recruitment draft:**
+
+> We used the closed alpha track and the Google Group
+> testers-community@googlegroups.com. Our recorded Console snapshot showed 12
+> continuously opted-in testers for 9 days. [FOUNDER FACT: who these testers were,
+> how you invited/recruited them, and whether any incentives were offered.] At
+> application time, Console shows [FOUNDER FACT: current eligible count and days].
+
+**Difficulty selector:** [FOUNDER FACT: choose the option matching your actual
+recruitment experience; the group address alone does not establish ease or method.]
+
+### Closed test: engagement
+
+> [FOUNDER FACT: describe actual usage frequency, devices/Android versions,
+> features exercised, and any features not tested.] The intended everyday flow
+> is sign in, connect a model source, send a task, read the reply, and return to
+> the conversation. [FOUNDER FACT: explain how observed tester use compared with
+> that flow, including differences and the versions actually installed.]
+
+### Closed test: feedback and collection channels
+
+> [FOUNDER FACT: name the channels actually used and summarize real feedback,
+> including unresolved issues and retest results.] We reviewed [FOUNDER FACT:
+> actual feedback sources and dates]. We changed [FOUNDER FACT: link each relevant
+> tester observation to a confirmed fix below].
+
+Check Console **Monitor and improve → Ratings and reviews → Testing feedback**
+and the channels you actually used. Group membership is not evidence of group
+feedback; “no Console notifications” is not “no feedback”. Do not claim email,
+forms, interviews, or tester reports without having used/received them.
+
+### App: intended audience
+
+> TinyAssets is for adults 18 and over who want a private AI workspace to carry
+> out projects across phone and web using a model source they connect themselves.
+> It serves people who want to continue a conversation and inspect completed work
+> without starting over on each device.
+
+### App: value
+
+> TinyAssets lets users give their agent tasks in chat, connect their own model
+> source, and return to their conversation and work from phone or web. The Android
+> app provides a native entry point, sign-in return, and recovery when a connection
+> is interrupted.
+
+### App: first-year installs
+
+[FOUNDER FACT: select your realistic forecast from Console's offered ranges.
+There is no verified forecast in this repository; 12 testers is not an install forecast.]
+
+### Production readiness: changes made during testing
+
+Source history establishes these changes; it does **not** establish that testers
+received every candidate or requested every fix:
+
+| Build | Change supported by repository history | Distribution evidence |
+|---|---|---|
+| 4 / 1.0.3 | Immediate foreground notification for the Android sign-in callback service (#3545), preventing the service from missing Android's start deadline. | Historical candidate; confirm tester exposure. |
+| 5 / 1.0.4 | Compiled start URL moved to `/app` (#4112); phone push and notification-tap routing were included in this generation. | Preceded active build 6; confirm actual tester feedback. |
+| 6 / 1.0.5 | Back navigation policy: navigate back within the app, warn at the root, then background on a second press instead of abruptly losing the session (#4320). | Founder confirms active alpha build, Oct 3. |
+| 7 / 1.0.6 | Bundled offline/retry page and matching launch colours (#4522). | Source candidate; current Console snapshot does not show it active. |
+| 8 / 1.0.7 | System-browser sign-in, protected return-secret exchange and native polish (#4594); includes the earlier improvements. | Next upload; confirm alpha rollout and device retest. |
+
+**Paste after filling the attribution and retest facts:**
+
+> During development of the closed-test builds we improved Android sign-in
+> service startup, the app launch URL, notification routing, back navigation,
+> offline retry, and launch colours. The next update, 1.0.7, also moves sign-in to
+> the system browser and improves return to the app. [FOUNDER FACT: which of these
+> changes followed tester feedback, which builds testers received, and the results
+> after retesting the uploaded 1.0.7 candidate.]
+
+### Production readiness: basis for release
+
+> [FOUNDER FACT: date and results of testing the final alpha candidate.] We checked
+> system-browser sign-in and return, a real agent reply, conversation recovery,
+> back navigation, offline retry, and notification delivery/tap where enabled.
+> [FOUNDER FACT: actual device coverage, crash/ANR and pre-launch report results,
+> remaining issues, and why those results justify production release.]
+
+The last paragraph is conditional: only retain checks actually completed. The
+source/config checks do not replace real tester engagement or a signed-device pass.
+Do not apply with placeholders or assert that production is ready solely because
+14 days elapsed. After access is granted, production submission and rollout still
+need completing in Console.

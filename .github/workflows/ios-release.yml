@@ -10,7 +10,7 @@ on:
       marketing_version:
         description: App version (for example 1.0.0)
         required: true
-        default: "1.0.0"
+        default: "1.0.1"
         type: string
       build_number:
         description: Numeric build number; blank uses this workflow run number
