@@ -20,5 +20,8 @@
       "backgroundColor": "#0f1020",
       "showSpinner": false
     }
+  },
+  "ios": {
+    "backgroundColor": "#0f1020"
   }
 }

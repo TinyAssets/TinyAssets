@@ -254,6 +254,9 @@ public class MainActivity extends BridgeActivity {
         if (bridge != null) {
             voiceChromeClient = new VoiceWebChromeClient(bridge, this);
             bridge.getWebView().setWebChromeClient(voiceChromeClient);
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                bridge.getWebView().setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_YES);
+            }
         }
         installBackPolicy();
     }
