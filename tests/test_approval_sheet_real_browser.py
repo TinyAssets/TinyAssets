@@ -33,7 +33,8 @@ def test_electron_sheet_opens_browser_handoff_only_after_click(app_url, browser)
     page.wait_for_function("() => window.handoffs.length === 1")
     assert launched == [{"request_id": "connect", "client": "desktop"}]
     assert page.evaluate("window.handoffs[0]").endswith("/app/approval-handoff/" + "x" * 43)
-    assert page.locator("#request-rail").is_hidden()
+    assert page.locator("#request-rail").is_visible()
+    assert "Opened in your browser to finish securely" in page.locator("#request-rail").inner_text()
     context.close()
 
 

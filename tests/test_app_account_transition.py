@@ -158,6 +158,10 @@ function $(id){
   if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}, children:[],
     classList:{contains(){return false;}},setAttribute(name,value){this[name]=value;},
     open:false, showModal(){this.open=true;}, close(){this.open=false;},
+    remove(){
+      if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(c=>c!==this);
+      this.parentNode=null;delete DOM.other[this.id];
+    },
     appendChild(node){
       if(node.parentNode)node.parentNode.children=node.parentNode.children.filter(c=>c!==node);
       this.children.push(node);node.parentNode=this;return node;
@@ -284,18 +288,21 @@ host.appendChild($('connect-panel'));host.appendChild($('rail-add-panel'));
 $('connect-panel').value='unsubmitted key';
 $('needs-you-items').textContent='Previous account request';
 $('request-history').textContent='Previous account history';
+sheet.appendChild($('request-open-error'));
+$('request-open-error').textContent='Previous account request failure';
 sheet.showModal();inbox.showModal();
 RequestSheets.seen.add('old-request');RequestSheets.selected='old-request';
 clearRailCards();
 console.log(JSON.stringify({seen:[...RequestSheets.seen],selected:RequestSheets.selected,
   open:[sheet.open,inbox.open],inbox:$('needs-you-items').textContent,
   history:$('request-history').textContent,key:$('connect-panel').value,
+  errorRetained:Object.hasOwn(DOM.other,'request-open-error'),
   panels:['connect-panel','rail-add-panel'].map(id=>({
     retained:sheet.contains($(id)),hidden:$(id).hidden}))}));
 """))
     assert out == {
         "seen": [], "selected": None, "open": [False, False],
-        "inbox": "", "history": "", "key": "",
+        "inbox": "", "history": "", "key": "", "errorRetained": False,
         "panels": [{"retained": True, "hidden": True}] * 2,
     }
 
