@@ -18,7 +18,7 @@ This is that layer — the Vercel ``ChatbotMessagePersistence`` shape applied he
 **thread identity → persistent message store → reconstruction at turn start.**
 It is the pure storage half; the bounded, untrusted-fenced *rendering* stays in
 :mod:`tinyassets.conversation_memory` (already Codex-reviewed 2026-08-08). Callers
-load prior turns, run the turn, then record both sides.
+load prior turns, commit the admitted message, then attach the terminal result.
 
 Contract
 --------
@@ -30,11 +30,9 @@ Contract
   observations grant no authority; the fenced
   not-consent formatter and the fresh-consent gate live elsewhere and are
   unchanged.
-* **Best-effort, single boundary**: every function catches its own storage
-  errors, logs, and degrades to "no memory this turn" (matching the hotfix
-  contract) — it never raises, so callers do NOT re-wrap it (that would just
-  double-log). This is the one place the fail-loud rule yields, because memory is
-  a bonus layer and a blank window is strictly better than dropping the answer.
+* Storage helpers report failures. Ingress requires a committed founder row before
+  dispatch; terminal writes never remove that row. Legacy callers may still
+  record a pair. Owner-scoped tool observations supplement unfinished history.
 
 Not the custody store
 ---------------------
@@ -187,7 +185,7 @@ def _has_execution_column(conn: sqlite3.Connection) -> bool:
 
 
 def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
-                   before: int | None = None) -> list[Msg]:
+                   before: int | None = None, *, with_evidence: bool = True) -> list[Msg]:
     receipt_column = "execution_json" if _has_execution_column(conn) else "''"
     failure_column = failure_column_sql(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_turns)")}
@@ -237,6 +235,31 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
                 f"AND session_id=? AND {position}=?", (parts[1], session_id, turn_no),
             ).fetchone():
                 consumer_id = parts[1]
+        if (with_evidence and speaker == "founder" and isinstance(ext_id, str)
+                and ext_id.startswith('turn:')):
+            terminal = conn.execute(
+                "SELECT speaker FROM conversation_turns WHERE session_id=? AND ext_id=?",
+                (session_id, f'reply-to:{turn_no}'),
+            ).fetchone()
+            if terminal is None or terminal[0] != 'universe':
+                from tinyassets.agent_activity import turn_evidence
+
+                # The connection already pins this owner's transcript; no owner
+                # or session comes from tool output. Evidence remains untrusted.
+                database = conn.execute('PRAGMA database_list').fetchone()[2]
+                try:
+                    evidence = turn_evidence(Path(database).parent, f'thread:{session_id}',
+                                             ext_id[len('turn:'):])
+                except (OSError, sqlite3.Error):
+                    logger.warning('conversation tool evidence could not be read', exc_info=True)
+                    evidence = 'Tool records unavailable; effects are unknown.'
+                if evidence:
+                    result.append(Msg('platform',
+                        'Recorded tools from this unfinished or failed turn. A returned tool '
+                        'is not proof every external effect succeeded. Do not replay uncertain '
+                        'work without checking its state.\n' + evidence, _coerce_ts(ts)))
+        # Evidence is older than its request for prompt trimming: never let a
+        # large tool observation evict the original owner message.
         result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
                           read_turn_failure(speaker, failure_raw), consumer_id,
                           id=row_id if isinstance(row_id, int) else None,
@@ -271,7 +294,9 @@ def read_history_page(
         return [], False
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
     try:
-        messages = _read_messages(conn, session_id, limit + 1, before=before)
+        # Paging is over durable rows only. Synthetic model context has no cursor.
+        messages = _read_messages(conn, session_id, limit + 1, before=before,
+                                  with_evidence=False)
     finally:
         conn.close()
     has_more = len(messages) > limit
@@ -362,6 +387,7 @@ def record_turn(
     ts: float | None = None,
     ext_id: str = "",
     failure: object = None,
+    client_send_id: str = "",
 ) -> int:
     """Append one turn; return its per-session ``turn_no`` (0 if not recorded).
 
@@ -402,6 +428,17 @@ def record_turn(
                 conn = _connect(db_path)
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    # The caller has already selected its authenticated owner/thread.
+                    # Serialize retry admission with the insert, not a preflight read.
+                    if client_send_id and speaker == "founder":
+                        duplicate = conn.execute(
+                            "SELECT 1 FROM conversation_turns WHERE session_id=? "
+                            "AND speaker='founder' AND client_send_id=? LIMIT 1",
+                            (session_id, client_send_id),
+                        ).fetchone()
+                        if duplicate is not None:
+                            conn.commit()
+                            return 0
                     # Stable-id idempotency: if this ext_id is already stored for
                     # the session, it's a re-sync / concurrent-sync repeat, NOT a
                     # new turn. BEGIN IMMEDIATE serialises writers (in- AND cross-
@@ -428,6 +465,10 @@ def record_turn(
                     columns = "session_id, turn_no, speaker, content, ts, ext_id"
                     placeholders = "?, ?, ?, ?, ?, ?"
                     values = (session_id, turn_no, str(speaker or ""), text, when, ext_id)
+                    if client_send_id:
+                        columns += ", client_send_id"
+                        placeholders += ", ?"
+                        values += (client_send_id,)
                     if normalized_failure is not None and (
                         failure_column_sql(conn) == "failure_json"
                     ):
@@ -498,6 +539,22 @@ def record_turn(
 #: deletion, or an explicit per-session delete).
 
 
+def stored_owner_send(universe_dir, session_id: str, client_send_id: str) -> str | None:
+    """Read an admitted send in the caller's authorized thread; never grant access."""
+    if not client_send_id:
+        return None
+    conn = sqlite3.connect(f"file:{_db_path(universe_dir)}?mode=ro", uri=True, timeout=5.0)
+    try:
+        row = conn.execute(
+            "SELECT content FROM conversation_turns WHERE session_id=? "
+            "AND speaker='founder' AND client_send_id=? ORDER BY turn_no LIMIT 1",
+            (session_id, client_send_id),
+        ).fetchone()
+        return row[0] if row is not None else None
+    finally:
+        conn.close()
+
+
 def record_exchange(
     universe_dir: "str | Path",
     session_id: str,
@@ -533,6 +590,7 @@ def record_exchange_turns(
     *,
     ts: float | None = None,
     client_send_id: str = "",
+    founder_turn: int | None = None,
     execution: object = None,
     interjections: "tuple[tuple[str, float], ...] | list[tuple[str, float]]" = (),
 ) -> "tuple[int, int] | None":
@@ -545,12 +603,13 @@ def record_exchange_turns(
     """
     return _record_pair(universe_dir, session_id, founder_text, universe_text,
                         speaker="universe", ts=ts, execution=execution,
-                        interjections=interjections, client_send_id=client_send_id)
+                        interjections=interjections, client_send_id=client_send_id,
+                        founder_turn=founder_turn)
 
 
 def record_failure(
     universe_dir: "str | Path", session_id: str, founder_text: str, code: object,
-    *, ts: float | None = None, client_send_id: str = "",
+    *, ts: float | None = None, client_send_id: str = "", founder_turn: int | None = None,
 ) -> bool:
     """Save the composed platform notice plus original text, without an answer receipt.
 
@@ -562,12 +621,12 @@ def record_failure(
     failure = code if isinstance(code, TurnFailure) else turn_failure(code)
     return _record_pair(universe_dir, session_id, founder_text, failure_notice(failure),
                         speaker="platform", ts=ts, failure=failure,
-                        client_send_id=client_send_id) is not None
+                        client_send_id=client_send_id, founder_turn=founder_turn) is not None
 
 
 def _record_pair(
     universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
-    execution=None, failure=None, interjections=(), client_send_id="",
+    execution=None, failure=None, interjections=(), client_send_id="", founder_turn=None,
 ) -> "tuple[int, int] | None":
     """The shared transaction and retry boundary for terminal pairs.
 
@@ -602,19 +661,36 @@ def _record_pair(
                 conn = _connect(db_path)
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    if founder_turn is not None:
+                        admitted = conn.execute(
+                            "SELECT content FROM conversation_turns WHERE session_id=? "
+                            "AND turn_no=? AND speaker='founder'",
+                            (session_id, founder_turn),
+                        ).fetchone()
+                        if admitted is None or admitted[0] != founder_text:
+                            raise ValueError("terminal message does not match admitted request")
+                        terminal = conn.execute(
+                            "SELECT 1 FROM conversation_turns WHERE session_id=? AND ext_id=?",
+                            (session_id, f"reply-to:{founder_turn}"),
+                        ).fetchone()
+                        if terminal is not None:
+                            conn.commit()
+                            return None
                     row = conn.execute(
                         "SELECT COALESCE(MAX(turn_no), 0) + 1 "
                         "FROM conversation_turns WHERE session_id = ?",
                         (session_id,),
                     ).fetchone()
                     turn_no = int(row[0])
-                    rows = [(session_id, turn_no, "founder", founder_text, founder_when)]
+                    rows = ([] if founder_turn is not None else
+                            [(session_id, turn_no, "founder", founder_text, founder_when)])
+                    offset = 0 if founder_turn is not None else 1
                     rows += [
-                        (session_id, turn_no + 1 + index, "founder", text, sent_at)
+                        (session_id, turn_no + offset + index, "founder", text, sent_at)
                         for index, (text, sent_at) in enumerate(between)
                     ]
                     rows.append(
-                        (session_id, turn_no + 1 + len(between), speaker, universe_text, when)
+                        (session_id, turn_no + offset + len(between), speaker, universe_text, when)
                     )
                     # Column names are fixed internal constants, never caller data.
                     # Text-only fallback preserves the speaker discriminator.
@@ -633,14 +709,26 @@ def _record_pair(
                     if "client_send_id" in available:
                         columns += ", client_send_id"
                         placeholders += ", ?"
-                        rows = [(*rows[0], client_send_id)] + [(*row, "") for row in rows[1:]]
+                        rows = [(*rows[0], client_send_id if founder_turn is None else "")] + [
+                            (*row, "") for row in rows[1:]]
                     elif client_send_id:
                         logger.warning("conversation_store: saved text without send identity")
                     conn.executemany(
                         f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})", rows,
                     )
+                    if founder_turn is not None:
+                        conn.execute('UPDATE conversation_turns SET ext_id=? '
+                                     'WHERE session_id=? AND turn_no=?',
+                                     (f'reply-to:{founder_turn}', session_id,
+                                      turn_no + offset + len(between)))
                     conn.commit()
-                    return turn_no, turn_no + 1 + len(between)
+                    # Another admission can land while this turn is running.
+                    # Never claim that intervening request as part of our learned
+                    # span; the existing contiguous-cursor guard leaves it owed.
+                    first = (founder_turn if founder_turn is not None
+                             and turn_no == founder_turn + 1 else turn_no)
+                    return (first,
+                            turn_no + offset + len(between))
                 finally:
                     conn.close()
         except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:

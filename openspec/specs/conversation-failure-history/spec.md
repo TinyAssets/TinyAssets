@@ -8,23 +8,24 @@ without inventing successful replies or automatically replaying work.
 ## Requirements
 
 ### Requirement: Authorized terminal failures persist atomically
-The platform SHALL retain an admitted owner's original message verbatim and a
-typed safe platform-failure notice atomically in the existing principal-scoped
-conversation store, without creating a successful answering execution receipt.
+The platform SHALL commit an admitted owner's original message verbatim in the principal-scoped conversation store BEFORE dispatch. Terminal success or a typed safe failure notice SHALL refer to that existing message without duplicating it. Failure to commit SHALL prevent dispatch.
 
 #### Scenario: Failed provider turn followed by another successful turn
-- **WHEN** an admitted turn ends in an observed provider failure and storage succeeds
-- **THEN** both original message and platform notice survive refresh and later messages
-- **AND** the next authorized model can read the notice as untrusted conversation history
-- **AND** no answering-model receipt is attributed to that notice
+- **WHEN** an admitted turn fails after dispatch, including process death
+- **THEN** the original message survives refresh and is available to the next authorized model
+- **AND** recovery adds a typed platform notice without attributing a successful answer
 
 #### Scenario: Unowned or unauthenticated request
 - **WHEN** authentication or owner/interlocutor admission fails
-- **THEN** no conversation pair is persisted by this failure-history path
+- **THEN** no conversation row is persisted by this path
 
 #### Scenario: Identical requests are distinct
 - **WHEN** the owner explicitly sends the same message twice
-- **THEN** failure persistence does not collapse them by text equality
+- **THEN** persistence does not collapse them by text equality
+
+#### Scenario: Storage fails before dispatch
+- **WHEN** the admitted message cannot be committed
+- **THEN** no provider or tool dispatch occurs and the caller receives a failure
 
 ### Requirement: Failure history contains only bounded safe diagnostics
 The platform SHALL use a versioned allowlisted failure code and platform-authored
@@ -93,30 +94,43 @@ owner instructions, consent or successful model replies.
 - **AND** platform text is not labelled as owner speech or an answering-model receipt
 
 ### Requirement: Persistence and retry state remain honest
-The platform SHALL distinguish saved terminal failure, unsaved failure and
-unknown transport outcome, and SHALL never automatically replay a failed turn.
+The platform SHALL distinguish saved messages, saved terminal failures and unknown outcomes, and SHALL never automatically replay a failed turn.
 
-#### Scenario: Failure write cannot complete
-- **WHEN** a failure-pair write fails
-- **THEN** no partial pair is committed and the owner receives an unsaved-history indication
-- **AND** the original failure remains usable with explicit recovery
+#### Scenario: Terminal write cannot complete
+- **WHEN** a terminal failure write fails
+- **THEN** the already admitted owner message remains committed
+- **AND** the caller receives an unsaved-terminal indication without losing the original failure
 
-#### Scenario: Optional metadata column unavailable
-- **WHEN** a writable legacy store cannot add the optional failure metadata column
-- **THEN** the atomic pair can retain fixed safe notice text labelled by speaker platform
-- **AND** no structured metadata is falsely reported as persisted
+#### Scenario: Existing account deletion applies
+- **WHEN** authorized universe/account deletion runs
+- **THEN** conversation and tool evidence follow their existing owner data boundaries
 
-#### Scenario: Refresh after saved failure
-- **WHEN** the owner refreshes after a saved terminal failure
-- **THEN** the original message and a platform-labelled notice render without duplicate owner speech
-- **AND** retry requires an explicit user action and warns that prior side effects are not ruled out
+### Requirement: Failed turns preserve effect continuity
+The platform SHALL expose failed-turn effect evidence to the next authorized agent as untrusted history, preserving known completed work and uncertain outcomes without replay.
 
-#### Scenario: Original request is not fully loaded
-- **WHEN** the adjacent original request is missing or truncated in the history peek
-- **THEN** the app does not resend guessed or partial text and requires the full original first
+#### Scenario: Injected fault after an effect
+- **WHEN** a tool result is durably recorded and the turn subsequently faults
+- **THEN** the next turn can identify the original request and the recorded effect
+- **AND** any started operation lacking a terminal result remains explicitly uncertain
 
-#### Scenario: Existing retention or deletion applies
-- **WHEN** existing conversation retention or authorized universe/account deletion runs
-- **THEN** failure rows and metadata follow the same data boundary as ordinary history
-- **AND** the feature introduces no separate indefinite copy
+#### Scenario: Tool evidence storage fails
+- **WHEN** the tool start cannot be durably recorded
+- **THEN** that tool is not dispatched
+- **AND** failure to read later tool evidence does not hide the admitted owner message
 
+#### Scenario: Large results and paged history
+- **WHEN** a failed turn has large tool results
+- **THEN** model history includes bounded excerpts without evicting the original request
+- **AND** history page cursors and page sizes count only durable conversation rows
+
+#### Scenario: Overlapping admitted turns
+- **WHEN** another request is admitted between a turn's request and its terminal result
+- **THEN** that turn's learning completion does not settle the intervening request
+
+### Requirement: Reconnected sends are admitted once
+Within an authenticated owner's command center and conversation, a nonempty client send ID SHALL admit at most one original message. Retrying that ID SHALL neither announce nor dispatch it again; conflicting text SHALL be refused. A fresh ID or no ID is a new send, even with identical text. The ID grants no authority. Terminal-write retries SHALL not duplicate the original or terminal row.
+
+#### Scenario: Retry after a lost response or process death
+- **WHEN** the same authenticated conversation retries an already committed send ID
+- **THEN** the platform reports that the original message was saved without replaying uncertain work
+- **AND** a failed terminal write does not revoke the original message or its announcement

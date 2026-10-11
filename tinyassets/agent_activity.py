@@ -10,11 +10,11 @@ Every adapter's tools run through the one per-universe engine process, so that
 is where each call is recorded: once when it starts and once when it ends, with
 a one-line summary (the command, the path, the target) and, on failure, the
 first line of the real cause. This is an observation log, never authority: no
-code decides anything from it, and losing a row loses nothing but the view.
+code grants authority from it. Failed turns retain these observations for the next agent.
 
 The store sits beside the session records in the data root's
-``.agent-sessions/<universe>/``, outside every universe folder. Each session
-keeps its latest :data:`KEEP_PER_SESSION` calls.
+``.agent-sessions/<universe>/``, outside every universe folder. Reads are bounded;
+recorded evidence is not pruned.
 """
 
 from __future__ import annotations
@@ -29,10 +29,12 @@ from urllib.parse import urlsplit
 
 from tinyassets import agent_sessions
 
-#: Calls kept per session; older ones are dropped as new ones start.
-KEEP_PER_SESSION = 200
 #: Longest summary or error line stored.
 MAX_LINE = 240
+# Transcript projections are bounded; the underlying observations stay verbatim.
+EVIDENCE_CHARS = 2000
+EVIDENCE_CALLS = 8
+RESULT_PREVIEW_CHARS = 512
 
 _FILE = "activity.db"
 _SCHEMA = (
@@ -55,6 +57,14 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     for statement in _SCHEMA:
         conn.execute(statement)
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(tool_calls)')}
+    for name in ('turn_id', 'result_text'):
+        if name not in columns:
+            try:
+                conn.execute(f"ALTER TABLE tool_calls ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if 'duplicate column' not in str(exc).lower():
+                    raise
     return conn
 
 
@@ -163,32 +173,56 @@ def safe_error(text: str) -> str:
     return _safe_words(first[0], limit=24) if first else ""
 
 
-def started(universe_dir: Path, session_key: str, tool: str, summary: str) -> int:
+def started(universe_dir: Path, session_key: str, tool: str, summary: str, *, turn_id="") -> int:
     """Record a call starting; returns its id."""
     now = time.time()
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
-            "INSERT INTO tool_calls (session_key, tool, summary, started_at) "
-            "VALUES (?, ?, ?, ?)",
-            (session_key, _line(tool), _line(summary), now),
-        )
-        conn.execute(
-            "DELETE FROM tool_calls WHERE session_key = ? AND id NOT IN ("
-            "SELECT id FROM tool_calls WHERE session_key = ? ORDER BY id DESC LIMIT ?)",
-            (session_key, session_key, KEEP_PER_SESSION),
+            "INSERT INTO tool_calls (session_key, tool, summary, started_at, turn_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_key, _line(tool), _line(summary), now, turn_id),
         )
         conn.execute("COMMIT")
     return int(cursor.lastrowid)
 
 
-def finished(universe_dir: Path, call_id: int, *, ok: bool, error: str = "") -> None:
+def finished(universe_dir: Path, call_id: int, *, ok: bool, error: str = "",
+             result_text="") -> None:
     """Record how a call ended: ``ok``, or the first line of its real cause."""
     with closing(_connect(universe_dir)) as conn:
         conn.execute(
-            "UPDATE tool_calls SET finished_at = ?, ok = ?, error = ? WHERE id = ?",
-            (time.time(), 1 if ok else 0, safe_error(error), call_id),
+            "UPDATE tool_calls SET finished_at = ?, ok = ?, error = ?, result_text=? WHERE id = ?",
+            (time.time(), 1 if ok else 0, safe_error(error), result_text, call_id),
         )
+
+
+def turn_evidence(universe_dir: Path, session_key: str, turn_id: str) -> str:
+    """Owner-scoped tool observations, not proof of upstream effect completion."""
+    path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
+    if not path.exists():
+        return ''
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
+        if 'turn_id' not in {row[1] for row in conn.execute('PRAGMA table_info(tool_calls)')}:
+            return ''
+        count = conn.execute('SELECT count(*) FROM tool_calls WHERE session_key=? AND turn_id=?',
+                             (session_key, turn_id)).fetchone()[0]
+        rows = conn.execute(
+            'SELECT id, tool, summary, finished_at, ok, error, '
+            'substr(result_text,1,?), length(result_text) FROM tool_calls '
+            'WHERE session_key=? AND turn_id=? ORDER BY id DESC LIMIT ?',
+            (RESULT_PREVIEW_CHARS, session_key, turn_id, EVIDENCE_CALLS),
+        ).fetchall()
+    lines = [f'{count} stored tool observations. Latest observations (bounded excerpts):']
+    for call_id, tool, summary, ended, ok, error, result, size in rows:
+        state = 'outcome unknown' if ended is None else 'returned' if ok else 'reported an error'
+        excerpt = f'Tool {call_id}: {tool} {summary}: {state}\n{result or error or ""}'
+        if size > RESULT_PREVIEW_CHARS:
+            excerpt += '\n[result excerpt; full observation retained]'
+        lines.append(excerpt)
+    text = '\n'.join(lines)
+    return (text[:EVIDENCE_CHARS] + '\n[more observations retained]' if len(text) > EVIDENCE_CHARS
+            else text) if count else ''
 
 
 def recent(universe_dir: Path, session_key: str, *, limit: int = 5,

@@ -16,6 +16,11 @@ from tinyassets.research_capability import ALLOWED, is_research_session
 @pytest.fixture
 def research(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    from tests.test_pending_requests import _make_universe
+    from tinyassets.daemon_server import set_founder_home
+
+    _make_universe(tmp_path, "u-test", admin="owner")
+    set_founder_home(tmp_path, founder_sub="owner", universe_id="u-test")
     monkeypatch.setattr(server, "_ACTOR_ID", "owner")
     monkeypatch.setattr(server, "_GRAPH_ID", "u-test")
     mock_engine_admission(monkeypatch, {"u-test"})

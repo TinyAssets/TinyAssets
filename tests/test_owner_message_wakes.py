@@ -138,11 +138,18 @@ def test_converse_announces_each_stored_owner_message_once(tmp_path: Path, monke
     monkeypatch.setattr(ui, "converse", fail)
     assert json.loads(us.converse(message="still there?", graph_id="u-x"))["history_saved"]
     assert len(announced) == 2
+    rows, _ = conversation_store.read_history_page(
+        tmp_path / "u-x", "principal:founder-1", limit=30)
+    assert [row.text for row in rows if row.speaker == "founder"] == ["hello", "still there?"]
 
     # Nothing stored, nothing to read: no event.
     monkeypatch.setattr(conversation_store, "record_failure", lambda *a, **kw: False)
-    us.converse(message="lost", graph_id="u-x")
+    monkeypatch.setattr(conversation_store, "record_turn", lambda *a, **kw: 0)
+    assert json.loads(us.converse(message="lost", graph_id="u-x"))["history_saved"] is False
     assert len(announced) == 2
+    remaining, _ = conversation_store.read_history_page(
+        tmp_path / "u-x", "principal:founder-1", limit=30)
+    assert remaining == rows
 
 
 def test_the_connector_creates_an_owner_message_subscription(home: Path) -> None:
