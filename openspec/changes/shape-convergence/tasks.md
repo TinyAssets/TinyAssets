@@ -165,6 +165,14 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       the unwired `okf_export.py` branch.
       Guard: S17 converged. Net about −2k. Depends on C6.
 
+- **N1–N9 founder-approved primitives** (2026-10-11, #4624; registry
+      rows N1–N9, item 10 is S28). Unbuilt; each is a new primitive built
+      only after its dependencies converge, never a second path: N9 after
+      C3; N3 after C3 and C9; N5, N6 after C6; N8 after C5 and C6; N4
+      after C6 and C11; N1 after C7 and C8; N2 after C7 and C11; N7 after
+      C3, C10 and `credential-vault-reshape`, spec first. C1's `SHAPES`
+      table carries the N rows and their planned guards.
+
 ## 3. Pull requests and notes folded by this change
 
 - [ ] 3.1 Fold or close, each with a pointer to this change:
