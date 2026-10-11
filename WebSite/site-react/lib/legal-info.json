@@ -19,10 +19,10 @@
     "venue_for_injunctive": "State and federal courts located in Delaware"
   },
   "contact": {
-    "general": "ops@tinyassets.io",
-    "security": "security@tinyassets.io",
-    "legal": "legal@tinyassets.io",
-    "dmca_agent": "dmca@tinyassets.io"
+    "general": "info@tinyassets.io",
+    "security": "info@tinyassets.io",
+    "legal": "info@tinyassets.io",
+    "dmca_agent": "info@tinyassets.io"
   },
   "token": {
     "name": "Destiny",

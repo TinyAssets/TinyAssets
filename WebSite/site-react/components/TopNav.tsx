@@ -43,6 +43,7 @@ export function TopNav() {
         </a>
 
         <button
+          type="button"
           className={`${styles.hamburger}${open ? " " + styles.open : ""}`}
           aria-label={open ? "Close menu" : "Open menu"}
           aria-expanded={open}

@@ -9,9 +9,9 @@ import Footer from "../components/Footer";
 import { TINYASSETS_MARK_VERSION } from "../components/TinyAssetsMark";
 import { SITE } from "../lib/site";
 
-const TITLE = "TinyAssets — your own AI command center";
+const TITLE = "TinyAssets — one app, your agents, your model";
 const DESCRIPTION =
-  "A cloud agent of your own. It runs on the Claude or ChatGPT subscription you already pay for, connects to any platform, builds any automation from a few primitives, learns you as it goes, and keeps working after you close the tab.";
+  "One app on any device. You bring a model you already use. Your agents keep your files and your work, and a setup you publish can be copied. Early access is open. The platform does not supply a model.";
 const markAsset = (path: string) => `${path}?v=${TINYASSETS_MARK_VERSION}`;
 
 export const metadata: Metadata = {
@@ -68,7 +68,6 @@ const jsonLd = {
       applicationCategory: "ProductivityApplication",
       operatingSystem: "Web, Android, Windows, macOS, Linux",
       url: SITE.app,
-      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
       license: `${SITE.repo}/blob/main/LICENSE`,
     },
   ],

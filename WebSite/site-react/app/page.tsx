@@ -1,215 +1,214 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { RitualLabel } from "@tiny/design-system";
-import { Receipt } from "../components/Receipt";
+import { OwnerDecision } from "../components/OwnerDecision";
 import { SITE } from "../lib/site";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
   alternates: { canonical: `${SITE.origin}/` },
+  description:
+    "TinyAssets is one app on any device. You bring a model you already use. Your agents keep your work. Early access is open.",
 };
 
 export default function HomePage() {
   return (
     <>
-      <section className={`container hero ${styles.hero}`}>
-        <RitualLabel>TinyAssets · your own AI command center</RitualLabel>
-        <h1>A command center of your own.</h1>
+      <section className={`container ${styles.screen}`} aria-labelledby="home-title">
+        <RitualLabel>Early access</RitualLabel>
+        <h1 id="home-title">One app. Your agents. Your model.</h1>
         <p className="lead">
-          TinyAssets gives you a cloud agent that runs on the Claude or ChatGPT subscription you
-          already pay for. It connects to any platform, builds any automation from a few
-          primitives, learns you as it goes, and keeps working after you close the tab.
+          TinyAssets is one app on the web, on a phone, and on a desk. You bring a model you
+          already use. Your agents keep your files and your work. A setup you publish can be
+          copied into someone else&apos;s app. The platform does not supply a model.
         </p>
+        <div className={styles.facts}>
+          <article className={styles.fact}>
+            <h2>One app</h2>
+            <p>The web app, an Android closed test, and an unsigned desktop window. Same account.</p>
+          </article>
+          <article className={styles.fact}>
+            <h2>Your agents</h2>
+            <p>They keep notes, files, and runs you can see, pause, or delete.</p>
+          </article>
+          <article className={styles.fact}>
+            <h2>Bring a model</h2>
+            <p>ChatGPT or Codex is one tap. Claude is a setup token you paste. Other API keys sit behind one Other control.</p>
+          </article>
+          <article className={styles.fact}>
+            <h2>Share a setup</h2>
+            <p>Publishing a shape lets someone copy it. Nothing you publish runs as them.</p>
+          </article>
+        </div>
         <div className="actions">
-          <a className="btn btn--primary btn--lg" href={SITE.app}>
+          <Link className="btn btn--primary btn--lg" href="/start/">
+            Join early access
+          </Link>
+          <a className="quiet" href={SITE.app}>
             Open the app
           </a>
-          <Link className="quiet" href="/start/#connector">
-            Add it to Claude or ChatGPT
-          </Link>
-          <Link className="quiet" href="/start/#android">
-            Get the Android app
-          </Link>
+          <a className="quiet" href="#how">
+            How it works
+          </a>
         </div>
       </section>
 
-      <section className="section">
+      <section className="section" id="how">
         <div className="container">
           <div className="head">
-            <RitualLabel>What a command center is</RitualLabel>
-            <h2>An account, a hard drive, and a mind that keeps its own notes.</h2>
+            <RitualLabel>How it works</RitualLabel>
+            <h2>Sign in, connect a model, say what to finish.</h2>
           </div>
-          <div className="cols cols--4">
-            <div className="col">
-              <span className="num">01</span>
-              <h3>A brain that writes itself</h3>
-              <p>
-                Everything the command center learns about you and about its own work goes into a brain it
-                keeps updating. One brain, whichever surface you open.
-              </p>
-            </div>
-            <div className="col">
-              <span className="num">02</span>
-              <h3>Connections to anything</h3>
-              <p>
-                Paste whatever you have for a service: an API key, a token, a webhook, a repo. The
-                command center works out the rest and asks only for what is missing, with links.
-              </p>
-            </div>
-            <div className="col">
-              <span className="num">03</span>
-              <h3>Automations you own</h3>
-              <p>
-                A recurring run is yours. It draws its authority from you every time, and you can see
-                it, pause it, or delete it whenever you like.
-              </p>
-            </div>
-            <div className="col">
-              <span className="num">04</span>
-              <h3>Storage and workspaces</h3>
-              <p>
-                Files, checkouts of repositories on any forge, receipts of every run. Kept in your
-                command center and nowhere else.
-              </p>
-            </div>
+          <ol className="steps">
+            <li>
+              <div>
+                <h3>Sign in</h3>
+                <p>Email sign-in. The first time you arrive, a blank app is created for your account.</p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Bring a model</h3>
+                <p>
+                  ChatGPT or Codex is one tap. For Claude, paste a setup token from your own account.
+                  It goes into your vault over TLS. The platform never supplies a model.
+                </p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Say what you want finished</h3>
+                <p>
+                  A paper, a repository, a feed you want watched. The agent asks for what is missing,
+                  with links, and keeps the run where you can see it.
+                </p>
+              </div>
+            </li>
+          </ol>
+          <p style={{ marginTop: 20 }}>
+            <Link href="/build/">The parts an agent builds from</Link>
+          </p>
+        </div>
+      </section>
+
+      <section className="section" id="join">
+        <div className="container">
+          <div className="head">
+            <RitualLabel>Join</RitualLabel>
+            <h2>Early access is the product that exists today.</h2>
+            <p>
+              The web app is open. Android is a closed test on Google Play, and only invited
+              accounts can join. Desktop builds are unsigned and come from the repository. There
+              is no public Play listing and no signed installer.
+            </p>
+          </div>
+          <div className="actions">
+            <Link className="btn btn--primary btn--md" href="/start/">
+              See the join steps
+            </Link>
+            <a className="quiet" href={`mailto:${SITE.contact.general}`}>
+              {SITE.contact.general}
+            </a>
           </div>
         </div>
       </section>
 
-      <section className="section">
-        <div className="container split">
-          <div>
-            <RitualLabel>It built this</RitualLabel>
-            <h2>The founder&apos;s command center wrote a graph, ran it, and merged the result.</h2>
+      <section className="section" id="status">
+        <div className="container">
+          <div className="head">
+            <RitualLabel>Status and price</RitualLabel>
+            <h2>Free means the same product and the same security.</h2>
             <p>
-              Asked to keep a line count in the README current, it composed three nodes: a fetch of
-              the file, a small function it wrote itself to count the lines, and a write that opened
-              the pull request. Nobody typed the code. The receipt on the right is what the run
-              reported; the pull request is public.
-            </p>
-            <p>
-              <a href={SITE.proof.pr} target="_blank" rel="noreferrer">
-                Pull request #{SITE.proof.prNumber} on GitHub
-              </a>
+              Tiers, when they exist, differ only by how many runs can be in flight at once and by
+              how much you can store. Nothing else is held back. Paid tiers are not on sale, and
+              this page does not name a price.
             </p>
           </div>
-          <div>
-            <Receipt
-              label={`Receipt for pull request ${SITE.proof.prNumber}`}
-              rows={[
-                { k: "run", v: "fetch → code → write" },
-                { k: "fetch", v: "README.md via the GitHub connection" },
-                { k: "code", v: "compute_append: counts lines from the fetched body" },
-                { k: "write", v: `pull request #${SITE.proof.prNumber}, then merged` },
-                { k: "result", v: "README: 91 lines.", tone: "ok" },
-                { k: "merged", v: SITE.proof.mergedOn },
-              ]}
-            />
-            <p className="note">
-              Author of record is the account whose GitHub connection the command center used. The run
-              actor is the command center itself.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="container split">
-          <div>
-            <RitualLabel>Runs on your subscription</RitualLabel>
-            <h2>No platform model. Your subscription does the thinking.</h2>
-            <p>
-              Sign in, then connect the subscription you already pay for. ChatGPT or Codex is one tap.
-              For Claude you paste a setup token from your own account into the deposit form; it goes
-              straight into your command center&apos;s vault and never through the chat.
-            </p>
-            <p>
-              Nothing to install, no keys to manage by default, no docker. Nothing runs anywhere
-              except inside a command center someone controls.
-            </p>
-          </div>
-          <div className={styles.quiet}>
-            <div className="rule">
-              <span className="eyebrow">Under your control</span>
-            </div>
-            <ul className={styles.plain}>
-              <li>Every run is visible, pausable, and deletable by you.</li>
-              <li>A refusal names its cause and what would fix it. Nothing is faked.</li>
-              <li>Your credentials stay in your command center. Nothing runs for another user.</li>
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="container split">
-          <div>
-            <RitualLabel>Commons</RitualLabel>
-            <h2>Publish a shape. Others remix it into their own command center.</h2>
-            <p>
-              Anything you publish is a shape: a graph, a branch, a way of doing something. Someone
-              else copies it into their command center and changes it, with lineage kept. Nothing you
-              publish runs for anyone but you.
-            </p>
-            <p>
-              <Link href="/commons/">See the commons</Link>
-            </p>
-          </div>
-          <div>
-            <RitualLabel>Reach it from anywhere</RitualLabel>
-            <table className="ledger" style={{ marginTop: 12 }}>
+          <div className="ledger--wrap">
+            <table className="ledger">
               <thead>
                 <tr>
-                  <th>Surface</th>
-                  <th>Where</th>
+                  <th>Tier</th>
+                  <th>Product and security</th>
+                  <th>What can differ</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Web app</td>
-                  <td>
-                    <a href={SITE.app}>tinyassets.io/app</a>
-                  </td>
+                  <td>Free, today</td>
+                  <td>The same app and the same security as every other tier.</td>
+                  <td>Simultaneous runs and storage. The numbers are not published.</td>
                 </tr>
                 <tr>
-                  <td>Claude or ChatGPT</td>
-                  <td>
-                    connector at <span className="ev">tinyassets.io/mcp</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Android</td>
-                  <td>
-                    <Link href="/start/#android">closed test on Google Play</Link>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Desktop</td>
-                  <td>
-                    <Link href="/start/#desktop">unsigned build from source</Link>
-                  </td>
+                  <td>Paid</td>
+                  <td>The same app and the same security. Not on sale.</td>
+                  <td>Simultaneous runs and storage. No price is set on this site.</td>
                 </tr>
               </tbody>
             </table>
-            <p className="note">One brain behind all of them. Say something on your phone; it is known on your desk.</p>
+          </div>
+          <OwnerDecision>
+            Set the free-tier simultaneous-run cap and storage cap, and any paid tier names,
+            prices, and caps, before this table grows past the placeholder. Do not add an upgrade
+            button until the app has one.
+          </OwnerDecision>
+          <p className="note">
+            The full statement, including what is not enforced today, is on the{" "}
+            <Link href="/fine-print/#plans">fine print</Link>.
+          </p>
+        </div>
+      </section>
+
+      <section className="section" id="creators">
+        <div className="container split">
+          <div>
+            <RitualLabel>Creators</RitualLabel>
+            <h2>Publish a setup. Someone else copies it.</h2>
+            <p>
+              A published shape is a graph, a branch, or a way of doing something. Another person
+              copies it into their own app and changes it. Lineage is kept. The copy does not run
+              as you, and it does not use your credentials.
+            </p>
+            <p>
+              <Link href="/commons/">See what is public</Link>
+            </p>
+            <OwnerDecision>
+              If “shareable setups” should mean something other than copying a published shape,
+              replace this paragraph. The site does not claim a directory listing or a count of
+              shared setups.
+            </OwnerDecision>
+          </div>
+          <div>
+            <RitualLabel>Power users</RitualLabel>
+            <h2>Abilities are files.</h2>
+            <p>
+              There is no feature editor on this site. What an agent can do is edited as files in
+              the repository. The source page says how to read the code and the specifications.
+            </p>
+            <p>
+              <Link href="/developers/">Open source</Link>
+            </p>
           </div>
         </div>
       </section>
 
-      <section className="section">
+      <section className="section" id="source">
         <div className="container">
           <RitualLabel>Open source</RitualLabel>
-          <h2>One public repository. Specs written after the fact.</h2>
+          <h2>One public repository, MIT.</h2>
           <p>
-            The whole platform is on GitHub under MIT. What it does is written down as specifications
-            once it works, not before, so the specs describe what actually ships.
+            The platform code is on GitHub. Specifications describe what has shipped. The only
+            public connector URL is <span className="ev">tinyassets.io/mcp</span>.
           </p>
-          <div className="actions" style={{ marginTop: 16 }}>
+          <div className="actions">
             <a className="btn btn--ghost btn--md" href={SITE.repo} target="_blank" rel="noreferrer">
               GitHub
             </a>
             <Link className="quiet" href="/developers/">
-              For developers
+              For people who want the source
+            </Link>
+            <Link className="quiet" href="/fine-print/">
+              Fine print
             </Link>
           </div>
         </div>

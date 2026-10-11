@@ -4,7 +4,7 @@
  */
 export const SITE = {
   origin: "https://tinyassets.io",
-  /** The web app: sign in, connect a subscription, talk to your universe. */
+  /** The web app: sign in, connect a model you already use, talk to your agent. */
   app: "https://tinyassets.io/app",
   /** The one public MCP endpoint (Claude.ai / ChatGPT connector URL). */
   mcp: "https://tinyassets.io/mcp",
@@ -28,7 +28,7 @@ export const SITE = {
   designSystem: "https://github.com/TinyAssets/TinyAssets/tree/main/WebSite/design-system",
   plan: "https://github.com/TinyAssets/TinyAssets/blob/main/docs/architecture.md",
   agents: "https://github.com/TinyAssets/TinyAssets/blob/main/AGENTS.md",
-  /** The receipt on the home page: the founder's universe merged this itself. */
+  /** A public pull request used as an example of a real run. */
   proof: {
     pr: "https://github.com/TinyAssets/TinyAssets/pull/2728",
     prNumber: 2728,
@@ -36,17 +36,20 @@ export const SITE = {
     firstPr: "https://github.com/TinyAssets/TinyAssets/pull/2720",
     firstPrNumber: 2720,
   },
+  /**
+   * The one mailbox the maintainer reads. Dedicated aliases are not in use.
+   */
   contact: {
-    general: "ops@tinyassets.io",
-    security: "security@tinyassets.io",
-    legal: "legal@tinyassets.io",
+    general: "info@tinyassets.io",
+    security: "info@tinyassets.io",
+    legal: "info@tinyassets.io",
   },
 } as const;
 
 export const NAV = [
-  { href: "/start/", label: "Start" },
-  { href: "/build/", label: "Build" },
-  { href: "/commons/", label: "Commons" },
-  { href: "/developers/", label: "Developers" },
+  { href: "/start/", label: "Join" },
+  { href: "/build/", label: "How it works" },
+  { href: "/commons/", label: "Creators" },
+  { href: "/developers/", label: "Source" },
   { href: "/fine-print/", label: "Fine print" },
 ] as const;

@@ -5,7 +5,7 @@ import tokenInfo from "../../lib/token-info.json";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
-  title: "Legal — TinyAssets",
+  title: "Legal",
   description:
     "The published TinyAssets privacy notice, license, draft terms, and token disclosures.",
   alternates: { canonical: "https://tinyassets.io/legal" },
@@ -30,6 +30,9 @@ export default function LegalPage() {
             · Legal · privacy v1.0 effective {legal.privacy_effective_date} · terms v0 draft effective {legal.terms_effective_date} ·
           </RitualLabel>
           <h1>Legal.</h1>
+          <p className="status">
+            What is current: the hosted app, the privacy facts below about sign-in, credentials, messages, and deletion, and one monitored mailbox, info@tinyassets.io. There is no paid work market, no platform token, and no DAO in the product today. The token, wallet, and paid-market sections further down are an old draft. They are not how TinyAssets works. Counsel has not signed this page.
+          </p>
           <p className="status">{legal.review_status}</p>
           <p className="reviewed">
             Privacy notice last reviewed for publication {legal.privacy_effective_date}. Terms and token disclosures below remain Draft v0 pending legal review.
@@ -88,11 +91,11 @@ export default function LegalPage() {
             <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a>.
           </p>
           <p>
-            <strong>Concept-layer public; instance-layer private; never training data.</strong> The <em>shape</em> of your workflow (which nodes, what edges, what state schema) is public — that&apos;s the commons. The <em>contents</em> you process (your documents, your prompts, your fills) stay on your machine or in owner-only storage. <strong>We</strong> do not train models on your data and never will. What the AI provider you connect does with the messages your command center sends it is governed by <em>your</em> agreement with that provider, not by us — check their terms, since it is your account they run on.
+            <strong>Published shapes are a choice; contents stay in your account.</strong> Nothing is public until you publish it. A published shape is the structure of a graph or branch, not the documents and prompts inside it. Those stay in your hosted account. They do not stay only on your own computer: the app is hosted. <strong>We</strong> do not train models on your data. What the AI provider you connect does with the messages your agent sends it is governed by <em>your</em> agreement with that provider, not by us.
           </p>
           <p>Per-piece visibility is judged by your chatbot per request, not by us. <strong>The chatbot proposes; you confirm. No cached consent.</strong></p>
           <p>You may export or delete your data at any time — the in-app path and the email path are described under <a href="#app-data-retention">Retention and deletion</a> above and on <a href="/account">/account</a>.</p>
-          <p><strong>Cookies / analytics:</strong> we plan to use Plausible (privacy-friendly, no PII, no third-party trackers). No advertising cookies, no cross-site tracking pixels.</p>
+          <p><strong>Cookies / analytics:</strong> this site does not run an analytics product today. There are no advertising cookies and no cross-site tracking pixels.</p>
           <p>
             <strong>Minimum age.</strong> TinyAssets is not directed at children. You must be at least <strong>18 years old</strong> to use the service or hold a wallet connection. Wallet features are not live today; the age self-declaration described here pre-positions the obligation for if and when wallet-connect opens. You self-declare your age at wallet-connect; misrepresentation is grounds for termination. We do not knowingly collect data from minors; if you believe we have, contact{" "}
             <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a>.
@@ -194,12 +197,10 @@ export default function LegalPage() {
 
           <h2 id="contact">Contact</h2>
           <p>
-            General: <a href={`mailto:${legal.contact.general}`}>{legal.contact.general}</a><br />
-            Security: <a href={`mailto:${legal.contact.security}`}>{legal.contact.security}</a><br />
-            Legal: <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a><br />
-            DMCA agent: <a href={`mailto:${legal.contact.dmca_agent}`}>{legal.contact.dmca_agent}</a>
+            One mailbox is monitored: <a href={`mailto:${legal.contact.general}`}>{legal.contact.general}</a>.
+            Use it for general questions, security reports, privacy requests, and copyright notices.
+            This page does not promise a reply window.
           </p>
-          <p>Response SLA per <a href="https://github.com/TinyAssets/TinyAssets/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">CONTRIBUTING.md</a> — 48h first response, 5 calendar days for full review.</p>
 
           <hr />
           <p className="footer-note">
