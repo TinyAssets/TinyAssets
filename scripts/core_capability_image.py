@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import runpy
@@ -608,6 +609,10 @@ def image_check(args):
                 WORKOS_MCP_RESOURCE=fixture.RESOURCE,
                 TINYASSETS_ONBOARDING_APP_CLIENT_ID="synthetic-client",
                 TINYASSETS_SESSION_SEAL_KEY=secrets.token_hex(32),
+                TINYASSETS_VAULT_MASTER_KEY=base64.urlsafe_b64encode(
+                    secrets.token_bytes(32)
+                ).decode(),
+                TINYASSETS_VAULT_MASTER_KEY_ID="1",
                 TINYASSETS_ENGINE_MCP_TOOLS="1",
                 TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED="1",
                 TINYASSETS_ASSIGNED_QUEUE_CONSUMER="1",

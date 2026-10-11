@@ -114,6 +114,14 @@ def test_complete_report_cannot_hide_missing_duplicate_or_failed_capabilities():
             ]
 
 
+def test_capability_image_sets_a_vault_master_key_before_it_writes():
+    source = (
+        Path(__file__).resolve().parents[1] / "scripts" / "core_capability_image.py"
+    ).read_text(encoding="utf-8")
+    assert "TINYASSETS_VAULT_MASTER_KEY=base64.urlsafe_b64encode(" in source
+    assert 'TINYASSETS_VAULT_MASTER_KEY_ID="1"' in source
+
+
 def test_capability_image_keeps_real_execution_seams():
     import ast
 
