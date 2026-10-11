@@ -2,6 +2,18 @@
 
 An agent of your own in the chat bubble: connect any model source, then build what you need from there.
 
+## Try it
+
+The hosted app is the supported way in. Android is in a closed Google Play test, not a public store listing. The steps, what to expect, and how to report a bug are in [docs/getting-started/testers.md](docs/getting-started/testers.md).
+
+- Web app: <https://tinyassets.io/app>
+- Start page (web, Claude or ChatGPT connector, Android, desktop): <https://tinyassets.io/start/>
+- Android closed test: <https://play.google.com/apps/testing/io.tinyassets.app>
+
+You connect your own model subscription. This project does not supply a model. What is free, and what is not built yet, is on <https://tinyassets.io/fine-print/>.
+
+Running the production server on your own machine is not a supported install. Status: [docs/getting-started/self-hosting.md](docs/getting-started/self-hosting.md).
+
 <!-- direction:start -->
 ## Direction
 
@@ -25,11 +37,12 @@ Where any older doc disagrees with this section, this section wins.
 
 - App: <https://tinyassets.io/app>
 - MCP connector (add it as a custom connector in Claude or ChatGPT): <https://tinyassets.io/mcp>
+- Testers: [docs/getting-started/testers.md](docs/getting-started/testers.md)
 - Live status (deployed sha, canary, providers): <https://tinyassets.io/fine-print>
 
 ## Contributing
 
-Python 3.11+. Tests run offline; providers are mocked, so no API keys are needed.
+Python 3.11+. Tests run offline; providers are mocked, so no API keys are needed. How to contribute, and what this repo does not promise, is [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 git clone https://github.com/TinyAssets/TinyAssets.git

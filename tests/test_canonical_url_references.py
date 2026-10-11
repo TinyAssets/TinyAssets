@@ -16,6 +16,11 @@ REPO = Path(__file__).resolve().parent.parent
 # Add new user-facing docs here when they are created.
 _WATCHED: list[str] = [
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/getting-started/README.md",
+    "docs/getting-started/testers.md",
+    "docs/getting-started/self-hosting.md",
     "INDEX.md",
     "SUCCESSION.md",
     "deploy/DEPLOY.md",
