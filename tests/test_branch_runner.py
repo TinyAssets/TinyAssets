@@ -81,7 +81,7 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
     )
 
     from tinyassets import universe_server as us
-    provider_calls = importlib.import_module("tinyassets.providers.call")
+    provider_calls = importlib.import_module("tinyassets.providers.model_call")
     from tests.test_run_provider_session import (
         _CountingProvider,
         _seed_serving_assignment,
@@ -116,7 +116,7 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
             operation=operation,
         ).text
 
-    monkeypatch.setattr(provider_calls, "call_provider", governed_provider_call)
+    monkeypatch.setattr(provider_calls, "text_sync", governed_provider_call)
     yield us, base
     importlib.reload(us)
 

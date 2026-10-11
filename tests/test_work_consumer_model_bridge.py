@@ -200,7 +200,7 @@ def test_public_selected_reusable_graph_uses_reserved_run_and_exact_reply_projec
     authenticate_request(owner)
     set_founder_home(tmp_path, founder_sub=owner, universe_id=home, platform_generated=True)
     router = ProviderRouter({})
-    monkeypatch.setattr(call, "_real_router", router)
+    monkeypatch.setattr(call, "_router", router)
     monkeypatch.setattr(call, "get_provider_router", lambda: router)
     provider = _seed_open_serving_assignment(tmp_path, monkeypatch,
                                             model_access=ModelAccess("discovered"))

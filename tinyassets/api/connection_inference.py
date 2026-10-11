@@ -548,7 +548,7 @@ def _run_model(udir, uid: str, *, shape: list, hints: list, intent: str) -> str:
     from tinyassets.config import load_universe_config
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import call_provider
+    from tinyassets.providers.model_call import text_sync
 
     # Binding resolution is INSIDE the guard with the call. A universe with no
     # serving binding — a fresh one, or one whose automation and serving
@@ -602,7 +602,7 @@ def _run_model(udir, uid: str, *, shape: list, hints: list, intent: str) -> str:
         "Return the JSON object."
     )
     try:
-        return call_provider(
+        return text_sync(
             prompt,
             system=_SYSTEM,
             role="writer",

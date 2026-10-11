@@ -152,7 +152,7 @@ def _bridge_owning_a_child(marker: Path, pids: list[int]):
     """A provider bridge that owns a real subprocess, like the real one does.
 
     It spawns the child, then blocks on it -- exactly the shape of
-    ``call_with_policy_sync`` blocking on a ``claude -p`` stream. The node
+    ``call_sync`` blocking on a ``claude -p`` stream. The node
     timeout fires while this is still running.
     """
     started: dict[str, subprocess.Popen] = {}

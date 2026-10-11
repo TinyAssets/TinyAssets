@@ -303,7 +303,7 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
         return ""
 
     # Build prompt
-    from domains.fantasy_daemon.phases._provider_stub import call_provider
+    from domains.fantasy_daemon.phases._provider_stub import text_sync
 
     file_summaries = "\n\n".join(
         f"**{name}**:\n{sample}" for name, sample in canon_files
@@ -324,7 +324,7 @@ def _maybe_generate_premise(state: dict[str, Any]) -> str:
         f"Write a 2-3 sentence creative direction for a novel in this world."
     )
 
-    premise = call_provider(prompt, system, role="writer")
+    premise = text_sync(prompt, system, role="writer")
     if not premise or not premise.strip():
         logger.info("Auto-premise: LLM returned empty; skipping")
         return ""
@@ -479,7 +479,7 @@ def _handle_new_element(
     state: dict[str, Any],
 ) -> None:
     """Create a focused canon document for a newly discovered element."""
-    from tinyassets.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.model_call import get_last_provider, text_sync
 
     topic_slug = safe_canon_slug(topic)
     topic_label = topic.replace("_", " ").title()
@@ -507,9 +507,8 @@ def _handle_new_element(
         f"premise and expand on what the prose revealed."
     )
 
-    content = call_provider(
+    content = text_sync(
         prompt, system, role="writer",
-        fallback_response=_mock_worldbuild_response(topic),
     )
     if content:
         filename = safe_canon_filename(topic_slug)
@@ -529,7 +528,7 @@ def _handle_contradiction(
     Asks the LLM which version makes for a better, more coherent universe
     given the full premise and context. Does NOT default to either side.
     """
-    from tinyassets.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.model_call import get_last_provider, text_sync
 
     topic_slug = safe_canon_slug(topic)
 
@@ -576,9 +575,8 @@ def _handle_contradiction(
         f"return the revised document."
     )
 
-    new_content = call_provider(
+    new_content = text_sync(
         prompt, system, role="writer",
-        fallback_response=canon_content,  # Keep original on failure
     )
     if new_content and new_content != canon_content:
         filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
@@ -598,7 +596,7 @@ def _handle_expansion(
     state: dict[str, Any],
 ) -> None:
     """Expand an existing thin canon document with new details from prose."""
-    from tinyassets.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.model_call import get_last_provider, text_sync
 
     topic_slug = safe_canon_slug(topic)
 
@@ -638,9 +636,8 @@ def _handle_expansion(
         f"add the new information, maintain consistency."
     )
 
-    new_content = call_provider(
+    new_content = text_sync(
         prompt, system, role="writer",
-        fallback_response=canon_content,  # Keep original on failure
     )
     if new_content and new_content != canon_content:
         filepath = _resolve_within_canon(canon_dir, canon_filename, kind="existing file")
@@ -992,10 +989,10 @@ def _call_for_worldbuild(
 ) -> str:
     """Call the LLM to generate a worldbuilding document for a topic.
 
-    Uses the provider stub's ``call_provider`` with role ``"writer"``.
+    Uses the provider stub's ``text_sync`` with role ``"writer"``.
     Returns the generated markdown content, or an empty string on failure.
     """
-    from domains.fantasy_daemon.phases._provider_stub import call_provider
+    from domains.fantasy_daemon.phases._provider_stub import text_sync
 
     topic_label = topic.replace("_", " ").title()
 
@@ -1030,31 +1027,13 @@ def _call_for_worldbuild(
         f"- Use markdown formatting with headers and lists\n"
     )
 
-    result = call_provider(
+    result = text_sync(
         prompt,
         system,
         role="writer",
-        fallback_response=_mock_worldbuild_response(topic),
     )
 
     return result
-
-
-def _mock_worldbuild_response(topic: str) -> str:
-    """Generate a deterministic mock worldbuilding document.
-
-    Used when no LLM provider is available (tests, offline mode).
-    """
-    topic_label = topic.replace("_", " ").title()
-    return (
-        f"# {topic_label}\n\n"
-        f"## Overview\n\n"
-        f"This document describes the {topic_label.lower()} of the world.\n\n"
-        f"## Details\n\n"
-        f"- The {topic_label.lower()} are a central element of the story.\n"
-        f"- They have deep historical roots and complex relationships.\n"
-        f"- Further details will emerge as the narrative develops.\n"
-    )
 
 
 def _write_canon_file(
@@ -1116,7 +1095,7 @@ def _trigger_kg_reindex(state: dict[str, Any]) -> None:
     if not canon_dir.is_dir():
         return
 
-    from domains.fantasy_daemon.phases._provider_stub import call_provider
+    from domains.fantasy_daemon.phases._provider_stub import text_sync
     from tinyassets.ingestion.indexer import index_text
     from tinyassets.memory.scoping import MemoryScope
 
@@ -1148,7 +1127,7 @@ def _trigger_kg_reindex(state: dict[str, Any]) -> None:
                     knowledge_graph=kg,
                     vector_store=vs,
                     embed_fn=embed,
-                    provider_call=call_provider,
+                    provider_call=text_sync,
                     scope=scope,
                 )
                 for k, v in stats.items():

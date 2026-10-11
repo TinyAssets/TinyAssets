@@ -11,13 +11,11 @@ Verifies:
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
+import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
-
-from tinyassets.providers import call as _provider_stub  # noqa: E402
-
-_provider_stub.set_force_mock(True)
 
 from domains.fantasy_daemon.graphs.scene import build_scene_graph  # noqa: E402
 from domains.fantasy_daemon.phases.book_close import book_close  # noqa: E402
@@ -25,8 +23,20 @@ from domains.fantasy_daemon.phases.commit import commit  # noqa: E402
 from domains.fantasy_daemon.phases.diagnose import diagnose  # noqa: E402
 from domains.fantasy_daemon.phases.select_task import select_task  # noqa: E402
 from domains.fantasy_daemon.phases.universe_cycle import universe_cycle  # noqa: E402
+from tests.support.fantasy_model import answer as fantasy_answer
 from tinyassets.memory.promises import SeriesPromiseTracker  # noqa: E402
 from tinyassets.memory.versioning import OutputVersionStore  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fantasy_model_transport(monkeypatch):
+    from domains.fantasy_daemon.phases import _provider_stub
+
+    monkeypatch.setattr(_provider_stub, "text_sync", fantasy_answer)
+    monkeypatch.setattr(importlib.import_module("domains.fantasy_daemon.phases.commit"),
+                        "text_sync", fantasy_answer)
+    monkeypatch.setattr(importlib.import_module("domains.fantasy_daemon.phases.consolidate"),
+                        "text_sync", fantasy_answer)
 
 
 def _make_scene_state(

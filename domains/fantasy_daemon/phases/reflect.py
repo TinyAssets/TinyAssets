@@ -393,7 +393,7 @@ def _evaluate_canon(
     Each dict has ``filename``, ``reason``, and ``severity`` (0-10).
     Files with no issues are omitted.
     """
-    from domains.fantasy_daemon.phases._provider_stub import call_provider
+    from domains.fantasy_daemon.phases._provider_stub import text_sync
 
     # Build a summary of each file (truncated to keep prompt manageable)
     file_summaries = []
@@ -424,9 +424,8 @@ def _evaluate_canon(
         "Return a JSON array of issues (or [] if none)."
     )
 
-    fallback = "[]"
-    raw = call_provider(prompt, system, role="writer", fallback_response=fallback)
 
+    raw = text_sync(prompt, system, role="writer")
     return _parse_issues(raw)
 
 
@@ -467,7 +466,7 @@ def _rewrite_canon_file(
 
     Returns the new content, or empty string on failure.
     """
-    from domains.fantasy_daemon.phases._provider_stub import call_provider
+    from domains.fantasy_daemon.phases._provider_stub import text_sync
 
     original = all_canon.get(filename, "")
     reason = issue.get("reason", "quality issues detected")
@@ -498,5 +497,4 @@ def _rewrite_canon_file(
         f"Return the full revised document."
     )
 
-    fallback = original  # If LLM fails, keep the original
-    return call_provider(prompt, system, role="writer", fallback_response=fallback)
+    return text_sync(prompt, system, role="writer")

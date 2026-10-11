@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tinyassets.providers.base import ProviderResponse
+from tinyassets.providers.model_policy import ModelRef
 
 
 def _label(value: object, maximum: int) -> str:
@@ -17,7 +18,11 @@ def _label(value: object, maximum: int) -> str:
 #: ``requested_model`` are optional and ABSENT when nothing resolved, so a row
 #: stored before they existed still normalizes and renders no blank label.
 _REQUIRED_FIELDS = {"provider", "model", "model_status"}
-_OPTIONAL_FIELDS = ("provider_display", "requested_model", "configured_model")
+_OPTIONAL_FIELDS = (
+    "provider_display", "requested_model", "configured_model", "resolved_model",
+    "reported_model", "family", "source_kind", "execution", "outcome",
+    "usage_provenance", "usage_id", "parent_usage_id",
+)
 
 
 _USAGE_COUNTS = ("reserved", "dispatched", "succeeded", "failed", "unknown", "not_sent")
@@ -99,6 +104,20 @@ class ExecutionReceipt:
     provider_display: str = ""
     requested_model: str = ""
     configured_model: str = ""
+    resolved_model: str = ""
+    reported_model: str = ""
+    family: str = ""
+    source_kind: str = ""
+    execution: str = ""
+    outcome: str = ""
+    usage_provenance: str = ""
+    usage_id: str = ""
+    parent_usage_id: str = ""
+    fallback_used: int | None = None
+    attempt: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_microunits: int | None = None
     usage: dict[str, Any] | None = field(default=None, compare=False, hash=False)
 
 
@@ -110,6 +129,9 @@ def normalize_execution_receipt(value: object) -> dict[str, Any] | None:
                 "model_status": value.model_status}
                if any((value.provider, value.model, value.model_status)) else {}),
             **{name: getattr(value, name) for name in _OPTIONAL_FIELDS if getattr(value, name)},
+            **{name: getattr(value, name) for name in (
+                "fallback_used", "attempt", "input_tokens", "output_tokens", "cost_microunits",
+            ) if getattr(value, name) is not None},
             **({"usage": value.usage} if value.usage is not None else {}),
         }
     if not isinstance(value, dict):
@@ -120,7 +142,10 @@ def normalize_execution_receipt(value: object) -> dict[str, Any] | None:
     if set(value) == {"usage"}:
         return {"usage": usage}
     if (not _REQUIRED_FIELDS <= set(value)
-            or set(value) - _REQUIRED_FIELDS - set(_OPTIONAL_FIELDS) - {"usage"}):
+            or set(value) - _REQUIRED_FIELDS - set(_OPTIONAL_FIELDS) - {
+                "usage", "fallback_used", "attempt", "input_tokens", "output_tokens",
+                "cost_microunits",
+            }):
         return None
     provider, model, status = value["provider"], value["model"], value["model_status"]
     if not isinstance(provider, str) or not provider or _label(provider, 400) != provider:
@@ -142,54 +167,44 @@ def normalize_execution_receipt(value: object) -> dict[str, Any] | None:
         if not isinstance(label, str) or not label or _label(label, 200) != label:
             return None
         out[name] = label
+    for name in ("fallback_used", "attempt", "input_tokens", "output_tokens", "cost_microunits"):
+        if name not in value:
+            continue
+        count = value[name]
+        if type(count) is not int or count < 0:
+            return None
+        out[name] = count
     return out
 
 
-@dataclass(slots=True)
-class WriterExecutionReceipt:
-    """Create once per reply; pass observe ONLY to that reply's writer call.
-
-    The collector keeps the first completed response, not a last-call slot that
-    learning or other requests could overwrite. It holds only safe labels, never
-    prompts, response text, credentials, tool output or mutable provider objects.
-    """
-
-    _receipt: tuple[str, str, str, str, str] | None = field(default=None, init=False)
-    _usage: dict[str, Any] | None = field(default=None, init=False)
-
-    def observe(self, response: ProviderResponse) -> None:
-        if not isinstance(response, ProviderResponse):
-            return
-        if self._usage is None:
-            self._usage = _project_request_usage(response.request_receipt)
-        if self._receipt is not None:
-            return
-        provider = _label(response.provider, 400)
-        if not provider or response.degraded or response.failure_class is not None:
-            return
-        self._receipt = (
-            provider,
-            _label(response.reported_model, 200),
-            # The owner's own name for the source, when the router resolved one.
-            _label(getattr(response, "provider_display", ""), 200),
-            # What the call asked for. Kept apart from `model`: a request is not
-            # evidence of what answered, so it never turns `unknown` into
-            # `reported` (a source that reports nothing still says so).
-            _label(getattr(response, "requested_model", ""), 200),
-            _label(response.configured_model, 200),
-        )
-
-    def projection(self) -> dict[str, Any] | None:
-        usage = normalize_request_usage(self._usage)
-        if self._receipt is None:
-            return {"usage": usage} if usage is not None else None
-        provider, model, display, requested, configured = self._receipt
-        return {
-            "provider": provider,
-            "model": model,
-            "model_status": "reported" if model else "unknown",
-            **({"provider_display": display} if display else {}),
-            **({"requested_model": requested} if requested else {}),
-            **({"configured_model": configured} if configured else {}),
-            **({"usage": usage} if usage is not None else {}),
-        }
+def receipt_from_response(
+    response: ProviderResponse,
+    *,
+    requested: ModelRef | None = None,
+    purpose: str = "reply",
+) -> ExecutionReceipt:
+    """Detach the completed call's evidence without inferring unknown usage as zero."""
+    reported = _label(response.reported_model, 200)
+    requested_id = requested.model_id if requested is not None else response.requested_model
+    usage_id = (response.request_receipt or {}).get("usage_id", "")
+    return ExecutionReceipt(
+        provider=_label(response.provider, 400),
+        model=reported,
+        model_status="reported" if reported else "unknown",
+        provider_display=_label(response.provider_display, 200),
+        requested_model=_label(requested_id, 200),
+        configured_model=_label(response.configured_model, 200),
+        resolved_model=_label(response.model, 200),
+        reported_model=reported,
+        family=_label(response.family, 200),
+        execution=("native_agent" if purpose == "reply" and response.tool_uses is not None
+                   else "model_response"),
+        outcome="failed" if response.failure_class or response.degraded else "succeeded",
+        usage_provenance=("provider_reported" if response.input_tokens is not None
+                          or response.output_tokens is not None else "unknown"),
+        usage_id=_label(usage_id, 32),
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        cost_microunits=response.cost_microunits,
+        usage=_project_request_usage(response.request_receipt),
+    )

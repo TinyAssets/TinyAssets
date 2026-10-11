@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from domains.fantasy_daemon.phases._provider_stub import call_for_extraction, call_provider
+from domains.fantasy_daemon.phases._provider_stub import call_for_extraction, text_sync
 from domains.fantasy_daemon.phases.fact_extraction import (
     detect_promises,
     extract_facts_from_llm_response,
@@ -937,9 +937,7 @@ def _generate_worldbuild_signals(
     )
 
     try:
-        raw = call_provider(
-            prompt, system, role="extract", fallback_response="[]"
-        )
+        raw = text_sync(prompt, system, role="extract")
         return _parse_worldbuild_signals(raw)
     except Exception as e:
         logger.warning("Worldbuild signal generation failed: %s", e)
@@ -1235,7 +1233,7 @@ def _index_prose_entities(
             knowledge_graph=kg,
             vector_store=vs,
             embed_fn=embed_fn,
-            provider_call=call_provider,
+            provider_call=text_sync,
             chapter_number=state.get("chapter_number", 0),
             scope=scope,
         )

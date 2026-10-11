@@ -550,6 +550,8 @@ class ProviderResponse:
     """One inference's validated result; requested tools have not been executed."""
     request_receipt: dict | None = field(default=None, repr=False, compare=False)
     """Detached local dispatch accounting, never a confirmed provider quota."""
+    execution_receipt: object | None = field(default=None, repr=False, compare=False)
+    """Detached requested/resolved/reported identity and usage for this call."""
     native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
     """Local execution evidence, not provider-reported billing or HTTP progress."""
 

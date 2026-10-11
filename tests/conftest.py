@@ -18,7 +18,6 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
-from tinyassets.providers import call as _provider_call
 
 # The owner-split runtime's test doubles: the in-process broker, the bounded
 # launcher, and center admission/deletion. Production has no fallback; tests opt out of a double
@@ -72,10 +71,6 @@ def pytest_configure(config: pytest.Config) -> None:
                 "cannot delete and that survives worktree teardown. Point it at "
                 "the system temp dir instead."
             )
-
-
-# Force mock provider responses in all tests to avoid real API calls
-_provider_call.set_force_mock(True)
 
 
 @pytest.fixture(autouse=True)

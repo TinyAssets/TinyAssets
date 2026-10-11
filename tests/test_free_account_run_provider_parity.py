@@ -155,10 +155,9 @@ def wires(tmp_path, monkeypatch):
     from tinyassets.providers import call as call_module
     from tinyassets.providers.router import ProviderRouter
 
-    monkeypatch.setattr(call_module, "_real_router", ProviderRouter(), raising=False)
+    monkeypatch.setattr(call_module, "_router", ProviderRouter(), raising=False)
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", read)
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve_proxy))
-    monkeypatch.setattr("tinyassets.providers.call._force_mock", False)
     return registry
 
 

@@ -621,7 +621,7 @@ def _bind_waiting_run_provider(
     from tinyassets.config import load_universe_config
     from tinyassets.foreground_run_provider import new_foreground_run_provider_session
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import bind_universe_provider_call, call_provider
+    from tinyassets.providers.model_call import bind_model_call, text_sync
     from tinyassets.storage import _connect as author_connect
     from tinyassets.storage.current_home import check_principal_not_deleted
 
@@ -634,12 +634,12 @@ def _bind_waiting_run_provider(
         check_principal_not_deleted(authority, owner_id)
     session = new_foreground_run_provider_session(
         base_path, universe_id=universe_id, principal_id=owner_id,
-        provider_call=call_provider,
+        provider_call=text_sync,
     )
     session.prepare(run_id=run_id, branch=branch, branch_version_id=branch_version_id,
                     allowed_statuses={RUN_STATUS_QUEUED})
     universe_dir = Path(base_path) / universe_id
-    return bind_universe_provider_call(
+    return bind_model_call(
         session,
         UniverseContext(universe_dir=universe_dir, config=load_universe_config(universe_dir)),
         operation="run_graph",

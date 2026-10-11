@@ -27,9 +27,9 @@ import pytest
 from tinyassets.exceptions import PlatformLLMCallRefusedError, ProviderAuthorityHeldError
 from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse, UniverseContext
-from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
+from tinyassets.providers.router import ProviderRouter
 
-_ALL_BUILTIN = sorted({name for chain in FALLBACK_CHAINS.values() for name in chain})
+_ALL_BUILTIN = ("claude-code", "codex", "ollama-local")
 
 
 def _builtin_executor_classes() -> dict[str, type]:
@@ -99,15 +99,12 @@ def _resolver(carrier):
 def test_router_call_with_no_universe_is_refused_before_any_provider_or_probe():
     health = MagicMock(return_value={"status": "ok"})
     router, spies = _spy_router(auth_health=health)
+    assert set(router.available_providers) == set(_ALL_BUILTIN)
 
     with pytest.raises(PlatformLLMCallRefusedError, match="platform has no LLM"):
         asyncio.run(router.call("writer", "prompt", "system"))
     with pytest.raises(PlatformLLMCallRefusedError):
         router.call_sync("writer", "prompt", "system")
-    with pytest.raises(PlatformLLMCallRefusedError):
-        asyncio.run(router.call_with_policy(
-            "writer", "prompt", "system", {"preferred": {"provider": "claude-code"}},
-        ))
     with pytest.raises(PlatformLLMCallRefusedError):
         asyncio.run(router.call_judge_ensemble("prompt", "system"))
 
@@ -130,17 +127,21 @@ def test_a_universe_with_no_owner_authority_gets_the_connect_refusal(tmp_path):
     assert _calls(spies) == {}
 
 
-def test_call_provider_with_no_universe_is_refused_not_degraded(monkeypatch):
-    """No mock, no ``fallback_response``: the refusal is the result (Hard Rule 8)."""
+def test_model_call_with_no_universe_is_refused_before_dispatch():
     from tinyassets.providers import call as bridge
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call_sync
 
     router, spies = _spy_router()
-    monkeypatch.setattr(bridge, "_force_mock", False)
-    monkeypatch.setattr(bridge, "_real_router", router)
-
-    with pytest.raises(PlatformLLMCallRefusedError):
-        bridge.call_provider("summarize this", "system", fallback_response="looks real")
-    assert _calls(spies) == {}
+    previous = bridge.get_provider_router()
+    bridge.set_provider_router(router)
+    try:
+        with pytest.raises(ProviderAuthorityHeldError, match="owner-bound"):
+            call_sync(ModelCall(model=None, fallbacks=(),
+                                context=ModelContext(prompt="summarize this")),
+                      Parent(owner="", command_center=""))
+        assert _calls(spies) == {}
+    finally:
+        bridge.set_provider_router(previous)
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ def test_bound_call_is_served_by_the_owners_provider_and_ignores_host_pin(
 
 @pytest.fixture
 def platform_base(tmp_path: Path, monkeypatch):
-    """Real stores, force-mock OFF, and a spy router behind ``call_provider``."""
+    """Real stores and a spy router behind the model call boundary."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", raising=False)
     from tinyassets.daemon_server import initialize_author_server
@@ -247,8 +248,7 @@ def platform_base(tmp_path: Path, monkeypatch):
     initialize_author_server(tmp_path)
     initialize_runs_db(tmp_path)
     router, spies = _spy_router()
-    monkeypatch.setattr(bridge, "_force_mock", False)
-    monkeypatch.setattr(bridge, "_real_router", router)
+    monkeypatch.setattr(bridge, "_router", router)
     return tmp_path, spies
 
 

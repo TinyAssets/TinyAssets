@@ -21,7 +21,7 @@ is injected through the existing `ProcessProvenanceObservation` seam
 (`platform_runtime_provenance.py` module docstring: "Tests inject a
 reader/resolver"), so no metadata socket is opened. Every provider dispatch is
 a local callable: the foreground lane runs on the `_CountingProvider` router
-and the monkeypatched `call_provider` that `_run_branch` installs, the served
+and the monkeypatched `text_sync` that `_run_branch` installs, the served
 lane on the `raw_provider` callable `_BackgroundAssignedProviderSession` is
 constructed with. No listener, no server, no subprocess, no network, no
 production credential, and no production edit.
@@ -261,63 +261,6 @@ def test_admitted_background_served_turn_still_launches(
 
     assert session("prompt") == "ok"
     assert raw_calls == ["raw"]
-    assert _reservations(conn) == 1
-
-
-# --- lane 1/2, structured entry (call_with_policy_sync) -------------------
-
-
-def test_unadmitted_structured_served_call_never_reaches_the_provider(
-    tmp_path: Path, monkeypatch, bind_provenance
-) -> None:
-    """The structured entry is a second public door onto the same mint path.
-
-    `__call__` above takes a raw prompt/system pair; `call_with_policy_sync`
-    takes role/prompt/system/policy and returns the provider name and an
-    authority metadata dict. A gate installed only on the raw shape would leave
-    the compiler's own entry — which is the one a real branch run uses — wide
-    open, so the negative is asserted on both doors rather than inferred from
-    one.
-    """
-    bind_provenance(UNADMITTED)
-    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    raw_calls: list[str] = []
-
-    session = background_provider_session(
-        tmp_path, task, lambda *_a, **_k: raw_calls.append("raw") or "unexpected"
-    )
-    try:
-        session.call_with_policy_sync("writer", "prompt", "", None)
-    except REFUSALS:
-        pass
-
-    assert raw_calls == [], (
-        "unadmitted structured served call invoked the provider before admission"
-    )
-    assert _reservations(conn) == 0, (
-        "unadmitted structured served call reserved cloud-class provider budget"
-    )
-
-
-def test_admitted_structured_served_call_still_launches(
-    tmp_path: Path, monkeypatch, bind_provenance
-) -> None:
-    """Control for the structured negative: same door, admitted verdict."""
-    bind_provenance(ADMITTED)
-    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    raw_calls: list[str] = []
-
-    def raw_provider(*_args, **kwargs):
-        raw_calls.append("raw")
-        return "ok"
-
-    session = background_provider_session(tmp_path, task, raw_provider)
-    response, provider, metadata = session.call_with_policy_sync("writer", "prompt", "", None)
-
-    assert response == "ok"
-    assert raw_calls == ["raw"]
-    assert provider
-    assert metadata["authority"] == _SERVED_OPERATION
     assert _reservations(conn) == 1
 
 

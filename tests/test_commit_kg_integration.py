@@ -7,7 +7,7 @@ test gap where all prior tests hit the early-return (kg is None).
 NOTE: commit() has two separate extraction paths:
   - Fact extraction (_extract_facts) uses call_for_extraction, which
     hits _mock_extraction_response under _FORCE_MOCK=True (conftest).
-  - KG indexing (_index_prose_entities) passes commit.call_provider to
+  - KG indexing (_index_prose_entities) passes commit.text_sync to
     index_text as provider_call, which we patch to return EXTRACTION_JSON.
 These tests target the KG indexing path specifically.
 """
@@ -122,7 +122,7 @@ def _commit_patches():
     """Return context managers that patch commit.py's provider and editorial reader."""
     return (
         patch(
-            "domains.fantasy_daemon.phases.commit.call_provider",
+            "domains.fantasy_daemon.phases.commit.text_sync",
             return_value=EXTRACTION_JSON,
         ),
         patch(
@@ -201,7 +201,7 @@ class TestCommitKGIntegration:
         # Return non-JSON to trigger regex fallback
         with (
             patch(
-                "domains.fantasy_daemon.phases.commit.call_provider",
+                "domains.fantasy_daemon.phases.commit.text_sync",
                 return_value="This is not valid JSON at all",
             ),
             patch(

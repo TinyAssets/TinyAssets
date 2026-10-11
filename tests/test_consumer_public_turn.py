@@ -119,7 +119,7 @@ def test_status_repairs_lost_terminal_callback_without_starting_work(public, sto
     complete(store, row["run_id"])
     monkeypatch.setattr("tinyassets.consumer_runtime._dispatch",
                         lambda *a, **k: pytest.fail("status cannot dispatch work"))
-    monkeypatch.setattr("tinyassets.providers.call.call_provider",
+    monkeypatch.setattr("tinyassets.providers.model_call.text_sync",
                         lambda *a, **k: pytest.fail("status cannot invoke a provider"))
     for _ in range(2):
         result = json.loads(public.read_graph(target="conversation_turn", graph_id=HOME,

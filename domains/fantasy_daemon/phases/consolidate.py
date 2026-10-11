@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from domains.fantasy_daemon.phases._provider_stub import call_provider
+from domains.fantasy_daemon.phases._provider_stub import text_sync
 
 logger = logging.getLogger(__name__)
 
@@ -171,9 +171,7 @@ def _summarize_chapter(state: dict[str, Any], fallback: str) -> str:
     )
 
     try:
-        summary = call_provider(
-            prompt, system, role="extract", fallback_response=fallback,
-        )
+        summary = text_sync(prompt, system, role="extract")
         if summary and summary.strip():
             logger.info(
                 "Generated real chapter summary (%d chars)", len(summary),

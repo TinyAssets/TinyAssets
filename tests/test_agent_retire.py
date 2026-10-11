@@ -219,7 +219,7 @@ def test_served_turn_reports_why_it_stopped(world, monkeypatch):
         change(world)
         return "finished inference"
 
-    monkeypatch.setattr(intelligence, "call_provider", provider)
+    monkeypatch.setattr(intelligence, "text_sync", provider)
     result = _converse(message="Work until stopped", agent_id=world["weaver"])
     assert result["interrupted"] is True
     assert result["reason"] == "agent retired"
@@ -445,7 +445,7 @@ def test_retirement_restore_cannot_resume_or_ack_an_old_request_wake(
 
     # The wake runs under the owner's provider authority, so the owner needs one.
     connect_owner_provider(home, OWNER)
-    monkeypatch.setattr(intelligence, "call_provider", inference)
+    monkeypatch.setattr(intelligence, "text_sync", inference)
     monkeypatch.setattr(intelligence, "_call_writer",
                         lambda turn_input, *, system, **_: inference(turn_input, system))
     results = []

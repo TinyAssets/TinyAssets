@@ -7,8 +7,7 @@ against the owner's serving binding -- and is served only by the provider that
 authority names, on that universe's own credentials. There is no platform
 fallback chain, no host pin and no host-credential provider; a call without
 owner authority is refused before any provider is touched
-(``tinyassets/providers/owner_binding.py``). ``FALLBACK_CHAINS`` survives only
-as the catalogue of built-in executor names status surfaces report.
+(``tinyassets/providers/owner_binding.py``).
 """
 
 from __future__ import annotations
@@ -235,18 +234,6 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
         )
     except Exception:
         return ModelConfig()
-
-# Built-in executor names per role (spec Section 8.3). NOT a routing chain:
-# Hard Rule 15 removed platform fallback routing, and every call is served
-# only by the provider its owner's authority names. Status surfaces still use
-# this as the catalogue of executor names the host could register.
-FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "ollama-local"],
-    "judge": ["codex", "ollama-local"],
-    "extract": ["codex", "ollama-local"],
-    "embed": ["ollama-local"],
-}
-
 
 def _retry_after_cooldown_s(retry_after: object) -> int:
     """Cooldown seconds implied by a source's own ``Retry-After``.
@@ -578,8 +565,7 @@ class ProviderRouter:
     ) -> tuple[list[str], list[ProviderAttemptDiagnostic]]:
         """Return registered providers from *chain* plus explicit exclusions.
 
-        ``FALLBACK_CHAINS`` records preference order, but runtime routing must
-        only advertise and iterate providers that were actually registered at
+        Runtime routing must only advertise and iterate providers registered at
         startup. Missing CLI-backed providers, such as ``claude-code`` in the
         cloud image, are reported as exclusions rather than silent phantom
         entries at the front of the live chain.
@@ -653,6 +639,27 @@ class ProviderRouter:
         return kind
 
     async def call(
+        self,
+        role: str,
+        prompt: str,
+        system: str,
+        config: ModelConfig | None = None,
+        *,
+        operation: str | None = None,
+        universe_context: UniverseContext | None = None,
+        _agent_observer=None,
+        _agent_execution_kind=None,
+    ) -> ProviderResponse:
+        from tinyassets.providers.execution_receipt import receipt_from_response
+
+        response = await self._call_impl(
+            role, prompt, system, config, operation=operation,
+            universe_context=universe_context, _agent_observer=_agent_observer,
+            _agent_execution_kind=_agent_execution_kind,
+        )
+        return replace(response, execution_receipt=receipt_from_response(response))
+
+    async def _call_impl(
         self,
         role: str,
         prompt: str,
@@ -1863,140 +1870,20 @@ class ProviderRouter:
         produced this, how long did it take, after how many tries" — spec
         §11.3 model-stamp requirement.
         """
-        from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+        from tinyassets.providers.execution_receipt import (
+            normalize_execution_receipt,
+            receipt_from_response,
+        )
 
-        receipt = WriterExecutionReceipt()
-        receipt.observe(resp)
+        receipt = normalize_execution_receipt(receipt_from_response(resp))
         return {
             "model": getattr(resp, "model", "") or "",
-            "execution": receipt.projection(),
+            "execution": receipt,
             "family": getattr(resp, "family", "") or "",
             "latency_ms": getattr(resp, "latency_ms", None),
             "degraded": bool(getattr(resp, "degraded", False)),
             "attempts": attempts,
         }
-
-    async def call_with_policy(
-        self,
-        role: str,
-        prompt: str,
-        system: str,
-        policy: dict | None,
-        config: ModelConfig | None = None,
-        difficulty: str = "",
-        *,
-        operation: str | None = None,
-        universe_context: UniverseContext | None = None,
-    ) -> tuple[str, str, dict]:
-        """Route a node's ``llm_policy`` call through the owner's authority.
-
-        Returns ``(response_text, provider_name_used, call_meta)`` where
-        ``call_meta`` is :meth:`_call_meta` telemetry for the winning call.
-
-        The owner's binding names exactly one provider, so a policy's
-        ``preferred`` / ``fallback_chain`` / ``difficulty_override`` entries no
-        longer choose among host-registered providers (Hard Rule 15: there is
-        no platform chain to choose from). Carrier-bound callers that must
-        honour a policy check it against their authority before calling here
-        (``cloud_automation_continuation``, ``foreground_run_provider``).
-        """
-        del policy, difficulty
-        require_owner_bound_context(universe_context, operation=operation)
-        response = await self.call(
-            role,
-            prompt,
-            system,
-            config,
-            operation=operation,
-            universe_context=universe_context,
-        )
-        return response.text, response.provider, self._call_meta(response, attempts=1)
-
-
-    @blocking_provider_child()
-    def call_with_policy_sync(
-        self,
-        role: str,
-        prompt: str,
-        system: str,
-        policy: dict | None,
-        config: ModelConfig | None = None,
-        difficulty: str = "",
-        *,
-        operation: str | None = None,
-        universe_context: UniverseContext | None = None,
-    ) -> tuple[str, str, dict]:
-        """Synchronous wrapper for :meth:`call_with_policy`."""
-        cfg = config or _default_config(_resolve_universe_config(universe_context))
-        # See call_sync (blocker L): enforce the timeout INSIDE the async task so
-        # a timeout cancels the coroutine and kills the streaming subprocess, and
-        # never fire below the stream absolute cap.
-        inner_timeout = _sync_call_timeout_s(cfg)
-        # One absolute monotonic deadline, armed HERE — on the caller's thread,
-        # BEFORE the queue. See call_sync for why the anchor has to be submit
-        # time and not worker pickup.
-        queued_at = time.monotonic()
-        node_budget_s = _caller_deadline_budget_s(cfg)
-        drain_deadline = queued_at + inner_timeout
-
-        # Capture universe_context in the closure so it survives the hop into
-        # the ThreadPoolExecutor worker thread (no ContextVar — a ContextVar
-        # set here would NOT propagate to the pool's worker thread).
-        def _run() -> tuple[str, str, dict]:
-            waited = time.monotonic() - queued_at
-            if node_budget_s is not None and waited >= node_budget_s:
-                raise ProviderTimeoutError(
-                    f"call_with_policy_sync refused role={role} before launch: "
-                    f"its {node_budget_s:.3g}s deadline passed while it waited "
-                    f"{waited:.3g}s in the provider-sync queue"
-                )
-            run_cfg = _queue_adjusted_config(cfg, node_budget_s, waited)
-            run_timeout = max(
-                _MIN_POSITIVE_PROVIDER_CAP_S, drain_deadline - time.monotonic(),
-            )
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(
-                    asyncio.wait_for(
-                        self.call_with_policy(
-                            role, prompt, system, policy, run_cfg, difficulty,
-                            operation=operation,
-                            universe_context=universe_context,
-                        ),
-                        timeout=run_timeout,
-                    )
-                )
-            except asyncio.TimeoutError:
-                raise ProviderTimeoutError(
-                    f"call_with_policy_sync exceeded {run_timeout:.0f}s for "
-                    f"role={role} (subprocess cancelled/killed)"
-                )
-            finally:
-                loop.close()
-
-        # A synchronous nested caller is blocked until this worker settles.
-        # Copy its explicit loan, not just the universe carrier. Nested work
-        # cannot queue behind blocked ancestors in the fixed sync-worker pool.
-        call_context = contextvars.copy_context()
-        nested_pool = (
-            concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            if blocking_parent_slot() is not None else None
-        )
-        pool = nested_pool or self._thread_pool
-        future = pool.submit(call_context.run, _run)
-        if nested_pool is not None:
-            nested_pool.shutdown(wait=False)
-        try:
-            return future.result(timeout=inner_timeout + 30)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                "call_with_policy_sync backstop fired after %.0fs for role=%s",
-                inner_timeout + 30, role,
-            )
-            raise ProviderTimeoutError(
-                f"call_with_policy_sync exceeded {inner_timeout + 30:.0f}s "
-                f"backstop for role={role}"
-            )
 
     # ------------------------------------------------------------------
     # Synchronous wrapper (for use from sync graph nodes)

@@ -610,11 +610,9 @@ def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(
             universe_context=UniverseContext(universe_dir=tmp_path / "universe-b", config={}),
         )
     with pytest.raises((PermissionError, ProviderAuthorityHeldError)):
-        session.call_with_policy_sync(
-            "writer",
-            "prompt",
-            "",
-            {"writer": {"provider": "claude-code"}},
+        session(
+            "prompt", "", role="writer",
+            policy={"preferred": {"provider": "claude-code"}},
         )
 
     assert raw_calls == []
@@ -727,7 +725,7 @@ def test_carrier_reservations_are_unique_ordered_and_armed_before_launch(
     assert [row["state"] for row in rows] == ["launch_started", "launch_started"]
 
 
-def test_background_carrier_actuals_are_finalized_by_the_real_router(
+def test_background_carrier_actuals_are_finalized_by_the_router(
     tmp_path: Path, monkeypatch
 ) -> None:
     """The carrier launch settles actual token and cost accounting."""
@@ -761,7 +759,7 @@ def test_background_carrier_actuals_are_finalized_by_the_real_router(
     fake = _CountingProvider()
     router = ProviderRouter({"codex": fake})
 
-    def through_real_router(prompt, system, *, role, config, **kwargs):
+    def through_router(prompt, system, *, role, config, **kwargs):
         # Exactly what production does: the session's authority-bearing context is
         # handed to the real router, which reserves, launches, and finalizes.
         resp = asyncio.run(
@@ -771,7 +769,7 @@ def test_background_carrier_actuals_are_finalized_by_the_real_router(
         return resp.text
 
     session = background_provider._BackgroundAssignedProviderSession(
-        tmp_path, task, _lease(), through_real_router
+        tmp_path, task, _lease(), through_router
     )
     assert session("first") == "routed-ok"
     assert fake.calls == 1

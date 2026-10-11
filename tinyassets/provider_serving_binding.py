@@ -389,17 +389,13 @@ def _resolve_serving_source(
         # host exception (byo-llm-connect-flow/design.md §"Claude requester-local
         # readiness") is owed and pending founder ratification — tracked in
         # STATUS.md; the code fails safe (held) until the host opts in.
-        from tinyassets.providers.router import FALLBACK_CHAINS
-
         opt_in = os.environ.get("TINYASSETS_ALLOW_CLAUDE_SERVING", "").strip().lower() in (
             "1",
             "true",
             "yes",
             "on",
         )
-        uncovered = [
-            role for role in _SERVING_ROLES if selected not in FALLBACK_CHAINS.get(role, ())
-        ]
+        uncovered = [role for role in _SERVING_ROLES if role != "writer"]
         if not opt_in:
             raise ServingProviderHeld(
                 "claude-code serving is held by default; set "

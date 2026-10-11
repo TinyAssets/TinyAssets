@@ -41,7 +41,6 @@ from domains.fantasy_daemon.phases.worldbuild import (
     _handle_synthesize_source,
     _identify_gaps,
     _maybe_generate_premise,
-    _mock_worldbuild_response,
     _read_direction_notes,
     _read_premise,
     _record_synthesis_failure,
@@ -51,11 +50,21 @@ from domains.fantasy_daemon.phases.worldbuild import (
     _write_canon_marker,
     worldbuild,
 )
+from tests.support.fantasy_model import answer as fantasy_answer
 from tinyassets.notes import add_note, update_note_status
 
 # -----------------------------------------------------------------------
 # worldbuild tests
 # -----------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def fantasy_model_transport(monkeypatch):
+    from domains.fantasy_daemon.phases import _provider_stub
+    from tinyassets.providers import model_call
+
+    monkeypatch.setattr(_provider_stub, "text_sync", fantasy_answer)
+    monkeypatch.setattr(model_call, "text_sync", fantasy_answer)
 
 
 class TestWorldbuild:
@@ -272,7 +281,7 @@ class TestWorldbuildAutoPremise:
         }
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "domains.fantasy_daemon.phases._provider_stub.text_sync",
             return_value="A story of Ryn navigating the shattered glass realm.",
         ):
             result = _maybe_generate_premise(state)
@@ -371,7 +380,7 @@ class TestWorldbuildAutoPremise:
         }
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "domains.fantasy_daemon.phases._provider_stub.text_sync",
             return_value="A tale of the glass realm.",
         ):
             result = worldbuild(state)
@@ -791,7 +800,7 @@ class TestWorldbuildCanonGeneration:
             return "should not happen"
 
         with patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "domains.fantasy_daemon.phases._provider_stub.text_sync",
             _fail_provider,
         ):
             result = _maybe_generate_premise(
@@ -947,7 +956,7 @@ class TestWorldbuildCanonGeneration:
             "tinyassets.ingestion.canon_io.resolve_within_canon",
             fake_resolve,
         ), patch.object(Path, "is_file", spy_is_file), patch(
-            "domains.fantasy_daemon.phases._provider_stub.call_provider",
+            "domains.fantasy_daemon.phases._provider_stub.text_sync",
             _fail_provider,
         ):
             _maybe_generate_premise(
@@ -1039,12 +1048,6 @@ class TestWorldbuildCanonGeneration:
         assert ("is_file", "magic_system.md") not in events
         assert ("resolve", "magic_system.md") in events
         new_el.assert_called_once()
-
-    def test_mock_worldbuild_response_has_content(self):
-        """Mock response should produce valid markdown."""
-        content = _mock_worldbuild_response("magic_system")
-        assert "# Magic System" in content
-        assert len(content) > 50
 
     def test_read_premise_from_file(self, tmp_path):
         """Should read premise from PROGRAM.md."""
@@ -1897,7 +1900,7 @@ class TestCanonReviewHelpers:
         """_evaluate_canon should return a list (possibly empty in mock mode)."""
         canon_files = {"chars.md": "# Characters\n\nContent."}
         premise = "A dark fantasy world."
-        # In test mode (_FORCE_MOCK=True), call_provider returns the
+        # In test mode (_FORCE_MOCK=True), text_sync returns the
         # fallback which is "[]", so _evaluate_canon returns []
         issues = _evaluate_canon(canon_files, premise)
         assert isinstance(issues, list)

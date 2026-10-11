@@ -93,7 +93,7 @@ def app(tmp_path, monkeypatch):
         raise AssertionError("app upload must not create authoring handles or sessions")
 
     monkeypatch.setattr(AuthoringStore, "put_file_handle", no_handles)
-    monkeypatch.setattr("tinyassets.providers.call.call_provider", no_handles)
+    monkeypatch.setattr("tinyassets.providers.model_call.text_sync", no_handles)
     return mw.AuthContextMiddleware(Starlette(routes=onboarding.onboarding_routes())), tmp_path
 
 

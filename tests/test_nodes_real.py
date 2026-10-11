@@ -1,15 +1,17 @@
 """Tests for the real Phase 1 node implementations (orient, plan, draft, commit).
 
-All tests run with _FORCE_MOCK=True (set in conftest.py) so no real API
-calls are made.  Tests verify the deterministic logic, state threading,
+Model calls use an explicit test transport. Tests verify the deterministic logic, state threading,
 and graceful fallback behavior of each node.
 """
 
 from __future__ import annotations
 
+import importlib
 import tempfile
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from domains.fantasy_daemon.phases.commit import commit
 from domains.fantasy_daemon.phases.draft import draft
@@ -21,10 +23,22 @@ from domains.fantasy_daemon.phases.plan import (
     _score_alternative,
     plan,
 )
+from tests.support.fantasy_model import answer as fantasy_answer
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def fantasy_model_transport(monkeypatch):
+    from domains.fantasy_daemon.phases import _provider_stub
+
+    monkeypatch.setattr(_provider_stub, "text_sync", fantasy_answer)
+    monkeypatch.setattr(importlib.import_module("domains.fantasy_daemon.phases.commit"),
+                        "text_sync", fantasy_answer)
+    monkeypatch.setattr(importlib.import_module("domains.fantasy_daemon.phases.consolidate"),
+                        "text_sync", fantasy_answer)
 
 
 def _base_state(tmp_story_db: str, **overrides: Any) -> dict[str, Any]:

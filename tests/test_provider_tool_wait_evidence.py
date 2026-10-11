@@ -252,7 +252,7 @@ def test_a_stored_failure_without_evidence_infers_no_pending_tool():
     ("Bearer secret", 10 ** 1000, {}),
     (True, math.nan, {}),
 ])
-async def test_real_router_held_compiler_and_run_read_keep_only_valid_evidence(
+async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
     monkeypatch, phase, age, expected,
 ):
     from tinyassets.api.runs import _run_error_detail

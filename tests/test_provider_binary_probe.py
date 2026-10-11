@@ -79,8 +79,8 @@ class TestStubSkipsWhenBinaryAbsent:
 
         stub = _reload_stub()
 
-        assert stub._real_router is not None
-        assert "claude-code" not in stub._real_router.available_providers
+        assert stub._router is not None
+        assert "claude-code" not in stub._router.available_providers
 
     def test_codex_not_registered_when_binary_absent(
         self, monkeypatch, reset_stub
@@ -90,8 +90,8 @@ class TestStubSkipsWhenBinaryAbsent:
 
         stub = _reload_stub()
 
-        assert stub._real_router is not None
-        assert "codex" not in stub._real_router.available_providers
+        assert stub._router is not None
+        assert "codex" not in stub._router.available_providers
 
     def test_claude_registered_when_binary_present(
         self, monkeypatch, reset_stub
@@ -101,5 +101,5 @@ class TestStubSkipsWhenBinaryAbsent:
 
         stub = _reload_stub()
 
-        assert stub._real_router is not None
-        assert "claude-code" in stub._real_router.available_providers
+        assert stub._router is not None
+        assert "claude-code" in stub._router.available_providers

@@ -10,11 +10,11 @@
       stored `llm_policy.difficulty_override` nodes on a production copy.
       Correct the design's deletion table with measured spans. Verify: the
       table matches `git grep` on the base commit.
-- [ ] 2.2 Receipt (D5): extend `ExecutionReceipt`, return it from
+- [x] 2.2 Receipt (D5): extend `ExecutionReceipt`, return it from
       `ProviderRouter.call`, and delete `WriterExecutionReceipt`. Verify:
       tests assert that requested, resolved and reported models are distinct,
       and that `unknown` usage never reads as zero. Net below 0.
-- [ ] 2.3 One call (D1, D7): add `model_call.call` and `call_sync` over
+- [x] 2.3 One call (D1, D7): add `model_call.call` and `call_sync` over
       `ProviderRouter.call`; move the 25 `call_provider` sites and the graph
       prompt path to it. Delete `call_provider`, `UniverseBoundProviderCall`,
       `_build_fallback_router`, `_call_router_with_retry`, `call_with_policy`,
@@ -45,9 +45,10 @@
       and the MCP-sampling reviewer. Verify: a raw POST to a model connection
       is refused with the fixed text before anything is sent, and `ta call
       model` returns text and a receipt. Net below 0.
-- [ ] 2.8 Supersede PR #4614: land its lost-message fix alone, then close the
+- [x] 2.8 Supersede PR #4614: land its lost-message fix alone, then close the
       rest with a pointer to this change. Verify: #4614 is closed, and the
-      lost-message fix is merged and deployed.
+      lost-message fix is merged and deployed. Completed before this build;
+      #4614 was already merged when C3 resumed.
 
 ## 3. Ship
 
