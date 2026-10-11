@@ -14,10 +14,11 @@ The nightly full-tier backup tars them offsite as they are. Browser sessions use
 a second, separate scheme: raw per-owner keys that are never backed up, so a
 restore signs everyone out.
 
-PR #4611 adds one master key, kept in the daemon's environment, with no escrow.
-That patches the known-bad shape instead of building the S6 shape that
-target-architecture already chose: the broker as sole key holder,
-per-command-center data keys and account KEKs, and escrow.
+PR #4611 (now closed) added one master key, kept in the daemon's environment,
+with no escrow. That patched the known-bad shape instead of building the S6
+shape that target-architecture already chose: the broker as sole key holder,
+per-command-center data keys and account KEKs, and a root that survives the
+host.
 
 The research in `design.md` compares Meta Muse, Grok, ChatGPT, Claude, Manus,
 Comet, Gemini and the integration platforms against OWASP and NIST. It
@@ -26,8 +27,8 @@ confirms the half TinyAssets already has right:
 - takeover is used for sign-in;
 - no passwords are stored.
 
-It also names the half it lacks: a key hierarchy, escrow, and encrypted
-backups.
+It also names the half it lacks: a key hierarchy, a durable root key, and
+encrypted backups.
 
 ## What changes
 
@@ -38,10 +39,15 @@ backups.
   command-center DEK, then AES-256-GCM records bound by AAD to account, center,
   record and generation. Browser custody joins the same hierarchy. The daemon,
   the loop and the boxes never hold keys or plaintext.
-- **The root key provider is a seam.** It is local by default, with a cloud
-  KMS as a founder option. The root is escrowed outside the host and outside
-  data backups. The DR drill must open a restored credential and a restored
-  session.
+- **The root key is an AWS KMS key behind a vendor-neutral seam** (founder,
+  2026-10-11).
+  - No app-held master key and no offline copy; KMS durability replaces
+    escrow.
+  - The droplet gets one least-privilege IAM credential, broker-only; the DR
+    drill uses a keyless GitHub OIDC role.
+  - If AWS is unreachable, uncached connections fail closed with a retryable
+    reason and an alarm. There is no plaintext fallback.
+  - The DR drill must open a restored credential and a restored session.
 - **Faults and lifecycle.**
   - An unopenable record means reconnect for that one connection; it never
     takes down the whole vault.
@@ -50,8 +56,10 @@ backups.
   - Erasure crypto-shreds the account KEK.
 - **One cutover migration.** The legacy reader, the vault-group path and the
   raw browser key volume are deleted in the same change.
-- **PR #4611 is superseded.** Its envelope fields, migration check and tests
-  are salvaged.
+- **Existing backups are rewritten at cutover**, canary first, so no readable
+  credential remains (founder, 2026-10-11).
+- **PR #4611 is closed.** Its envelope format, migration check and tests are
+  reused.
 
 ## Capabilities
 
@@ -73,8 +81,9 @@ backups.
   - `deploy/backup.sh`
   - `deploy/compose.yml` (the browser key volume is retired)
   - `dr-drill.yml`
-  - escrow install in the deploy workflow
+  - broker-only install of the KMS credential in the deploy workflow
+  - the founder's AWS checklist in `docs/host-actions.md`
 - **Authority:** floor-class (credential custody). One cross-family review
   round at implementation time.
-- **Founder decisions:** the root provider (local or KMS), the escrow holder,
-  and what to do with pre-cutover backups. See `design.md` section 6.
+- **Founder decisions:** all made on 2026-10-11 (`design.md` section 6).
+- **Cost:** AWS KMS, about $1–3 a month.

@@ -172,7 +172,7 @@ TinyAssets already matches the strong half of this pattern:
 - takeover handles sign-in;
 - there is no password storage.
 
-What it lacks is a key hierarchy, escrow, and encrypted backups.
+What it lacks is a key hierarchy, a durable root key, and encrypted backups.
 
 ## 3. Best practice
 
@@ -243,9 +243,10 @@ keys:
   spec already describes.
 
 Everything stored is then re-obtainable from its issuer. That changes what key
-loss means: **losing the vault key is a mass reconnect, not data loss**. It is
-still an outage, so escrow is required (D4), but it is not the catastrophe the
-#4611 description implies.
+loss means: **losing the root key is a mass reconnect, not data loss**. It is
+still an outage, which is why the root is a KMS key with AWS's durability and a
+deletion waiting period (D3, D4), but it is not the catastrophe the #4611
+description implies.
 
 Rejected: Muse's captured-password injection. It makes TinyAssets a password
 store, the highest-value target, and buys little over takeover plus a remembered
@@ -256,7 +257,7 @@ connection the owner owns. The secret stays in their manager.
 ### D2. One hierarchy, broker-only
 
 ```text
-root key (provider seam: local file | cloud KMS)       escrowed, never in a data backup
+root key (AWS KMS key behind the key seam)            never leaves KMS, never in a data backup
   -> account KEK (one per account, wrapped by root)    stored wrapped in the broker ledger
      -> command-center DEK (wrapped by account KEK)    stored wrapped beside the center's records
         -> sealed record: AES-256-GCM, AAD = account | command center | record id | generation
@@ -271,138 +272,309 @@ root key (provider seam: local file | cloud KMS)       escrowed, never in a data
 - **Blast radius:**
   - a leaked DEK exposes one command center;
   - a leaked account KEK exposes one account;
-  - a leaked root together with the data exposes everyone, which is why the
-    root sits in a separate place with separate escrow;
+  - the root never leaves KMS. A leaked broker credential lets an attacker
+    unwrap account KEKs only while that credential is active, and every call
+    is logged by CloudTrail. Deactivating the access key stops it at once;
   - a compromised running broker exposes everyone, as Muse authd or Anthropic's
     vault would. That is bounded by keeping the broker small, on its own uid,
     and free of tenant code.
 - **This is the D12 shape**, so per-account crypto-shredding and the
   survivor-rewrap order work unchanged.
 
-### D3. Root key provider: a seam, local by default
+### D3. Root key: AWS KMS behind a vendor-neutral seam (founder, 2026-10-11)
 
-| Option | Cost (2026) | What it buys | What it costs |
-|---|---|---|---|
-| **Local root** (broker-only file outside the data volume, escrowed) | $0 | No new vendor or dependency. Works with zero hosts online. | Root bytes exist on the host. Theft of the host disk plus the root volume exposes everyone. |
-| **AWS KMS**, one symmetric key | $1/key-month, plus $1/month for each of the first two rotations; $0.03 per 10k requests, 20k free (<https://aws.amazon.com/kms/pricing/>, 2026) | The root is never exportable; every unwrap is audit-logged; decrypt can be cut off in an incident. | DigitalOcean has no KMS (only a key/value Secrets Manager with no published encryption: <https://docs.digitalocean.com/reference/doctl/reference/secrets/>, 2026-10-09), so the droplet needs a long-lived AWS credential. A host compromise can still call unwrap while it holds that credential. A new vendor and spend line; the broker cannot start if AWS cannot be reached. |
-| **GCP Cloud KMS** | about $0.06 per software key version per month; $0.03 per 10k operations (<https://cloud.google.com/kms/pricing>, read via snippet) | Same as AWS | Same as AWS |
-| **OpenBao Transit** on a separate small VM | $0 licence, plus about $6+/month for a VM and the operations work | Open source and vendor-neutral | Another always-on service, which works against Direction 8, plus Shamir unseal operations |
-| HCP Vault, Infisical | about $450+/month (HCP, third-party figure); $20 per identity per month (Infisical) | Managed | Too expensive at this scale |
+**Decision.** The root is one AWS KMS symmetric key. It lives in the same AWS
+account as Device Farm, in `us-west-2`, the region nearest the sfo3 droplet and
+the one that checklist already uses. There is **no app-held master key and no
+offline copy**. The founder judged an offline copy to be a risk of its own, so
+KMS durability replaces escrow for the root. The key material never leaves
+KMS.
 
-**Recommendation:**
-- Ship the seam with the **local provider as the default now**. It costs
-  nothing and is vendor-neutral.
-- Usage is tiny. The broker unwraps account KEKs, caches them in memory, and
-  calls the root only on start and on a KEK miss. That keeps any KMS bill at
-  about $1 to $3 a month.
-- Moving to a KMS later rewrites only the account-KEK wraps (D2), so this
-  choice does not block the reshape. **This is a founder decision** (section 6).
+**The seam.**
+- The broker reaches the root only through `RootKeyProvider`, which has three
+  operations:
+  - `generate(context)`, which creates a new account KEK;
+  - `unwrap(blob, context)`;
+  - `wrap(kek, context)`, which rewraps under the current key material.
+- The AWS adapter is one module behind that interface. No other code names
+  AWS. The sealed-record and wrapped-KEK formats carry a provider id and a key
+  reference, so a later move to GCP KMS or OpenBao Transit rewrites only the
+  account-KEK wraps (`unwrap` with the old provider, `wrap` with the new one).
+  No record is resealed.
+- No local provider ships in production. Tests use an in-memory fake that is
+  refused when `TINYASSETS_ENV=production`, so there is no second default
+  (Fact 8).
 
-### D4. Escrow and restore
+**Calls.**
+- **`GenerateDataKey` (AES_256)** creates an account KEK. The broker keeps the
+  `CiphertextBlob` in its ledger.
+- **`Decrypt`** unwraps a KEK when the broker's cache misses.
+- **`Encrypt`** rewraps a KEK under the current key material after a rotation.
+- **Encryption context.** Every call carries
+  `{"ta_purpose": "account-kek", "ta_account": "<opaque account digest>"}`.
+  AWS binds the context as AAD, so a wrapped KEK replayed under another account
+  fails. CloudTrail logs the context in plaintext, so it holds only an opaque
+  digest, never an email or a name
+  (<https://docs.aws.amazon.com/kms/latest/developerguide/encrypt_context.html>,
+  undated).
+- **Volume.** The broker caches unwrapped KEKs in memory only, so it calls KMS
+  on start, on a cache miss and on rotation. That is thousands of requests a
+  month, inside the 20k free tier.
 
-- The root goes into the escrow already proposed in the 2026-10-02 note: GitHub
-  Actions secrets, CI-readable, plus an offline founder copy.
-- Data backups carry only sealed records and wrapped keys. That also closes the
-  cleartext-in-backups exposure for every backup taken after the cutover.
-- The DR drill restores with the escrowed root and **opens one restored
-  credential and one browser session**, so missing escrow fails the drill. It
-  no longer passes green.
-- User-held keys (passkey PRF and the like) are rejected as the default. A user
-  who is offline could not run 24/7 automations (Direction 8), and losing the
-  key would lose the credentials. The only vendor exploring user-held keys is
-  Muse (Confidential VM, unreleased). That remains a possible later per-connection
-  opt-in.
+**Cost.** $1 per key-month, plus $1 a month for each of the first two automatic
+rotations. Requests cost $0.03 per 10k beyond 20k free a month
+(<https://aws.amazon.com/kms/pricing/>, 2026). That comes to about **$1–3 a
+month**.
 
-### D5. Rotation
+**The droplet's credential.**
+- One IAM user, `tinyassets-vault-broker`, with no console access.
+- One access key, created as "Application running outside AWS". DigitalOcean
+  has no instance identity that AWS trusts, so a long-lived key is the only
+  option.
+- The policy allows only the three actions, on the single key, and only with
+  the vault's encryption context:
 
-- **Root and KEK rotation** rewrap the layer below. This is cheap, and no
-  record is re-encrypted.
-- **DEK rotation** reseals one command center's records. It runs lazily on
-  write and by an explicit sweep.
-- Every layer records its key id, and a retired key is destroyed only when
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VaultRootKeyAccountKeksOnly",
+      "Effect": "Allow",
+      "Action": ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"],
+      "Resource": "arn:aws:kms:us-west-2:ACCOUNT_ID:key/KEY_ID",
+      "Condition": {
+        "StringEquals": {"kms:EncryptionContext:ta_purpose": "account-kek"},
+        "Null": {"kms:EncryptionContext:ta_account": "false"}
+      }
+    }
+  ]
+}
+```
+
+This policy deliberately grants nothing else:
+- no `kms:ReEncrypt*`, `CreateGrant`, `DescribeKey`, `ScheduleKeyDeletion`,
+  `DisableKey` or `PutKeyPolicy`;
+- no other key and no other AWS service.
+
+The key policy stays at the AWS default. The account root principal enables IAM
+policies, and the founder's administrator identity alone administers the key.
+
+**Where the credential lives.**
+- **Names:**
+  - `TINYASSETS_VAULT_KMS_KEY_ARN`
+  - `TINYASSETS_VAULT_AWS_ACCESS_KEY_ID`
+  - `TINYASSETS_VAULT_AWS_SECRET_ACCESS_KEY`
+  - The standard `AWS_*` names are avoided on purpose, so no other SDK in the
+    container picks them up.
+- **Path to the host:** the founder puts them in the GitHub `production`
+  environment, restricted to main. The deploy installs them into one
+  broker-only file, mode `0400` and owned by the broker uid, outside the data
+  volume (the #4260 set-once precedent).
+- **Who can read them:** the names join `DAEMON_FORBIDDEN_ENV` and the
+  engine-child strip list. The deploy's `daemon_env_scoped` check already
+  rolls back a daemon process that holds a forbidden name.
+- **Recovery:** the credential can be regenerated at any time, unlike the key,
+  so it needs no escrow.
+- **Optional hardening:** an `aws:SourceIp` condition pinned to a reserved IP.
+  It is left out by default because a DR standby on another host would need a
+  policy edit first.
+
+**Disaster-recovery principal.**
+- The DR drill (D4) must open a restored credential from CI, so it gets a
+  separate keyless principal: a role that GitHub OIDC assumes.
+- **Trust:** `token.actions.githubusercontent.com`, audience `sts.amazonaws.com`,
+  subject `repo:TinyAssets/TinyAssets:environment:dr-drill`.
+- **Permissions:** only `kms:Decrypt` on the same key, with the same context
+  condition.
+- No long-lived secret exists for the drill.
+
+**Rotation.**
+- **Key material.** Enable automatic yearly rotation on the KMS key. `Decrypt`
+  keeps opening blobs made under older material. A sweep rewraps account KEKs
+  under the current material (`Decrypt` then `Encrypt`), so old material is
+  never needed in practice.
+- **Access key**, yearly or on suspicion:
+  1. Create a second access key.
+  2. Update the GitHub secret and redeploy, which reinstalls the broker file.
+  3. Confirm the broker's KMS health probe is green.
+  4. Deactivate the old key.
+  5. Delete it after 24 hours with no CloudTrail use.
+- **KEKs and DEKs:** as in D5.
+
+**Revocation and kill switches**, from mildest to strongest:
+1. **Deactivate the access key.** Every new unwrap fails at once. Cached KEKs
+   live until the broker restarts, so restart the broker as well. This is
+   reversible.
+2. **Disable the KMS key.** This stops every principal, the drill included.
+   It is reversible.
+3. **Schedule key deletion.** Every credential in every copy becomes
+   unreadable after the waiting period, which is a forced platform-wide
+   reconnect. Leave the waiting period at the 30-day maximum, so a mistaken
+   deletion can be cancelled.
+
+### D4. Durability, outage and restore
+
+**Durability replaces escrow.**
+- The root never exists outside KMS, so there is no copy to steal or lose.
+- What remains is AWS account loss or deletion of the key. Root MFA, the
+  administrator-only key policy and the 30-day deletion window guard against
+  both.
+- If it still happens, the result is D1's mass reconnect. Nothing
+  irreplaceable is lost, because every stored credential can be re-issued by
+  its issuer.
+- The 2026-10-02 escrow note's "broker vault key / account KEKs" row resolves
+  to "AWS KMS, no escrow". Its escrow set otherwise stands.
+
+**AWS unreachable, or the credential refused: fail closed, per connection.**
+- KEKs already cached keep working, so live connections continue through a
+  short outage.
+- A cache miss, or a broker restart during the outage, refuses only the
+  affected connections with `key_service_unavailable`. That refusal is
+  retryable and is **not** `reconnect_required`: the credential is fine, so
+  the owner is not asked to reconnect.
+- The broker's KMS health probe raises the existing uptime alarm after
+  sustained failure.
+- Nothing ever falls back to plaintext, a local key or a newly generated key.
+
+**Backups and the drill.**
+- Data backups carry only sealed records and wrapped KEKs, so a stolen
+  backup is useless without KMS access.
+- The DR drill restores from off-region copies with no production secrets. It
+  assumes the OIDC role, then opens **one restored credential and one browser
+  session**. A failure fails the drill.
+
+**User-held keys stay rejected as the default.** They break 24/7 automation
+while the owner is offline (Direction 8). Muse's unreleased Confidential VM is
+the only precedent.
+
+### D5. Rotation of KEKs and DEKs
+
+- **Account KEK rotation** rewraps that account's DEKs.
+- **DEK rotation** reseals one command center's records, lazily on write and
+  through an explicit sweep.
+- Every layer records its key id. A retired key is destroyed only when
   nothing names it.
 - **Upstream rotation** is unchanged: OAuth refresh-token rotation is
   single-flight in `credential_refresh.py`.
-- Schedule: rotate the root yearly or on suspicion. DEKs follow NIST's
-  roughly 2-year use period.
+- **Schedule:** DEKs follow NIST's roughly 2-year use period, and KMS material
+  rotates yearly (D3).
 
 ### D6. Unopenable means reconnect, per credential
 
-A record that will not open fails loudly for that connection only, with a named
-`reconnect_required` reason, and raises the existing connect ask (Fact 8). The
-daemon and every other connection keep working. This replaces the #4611
-behaviour, where a missing key makes every vault read raise.
+- A record that fails authentication, or that names a key that no longer
+  exists, fails loudly for that connection only with `reconnect_required`
+  (Fact 8). The existing connect ask is raised for it.
+- An unreachable key service is the different, retryable
+  `key_service_unavailable` (D4).
+- The daemon and every other connection keep working.
 
 ### D7. Revocation and erasure
 
-- **Disconnect** first calls the issuer's RFC 7009 revocation endpoint when
-  discovery advertises one, then deletes the record. When the issuer offers
-  none, the owner is told the grant stays valid at the issuer until it expires.
-  This goes beyond the industry norm (Anthropic and Pipedream do not revoke).
+- **Disconnect** calls the issuer's RFC 7009 revocation endpoint when
+  discovery advertises one, then deletes the record. When the issuer offers no
+  revocation, the owner is told the grant stays valid there until it expires.
+  Anthropic and Pipedream do not revoke at all.
 - **Browser disconnect** deletes the sealed session.
-- **Account erasure** destroys the account KEK after the D12 order, so old
-  backups of that owner's credentials become unreadable.
-- Escrow holds only the root, never account KEKs, so shredding works.
-- **Incident kill switch:** destroying the root and rotating escrow forces a
-  platform-wide reconnect. That is the honest worst-case lever, because with no
-  shared platform apps there is no single client to revoke.
+- **Account erasure** destroys the account's wrapped KEK in the ledger after
+  the D12 order. Backups taken after the cutover hold that same wrapped KEK,
+  so the D12 tombstone list must refuse to re-import an erased account's KEK
+  on restore. Shredding is complete once backup retention has passed.
 
-### D8. Migration: one cutover (Direction 5)
+### D8. Migration: one cutover (Direction 5), including the backups
 
-The cutover runs in a short maintenance window, after a verified full backup:
-1. The broker generates the root, the account KEKs and the DEKs.
-2. It seals every legacy record and every browser key's state.
-3. It opens each sealed record and compares it with the legacy bytes.
-4. Only then does it remove the legacy files.
+The cutover runs in one maintenance window, after the KMS key, the IAM
+credential and the OIDC role exist, and the broker's KMS health probe is green.
+
+**Live data:**
+1. Take a verified full backup in the legacy format, and keep it local to the
+   window.
+2. The broker generates account KEKs through KMS and creates the DEKs.
+3. It seals every legacy record and every raw browser key's state.
+4. It opens each sealed record and compares it with the legacy bytes. Any
+   mismatch stops the cutover with nothing removed.
+5. It removes the legacy files.
 
 The same change deletes:
-- the legacy JSON reader and writer;
+- the legacy reader and writer;
 - the vault-group read path;
-- the separate browser key volume.
+- the browser key volume.
 
-There is no dual-read period and no feature flag.
+There is no dual read and no flag.
 
-**Pre-cutover backups still hold cleartext** until retention prunes them, up to
-six months for monthly archives. Rewriting retained archives destroys backup
-history, so that is a founder decision (section 6).
+**Existing backups: rewrite them (founder, 2026-10-11).** This step is
+irreversible, so the order and checks are fixed.
 
-## 5. PR #4611: replace, salvage parts
+1. **Inventory.** List every place a legacy vault or raw key might be:
+   - every retained archive in every tier at `BACKUP_DEST`;
+   - noncurrent object versions, if bucket versioning is on;
+   - every GitHub release asset in the backups repo;
+   - the local snapshot copies `backup.sh` keeps on the droplet.
 
-#4611 (`cursor/vault-envelope-encryption-fd9b`, draft) seals each vault file
-with a random per-write data key, wrapped by `TINYASSETS_VAULT_MASTER_KEY`.
+   Record each archive's name and sha256 in a rewrite manifest.
+2. **Fresh baseline.** Take a new backup in the sealed format. Verify it with a
+   restore that opens a credential, as in step 4, before any old archive is
+   touched.
+3. **Canary.** Rewrite the newest legacy archive into a new object with a new
+   name, and keep the original:
+   - every `.credential-vault.json` is resealed in place by the same migration
+     code, so restore value is kept;
+   - every raw browser key and its state is resealed;
+   - records of accounts erased since the archive was taken are **stripped**,
+     not resealed, so a restore cannot bring them back;
+   - anything that fails to seal is stripped and listed in the manifest.
+4. **Prove the canary.** Restore the rewritten archive into a fresh
+   environment through the DR drill path:
+   - it must open one credential and one browser session;
+   - a scan of the extracted tree must find no file named
+     `.credential-vault.json`, no `browser-vault/*.key`, and none of a sample
+     of known plaintext secret values. The scan runs inside the broker and
+     never prints values.
+5. **Then the rest, one archive at a time:**
+   1. Rewrite to a new object.
+   2. Verify its sha256, that it extracts, and the scan.
+   3. Only then delete the original, including its noncurrent versions and its
+      GitHub asset.
+   4. Write the old and new sha256 to the manifest.
+6. **Abort.** Any failure stops the sweep:
+   - originals that were not yet replaced stay untouched;
+   - already-replaced archives stay replaced, because each was verified before
+     its original was deleted;
+   - the manifest says exactly where the sweep stopped, and re-running resumes
+     from there.
 
-What is wrong with its shape:
-1. **The master key lives in the daemon's environment, and the broker asks the
-   daemon to open records (`broker/vault_open.py`).** That inverts S6, where
-   the broker is the sole key holder. The daemon is the process that takes
-   tenant input, and its environment is readable by same-uid engine children
-   (concerns `2026-10-02-platform-secrets-in-daemon-env.md` and
-   `2026-10-04-engine-mcp-shares-daemon-uid`).
-2. **One global key, no account KEK.** Per-account crypto-shredding and the D12
-   survivor rewrap cannot work, because a backup's ciphertext is opened by the
-   global key forever.
-3. **No escrow, and a missing key fails every vault.** The fault is all-or-
-   nothing instead of per credential (D6), and the DR drill cannot prove it.
-4. **The AAD binds only the directory name**, not the account, the record or
-   its generation.
-5. **It leaves browser custody on a second scheme** and keeps the daemon on the
-   read and write path. It is a patch to the known-bad shape.
+   If the canary fails, nothing has been deleted.
+7. **Close-out.** A final scan of the whole destination confirms that no
+   legacy name remains. The manifest is the receipt, and it goes in the PR's
+   verification evidence.
 
-Worth salvaging into the S6 implementation:
-- the versioned envelope fields;
-- compare-before-replace migration with an on-disk byte check;
-- its tamper, cross-center, rotation and idempotence tests.
+## 5. PR #4611: closed; reuse its parts
 
-**Action:** close #4611 as superseded by this change. Do **not** set
-`TINYASSETS_VAULT_MASTER_KEY` on the host.
+#4611 is closed. Its head `dbe7a4675fc` is still on
+`cursor/vault-envelope-encryption-fd9b`. Its shape was replaced because:
+- the master key sat in the daemon's environment, and the broker asked the
+  daemon to open records;
+- one global key meant no per-account shred;
+- it had no escrow, and a missing key failed every vault.
 
-## 6. Founder decisions
+The S6 implementation reuses three parts, adapted:
+1. **The envelope format** in `tinyassets/vault_envelope.py`: the versioned
+   `format`, `version`, `key_id`, `nonce` and `ciphertext` fields. Here it is
+   extended with the provider id, the account and command center, and the
+   record generation in the AAD.
+2. **The migration check:** decrypt and compare before replacing, and replace
+   only while the on-disk bytes are still the bytes that were read. A second
+   load never rewrites.
+3. **The tests** in `tests/test_vault_envelope.py`: migration, idempotence,
+   tamper, missing key, rotation and cross-center copy. They are re-pointed at
+   the broker key service with the in-memory provider fake.
 
-1. **Root provider.** Local root plus escrow ($0, recommended now), or a cloud
-   KMS (AWS about $1 to $3 a month, GCP under $1 a month). A KMS means a new
-   vendor and a long-lived cloud credential on the droplet.
-2. **Escrow holder for the root.** GitHub Actions secrets plus an offline copy,
-   as recommended in the 2026-10-02 note, or a paid secrets manager.
-3. **Pre-cutover backups that hold cleartext credentials.** Either rewrite the
-   retained archives without vault files (irreversible), or let them age out
-   over up to six months while access to the bucket stays restricted.
+## 6. Founder decisions (all made 2026-10-11)
+
+1. **Root:** AWS KMS in the Device Farm account (`us-west-2`), behind the seam.
+   No app-held key and no offline copy. One least-privilege IAM user for the
+   droplet, plus a keyless OIDC role for the DR drill. The setup steps are in
+   `docs/host-actions.md`, beside Device Farm.
+2. **Existing backups:** rewritten at cutover, following the order in D8.
+3. **#4611:** closed. Its envelope format, migration check and tests are
+   reused.

@@ -170,6 +170,7 @@ regrowth. **Removed by** names the item in the convergence plan
 | S25 | Two public doors (Fact 11; founder 2026-10-11) | `https://tinyassets.io/mcp` for MCP clients and `/api/v1` for keyed programmatic agents, same handles and authority; `/app` for the app | duplicate REST PR #4589 closed; #4602 is the one REST PR | converged once #4602 lands | `public-routes` (planned): exactly `/mcp`, `/api/v1`, `/app` | — |
 | S26 | Exactly two account limits (seats, storage) | `usage_policy.py` | five open limit changes; cleanup #4134 (1/3), #4136 (2/3), no 3/3 | drifted | `limit-names` (planned) | C2 fold, C7 |
 | S27 | Zero hosts online, recoverable (Dir 8, ADR-012) | off-region backup, key escrow, standby | Litestream deferred (#4284); escrow and backup PRs #4279, #4283, #4332, #4333 closed | unbuilt | DR drill workflow | C6 |
+| S28 | One credential custody (ADR-012 D12/S6, ADR-007) | broker-only key hierarchy: AWS KMS root behind a key seam -> account KEK -> command-center DEK -> sealed records and browser sessions; delegations only, never site passwords | cleartext `.credential-vault.json` (`credential_vault.py` 2575) read by the broker through the vault group and tarred into offsite backups; separate raw per-owner browser keys (`broker/browser_vault.py`) | drifted | `credential-custody` (planned) | `credential-vault-reshape` |
 
 Findings against a row go in [`docs/concerns/`](concerns/); a new shape is a
 new row with its guard in the same PR.

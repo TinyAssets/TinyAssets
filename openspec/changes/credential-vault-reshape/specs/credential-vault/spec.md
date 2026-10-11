@@ -61,35 +61,63 @@ broker and SHALL NOT read sealed records.
   inspected
 - **THEN** no root key, KEK, DEK or credential plaintext is present
 
-### Requirement: The root key provider is a seam
+### Requirement: The root key is a cloud KMS key behind a seam
 
-The root key SHALL be reached only through one provider interface with two
-operations, wrap and unwrap of account KEKs. The sealed record and wrapped-key
-formats SHALL NOT depend on which provider is installed. Two providers SHALL be
-supported: a local root held in a broker-only key file outside the backed-up
-data volume, and a cloud KMS key that never leaves the KMS. A missing or
-unreachable provider SHALL fail closed: nothing is written as plaintext and no
-ephemeral key is generated.
+The root key SHALL be a symmetric cloud KMS key, reached only through one
+provider interface (generate, unwrap and wrap of account KEKs) whose sealed and
+wrapped formats record the provider and key reference, so changing providers
+rewrites only account-KEK wraps. The production provider SHALL be AWS KMS. No
+application-held root key and no offline copy of the root SHALL exist; a test
+provider SHALL be refused in production. Every KMS call SHALL carry an
+encryption context naming the purpose and an opaque account digest, and no
+secret or personal identifier.
+
+The production credential SHALL be one IAM principal allowed only
+`kms:GenerateDataKey`, `kms:Decrypt` and `kms:Encrypt` on that one key with the
+vault's encryption context, delivered only to the broker uid and forbidden in
+the daemon's and engine children's environments. The DR drill SHALL use a
+separate keyless principal allowed only `kms:Decrypt` on that key.
 
 #### Scenario: The provider changes
 
-- **WHEN** the founder moves the root from the local provider to a cloud KMS
+- **WHEN** the root provider is changed
 - **THEN** only the account KEK wraps are rewritten and every sealed record
   still opens
 
-### Requirement: The root key is escrowed and restore is proven
+#### Scenario: The daemon holds the KMS credential
 
-The root key, or the KMS key's identifier and access, SHALL be escrowed outside
-the production host and outside every data backup, under the escrow holder
-recorded by the vault-key escrow design. Data backups SHALL carry only sealed
-records and wrapped keys. The DR drill SHALL restore from off-region copies
-with the escrowed root and open one restored credential record; a failure to
-open SHALL fail the drill.
+- **WHEN** a deploy candidate's daemon process environment names the vault's
+  KMS credential
+- **THEN** the deploy's environment scope check rolls the candidate back
 
-#### Scenario: The drill restores without the root
+### Requirement: The key service fails closed per connection
 
-- **WHEN** a restore runs with data backups but no escrowed root
-- **THEN** the drill fails and names the missing root key
+The broker SHALL cache unwrapped account KEKs in memory only. When the KMS is
+unreachable or refuses the credential, a connection whose KEK is not cached
+SHALL be refused with a retryable `key_service_unavailable` reason, distinct
+from `reconnect_required`, and SHALL NOT raise a reconnect ask. Sustained
+failure SHALL raise the uptime alarm. The broker SHALL NOT fall back to
+plaintext, a local key or a newly generated key.
+
+#### Scenario: AWS is unreachable
+
+- **WHEN** KMS calls fail and an owner's KEK is not cached
+- **THEN** that owner's credentialed calls are refused with
+  `key_service_unavailable`, no reconnect ask is raised, the alarm fires after
+  the threshold, and calls succeed again once KMS answers
+
+### Requirement: Restore is proven with the KMS root
+
+Data backups SHALL carry only sealed records and wrapped keys. The DR drill
+SHALL restore from off-region copies with no production secret, open one
+restored credential and one restored browser session through its keyless KMS
+principal, and fail when either does not open.
+
+#### Scenario: The drill cannot reach the key
+
+- **WHEN** a restore runs and the drill principal cannot decrypt the
+  restored account KEK
+- **THEN** the drill fails and names the key service
 
 ### Requirement: An unopenable credential asks for reconnect
 
@@ -124,9 +152,10 @@ or wrap names it.
 Disconnecting a connection SHALL call the issuer's token revocation endpoint
 (RFC 7009) when the issuer advertises one, then delete the sealed record; the
 owner SHALL be told when the issuer offered no revocation. Account erasure
-SHALL destroy the account KEK after the deletion order in target-architecture
-D12, so every backup copy of that owner's credentials becomes unreadable
-without touching other owners.
+SHALL destroy the account's wrapped KEK after the deletion order in
+target-architecture D12, and restore SHALL refuse to re-import an erased
+account's KEK from a backup, so that owner's credentials cannot be opened
+again without touching other owners.
 
 #### Scenario: The owner disconnects an OAuth connection
 
@@ -138,8 +167,8 @@ without touching other owners.
 #### Scenario: An account is erased
 
 - **WHEN** account erasure completes
-- **THEN** that account's KEK is destroyed and no backup of its credentials can
-  be opened, while other accounts' credentials still open
+- **THEN** that account's wrapped KEK is destroyed, a restore from an older
+  backup does not re-import it, and other accounts' credentials still open
 
 ### Requirement: One cutover from the legacy vault
 
@@ -155,6 +184,33 @@ change, so the sealed store is the only path.
 - **WHEN** a sealed record does not match its legacy bytes
 - **THEN** the migration stops before removing any legacy file and reports the
   command center, with no record written as plaintext elsewhere
+
+### Requirement: Existing backups are rewritten so no readable credential remains
+
+The cutover SHALL rewrite every retained backup copy so it holds no legacy
+vault file and no raw browser key. That covers every tier at the backup
+destination including noncurrent object versions, every backup release asset,
+and local snapshot copies: legacy records are resealed under the hierarchy, and records of
+accounts erased since are stripped. The sweep SHALL first take and verify a
+sealed-format backup, then rewrite the newest legacy archive as a canary under a
+new name and prove a restore of it opens a credential and a browser session and
+passes a scan for legacy files and known plaintext values, before touching any
+other archive. Each further archive SHALL be written, verified and scanned
+before its original is deleted. Any failure SHALL stop the sweep with every
+not-yet-replaced original intact, and a manifest of old and new digests SHALL
+record where it stopped and serve as the receipt.
+
+#### Scenario: The canary restore fails
+
+- **WHEN** the rewritten canary archive does not restore or a credential in it
+  does not open
+- **THEN** the sweep stops and no original archive has been deleted
+
+#### Scenario: A rewrite fails midway
+
+- **WHEN** verification of the rewrite of one archive fails
+- **THEN** its original and every later original remain, earlier verified
+  replacements remain, and re-running resumes from the manifest
 
 ## REMOVED Requirements
 
