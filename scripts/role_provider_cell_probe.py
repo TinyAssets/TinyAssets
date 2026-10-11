@@ -121,6 +121,9 @@ with open(os.path.join(os.environ['CODEX_HOME'], 'own-sentinel')) as f:
     own_snapshot = f.read()
 assert os.environ['HOME'] == '/provider-home'
 assert os.stat(os.environ['HOME']).st_uid == os.getuid()
+home_fs = os.statvfs(os.environ['HOME'])
+home_bytes = home_fs.f_blocks * home_fs.f_frsize
+assert home_bytes == 256 * 1024 * 1024, home_bytes
 assert os.stat(os.environ['CODEX_HOME']).st_uid == os.getuid()
 assert not os.path.realpath(os.environ['CODEX_HOME']).startswith('/tmp/')
 with open('/tmp/metadata-positive-control', 'w') as f:
@@ -155,7 +158,7 @@ fds = sorted(int(n) for n in os.listdir('/proc/self/fd') if n.isdigit()
 print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'], 16),
     nnp=int(fields['NoNewPrivs']), fds=fds, opened=opened, direct=direct, engine=engine,
     env_secret='DAEMON_ONLY_SECRET' in os.environ, pids=len(pids), proc_secret=seen_secret,
-    own_snapshot=own_snapshot)))
+    own_snapshot=own_snapshot, home_bytes=home_bytes)))
 """
 PIPES = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
              stderr=asyncio.subprocess.PIPE)

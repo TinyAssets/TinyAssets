@@ -22,6 +22,9 @@ PROPOSAL = {"action": "Fix the stale documentation", "why": "The example fails."
 def owner(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     root = _make_universe(tmp_path, "u-test", admin="owner")
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(tmp_path, founder_sub="owner", universe_id="u-test")
     _login("owner")
     monkeypatch.setattr(server, "_ACTOR_ID", "owner")
     monkeypatch.setattr(server, "_GRAPH_ID", "u-test")

@@ -146,7 +146,8 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
     elif provider:
         # Private mount per launch, owned by this cell's mapped owner identity.
         # CLI homes must not resolve underneath the OS temporary directory.
-        argv.extend(['--perms', '0700', '--tmpfs', '/provider-home'])
+        argv.extend(['--perms', '0700', '--size', str(256 * 1024 * 1024),
+                     '--tmpfs', '/provider-home'])
         # Fixed immutable shipped CLI trees only; node itself lives under /usr.
         for path in sorted(glob.glob('/opt/*-install')):
             if os.path.isdir(path) and not os.path.islink(path):

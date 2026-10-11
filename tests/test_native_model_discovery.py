@@ -219,7 +219,9 @@ def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp
         )) == expected
     environment.assert_called_once_with("codex", universe_dir=tmp_path,
                                         credential_snapshot_dir=snapshot)
-    assert reader.call_args.args == (["executor", "app-server"],)
+    # Discovery runs only in the owner OS cell; its boundary replaces the inner sandbox.
+    assert reader.call_args.args == (
+        ["executor", "app-server", "-c", 'sandbox_mode="danger-full-access"'],)
     assert reader.call_args.kwargs["env"] == {"OWNED": "yes"}
     assert reader.call_args.kwargs["cwd"] == str(snapshot)
     assert reader.call_args.kwargs["protocol"] is PROTOCOL

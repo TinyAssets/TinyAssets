@@ -126,3 +126,11 @@ The platform SHALL expose failed-turn effect evidence to the next authorized age
 #### Scenario: Overlapping admitted turns
 - **WHEN** another request is admitted between a turn's request and its terminal result
 - **THEN** that turn's learning completion does not settle the intervening request
+
+### Requirement: Reconnected sends are admitted once
+Within an authenticated owner's command center and conversation, a nonempty client send ID SHALL admit at most one original message. Retrying that ID SHALL neither announce nor dispatch it again; conflicting text SHALL be refused. A fresh ID or no ID is a new send, even with identical text. The ID grants no authority. Terminal-write retries SHALL not duplicate the original or terminal row.
+
+#### Scenario: Retry after a lost response or process death
+- **WHEN** the same authenticated conversation retries an already committed send ID
+- **THEN** the platform reports that the original message was saved without replaying uncertain work
+- **AND** a failed terminal write does not revoke the original message or its announcement

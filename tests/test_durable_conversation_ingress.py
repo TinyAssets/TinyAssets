@@ -84,6 +84,86 @@ def test_ingress_write_failure_prevents_dispatch(tmp_path, monkeypatch):
     assert response['history_saved'] is False
 
 
+@pytest.mark.parametrize('ending', ['reply', 'failure', 'crash', 'terminal_lost'])
+def test_reconnected_send_is_stored_announced_and_dispatched_once(tmp_path, monkeypatch, ending):
+    from tinyassets import automation_events, universe_intelligence, universe_server
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    announced, dispatched = [], []
+    monkeypatch.setattr(automation_events, 'emit_owner_message',
+                        lambda *a, **kw: announced.append(kw['principal_id']))
+
+    def provider(*args, **kwargs):
+        dispatched.append(args)
+        if ending == 'crash':
+            raise SystemExit('connection lost')
+        if ending != 'reply':
+            raise RuntimeError('provider failed')
+        return 'done'
+
+    monkeypatch.setattr(universe_intelligence, 'converse', provider)
+    consumed = []
+    monkeypatch.setattr(universe_server, '_with_carryover',
+                        lambda root, session, text: consumed.append('carryover') or text)
+    monkeypatch.setattr(universe_server, '_with_answered_requests',
+                        lambda history, uid, owner: consumed.append('answers') or history)
+    if ending == 'terminal_lost':
+        monkeypatch.setattr(store, 'record_failure', lambda *a, **kw: False)
+    args = dict(message='do this once', graph_id='u-x', client_send_id='send-once')
+    if ending == 'crash':
+        with pytest.raises(SystemExit):
+            universe_server.converse(**args)
+    else:
+        universe_server.converse(**args)
+    for _ in range(2):
+        assert json.loads(universe_server.converse(**args)) == {
+            'already_received': True, 'history_saved': True, 'universe_id': 'u-x'}
+    conflict = json.loads(universe_server.converse(**{**args, 'message': 'different work'}))
+    assert conflict['error'] == 'client_send_id_conflict'
+    assert len(announced) == len(dispatched) == 1
+    assert consumed == ['carryover', 'answers']
+    rows, _ = store.read_history_page(tmp_path / 'u-x', 'principal:founder-1', limit=30)
+    assert [(m.speaker, m.text) for m in rows if m.speaker == 'founder'] == [
+        ('founder', 'do this once')]
+
+
+def test_send_admission_serializes_retries_and_scopes_identity(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def admit(index):
+        return store.record_turn(tmp_path, 'principal:alice', 'founder', 'same text',
+                                 client_send_id='send-a', ext_id=f'turn:{index}')
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(admit, range(8)))
+    assert sum(bool(result) for result in results) == 1
+    assert store.record_turn(tmp_path, 'principal:bob', 'founder', 'same text',
+                             client_send_id='send-a')
+    assert store.record_turn(tmp_path, 'principal:alice', 'founder', 'same text',
+                             client_send_id='send-b')
+    assert len(store.load_recent(tmp_path, 'principal:alice')) == 2
+    assert len(store.load_recent(tmp_path, 'principal:bob')) == 1
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_terminal_retry_never_duplicates_an_admitted_message(tmp_path, failed):
+    founder = store.record_turn(tmp_path, 'owner', 'founder', 'original', client_send_id='send-a')
+
+    def finish():
+        if failed:
+            return store.record_failure(tmp_path, 'owner', 'original', 'platform_fault',
+                                        founder_turn=founder)
+        return store.record_exchange_turns(tmp_path, 'owner', 'original', 'reply',
+                                           founder_turn=founder)
+
+    assert finish()
+    assert not finish()
+    rows, _ = store.read_history_page(tmp_path, 'owner', limit=30)
+    assert len(rows) == 2
+    assert rows[0].speaker == 'founder' and rows[0].text == 'original'
+    assert rows[1].speaker == ('platform' if failed else 'universe')
+
+
 def test_identical_messages_have_distinct_rows_and_terminal_links(tmp_path):
     first = store.record_turn(tmp_path, 'a', 'founder', 'again')
     second = store.record_turn(tmp_path, 'a', 'founder', 'again')

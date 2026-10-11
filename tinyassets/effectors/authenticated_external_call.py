@@ -1306,13 +1306,6 @@ def _run(
             connection_id=connection_id,
             owner_user_id=getattr(grant, "owner_user_id", ""),
         )
-        from tinyassets.effectors.connection_inference import request as accounted_request
-
-        def send():
-            return accounted_request(proxy, verb, wire_request, root=universe_dir,
-                owner=grant.owner_user_id, grant_id=grant_id, connection_id=connection_id,
-                run_id=run_id)
-
         if scoped:
             from tinyassets.approval_scopes import dispatch
             from tinyassets.outside_authority import effect_admission
@@ -1321,14 +1314,14 @@ def _run(
                 universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
                 grant.owner_user_id, rule_agent, run_id=run_id, node_id=node_id,
             ) as receipt:
-                response = send()
+                response = proxy.request(verb, wire_request)
                 if isinstance(response.get('status'), int):
                     receipt['status'] = response['status']
         else:
             from tinyassets.outside_authority import effect_admission
 
             with effect_admission():
-                response = send()
+                response = proxy.request(verb, wire_request)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

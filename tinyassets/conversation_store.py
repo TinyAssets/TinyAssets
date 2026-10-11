@@ -428,6 +428,17 @@ def record_turn(
                 conn = _connect(db_path)
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    # The caller has already selected its authenticated owner/thread.
+                    # Serialize retry admission with the insert, not a preflight read.
+                    if client_send_id and speaker == "founder":
+                        duplicate = conn.execute(
+                            "SELECT 1 FROM conversation_turns WHERE session_id=? "
+                            "AND speaker='founder' AND client_send_id=? LIMIT 1",
+                            (session_id, client_send_id),
+                        ).fetchone()
+                        if duplicate is not None:
+                            conn.commit()
+                            return 0
                     # Stable-id idempotency: if this ext_id is already stored for
                     # the session, it's a re-sync / concurrent-sync repeat, NOT a
                     # new turn. BEGIN IMMEDIATE serialises writers (in- AND cross-
@@ -526,6 +537,22 @@ def record_turn(
 #: budget at render time. Trimming context is a prompt-shaping decision; deleting
 #: history is a data-loss decision, and only the user makes that one (account
 #: deletion, or an explicit per-session delete).
+
+
+def stored_owner_send(universe_dir, session_id: str, client_send_id: str) -> str | None:
+    """Read an admitted send in the caller's authorized thread; never grant access."""
+    if not client_send_id:
+        return None
+    conn = sqlite3.connect(f"file:{_db_path(universe_dir)}?mode=ro", uri=True, timeout=5.0)
+    try:
+        row = conn.execute(
+            "SELECT content FROM conversation_turns WHERE session_id=? "
+            "AND speaker='founder' AND client_send_id=? ORDER BY turn_no LIMIT 1",
+            (session_id, client_send_id),
+        ).fetchone()
+        return row[0] if row is not None else None
+    finally:
+        conn.close()
 
 
 def record_exchange(
@@ -642,6 +669,13 @@ def _record_pair(
                         ).fetchone()
                         if admitted is None or admitted[0] != founder_text:
                             raise ValueError("terminal message does not match admitted request")
+                        terminal = conn.execute(
+                            "SELECT 1 FROM conversation_turns WHERE session_id=? AND ext_id=?",
+                            (session_id, f"reply-to:{founder_turn}"),
+                        ).fetchone()
+                        if terminal is not None:
+                            conn.commit()
+                            return None
                     row = conn.execute(
                         "SELECT COALESCE(MAX(turn_no), 0) + 1 "
                         "FROM conversation_turns WHERE session_id = ?",

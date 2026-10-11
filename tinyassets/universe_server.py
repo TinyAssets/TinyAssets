@@ -3011,8 +3011,9 @@ def converse(
     loads that seed soul/persona before forwarding the opening message.
 
     Args:
-        client_send_id: Optional correlation echo (ASCII letters, digits, underscore,
-            hyphen; at most 128 characters). Never authority or an idempotency key.
+        client_send_id: Optional send identity (ASCII letters, digits, underscore,
+            hyphen; at most 128 characters). Retries in the authenticated thread
+            are acknowledged without replay. Never authority.
         message: The founder's turn to send to the command center intelligence.
         graph_id: Optional target command center identifier. Defaults to the founder's
             home command center.
@@ -3058,7 +3059,7 @@ def converse(
             "error": "Sign in as this command center's founder to talk with it.",
             "auth_required": True,
         })
-    # Correlation only: never used for lookup, authorization or deduplication.
+    # Send identity is scoped below by authenticated principal and conversation.
     import re
 
     if not isinstance(client_send_id, str) or (
@@ -3195,12 +3196,6 @@ def converse(
         conversation_history = _with_agent_activity(
             conversation_history, memory_universe_dir, uid, current_actor_id(),
         )
-        # Only where history reaches the model (founder turns), so a notice is
-        # never spent on a turn that drops it.
-        if turn.interlocutor.tier == interlocutor.FOUNDER:
-            conversation_history = _with_answered_requests(
-                conversation_history, uid, current_actor_id(),
-            )
 
     from tinyassets.providers.execution_receipt import WriterExecutionReceipt
 
@@ -3227,7 +3222,6 @@ def converse(
     # (harness S2 carryover): the page normally re-sends them as this message;
     # any it did not (a closed or reloaded page) are folded in here.
     typed = message
-    message = _with_carryover(memory_universe_dir, memory_session, message)
     live_id = ""
     live_turn = None
     founder_turn = None
@@ -3265,9 +3259,28 @@ def converse(
                 client_send_id=client_send_id, ext_id=f"turn:{live_turn.live_id}",
             )
             if not founder_turn:
+                from tinyassets.conversation_store import stored_owner_send
+
+                try:
+                    original = stored_owner_send(memory_universe_dir, memory_session,
+                                                 client_send_id)
+                except Exception:  # noqa: BLE001 - unreadable admission must refuse dispatch
+                    original = None
+                if original is not None:
+                    if original != typed:
+                        return json.dumps({"error": "client_send_id_conflict",
+                                           "universe_id": uid})
+                    return json.dumps({"already_received": True, "history_saved": True,
+                                       "universe_id": uid})
                 return json.dumps({"error": "Your message could not be saved, so nothing was sent.",
                                    "history_saved": False, "universe_id": uid})
             _announce_owner_message(memory_universe_dir)
+            # A reconnect must not consume context owed to the next new turn.
+            message = _with_carryover(memory_universe_dir, memory_session, message)
+            if addressed is None and turn.interlocutor.tier == interlocutor.FOUNDER:
+                conversation_history = _with_answered_requests(
+                    conversation_history, uid, current_actor_id(),
+                )
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
                            current_actor_id(), typed, client_send_id)
             reply = _converse_impl(
