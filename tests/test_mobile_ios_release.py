@@ -312,7 +312,8 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
 
 def test_ios_release_is_manual_and_upload_is_opt_in() -> None:
     workflow = yaml.load(RELEASE_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert set(workflow["on"]) == {"workflow_dispatch", "workflow_call"}
+    assert workflow["on"]["workflow_call"]["inputs"]["upload_to_testflight"]["default"] == "false"
     assert workflow["concurrency"] == {
         "group": "ios-release",
         "cancel-in-progress": "false",
