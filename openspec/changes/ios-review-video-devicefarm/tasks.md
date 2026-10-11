@@ -17,9 +17,11 @@ The selected heavy files yielded 245 passes, 10 skips and 22 failures in unchang
 handoff/host-installer code on Windows (missing flock, symlink semantics and one
 in-flight reservation). No fixes to those unrelated modules are included.
 
-Both XCUITest targets compiled and the signed-out Simulator XCUITest passed in
-run 38100778120. The subsequent splash check was blocked by macOS's externally
-managed system Python; the workflow now selects CI Python before pip installs.
+Both XCUITest targets compiled, the production signed-out Simulator XCUITest
+passed with its named screenshot, and the native splash was verified in the
+actual recording in [run 38101326847](https://github.com/TinyAssets/TinyAssets/actions/runs/38101326847).
+This proves the launch and evidence harness only. The preceding dependency-install
+failure was resolved by selecting CI Python before pip installs.
 Full signed/credentialed proof was rejected before
 execution in run 38100020133: app-store environment permits main only. Founder
 authorization for a temporary exact-branch allowance is pending; no environment
