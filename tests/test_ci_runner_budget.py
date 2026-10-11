@@ -52,8 +52,10 @@ def test_mobile_builds_do_not_run_on_pull_requests() -> None:
 
 #: Heavy `pull_request` workflows that skip while a PR is a draft, mapped to the
 #: job that carries the condition. Measured 2026-10-03 over the last 100
-#: completed PR runs. Isolation proofs run even on draft PRs.
+#: completed PR runs. Isolation proofs wait until a PR is ready.
 _DRAFT_SKIPPING = {
+    "linux-jail-proof.yml": "linux-jail-proof",
+    "real-browser-proof.yml": "real-browser-proof",
     "preview-security.yml": "contract",
     "build-bundle.yml": "stage-and-probe",
     "docker-build.yml": "build-smoke",
@@ -82,7 +84,7 @@ def _job(name: str, job_id: str) -> dict:
 def test_heavy_pull_request_jobs_skip_drafts() -> None:
     """The cut itself: a draft push must not spend a runner on these."""
     for name, job_id in _DRAFT_SKIPPING.items():
-        expected = (_DRAFT_CONDITION if name in ("preview-security.yml", "build-bundle.yml")
+        expected = (_DRAFT_CONDITION if name != "docker-build.yml"
                     else "github.event_name != 'pull_request'")
         assert _job(name, job_id).get("if") == expected, name
         if expected != _DRAFT_CONDITION:

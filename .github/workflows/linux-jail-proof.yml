@@ -235,7 +235,8 @@ concurrency:
 jobs:
   linux-jail-proof:
     name: linux-jail-proof
-    # Run path-selected isolation proofs on PRs, including drafts.
+    # Draft proofs run when ready_for_review fires; dispatch and main still run.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Ephemeral GitHub-hosted VM only, never self-hosted. The jail itself runs
     # in a throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest

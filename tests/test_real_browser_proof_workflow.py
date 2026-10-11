@@ -180,7 +180,9 @@ def test_the_proofs_run_in_the_jail_proofs_venue_and_nowhere_weaker():
 
 
 def test_browser_proof_runs_on_path_selected_prs_and_after_merge():
-    assert "if" not in _job(_load())
+    assert _job(_load())["if"] == (
+        "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
+    )
 
 
 def test_the_whole_preview_module_runs_and_every_collected_case_is_asserted():

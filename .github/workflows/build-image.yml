@@ -42,10 +42,8 @@ on:
       # model addition sat in the repo and never reached anyone.
       - 'models/**'
       - 'scripts/mcp_public_canary.py'
-      # Paired image probes load launcher/fixture code dynamically. Match the
-      # runtime-input resolver's conservative scripts/ closure at this prefilter.
-      - 'scripts/**'
-      - 'scripts/core_capability_image.py'
+      - 'scripts/core_capability_live.py'
+      - 'scripts/core_capability_alert.py'
       - '.github/actions/core-capability-canary/**'
       # The app is the second public surface, and deploy-prod.yml runs this as a
       # post-deploy gate with the same rollback authority as the MCP canary —

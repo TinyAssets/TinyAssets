@@ -123,6 +123,7 @@ on:
       - 'tests/test_app_pending_requests_browser.py'
       - 'tests/test_app_phone_conversation_browser.py'
       - 'tests/test_app_recovery_browser.py'
+      - 'tests/test_app_live_pending_browser.py'
       - 'tests/test_app_send_resume_browser.py'
       - 'tests/test_app_two_surfaces_browser.py'
       - 'tests/test_approval_sheet_real_browser.py'
@@ -153,7 +154,8 @@ concurrency:
 jobs:
   real-browser-proof:
     name: real-browser-proof
-    # Run path-selected isolation proofs on PRs, including drafts.
+    # Draft proofs run when ready_for_review fires; dispatch and main still run.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Ephemeral GitHub-hosted VM only, never self-hosted. The proofs run in a
     # throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest

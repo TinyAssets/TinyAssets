@@ -171,34 +171,8 @@ def test_live_missing_config_and_restarts_are_unknown_not_failed(monkeypatch):
     assert report["warnings"][0]["code"] == "deployment_in_progress"
 
 
-def test_only_candidate_specific_measured_image_failures_authorize_rollback():
-    from scripts.core_capability_regression import regressions
-
-    green = {
-        "capabilities": [
-            dict(
-                capability=name,
-                status="passed",
-                evidence=contract.evidence,
-                observation={"verified": True},
-            )
-            for name, contract in CAPABILITIES.items()
-        ]
-    }
-    red = {"capabilities": [dict(capability="bash", status="failed", code="cell_entry_failed")]}
-    live = {"failures": [{"capability": "bash", "code": "probe_failed"}]}
-    assert regressions(red, green, live) == ["bash"]
-    assert regressions(red, red, live) == []
-    assert regressions({}, green, live) == []
-    assert (
-        regressions(red, green, {"warnings": [{"capability": "bash", "code": "rate_alarm"}]}) == []
-    )
-    assert regressions(green, green, live) == []
-
-
 def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     from scripts import core_capability_live as live
-    from scripts.core_capability_regression import regressions
 
     async def observed(report):
         report["model_dependent"] = ["chat_stream", "read_image"]
@@ -213,7 +187,6 @@ def test_model_missing_and_failed_evidence_is_alert_only(monkeypatch):
     report = asyncio.run(live.collect())
     assert not report["failures"]
     assert {row["capability"] for row in report["warnings"]} == {"chat_stream", "read_image"}
-    assert regressions({}, {}, report) == []
 
 
 @pytest.mark.parametrize("failure", ["github", "pushover", "report"])

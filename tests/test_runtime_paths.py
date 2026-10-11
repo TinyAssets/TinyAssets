@@ -552,13 +552,9 @@ def test_real_deploy_python_closure_includes_the_preflight_helper():
     """prepare_expected_instance_state.py imports resolve_expected_droplet from
     cloud_only_preflight.py; its output is installed on the droplet."""
     inputs = _working_tree_inputs()
-    assert inputs.notes == (
-        'unresolvable import -- all of scripts/ counts: '
-        'scripts/core_capability_image.py (dynamic import); '
-        'scripts/role_image_oracle.py (dynamic import); '
-        'scripts/role_chat_probe.py (dynamic import)',
-    )
-    assert inputs.covers('scripts/a_new_dynamic_fixture.py')
+    assert inputs.notes == ()
+    assert not inputs.covers('scripts/a_new_dynamic_fixture.py')
+    assert not inputs.covers('scripts/core_capability_image.py')
     for path in (
         "scripts/prepare_expected_instance_state.py",
         "scripts/cloud_only_preflight.py",

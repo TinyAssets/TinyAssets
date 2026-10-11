@@ -5,7 +5,7 @@ The change SHALL replay each listed cutover regression against existing tests be
 
 #### Scenario: Tier selection
 - **WHEN** a pull request changes runtime or deploy inputs
-- **THEN** affected-test selection requires affected tests inside the user-namespace/browser-capable jail container and one real production-image capability check, plus path-selected jail and browser PR proofs; live checks remain outside the PR path
+- **THEN** affected-test selection requires affected tests inside the user-namespace/browser-capable jail container and one real production-image capability check, plus path-selected jail and browser proofs for ready PRs; live checks remain outside the PR path
 
 #### Scenario: Replacement cannot detect a broken capability
 - **WHEN** a capability step stays green after its real defect is reintroduced
@@ -41,8 +41,8 @@ The system SHALL run live checks after every deploy and every five minutes on ho
 - **THEN** the live probe requires independent file, image, service HMAC, delivery and run observations where available; direct API checks precede optional model-dependent checks, whose variance, quota and provider outages are alert-only; model prose alone cannot pass
 
 #### Scenario: Fresh deployment loses a capability
-- **WHEN** a live failure is reproduced as a measured capability failure in the candidate image, using deterministic external fixtures, and the captured previous image passes the same complete harness
-- **THEN** only then may the deploy invoke previous-image rollback; shared failures, absent/invalid evidence, rate alarms, configuration and external-service failures cannot authorize rollback
+- **WHEN** the existing public MCP canary or app probe fails after a successful deploy
+- **THEN** the deploy fails, opens the deploy-failed issue and rolls back to the captured previous image; an exposed CF Access origin fails the deploy without image rollback. The new core-capability canary remains advisory, including missing configuration, and never runs a previous-versus-candidate image comparison.
 
 ### Requirement: Systemic runtime failure alarms
 The daemon SHALL record stable failure codes and success denominators for core capability operations, expose bounded aggregate rates only to the existing operational canary authority, and report spikes and systemic absolute failure rates independently of synthetic probe success.
