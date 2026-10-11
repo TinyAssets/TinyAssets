@@ -71,10 +71,9 @@ def _files(client, *, principal, center, identity, fd, agent_id):
     try:
         result = _files_exchange(client, principal=principal, center=center,
                                  identity=identity, fd=fd, agent_id=agent_id)
-        from tinyassets.role_content import promote_brains, repair_empty_wiki_categories
+        from tinyassets.role_content import promote_brains
 
         promote_brains(center, fd, identity, result, agent_id=agent_id)
-        repair_empty_wiki_categories(client, center, fd, principal=principal, identity=identity)
         return result
     except OwnerLaunchRefused as exc:
         raise tools.UniverseToolError(str(exc)) from exc

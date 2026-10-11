@@ -51,6 +51,7 @@ ROOT_TEST_FILES = frozenset({
     "tests/test_role_owner_tree_deletion.py",
     "tests/test_role_reader_identity.py",
     "tests/test_role_center_admission.py",
+    "tests/test_role_content_repair.py",
 })
 
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,

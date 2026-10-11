@@ -25,6 +25,7 @@ from typing import Any
 from tinyassets.enrichment_signals import load_enrichment_signals, state_enrichment_signals
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import premise_from_soul, read_legacy_premise
 from tinyassets.utils.json_parsing import parse_llm_json
 
@@ -189,7 +190,7 @@ def _review_canon_quality(state: dict[str, Any]) -> dict[str, Any]:
                 filename, premise, issue, canon_files
             )
             if new_content:
-                filepath.write_text(new_content, encoding="utf-8")
+                write_data_path(filepath, new_content)
                 _stamp_reviewed(filepath, model=current_model)
                 rewritten.append(filename)
                 logger.info(
@@ -315,7 +316,7 @@ def _stamp_reviewed(filepath: Path, model: str = "") -> None:
             "reviewed_at": time.time(),
             "model": model,
         })
-        marker.write_text(data, encoding="utf-8")
+        write_data_path(marker, data)
     except OSError:
         logger.debug("Failed to write review marker for %s", filepath)
 

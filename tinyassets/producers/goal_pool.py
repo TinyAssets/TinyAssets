@@ -42,6 +42,7 @@ from tinyassets.branch_tasks import (
     new_task_id,
 )
 from tinyassets.producers.branch_task import register_branch_task_producer
+from tinyassets.subscriptions import validate_goal_id
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,11 @@ class GoalPoolProducer:
 
         out: list[BranchTask] = []
         for goal in subscribed_goals:
+            try:
+                validate_goal_id(goal)
+            except ValueError as exc:
+                logger.warning("goal_pool: skipping unsafe goal %r: %s", goal, exc)
+                continue
             goal_dir = pool_root / goal
             if not goal_dir.is_dir():
                 continue
@@ -476,6 +482,7 @@ def pool_post_path(
     repo_root: Path, goal_id: str, branch_task_id: str | None = None,
 ) -> Path:
     """Canonical path for a pool post YAML."""
+    validate_goal_id(goal_id)
     task_id = branch_task_id or new_task_id()
     return repo_root / POOL_DIRNAME / goal_id / f"{task_id}.yaml"
 
@@ -494,6 +501,7 @@ def write_pool_post(
 
     Returns the YAML path. Raises ``ValueError`` on invalid inputs.
     """
+    validate_goal_id(goal_id)
     ok, reason = validate_pool_task_inputs(inputs)
     if not ok:
         raise ValueError(f"invalid pool inputs: {reason}")

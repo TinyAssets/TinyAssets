@@ -38,6 +38,7 @@ from tinyassets.evaluation.editorial import EditorialNotes, read_editorial
 from tinyassets.evaluation.process import ProcessEvaluation, evaluate_scene_process
 from tinyassets.evaluation.structural import StructuralEvaluator, StructuralResult
 from tinyassets.ingestion.canon_io import iter_canon_files
+from tinyassets.universe_files import write_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -1046,9 +1047,8 @@ def _export_prose(state: dict[str, Any], prose: str) -> None:
             Path(universe_path) / "output"
             / f"book-{book}" / f"chapter-{chapter:02d}"
         )
-        chapter_dir.mkdir(parents=True, exist_ok=True)
         scene_file = chapter_dir / f"scene-{scene:02d}.md"
-        scene_file.write_text(prose, encoding="utf-8")
+        write_data_path(scene_file, prose)
         logger.info(
             "Exported scene %d prose to %s", scene, scene_file,
         )
@@ -1183,12 +1183,8 @@ def _emit_scene_packet(
             Path(universe_path) / "output"
             / f"book-{book}" / f"chapter-{chapter:02d}"
         )
-        chapter_dir.mkdir(parents=True, exist_ok=True)
         packet_file = chapter_dir / f"scene-{scene:02d}.packet.json"
-        packet_file.write_text(
-            json.dumps(packet.to_dict(), indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
+        write_data_path(packet_file, json.dumps(packet.to_dict(), indent=2, default=str) + "\n")
         logger.info("Emitted scene packet to %s", packet_file)
     except OSError as e:
         logger.warning("Failed to emit scene packet: %s", e)

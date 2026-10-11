@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -34,6 +35,12 @@ SUBSCRIPTIONS_FILENAME = "subscriptions.json"
 LOCK_FILENAME = ".subscriptions.json.lock"
 
 DEFAULT_GOALS: tuple[str, ...] = ("maintenance",)
+
+
+def validate_goal_id(goal_id: str) -> None:
+    """A goal is one portable path segment, never a relative or absolute path."""
+    if not isinstance(goal_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", goal_id):
+        raise ValueError("goal_id must be a single safe path segment")
 
 
 def _subscriptions_path(universe_path: Path) -> Path:
@@ -101,22 +108,26 @@ def _read_raw(universe_path: Path) -> list[str]:
         goals = data.get("goals", [])
     else:
         goals = data if isinstance(data, list) else []
-    return [g for g in goals if isinstance(g, str) and g]
+    safe_goals = []
+    for goal in goals:
+        try:
+            validate_goal_id(goal)
+        except ValueError as exc:
+            logger.warning("Ignoring unsafe subscribed goal %r: %s", goal, exc)
+            continue
+        safe_goals.append(goal)
+    return safe_goals
 
 
 def _write_raw(universe_path: Path, goals: list[str]) -> None:
-    sp = _subscriptions_path(universe_path)
-    sp.parent.mkdir(parents=True, exist_ok=True)
+    from tinyassets.universe_files import write_universe_file
+
     payload = {
         "goals": goals,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    tmp = sp.with_suffix(sp.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, default=str),
-        encoding="utf-8",
-    )
-    os.replace(tmp, sp)
+    write_universe_file(Path(universe_path), SUBSCRIPTIONS_FILENAME,
+                        json.dumps(payload, indent=2, default=str).encode(), mode="replace")
 
 
 def list_subscriptions(universe_path: Path) -> list[str]:
@@ -139,8 +150,7 @@ def list_subscriptions(universe_path: Path) -> list[str]:
 
 def subscribe(universe_path: Path, goal_id: str) -> list[str]:
     """Append goal_id if absent. Idempotent. Returns updated list."""
-    if not goal_id or not isinstance(goal_id, str):
-        raise ValueError("goal_id must be a non-empty string")
+    validate_goal_id(goal_id)
     with _file_lock(universe_path):
         goals = _read_raw(universe_path)
         if goal_id not in goals:

@@ -265,7 +265,10 @@ def test_canary_step_only_probes_canonical():
     assert not public.get("continue-on-error")
     assert not next(s for s in steps if s.get("id") == "app_probe").get("continue-on-error")
     assert not any(s.get("id") == "core_regression" for s in steps)
-    assert steps.index(core) == next(i for i, s in enumerate(steps) if s.get("id") == "deploy") + 1
+    deploy = next(i for i, s in enumerate(steps) if s.get("id") == "deploy")
+    repair = next(i for i, s in enumerate(steps) if s.get("id") == "content_repair")
+    # The canary observes the deployed, repaired tree, before the blocking probes.
+    assert deploy < repair < steps.index(core) < steps.index(public)
 
 
 def test_access_gate_step_present():
