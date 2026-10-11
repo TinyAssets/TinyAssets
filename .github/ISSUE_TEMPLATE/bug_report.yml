@@ -1,0 +1,56 @@
+name: Bug report
+description: Something broke in the app, the Android test, the connector, or this repository.
+title: "Bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Early access. A useful report says what you did and what you saw.
+
+        Do not paste passwords, setup tokens, API keys, or session cookies.
+        If this is a vulnerability, stop and follow SECURITY.md. Do not file it here.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did this happen?
+      options:
+        - Web app (tinyassets.io/app)
+        - Android (Google Play closed test)
+        - Claude connector
+        - ChatGPT connector
+        - Desktop
+        - This GitHub repository
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened?
+      description: What you did, and what you saw. An error message you can copy helps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Device or browser (optional)
+      description: Phone model, Android version, or browser. Leave blank if you do not know.
+    validations:
+      required: false
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Before you submit
+      options:
+        - label: I left out passwords, tokens, and session cookies.
+          required: true
+        - label: This is a product bug, not a security vulnerability.
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Try the app
+    url: https://tinyassets.io/start/
+    about: Web app, Claude or ChatGPT connector, and the Android closed test.
+  - name: Security reports
+    url: https://github.com/TinyAssets/TinyAssets/blob/main/SECURITY.md
+    about: Email a vulnerability. Do not open a public issue for one.
