@@ -487,6 +487,22 @@ will know what real usage looks like before the number matters.
 
 ---
 
+### Phone app — send the first message and see it answered
+
+*Live and proven on the founder's S24+ via adb (2026-08-22): OpenAI link completes, PONG inside the
+sandbox on the founder's own subscription. Shipped as #2466 (FGS vs the Android freezer), #2467
+(auto serving binding), #2468 (codex sandbox tmpfs home + systempaths/cap_drop), #2469 (HttpOnly
+refresh); APK `android-latest`.*
+
+What is missing is one real message from the founder, answered. Everything up to that is verified.
+
+Owed alongside it: codex refresh-token persistence across a rotating turn, and the deploy step must
+install `deploy/compose.yml` -- the droplet was patched in place, so a container recreate loses it.
+
+Recovered 2026-08-27 from PR #2463, which carried it on the retired board and had no other home.
+
+---
+
 ### First-class Voice — stop before microphone acceptance after browser speech deploys
 
 **Do not send a credential in chat and do not buy a platform key.** Voice must keep using the same
