@@ -29,4 +29,4 @@ video_pid=$!
 run_file=$(find "$RUNNER_TEMP/review-iphonesimulator/Build/Products" -maxdepth 1 -name '*.xctestrun' -print -quit)
 test -n "$run_file"
 python3 scripts/review_xctest.py --xctestrun "$run_file" \
-  --destination "platform=iOS Simulator,id=$device" --output "$output"
+  --destination "platform=iOS Simulator,id=$device" --output "$output" "$@"

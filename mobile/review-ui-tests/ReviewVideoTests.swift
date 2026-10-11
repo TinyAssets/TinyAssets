@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 // The same journey runs on Simulator and a physical Device Farm iPhone.
 // No API shortcuts, injected cookies, model stubs or account-deletion actions.
@@ -83,6 +84,14 @@ final class ReviewVideoTests: XCTestCase {
         return last
     }
 
+    func testSignedOutLaunch() {
+        app.terminate()
+        XCTAssertTrue(app.state == .notRunning)
+        app.launch()
+        XCTAssertTrue(app.buttons["Sign in"].waitForExistence(timeout: 120))
+        shot("01-signed-out")
+    }
+
     func testGuideline21Journey() throws {
         let env = ProcessInfo.processInfo.environment
         let username = try XCTUnwrap(env["APP_STORE_REVIEW_USERNAME"], "review username missing")
@@ -133,7 +142,24 @@ final class ReviewVideoTests: XCTestCase {
         XCTAssertTrue(secure.waitForExistence(timeout: 60), "masked password field required")
         XCTAssertTrue(secure.elementType == .secureTextField, "never type password in a plain field")
         secure.tap()
-        secure.typeText(password)
+        // Per-key typing can expose the last character in iOS password fields.
+        // Paste into the asserted secure field, then immediately clear the board.
+        UIPasteboard.general.string = password
+        defer { UIPasteboard.general.items = [] }
+        secure.press(forDuration: 1.2)
+        let paste = auth.menuItems["Paste"]
+        let pasteButton = auth.buttons["Paste"]
+        wait("secure-field Paste action") { paste.exists || pasteButton.exists }
+        if paste.exists { paste.tap() } else { pasteButton.tap() }
+        for host in [app, springboard, safari] {
+            let allowPaste = host.alerts.buttons["Allow Paste"]
+            if allowPaste.waitForExistence(timeout: 2) { allowPaste.tap(); break }
+        }
+        wait("masked password was entered") {
+            let value = secure.value as? String ?? ""
+            return !value.isEmpty && value != "Password"
+        }
+        UIPasteboard.general.items = []
         let submit = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Sign in", "Continue", "Log in"])).firstMatch
         XCTAssertTrue(submit.waitForExistence(timeout: 30), "password submit missing")
         submit.tap()

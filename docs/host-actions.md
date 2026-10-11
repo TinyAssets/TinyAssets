@@ -257,14 +257,18 @@ production on Simulator; that proof alone is not Apple's required device video.
 5. In **Actions > iOS App Review video > Run workflow**, use the PR branch for
    testing (after merge, `main`) and leave **dry_run=true** first. Before the new
    workflow is registered on main, use **iOS build > Run workflow** on the PR branch
-   with **review_video_proof=true**, which invokes the same dry run. A successful
+   with **review_video_proof=true**, which invokes the same dry run. The branch
+   must be allowed by app-store environment protection and its required reviewer
+   must approve the deployment. **review_video_compile_only=true** compiles both
+   runners without environment access when that approval is unavailable. A successful
    run compiles both runners, builds a signed IPA and completes the production
    Simulator journey without AWS calls. If the reviewer has no working model
    connection, the test fails; arrange the normal user connection first, never an
    interim review-only inference key.
 6. Dispatch **iOS App Review video** with **dry_run=false** to authorize one metered
    physical run. Download `ios-review-physical-iphone-<run-id>` from its artifacts:
-   MP4, named per-step PNGs, test status, device/iOS version and source SHA. Runs
+   an encrypted bundle containing MP4, named per-step PNGs, test status, device/iOS
+   version and source SHA. Runs
    fail if the journey, splash, recording or screenshot evidence is incomplete.
    Review all six shots, password masking, and the recorded OS against Apple's
    latest-public-iOS request before sending it to the lead. Apple attachment and
@@ -314,11 +318,29 @@ runner usage and the reviewer's model usage are separate. No monthly device slot
 is needed. Dry run incurs no AWS usage.
 
 Device Farm re-signs the uploaded current-source app. The artifact records its
-SHA; it must not be described as the old build 3 binary. The workflow deletes its
+SHA; it must not be described as the old build 3 binary. The workflow attempts to delete its
 AWS run metadata and uploaded packages after downloading evidence because the
 restricted run environment carries reviewer credentials. Keep the GitHub artifact
 (the retention is 14 days); failures also retain available evidence. No AWS
 account, access keys or paid run is created by the builder.
+
+The repository is public, so **all video/screenshot evidence is encrypted before
+upload**, using AES-256-GCM with a scrypt key derived from the existing App Review
+password and a fresh random salt. After downloading and unzipping the Actions
+artifact locally, install `cryptography==46.0.3` and run:
+
+```powershell
+python -m pip install cryptography==46.0.3
+python mobile/scripts/review_evidence.py decrypt review-devicefarm.enc private-review-video
+```
+
+Enter the App Review password at the hidden prompt; never pass it as an argument.
+For Simulator evidence substitute `review-simulator.enc`. Keep the decrypted
+files private. Decryption requires the password used at recording time. If the
+workflow reports incomplete AWS cleanup, decrypt `cleanup-required.json` and
+remove the listed run/uploads in Device Farm after the run has stopped. A forced
+runner termination may also require checking the project for a leftover run.
+
 
 ---
 

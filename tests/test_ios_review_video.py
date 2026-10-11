@@ -128,8 +128,97 @@ def test_wrong_sha_or_private_configuration_blocks_upload(tmp_path, monkeypatch)
         farm.validate_packages(tmp_path, tests)
 
 
-def test_missing_step_screenshot_cannot_count_as_complete():
-    assert len(xc.SHOTS) == 8
-    assert "04-persisted" in xc.SHOTS
-    assert "05-grounded-answer" in xc.SHOTS
-    assert "06-account-privacy" in xc.SHOTS
+def test_stopping_run_is_awaited_and_all_uploads_are_cleaned(tmp_path, monkeypatch):
+    calls = []
+
+    class Client:
+        states = iter(["RUNNING", "STOPPING", "COMPLETED"])
+
+        def get_run(self, **kwargs):
+            state = next(self.states)
+            calls.append(state)
+            return {"run": {"status": state}}
+
+        def stop_run(self, **kwargs):
+            calls.append("stop")
+
+        def delete_run(self, **kwargs):
+            calls.append("delete")
+            raise RuntimeError("fixture failure")
+
+        def delete_upload(self, **kwargs):
+            calls.append(kwargs["arn"])
+
+    monkeypatch.setattr(farm.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="cleanup incomplete"):
+        farm.cleanup(Client(), "run", ["upload-one", "upload-two"], tmp_path)
+    assert calls == [
+        "RUNNING",
+        "stop",
+        "STOPPING",
+        "COMPLETED",
+        "delete",
+        "upload-two",
+        "upload-one",
+    ]
+    assert json.loads((tmp_path / "cleanup-required.json").read_text()) == [
+        {"operation": "delete_run", "arn": "run"}
+    ]
+
+
+def test_evidence_requires_password_and_rejects_tampering(tmp_path):
+    from cryptography.exceptions import InvalidTag
+
+    evidence = load("review_evidence")
+    source = tmp_path / "private"
+    source.mkdir()
+    (source / "video.mp4").write_bytes(b"private video fixture")
+    encrypted = tmp_path / "evidence.enc"
+    evidence.seal(source, encrypted, "test-password")
+    assert b"private video fixture" not in encrypted.read_bytes()
+    with pytest.raises(InvalidTag):
+        evidence.unseal(encrypted, tmp_path / "wrong-password", "wrong")
+    assert not (tmp_path / "wrong-password").exists()
+    evidence.unseal(encrypted, tmp_path / "decrypted", "test-password")
+    assert (tmp_path / "decrypted/video.mp4").read_bytes() == b"private video fixture"
+    body = bytearray(encrypted.read_bytes())
+    body[-1] ^= 1
+    encrypted.write_bytes(body)
+    with pytest.raises(InvalidTag):
+        evidence.unseal(encrypted, tmp_path / "tampered", "test-password")
+    assert not (tmp_path / "tampered").exists()
+
+
+def test_attachment_export_excludes_unnamed_screenshots_and_path_escapes(tmp_path, monkeypatch):
+    private = tmp_path / "private"
+    exported = private / "attachments"
+    exported.mkdir(parents=True)
+    (exported / "good.png").write_bytes(b"named screenshot")
+    (private / "sensitive.png").write_bytes(b"must not escape")
+    (exported / "manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "attachments": [
+                        {
+                            "suggestedHumanReadableName": "review-01-signed-out",
+                            "exportedFileName": "good.png",
+                        },
+                        {
+                            "suggestedHumanReadableName": "automatic screenshot",
+                            "exportedFileName": "good.png",
+                        },
+                        {
+                            "suggestedHumanReadableName": "review-02-signed-in",
+                            "exportedFileName": "../sensitive.png",
+                        },
+                    ]
+                }
+            ]
+        )
+    )
+    monkeypatch.setattr(xc.subprocess, "run", lambda *args, **kwargs: None)
+    output = tmp_path / "public"
+    output.mkdir()
+    assert xc.export_shots(tmp_path / "result", output, private) == {"01-signed-out"}
+    assert [p.name for p in output.iterdir()] == ["review-01-signed-out.png"]

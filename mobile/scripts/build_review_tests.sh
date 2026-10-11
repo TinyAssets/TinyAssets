@@ -16,9 +16,16 @@ for platform in iphonesimulator iphoneos; do
       tail -80 "$RUNNER_TEMP/review-build-$platform.log"; exit 1;
     }
   runner="$RUNNER_TEMP/review-$platform/Build/Products/Debug-$platform/ReviewUITests-Runner.app"
-  /usr/libexec/PlistBuddy -c 'Add :UIFileSharingEnabled bool true' "$runner/Info.plist"
-  /usr/libexec/PlistBuddy -c 'Add :LSSupportsOpeningDocumentsInPlace bool true' "$runner/Info.plist"
-  /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Review Files' "$runner/Info.plist"
+  python3 - "$runner/Info.plist" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+info = plistlib.loads(p.read_bytes())
+info.update(UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True,
+            CFBundleDisplayName="Review Files")
+p.write_bytes(plistlib.dumps(info))
+PY
   if [ "$platform" = iphonesimulator ]; then codesign --force --deep --sign - "$runner"; fi
 done
 mkdir -p "$RUNNER_TEMP/review-package"

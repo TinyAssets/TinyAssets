@@ -96,6 +96,34 @@ def validate_packages(ipa_dir: Path, tests: Path) -> Path:
     return ipa
 
 
+def cleanup(client, run: str | None, uploads: list[str], output: Path) -> None:
+    """A stopping run cannot be deleted. Attempt every cleanup even if one fails."""
+    failures = []
+    if run:
+        try:
+            state = client.get_run(arn=run)["run"]["status"]
+            if state != "COMPLETED":
+                client.stop_run(arn=run)
+                deadline = time.monotonic() + 180
+                while state != "COMPLETED" and time.monotonic() < deadline:
+                    time.sleep(5)
+                    state = client.get_run(arn=run)["run"]["status"]
+            if state != "COMPLETED":
+                raise TimeoutError("Run is still stopping")
+            client.delete_run(arn=run)
+        except Exception:
+            failures.append({"operation": "delete_run", "arn": run})
+    for arn in reversed(uploads):
+        try:
+            client.delete_upload(arn=arn)
+        except Exception:
+            failures.append({"operation": "delete_upload", "arn": arn})
+    if failures:
+        (output / "cleanup-required.json").write_text(json.dumps(failures, indent=2) + "\n")
+        print("::error::AWS cleanup incomplete; see encrypted cleanup-required.json")
+        raise RuntimeError("AWS cleanup incomplete")
+
+
 def collect(client, run: str, output: Path) -> tuple[list[Path], bool]:
     """List at run/job/suite/test scope; collect only video and allowlisted evidence."""
     scopes = [run]
@@ -253,14 +281,9 @@ def execute(ipa: Path, tests: Path, output: Path) -> None:
         if not any(verify_splash(video, output) for video in videos):
             raise RuntimeError("Native splash not visible in physical recording")
     finally:
-        if run and not completed:
-            client.stop_run(arn=run)
         # Run metadata contains credentials. Once evidence is downloaded (also
         # on failure), remove it; the workflow artifact is the retained evidence.
-        if run:
-            client.delete_run(arn=run)
-        for arn in reversed(created):
-            client.delete_upload(arn=arn)
+        cleanup(client, run, created, output)
 
 
 def main() -> int:

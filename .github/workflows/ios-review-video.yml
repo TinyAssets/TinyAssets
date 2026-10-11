@@ -105,12 +105,19 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check 'opencv-python-headless==4.11.0.86'
           python3 mobile/scripts/verify_review_video.py "$RUNNER_TEMP/review-simulator/simulator-proof.mp4" "$RUNNER_TEMP/review-simulator"
-      - name: Save Simulator evidence (not Apple's physical-device proof)
+      - name: Encrypt private Simulator evidence
+        if: always()
+        env:
+          APP_STORE_REVIEW_PASSWORD: ${{ secrets.APP_STORE_REVIEW_PASSWORD }}
+        run: |
+          python3 -m pip install --disable-pip-version-check 'cryptography==46.0.3'
+          python3 mobile/scripts/review_evidence.py encrypt "$RUNNER_TEMP/review-simulator" "$RUNNER_TEMP/review-simulator.enc"
+      - name: Save encrypted Simulator evidence (not Apple's physical-device proof)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ios-review-simulator-${{ github.run_id }}
-          path: ${{ runner.temp }}/review-simulator/
+          path: ${{ runner.temp }}/review-simulator.enc
           if-no-files-found: warn
           retention-days: 7
 
@@ -149,11 +156,18 @@ jobs:
           python mobile/scripts/devicefarm_review.py \
             --ipa-dir "$RUNNER_TEMP/ipa" --tests "$RUNNER_TEMP/tests/review-tests.zip" \
             --output "$RUNNER_TEMP/review-devicefarm"
-      - name: Save physical-device video and step screenshots
+      - name: Encrypt private physical-device evidence
+        if: always() && !inputs.dry_run
+        env:
+          APP_STORE_REVIEW_PASSWORD: ${{ secrets.APP_STORE_REVIEW_PASSWORD }}
+        run: |
+          python -m pip install --disable-pip-version-check 'cryptography==46.0.3'
+          python mobile/scripts/review_evidence.py encrypt "$RUNNER_TEMP/review-devicefarm" "$RUNNER_TEMP/review-devicefarm.enc"
+      - name: Save encrypted physical-device video and step screenshots
         if: always() && !inputs.dry_run
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ios-review-physical-iphone-${{ github.run_id }}
-          path: ${{ runner.temp }}/review-devicefarm/
+          path: ${{ runner.temp }}/review-devicefarm.enc
           if-no-files-found: error
           retention-days: 14

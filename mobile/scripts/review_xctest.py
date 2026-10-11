@@ -86,10 +86,14 @@ def export_shots(result: Path, output: Path, private: Path) -> set[str]:
     return found
 
 
-def run_test(source: Path, destination: str, output: Path) -> int:
+def run_test(source: Path, destination: str, output: Path, launch_only: bool = False) -> int:
     credentials = {name: os.environ.get(name, "") for name in CREDENTIALS}
-    if not all(credentials.values()):
+    if launch_only and not destination.startswith("platform=iOS Simulator,"):
+        raise ValueError("Launch-only smoke is Simulator-only")
+    if not launch_only and not all(credentials.values()):
         raise ValueError("App Review credentials are missing")
+    expected_shots = {"01-signed-out"} if launch_only else SHOTS
+    test = "testSignedOutLaunch" if launch_only else "testGuideline21Journey"
     output.mkdir(parents=True, exist_ok=True)
     # Keep the copy beside the original: __TESTROOT__ paths must not change.
     private_run = source.with_name("review-private.xctestrun")
@@ -119,7 +123,7 @@ def run_test(source: Path, destination: str, output: Path) -> int:
                         "NO",
                         "-maximum-test-execution-time-allowance",
                         "1500",
-                        "-only-testing:ReviewUITests/ReviewVideoTests/testGuideline21Journey",
+                        f"-only-testing:ReviewUITests/ReviewVideoTests/{test}",
                     ],
                     stdout=log,
                     stderr=subprocess.STDOUT,
@@ -127,18 +131,20 @@ def run_test(source: Path, destination: str, output: Path) -> int:
                     timeout=1650,
                 )
             found = export_shots(result, output, private) if result.exists() else set()
-            result_code = 0 if process.returncode == 0 and found == SHOTS else 1
+            result_code = 0 if process.returncode == 0 and found == expected_shots else 1
             # Only assertion lines, with credentials redacted, are useful publicly.
             errors = []
             for line in (private / "xcode.log").read_text(errors="replace").splitlines():
                 if re.search(r"ReviewVideoTests.swift:\d+: error:", line):
                     for value in credentials.values():
-                        line = line.replace(value, "[REDACTED]")
+                        if value:
+                            line = line.replace(value, "[REDACTED]")
                     errors.append(line)
             summary = {
                 "passed": result_code == 0,
+                "scope": "signed-out launch only" if launch_only else "six-step review journey",
                 "screenshots": sorted(found),
-                "missing": sorted(SHOTS - found),
+                "missing": sorted(expected_shots - found),
                 "assertions": errors,
             }
             (output / "test-result.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -153,9 +159,10 @@ def main() -> int:
     parser.add_argument("--xctestrun", required=True, type=Path)
     parser.add_argument("--destination", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--launch-only", action="store_true")
     args = parser.parse_args()
     try:
-        return run_test(args.xctestrun, args.destination, args.output)
+        return run_test(args.xctestrun, args.destination, args.output, args.launch_only)
     except Exception as exc:
         # A subprocess/SDK exception can carry commands, URLs or credentials.
         print(f"::error::Review test harness failed ({type(exc).__name__}); no raw logs exported")
