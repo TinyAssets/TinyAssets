@@ -1,146 +1,102 @@
 # Contributing to TinyAssets
 
-Thanks for looking at TinyAssets. This document tells you how to contribute code, content, connectors, and reviews — and what you can expect back from us in return. If anything here is unclear, open an issue.
+This repository is the product: the hosted app, the public MCP server, the
+Android and desktop shells, and the site. It is MIT-licensed. One person
+maintains it: Jonathan Farnsworth
+([jonathan.m.farnsworth@gmail.com](mailto:jonathan.m.farnsworth@gmail.com),
+[@Jonnyton](https://github.com/Jonnyton)).
 
----
+There is no review-time commitment. A pull request can sit. That is a
+capacity fact, not a judgment of the patch.
 
-## What lives where
+## What an older edition of this file claimed
 
-- **`TinyAssets/`** (this repo, platform code) — MIT-licensed Python + prototypes. PRs land here for the MCP gateway, tray, connectors, node authoring surface, infra.
-- **`TinyAssets-catalog/`** (content repo, CC0-1.0) — node YAMLs, branch definitions, catalogs (node-type / integration-pattern / domain-pattern / privacy / moderation). PRs land here for node + branch + taxonomy contributions.
-- **`docs/design-notes/`, `docs/specs/`, `docs/catalogs/`** — design documentation. PRs welcome for amendments, counter-proposals, new specs.
+The previous text told contributors to use a separate catalog repository, to
+add connectors under `connectors/<name>/`, to add a `Signed-off-by` line, and
+to expect a first response within 48 hours, with escalation to
+`security@tinyassets.io`. That does not describe this repository:
 
-**Pick the right repo for your contribution:** connector code → `TinyAssets/connectors/`. A new node definition → `TinyAssets-catalog/catalog/nodes/`. A design critique → `docs/design-notes/` in `TinyAssets/`.
+- There is no `connectors/` tree.
+- `prototype/tinyassets-catalog-v0/` and `prototype/workflow-catalog-v0/` are
+  prototypes in this repo, not a live second project to send pull requests to.
+- A `Signed-off-by` trailer is not required.
+- Security reports go to [SECURITY.md](SECURITY.md). A quiet pull request is
+  not a security incident.
 
----
+TODO(owner): say whether you want a Developer Certificate of Origin, and
+whether any external catalog repository is still a contribution target.
 
-## Our commitment to you — Review SLA
+## A code change
 
-This section is the forever-rule answer to "is my PR going to rot?" Short answer: **no.**
+1. Branch from `main`. One intent per pull request.
+2. Read [AGENTS.md](AGENTS.md). It is the working agreement for this repo.
+   Changes to the public MCP or API, storage shape, authority, migrations, or
+   money need a spec first. Other changes can be a small diff with no plan.
+3. Python 3.11+. From a checkout:
 
-### Response SLA (what you can expect)
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+python -m scripts.ci_structural_guards
+pytest -q tests/test_<area>.py
+ruff check <changed files>
+```
 
-| Event | Target | Commitment |
-|---|---|---|
-| **First-response to a PR** | ≤48 hours (weekday median) | A named maintainer acknowledges the PR + either reviews or tells you who will. No silent inbox. |
-| **Full review** | ≤5 calendar days | A complete review pass with merge / change-request / decline decision. If the work is larger than maintainer bandwidth, we'll say so + propose a chunking plan. |
-| **Re-review after changes** | ≤48 hours (weekday median) | Same clock re-starts on push-to-branch. |
-| **Merge decision** | ≤10 calendar days from PR open (absent blocker) | If a decision takes longer, it's because of a genuine blocker (spec ambiguity, cross-PR coordination, host out sick) — maintainer posts the reason on the PR. |
+Tests run offline. Providers are mocked. API keys are not required for that
+loop. CI runs the rest. Required CI does not run the files listed in
+`.github/heavy-test-files.txt`.
 
-### Holiday / out-of-office exceptions
+4. Open the pull request against `main`.
 
-If a named maintainer is OOO ≥72 hours, they either (a) hand off to another admin-pool member or (b) post an OOO note to the repo's pinned issue with expected return date. PRs opened during OOO windows get first-response when the reviewer returns + the clock is measured from OOO-end, not PR-open.
+A second model family reviews floor-class changes and gate-file changes only
+([ADR-015](docs/decisions/ADR-015-only-the-floor-blocks-a-deploy.md)). That is
+narrower than "every change gets a second review."
 
-### Escalation path if SLA is breached
+TODO(owner): the public developers page says every change gets a review from
+a second model family (`WebSite/site-react/app/developers/page.tsx`). That
+sentence is broader than ADR-015.
 
-1. Comment on the PR tagging `@maintainers` after 72h of no first-response.
-2. If still silent after 5 days, email `security@tinyassets.io` with the PR URL. Admin-pool members rotate this inbox.
-3. If still silent after 10 days with no SLA-breach explanation, the PR is eligible for the `stale-maintainer` escalation — file an issue in `TinyAssets/` titled `SLA breach: PR #N`. Admin pool treats this as a P1 operational flag.
+Leave `.github/workflows/` and `deploy/` alone unless the change is
+specifically about them. This repository's production path is easy to break
+from a docs-shaped pull request that also edits a workflow.
 
-No single maintainer can make your PR invisible. If one is unresponsive, the admin-pool surface exists to catch it.
+## Words
 
-### Launch-window caveat (2026-04 → ~2026-07)
+The user-facing name is **command center**. Code, stored data, and many older
+docs still say **universe**. The map is
+[docs/architecture.md](docs/architecture.md). A drive-by rename is a large
+change of its own; the open note is
+`openspec/changes/rename-universe-to-command-center/`.
 
-During the initial launch window, the admin pool is size 1-2 (host + first co-maintainer per `SUCCESSION.md` §2). The SLA above is our best-effort target; we expect to hit the 48h first-response median but occasional 3-5 day slips are realistic. **If you see a pattern of slips, flag it in the `stale-maintainer` path** — we'd rather hear about SLA breaches than have contributors quietly bounce.
+## Issues
 
-Post-launch (admin pool ≥3), the SLA becomes a hard commitment. Breach-rate is tracked in the public maintainer-health dashboard.
+Use the templates:
 
----
+- [Bug report](https://github.com/TinyAssets/TinyAssets/issues/new?template=bug_report.yml)
+- [Feature request](https://github.com/TinyAssets/TinyAssets/issues/new?template=feature_request.yml)
+- [Tester feedback](https://github.com/TinyAssets/TinyAssets/issues/new?template=tester_feedback.yml)
 
-## Who reviews
+Do not paste passwords, setup tokens, or session cookies into an issue.
 
-Current admin pool (see `SUCCESSION.md` §2 for canonical list):
+On 2026-10-11 GitHub reported 1,314 open issues. Open pull requests were in
+the single digits on two reads that day. 932 open issues were labeled
+`watchdog` and 126 were labeled `deploy-failed`.
+Those are opened by repository automation. The `good first issue` label
+existed and had zero open issues. Treat the issue list as an automation log
+until someone triages it. The templates above do not apply to issues that
+Actions opens.
 
-| Role | Who | What they review |
-|---|---|---|
-| **Host / primary maintainer** | Jonathan Farnsworth | All PRs by default during launch window. |
-| **Co-maintainer #1** (pre-launch seat — TBD) | — | Connectors, tray, node authoring surface. Backup reviewer for all other areas. |
-| **Moderation admin** (may overlap with co-maintainer) | — | Content-catalog PRs + moderation-rubric changes. |
-| **User-sim persona reviewer** | `user` agent (automated) | Catalog + onboarding copy — checks persona authenticity + real-world-effect framing. |
+TODO(owner): close or silence the automation backlog, and label a few real
+starter tasks `good first issue` if you want outside contributors.
 
-**Maintainer rotation:** the first review on each PR is auto-assigned round-robin across the admin pool. The assignee can re-route if another member is a better fit; re-routes must happen within the 48h first-response clock.
+## Conduct and security
 
----
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md)
 
-## How to contribute
+## Where to start if you are not sending code
 
-### 1. Platform code (`TinyAssets/`)
+Testers: [docs/getting-started/testers.md](docs/getting-started/testers.md).
 
-- Fork + branch off `main`.
-- Run `ruff check` + `pytest` locally before pushing — our pre-merge CI runs both.
-- Follow the conventions in `AGENTS.md` (hard rules, TypedDict+Annotated-reducer state, no destructive operations without user approval).
-- New modules need tests. Nodes must never crash — graceful fallback always.
-- Sign commits with DCO (`Signed-off-by: Your Name <email>`). No CLA required.
-
-### 2. Connectors (`TinyAssets/connectors/<name>/`)
-
-See `docs/specs/2026-04-19-connectors-two-way-tool-integration.md` §9. Required files:
-- `__init__.py` exporting a class matching `ConnectorProtocol`.
-- `MANIFEST.yaml` declaring name/version/auth_kind/required_scopes/actions.
-- `tests/test_connector.py` with mock-backed unit tests for each declared action.
-- `README.md` covering setup + scope rationale + known limitations.
-
-Review criteria: privacy compliance (no payload logging), auth via shared `OAuth2Handler`, error-taxonomy mapping, tests, documentation, maintainer contact.
-
-### 3. Node + Branch content (`TinyAssets-catalog/`)
-
-- Start with an existing node YAML as a template (see `catalog/nodes/example-node.yaml`).
-- License: **CC0-1.0** for all catalog content. No exceptions at launch.
-- Required fields per `docs/catalogs/node-type-taxonomy.md` + `docs/catalogs/integration-patterns.md`.
-- Persona-authenticity test: can you describe this node's use-case in the voice of a real user with a real project? If the answer is "no" or "it's a toy example," rework it before submitting.
-
-### 4. Design notes + specs (`TinyAssets/docs/`)
-
-- Design-notes go in `docs/design-notes/YYYY-MM-DD-<slug>.md`.
-- Specs (executable feature plans) go in `docs/specs/YYYY-MM-DD-<slug>.md` or the existing INDEX.
-- Counter-proposals are welcome — open an issue linking to the existing doc + your alternative. We track dissent, not just consensus.
-
-### 5. Reviews
-
-You don't have to be an admin-pool member to review. Drive-by reviews are welcome + weighted in the maintainer-health dashboard. If you want to commit to regular review work, say so in an issue — it's the fastest path to admin-pool seating.
-
----
-
-## What we won't merge
-
-- Code without tests (nodes + platform both).
-- Connectors that log payload content.
-- Catalog content with a non-CC0 license.
-- PRs that add backwards-compatibility shims for removed code (delete the dead code — we're not supporting legacy).
-- Anything that breaks the "main is always downloadable" standing principle.
-- PRs that change `AGENTS.md` hard rules without a corresponding design note + admin-pool sign-off.
-
----
-
-## Getting help
-
-- **General questions:** open a discussion in `TinyAssets/`.
-- **Security reports:** email `security@tinyassets.io` (PGP key in `SUCCESSION.md`).
-- **Stuck contributor:** ping `@maintainers` on your PR. If you've been stuck for >72h, use the escalation path above — we want to unblock you.
-
-Thanks for showing up. The forever-rule is "TinyAssets is always up, always downloadable, always reviewable" — contributors make the third clause real. We owe you the review time you're giving us the code time for.
-
----
-
-## Cross-references
-
-- `SUCCESSION.md` — admin pool roster, rotation policy, recruitment criteria.
-- `AGENTS.md` — behavioral norms, hard rules, testing requirements.
-- `docs/specs/2026-04-19-connectors-two-way-tool-integration.md` §9 — connector plugin schema.
-- `docs/catalogs/node-type-taxonomy.md` + sibling catalogs — content contribution shapes.
-- `docs/moderation_rubric.md` — how reported content is evaluated.
-
----
-
-## Open questions (pending host decisions)
-
-This section lists commitments in this doc whose concrete values are still pending host decision. Contributors should know what's still being finalized.
-
-**Q25-nav (maintainer rotation at launch):** This doc commits to a 48h first-response SLA. The admin-pool size at launch-day-zero is 1-2 (host + first co-maintainer per `SUCCESSION.md`). Host has three options for how to honor the SLA during the launch window:
-- **(a)** Accept tier-3 bounce risk; honor SLA on best-effort only; post the "launch-window caveat" above as our actual posture.
-- **(b)** Delay launch until admin pool ≥ 3 (hard SLA from day zero).
-- **(c)** Launch + recruit co-maintainers mid-launch-window; SLA hardens as pool grows.
-
-Current draft reflects (c). If host picks (a) or (b), the "Launch-window caveat" section changes.
-
-Resolution target: before `tinyassets.io` launch-day-zero.
+Self-hosting: [docs/getting-started/self-hosting.md](docs/getting-started/self-hosting.md).
+The production server is not a supported install on your own machine.

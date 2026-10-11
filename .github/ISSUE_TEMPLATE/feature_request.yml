@@ -1,0 +1,44 @@
+name: Feature request
+description: Something you want TinyAssets to do.
+title: "Request: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One maintainer reads these. There is no promise to build it.
+
+        Security vulnerabilities belong in SECURITY.md, not here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to get done?
+      description: The job, in your words. A paper, an inbox, a repo, a reminder.
+    validations:
+      required: true
+  - type: textarea
+    id: want
+    attributes:
+      label: What would "done" look like?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where would you use it?
+      options:
+        - Web app
+        - Android
+        - Claude or ChatGPT connector
+        - Desktop
+        - I do not mind
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Before you submit
+      options:
+        - label: This is not a security vulnerability.
+          required: true
