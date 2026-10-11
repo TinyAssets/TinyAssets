@@ -3,25 +3,20 @@
 Date 2026-10-11. Audited `origin/main` at `e603aafd618`, read-only. Research
 and design only; nothing here changes code.
 
-**Trigger.** The founder's app agent tried to add a cross-family review step
-and failed three ways:
-- Codex did not run inside the owner cells.
-- Its workflow reached OpenRouter over a raw HTTP connection, and usage
-  accounting refused the call.
-- Its "Codex review" step ran on the default Claude model.
-
-Open PR #4614 patches Codex-only and effector-only paths for this. The
+**Trigger.** The founder's app agent could not add a cross-family review
+step: Codex did not run inside the owner cells, its workflow's raw HTTP call to
+OpenRouter was refused by usage accounting, and its "Codex review" step ran on
+the default Claude model. Open PR #4614 patches Codex-only and effector-only
+paths for this. The
 founder's question: why does a pi.dev-style harness need a platform patch to
 build an agent?
 
 ## 1. The answer in one paragraph
 
 We designed the right shape and shipped none of it as the only path.
-`target-architecture` D6 already says it:
-- one thin, vendor-neutral loop speaking standard model protocols through the
-  broker;
-- CLIs only as command adapters inside the owner's box;
-- credentials and metering at the broker.
+`target-architecture` D6 already says it: one thin, vendor-neutral loop over
+standard model protocols; CLIs only as command adapters in the owner's box;
+credentials and metering at the broker.
 
 On main, that loop is an opt-in environment switch (`TINYASSETS_AGENT_LOOP=thin`
 in `agent_loop/served_chat.py:26`) that production does not set.
@@ -31,11 +26,9 @@ per owner**: `router.call_with_policy` begins with `del policy, difficulty`,
 because "the owner's binding names exactly one provider"
 (`providers/router.py:1895-1902`).
 
-Three things follow:
-1. "Call a different model" has no general path, so each caller grew its own.
-2. The isolation cutover then had to harden every one of those paths
-   separately, about ten kinds of cell, one at a time.
-3. Most "bugs" are the seams between duplicate paths.
+So "call a different model" has no general path and each caller grew its
+own; the isolation cutover then hardened each of those paths separately (about
+ten kinds of cell); and most "bugs" are the seams between duplicate paths.
 
 pi has one model-call function, one loop and one outer boundary, and builds
 everything else (sub-agents, review, routing, UI) in user space. That is why
@@ -65,24 +58,16 @@ are experimental), mobile, a web chat app, and any workflow or graph engine.
 
 ## 3. What we said the harness would be
 
-- **README Direction 2-3:** four tools plus `ta`, one extension unit, one
-  agent definition for every provider, no provider code, abilities as files.
-- **ADR-006:** owner credentials only.
-- **ADR-007:** an LLM is just another connection, and a "user-configured
-  command adapter" is a connection primitive.
-- **ADR-012 / `target-architecture`:** one sealed box per command center;
-  credentials and metering in the broker; D6 thin loop with a CLI only as a
-  command adapter in the box.
-- **ADR-013:** ship the missing primitive, never the operator.
-- **ADR-014:** an agent is a node running the same turn as `converse`.
-- **`universe-agent-harness` §4.7:** exactly pi's four tools; breadth through
-  `ta search/describe/call`.
-- **2026-10-04 pi gap audit:** we have none of pi's four extension properties
-  (loop hooks, tool and command registration, UI hooks, one-command install).
-- **2026-10-06 Muse-fit note:** Muse-level abilities ship as the starter's
-  package, not platform code.
-
-Every one of these points the same way. The code does not.
+README Direction 2-3 (four tools plus `ta`, one extension unit, one agent
+definition, no provider code); ADR-006 (owner credentials only); ADR-007 (an
+LLM is just a connection; a "user-configured command adapter" is a primitive);
+ADR-012 and `target-architecture` D6 (one sealed box; credentials and metering
+in the broker; a thin loop, CLIs only as command adapters in the box); ADR-013
+(ship the primitive, not the operator); ADR-014 (an agent is a node running the
+`converse` turn); `universe-agent-harness` §4.7 (pi's four tools, breadth
+through `ta`); the 2026-10-04 pi gap audit (none of pi's four extension
+properties yet); the 2026-10-06 Muse-fit note (Muse abilities as the starter's
+package). Every one of these points the same way. The code does not.
 
 ## 4. What we actually have
 
@@ -121,15 +106,8 @@ The layer the Direction calls the product is the smallest.
 
 ### Provider- and feature-specific code (against Direction 2-3)
 
-Hits for vendor names in `tinyassets/*.py`:
-
-| Name | Files | Hits |
-|---|---|---|
-| codex | 125 | 1,063 |
-| claude | 62 | 360 |
-| openai | 25 | 127 |
-| anthropic | 15 | 55 |
-| openrouter | 16 | 21 |
+Vendor names in `tinyassets/*.py`: codex 1,063 hits in 125 files; claude 360
+in 62; openai 127 in 25; anthropic 55 in 15; openrouter 21 in 16.
 
 Structural cases:
 - `router.py:243`, the named fallback chains.
@@ -162,13 +140,9 @@ Structural cases:
 
 ## 5. The band-aids, classified
 
-Classes:
-- (a) a real bug in a single correct path;
-- (b) duplicate paths or special-casing;
-- (c) the platform building something a user should;
-- (d) fallout from the isolation cutover.
-
-Secondary class in parentheses.
+Classes: (a) a real bug in a single correct path; (b) duplicate paths or
+special-casing; (c) the platform building something a user should; (d) fallout
+from the isolation cutover. Secondary class in parentheses.
 
 | PR | Merged | Class | Why |
 |---|---|---|---|
@@ -193,11 +167,9 @@ Ten of the 13 code PRs are (d). But (d) has a cause: the cutover put a
 boundary around each path and each platform feature, not around the owner. So
 every duplicate became one more cell to harden.
 
-Other recurring causes:
-- **Separate launch code per provider:** #4578, #4579, #4580 and part of
-  #4614.
-- **Accounting per route rather than per call:** #4596, #4613 and #4614.
-- **Platform features writing into owner space:** #4597 and #4599.
+Other recurring causes: separate launch code per provider (#4578-#4580, part
+of #4614); accounting per route, not per call (#4596, #4613, #4614); platform
+features writing into owner space (#4597, #4599).
 
 ## 6. The target core
 
@@ -228,38 +200,33 @@ Six primitives:
 1. **One model call.** Every caller (chat, workflow step, sub-agent,
    extension, a raw `ta` connection POST) uses
    `call(model_ref, context) -> stream + usage`.
-   - Sources are connections: API key, OAuth, local endpoint, or a command
-     adapter.
-   - The owner's authority is the set of connected sources, not one bound
-     provider. A call names a source or takes the default.
+   Sources are connections (API key, OAuth, local endpoint, command adapter).
+   The owner's authority is the set of connected sources, not one bound
+   provider; a call names a source or takes the default.
 2. **Accounting and isolation attach once.**
-   - Isolation is the box: everything owner-side runs in it, including CLIs.
-   - Credentials, ADR-006 checks, metering and budgets live at the broker.
-     Usage is read from the standard wire protocol's `usage` field, so the
-     parser depends on the protocol, never the vendor. If usage cannot be
-     parsed, the call is still recorded and flagged; it is never refused.
-   - This is pi's "the container is the boundary, the proxy swaps
-     credentials", made multi-user.
+   Isolation is the box: everything owner-side runs in it, CLIs included.
+   Credentials, ADR-006 checks, metering and budgets live at the broker, which
+   reads the wire protocol's `usage` field (per protocol, never per vendor);
+   unparseable usage is recorded and flagged, never refused. This is pi's "the
+   container is the boundary, the proxy swaps credentials", made multi-user.
 3. **One loop.** The thin loop. A CLI is never a chat transport. It is a
    binary in the box that the agent runs through `bash` (`codex exec …`),
    exactly as pi's blog says.
 4. **One agent definition: a file.**
-   - The file is `agents/<name>.md` with frontmatter (`model`, `tools`,
-     `skills`).
-   - A sub-agent is `ta agent run <file> [--model]`.
-   - An agent node (ADR-014) is the same call made from a graph.
-   - "Codex review" becomes `agents/reviewer.md` with
-     `model: <openrouter-or-openai source>/gpt-…`, or a skill that runs
-     `codex exec` in the box. Either way, no platform patch.
+   `agents/<name>.md` with frontmatter (`model`, `tools`, `skills`). A
+   sub-agent is `ta agent run <file> [--model]`; an agent node (ADR-014) is
+   the same call from a graph. "Codex review" becomes `agents/reviewer.md` with
+   `model: <openrouter-or-openai source>/gpt-…`, or a skill that runs
+   `codex exec` in the box. Either way, no platform patch.
 5. **One extension unit.** `extension.json` grows pi's hooks (`tool_call`,
    `context`, `before_agent_start`, `agent_end`), command registration and UI
    contributions, running in the box with the launch's grant. The UI bridge
    exposes exactly `ta`.
 6. **Durable runs stay.** The graph runtime, the control plane and the run
    journal are what pi lacks and Direction 8 requires (24/7 with zero hosts).
-   - Node kinds shrink to four: `agent` (the loop; zero tools covers today's
-     plain prompt), `code` (sandbox), `call` (a `ta` capability or
-     connection) and `subgraph`.
+   Node kinds shrink to four: `agent` (zero tools covers today's plain
+   prompt), `code` (sandbox), `call` (a `ta` capability or connection) and
+   `subgraph`.
 
 ## 7. Delete or merge
 
@@ -283,35 +250,28 @@ Six primitives:
 Each step ships alone, is live-verified, and deletes more than it adds.
 Foundation first (Direction 5).
 
-1. **Meter at the broker; never refuse a model-source call.**
-   - Broker metering from the response `usage` of every request to a
-     model-source connection.
-   - Delete the envelope requirement and the prompt band-aid.
-   - This alone lets the founder's workflow call OpenRouter, with no
-     special path.
-   - **Replace #4614's effector-accounting and Codex-home parts with this
-     step. Keep only its lost-message fix.**
+1. **Meter at the broker; never refuse a model-source call.** Metering from
+   the response `usage` of every model-source request; delete the envelope
+   requirement and the prompt band-aid. This alone lets the founder's workflow
+   call OpenRouter with no special path. **Replace #4614's effector-accounting
+   and Codex-home parts with this step; keep only its lost-message fix.**
 2. **The owner's authority is a source set.** `model_ref` is honoured on every
-   call, the four admission scopes collapse into one, and the roles and chains
-   are deleted. A node's model choice then works.
-3. **Agents are files; sub-agents use `ta agent run`.**
-   - Migrate `custom_agents` rows to `agents/*.md`, and point agent nodes at
-     the same call.
-   - Move `agent_review` into the starter package.
-   - Proof: the app agent builds a GPT reviewer itself, observed only (memory
-     "agent ships alone").
-4. **The thin loop is the only loop.**
-   - Flip the default, then delete the CLI chat transports.
-   - Codex and Claude CLIs become command adapters that run in the box, with
-     egress through the broker (`target-architecture` D6 base-URL mode and the
-     file-OAuth lease).
-   - Depends on `broker-streaming-contract`.
-5. **One box per owner.** Collapse the `role_*` cell kinds into box exec, and
-   move the remaining platform writers out of owner space. This is the
-   ADR-012 cutover finished, rather than ten cells hardened.
-6. **Extension hooks and UI bridge = `ta`** (pi gap audit L11-L13). Only now
-   does "users build any harness" become literally true. Before step 4 it
-   would add a fourth loop to hook into.
+   call, the four admission scopes collapse into one, roles and chains are
+   deleted. A node's model choice then works.
+3. **Agents are files; sub-agents use `ta agent run`.** Migrate `custom_agents`
+   rows to `agents/*.md`, point agent nodes at the same call, move
+   `agent_review` into the starter package. Proof: the app agent builds a GPT
+   reviewer itself, observed only (memory "agent ships alone").
+4. **The thin loop is the only loop.** Flip the default, then delete the CLI
+   chat transports. Codex and Claude CLIs become command adapters in the box
+   with egress through the broker (D6 base-URL mode, file-OAuth lease).
+   Depends on `broker-streaming-contract`.
+5. **One box per owner.** Collapse the `role_*` cell kinds into box exec and
+   move the remaining platform writers out of owner space: the ADR-012 cutover
+   finished, rather than ten cells hardened.
+6. **Extension hooks and UI bridge = `ta`** (pi gap audit L11-L13). Only now is
+   "users build any harness" literally true; before step 4 it would add a
+   fourth loop to hook into.
 
 Steps 1-3 are small and unblock the trigger case. Step 4 is the large
 deletion. Steps 1-2 touch the floor (ADR-015: authority and money), so each
