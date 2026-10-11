@@ -3329,6 +3329,8 @@ def converse(
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
+        if saved and founder_turn is None:
+            _announce_owner_message(memory_universe_dir)
         history = {
             "turn_failure": normalize_turn_failure(record),
             "failure_notice": failure_notice(record),

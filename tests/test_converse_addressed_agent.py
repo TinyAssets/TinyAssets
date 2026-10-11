@@ -541,8 +541,12 @@ def test_client_send_identity_round_trips_only_in_own_agent_thread(world, monkey
                       )["recent_conversation"]["turns"] == []
     other_session = addressed_agents.memory_session("other-owner", agent)
     assert load_recent_readonly(world["udir"], other_session) == []
-    # Repeating the ID is metadata, never deduplication or a turn mutation.
-    _converse(message="yes", agent_id=agent, client_send_id=identity)
+    # Retrying an admitted send acknowledges its row without another dispatch.
+    assert _converse(message="yes", agent_id=agent, client_send_id=identity) == {
+        "already_received": True, "history_saved": True, "universe_id": "u-home"}
     rows = load_recent_readonly(world["udir"], addressed_agents.memory_session(OWNER, agent))
-    assert len(rows) == 4
-    assert [r.client_send_id for r in rows] == [identity, "", identity, ""]
+    assert len(rows) == 2
+    assert [r.client_send_id for r in rows] == [identity, ""]
+    assert [(r.speaker, r.text) for r in rows] == [
+        ("founder", "yes"), ("universe", "causally matched reply")]
+    assert len(observed) == 1

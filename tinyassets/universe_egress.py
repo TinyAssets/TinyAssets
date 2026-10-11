@@ -75,7 +75,7 @@ JAIL_ENGINE_SOCKET = "/tmp/.ta-engine.sock"
 #: that relays every connection on a port to its unix socket, then execs the
 #: command. The child dies with the jail.
 FORWARDER = r'''
-import ctypes, os, signal, socket, sys, threading
+import os, socket, sys, threading
 def report(exc, operation):
     number = exc.errno if isinstance(exc, OSError) else None
     os.write(2, ('TA_CELL_FAILURE relay:' + operation + ':errno=' + str(number) + '\n').encode())
@@ -91,18 +91,10 @@ for spec in args[:sep]:
     srv.listen(64)
     servers.append((srv, path))
 command = args[sep + 1:]
-parent = os.getpid()
 if os.fork():
     for srv, _ in servers:
         srv.close()
     os.execvp(command[0], command)
-# The relay must not outlive the CLI. Otherwise it retains stderr and keeps
-# the PID namespace alive after a successful one-shot provider has exited.
-libc = ctypes.CDLL(None, use_errno=True)
-if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
-    raise OSError(ctypes.get_errno(), 'relay parent-death guard')
-if os.getppid() != parent:
-    os._exit(0)
 null = os.open(os.devnull, os.O_RDWR)
 for fd in (0, 1):
     os.dup2(null, fd)

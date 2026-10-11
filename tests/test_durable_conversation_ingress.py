@@ -246,3 +246,25 @@ def test_effect_record_failure_prevents_tool_dispatch(tmp_path, monkeypatch):
     with pytest.raises(sqlite3.DatabaseError):
         asyncio.run(engine_tool_activity.ToolActivity().on_call_tool(
             SimpleNamespace(message=SimpleNamespace(name='bash', arguments={})), dispatch))
+
+
+def test_setup_failure_announces_its_stored_owner_message_once(tmp_path, monkeypatch):
+    from tinyassets import automation_events, turn_interrupt, universe_intelligence, universe_server
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    announced = []
+    monkeypatch.setattr(automation_events, 'emit_owner_message',
+                        lambda *a, **kw: announced.append(kw['principal_id']))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError('injected turn setup failure')
+
+    monkeypatch.setattr(turn_interrupt, 'interactive_turn', broken)
+    monkeypatch.setattr(universe_intelligence, 'converse',
+                        lambda *a, **kw: pytest.fail('dispatch after failed setup'))
+    response = json.loads(universe_server.converse(message='keep setup failure', graph_id='u-x'))
+    assert response['history_saved'] is True
+    assert announced == ['founder-1']
+    rows, _ = store.read_history_page(tmp_path / 'u-x', 'principal:founder-1', limit=30)
+    assert [m.speaker for m in rows] == ['founder', 'platform']
+    assert rows[0].text == 'keep setup failure'

@@ -136,12 +136,13 @@ def test_executable_admission_is_install_layout_not_provider_name(
 
 
 def test_cell_fixes_disposable_environment(monkeypatch):
-    monkeypatch.setattr(role_provider_cell, 'shipped_executable', lambda path: True)
+    monkeypatch.setattr(role_provider_cell.os.path, 'realpath', lambda value: value)
+    monkeypatch.setattr(role_provider_cell.os, 'stat',
+                        lambda value: SimpleNamespace(st_mode=0o100755, st_uid=65534))
     argv, env, engine_port = role_provider_cell.validate(json.dumps(
         {'argv': ['/opt/claude-code-install/node_modules/.bin/claude'],
          'env': {'HOME': '/elsewhere', 'PATH': '/evil', 'CODEX_HOME': '/snapshot'}}), '/data')
-    assert env['HOME'] == '/provider-home' and env['PATH'] == '/usr/bin:/bin'
-    assert env['USERPROFILE'] == '/provider-home' and env['TMPDIR'] == '/tmp'
+    assert env['HOME'] == '/tmp' and env['PATH'] == '/usr/bin:/bin'
     assert env['CODEX_HOME'] == '/snapshot' and engine_port is None
 
 

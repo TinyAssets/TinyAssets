@@ -652,7 +652,7 @@ def leg_provider_turns():
                     dict(ANTHROPIC_API_KEY=key, ANTHROPIC_BASE_URL=base,
                          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', ENABLE_TOOL_SEARCH='false')),
                 'codex': (['/usr/local/bin/codex', 'exec', '--skip-git-repo-check',
-                    '--json', '--sandbox', 'danger-full-access', '-m', 'gpt-5',
+                    '--json', '--sandbox', 'read-only', '-m', 'gpt-5',
                     '-c', 'model_provider="oracle"',
                     '-c', 'model_providers.oracle.name="Oracle"',
                     '-c', f'model_providers.oracle.base_url="{base}/v1"',

@@ -44,9 +44,6 @@ if seed == 0:
     launch['close_descriptors']((writer.fileno(),))
     from tinyassets.broker.owner_identities import OwnerIdentities
     store = OwnerIdentities(root / '.broker/state/owner-identities.db', initialize=True)
-    for owner in ('alice', 'bob'):
-        store.resolve(owner, allocate=True)
-        store.admission('admit', owner, 'cell-' + owner)
     writer.sendall(json.dumps({o: store.resolve(o, allocate=True).uid
                                for o in ('alice', 'bob')}).encode())
     os._exit(0)
@@ -119,13 +116,7 @@ targets, port = json.loads(bytes.fromhex(sys.argv[1]))
 fields = dict(l.split(':', 1) for l in open('/proc/self/status').read().splitlines())
 with open(os.path.join(os.environ['CODEX_HOME'], 'own-sentinel')) as f:
     own_snapshot = f.read()
-assert os.environ['HOME'] == '/provider-home'
-assert os.stat(os.environ['HOME']).st_uid == os.getuid()
-home_fs = os.statvfs(os.environ['HOME'])
-home_bytes = home_fs.f_blocks * home_fs.f_frsize
-assert home_bytes == 256 * 1024 * 1024, home_bytes
-assert os.stat(os.environ['CODEX_HOME']).st_uid == os.getuid()
-assert not os.path.realpath(os.environ['CODEX_HOME']).startswith('/tmp/')
+assert os.environ['HOME'] == '/tmp'
 with open('/tmp/metadata-positive-control', 'w') as f:
     f.write('private scratch works')
 opened = []
@@ -158,7 +149,7 @@ fds = sorted(int(n) for n in os.listdir('/proc/self/fd') if n.isdigit()
 print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'], 16),
     nnp=int(fields['NoNewPrivs']), fds=fds, opened=opened, direct=direct, engine=engine,
     env_secret='DAEMON_ONLY_SECRET' in os.environ, pids=len(pids), proc_secret=seen_secret,
-    own_snapshot=own_snapshot, home_bytes=home_bytes)))
+    own_snapshot=own_snapshot)))
 """
 PIPES = dict(stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
              stderr=asyncio.subprocess.PIPE)
@@ -204,8 +195,8 @@ async def app_server_handshake(owner):
     center = root / ('cell-' + owner)
     snapshot = center / '.runtime/provider-launch-credentials/fixture'
     with provider_launch_scope(center, credential_dir=snapshot):
-        proc = await aspawn_owned([CODEX, *CodexProvider.native_metadata_arguments],
-                                  env={'CODEX_HOME': str(snapshot)}, **PIPES)
+        proc = await aspawn_owned([CODEX, 'app-server'], env={'CODEX_HOME': str(snapshot)},
+                                  **PIPES)
     try:
         proc.stdin.write(json.dumps({'id': 1, 'method': 'initialize', 'params': {
             'clientInfo': {'name': 'cell_probe', 'version': '1'}}}).encode() + b'\n')
@@ -236,8 +227,7 @@ async def main():
             hello = await app_server_handshake(owner)
             assert 'result' in hello, hello
             catalogue = await read_native_catalogue(
-                [CODEX, *CodexProvider.native_metadata_arguments],
-                protocol=CodexProvider.native_discovery_protocol,
+                [CODEX, 'app-server'], protocol=CodexProvider.native_discovery_protocol,
                 env={'CODEX_HOME': str(root / ('cell-' + owner)
                                        / '.runtime/provider-launch-credentials/fixture')},
                 cwd=str(root / ('cell-' + owner) / '.runtime/provider-launch-credentials/fixture'),
