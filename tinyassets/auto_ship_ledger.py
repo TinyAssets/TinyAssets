@@ -46,7 +46,9 @@ from pathlib import Path
 from typing import Iterator
 
 LEDGER_FILENAME = "auto_ship_attempts.jsonl"
-LOCK_FILENAME = "auto_ship_attempts.jsonl.lock"
+# Dotted: a platform coordination file, never owner content
+# (command_center_layout.PLATFORM_LOCK_NAMES).
+LOCK_FILENAME = ".auto_ship_attempts.jsonl.lock"
 
 #: Valid ``ship_status`` values across Phase 1-3 (§10).
 VALID_SHIP_STATUSES: frozenset[str] = frozenset({
@@ -190,14 +192,15 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
 
     Same primitive as ``tinyassets.branch_tasks._file_lock`` — kept as a
     private mirror rather than importing it because the lock is
-    namespaced to ``auto_ship_attempts.jsonl.lock``, not to the queue
+    namespaced to ``.auto_ship_attempts.jsonl.lock``, not to the queue
     file. Two concurrent ledger writes serialize; ledger writes do
     NOT serialize against branch_tasks writes (they touch different
-    files anyway).
+    files anyway). Opened link-free through ``universe_files.open_lock_file``.
     """
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lock_file = _lock_path(universe_path)
-    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_path, LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -267,13 +270,10 @@ def _write_raw(lp: Path, rows: list[dict]) -> None:
     Used by ``update_attempt``. ``record_attempt`` uses a true append
     instead so it does not have to re-serialize the whole file.
     """
-    lp.parent.mkdir(parents=True, exist_ok=True)
-    tmp = lp.with_suffix(lp.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            fh.write(json.dumps(row, default=str))
-            fh.write("\n")
-    os.replace(tmp, lp)
+    from tinyassets.universe_files import write_universe_file
+
+    data = ''.join(json.dumps(row, default=str) + '\n' for row in rows).encode()
+    write_universe_file(lp.parent, lp.name, data, mode="replace")
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -430,11 +430,11 @@ def record_attempt(universe_path: Path, attempt: ShipAttempt) -> None:
                     f"ship_attempt_id {attempt.ship_attempt_id!r} already "
                     f"recorded — use update_attempt to mutate"
                 )
-        # True append, no full rewrite — JSONL's main ergonomic win.
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        with lp.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(attempt.to_dict(), default=str))
-            fh.write("\n")
+        from tinyassets.universe_files import write_universe_file
+
+        write_universe_file(lp.parent, lp.name,
+                            (json.dumps(attempt.to_dict(), default=str) + '\n').encode(),
+                            mode="append")
 
 
 def update_attempt(

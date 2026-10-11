@@ -34,7 +34,9 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 EXEC_LOG_FILENAME = "bid_execution_log.json"
-EXEC_LOG_LOCK_FILENAME = "bid_execution_log.json.lock"
+# Dotted: a platform coordination file, never owner content
+# (command_center_layout.PLATFORM_LOCK_NAMES).
+EXEC_LOG_LOCK_FILENAME = ".bid_execution_log.json.lock"
 # Legacy filenames — read during this transition only. Future
 # hardening pass can remove once no universe retains the old names.
 _LEGACY_LOG_FILENAME = "bid_ledger.json"
@@ -44,15 +46,12 @@ def execution_log_path(universe_path: Path) -> Path:
     return Path(universe_path) / EXEC_LOG_FILENAME
 
 
-def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / EXEC_LOG_LOCK_FILENAME
-
-
 @contextlib.contextmanager
 def _exec_log_lock(universe_path: Path) -> Iterator[None]:
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lf = _lock_path(universe_path)
-    fd = os.open(str(lf), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_path, EXEC_LOG_LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -119,16 +118,13 @@ def read_execution_log(universe_path: Path) -> list[dict]:
 
 def append_execution_log_entry(universe_path: Path, entry: dict) -> None:
     """File-locked append of a single execution-log entry."""
-    p = execution_log_path(universe_path)
+    from tinyassets.universe_files import write_universe_file
+
     with _exec_log_lock(universe_path):
         data = read_execution_log(universe_path)
         data.append(dict(entry))
-        tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
-        )
-        os.replace(tmp, p)
+        write_universe_file(Path(universe_path), EXEC_LOG_FILENAME,
+                            json.dumps(data, indent=2, default=str).encode(), mode="replace")
 
 
 # Back-compat aliases — delete once all callers switch over.

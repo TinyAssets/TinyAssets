@@ -124,6 +124,11 @@ def test_owner_work_is_owner_owned_and_daemon_keeps_access():
         once = target(path, kind, mode)
         assert target(path, kind, once[2]) == once  # a converged rerun changes nothing
     assert target("u-a/.agent-workspace", stat.S_IFDIR, 0o755)[0] == 300001
+    # Repair of post-cutover daemon writes: a rerun relabels a uid-1001 visible
+    # entry to its owner, while a dotted coordination lock stays the daemon's.
+    for name in ("config.yaml", "branch_tasks.json.lock", "subscriptions.json.lock"):
+        assert target(f"u-a/{name}", mode=0o644)[:3] == (300001, 300001, 0o664)
+    assert target("u-a/.branch_tasks.json.lock")[:3] == (1001, 1001, 0o600)
     assert target("u-a/notes-link", stat.S_IFLNK) == "skip"
     assert target("u-a/.runtime/provider-child/tmp/task.output", stat.S_IFLNK) == "skip"
 

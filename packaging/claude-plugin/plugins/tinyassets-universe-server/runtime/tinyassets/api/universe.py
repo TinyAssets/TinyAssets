@@ -4916,7 +4916,6 @@ def _action_add_canon(
     from tinyassets.ingestion.core import ingest_file
 
     try:
-        canon_dir.mkdir(parents=True, exist_ok=True)
         source_operation = _canon_source_operation(canon_dir, safe_name, data)
         result = ingest_file(
             canon_dir=canon_dir,

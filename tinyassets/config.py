@@ -246,13 +246,30 @@ def _build_config(data: dict[str, Any]) -> UniverseConfig:
         return UniverseConfig()
 
 
+def _publish_config(universe_path: str | Path, data: dict[str, Any]) -> None:
+    """Atomically replace ``config.yaml`` through the one owner-content writer.
+
+    ``config.yaml`` is owner content (command_center_layout USER_NAMES), so a
+    daemon-side ``os.replace`` would leave a daemon-owned inode that the owner
+    storage scan refuses; ``write_universe_file`` routes it through the owner
+    cell and follows no link.
+    """
+    import yaml
+
+    from tinyassets.universe_files import write_universe_file
+
+    Path(universe_path).mkdir(parents=True, exist_ok=True)
+    rendered = yaml.safe_dump(data, default_flow_style=False, sort_keys=True)
+    write_universe_file(universe_path, "config.yaml", rendered.encode("utf-8"), mode="replace")
+
+
 def write_universe_config_fields(
     universe_path: str | Path, **fields: Any
 ) -> None:
     """Merge *fields* into ``{universe_path}/config.yaml`` (atomic).
 
     Loads the existing config.yaml (if any), updates the given top-level keys,
-    and writes the merged mapping back atomically (temp file + rename). Existing
+    and writes the merged mapping back atomically (``_publish_config``). Existing
     keys not named in *fields* are preserved. This is the write path for
     per-universe engine assignment (``preferred_writer`` /
     ``allow_api_key_providers`` set by ``universe action=set_engine``).
@@ -261,11 +278,6 @@ def write_universe_config_fields(
     silently-dropped engine assignment would leave the universe on the wrong
     engine (Hard Rule #8).
     """
-    import os
-    import tempfile
-
-    import yaml
-
     from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for, record_path
 
     refused = sorted(set(fields) & set(AUTHORITY_FIELDS))
@@ -290,20 +302,7 @@ def write_universe_config_fields(
         data.pop(name, None)
     data.update(fields)
 
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
-        os.replace(tmp_path, config_file)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _publish_config(universe_path, data)
 
 
 def write_provider_assignment_projection(
@@ -325,11 +324,6 @@ def write_provider_assignment_projection(
     of supported provider brands. These records are data, not launch authority;
     the publisher owns their resolution and admission still re-reads the ledger.
     """
-
-    import os
-    import tempfile
-
-    import yaml
 
     normalized_state = state.strip()
     if normalized_state not in {"unassigned", "pending", "ready", "failed"}:
@@ -388,7 +382,6 @@ def write_provider_assignment_projection(
         preferred = ""
         engine_source = "requester_local" if generation else "unassigned"
 
-    config_file = Path(universe_path) / "config.yaml"
     data: dict[str, Any] = {}
     try:
         loaded = _read_config_document(universe_path, absent=CONFIG_ABSENT)
@@ -418,17 +411,4 @@ def write_provider_assignment_projection(
         "engine_source": engine_source,
         "preferred_writer": preferred,
     })
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_file.parent), prefix=".config.", suffix=".yaml.tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=True)
-        os.replace(tmp_path, config_file)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _publish_config(universe_path, data)

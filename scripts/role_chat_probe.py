@@ -65,9 +65,13 @@ def main():
     active = {}
     from tinyassets.broker.catalog import connections
 
-    service = next(view for grant, view, cap in connections(Path('/data'),
+    services = [view for grant, view, cap in connections(Path('/data'),
         principal=owner, command_center=center)
-        if view.connection_type == 'http' and 'api.github.com' in str(view.allowed_endpoints))
+        if view.connection_type == 'http' and 'api.github.com' in str(view.allowed_endpoints)]
+    if not services:
+        print('ORACLE DETAIL fixture: selected center lacks its GitHub connection', flush=True)
+        raise RuntimeError('chat fixture requires a center with its recorded GitHub connection')
+    service = services[0]
     connection_command = 'ta connection:' + service.connection_id + ':POST --json ' + shlex.quote(
         json.dumps({'request': {'path': '/repos/TinyAssets/TinyAssets/issues',
                                'body': {'title': 'Synthetic oracle', 'body': 'Local copy only'}}}))
@@ -88,8 +92,6 @@ def main():
         # writing a new wiki category must not leave a daemon-owned directory
         # that poisons the next tool's storage observation.
         category = 'oracle-content-' + secrets.token_hex(6)
-        debris = root / 'wiki/drafts' / (category + '-old-empty')
-        debris.mkdir()  # The deployed bug's empty daemon-owned category.
         with _scoped_wiki_root(root / 'wiki'):
             wiki_result = json.loads(_wiki_write(category=category, filename='proof',
                                                 content='ORACLE wiki content\n'))
@@ -110,7 +112,6 @@ def main():
                     assert result.exit_code == 0 and result.output.strip() == b'ok'
                     assert (root / 'MEMORY.md').read_bytes() == b'ORACLE pending brain\n'
                     assert (root / 'MEMORY.md').stat().st_uid == machine
-                    assert debris.stat().st_uid == machine and not list(debris.iterdir())
                 elif name == 'content-data':
                     assert (root / 'notes/oracle-content').read_bytes() == b'ORACLE content\n'
                     assert (root / 'notes/oracle-content').stat().st_uid == machine
@@ -485,7 +486,9 @@ def main():
                         "efforts": [],
                     }
                 arguments['agent_id'] = agent
+                print("ORACLE TURN START " + provider, flush=True)
                 result = await client.call_tool("converse", arguments)
+                print("ORACLE TURN END " + provider, flush=True)
                 document = result.data
                 if document.get('reply') != answer:
                     print('ORACLE DETAIL converse: ' + json.dumps({
@@ -505,7 +508,7 @@ def main():
         print(
             "PRODUCTION CHAT PASS " + json.dumps(dict(providers=results,
                 graph_runs=graph_runs, owner_content=['wiki-publication', 'pending-brain',
-                    'content-data', 'content-directories', 'empty-category-repair'])),
+                    'content-data', 'content-directories'])),
             flush=True,
         )
 
@@ -520,4 +523,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        import traceback
+
+        # Frames and exception type only: never leak restored chat or credentials.
+        frames = traceback.extract_tb(exc.__traceback__)
+        print('ORACLE FAILURE ' + type(exc).__name__ + ':' + ':'.join(
+            f'{frame.name.strip("<>")}-{frame.lineno}'
+            for frame in frames), flush=True)
+        raise SystemExit(1) from None

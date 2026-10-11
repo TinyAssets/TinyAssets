@@ -1096,3 +1096,23 @@ def test_subscribe_unsubscribe_when_pool_flag_off_returns_not_available(
     ):
         resp = json.loads(handler(universe_id=uid, goal_id="x"))
         assert resp["status"] == "not_available"
+
+
+@pytest.mark.parametrize('goal', ['../outside', '..', '.', '/tmp', 'a/b', r'a\b', 'C:evil', ''])
+def test_unsafe_goal_never_reaches_pool_scan(repo_root, universe_dir, monkeypatch, caplog, goal):
+    from tinyassets.producers.goal_pool import pool_post_path
+
+    with pytest.raises(ValueError, match='safe path segment'):
+        subscribe(universe_dir, goal)
+    with pytest.raises(ValueError, match='safe path segment'):
+        pool_post_path(repo_root, goal)
+    with pytest.raises(ValueError, match='safe path segment'):
+        write_pool_post(repo_root, goal, branch_def_id='branch', inputs={})
+    (universe_dir / 'subscriptions.json').write_text(json.dumps({'goals': [goal, 'safe']}))
+    assert list_subscriptions(universe_dir) == ['safe']
+    producer = GoalPoolProducer()
+    scanned = []
+    monkeypatch.setattr(producer, '_scan_goal_dir', lambda *a, **kw: scanned.append(a) or [])
+    assert producer.produce(universe_dir, subscribed_goals=[goal]) == []
+    assert scanned == []
+    assert 'skipping unsafe goal' in caplog.text
