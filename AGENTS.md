@@ -6,7 +6,7 @@
 The founder owns this section. To re-steer, replace a line; never add one beside it.
 `python scripts/sync_direction.py` copies it verbatim into `AGENTS.md`.
 
-1. Product: a Meta-Muse-level agent in the chat bubble, on pi.dev-style plumbing; users build from there.
+1. Product: a default bubble agent that continuously matches and beats the industry-leading main agents (Grok Bot, Muse, ChatGPT dots, Claude), built as a starter package on a pi.dev-modelled harness; users customize the harness and interface to build anything.
 2. Plumbing: the model sees 4 tools (read/write/edit/bash) plus `ta`; one extension unit; one agent definition for every model provider; no provider-specific code.
 3. The agent's abilities are editable files, skills and packages. The platform does not build feature editors or pre-built features.
 4. Users connect any model source; default to their strongest connected source.
