@@ -21,7 +21,7 @@ exceptions in `docs/host-actions.md`.
 | SKU | `tinyassets-ios` |
 | User access | Full Access for the existing Account Holder; the live form disables Limited Access and no additional user is selected |
 | Primary language | English (U.S.) |
-| Version | `1.0.0` |
+| Next version | `1.0.1` (new native build containing #4594) |
 | Build | Use the numeric GitHub Actions run number |
 | Primary category | Productivity |
 | Secondary category | None |
@@ -267,7 +267,7 @@ Run this against the exact signed artifact before any App Review submission:
 
 1. Record source SHA, version, build number, IPA checksum, iOS version, and iPhone model.
 2. Fresh-install; confirm the icon, splash, safe areas, portrait layout, keyboard, and no blank/offline shell.
-3. Complete sign-in and verify the native OAuth return opens TinyAssets, not Safari or a dead callback page.
+3. Tap Sign in, complete authentication in the system-browser session, and verify it returns to TinyAssets with the reviewer session. Cancel once and retry; do not expect an embedded WebView login.
 4. Force-quit/relaunch and background/foreground; confirm the session recovers without duplicating a universe.
 5. Connect a test provider, return to chat, send a message, and receive the same canonical conversation on web.
 6. Attach an allowed text file; verify it is shown accurately and no photo-library permission is requested.
@@ -352,69 +352,112 @@ one, so the server must remain compatible with the last released shell.
 
 ### Guideline 2.1 response packet
 
-Use one physical-iPhone recording that begins at a cold launch and shows, in order:
+Updated **2026-10-10** for the **2026-10-11** founder goal. Apple's outstanding
+request concerns **1.0 / build 3**. Record and resubmit the new **1.0.1** native
+build containing #4594, not build 3 with only a refreshed web page.
 
-1. TinyAssets launch, native splash, and the signed-out screen.
-2. Email-and-password sign-in with the dedicated App Review account already stored in
-   App Store Connect. Do not expose the password in the recording.
-3. Entry into the private reviewer universe, followed by the real inline connect
-   flow when a connection is needed. Verify that path before recording; do not
-   promise a preconfigured review-only connection or renew an interim key.
-4. A substantive text request and the universe's response, followed by a force-quit,
-   relaunch, and proof that the same conversation remains.
-5. Attachment of `docs/ops/app-store-review-sample.txt`, followed by the prompt
-   `What is the project, target storefront, and review deadline in this file?` and
-   an answer grounded in the file.
-6. Account and Privacy navigation, including the visible account-deletion path. Do not
-   complete deletion in the primary recording; use a second disposable account if Apple
-   requires proof of the destructive final step.
+**Build and account readiness:** `ios-release.yml` defaults to marketing version
+1.0.1; `build_number` defaults to its numeric workflow run number. Use an unused
+number. `npm ci`, `cap add ios`, and `cap sync ios` resolve the lockfile's local
+`@tinyassets/system-auth` plugin; its Swift package exposes `SystemAuth.open` via
+`ASWebAuthenticationSession`. `add_ios_scheme.py` registers `tinyassets`, enabling
+the callback that carries the protected return secret. No Universal Links
+entitlement or Electron build is required for this custom-scheme return.
 
-Written response facts (draft: the agent must rewrite Access from live verified
-connection steps before submitting this response to Apple):
+GitHub settings checked 2026-10-10: **app-store** allows only `main` and requires
+review by the founder (`Jonnyton`). Both signing and upload jobs use it; approve
+both when prompted. Signing uses `APPLE_DISTRIBUTION_CERT_P12_B64`,
+`APPLE_DISTRIBUTION_CERT_PASSWORD`, and `APPLE_PROVISIONING_PROFILE_B64`; optional
+TestFlight upload uses `APP_STORE_CONNECT_API_KEY_ID`,
+`APP_STORE_CONNECT_API_ISSUER_ID`, and `APP_STORE_CONNECT_API_KEY_B64`.
+All six secret names are present. Their validity/expiry is checked by the signed
+run, not inferred from their presence. No values were read or changed.
+`upload_to_testflight=true` uploads only; it does not select a version or submit
+App Review. Select 1.0.1 and its processed build in App Store Connect before resubmitting.
 
-- **Purpose / audience / value:** TinyAssets is an 18+ productivity app for adults who
-  want one persistent, private AI workspace for substantive multi-step projects across
-  phone, web, and supported chatbot clients. It reduces fragmented sessions and repeated
-  setup by keeping one signed-in universe, conversation, memory, and work history.
-- **Access:** use the dedicated Email + Password credentials in App Review Information.
-  The review account has no organization, founder data, or public content attached.
-  The reviewer uses the real inline connect flow when a connection is needed;
-  the founder rejected the interim review-only inference-key workaround. Before
-  submission, verify that flow and a substantive reply live with the review account.
-  The 2026-09-10 turn predates this decision and does not prove the new path.
-- **External services:** WorkOS AuthKit provides authentication; Cloudflare provides the
-  public HTTPS edge/tunnel; TinyAssets' hosted daemon stores the user's private universe;
-  and the user-selected AI connection supplies inference (OpenAI, Anthropic/Claude, or
-  another explicitly connected HTTPS provider). Stripe support exists in the platform,
-  but the submitted iOS build exposes no purchase or paid-content flow.
-- **User-generated content:** prompts, text attachments, and responses are private to the
-  signed-in universe. There is no public feed, sharing between users, messaging, or other
-  user-to-user content, so reporting and blocking controls are not applicable.
-- **Regions:** the app's features and content behave consistently in every enabled
-  storefront. The initial release enables 148 non-EU storefronts including the United
-  States and excludes all 27 EU storefronts solely for DSA launch scope; there is no
-  feature or content difference among enabled regions.
-- **Regulated / protected material:** TinyAssets is a general-purpose productivity tool,
-  not a regulated-industry service, and it ships no protected third-party catalog or
-  licensed media. Users may connect services they are authorized to use.
+**Before recording:** use the dedicated reviewer account from App Store Connect's
+App Review Information (credentials held privately; never paste them into this
+file or chat). Verify the real connection path and a substantive reply on the
+new installed build. If connection is needed, use the actual inline connection
+flow; do not revive an interim review-only key or assume an old reply proves it.
+Keep passwords, provider credentials, callback URLs and tokens out of the video.
+
+**Physical-device shot list:** use the latest public iOS, show the actual device/OS
+and build in the accompanying response, and capture these six scenes in one session:
+
+1. Cold-launch TinyAssets from its icon; show the native splash and signed-out screen.
+2. Tap **Sign in** and show the system-browser authentication session opening.
+   Choose email/password and use the dedicated reviewer credentials in masked
+   fields. Show the return into TinyAssets and the signed-in reviewer workspace.
+3. Show the real inline connection flow if needed, with secret inputs masked.
+   Confirm a usable model source without a subscription or payment step in the app.
+4. Send `Give me a three-step plan to launch a small bakery's online orders, and keep it short.`
+   Show the full substantive reply. Force-quit, relaunch, and show the same conversation.
+5. Attach `docs/ops/app-store-review-sample.txt`; ask
+   `What is the project, target storefront, and review deadline in this file?`
+   and show an answer grounded in its contents.
+6. Open Account and Privacy, including the visible account-deletion path; stop
+   before confirming deletion of the reviewer account.
+
+A cloud **real iPhone** is acceptable preparation for the requested physical-device
+recording; a simulator is not. For BrowserStack App Live, verify TestFlight access,
+the required iOS version, session recording/download and sample-file injection in
+your plan before paying. Install the new build through TestFlight Internal; use
+Chrome for the session recording. Sign out of your Apple ID/TestFlight when done.
+Vendor instructions: [TestFlight](https://www.browserstack.com/docs/app-live/app-source/testflight),
+[recording](https://www.browserstack.com/docs/app-live/session-debugging/record-session),
+[file injection](https://www.browserstack.com/docs/app-live/media/file-injection).
+Do not assume the free trial supports the complete recording.
+
+**Written response — ready to paste after replacing the bracketed facts and verifying
+all statements against the installed build:**
+
+> Thank you for reviewing TinyAssets. We are responding to the Guideline 2.1
+> information request with an updated version, 1.0.1, build [BUILD NUMBER]. The
+> attached video [FILENAME OR ACCESSIBLE LINK] was recorded on a physical
+> [IPHONE MODEL] running [IOS VERSION] and demonstrates launch, system-browser
+> sign-in and return, connection, a real response, conversation persistence,
+> text-file attachment, and Account/Privacy controls.
+>
+> Purpose, audience and value: TinyAssets is an 18+ productivity app for adults
+> who want a private AI workspace for projects across phone and web. Users connect
+> their own model source, give tasks in chat, and return to their conversation and work.
+>
+> Access: use the dedicated email and password provided in App Review Information.
+> Tap Sign in; authentication opens in the iOS system-browser session and returns
+> to TinyAssets. [VERIFIED CONNECTION STEPS: describe the exact steps needed with
+> this reviewer account, or state the verified connected source is already usable.]
+> We verified a substantive reply with this account on [DATE / BUILD]. No reviewer
+> payment is required. The video demonstrates the same account and flow.
+>
+> External services: WorkOS AuthKit handles account authentication. Cloudflare
+> provides the public HTTPS edge, TinyAssets' hosted service stores the private
+> workspace, and the user's connected model provider supplies inference. The
+> submitted app exposes no purchase or paid-content flow.
+>
+> Content: the recorded prompts, attachments and replies belong to the reviewer's
+> private workspace. TinyAssets is a general-purpose productivity tool and does
+> not ship a licensed third-party media catalog or a regulated-industry service.
+> Users connect services they are authorized to use.
+>
+> Regions: [CONFIRM CURRENT STOREFRONTS: the previously saved scope was 148 non-EU
+> storefronts including the United States, excluding the 27 EU storefronts.]
+> [CONFIRM: functionality is consistent across the enabled storefronts.]
+
+Do not paste the founder's implementation notes or unfilled brackets into App Review.
+The older blanket claim of no sharing between users has been removed: a private
+review workspace does not establish the absence of sharing features elsewhere.
 
 ## External gate that remains
 
-- The required 6.5-inch iPhone and 13-inch iPad screenshots were captured from Build
-  3's exact source, passed dimension/alpha and visual checks, and persisted in App
-  Store Connect. Receipt:
-  `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`. A physical
-  iPhone is separately required for microphone-release proof if voice ships. Build 3's
-  defensive microphone usage string remains in the binary, but the remotely hosted
-  Capacitor surface is voice-dark: PR #3830 / merge
-  `f497050f6586ae70f41e98f78c412932176a46c7` hides and does not initialize Voice on
-  native while preserving it on web. Deploy run `34523794549` published and verified
-  that exact revision on 2026-09-10.
-- Apple requires the Guideline 2.1 response packet above and a physical-iPhone recording.
-  The Account Holder's TestFlight invitation is live and Build 3 is attached. After the
-  recording and written response are saved, resubmit iOS 1.0. Release is configured for
-  automatic publication after approval; verify that the United States App Store product
-  page offers the install before calling the launch complete.
+Founder approvals, reviewer sign-in/connection proof and physical-iPhone recording
+remain. Existing screenshots were captured for build 3; compare them with 1.0.1
+and replace any that no longer represent the app. Attach the video and completed
+written response to the unresolved request, select the new version/build, and
+resubmit. Confirm the saved release mode (historically automatic after approval)
+and the public product page's install availability before calling launch complete.
+The [single founder checklist](../host-actions.md#apple-record-the-review-video-and-resubmit)
+contains the ordered actions.
 
 Official references checked 2026-09-03: [add a new app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app/),
 [app information](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/),
