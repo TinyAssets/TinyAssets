@@ -55,8 +55,8 @@ def test_protects_current_two_older_newer_and_container_references(inventory, di
     inventory[1].append(dict(Image=identity(1), State={"Running": False}))
     inventory[3]["rollback_target"] = reference(2)
     rows, protected = select(inventory, reference(3))
-    assert [r["ref"] for r in rows] == [reference(n) for n in (4, 5, 6, 7, 8, 10)]
-    assert set(protected) == {identity(n) for n in (1, 2, 3, 9)}
+    assert [r["ref"] for r in rows] == [reference(n) for n in (4, 5, 6, 7, 10)]
+    assert set(protected) == {identity(n) for n in (1, 2, 3, 8, 9)}
 
 
 def test_containerd_captured_digest_alias_is_not_a_mutable_tag(inventory):
@@ -644,7 +644,7 @@ def test_count_mode_preserves_rollback_target_and_any_container_image(inventory,
     inventory[3]["rollback_target"] = reference(2)
     inventory[1].append(dict(Name="/exited-helper", Image=identity(4), State={"Running": False}))
     survivors, _ = drain(inventory, tmp_path, measure=lambda p: 50)
-    assert survivors == {reference(n) for n in (2, 4, 9)}
+    assert survivors == {reference(n) for n in (2, 4, 8, 9)}
 
 
 def test_count_mode_preserves_the_running_image_even_when_it_is_the_oldest(inventory, tmp_path):
@@ -800,3 +800,18 @@ def test_bounded_pass_reports_incomplete_not_success(inventory, tmp_path, monkey
     report = retention.retain(**options)
     assert len(report["removed"]) == 2
     assert report["status"] == "retention_incomplete"
+
+
+def test_old_receipt_during_canary_protects_immediate_rollback(inventory):
+    inventory[3]["rollback_target"] = reference(7)
+    choices, protected = select(inventory)
+    assert identity(8) in protected and identity(7) in protected
+    assert reference(8) not in {row["ref"] for row in choices}
+
+
+def test_cached_prefetch_needs_no_second_reserve_but_missing_image_does(inventory, tmp_path):
+    docker = FakeDocker(inventory, tmp_path)
+    usage = SimpleNamespace(total=50 * 1024**3, free=8 * 1024**3)
+    retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(10))
+    with pytest.raises(retention.Refusal, match="headroom"):
+        retention.check_pull_headroom(docker, disk_fn=lambda _: usage, image_ref=reference(11))

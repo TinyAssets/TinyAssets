@@ -79,6 +79,9 @@ jobs:
       msg: ${{ steps.combine.outputs.msg }}
       overall: ${{ steps.combine.outputs.overall }}
       page_needed: ${{ steps.combine.outputs.page_needed }}
+      disk_overall: ${{ steps.combine.outputs.disk_overall }}
+      disk_page_needed: ${{ steps.combine.outputs.disk_page_needed }}
+      disk_status: ${{ steps.disk_probe.outputs.disk_status }}
     steps:
       - uses: actions/checkout@v4
 
@@ -312,6 +315,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   alarm-sink:
+    strategy:
+      fail-fast: false
+      matrix:
+        alarm: [uptime, disk]
     # Runs on every tick so it can close issues after recovery too.
     # `if: always()` because the probe job intentionally exits non-zero
     # on red — without always(), alarm-sink would skip on every red run.
@@ -330,11 +337,11 @@ jobs:
         id: gate
         uses: actions/github-script@v7
         env:
-          OVERALL: ${{ needs.probe.outputs.overall }}
-          PAGE_NEEDED: ${{ needs.probe.outputs.page_needed }}
-          PROBE_STATUS: ${{ needs.probe.outputs.status }}
+          OVERALL: ${{ matrix.alarm == 'disk' && needs.probe.outputs.disk_overall || needs.probe.outputs.overall }}
+          PAGE_NEEDED: ${{ matrix.alarm == 'disk' && needs.probe.outputs.disk_page_needed || needs.probe.outputs.page_needed }}
+          PROBE_STATUS: ${{ matrix.alarm == 'disk' && needs.probe.outputs.disk_status || needs.probe.outputs.status }}
           PROBE_MSG: ${{ needs.probe.outputs.msg }}
-          LABEL: ${{ env.ALARM_ISSUE_LABEL }}
+          LABEL: ${{ matrix.alarm == 'disk' && 'disk-pressure' || env.ALARM_ISSUE_LABEL }}
           THRESHOLD: ${{ env.ALARM_THRESHOLD }}
           PROBE_URL: ${{ env.PROBE_URL }}
           PRODUCTION_BRANCH: ${{ github.event.repository.default_branch }}
@@ -489,15 +496,15 @@ jobs:
                 return;
               }
 
-              const priorRed = await previousRunWasRed();
+              const priorRed = label === 'disk-pressure' || await previousRunWasRed();
               if (priorRed) {
                 const result = await github.rest.issues.create({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  title: `P0 Public MCP outage — ${now}`,
+                  title: `${label === 'disk-pressure' ? 'Shared disk pressure' : 'P0 Public MCP outage'} — ${now}`,
                   labels: [label],
                   body: [
-                    `Auto-opened by the uptime canary after ${threshold} consecutive reds.`,
+                    label === 'disk-pressure' ? 'Disk alert at 80%; page at 90%; no automatic restart.' : `Auto-opened by the uptime canary after ${threshold} consecutive reds.`,
                     `This issue tracks the outage window; comments append per tick.`,
                     ``,
                     formatBody('RED (threshold crossed)'),
@@ -612,8 +619,8 @@ jobs:
               --issue-number "${{ steps.gate.outputs.issue_number }}" \
               --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
               --probe-url "${PROBE_URL}" \
-              --probe-exit "${{ needs.probe.outputs.status }}" \
-              --kind "PUBLIC_MCP_OUTAGE" \
+              --probe-exit "${{ matrix.alarm == 'disk' && needs.probe.outputs.disk_status || needs.probe.outputs.status }}" \
+              --kind "${{ matrix.alarm == 'disk' && 'SHARED_DISK_PRESSURE' || 'PUBLIC_MCP_OUTAGE' }}" \
               "${extra_args[@]}" \
               --comments-json /tmp/pushover/comments.json)
           code=$?

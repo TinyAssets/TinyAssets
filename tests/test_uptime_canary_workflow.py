@@ -125,7 +125,7 @@ def _run_alarm_script(overall: str, **config: object) -> dict:
             "PAGE_NEEDED": str(config.get("pageNeeded", True)).lower(),
             "PROBE_STATUS": "",
             "PROBE_MSG": "",
-            "LABEL": "p0-outage",
+            "LABEL": str(config.get("label", "p0-outage")),
             "THRESHOLD": "2",
             "PROBE_URL": "https://tinyassets.io/mcp",
             "GITHUB_SERVER_URL": "https://github.com",
@@ -306,8 +306,29 @@ def test_wiki_probe_uses_gha_output_mode_and_preserves_diagnostic() -> None:
 
 
 def test_disk_warning_opens_issue_without_paging_and_critical_pages_existing_issue():
-    warning = _run_alarm_script("red", measuredRed=True, pageNeeded=False)
+    warning = _run_alarm_script("red", pageNeeded=False, label="disk-pressure")
     assert warning["outputs"]["issue_number"] == "99"
     assert warning["outputs"]["page_eligible"] == "false"
-    critical = _run_alarm_script("red", openIssue={"number": 99}, pageNeeded=True)
+    critical = _run_alarm_script("red", openIssue={"number": 99}, pageNeeded=True,
+                                 label="disk-pressure")
     assert critical["outputs"]["page_eligible"] == "true"
+
+
+def test_disk_alarm_uses_existing_disk_label_without_p0_triage():
+    result = _run_alarm_script("red", label="disk-pressure", pageNeeded=False)
+    created = next(call["args"] for call in result["calls"] if call["name"] == "issues.create")
+    assert created["labels"] == ["disk-pressure"]
+    assert "Shared disk pressure" in created["title"]
+    assert not any(call["name"].startswith("actions.") for call in result["calls"])
+    recovered = _run_alarm_script("green", label="disk-pressure", openIssue={"number": 99})
+    assert next(call["args"] for call in recovered["calls"]
+                if call["name"] == "issues.listForRepo")["labels"] == "disk-pressure"
+    assert recovered["outputs"]["page_eligible"] == "false"
+    matrix = _workflow()["jobs"]["alarm-sink"]["strategy"]["matrix"]
+    assert matrix["alarm"] == ["uptime", "disk"]
+    steps = _workflow()["jobs"]["alarm-sink"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+    assert "disk_overall" in gate["env"]["OVERALL"]
+    assert "disk-pressure" in gate["env"]["LABEL"]
+    page = next(step for step in steps if step.get("id") == "page")
+    assert "disk_status" in page["run"] and "SHARED_DISK_PRESSURE" in page["run"]

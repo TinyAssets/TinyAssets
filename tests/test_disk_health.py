@@ -21,8 +21,10 @@ def test_disk_pressure_health_to_uptime_escalation(monkeypatch, used, status, co
         json.dumps({"disk_health": disk}).encode()))
     assert result == code and status in message
     combined = classify_observations(dict.fromkeys(PROBES, "0") | {"disk": str(code)})
-    assert combined["overall"] == ("green" if code == 0 else "red")
-    assert combined["page_needed"] is page
+    assert combined["overall"] == "green"
+    assert combined["disk_overall"] == ("green" if code == 0 else "red")
+    assert combined["disk_page_needed"] is page
+    assert not combined["page_needed"]
 
 
 def test_warning_never_suppresses_other_outage():
@@ -39,3 +41,10 @@ def test_disk_unknown_is_loud_without_host_paths(monkeypatch):
     code, message = probe(opener=lambda *a, **k: io.BytesIO(
         b'{"disk_health":{"status":"unknown"}}'))
     assert code == 2 and "private" not in message
+
+
+def test_missing_disk_observation_is_unknown_and_cannot_page():
+    combined = classify_observations(dict.fromkeys(PROBES, "0") | {"disk": "2"})
+    assert combined["disk_overall"] == "unknown"
+    assert combined["overall"] == "unknown"
+    assert not combined["disk_page_needed"] and not combined["page_needed"]

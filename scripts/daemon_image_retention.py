@@ -42,7 +42,7 @@ MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
 FENCE_STATE = Path("/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json")
 MAX_OUTPUT = 4 * 1024 * 1024
 MODES = ("count", "threshold")
-# Only a legacy receipt without a rollback target needs timestamp inference.
+# The newest older image bridges the swap-to-receipt canary window.
 KEEP_OLDER = 1
 MAX_REMOVALS = 32
 # Registry proof per pass is bounded so one unrecoverable image cannot starve
@@ -264,8 +264,7 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
         tags = row.get("RepoTags") or []
         if len(digests) == 1 and immutable(digests[0]) and (not tags or tags == digests):
             eligible.append((created, identity, digests[0]))
-    if not receipt.get("rollback_target"):
-        protected.update(identity for _, identity in sorted(older, reverse=True)[:keep_older])
+    protected.update(identity for _, identity in sorted(older, reverse=True)[:keep_older])
     return [
         dict(image_id=identity, ref=ref)
         for _, identity, ref in sorted(eligible)
@@ -273,10 +272,16 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
     ], sorted(protected)
 
 
-def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage):
+def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage, image_ref=""):
     """Check root and Docker's actual image filesystem, after retention."""
     docker = docker or Docker(time.monotonic() + 30)
     env = os.environ if environ is None else environ
+    if image_ref:
+        if not immutable(image_ref):
+            raise Refusal("invalid_pull_reference")
+        images, _ = docker.inventory()
+        if any(image_ref in (row.get("RepoDigests") or []) for row in images):
+            return  # An immutable cached image needs no download/extraction reserve.
     info = docker.json("info", "--format", "{{json .}}")
     store = storage_path(info, env.get("TINYASSETS_IMAGE_RETENTION_STORAGE_PATH", ""))
     for path in sorted({"/", store}):
@@ -573,10 +578,11 @@ def main(argv=None):
     parser.add_argument("--prepare-pull", action="store_true",
                         help="require completed pruning and disk headroom before a pull")
     parser.add_argument("--check-headroom", action="store_true")
+    parser.add_argument("--image-ref", default="")
     options = parser.parse_args(argv)
     try:
         if options.check_headroom:
-            check_pull_headroom()
+            check_pull_headroom(image_ref=options.image_ref)
             print(json.dumps(dict(status="pull_headroom_ok")))
             return 0
         activation = os.environ.get("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "0")
@@ -596,7 +602,7 @@ def main(argv=None):
         if options.prepare_pull:
             if report["status"] not in ("retained", "pressure_relieved"):
                 raise Refusal("pre_pull_retention_incomplete")
-            check_pull_headroom()
+            check_pull_headroom(image_ref=options.image_ref)
     except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
         reason = str(exc) if isinstance(exc, Refusal) else "evidence_unavailable"
         print(json.dumps(dict(status="refused", reason=reason)))

@@ -6,5 +6,5 @@
 
 ## 2. Delivery
 
-- [ ] 2.1 Sync specs and pass affected Linux suites, actionlint, ruff, structural guards, plugin build and hygiene.
-- [ ] 2.2 Commit, push non-draft infra-change PR and complete one cross-family correctness review.
+- [x] 2.1 Sync specs and pass affected Linux suites, actionlint, ruff, structural guards, plugin build and hygiene.
+- [x] 2.2 Commit, push non-draft infra-change PR and complete one cross-family correctness review.

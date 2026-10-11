@@ -188,3 +188,11 @@ def test_pre_pull_cleanup_and_headroom_cover_prefetch_and_final_pull():
     assert "--apply --prepare-pull" in steps[before]["run"]
     assert "--check-headroom" in steps[recheck]["run"]
     assert all(not steps[index].get("continue-on-error") for index in (before, recheck))
+
+
+def test_final_pull_checks_headroom_under_the_host_lock():
+    script = (Path(__file__).resolve().parents[1] / "deploy/deploy_fail_safe.sh").read_text()
+    assert script.index('flock -w "$LOCK_WAIT" 9') < script.index('--check-headroom --image-ref')
+    assert script.index('--check-headroom --image-ref') < script.index('docker pull "$NEW_IMAGE"')
+    step = next(s for s in _deploy_steps() if s.get("id") == "deploy")
+    assert "DISK_HEADROOM_HELPER='${RETENTION_HELPER}'" in step["run"]

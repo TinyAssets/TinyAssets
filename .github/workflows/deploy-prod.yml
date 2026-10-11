@@ -549,16 +549,18 @@ jobs:
         timeout-minutes: 5
         env:
           RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${RETENTION_HELPER} --check-headroom'"
+              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${RETENTION_HELPER} --check-headroom --image-ref ${IMAGE_REF}'"
 
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           BUNDLE_DIR: ${{ steps.stage_bundle.outputs.stage }}
+          RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
         run: |
           set -euo pipefail
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -567,7 +569,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 BUNDLE_DIR='${BUNDLE_DIR}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 DISK_HEADROOM_HELPER='${RETENTION_HELPER}' BUNDLE_DIR='${BUNDLE_DIR}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
