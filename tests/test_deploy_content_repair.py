@@ -123,3 +123,14 @@ def test_workflow_report_never_exposes_owner_filenames(monkeypatch, capsys, stdo
     output = capsys.readouterr()
     assert 'private' not in output.out + output.err
     assert '"rc": 2' in output.out
+
+
+def test_deploy_never_sources_the_host_env_file_as_shell():
+    # /etc/tinyassets/env is a systemd EnvironmentFile, not shell: sourcing it
+    # failed the first automatic repair with exit 127 (issue #4606).
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    workflow = (repo / ".github/workflows/deploy-prod.yml").read_text()
+    assert "source /etc/tinyassets/env" not in workflow
+    assert "-p EnvironmentFile=/etc/tinyassets/env" in workflow
