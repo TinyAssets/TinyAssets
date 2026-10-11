@@ -18,6 +18,11 @@ def test_shell_splash_and_offline_page_match_app_background() -> None:
     config = json.loads((MOBILE / "capacitor.config.json").read_text())
     assert config["android"]["backgroundColor"].lower() == background
     assert config["plugins"]["SplashScreen"]["backgroundColor"].lower() == background
+    assert config["ios"]["backgroundColor"].lower() == background
+    desktop = (ROOT / "desktop-app/config.js").read_text(encoding="utf-8")
+    assert f"const BACKGROUND_COLOR = '{background}'" in desktop
+    loading = (ROOT / "desktop-app/src/loading.html").read_text(encoding="utf-8")
+    assert f"background: {background}" in loading
     offline = (MOBILE / "www/index.html").read_text(encoding="utf-8")
     assert re.search(r"html, body\s*\{[^}]*background:\s*" + background, offline)
     rgb = tuple(int(background[i:i + 2], 16) for i in (1, 3, 5))

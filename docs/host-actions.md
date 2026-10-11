@@ -15,6 +15,12 @@ whose next step is *"the founder logs into Cloudflare."*
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
 | Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup opens a canary-not-provisioned warning/issue; it never blocks or rolls back a deploy. |
+## Device sign-in store updates (2026-10-10)
+
+After [PR #4594](https://github.com/TinyAssets/TinyAssets/pull/4594) merges and its web routes deploy, run the existing main-only signing workflows. Upload Android `app-release.aab` (package `io.tinyassets.app`, code **8**, version **1.0.7**) from `android-release.yml` to the Play closed-testing track. Upload the exported `.ipa` named in `release-manifest.json` from the `tinyassets-ios-1.0.1-<build>` artifact of `ios-release.yml` (version **1.0.1**, next unused build number) to App Store Connect, select it for review and submit. The feature branch cannot produce signed store files: Android requires main history; Apple's `app-store` environment rejects feature branches. Do not upload the debug APK or an unsigned bundle. Verify Google sign-in, return, and password suggestions on a physical Android/iPhone before submission. [Build/proof details](../openspec/changes/all-devices-polish/design.md).
+
+Release note for Android 1.0.6 and earlier: cached `app.*` / `appdebug.*` sign-ins keep a package-pinned compatibility return until **2026-10-24 00:00 UTC**. Reopening the hosted app loads the new return-secret flow; publish 1.0.7 before the cutoff and tell testers to reopen/update if an old sign-in expires. Desktop and iOS binaries must be rebuilt from the #4594 fix head: the earlier downloaded desktop packages and iOS compile predate callback-secret delivery and are superseded.
+
 ## Isolation production refusal acceptance (2026-10-10)
 
 | Item | Smallest founder-only action |

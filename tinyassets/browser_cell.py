@@ -162,11 +162,15 @@ class Browser:
         if (previous and previous['page'] == self.page and previous['frame'] == frame
                 and await focused.evaluate('(node, old) => node === old', previous['node'])
                 and self.field is previous):
-            return {key: previous[key] for key in ('token', 'origin', 'type')}
+            return {key: previous[key] for key in ('token', 'origin', 'type', 'autocomplete')}
         kind = await focused.get_attribute('type') or 'text'
+        hint = (await focused.get_attribute('autocomplete') or '').split()
+        autocomplete = next((part for part in hint if part in {
+            'username', 'current-password', 'new-password', 'one-time-code', 'email'}),
+            'current-password' if kind == 'password' else 'email' if kind == 'email' else 'off')
         self.field = dict(node=focused, page=self.page, frame=frame, token=secrets.token_hex(24),
-                          origin=origin(frame.url), type=kind)
-        return {key: self.field[key] for key in ('token', 'origin', 'type')}
+                          origin=origin(frame.url), type=kind, autocomplete=autocomplete)
+        return {key: self.field[key] for key in ('token', 'origin', 'type', 'autocomplete')}
 
     async def protected_fill(self, command):
         field = self.field

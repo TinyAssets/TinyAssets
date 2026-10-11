@@ -21,7 +21,8 @@
     "@capacitor/ios": "^8.5.1",
     "@capacitor/push-notifications": "^8.1.2",
     "@capacitor/splash-screen": "^8.0.2",
-    "@capacitor/status-bar": "^8.0.3"
+    "@capacitor/status-bar": "^8.0.3",
+    "@tinyassets/system-auth": "file:native/system-auth"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.1"

@@ -101,8 +101,8 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `7`, version
-name `1.0.6`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
+records the next candidate: package `io.tinyassets.app`, version code `8`, version
+name `1.0.7`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
 (`1.0.2`), `4` (`1.0.3`) and `5` (`1.0.4`).
 
 Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into the
@@ -667,3 +667,5 @@ does not rewrite the dependency-owned template. The container moves an existing
 directory aside; it does not delete untracked native work. Create a `mobile-v*` tag
 only after its commit is in `main`; the signing workflow rejects refs outside main's
 history.
+
+The 1.0.7 candidate (code 8) adds system-browser sign-in with an opaque PKCE-bound return and Android Autofill hints. Upload the signed `app-release.aab` produced by `android-release.yml` after this commit lands on main; the PR unsigned AAB and debug APK are not Play uploads.
