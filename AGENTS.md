@@ -64,7 +64,7 @@ Converge a shape; add no second path. Write durable state before replying.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.
-11. Public doors: `tinyassets.io/mcp` and `/api/v1` (keyed agents); `mcp.` is
+11. Doors: `tinyassets.io/mcp`, `/api/v1` (keyed), `/hooks/inbound`; `mcp.`
     internal. After DNS/tunnel/connector edits:
     `python scripts/mcp_public_canary.py --assert-handles`.
 13. Prove a path is pushed or in history before destroying it; never switch
