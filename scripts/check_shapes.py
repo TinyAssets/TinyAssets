@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -170,7 +171,13 @@ SHAPES: dict[str, Shape] = {
         ceiling=3,
     ),
     "S22": Shape(
-        ("tinyassets/command_center/**",), (("tinyassets/universe_*.py", ""),), ceiling=11
+        (
+            "tinyassets/command_center/**",
+            "tinyassets/universe_tools.py",
+            "tinyassets/universe_server.py",
+        ),
+        (("tinyassets/**/*.py", r"(?i)universe"),),
+        ceiling=13069,
     ),
     "S23": Shape(("domains/fantasy_daemon/state/book_state.py",)),
     "S24": Shape(("tinyassets/owner_door/**",)),
@@ -219,9 +226,11 @@ ENTRY_SYMBOLS: dict[str, str] = {
     "S15": r"\bclass\s+(?:HostPool\w*|HeartbeatLoop|BidPoller)\b",
     "S22": r"\b(?:class|def)\s+\w*Universe\w*\b",
 }
-# File probes also have a line ratchet: growing an existing file cannot hide
-# behind an unchanged file count. Entry symbols above catch moved implementations.
-LINE_CEILINGS = {"S3": 2434, "S5": 4552, "S9": 4638, "S15": 7547, "S22": 11095}
+# Genuinely old file probes also have a line ratchet: growing an existing file
+# cannot hide behind an unchanged file count. S22 counts mentions instead.
+LINE_CEILINGS = {"S3": 2434, "S5": 4552, "S9": 4638, "S15": 7547}
+FLOOR_RAISE_SHAPES = frozenset({"S3", "S5", "S9", "S15"})
+FLOOR_REASON = re.compile(r"\b(?:security|data[ -]loss|outage)\b", re.I)
 VENDOR_FILE_CEILING = 147
 MIRROR_ROOT = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
 VENDOR_NAMES = re.compile(
@@ -272,7 +281,11 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
     total = 0
     for glob, pattern in shape.old:
         for path in files(glob, root):
-            if shape is SHAPES["S19"]:
+            if shape is SHAPES["S22"] and any(
+                registered_path(path.relative_to(root).as_posix(), home) for home in shape.paths
+            ):
+                continue
+            if shape is SHAPES.get("S19"):
                 counterpart = (
                     root / "tinyassets" / path.relative_to(root / MIRROR_ROOT / "tinyassets")
                     if path.is_relative_to(root / MIRROR_ROOT / "tinyassets")
@@ -359,6 +372,40 @@ def recorded_shapes(
     return result
 
 
+def ceiling_raise_authorized() -> bool:
+    """Only a PR event with the floor label and stated reason can raise an old-path pin."""
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return False
+    try:
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+        pr = event["pull_request"]
+        return (
+            isinstance(pr, dict)
+            and any(label.get("name") == "shape-ceiling-raise" for label in pr["labels"])
+            and bool(FLOOR_REASON.search(pr["body"] or ""))
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def merge_queue_pin_check() -> bool:
+    """Queued commits already passed the required PR guard with their PR event."""
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("GITHUB_EVENT_NAME") != "merge_group"
+    ):
+        return False
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return False
+    try:
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+        return event["merge_group"]["head_sha"] == os.environ.get("GITHUB_SHA")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def base_shape_problems(root: Path = ROOT) -> list[str]:
     merge_base = _merge_base(root)
     if merge_base is None:
@@ -379,7 +426,10 @@ def base_shape_problems(root: Path = ROOT) -> list[str]:
             problems.append(f"{shape_id} registry-parity: existing shape removed")
             continue
         current = SHAPES[shape_id]
-        if current.ceiling > ceiling:
+        if current.ceiling > ceiling and not (
+            shape_id in FLOOR_RAISE_SHAPES
+            and (ceiling_raise_authorized() or merge_queue_pin_check())
+        ):
             problems.append(f"{shape_id} ceiling: pin raised {ceiling} -> {current.ceiling}")
         if not set(old) <= set(current.old):
             problems.append(f"{shape_id} ceiling: old-path probe removed")
@@ -402,7 +452,12 @@ def base_shape_problems(root: Path = ROOT) -> list[str]:
             isinstance(target, ast.Name) and target.id == "LINE_CEILINGS" for target in node.targets
         ):
             for shape_id, prior in ast.literal_eval(node.value).items():
-                if LINE_CEILINGS.get(shape_id, 0) > prior:
+                if shape_id not in LINE_CEILINGS:
+                    problems.append(f"{shape_id} line ceiling: pin removed")
+                elif LINE_CEILINGS[shape_id] > prior and not (
+                    shape_id in FLOOR_RAISE_SHAPES
+                    and (ceiling_raise_authorized() or merge_queue_pin_check())
+                ):
                     problems.append(
                         f"{shape_id} line ceiling: pin raised {prior} -> {LINE_CEILINGS[shape_id]}"
                     )
@@ -412,6 +467,8 @@ def base_shape_problems(root: Path = ROOT) -> list[str]:
 def registered_path(rel: str, glob: str) -> bool:
     if glob.endswith("/**"):
         return rel.startswith(glob[:-3] + "/")
+    if not any(char in glob for char in "*?["):
+        return rel == glob
     return PurePosixPath(rel).match(glob)
 
 

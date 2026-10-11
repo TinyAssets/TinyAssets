@@ -16,6 +16,11 @@ GUARDS = {
     "test_shape_registry": (
         "Remove the named second path or new surface, lower a recorded ceiling after deletion, "
         "and keep docs, ADRs and proposals in their registered homes. "
+        "S22 counts 'universe' mentions outside command_center, universe_tools.py and "
+        "the universe_server.py public handle home; new entry symbols belong in those homes. "
+        "For S3/S5/S9/S15 floor fixes only, raise the old-path ceiling in this PR with "
+        "the shape-ceiling-raise label and state security, data loss or outage in the PR body. "
+        "Local runs without a PR event fail closed. "
     ),
     "test_one_agent_definition": "Keep every provider on the one agent definition. ",
     "test_one_extension_unit": "Keep extensions on the v2 revision and authority boundary. ",

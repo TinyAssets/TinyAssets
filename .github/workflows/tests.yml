@@ -24,7 +24,7 @@ on:
   pull_request:
     # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
     # gives signal before a PR is marked ready and becomes auto-merge eligible.
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
   # The merge queue. `required-tests` and `slow-tests` are required checks, and
   # a queue waits for every required check to report on the merge-group commit;
   # without this trigger nothing reports and every queued PR times out.

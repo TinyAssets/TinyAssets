@@ -1,5 +1,6 @@
 """Structural checks for every row of the architecture Shape registry."""
 
+import json
 import re
 import subprocess
 from dataclasses import replace
@@ -108,6 +109,34 @@ def test_line_ratchet_catches_growth_without_file_growth(tmp_path: Path):
     assert check_shapes.old_lines(shape, tmp_path) == 2
 
 
+def test_s22_counts_mentions_outside_target_homes_not_target_lines(tmp_path: Path, monkeypatch):
+    root = tmp_path / "tinyassets"
+    root.mkdir()
+    (root / "universe_tools.py").write_text("universe\nextra fix\n", encoding="utf-8")
+    (root / "universe_server.py").write_text("universe\n", encoding="utf-8")
+    (root / "legacy.py").write_text("universe_name = 'Universe'\n", encoding="utf-8")
+    shape = check_shapes.SHAPES["S22"]
+    assert "S22" not in check_shapes.LINE_CEILINGS
+    assert check_shapes.old_count(shape, tmp_path) == 2
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "architecture.md").write_text(
+        "| S22 | name | target | old | drifted | guard | slice |\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(check_shapes, "SHAPES", {"S22": replace(shape, ceiling=2)})
+    monkeypatch.setattr(check_shapes, "base_shape_problems", lambda root: [])
+    monkeypatch.setattr(check_shapes, "git_added_lines", lambda root: {})
+    monkeypatch.setattr(check_shapes, "deleted_doc_references", lambda root: [])
+    assert check_shapes.check(tmp_path, added=set()) == []
+    (root / "legacy.py").write_text("command_center_name = 'center'\n", encoding="utf-8")
+    assert check_shapes.old_count(check_shapes.SHAPES["S22"], tmp_path) == 0
+    assert check_shapes.registered_path("tinyassets/universe_tools.py", shape.paths[1])
+    assert check_shapes.registered_path("tinyassets/universe_server.py", shape.paths[2])
+    assert not check_shapes.registered_path(
+        "tinyassets/nested/tinyassets/universe_tools.py", shape.paths[1]
+    )
+
+
 def test_raising_a_ceiling_fails_against_the_base_pin(monkeypatch):
     baseline = Path(check_shapes.__file__).read_text(encoding="utf-8")
     monkeypatch.setitem(
@@ -124,6 +153,67 @@ def test_raising_a_ceiling_fails_against_the_base_pin(monkeypatch):
         ),
     ):
         assert "S19 ceiling: pin raised 6 -> 7" in check_shapes.base_shape_problems()
+
+
+def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypatch):
+    baseline = Path(check_shapes.__file__).read_text(encoding="utf-8")
+    monkeypatch.setitem(check_shapes.LINE_CEILINGS, "S3", 2435)
+    event = tmp_path / "event.json"
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+
+    def base_problems():
+        with (
+            patch.object(check_shapes, "_merge_base", return_value="base"),
+            patch.object(
+                check_shapes.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=baseline),
+            ),
+        ):
+            return check_shapes.base_shape_problems()
+
+    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+
+    monkeypatch.delitem(check_shapes.LINE_CEILINGS, "S3")
+    assert "S3 line ceiling: pin removed" in base_problems()
+    monkeypatch.setitem(check_shapes.LINE_CEILINGS, "S3", 2435)
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+    monkeypatch.setenv("GITHUB_SHA", "queued-head")
+    event.write_text(json.dumps({"merge_group": {"head_sha": "queued-head"}}), encoding="utf-8")
+    assert "S3 line ceiling: pin raised 2434 -> 2435" not in base_problems()
+    monkeypatch.setenv("GITHUB_SHA", "different-head")
+    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+    event.write_text(
+        json.dumps(
+            {
+                "pull_request": {
+                    "labels": [{"name": "shape-ceiling-raise"}],
+                    "body": "Floor fix: outage in the native CLI loop.",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert "S3 line ceiling: pin raised 2434 -> 2435" not in base_problems()
+    event.write_text(
+        json.dumps(
+            {
+                "pull_request": {
+                    "labels": [{"name": "shape-ceiling-raise"}],
+                    "body": "Routine cleanup",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+    event.write_text(
+        json.dumps({"pull_request": {"labels": [], "body": "Floor fix: outage."}}),
+        encoding="utf-8",
+    )
+    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
 
 
 def test_git_added_uses_the_pr_diff_not_untracked_files():
