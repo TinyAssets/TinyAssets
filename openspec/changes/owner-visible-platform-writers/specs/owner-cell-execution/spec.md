@@ -34,3 +34,8 @@ Wiki directories SHALL be created by the admitted owner's content cell. Existing
 #### Scenario: Recovery races and user bytes
 - **WHEN** a category is nonempty, a symlink, or concurrently replaced by its owner
 - **THEN** recovery never follows the symlink, never removes nonempty content, and never overwrites the owner's replacement.
+
+#### Scenario: Automatic deployment recovery
+- **WHEN** the new production container is healthy
+- **THEN** deployment verifies the newest full backup digest, applies online repair, and checks convergence without a manual production step
+- **AND** daemon-owned symlinks are skipped and reported without following them; refusals or skipped entries trigger a deploy summary warning and alert without rolling back the healthy deployment

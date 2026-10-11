@@ -242,7 +242,13 @@ at Verify.
 
 ## 8. Later daemon-writer damage: online content-only recovery
 
-Keep the daemon running after deploying the writer fixes. Verify the latest full
+Deploy automatically runs this repair immediately after the new container is healthy,
+verifies the newest full GitHub backup asset digest and size (at most 26 hours old),
+applies, and checks convergence. Public deploy logs contain counts, never owner filenames.
+Refusals and skipped daemon-owned symlinks appear in the deploy summary and an
+alert issue; they do not roll back the healthy deploy. Each deploy retries.
+
+Manual fallback only: keep the daemon running. Verify the latest full
 backup from `gh release list -R Jonnyton/tinyassets-backups` and its release asset
 SHA-256. The existing migration executable has a separate online mode: it reads
 recorded admission identities and changes only daemon-owned owner-content inode
@@ -261,6 +267,8 @@ docker run --rm --user 0 --cap-drop ALL \
 ```
 
 An inspection with candidates exits 1; a converged inspection/apply exits 0.
+Daemon-owned symlinks are skipped without following them and reported by path;
+exit 2 reports these skips after processing the remaining content.
 Foreign custody, aliased repair candidates and special files refuse without
 removing content. A changing tree may require another pass; repaired inodes and
 open descriptors remain valid. The initial owner split still uses the offline

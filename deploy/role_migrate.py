@@ -1056,7 +1056,7 @@ def _live_database(parent, name):
         os.close(fd)
 
 
-def _repair_content_tree(root, machine, *, apply, max_entries=1000000):
+def _repair_content_tree(root, machine, *, apply, skipped, center, max_entries=1000000):
     """Relabel pinned daemon inodes, without changing names or content bytes.
 
     A concurrent writer retains its inode and ACL access. No file is read,
@@ -1066,7 +1066,7 @@ def _repair_content_tree(root, machine, *, apply, max_entries=1000000):
     device = os.fstat(root).st_dev
     visited = changed = 0
 
-    def walk(parent, depth):
+    def walk(parent, depth, relative):
         nonlocal visited, changed
         if depth > 64:
             raise MigrationRefused('content repair exceeds depth bound')
@@ -1084,7 +1084,10 @@ def _repair_content_tree(root, machine, *, apply, max_entries=1000000):
                     continue
                 if stat.S_ISLNK(before.st_mode):
                     if before.st_uid == DAEMON:
-                        raise MigrationRefused('daemon content symlink requires inspection')
+                        path = relative + '/' + entry.name
+                        skipped.append(path)
+                        print('content repair skipped daemon symlink: ' + ascii(path),
+                              file=sys.stderr)
                     continue
                 if not (stat.S_ISDIR(before.st_mode) or stat.S_ISREG(before.st_mode)):
                     raise MigrationRefused('content repair refuses special entries')
@@ -1113,10 +1116,10 @@ def _repair_content_tree(root, machine, *, apply, max_entries=1000000):
                             _apply(fd, wanted)
                         changed += 1
                     if stat.S_ISDIR(info.st_mode):
-                        walk(fd, depth + 1)
+                        walk(fd, depth + 1, relative + '/' + entry.name)
                 finally:
                     os.close(fd)
-    walk(root, 0)
+    walk(root, 0, center)
     return changed
 
 
@@ -1137,6 +1140,7 @@ def repair_content_online(data_root, *, snapshot, apply=False):
             raise MigrationRefused('online repair requires completed owner split')
         reservations, admitted, retired = _admission_log(root, database_reader=_live_database)
         changed = centers = 0
+        skipped = []
         for center, principal in sorted(admitted.items()):
             if center in retired:
                 continue
@@ -1147,9 +1151,11 @@ def repair_content_online(data_root, *, snapshot, apply=False):
                 expected = (DAEMON, machine, 0o750, canonical_root_acl(machine), None)
                 if _label(directory) != expected:
                     raise MigrationRefused('online repair center root is not canonical')
-                changed += _repair_content_tree(directory, machine, apply=apply)
+                changed += _repair_content_tree(directory, machine, apply=apply,
+                                                skipped=skipped, center=center)
                 centers += 1
-        return dict(centers=centers, changed=changed, applied=apply, backup=snapshot)
+        return dict(centers=centers, changed=changed, applied=apply, backup=snapshot,
+                    skipped_symlinks=skipped)
 
 
 def load_modes(app):
@@ -1177,6 +1183,8 @@ def main(argv=None):
         if args.repair_content_online:
             report = repair_content_online(args.data_root, snapshot=args.backup, apply=args.apply)
             print(json.dumps(report, sort_keys=True))
+            if report['skipped_symlinks']:
+                return 2
             return 0 if args.apply or report['changed'] == 0 else 1
         if args.manifest:
             with _root(args.data_root) as root:

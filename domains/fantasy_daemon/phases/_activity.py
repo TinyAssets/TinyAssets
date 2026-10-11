@@ -53,8 +53,8 @@ def activity_log(
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         body = f"[{tag}] {message}" if tag else message
         write_data_path(log_path, f"[{ts}] {body}\n", mode="append")
-    except OSError:
-        logger.debug("Failed to write activity.log entry: %s", message)
+    except OSError as exc:
+        logger.warning("Failed to append activity at %s: %s", log_path, exc)
 
 
 def update_phase(state: dict[str, Any], phase: str) -> None:

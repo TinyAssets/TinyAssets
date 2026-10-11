@@ -98,3 +98,27 @@ avoided by the existing single-container replacement deployment.
 Final combined acceptance completed `restore,repair,writers,chat`: 29 writer/request/periodic checks (every recorded center measured after each), real service health/census/canary, both provider turns and sub-agent, all four tools, images, connections and graph runs. Focused Linux validation passed 462 tests; seven root recovery tests and all 595 structural guards passed. The oracle/integrity checks passed 31 tests; Ruff and plugin build/import passed.
 
 The hygiene gate passed with the declared retirement of two obsolete tests; hooks ran normally.
+
+
+## Final deployment automation
+
+Deployment now verifies the newest full offsite GitHub asset's SHA-256 and size,
+requires a backup no older than 26 hours, and runs the existing online repair
+immediately after the new container is healthy. It applies then checks convergence
+using the deployed immutable image and unchanged operator-only capabilities.
+The workflow warns, summarizes and opens an alert on refusal or skipped symlinks;
+that advisory outcome never triggers image rollback. The runbook command is a
+manual fallback. Daemon symlinks are reported and left untouched while other
+entries continue. Activity append failures warn with path and reason.
+
+Final cross-family round: Claude returned ADAPT. AGREE and fixed: the pool-post
+writer now validates before mkdir/write, subscription reads discard unsafe saved
+IDs before any API pool count, public repair logs expose only counts/status, and
+backup age is bounded. The subscription producer and creation path also validate
+single safe path segments. No new concern file is needed for the fixed traversal.
+
+Validation: root inode recovery 7 passed; final focused Linux repair/goal/migration
+checks 83 passed after the review fixes. Structural
+guards 595 passed, actionlint and Ruff passed, plugin build/import passed. The
+heavy deploy workflow file has 57 passes and 30 failures, every failure already
+listed in .github/known-failing-tests.txt; no new workflow regression was found.

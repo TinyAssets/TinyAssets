@@ -82,14 +82,11 @@ def test_online_repair_preserves_paths_inodes_open_writes_and_is_noop_on_repeat(
     assert labels == {p: p.stat() for p in center.rglob('*')}
 
 
-@pytest.mark.parametrize('kind', ['symlink', 'hardlink', 'foreign', 'fifo', 'foreign-parent'])
+@pytest.mark.parametrize('kind', ['hardlink', 'foreign', 'fifo', 'foreign-parent'])
 def test_repair_refuses_unsafe_candidates_without_touching_outsider(center, kind):
     outside = damage(center.parent / 'outside')
     candidate = center / 'candidate'
-    if kind == 'symlink':
-        candidate.symlink_to(outside)
-        os.chown(candidate, 1001, 1001, follow_symlinks=False)
-    elif kind == 'hardlink':
+    if kind == 'hardlink':
         os.link(outside, candidate)
     elif kind == 'fifo':
         os.mkfifo(candidate)
@@ -127,3 +124,21 @@ def test_interrupted_repair_converges_and_preserves_owner_custom_labels(center, 
     assert repair(center)['changed'] == 0
     assert a.stat() == before
     assert a.read_bytes() == b.read_bytes() == b'keep\x00verbatim'
+
+
+def test_daemon_symlink_is_reported_without_following_or_blocking_repair(center):
+    outside = damage(center.parent / 'outside')
+    link = center / 'link'
+    link.symlink_to(outside)
+    os.chown(link, 1001, 1001, follow_symlinks=False)
+    leaf = damage(center / 'safe')
+    before = outside.stat()
+    link_before = link.lstat()
+    report = repair(center)
+    assert report['changed'] == 1
+    assert report['skipped_symlinks'] == ['u-a/link']
+    assert leaf.stat().st_uid == 300001
+    assert outside.stat() == before
+    assert link.lstat() == link_before
+    assert outside.read_bytes() == b'keep\x00verbatim'
+    assert repair(center)['changed'] == 0
