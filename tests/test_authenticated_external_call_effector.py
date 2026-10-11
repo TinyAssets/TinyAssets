@@ -581,9 +581,9 @@ def test_served_broker_resolves_credential_and_stays_blind(tmp_path, monkeypatch
     assert "real-vault-http-token" not in json.dumps(evidence)
 
     audit = _read_audit(data_root, "grant-http")
-    # "destination request failed" (reached the driver) NOT "credential
-    # unavailable" — the worker DID resolve the vault credential.
-    assert [r["reason"] for r in audit] == ["destination request failed"]
+    # A typed endpoint refusal proves the real worker reached the driver
+    # after resolving the credential. No credential crosses the boundary.
+    assert [r["reason"] for r in audit] == ["grant_path_refused"]
     assert "real-vault-http-token" not in json.dumps(audit)
 
 
