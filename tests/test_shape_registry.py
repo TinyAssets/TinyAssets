@@ -27,6 +27,14 @@ def test_old_count_is_a_ceiling(tmp_path: Path):
     assert check_shapes.old_count(shape, tmp_path) == 2
 
 
+def test_recursive_file_probe_works_on_python_311(tmp_path: Path):
+    nested = tmp_path / "mirror" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "module.py").write_text("pass\n", encoding="utf-8")
+    shape = check_shapes.Shape((), (("mirror/**", ""),), ceiling=1)
+    assert check_shapes.old_count(shape, tmp_path) == 1
+
+
 def test_public_route_and_opt_in_flag_on_existing_file():
     changes = {
         "tinyassets/universe_server.py": 'app.mount("/other", other)\n'
@@ -59,7 +67,10 @@ def test_new_model_call_entry_symbol_is_detected_outside_registered_path():
 def test_base_pin_parser_records_ceiling_and_probes():
     baseline = (
         "SHAPES: dict[str, Shape] = {"
-        "'S1': Shape(('new.py',), (('old.py', 'call_provider'),), ceiling=4)"
+        "'S1': Shape(('new.py',), (('old.py', 'call_provider'),), "
+        "forbid=('unsafe',), ceiling=4)"
         "}"
     )
-    assert check_shapes.recorded_shapes(baseline) == {"S1": (4, (("old.py", "call_provider"),))}
+    assert check_shapes.recorded_shapes(baseline) == {
+        "S1": (4, (("old.py", "call_provider"),), ("unsafe",))
+    }

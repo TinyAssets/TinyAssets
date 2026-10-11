@@ -1,0 +1,24 @@
+# Same shape as deploy/compose.yml's daemon: fixed container_name (the deploy
+# step addresses `tinyassets-daemon` by name), a 127.0.0.1 port, a named data
+# volume, recreated by `up -d` when GEN changes (standing in for a new image).
+name: deploy-waits-for-turns-repro
+services:
+  daemon:
+    image: ${REPRO_IMAGE:?set REPRO_IMAGE to an image with fastmcp+uvicorn and the repo deps}
+    container_name: tinyassets-daemon
+    entrypoint: ["python", "/repro/app.py"]
+    user: "1001:1001"
+    environment:
+      GEN: ${GEN}
+      TURN_S: ${TURN_S}
+      TINYASSETS_DATA_DIR: /data
+      PYTHONPATH: /repo
+    volumes:
+      - ./:/repro:ro
+      - ../../../:/repo:ro
+      - data:/data
+    ports:
+      - "127.0.0.1:18001:8001"
+    stop_grace_period: 20s
+volumes:
+  data:

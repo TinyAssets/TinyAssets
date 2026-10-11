@@ -34,10 +34,10 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/request_continuations.py", ""),
             ("tinyassets/bid/**/*.py", ""),
             ("tinyassets/treasury/**/*.py", ""),
-            ("tinyassets/domains/fantasy_daemon/**/*.py", ""),
-            ("tinyassets/domains/research_probe/**/*.py", ""),
+            ("domains/fantasy_daemon/**/*.py", ""),
+            ("domains/research_probe/**/*.py", ""),
         ),
-        ceiling=12,
+        ceiling=68,
     ),
     "B2": Shape(
         ("tinyassets/agent_loop/**", "tinyassets/model_call.py", "tinyassets/universe_tools.py"),
@@ -152,11 +152,11 @@ SHAPES: dict[str, Shape] = {
     "S18": Shape(
         ("starter/**", "packages/**"),
         (
-            ("tinyassets/domains/fantasy_daemon/**", ""),
-            ("tinyassets/domains/research_probe/**", ""),
+            ("domains/fantasy_daemon/**/*.py", ""),
+            ("domains/research_probe/**/*.py", ""),
             ("tinyassets/api/market.py", ""),
         ),
-        ceiling=1,
+        ceiling=57,
     ),
     "S19": Shape(
         ("packaging/claude-plugin/build_plugin.py",),
@@ -164,11 +164,15 @@ SHAPES: dict[str, Shape] = {
         ceiling=737,
     ),
     "S20": Shape(("docs/architecture.md", "docs/decisions/**", "openspec/**")),
-    "S21": Shape(("openspec/changes/**",)),
+    "S21": Shape(
+        ("openspec/changes/**",),
+        (("openspec/changes/*/proposal.md", r"(?i)\bsuperseded by\b"),),
+        ceiling=3,
+    ),
     "S22": Shape(
         ("tinyassets/command_center/**",), (("tinyassets/universe_*.py", ""),), ceiling=11
     ),
-    "S23": Shape(("tinyassets/domains/fantasy_daemon/state/book_state.py",)),
+    "S23": Shape(("domains/fantasy_daemon/state/book_state.py",)),
     "S24": Shape(("tinyassets/owner_door/**",)),
     "S25": Shape(
         ("tinyassets/universe_server.py", "tinyassets/onboarding/**", "tinyassets/api/**")
@@ -225,6 +229,8 @@ def registry_rows(text: str) -> dict[str, str]:
 
 
 def files(glob: str, root: Path = ROOT) -> list[Path]:
+    if glob.endswith("/**"):
+        glob += "/*"  # Path.glob('**') omits files on Python 3.11
     return sorted(
         path
         for path in root.glob(glob)
@@ -247,7 +253,9 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
     return total
 
 
-def recorded_shapes(source: str) -> dict[str, tuple[int, tuple[tuple[str, str], ...]]]:
+def recorded_shapes(
+    source: str,
+) -> dict[str, tuple[int, tuple[tuple[str, str], ...], tuple[str, ...]]]:
     """Read base pins and probes as syntax; never import code from the base tree."""
     tree = ast.parse(source)
     result = {}
@@ -266,7 +274,12 @@ def recorded_shapes(source: str) -> dict[str, tuple[int, tuple[tuple[str, str], 
             ceiling = next(
                 (ast.literal_eval(kw.value) for kw in value.keywords if kw.arg == "ceiling"), 0
             )
-            result[shape_id] = (ceiling, old)
+            forbid = ast.literal_eval(value.args[2]) if len(value.args) > 2 else ()
+            forbid = next(
+                (ast.literal_eval(kw.value) for kw in value.keywords if kw.arg == "forbid"),
+                forbid,
+            )
+            result[shape_id] = (ceiling, old, forbid)
     return result
 
 
@@ -285,14 +298,17 @@ def base_shape_problems(root: Path = ROOT) -> list[str]:
     if baseline.returncode:
         return []  # C1 introduces the table
     problems = []
-    for shape_id, (ceiling, old) in recorded_shapes(baseline.stdout).items():
+    for shape_id, (ceiling, old, forbid) in recorded_shapes(baseline.stdout).items():
         if shape_id not in SHAPES:
-            continue  # registry parity reports a removed shape
+            problems.append(f"{shape_id} registry-parity: existing shape removed")
+            continue
         current = SHAPES[shape_id]
         if current.ceiling > ceiling:
             problems.append(f"{shape_id} ceiling: pin raised {ceiling} -> {current.ceiling}")
         if not set(old) <= set(current.old):
             problems.append(f"{shape_id} ceiling: old-path probe removed")
+        if not set(forbid) <= set(current.forbid):
+            problems.append(f"{shape_id} converged: forbidden-path probe removed")
     return problems
 
 

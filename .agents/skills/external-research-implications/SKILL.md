@@ -117,7 +117,7 @@ Use this mode when the user asks which outside project, paper, repo, or
 movement matters most, rather than naming a single source.
 
 When the user asks for another, next, or second project/repo, first scan
-existing `docs/audits/`, `ideas/PIPELINE.md`, and open `openspec/changes/` so
+existing `docs/concerns/`, `ideas/PIPELINE.md`, and open `openspec/changes/` so
 the result does not simply rediscover an already-promoted concept. A repeated
 concept is acceptable only when the new source materially changes the
 implementation path; otherwise choose a distinct frontier axis and state how it
@@ -182,13 +182,9 @@ private-by-default capture and explicit review.
 
 ### 7. Leave Durable Artifacts
 
-Default artifact location:
-
-`docs/audits/YYYY-MM-DD-<source>-architecture-implications.md`
-
-Use a design note instead when the user accepts a direction:
-
-`docs/design-notes/YYYY-MM-DD-<topic>.md`
+Put unresolved findings in `docs/concerns/` with its required front matter.
+Record an accepted choice in an ADR under `docs/decisions/`, citing an OpenSpec
+spec or change. Do not create a design note.
 
 If implementation should follow, create a narrow OpenSpec change with
 specific files and dependencies. Do not bury active work only in the report.

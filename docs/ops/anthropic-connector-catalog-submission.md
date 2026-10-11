@@ -88,7 +88,7 @@ Typical directory requirements:
 
 ### 2.4 Compliance + security
 
-- **Public privacy policy** at stable URL. Content driven by `project_privacy_per_piece_chatbot_judged.md` + schema spec #25 §2 RLS structure + `docs/catalogs/privacy-principles-and-data-leak-taxonomy.md`.
+- **Public privacy policy** at stable URL. Content follows `docs/decisions/ADR-010-private-by-default.md` and the deployed schema.
 - **Terms of service.** Likely includes "you must meet your chatbot provider's age requirements" per `project_q10_q11_q12_resolutions.md` Q11 + the CC0 licensing commitment.
 - **Security contact:** `security@tinyassets.io` — must be monitored per SUCCESSION.md §7.
 - **Incident-response policy:** public statement that security reports get a <72h first response + coordinated disclosure timeline.

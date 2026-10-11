@@ -101,7 +101,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 - [ ] **Privacy policy live at `tinyassets.io/legal/privacy`**.
 - [ ] **Terms of Service live at `tinyassets.io/legal/terms`**.
-- [ ] **`docs/catalogs/privacy-principles-and-data-leak-taxonomy.md` v1 published** + referenced by chatbot instructions.
+- [ ] **Privacy contract verified** against `docs/decisions/ADR-010-private-by-default.md` and the live chatbot instructions.
 - [ ] **`control_station` prompt rendered from the directive-relocation audit §3** in production MCP gateway (historical filename: `docs/audits/2026-04-18-universe-server-directive-relocation-plan.md`).
 - [ ] **DMCA counter-notice email address** published in ToS.
 - [ ] **Security report channel `security@tinyassets.io` monitored** + initial response SLA documented.
