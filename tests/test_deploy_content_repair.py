@@ -130,6 +130,7 @@ def test_deploy_never_sources_the_host_env_file_as_shell():
     # failed the first automatic repair with exit 127 (issue #4606).
     from pathlib import Path
 
-    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/deploy-prod.yml").read_text()
+    repo = Path(__file__).resolve().parents[1]
+    workflow = (repo / ".github/workflows/deploy-prod.yml").read_text()
     assert "source /etc/tinyassets/env" not in workflow
     assert "-p EnvironmentFile=/etc/tinyassets/env" in workflow
