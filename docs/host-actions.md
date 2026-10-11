@@ -235,11 +235,167 @@ system-browser sign-in is merged and live but needs a new native build.
    in App Store Connect, verify system-browser sign-in returns to TinyAssets,
    the real connection flow works, and a substantive reply arrives. Do not reuse
    build 3 or an interim review-only key for this proof.
-3. On a physical iPhone (owned or cloud-hosted) running the latest public iOS,
-   record the [six-shot list and complete the written response](ops/app-store-submission-packet.md#guideline-21-response-packet).
-   Keep passwords and connection credentials masked. Attach the video and written
-   answers to the unresolved 2.1 request, then resubmit the selected 1.0.1 build.
-   Confirm release settings and the public install page after approval.
+3. Record the 2.1 video with the automated physical-iPhone workflow below (no personal
+   iPhone needed), check all six shots, attach it with the
+   [written answers](ops/app-store-submission-packet.md#guideline-21-response-packet)
+   to the unresolved 2.1 request, and resubmit the selected 1.0.1 build only on the
+   founder's go. Confirm release settings and the public install page after approval.
+
+### Apple: enable automated physical-iPhone review video
+
+Founder direction 2026-10-11: no personal iPhone is needed. The **iOS App Review
+video** workflow (`.github/workflows/ios-review-video.yml`) runs the six-step
+Guideline 2.1 packet on one physical AWS iPhone. It first runs the same test against
+production on Simulator; that proof alone is not Apple's required device video.
+
+1. Use [AWS advanced account signup](https://docs.aws.amazon.com/accounts/latest/reference/getting-started.html)
+   to create a standard AWS account, complete email/phone/payment verification,
+   choose the Paid account plan (pay as you go) and Basic support, and enable root
+   MFA. Use an administrator identity for the following one-time setup;
+   do not create root access keys.
+2. Open [Device Farm in Oregon](https://us-west-2.console.aws.amazon.com/devicefarm/home?region=us-west-2).
+   Choose **Mobile Device Testing > Projects > Create project**, name it
+   `tinyassets-app-review`, and copy its ARN. This enables use of Device Farm;
+   select metered testing, not a monthly device slot. All workflow calls use
+   `us-west-2`, Device Farm's mobile-testing region.
+3. In **IAM > Users > Create user**, name it `tinyassets-review-video`, with no
+   console access. Add the inline policy below, substituting your 12-digit account
+   ID and the project UUID (the text after `project:` in its ARN). Do not attach
+   AdministratorAccess, S3, IAM or any other service permissions.
+4. Under that user's **Security credentials > Create access key**, select
+   **Application running outside AWS**. Copy the key ID and secret directly into
+   GitHub **TinyAssets/TinyAssets > Settings > Environments > app-store > Add
+   environment secret** as `AWS_DEVICEFARM_ACCESS_KEY_ID` and
+   `AWS_DEVICEFARM_SECRET_ACCESS_KEY`. Add the project ARN as
+   `AWS_DEVICEFARM_PROJECT_ARN`. The existing `APP_STORE_REVIEW_USERNAME` and
+   `APP_STORE_REVIEW_PASSWORD` remain in that environment; do not put any value in
+   source, workflow inputs, chat, screenshots or command arguments.
+5. Generate the evidence key locally with the commands below, replace
+   `mobile/review-evidence-recipient.pub` with ONLY the public PEM output, and
+   commit that public file. The placeholder deliberately blocks the workflow.
+   After merge, in **Actions > iOS App Review video > Run workflow**, dispatch
+   from **main only** and leave **dry_run=true** first. Keep the app-store
+   environment restricted to main and approve its required review. Before merge,
+   **iOS build > review_video_compile_only=true** compiles both runners without
+   environment access. A successful
+   run compiles both runners, builds a signed IPA and completes the production
+   Simulator journey without AWS calls. If the reviewer has no working model
+   connection, the test fails; arrange the normal user connection first, never an
+   interim review-only inference key.
+6. Dispatch **iOS App Review video** from **main only** with **dry_run=false** to authorize one metered
+   physical run. Download `ios-review-physical-iphone-<run-id>` from its artifacts:
+   an encrypted bundle containing MP4, named per-step PNGs, test status, device/iOS
+   version and source SHA. Runs
+   fail if the journey, splash, recording or screenshot evidence is incomplete.
+   Review all six shots, password masking, and the recorded OS against Apple's
+   latest-public-iOS request before sending it to the lead. Apple attachment and
+   resubmission still require the lead's explicit go.
+
+Optional hardening: set `prevent_self_review` and `can_admins_bypass` only if another available reviewer preserves the founder's approval path; stricter settings can block a sole founder's own dispatches.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyReviewProjectAndItsChildren",
+      "Effect": "Allow",
+      "Action": [
+        "devicefarm:CreateUpload",
+        "devicefarm:GetUpload",
+        "devicefarm:DeleteUpload",
+        "devicefarm:ScheduleRun",
+        "devicefarm:GetRun",
+        "devicefarm:StopRun",
+        "devicefarm:DeleteRun",
+        "devicefarm:ListJobs",
+        "devicefarm:ListSuites",
+        "devicefarm:ListTests",
+        "devicefarm:ListArtifacts",
+        "devicefarm:ListRuns",
+        "devicefarm:ListUploads"
+      ],
+      "Resource": [
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:project:PROJECT_UUID",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:upload:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:run:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:job:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:suite:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:test:PROJECT_UUID/*"
+      ]
+    },
+    {
+      "Sid": "DiscoverPublicIPhones",
+      "Effect": "Allow",
+      "Action": "devicefarm:ListDevices",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "us-west-2"}}
+    }
+  ]
+}
+```
+
+The separate read-only `ListDevices` statement is required: AWS does not support
+resource-level permissions for this action. A literal project-ARN-only policy
+cannot discover the newest iPhone/iOS. All mutation permissions above are confined
+to this project's resources, and no other AWS service is granted. See the
+[AWS service authorization table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_devicefarm.html).
+`ListRuns` and `ListUploads` are the only additions to the recording/cleanup
+operations: the cancellation recovery sweep needs them to discover leftovers.
+The script uses no other AWS API operations; upload/download transfers use the
+service's presigned URLs. Device selection does not need a device pool or PassRole.
+
+**Cost, checked 2026-10-11:** [AWS pricing](https://aws.amazon.com/device-farm/pricing/)
+lists **$0.17/device-minute** and a limited-time **1,000-minute one-time trial**
+(normally 250 minutes). Confirm the trial balance in your new account. One 10-20
+minute run is about **$1.70-$3.40** after trial; the 30-minute device timeout is
+about **$5.10** in device time, plus any billable service setup time. GitHub macOS
+runner usage and the reviewer's model usage are separate. No monthly device slot
+is needed. Dry run incurs no AWS usage.
+
+Device Farm re-signs the uploaded current-source app. The artifact records its
+SHA; it must not be described as the old build 3 binary. The workflow attempts to delete its
+AWS run metadata and uploaded packages after downloading evidence because the
+restricted run environment carries reviewer credentials. Keep the GitHub artifact
+(the retention is 14 days); failures also retain available evidence. No AWS
+account, access keys or paid run is created by the builder.
+
+The repository is public, so **all video/screenshot evidence is encrypted before
+upload**, using ephemeral X25519 + HKDF-SHA256 + AES-256-GCM to the committed
+recipient public key. No encryption key is derived from the reviewer password.
+On the lead's machine, run once (stdout contains only the public PEM):
+
+```powershell
+python -m pip install cryptography==46.0.3
+python scripts/review_evidence_keygen.py
+```
+
+The private key is created with an owner-only ACL at
+`%USERPROFILE%\.tinyassets\review-evidence.key`; keygen refuses to overwrite it.
+Never commit or upload that private key. Preserve it privately: without it, old
+evidence cannot be recovered. Paste only the public output into the recipient
+file (plain ASCII/UTF-8). After downloading and unzipping an Actions artifact,
+decrypt locally on that same machine:
+
+```powershell
+python mobile/scripts/review_evidence.py decrypt review-devicefarm.enc private-review-video
+```
+
+Decryption reads the local private key; there is no password prompt.
+For Simulator evidence substitute `review-simulator.enc`. Keep decrypted files
+private. If the
+workflow reports incomplete AWS cleanup, decrypt `cleanup-required.json` and
+remove the listed run/uploads in Device Farm after the run has stopped. A forced
+runner termination is recovered by the next physical run: before uploading or
+sending new credentials, it deletes runs/uploads older than two hours in this
+dedicated project, stopping and awaiting unfinished runs first. Do not reuse this
+project for other tests. Dry runs make no AWS calls and do not sweep; if no next
+physical run is planned, remove leftovers manually. The job allows 75 minutes
+for orchestration and cleanup. GitHub has no `cancel-timeout-minutes` setting;
+its [cancellation protocol](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation)
+can kill a process before cleanup finishes, so extending the job timeout alone
+does not guarantee cancellation cleanup.
+
 
 ---
 

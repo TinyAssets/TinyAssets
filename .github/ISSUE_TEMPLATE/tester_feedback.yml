@@ -1,0 +1,56 @@
+name: Tester feedback
+description: What happened when you tried the early-access app.
+title: "Tester: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        You do not need a patch. Say what you tried and whether you would try again.
+
+        Leave passwords, setup tokens, and session cookies out.
+        Broken behavior that you want fixed can also be a bug report.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: What did you try?
+      options:
+        - Web app (tinyassets.io/app)
+        - Android closed test
+        - Claude connector
+        - ChatGPT connector
+        - Desktop
+        - More than one
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What did you ask it to do?
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: dropdown
+    id: again
+    attributes:
+      label: Would you try again?
+      options:
+        - Yes
+        - Only if this specific thing is fixed
+        - No
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Before you submit
+      options:
+        - label: I left out passwords, tokens, and session cookies.
+          required: true
