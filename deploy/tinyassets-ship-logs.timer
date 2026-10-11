@@ -1,7 +1,7 @@
 # TinyAssets log archiver timer — fires every hour.
 #
 # Self-host migration Row K per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 
 [Unit]
 Description=Timer for TinyAssets log archiver (hourly)

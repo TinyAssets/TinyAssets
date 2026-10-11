@@ -183,9 +183,9 @@ def default_specs(root: Path) -> list[SourceSpec]:
         SourceSpec("ideas/PIPELINE.md", "shared", "idea-pipeline", False),
         SourceSpec("pages/concepts", "shared", "brain-concept"),
         SourceSpec("pages/plans", "shared", "brain-plan"),
-        SourceSpec("docs/audits", "shared", "research-artifact"),
-        SourceSpec("docs/exec-plans/active", "shared", "exec-plan"),
         SourceSpec("docs/vetted-specs.md", "shared", "vetted-specs", False),
+        SourceSpec("docs/concerns", "shared", "research-artifact"),
+        SourceSpec("openspec/changes", "shared", "exec-plan"),
     ]
     specs.extend(
         SourceSpec(str(path), "shared", "worktree-purpose", False)

@@ -1,6 +1,6 @@
 """Storage backend protocol for Phase 7 dual-write cutover.
 
-Per spec (``docs/specs/phase7_github_as_catalog.md`` §Architecture):
+Per spec (``openspec/specs/community-patch-loop/spec.md`` §Architecture):
 
 ```
 StorageBackend (protocol)

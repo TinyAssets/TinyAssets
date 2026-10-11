@@ -15,7 +15,7 @@ name: Deploy prod
 # The deploy step NEVER leaves prod at zero: the script's worst case restores the
 # previous healthy image, backed by compose `restart: unless-stopped` + systemd
 # `Restart=always`. Rationale + prior-fence postmortem: the deploy_fail_safe.sh
-# header and docs/audits/2026-08-20-deploy-fence-rewrite.md.
+# header and docs/architecture.md.
 #
 # Required repo secrets: DO_DROPLET_HOST, DO_SSH_USER, DO_SSH_KEY.
 

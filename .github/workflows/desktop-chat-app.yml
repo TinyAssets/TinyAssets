@@ -22,7 +22,7 @@ on:
   # No `pull_request` trigger (2026-09-27 lean pipeline): no platform builds on
   # PRs. The main push above builds every change that lands; a PR that changes
   # the shell can run this via workflow_dispatch on its branch.
-  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
+  # docs/decisions/ADR-019-lean-ci-successor.md
   workflow_dispatch:
 
 permissions:

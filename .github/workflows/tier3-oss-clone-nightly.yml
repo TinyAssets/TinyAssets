@@ -2,7 +2,7 @@ name: tier3-oss-clone-nightly
 
 # Nightly tier-3 OSS clone smoke per AGENTS.md Forever Rule:
 # "tier-3 OSS contributors `git clone` and run cleanly" is a P0 uptime
-# surface. Spec: docs/design-notes/2026-04-19-tier3-oss-clone-nightly-gha.md.
+# surface. Spec: docs/ops/host-independence-runbook.md.
 
 on:
   schedule:
@@ -125,7 +125,7 @@ jobs:
                 ``,
                 `A fresh \`git clone\` + \`pip install -e .\` + smoke pytest path is broken on main. This is a Forever Rule (AGENTS.md) P0: tier-3 OSS contributors clone the repo and run it cleanly — that surface is currently red.`,
                 ``,
-                `Debug order: (1) check the last commit's diff for dirty-tree artifacts or dropped files; (2) re-run the workflow locally via the clone steps in \`docs/design-notes/2026-04-19-tier3-oss-clone-nightly-gha.md\`; (3) fix forward.`,
+                `Debug order: (1) check the last commit's diff for dirty-tree artifacts or dropped files; (2) re-run the workflow locally via the clone steps in \`docs/ops/host-independence-runbook.md\`; (3) fix forward.`,
               ].join('\n'),
             });
 

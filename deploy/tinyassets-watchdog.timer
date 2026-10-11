@@ -1,7 +1,7 @@
 # TinyAssets daemon watchdog — every 30s, starting 60s after boot.
 #
 # Self-host migration Row L per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Fires tinyassets-watchdog.service on a steady 30s cadence. The
 # watchdog.py script tracks consecutive-red state across ticks via

@@ -78,7 +78,7 @@ class TriageClass:
 # which needs timestamp-window logic and is handled explicitly in classify().
 # (class_name, compiled_regex, auto_repairable, manual_only, description)
 #
-# Spec ordering (docs/design-notes/2026-04-23-revert-loop-canary-spec.md
+# Spec ordering (docs/architecture.md
 # §Q6): env_unreadable > tunnel_token > provider_exhaustion > disk_full
 # > oom > image_pull_failure > watchdog_hotloop > unknown. Rationale:
 # cause-addressing repairs outrank symptom-addressing repairs. The

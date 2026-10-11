@@ -34,5 +34,7 @@ from what shipped.
 
 ## Consequences
 
+The delivery contract is `openspec/specs/development-coordination-runtime/`.
+
 - Cross-family review (`AGENTS.md`, loop step 4) covers floor-class changes and
   gate files only.

@@ -26,7 +26,7 @@ Hard Rule 15.)
 selector was a platform model call and now fails closed
 (``selector_retired``), so an auto-refresh finds no entries and the stored
 canonical, if any, is used. ``auto_canonical_via_leaderboard`` is inert until
-the follow-up deletion in ``docs/reviews/2026-09-24-platform-llm-call-audit.md``.
+the follow-up deletion in ``docs/decisions/ADR-006-the-platform-has-no-llm.md``.
 
 No new substrate primitives — pure orchestration over existing
 ``goals`` / ``branch_versions`` / ``quality_leaderboard`` / ``runs``

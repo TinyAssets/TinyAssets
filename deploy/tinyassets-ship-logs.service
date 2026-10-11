@@ -1,7 +1,7 @@
 # TinyAssets log archiver — hourly offsite log shipping.
 #
 # Self-host migration Row K per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Triggered by tinyassets-ship-logs.timer every hour. Invokes
 # deploy/ship-logs.sh to collect Docker container logs + rclone-upload

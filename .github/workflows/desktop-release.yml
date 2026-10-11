@@ -20,7 +20,7 @@ on:
   # jobs, so it queued every required check and the deploy behind it. It is
   # not a required check; the main push above still builds every change that
   # lands, and a PR that needs installer proof can use workflow_dispatch.
-  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
+  # docs/decisions/ADR-019-lean-ci-successor.md
   workflow_dispatch:
     inputs:
       publish_signed:

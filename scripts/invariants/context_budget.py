@@ -15,8 +15,8 @@ it did. Measurement without a pawl is not a ratchet.
 Ceilings are HARD and set just above the achieved values (see
 `scripts/check_context_budget.py`). No auto-heal: deciding WHICH content moves
 to `docs/reference/` is editorial, so a human does it. Basis:
-`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md` and
-`docs/audits/2026-08-25-harness-reset-baseline.md`.
+`docs/architecture.md` and
+`docs/architecture.md`.
 """
 
 from __future__ import annotations

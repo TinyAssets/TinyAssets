@@ -37,7 +37,7 @@ jobs:
   contract:
     name: Preview trust-boundary contract
     # Drafts do not spend a runner on this; `ready_for_review` above runs it for
-    # real the moment the PR is ready. See docs/design-notes/2026-09-27-lean-ci-pipeline.md.
+    # real the moment the PR is ready. See docs/decisions/ADR-019-lean-ci-successor.md.
     #
     # Safe ONLY because this is not a branch-protection context today. A skipped
     # job reports `conclusion=skipped`, which branch protection accepts as

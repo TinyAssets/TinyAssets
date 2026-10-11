@@ -197,7 +197,7 @@ def _action_validate_ship_packet(kwargs: dict[str, Any]) -> str:
             "hint": (
                 "Pass body_json='<coding_packet JSON>' — an object with "
                 "release_gate_result, ship_class, child_keep_reject_decision, "
-                "etc per docs/milestones/auto-ship-canary-v0.md §6"
+                "etc per openspec/specs/evaluation-outcomes-and-attribution/spec.md §6"
             ),
         })
 

@@ -1,7 +1,7 @@
 """The web app's ES modules, served as static files from ``tinyassets/onboarding/app/``.
 
 app.html carries the whole web app in one inline script. The split
-(docs/design-notes/2026-10-01-split-app-html-into-es-modules.md) moves that
+(docs/architecture.md) moves that
 script into native ES modules the page imports from ``/app/m/<build>/<name>.js``.
 This module is S0: the route, its allowlist and the CSP grant, with nothing
 loaded yet.

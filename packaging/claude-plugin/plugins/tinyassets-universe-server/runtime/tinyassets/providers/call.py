@@ -6,7 +6,7 @@ explicit fallback when providers are exhausted. This is the engine's single,
 domain-agnostic LLM-call primitive — engine code must reach the LLM only
 through this module, never through a domain package. (It was previously hosted
 inside the fantasy domain; the relocation is the de-fantasy audit's Tier A:
-``docs/audits/2026-06-24-fantasy-architecture-residue-audit.md``.)
+``docs/architecture.md``.)
 
 The router is injectable: a long-running host (e.g. a daemon) builds its own
 fully-configured :class:`ProviderRouter` and installs it via

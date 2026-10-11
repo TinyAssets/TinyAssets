@@ -1,6 +1,6 @@
 """TinyAssets daemon host-pool — Track D Wave 1.
 
-Spec: docs/exec-plans/active/2026-04-19-daemon-economy-first-draft.md §2
+Spec: docs/architecture.md §2
 Track D. Schema: prototype/full-platform-v0/migrations/001_core_tables.sql
 (commit ``98055aa``'s Track A foundation).
 

@@ -2,7 +2,7 @@
 
 Pure-Python validator that runs a coding_packet (or constructed ship_request)
 through the auto-ship safety envelope from
-``docs/milestones/auto-ship-canary-v0.md`` §5.2, §6.1, §6.2, §6.3 and returns
+``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` §5.2, §6.1, §6.2, §6.3 and returns
 a structured ship_decision explaining whether the packet WOULD ship, why,
 and what rollback handle would be used.
 
@@ -13,10 +13,10 @@ mode) wires the actual repo operation behind a flag; Phase 3 enables
 auto-merge for narrow canary classes after one successful PR-open round.
 
 Pairs with:
-- ``docs/specs/loop-outcome-rubric-v0.md`` (PR #211) — defines what KEEP +
+- ``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` (PR #211) — defines what KEEP +
   evidence-bundle-complete actually mean. The validator below enforces the
   envelope; the rubric defines what packets ARE before the envelope sees them.
-- ``docs/milestones/auto-ship-canary-v0.md`` (PR #198) — milestone spec
+- ``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` (PR #198) — milestone spec
   this module implements one phase of.
 
 The shipper is the LAST enforcement layer. The release_gate may recommend
@@ -103,7 +103,7 @@ DIFF_SIZE_BYTES_MAX: int = 8 * 1024  # 8 KB
 #: rubric and annotate the decision with `rubric_warnings`, but NEVER block.
 #: "enforce": promote rubric-only violations to blocking. "off": skip entirely.
 #: Producers + tests must populate the rubric fields BEFORE flipping to enforce
-#: (see docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md S2).
+#: (see openspec/specs/evaluation-outcomes-and-attribution/spec.md S2).
 RUBRIC_MODE_FLAG: str = "TINYASSETS_AUTO_SHIP_RUBRIC_MODE"
 
 #: Rubric rule IDs that validate_ship_request does NOT already enforce. Scoped
@@ -155,7 +155,7 @@ def _rubric_only_violations(packet: dict) -> list:
 #: gating on execution-path soundness, a distinct axis from the output rubric, so
 #: it never double-reports a rubric block rule (the S2 de-overlap lesson). The
 #: enforce flip is host-gated + warn-data-gated (see
-#: docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md S3).
+#: openspec/specs/evaluation-outcomes-and-attribution/spec.md S3).
 TRAJECTORY_MODE_FLAG: str = "TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE"
 
 

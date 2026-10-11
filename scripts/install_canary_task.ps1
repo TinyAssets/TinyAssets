@@ -1,7 +1,7 @@
 # install_canary_task.ps1 — register Windows Task Scheduler entries for the
 # layered uptime canary.
 #
-# Spec: docs/design-notes/2026-04-19-uptime-canary-layered.md §5 (file layout)
+# Spec: openspec/specs/uptime-and-alarms/spec.md §5 (file layout)
 # + §7 (scheduler drift mitigation — XML-serializable entries).
 #
 # Creates two tasks in the user's task library:

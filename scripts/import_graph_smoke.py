@@ -1,6 +1,6 @@
 """Import-graph smoke — catch missing-symbol regressions at commit + install time.
 
-Per ``docs/design-notes/2026-04-19-storage-init-stale-bytecode-mitigation.md``
+Per ``openspec/specs/storage-runtime-accounting/spec.md``
 Option B. Spawns a fresh Python subprocess to import canonical packages
 and exercise every name in every ``__all__`` list. Exits 0 green, 1 + stderr
 on any failure.
@@ -157,8 +157,7 @@ def main(argv: list[str]) -> int:
             f"\n{len(all_errors)} import-graph regression(s) across "
             f"{len(targets)} target(s). "
             f"Fix before committing — stale-bytecode class of bug "
-            f"(see docs/design-notes/"
-            f"2026-04-19-storage-init-stale-bytecode-mitigation.md).",
+            "(see the storage import smoke contract).",
             file=sys.stderr,
         )
         return 1

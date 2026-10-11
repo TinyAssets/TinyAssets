@@ -13,6 +13,14 @@ import pytest
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
 GUARDS = {
+    "test_shape_registry": (
+        "Remove the named second path or new surface, lower a recorded ceiling after deletion, "
+        "and keep docs, ADRs and proposals in their registered homes. "
+    ),
+    "test_one_agent_definition": "Keep every provider on the one agent definition. ",
+    "test_one_extension_unit": "Keep extensions on the v2 revision and authority boundary. ",
+    "test_platform_has_no_llm": "Bind every model call to its owner; platform calls fail closed. ",
+    "test_private_by_default": "Creation must declare private visibility. ",
     "test_capability_health": (
         'Keep the capability report complete and the image check on real broker, cell, '
         'launcher and relay paths; only the model transport may be substituted. '

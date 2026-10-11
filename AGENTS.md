@@ -53,7 +53,6 @@ Converge a shape; add no second path. Write durable state before replying.
 
 1. `SqliteSaver`, never `AsyncSqliteSaver`.
 2. Reuse the LanceDB connection; never recreate it.
-3. Vendor-neutral compute only — ADR-007.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
    agreed work (host-only: a minimal host-actions row, blocking nothing else).
@@ -70,7 +69,6 @@ Converge a shape; add no second path. Write durable state before replying.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
 14. `python scripts/deployed_sha.py --assert-contains <sha>` before "shipped".
-15. The platform has no LLM — ADR-006.
 
 Required CI omits `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
 Sandbox, filesystem or process-limit work needs `python scripts/linux_oracle.py`;
