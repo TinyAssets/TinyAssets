@@ -38,7 +38,9 @@ final class ReviewVideoTests: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
     }
 
-    private var composer: XCUIElement { app.webViews.textViews.firstMatch }
+    private var composer: XCUIElement {
+        app.webViews.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Message ")).firstMatch
+    }
     private var visibleText: [String] { app.webViews.staticTexts.allElementsBoundByIndex.map(\.label) }
 
     private func openChat() {
@@ -157,14 +159,17 @@ final class ReviewVideoTests: XCTestCase {
         }
         wait("masked password was entered") {
             let value = secure.value as? String ?? ""
-            return !value.isEmpty && value != "Password"
+            return value.count == password.count && value.allSatisfy { $0 == "•" || $0 == "●" }
         }
         UIPasteboard.general.items = []
         let submit = auth.buttons.matching(NSPredicate(format: "label IN %@", ["Sign in", "Continue", "Log in"])).firstMatch
         XCTAssertTrue(submit.waitForExistence(timeout: 30), "password submit missing")
         submit.tap()
         wait("tinyassets callback returned to signed-in app", timeout: 180) {
-            self.app.state == .runningForeground && self.app.buttons["Account"].exists
+            self.app.state == .runningForeground && (
+                self.app.buttons["Command center menu"].exists ||
+                self.app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open the chat with your agent")).firstMatch.exists
+            )
         }
         shot("02-signed-in")
 
@@ -206,13 +211,17 @@ final class ReviewVideoTests: XCTestCase {
         if open.waitForExistence(timeout: 3), open.isHittable { open.tap() }
         wait("sample uploaded through the app") {
             self.app.buttons["Remove app-store-review-sample.txt"].exists
-                && self.visibleText.contains(where: { $0.contains("app-store-review-sample.txt") })
+                && self.visibleText.contains(where: { $0.contains("app-store-review-sample.txt (") })
+                && !self.visibleText.contains(where: { $0.contains("app-store-review-sample.txt —") })
+                && !self.app.buttons["Check app-store-review-sample.txt"].exists
         }
         shot("05-attached")
         _ = send(question, facts: ["orchard launch", "united states", "friday"])
         shot("05-grounded-answer")
 
         step = "06-account-privacy"
+        app.buttons["Command center menu"].tap()
+        XCTAssertTrue(app.buttons["Account"].waitForExistence(timeout: 15), "Account menu entry missing")
         app.buttons["Account"].tap()
         let delete = app.buttons["Delete my account"]
         for _ in 0..<25 {

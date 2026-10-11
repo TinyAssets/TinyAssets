@@ -8,8 +8,11 @@ mkdir -p "$output"
 selection=$(xcrun simctl list -j | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-r=max((r for r in d["runtimes"] if r["isAvailable"] and r["identifier"].split(".")[-1].startswith("iOS-")), key=lambda r:tuple(map(int,r["version"].split("."))))
-t=next(t for t in reversed(d["devicetypes"]) if "iPhone" in t["name"] and "SE" not in t["name"])
+r=max((r for r in d["runtimes"] if r["isAvailable"] and r["identifier"].split(".")[-1].startswith("iOS-") and any(p["isAvailable"] and p["name"].startswith("iPhone") for p in d["devices"].get(r["identifier"],[]))), key=lambda r:tuple(map(int,r["version"].split("."))))
+# A device type in the global catalogue may require an uninstalled runtime.
+# Pick a type already known to work with this runtime, then create a clean copy.
+p=next(p for p in d["devices"][r["identifier"]] if p["isAvailable"] and p["name"].startswith("iPhone"))
+t=next(t for t in d["devicetypes"] if t["name"]==p["name"])
 print(t["identifier"], r["identifier"])
 ')
 read -r device_type runtime <<< "$selection"

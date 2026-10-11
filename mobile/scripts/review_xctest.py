@@ -135,7 +135,7 @@ def run_test(source: Path, destination: str, output: Path, launch_only: bool = F
             # Only assertion lines, with credentials redacted, are useful publicly.
             errors = []
             for line in (private / "xcode.log").read_text(errors="replace").splitlines():
-                if re.search(r"ReviewVideoTests.swift:\d+: error:", line):
+                if re.search(r"ReviewVideoTests.swift:\d+: error:|xcodebuild: error:", line):
                     for value in credentials.values():
                         if value:
                             line = line.replace(value, "[REDACTED]")
