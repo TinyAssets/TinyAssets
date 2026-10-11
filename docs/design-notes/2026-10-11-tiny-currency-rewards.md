@@ -213,7 +213,7 @@ A dollar payout to a bank account is even smaller as a new structure, and it spe
 1. **One payable ledger, in cents.** Append-only rows from cash actually collected. No `tiny` price, no in-app balance, no withdraw button. This is Phase A of `creator-revenue-share`. It is not built.
 2. **Creator rows only, and only once a published piece can be named.** One record per released seat. Compute rows stay absent. Leave `TINYASSETS_PAID_MARKET` off. Do not write these rows into `settlement_ledger.py`. Do not revive the 2026-07-08 NAV mint.
 3. **Pay the cents out in USDC to a wallet the user proved, or in dollars to a bank.** Founder-signed, batch emptied, sanctions list checked first, tax form collected before the first send. In-kind retirement is optional and does not fix the sink problem. Do not mint `tiny` and do not buy the published Base contract.
-4. **Issue `tiny` only later,** when someone other than a payee has a reason to hold it and the program can pay for counsel. Until then the 2026-04-29 boundary stays closed.
+4. **Issue `tiny` only later,** when someone other than a payee has a reason to hold it and the program can pay for counsel. Until then the 2026-04-29 boundary stays closed. If that later payout exists, buy the coins with the cents already owed. Do not mint them. See "Buy `tiny` or mint it."
 5. **Copy, in a later change.** The legal page matches the fine print until a payout is real: no currency moves, the published contracts are reference-only, and the KYC and OFAC products named on the page are not running.
 
 ## Where counsel is needed
@@ -221,7 +221,7 @@ A dollar payout to a bank account is even smaller as a new structure, and it spe
 Not legal advice. The owner cannot afford a lawyer now, so the path above avoids a new token instead of waiting on a custom legal structure. That is a staging choice. It is not a conclusion that a USDC payout, a bank payout, or a later `tiny` issuance is permitted. Do not treat this note as permission to send money. When the program can pay for advice, the questions are:
 
 - Whether sending USDC, bought with card revenue, to a contributor's wallet is money transmission or conflicts with the card processor's rules (design §9.2 and §9.4). This is the question the staged plan does not answer.
-- Whether a later `tiny` is a security, a commodity, a digital tool, or something else, including the effect of the platform buying it with subscription revenue (design §9.1). The page's "not a security" line is not an answer.
+- Whether a later `tiny` is a security, a commodity, a digital tool, or something else, including the effect of the platform buying it with subscription revenue (design §9.1), and whether minting rewards instead is a different answer. The page's "not a security" line is neither answer.
 - Whether a short-lived batch in a founder-signed Safe is custody of platform funds only, and which product behaviors (a withdrawable app balance, a deposit address, per-user tokens left in the Safe) would be custody of user funds.
 - Tax forms, the reporting threshold, withholding, and fair-market value on the transfer date (design §9.3). Whether a same-brand testnet token creates a reporting or disclosure duty.
 - The KYC threshold and the sanctions screen that must exist before a send. The page's $1,000 / Sumsub / Chainalysis sentences are not that program.
@@ -338,6 +338,56 @@ The concept above is a public market per account. An off-chain point is a differ
 1. **The cent ledger, shown to one creator.** Credited seat-time of paid use, and the cent estimate of the revenue share. Not sendable, no price, no pool. The pass is that the cents match cash actually collected. The fail is a screen that looks like a market. This is the experiment. It does not deploy a contract.
 2. **USDC, or dollars, to a wallet or bank they control,** from that same ledger, once cash has actually been collected. That is the first payout. It does not mint `tiny` and it does not open a pool.
 3. **Do not open personal-token pools,** including a single testnet pool under this brand, until a live `tiny` exists for a reason other than seeding exits, and until the public-token questions in the counsel list can be paid for. A day-one pool is a public offer of a thin market whose locked `tiny` is the bid. Launching it first spends the budget the safer payout needs, and it does so into the first sale.
+
+## Buy `tiny` or mint it
+
+Open question from the owner, 2026-10-11: when a payout is denominated in `tiny`, should the platform buy the coins on the market or mint new ones? He is unsure, and either can be made to run. This is not legal advice. The minimal first version below does neither.
+
+**Evidence of the two designs already in the repo, which disagree.**
+
+- `openspec/changes/creator-revenue-share/` buys. The proposal says the cents are the obligation, and the number of coins is whatever that month's purchase actually filled. The ledger does not store a `tiny` price. Design §6.4 is one batched buy, tranched so the platform's own order does less damage to the price, then a founder-signed distribution. The Safe is funded with the batch's cash only, not a standing pile. None of that code exists.
+- `docs/exec-plans/active/2026-07-08-token-architecture.md` mints, and only at net asset value against a pool of assets, with no discretionary mint. That package is not in the tree. The plan's own §5 says that design is plausibly a security. It also conflicts with the legal page's "not backed by a managed pool."
+- There is no mint key, cap, or schedule in this repository. **TODO:** the published Base contract's total supply and whether its mint role is already renounced were not read on chain.
+
+### Market buying (inference)
+
+The platform takes dollars it already has (collected subscription revenue, or a treasury balance of those dollars) and buys `tiny` from whoever is selling. Total supply does not change. Holders are not diluted. The purchase is a real bid, so the price tends to rise while the order is in the book, and a large order walks through sellers and pays more than the quote. Creators then receive fewer coins per dollar than the pre-trade quote suggested. Design §6.4 already treats that gap as shared across the batch and records the fill, not a wished-for price.
+
+The treasury holds `tiny` between the buy and the send. If the price falls in that window, the dollar value of the batch shrinks. The existing design limits that window by not pre-funding a surplus and by paying the coins that were actually bought. A standing treasury of `tiny` would add volatility the cent ledger does not have.
+
+Legally this is still not a clearance. Design §9.1 already asks whether a platform that repeatedly buys its named token with customer revenue is creating an expectation that the price will be supported. A purchase is easier to explain than a mint ("we spent the revenue share on the coin and sent the coin"), and it is still a distribution of a token the site promotes. Money-transmission and processor questions from the USDC stage apply here too, with the added fact that the asset is the platform's own brand.
+
+### Minting (inference)
+
+The platform creates new `tiny` and sends it. No market order, so no price impact from a buy, and no need for dollars at the moment of the send. Supply goes up. Everyone who already holds `tiny`, including people paid last period, owns a smaller share of the supply. That is dilution. If the mint is large relative to the float, the coins the new recipients try to sell push the price down. The inflation shows up there instead of in a buy order.
+
+Who holds the mint key is the whole control question. A key the platform can use can pay rewards, and it can also pay insiders or plug a shortfall. Optics follow the key: holders are trusting the operator not to print. A published cap, or a schedule that emits a fixed amount per period, is only as credible as the key. Destroying the mint role after a genesis supply makes later minting impossible. Leaving the role on a founder wallet, even a hardware key, means the cap is a policy. The 2026-07-08 plan's "mint only at net asset value" is a third story, a claim on a pool of assets, and this note does not revive it.
+
+A mint does not need revenue. That is the danger as well as the convenience. Payouts can continue when nobody paid a subscription, which separates the reward from the cash the sink section insisted on. A schedule that emits whether or not there was use does the same thing.
+
+### A hybrid (inference)
+
+Three hybrids are easy to describe. Only one is small.
+
+- **Genesis once, then only buy.** If the coin needs a fixed supply, mint that supply in one transaction and destroy the mint role in the same transaction. Every later payout is a market buy with collected cents. No ongoing inflation. No live key. This is market buying plus a finished genesis. It is the hybrid that matches "either could work" without keeping both machines running.
+- **Buy the wallet payout, mint the pool seed.** Liquid rewards are purchased. The `tiny` locked beside each personal token is printed. That hides the cost of day-one pools and makes signup the mint schedule. It is the dilution case aimed at the exit liquidity the previous section described. It is not a simplification.
+- **Buy some and mint the rest in every batch.** The platform chooses the mix. Recipients and holders cannot see whether this month's coins were paid for or printed unless the transaction says so. The operator is back in the mint-key seat. More moving parts, not fewer.
+
+### Effect on the per-user pools (inference)
+
+Wallet payouts and locked pools spend the same `tiny`. A lock forever means coins put in a pool cannot come back to pay the next creator. They compete.
+
+A market buy that is then locked spends dollars twice in spirit: once to acquire the coins, and again because those coins become the bid sellers of the personal token will take. The buy lifts the `tiny` quote. The later sale of the personal token moves that `tiny` to the seller, which is a distribution, not a burn. Between the buy and the lock the treasury is exposed to the `tiny` price. Price impact hits twice, on the `tiny` market during the buy and on the thin personal pool during the seed and the dump.
+
+A mint straight into the locked pool does not spend dollars and does increase supply by every account seeded. Idle pools warehouse the new coins. Traded pools hand them to sellers. Holders of previously bought `tiny` are diluted so that personal tokens have a day-one bid. The signup rate becomes an emission schedule the cent ledger does not govern.
+
+Neither source turns the lock into support for `tiny`. Bought or minted, the locked coins are the exit. The difference is who pays. Buyers of `tiny` and the revenue budget pay in the purchase case. Existing holders pay, by dilution, in the mint case. Sellers of the personal token are paid in both.
+
+### Minimal first version (inference, not legal advice)
+
+Do not buy `tiny` and do not mint it in the first payout. The first version is the cent ledger paid in USDC or dollars, from cash collected, with no mint key anywhere in that path.
+
+When a `tiny` payout is actually started, buy the coins with those cents in one founder-signed batch, record the fill, and send the coins to wallets the users proved. Do not keep a mint function on that path. Do not seed personal-token pools with the coins, whether they were bought or printed. A genesis mint, if the published contract does not already have a finished supply, is a separate one-time transaction that destroys the mint role before any reward runs. It is not a monthly choice. The 2026-07-08 net-asset-value mint stays unused.
 
 ## What this note did not do
 
