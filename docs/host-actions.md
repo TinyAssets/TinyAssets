@@ -396,6 +396,142 @@ its [cancellation protocol](https://docs.github.com/en/actions/reference/workflo
 can kill a process before cleanup finishes, so extending the job timeout alone
 does not guarantee cancellation cleanup.
 
+### AWS: credential vault root key (same account as Device Farm)
+
+Founder decision 2026-10-11: the credential vault's root key is one AWS KMS key
+in the AWS account created in step 1 above. That gives one AWS account and one
+checklist. There is no offline copy. Design:
+`openspec/changes/credential-vault-reshape/design.md` D3. Nothing reads these
+values until the cutover PR ships, so do this whenever the account exists.
+
+1. Open [KMS in Oregon](https://us-west-2.console.aws.amazon.com/kms/home?region=us-west-2).
+   Choose **Customer managed keys > Create key**:
+   - **Symmetric**, **Encrypt and decrypt**, single-Region;
+   - alias `tinyassets-vault-root`;
+   - key administrator: your administrator identity only;
+   - key users: none, because IAM policies grant use (the default key policy
+     allows that).
+
+   After creation:
+   - open **Key rotation** and enable automatic yearly rotation;
+   - copy the key ARN.
+
+   Never schedule deletion. If deletion is ever scheduled, it waits 30 days,
+   and it can be cancelled until then.
+2. In **IAM > Users > Create user**, name it `tinyassets-vault-broker`, with no
+   console access. Add only the inline policy below, with your 12-digit
+   account ID and the key ID (the text after `key/` in the ARN). Attach nothing
+   else.
+3. Under that user's **Security credentials > Create access key**, choose
+   **Application running outside AWS**. Paste the values into GitHub
+   **TinyAssets/TinyAssets > Settings > Environments > production > Add
+   environment secret**:
+   - `TINYASSETS_VAULT_AWS_ACCESS_KEY_ID`
+   - `TINYASSETS_VAULT_AWS_SECRET_ACCESS_KEY`
+   - `TINYASSETS_VAULT_KMS_KEY_ARN` (the key ARN)
+
+   Deploy installs them only for the broker process. Never put them in
+   `/etc/tinyassets/env`, chat or a command line.
+4. In **IAM > Identity providers > Add provider**, add the GitHub OIDC
+   provider if it is not there already:
+   - type **OpenID Connect**;
+   - provider URL `https://token.actions.githubusercontent.com`;
+   - audience `sts.amazonaws.com`.
+
+   Then **IAM > Roles > Create role > Custom trust policy**:
+   - paste the trust policy below;
+   - name the role `tinyassets-vault-dr-drill`;
+   - add the drill permission policy below as its only inline policy.
+
+   Then add GitHub environment `dr-drill`, restricted to main, with secret
+   `TINYASSETS_VAULT_DR_ROLE_ARN` set to the role ARN. The DR drill uses this
+   role, with `kms:Decrypt` only and no stored key, to prove a restored
+   credential opens.
+
+**Broker policy** (`tinyassets-vault-broker`, inline):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VaultRootKeyAccountKeksOnly",
+      "Effect": "Allow",
+      "Action": ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"],
+      "Resource": "arn:aws:kms:us-west-2:ACCOUNT_ID:key/KEY_ID",
+      "Condition": {
+        "StringEquals": {"kms:EncryptionContext:ta_purpose": "account-kek"},
+        "Null": {"kms:EncryptionContext:ta_account": "false"}
+      }
+    }
+  ]
+}
+```
+
+**DR drill trust policy** (`tinyassets-vault-dr-drill`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {"Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"},
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:TinyAssets/TinyAssets:environment:dr-drill"
+        }
+      }
+    }
+  ]
+}
+```
+
+**DR drill permission policy** (inline on that role):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DrillDecryptOnly",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:us-west-2:ACCOUNT_ID:key/KEY_ID",
+      "Condition": {
+        "StringEquals": {"kms:EncryptionContext:ta_purpose": "account-kek"}
+      }
+    }
+  ]
+}
+```
+
+**Rotate the access key** yearly, or at once on any suspicion:
+1. Create a second access key on `tinyassets-vault-broker`.
+2. Replace the two GitHub secrets.
+3. Redeploy.
+4. Confirm the broker's KMS health probe is green.
+5. Deactivate the old key.
+6. Delete it after 24 hours with no use in CloudTrail.
+
+**Emergency stops**, mildest first:
+1. **Deactivate the access key, then restart the broker.** All credentialed
+   calls stop. This is reversible.
+2. **Disable the KMS key.** It stops the drill as well. This is reversible.
+3. **Schedule deletion.** After 30 days, every stored credential in every copy
+   is unreadable and every user must reconnect.
+
+If AWS is unreachable, live connections keep working from the broker's memory
+cache. Others refuse with a retryable error and the uptime alarm fires. No
+credential is ever exposed and nothing falls back to plaintext.
+
+**Cost, checked 2026-10-11:** [AWS KMS pricing](https://aws.amazon.com/kms/pricing/)
+is $1/key-month, plus $1/month for each of the first two yearly rotations.
+Requests cost $0.03 per 10k beyond 20k free a month, and this usage stays
+inside the free tier. Expect about **$1-3/month**.
+
 
 ---
 
