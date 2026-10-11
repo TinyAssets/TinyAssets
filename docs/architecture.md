@@ -89,6 +89,7 @@ beside `cloudflared` and a log shipper.
 |---|---|
 | `tinyassets/providers/router.py` | Serves one command center's owner-authorized provider; no platform fallback. |
 | `tinyassets/providers/` | Owner binding, model selection, discovery, wire codecs, `provider_jail.py`. |
+| `docs/getting-started/bring-your-own-model.md` | How an owner connects a model the hosted app can call. |
 | `tinyassets/connection_oauth/` | Generic OAuth 2.0: discovery, PKCE, refresh. |
 | `tinyassets/credential_vault.py`, `tinyassets/broker/` | Per-command-center credentials and the broker process that alone holds them. |
 
