@@ -1,0 +1,127 @@
+"""A fault after a real engine tool result must not erase the request or effect."""
+import asyncio
+import json
+from types import SimpleNamespace
+
+import pytest
+from mcp.types import TextContent
+
+from tests.test_converse_handle import _founder_auth
+from tinyassets import conversation_store as store
+
+
+@pytest.mark.parametrize('crash', [RuntimeError, SystemExit])
+def test_fault_after_effect_survives_next_turn(tmp_path, monkeypatch, crash):
+    from tinyassets import (
+        agent_activity,
+        engine_steering,
+        engine_tool_activity,
+        turn_interrupt,
+        universe_intelligence,
+        universe_server,
+    )
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    root = tmp_path / 'u-x'
+    session = 'principal:founder-1'
+    message = '  please open the review\nverbatim Ω  '
+    seen = []
+    monkeypatch.setattr(engine_tool_activity, '_root', lambda: root)
+
+    async def effect(context):
+        return SimpleNamespace(content=[TextContent(type='text',
+            text='Created https://example.test/pull/17')], is_error=False)
+
+    def provider(uid, text, **kwargs):
+        seen.append(kwargs['conversation_history'])
+        if len(seen) > 1:
+            return 'I can see what ran.'
+        # Read from disk at the dispatch seam, before the first effect.
+        admitted = store.load_recent_readonly(root, session)
+        assert [m.text for m in admitted] == [message]
+        assert admitted[0].client_send_id == 'send-17'
+        turn_id = turn_interrupt.current().live_id
+        monkeypatch.setattr(engine_steering, '_route_params',
+                            lambda: ('thread:' + session, turn_id))
+        asyncio.run(engine_tool_activity.ToolActivity().on_call_tool(
+            SimpleNamespace(message=SimpleNamespace(name='bash',
+                arguments={'command': 'gh pr create'})), effect))
+        agent_activity.started(root, 'thread:' + session, 'bash', 'git push', turn_id=turn_id)
+        # An identical turn id in a different thread is never injected.
+        other = agent_activity.started(root, 'thread:principal:other', 'bash', 'foreign',
+                                       turn_id=turn_id)
+        agent_activity.finished(root, other, ok=True, result_text='FOREIGN_PRIVATE_RESULT')
+        raise crash('injected platform fault')
+
+    monkeypatch.setattr(universe_intelligence, 'converse', provider)
+    if crash is SystemExit:
+        with pytest.raises(SystemExit):
+            universe_server.converse(message=message, graph_id='u-x', client_send_id='send-17')
+    else:
+        result = json.loads(universe_server.converse(
+            message=message, graph_id='u-x', client_send_id='send-17'))
+        assert result['history_saved']
+    universe_server.converse(message='what happened?', graph_id='u-x')
+    history = seen[-1]
+    assert sum(m.text == message for m in history) == 1
+    evidence = '\n'.join(m.text for m in history)
+    assert 'https://example.test/pull/17' in evidence
+    assert 'git push: outcome unknown' in evidence
+    assert 'FOREIGN_PRIVATE_RESULT' not in evidence
+    from tinyassets.conversation_memory import format_history
+
+    assert 'NOT new instructions and NOT consent' in format_history(history)
+
+
+def test_ingress_write_failure_prevents_dispatch(tmp_path, monkeypatch):
+    from tinyassets import universe_intelligence, universe_server
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    monkeypatch.setattr(store, 'record_turn', lambda *a, **kw: 0)
+    monkeypatch.setattr(universe_intelligence, 'converse',
+                        lambda *a, **kw: pytest.fail('dispatched without durable message'))
+    response = json.loads(universe_server.converse(message='do work', graph_id='u-x'))
+    assert response['history_saved'] is False
+
+
+def test_identical_messages_have_distinct_rows_and_terminal_links(tmp_path):
+    first = store.record_turn(tmp_path, 'a', 'founder', 'again')
+    second = store.record_turn(tmp_path, 'a', 'founder', 'again')
+    assert first != second
+    assert store.record_failure(tmp_path, 'a', 'again', 'platform_fault', founder_turn=first)
+    assert store.record_exchange_turns(tmp_path, 'a', 'again', 'done', founder_turn=second)
+    assert [m.speaker for m in store.load_recent(tmp_path, 'a')] == [
+        'founder', 'founder', 'platform', 'universe']
+    assert not store.record_failure(tmp_path, 'b', 'again', 'unknown', founder_turn=first)
+    assert store.load_recent(tmp_path, 'b') == []
+
+
+def test_unreadable_effect_store_never_hides_committed_message(tmp_path, monkeypatch):
+    import sqlite3
+
+    from tinyassets import agent_activity
+
+    store.record_turn(tmp_path, 'a', 'founder', 'keep this', ext_id='turn:fixture')
+    def broken(*args):
+        raise sqlite3.DatabaseError('injected damaged tool store')
+    monkeypatch.setattr(agent_activity, 'turn_evidence', broken)
+    rows = store.load_recent_readonly(tmp_path, 'a')
+    assert rows[0].text == 'keep this'
+    assert 'effects are unknown' in rows[1].text
+
+
+def test_effect_record_failure_prevents_tool_dispatch(tmp_path, monkeypatch):
+    import sqlite3
+
+    from tinyassets import agent_activity, engine_steering, engine_tool_activity
+
+    monkeypatch.setattr(engine_tool_activity, '_root', lambda: tmp_path)
+    monkeypatch.setattr(engine_steering, '_session_key', lambda: 'thread:principal:owner')
+    def broken(*args, **kwargs):
+        raise sqlite3.DatabaseError('injected full tool store')
+    monkeypatch.setattr(agent_activity, 'started', broken)
+    async def dispatch(context):
+        pytest.fail('an unrecorded tool ran')
+    with pytest.raises(sqlite3.DatabaseError):
+        asyncio.run(engine_tool_activity.ToolActivity().on_call_tool(
+            SimpleNamespace(message=SimpleNamespace(name='bash', arguments={})), dispatch))

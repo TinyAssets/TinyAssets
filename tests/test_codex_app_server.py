@@ -126,7 +126,7 @@ async def test_served_launch_is_the_app_server_with_every_native_tool_off(served
     assert argv[:2] == ["codex", "app-server"]
     assert argv[1:1 + len(app.SERVED_LAUNCH_ARGS)] == list(app.SERVED_LAUNCH_ARGS)
     assert argv[-2] == "-c" and argv[-1].startswith(
-        'model_catalog_json="/tmp/provider-auth/model-catalog-')
+        'model_catalog_json="/provider-home/auth/model-catalog-')
     flat = " ".join(argv)
     for absent in ("exec", "mcp_servers", "--json", 'web_search="cached"', "workspace-write"):
         assert absent not in argv and absent not in flat.split()
@@ -417,5 +417,4 @@ def test_no_project_doc_reaches_the_model():
     (real-CLI capture, ``scripts/codex_cli_smoke.py``)."""
     assert ("-c", "project_doc_max_bytes=0") in zip(
         app.SERVED_LAUNCH_ARGS, app.SERVED_LAUNCH_ARGS[1:])
-
 

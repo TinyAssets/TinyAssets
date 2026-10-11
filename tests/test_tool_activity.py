@@ -50,15 +50,16 @@ def test_a_failure_keeps_only_the_first_line_of_its_real_cause(tmp_path):
     assert failed["error"] == "refused schedule id unknown"
 
 
-def test_newest_first_per_session_and_bounded(tmp_path, monkeypatch):
+def test_newest_first_per_session_preserves_durable_evidence(tmp_path):
     universe = _universe(tmp_path)
-    monkeypatch.setattr(agent_activity, "KEEP_PER_SESSION", 3)
-    for index in range(5):
-        agent_activity.started(universe, THREAD, "read", f"notes/{index}.md")
+    for index in range(205):
+        agent_activity.started(universe, THREAD, "read", f"notes/{index}.md", turn_id='retained')
     agent_activity.started(universe, "node:b:agent", "bash", "background work")
-    rows = agent_activity.recent(universe, THREAD, limit=10)
-    assert [r["summary"] for r in rows] == ["notes/4.md", "notes/3.md", "notes/2.md"]
+    rows = agent_activity.recent(universe, THREAD, limit=3)
+    assert [r["summary"] for r in rows] == ["notes/204.md", "notes/203.md", "notes/202.md"]
     assert all(r["summary"] != "background work" for r in rows)
+    evidence = agent_activity.turn_evidence(universe, THREAD, 'retained')
+    assert evidence.count('outcome unknown') == 205 and 'notes/0.md' in evidence
 
 
 def test_since_drops_calls_from_an_earlier_turn(tmp_path):

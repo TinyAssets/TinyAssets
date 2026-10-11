@@ -28,6 +28,80 @@ BUNDLE = TokenBundle(access_token="synthetic-access-v1", refresh_token="syntheti
                      token_url="https://tokens.example/refresh", client_id="synthetic-client")
 
 
+@pytest.mark.parametrize('limit', [None, 1])
+def test_workflow_connection_accounts_without_special_budget(rig, monkeypatch, limit):
+    from tinyassets.effectors.connection_inference import request
+    from tinyassets.providers import definition
+    from tinyassets.request_budget import request_budget_scope
+
+    monkeypatch.setattr(definition, 'list_definitions', lambda uid: [rig.definition])
+    monkeypatch.setattr(definition, 'get_definition', lambda *a: rig.definition)
+    events = []
+    dispatch = build_dispatch(rig.base, events=events)
+
+    class Proxy:
+        def request(self, verb, wire, *, inference_usage=None):
+            return invoke(dispatch, inference_usage, verb=verb, request=wire)
+
+    budget = TurnRequestBudget(OWNER_ID, UNIVERSE, max_requests=limit)
+    with request_budget_scope(budget):
+        for _ in range(1 if limit else 2):
+            response = request(Proxy(), 'POST', WIRE, root=rig.base / UNIVERSE,
+                owner=OWNER_ID, grant_id=GRANT, connection_id=CONNECTION, run_id='review')
+            assert response['status'] == 200
+        if limit:
+            with pytest.raises(RequestBudgetExceeded):
+                request(Proxy(), 'POST', WIRE, root=rig.base / UNIVERSE,
+                    owner=OWNER_ID, grant_id=GRANT, connection_id=CONNECTION)
+    assert events.count('send') == (1 if limit else 2)
+    assert all(a['state'] == 'succeeded' for a in budget.receipt()['attempts'])
+    assert budget.receipt()['dispatched'] == events.count('send')
+
+
+def test_workflow_connection_creates_root_and_rejects_foreign_owner(rig, monkeypatch):
+    from tinyassets.effectors.connection_inference import request
+    from tinyassets.providers import definition
+
+    monkeypatch.setattr(definition, 'list_definitions', lambda uid: [rig.definition])
+    monkeypatch.setattr(definition, 'get_definition', lambda *a: rig.definition)
+    events, references = [], []
+    dispatch = build_dispatch(rig.base, events=events)
+
+    class Proxy:
+        def request(self, verb, wire, *, inference_usage=None):
+            if inference_usage:
+                references.append(inference_usage)
+            return invoke(dispatch, inference_usage, verb=verb, request=wire)
+
+    response = request(Proxy(), 'POST', WIRE, root=rig.base / UNIVERSE,
+        owner=OWNER_ID, grant_id=GRANT, connection_id=CONNECTION)
+    assert response['status'] == 200 and len(references) == 1
+    with pytest.raises(ProviderAuthorityHeldError):
+        request(Proxy(), 'POST', WIRE, root=rig.base / UNIVERSE,
+            owner='another-owner', grant_id=GRANT, connection_id=CONNECTION)
+    assert events.count('send') == 1
+
+
+def test_connection_borrows_bound_workflow_budget_and_refuses_closed_run(tmp_path, monkeypatch):
+    from tinyassets.agent_review import bound
+    from tinyassets.effectors.connection_inference import _workflow_budget
+    from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
+
+    session = _ForegroundRunProviderSession(tmp_path, universe_id=UNIVERSE,
+        principal_id=OWNER_ID, provider_call=lambda *a, **kw: None)
+    session._run_id = 'review'
+    checked = []
+    monkeypatch.setattr(session, '_validate_run', lambda **kw: checked.append(kw))
+    with bound(session, active=True, run_id='review'):
+        assert _workflow_budget('review') is session._request_budget
+        assert checked == [{'allowed_statuses': {'running'}}]
+        with pytest.raises(PermissionError, match='changed'):
+            _workflow_budget('another-run')
+        session._closed = True
+        with pytest.raises(PermissionError, match='ended'):
+            _workflow_budget('review')
+
+
 @pytest.fixture
 def rig(tmp_path):
     (tmp_path / UNIVERSE).mkdir()
@@ -377,7 +451,7 @@ def test_unix_broker_preserves_missing_accounting_recovery(uds_broker, rig):
 
     events = []
     uds_broker.state["dispatch"] = build_dispatch(rig.base, events=events)
-    with pytest.raises(InferenceUsageRequired, match="owner-approved model"):
+    with pytest.raises(InferenceUsageRequired, match="owner-connected model"):
         uds_broker.client.request(
             grant_id=GRANT, connection_id=CONNECTION, verb="POST", request=WIRE,
             op_id=new_op_id(),

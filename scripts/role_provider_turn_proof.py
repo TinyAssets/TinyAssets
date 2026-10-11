@@ -52,6 +52,8 @@ if seed == 0:
     launch['close_descriptors']((writer.fileno(),))
     from tinyassets.broker.owner_identities import OwnerIdentities
     store = OwnerIdentities(root / '.broker/state/owner-identities.db', initialize=True)
+    store.resolve('alice', allocate=True)
+    store.admission('admit', 'alice', 'cell-alice')
     writer.sendall(json.dumps({'alice': store.resolve('alice', allocate=True).uid}).encode())
     os._exit(0)
 writer.close(); identities = json.loads(reader.recv(4096)); reader.close()

@@ -3,8 +3,9 @@
 ``tinyassets.agent_activity`` owns the log. This middleware writes one row when
 a call starts and completes it when the call ends, for whichever session the
 launch named on its engine route (``engine_steering``). A call with no session
-(stdio, an old launch) is not recorded. Recording never fails or delays the
-call's own result beyond two small local writes.
+(stdio, an old launch) is not recorded. A failed start write refuses dispatch.
+A missing terminal record leaves an
+explicitly uncertain outcome for the next turn.
 """
 from __future__ import annotations
 
@@ -39,26 +40,28 @@ def _root():
 
 def _start(session_key: str, tool: str, arguments) -> tuple | None:
     from tinyassets import agent_activity
+    from tinyassets.engine_steering import _route_params
 
     try:
         root = _root()
         if root is None:
             return None
         call_id = agent_activity.started(
-            root, session_key, tool, agent_activity.summarize(tool, arguments))
+            root, session_key, tool, agent_activity.summarize(tool, arguments),
+            turn_id=_route_params()[1])
         return root, call_id
     except Exception:  # noqa: BLE001 - the view is never worth a failed call
         logger.warning("tool activity could not be recorded", exc_info=True)
-        return None
+        raise
 
 
-def _finish(handle, *, ok: bool, error: str = "") -> None:
+def _finish(handle, *, ok: bool, error: str = "", result_text="") -> None:
     from tinyassets import agent_activity
 
     if handle is None:
         return
     try:
-        agent_activity.finished(handle[0], handle[1], ok=ok, error=error)
+        agent_activity.finished(handle[0], handle[1], ok=ok, error=error, result_text=result_text)
     except Exception:  # noqa: BLE001
         logger.warning("tool activity could not be completed", exc_info=True)
 
@@ -105,5 +108,8 @@ class ToolActivity(Middleware):
             _REFUSALS.reset(token)
         failed = bool(getattr(result, "is_error", False) or getattr(result, "isError", False))
         error = refusals[0] if refusals else (_error_text(result) if failed else "")
-        await asyncio.to_thread(_finish, handle, ok=not (failed or refusals), error=error)
+        text = '\n'.join(block.text for block in getattr(result, 'content', ())
+                         if isinstance(getattr(block, 'text', None), str))
+        await asyncio.to_thread(_finish, handle, ok=not (failed or refusals), error=error,
+                                result_text=text)
         return result

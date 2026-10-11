@@ -23,7 +23,8 @@ INSTALL_TREE = re.compile(r'/opt/[a-z0-9][a-z0-9.-]*-install/.+')
 WRAPPER_DIR = '/usr/local/bin/'
 SNAPSHOT = '/snapshot'
 #: The cell's private, writable copy of the launch snapshot.
-AUTH_DIR = '/tmp/provider-auth'
+HOME_DIR = '/provider-home'
+AUTH_DIR = HOME_DIR + '/auth'
 #: The provider's working directory inside an execution cell: empty, owner-private.
 WORKSPACE = '/tmp/workspace'
 #: Where the cell reaches its owner's engine MCP route (served turns only).
@@ -31,7 +32,7 @@ ENGINE_SOCKET = '/provider-engine.sock'
 #: Settings values that cannot carry a secret.
 SWITCH_VALUES = frozenset({'0', '1', 'true', 'false', 'yes', 'no', 'on', 'off'})
 MAX_VALUE_FILE_BYTES = 8192
-FIXED_ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp', 'USERPROFILE': '/tmp',
+FIXED_ENV = {'PATH': '/usr/bin:/bin', 'HOME': HOME_DIR, 'USERPROFILE': HOME_DIR,
              'TMPDIR': '/tmp', 'TMP': '/tmp', 'TEMP': '/tmp', 'LANG': 'C.UTF-8'}
 
 

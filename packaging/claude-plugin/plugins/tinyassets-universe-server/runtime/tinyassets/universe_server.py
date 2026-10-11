@@ -2869,7 +2869,7 @@ def _announce_owner_message(universe_dir) -> None:
 
 
 def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner_stopped,
-                              client_send_id="") -> dict:
+                              client_send_id="", founder_turn=None) -> dict:
     """What a turn the owner stopped leaves in the thread and returns.
 
     Recorded exactly where every other ended turn is (``record_failure``: the
@@ -2897,12 +2897,13 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner
     )
     try:
         saved = record_failure(
-            universe_dir, session, message, record, client_send_id=client_send_id,
+        universe_dir, session, message, record, client_send_id=client_send_id,
+        founder_turn=founder_turn,
         )
     except Exception:  # noqa: BLE001 - the stop still happened; memory is best-effort
         logger.warning("converse: interrupted-turn history could not be saved")
         saved = False
-    if saved:
+    if saved and founder_turn is None:
         _announce_owner_message(universe_dir)
     notice = failure_notice(record)
     logger.info("converse: turn %s ended in %s (owner_stopped=%s)", record.ref, uid, owner_stopped)
@@ -3177,7 +3178,7 @@ def converse(
     # One continuous session per founder per universe, keyed on the VERIFIED
     # principal, so every surface (phone app, claude.ai connector, web) shares
     # the same thread and it survives app restarts and token renewals. The
-    # store is best-effort by contract: a memory hiccup never costs the turn.
+    # admitted message is committed before dispatch below.
     # History only rides into GRANTED (founder) turns — enforced again inside
     # converse — and it is memory, never consent.
     from tinyassets.api.helpers import _universe_dir as _memory_universe_dir
@@ -3229,6 +3230,7 @@ def converse(
     message = _with_carryover(memory_universe_dir, memory_session, message)
     live_id = ""
     live_turn = None
+    founder_turn = None
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
@@ -3253,6 +3255,19 @@ def converse(
                                                    if addressed else 0)) as live_turn:
             live_turn.check()
             live_id = live_turn.live_id
+            # This commit is admission, not optional memory. No model or tool may run
+            # until the original request survives process death. Carryover is context,
+            # never a replacement for the owner's verbatim message in the transcript.
+            from tinyassets.conversation_store import record_turn
+
+            founder_turn = record_turn(
+                memory_universe_dir, memory_session, "founder", typed,
+                client_send_id=client_send_id, ext_id=f"turn:{live_turn.live_id}",
+            )
+            if not founder_turn:
+                return json.dumps({"error": "Your message could not be saved, so nothing was sent.",
+                                   "history_saved": False, "universe_id": uid})
+            _announce_owner_message(memory_universe_dir)
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
                            current_actor_id(), typed, client_send_id)
             reply = _converse_impl(
@@ -3274,9 +3289,10 @@ def converse(
         # Disconnect/cancellation must never fabricate an owner decision.
         return json.dumps(_with_unsettled_steering(
             _interrupted_turn_payload(
-                uid, memory_universe_dir, memory_session, message, exc,
+                uid, memory_universe_dir, memory_session, typed, exc,
                 owner_stopped=live_turn is not None and live_turn.requested(),
                 client_send_id=client_send_id,
+                founder_turn=founder_turn,
             ),
             memory_universe_dir, memory_session, live_id,
         ))
@@ -3294,13 +3310,12 @@ def converse(
         record = _served_failure_record(exc, held=held is not None)
         try:
             saved = record_failure(
-                memory_universe_dir, memory_session, message, record, client_send_id=client_send_id,
+                memory_universe_dir, memory_session, typed, record, client_send_id=client_send_id,
+                founder_turn=founder_turn,
             )
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
-        if saved:
-            _announce_owner_message(memory_universe_dir)
         history = {
             "turn_failure": normalize_turn_failure(record),
             "failure_notice": failure_notice(record),
@@ -3325,15 +3340,13 @@ def converse(
     try:
         from tinyassets.conversation_store import record_exchange_turns
 
-        # Both sides in ONE transaction: never a founder-only half-turn. The
-        # owner's messages the agent received while it worked sit between them.
+        # Attach the terminal to the admitted row without inserting the request twice.
         recorded = record_exchange_turns(
-            memory_universe_dir, memory_session, message, str(reply), execution=execution,
+            memory_universe_dir, memory_session, typed, str(reply), execution=execution,
             interjections=[(item.text, item.created_at) for item in delivered],
             client_send_id=client_send_id,
+            founder_turn=founder_turn,
         )
-        if recorded is not None:
-            _announce_owner_message(memory_universe_dir)
         # Only now can the cursor name this turn -- by the exact rows it wrote, never
         # "the latest row", which with two turns in flight can be another turn's
         # unlearned exchange. Settled -> the lesson is done; unsettled (a failed

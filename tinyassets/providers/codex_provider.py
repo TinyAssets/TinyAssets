@@ -279,7 +279,7 @@ class CodexProvider(BaseProvider):
     native_command_resolver = staticmethod(lambda: _resolve_codex_cmd())
     native_process_options = staticmethod(_no_window_kwargs)
     native_install_mounts = staticmethod(lambda command: _codex_sandbox_mounts(command))
-    native_metadata_arguments = ("app-server",)
+    native_metadata_arguments = ("app-server", "-c", 'sandbox_mode="danger-full-access"')
     from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
 
     native_discovery_protocol = NativeJsonRpcProtocol(

@@ -128,9 +128,9 @@ class InferenceUsageRequired(ProviderAuthorityHeldError):
 
     def __init__(self):
         super().__init__(
-            "HTTP inference requires a parent usage reference. Run the review as a "
-            "prompt_template node through run_graph with an owner-approved model; "
-            "direct connection POSTs cannot supply inference accounting. Read "
+            "HTTP inference requires a parent usage reference. Use an owner-connected "
+            "model through the platform connection capability or a prompt_template "
+            "node through run_graph; those paths reserve normal inference usage. Read "
             'read_graph target="handbook" query="write_graph.connections" for the '
             "inference recovery and model-access approval steps."
         )

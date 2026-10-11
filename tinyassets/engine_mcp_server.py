@@ -1742,13 +1742,11 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     failure this replaces: you are not being careful, you are making them
     answer the same question in three shapes.
 
-    **Inference recovery (including a second-model review).** A direct POST to
-    a model connection can fail with ``InferenceUsageRequired``: "HTTP inference
-    requires a parent usage reference" (older brokers said "inference usage
-    authority refused"). This is missing accounting, not a request to extend
-    the HTTP grant. Do not retry the POST or ask the owner to approve an
-    accounting bypass. Build a ``prompt_template`` node and run it through
-    ``run_graph``; the model router supplies its parent usage reference.
+    **Inference (including a second-model review).** Model POSTs through an owner's
+    connected channel receive normal usage accounting. Workflow ``prompt_template``
+    nodes also use that accounting through the model router. No separate budget
+    or repeated key deposit is needed. An invalid or closed usage reference is a
+    platform failure; never ask the owner to bypass accounting.
     Read ``model_options`` and the owner's model preferences, then use the
     node's ``llm_policy`` to select the approved review model. Read back the
     saved branch before running it and the run output before claiming a review.

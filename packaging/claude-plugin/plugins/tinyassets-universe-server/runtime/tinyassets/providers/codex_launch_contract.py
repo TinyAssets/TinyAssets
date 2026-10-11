@@ -18,6 +18,7 @@ import copy
 #: reject the launch, so a CLI upgrade fails closed rather than adding tools.
 SERVED_LAUNCH_ARGS: tuple[str, ...] = (
     "app-server",
+    "-c", 'sandbox_mode="danger-full-access"',
     "--disable", "shell_tool", "--disable", "unified_exec",
     "--disable", "apps", "--disable", "plugins", "--disable", "remote_plugin",
     "--disable", "multi_agent", "--disable", "sleep_tool", "--disable", "goals",
