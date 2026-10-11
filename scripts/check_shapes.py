@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs/architecture.md"
@@ -26,21 +27,41 @@ class Shape:
 SHAPES: dict[str, Shape] = {
     "B1": Shape(
         ("starter/**", "packages/**"),
-        (("tinyassets/api/market.py", ""), ("tinyassets/automations.py", "")),
-        ceiling=2,
+        (
+            ("tinyassets/api/market.py", ""),
+            ("tinyassets/automations.py", ""),
+            ("tinyassets/agent_wakes.py", ""),
+            ("tinyassets/request_continuations.py", ""),
+            ("tinyassets/bid/**/*.py", ""),
+            ("tinyassets/treasury/**/*.py", ""),
+            ("tinyassets/domains/fantasy_daemon/**/*.py", ""),
+            ("tinyassets/domains/research_probe/**/*.py", ""),
+        ),
+        ceiling=12,
     ),
     "B2": Shape(
         ("tinyassets/agent_loop/**", "tinyassets/model_call.py", "tinyassets/universe_tools.py"),
-        (("tinyassets/providers/*_provider.py", ""),),
-        ceiling=4,
+        (
+            ("tinyassets/providers/*_provider.py", ""),
+            ("tinyassets/**/*.py", r"\bcall_provider\("),
+            ("tinyassets/**/*.py", r"\b(?:_call_writer|make_interactive_agent_turn)\("),
+            ("tinyassets/custom_agents.py", ""),
+            ("tinyassets/api/extensions.py", ""),
+        ),
+        ceiling=23,
     ),
     "S1": Shape(
         ("tinyassets/model_call.py", "tinyassets/providers/**"),
         (
             ("tinyassets/**/*.py", r"\bcall_provider\("),
             ("tinyassets/**/*.py", r"\bcall_with_policy(?:_sync)?\("),
+            ("tinyassets/agent_turn_coordinator.py", r"\bTurnRequestBudget\("),
+            ("tinyassets/background_served_provider.py", r"\bTurnRequestBudget\("),
+            ("tinyassets/foreground_run_provider.py", r"\bTurnRequestBudget\("),
+            ("tinyassets/providers/router.py", r"\bTurnRequestBudget\("),
+            ("tinyassets/universe_intelligence.py", r"\bTurnRequestBudget\("),
         ),
-        ceiling=22,
+        ceiling=27,
     ),
     "S2": Shape(
         ("tinyassets/control_plane/**",),
@@ -98,7 +119,10 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/daemon_server.py", r"\bCREATE TABLE\b"),),
         ceiling=27,
     ),
-    "S11": Shape(("tinyassets/owner_door/**", "tinyassets/api/**")),
+    "S11": Shape(
+        ("tinyassets/owner_door/**", "tinyassets/api/**"),
+        forbid=(r"from\s+tinyassets\.model_door\b",),
+    ),
     "S12": Shape(
         ("tinyassets/universe_server.py",), (("tinyassets/mcp_server.py", ""),), ceiling=1
     ),
@@ -107,7 +131,10 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/**/*.py", r"\b(?:reflexion|raptor|agentic_search|extract_learning)\b"),),
         ceiling=14,
     ),
-    "S14": Shape(("tinyassets/api/visibility.py", "tinyassets/api/universe.py")),
+    "S14": Shape(
+        ("tinyassets/api/visibility.py", "tinyassets/api/universe.py"),
+        forbid=(r"DEFAULT_CREATE_VISIBILITY\s*=\s*['\"]public['\"]",),
+    ),
     "S15": Shape(
         ("tinyassets/boxes/**",),
         (
@@ -117,7 +144,10 @@ SHAPES: dict[str, Shape] = {
         ),
         ceiling=122,
     ),
-    "S16": Shape(("tinyassets/onboarding/**", "mobile/**", "desktop-app/**")),
+    "S16": Shape(
+        ("tinyassets/onboarding/**", "mobile/**", "desktop-app/**"),
+        forbid=(r"Route\s*\(\s*['\"]/mcp/app",),
+    ),
     "S17": Shape(("tinyassets/okf/**",), (("tinyassets/daemon_brain.py", ""),), ceiling=1),
     "S18": Shape(
         ("starter/**", "packages/**"),
@@ -145,11 +175,16 @@ SHAPES: dict[str, Shape] = {
     ),
     "S26": Shape(("tinyassets/usage_policy.py",)),
     "S27": Shape(("deploy/**", "tinyassets/boxes/**")),
+    "S28": Shape(
+        ("tinyassets/broker/**", "tinyassets/credential_vault.py"),
+        (("tinyassets/credential_vault.py", ""), ("tinyassets/broker/browser_vault.py", "")),
+        ceiling=2,
+    ),
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {
     "S1": (
-        r"\b(?:def\s+(?:call_provider|call_with_policy|model_call)\s*\("
+        r"\b(?:(?:def\s+)?(?:call_provider|call_with_policy|model_call)\s*\("
         r"|class\s+TurnRequestBudget\b)"
     ),
     "S2": (
@@ -165,7 +200,7 @@ DUAL_FLAGS = re.compile(
     r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING|ASSIGNED_QUEUE_CONSUMER)\b"
 )
 PUBLIC_ROUTE = re.compile(
-    r"(?:mount|route|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
+    r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
     r"\s*\(\s*['\"](/[^'\"]*)"
 )
 PUBLIC_ROOTS = frozenset({"/mcp", "/api/v1", "/app"})
@@ -212,6 +247,61 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
     return total
 
 
+def recorded_shapes(source: str) -> dict[str, tuple[int, tuple[tuple[str, str], ...]]]:
+    """Read base pins and probes as syntax; never import code from the base tree."""
+    tree = ast.parse(source)
+    result = {}
+    for assignment in tree.body:
+        if not isinstance(assignment, ast.AnnAssign) or not isinstance(assignment.target, ast.Name):
+            continue
+        if assignment.target.id != "SHAPES" or not isinstance(assignment.value, ast.Dict):
+            continue
+        for key, value in zip(assignment.value.keys, assignment.value.values):
+            if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Name):
+                continue
+            if value.func.id != "Shape" or key is None:
+                continue
+            shape_id = ast.literal_eval(key)
+            old = ast.literal_eval(value.args[1]) if len(value.args) > 1 else ()
+            ceiling = next(
+                (ast.literal_eval(kw.value) for kw in value.keywords if kw.arg == "ceiling"), 0
+            )
+            result[shape_id] = (ceiling, old)
+    return result
+
+
+def base_shape_problems(root: Path = ROOT) -> list[str]:
+    merge_base = _merge_base(root)
+    if merge_base is None:
+        return []
+    baseline = subprocess.run(
+        ["git", "show", f"{merge_base}:scripts/check_shapes.py"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if baseline.returncode:
+        return []  # C1 introduces the table
+    problems = []
+    for shape_id, (ceiling, old) in recorded_shapes(baseline.stdout).items():
+        if shape_id not in SHAPES:
+            continue  # registry parity reports a removed shape
+        current = SHAPES[shape_id]
+        if current.ceiling > ceiling:
+            problems.append(f"{shape_id} ceiling: pin raised {ceiling} -> {current.ceiling}")
+        if not set(old) <= set(current.old):
+            problems.append(f"{shape_id} ceiling: old-path probe removed")
+    return problems
+
+
+def registered_path(rel: str, glob: str) -> bool:
+    if glob.endswith("/**"):
+        return rel.startswith(glob[:-3] + "/")
+    return PurePosixPath(rel).match(glob)
+
+
 def _merge_base(root: Path) -> str | None:
     if not (root / ".git").exists():
         return None
@@ -241,7 +331,9 @@ def git_added(root: Path = ROOT) -> set[str]:
         )
         return result.stdout.strip()
 
-    added = set(git("diff", "--name-only", "--diff-filter=A", merge_base).splitlines())
+    added = set(
+        git("diff", "--no-renames", "--name-only", "--diff-filter=A", merge_base).splitlines()
+    )
     added.update(git("ls-files", "--others", "--exclude-standard").splitlines())
     return {path.replace("\\", "/") for path in added}
 
@@ -252,7 +344,7 @@ def git_added_lines(root: Path = ROOT) -> dict[str, str]:
     if merge_base is None:
         return {}
     diff = subprocess.check_output(
-        ["git", "diff", "--unified=0", merge_base],
+        ["git", "diff", "--no-renames", "--unified=0", merge_base],
         cwd=root,
         text=True,
         encoding="utf-8",
@@ -296,6 +388,7 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     extra = sorted(SHAPES.keys() - rows.keys())
     if missing or extra:
         problems.append(f"registry-parity: missing={missing}, extra={extra}")
+    problems.extend(base_shape_problems(root))
     for shape_id, shape in SHAPES.items():
         if shape_id not in rows:
             continue
@@ -328,7 +421,7 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             continue
         source = path.read_text(encoding="utf-8", errors="replace")
         for shape_id, pattern in ENTRY_SYMBOLS.items():
-            if not any(path.match(glob) for glob in SHAPES[shape_id].paths) and re.search(
+            if not any(registered_path(rel, glob) for glob in SHAPES[shape_id].paths) and re.search(
                 pattern, source
             ):
                 problems.append(f"{shape_id} second-path: {rel} matches {pattern}")
