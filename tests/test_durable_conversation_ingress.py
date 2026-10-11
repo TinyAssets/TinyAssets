@@ -106,8 +106,49 @@ def test_unreadable_effect_store_never_hides_committed_message(tmp_path, monkeyp
         raise sqlite3.DatabaseError('injected damaged tool store')
     monkeypatch.setattr(agent_activity, 'turn_evidence', broken)
     rows = store.load_recent_readonly(tmp_path, 'a')
-    assert rows[0].text == 'keep this'
-    assert 'effects are unknown' in rows[1].text
+    assert rows[-1].text == 'keep this'
+    assert 'effects are unknown' in rows[0].text
+
+
+@pytest.mark.parametrize('terminal_notice', [False, True])
+def test_large_tool_result_cannot_evict_failed_request(tmp_path, terminal_notice):
+    from tinyassets import agent_activity
+    from tinyassets.conversation_memory import format_history
+
+    message = 'Keep my original request visible after the fault.'
+    founder = store.record_turn(tmp_path, 'a', 'founder', message, ext_id='turn:large')
+    call = agent_activity.started(tmp_path, 'thread:a', 'read', 'large.txt', turn_id='large')
+    agent_activity.finished(tmp_path, call, ok=True, result_text='x' * 10000)
+    if terminal_notice:
+        assert store.record_failure(tmp_path, 'a', message, 'platform_fault', founder_turn=founder)
+    history = store.load_recent_readonly(tmp_path, 'a')
+    rendered = format_history(history)
+    assert message in rendered and 'large.txt: returned' in rendered
+    assert sum(len(m.text) for m in history) < 3000
+
+
+def test_evidence_does_not_change_durable_history_page_cursors(tmp_path):
+    from tinyassets import agent_activity
+
+    for i in range(4):
+        store.record_turn(tmp_path, 'a', 'founder', f'request {i}', ext_id=f'turn:{i}')
+        agent_activity.started(tmp_path, 'thread:a', 'bash', 'work', turn_id=str(i))
+    recent, more = store.read_history_page(tmp_path, 'a', limit=2)
+    assert more and [m.text for m in recent] == ['request 2', 'request 3']
+    older, more = store.read_history_page(tmp_path, 'a', limit=2, before=recent[0].id)
+    assert not more and [m.text for m in older] == ['request 0', 'request 1']
+    assert all(type(m.id) is int for m in recent + older)
+
+
+@pytest.mark.parametrize('overlap', [False, True])
+def test_admitted_exchange_cannot_settle_another_requests_lesson(tmp_path, overlap):
+    founder = store.record_turn(tmp_path, 'a', 'founder', 'A')
+    if overlap:
+        store.record_turn(tmp_path, 'a', 'founder', 'B')
+    first, last = store.record_exchange_turns(tmp_path, 'a', 'A', 'A done', founder_turn=founder)
+    cursor = store.settle_learned_cursor(tmp_path, 'a', from_turn=0,
+                                       first_turn=first, through_turn=last)
+    assert cursor == (0 if overlap else last)
 
 
 def test_effect_record_failure_prevents_tool_dispatch(tmp_path, monkeypatch):

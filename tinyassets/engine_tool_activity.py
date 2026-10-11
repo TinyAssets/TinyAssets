@@ -50,7 +50,7 @@ def _start(session_key: str, tool: str, arguments) -> tuple | None:
             root, session_key, tool, agent_activity.summarize(tool, arguments),
             turn_id=_route_params()[1])
         return root, call_id
-    except Exception:  # noqa: BLE001 - the view is never worth a failed call
+    except Exception:  # noqa: BLE001 - log the storage cause, then refuse dispatch
         logger.warning("tool activity could not be recorded", exc_info=True)
         raise
 
@@ -108,7 +108,7 @@ class ToolActivity(Middleware):
             _REFUSALS.reset(token)
         failed = bool(getattr(result, "is_error", False) or getattr(result, "isError", False))
         error = refusals[0] if refusals else (_error_text(result) if failed else "")
-        text = '\n'.join(block.text for block in getattr(result, 'content', ())
+        text = '\n'.join(block.text for block in (getattr(result, 'content', None) or ())
                          if isinstance(getattr(block, 'text', None), str))
         await asyncio.to_thread(_finish, handle, ok=not (failed or refusals), error=error,
                                 result_text=text)

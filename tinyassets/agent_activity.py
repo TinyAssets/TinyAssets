@@ -31,6 +31,10 @@ from tinyassets import agent_sessions
 
 #: Longest summary or error line stored.
 MAX_LINE = 240
+# Transcript projections are bounded; the underlying observations stay verbatim.
+EVIDENCE_CHARS = 2000
+EVIDENCE_CALLS = 8
+RESULT_PREVIEW_CHARS = 512
 
 _FILE = "activity.db"
 _SCHEMA = (
@@ -201,15 +205,24 @@ def turn_evidence(universe_dir: Path, session_key: str, turn_id: str) -> str:
     with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
         if 'turn_id' not in {row[1] for row in conn.execute('PRAGMA table_info(tool_calls)')}:
             return ''
+        count = conn.execute('SELECT count(*) FROM tool_calls WHERE session_key=? AND turn_id=?',
+                             (session_key, turn_id)).fetchone()[0]
         rows = conn.execute(
-            'SELECT id, tool, summary, finished_at, ok, error, result_text FROM tool_calls '
-            'WHERE session_key=? AND turn_id=? ORDER BY id', (session_key, turn_id),
+            'SELECT id, tool, summary, finished_at, ok, error, '
+            'substr(result_text,1,?), length(result_text) FROM tool_calls '
+            'WHERE session_key=? AND turn_id=? ORDER BY id DESC LIMIT ?',
+            (RESULT_PREVIEW_CHARS, session_key, turn_id, EVIDENCE_CALLS),
         ).fetchall()
-    lines = []
-    for call_id, tool, summary, ended, ok, error, result in rows:
+    lines = [f'{count} stored tool observations. Latest observations (bounded excerpts):']
+    for call_id, tool, summary, ended, ok, error, result, size in rows:
         state = 'outcome unknown' if ended is None else 'returned' if ok else 'reported an error'
-        lines.append(f'Tool {call_id}: {tool} {summary}: {state}\n{result or error or ""}')
-    return '\n'.join(lines)
+        excerpt = f'Tool {call_id}: {tool} {summary}: {state}\n{result or error or ""}'
+        if size > RESULT_PREVIEW_CHARS:
+            excerpt += '\n[result excerpt; full observation retained]'
+        lines.append(excerpt)
+    text = '\n'.join(lines)
+    return (text[:EVIDENCE_CHARS] + '\n[more observations retained]' if len(text) > EVIDENCE_CHARS
+            else text) if count else ''
 
 
 def recent(universe_dir: Path, session_key: str, *, limit: int = 5,

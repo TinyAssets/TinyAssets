@@ -59,7 +59,12 @@ def test_newest_first_per_session_preserves_durable_evidence(tmp_path):
     assert [r["summary"] for r in rows] == ["notes/204.md", "notes/203.md", "notes/202.md"]
     assert all(r["summary"] != "background work" for r in rows)
     evidence = agent_activity.turn_evidence(universe, THREAD, 'retained')
-    assert evidence.count('outcome unknown') == 205 and 'notes/0.md' in evidence
+    assert '205 stored tool observations' in evidence and len(evidence) < 2100
+    from contextlib import closing
+
+    with closing(agent_activity._connect(universe)) as conn:
+        assert conn.execute('SELECT count(*) FROM tool_calls WHERE turn_id=?',
+                            ('retained',)).fetchone()[0] == 205
 
 
 def test_since_drops_calls_from_an_earlier_turn(tmp_path):

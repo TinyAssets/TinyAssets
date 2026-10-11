@@ -7,6 +7,6 @@
 
 ## 2. Verification and delivery
 
-- [ ] 2.1 Run touched and affected heavy tests, Linux oracle, ruff, structural guards, plugin build and hygiene gate.
-- [ ] 2.2 Sync specifications, commit explicit paths, push and open a non-draft PR.
-- [ ] 2.3 Perform one cross-family floor review and resolve correctness findings with evidence.
+- [x] 2.1 Run touched and affected heavy tests, Linux oracle, ruff, structural guards, plugin build and hygiene gate.
+- [x] 2.2 Sync specifications, commit explicit paths, push and open a non-draft PR.
+- [x] 2.3 Perform one cross-family floor review and resolve correctness findings with evidence.

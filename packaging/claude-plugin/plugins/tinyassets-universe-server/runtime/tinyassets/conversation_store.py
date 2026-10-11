@@ -185,7 +185,7 @@ def _has_execution_column(conn: sqlite3.Connection) -> bool:
 
 
 def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
-                   before: int | None = None) -> list[Msg]:
+                   before: int | None = None, *, with_evidence: bool = True) -> list[Msg]:
     receipt_column = "execution_json" if _has_execution_column(conn) else "''"
     failure_column = failure_column_sql(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_turns)")}
@@ -235,11 +235,8 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
                 f"AND session_id=? AND {position}=?", (parts[1], session_id, turn_no),
             ).fetchone():
                 consumer_id = parts[1]
-        result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
-                          read_turn_failure(speaker, failure_raw), consumer_id,
-                          id=row_id if isinstance(row_id, int) else None,
-                          client_send_id=client_send_id or ""))
-        if speaker == "founder" and isinstance(ext_id, str) and ext_id.startswith('turn:'):
+        if (with_evidence and speaker == "founder" and isinstance(ext_id, str)
+                and ext_id.startswith('turn:')):
             terminal = conn.execute(
                 "SELECT speaker FROM conversation_turns WHERE session_id=? AND ext_id=?",
                 (session_id, f'reply-to:{turn_no}'),
@@ -261,6 +258,12 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
                         'Recorded tools from this unfinished or failed turn. A returned tool '
                         'is not proof every external effect succeeded. Do not replay uncertain '
                         'work without checking its state.\n' + evidence, _coerce_ts(ts)))
+        # Evidence is older than its request for prompt trimming: never let a
+        # large tool observation evict the original owner message.
+        result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
+                          read_turn_failure(speaker, failure_raw), consumer_id,
+                          id=row_id if isinstance(row_id, int) else None,
+                          client_send_id=client_send_id or ""))
     return result
 
 
@@ -291,7 +294,9 @@ def read_history_page(
         return [], False
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
     try:
-        messages = _read_messages(conn, session_id, limit + 1, before=before)
+        # Paging is over durable rows only. Synthetic model context has no cursor.
+        messages = _read_messages(conn, session_id, limit + 1, before=before,
+                                  with_evidence=False)
     finally:
         conn.close()
     has_more = len(messages) > limit
@@ -683,7 +688,12 @@ def _record_pair(
                                      (f'reply-to:{founder_turn}', session_id,
                                       turn_no + offset + len(between)))
                     conn.commit()
-                    return (founder_turn if founder_turn is not None else turn_no,
+                    # Another admission can land while this turn is running.
+                    # Never claim that intervening request as part of our learned
+                    # span; the existing contiguous-cursor guard leaves it owed.
+                    first = (founder_turn if founder_turn is not None
+                             and turn_no == founder_turn + 1 else turn_no)
+                    return (first,
                             turn_no + offset + len(between))
                 finally:
                     conn.close()

@@ -2897,8 +2897,8 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner
     )
     try:
         saved = record_failure(
-        universe_dir, session, message, record, client_send_id=client_send_id,
-        founder_turn=founder_turn,
+            universe_dir, session, message, record, client_send_id=client_send_id,
+            founder_turn=founder_turn,
         )
     except Exception:  # noqa: BLE001 - the stop still happened; memory is best-effort
         logger.warning("converse: interrupted-turn history could not be saved")

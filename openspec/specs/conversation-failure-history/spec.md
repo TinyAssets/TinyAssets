@@ -117,3 +117,12 @@ The platform SHALL expose failed-turn effect evidence to the next authorized age
 - **WHEN** the tool start cannot be durably recorded
 - **THEN** that tool is not dispatched
 - **AND** failure to read later tool evidence does not hide the admitted owner message
+
+#### Scenario: Large results and paged history
+- **WHEN** a failed turn has large tool results
+- **THEN** model history includes bounded excerpts without evicting the original request
+- **AND** history page cursors and page sizes count only durable conversation rows
+
+#### Scenario: Overlapping admitted turns
+- **WHEN** another request is admitted between a turn's request and its terminal result
+- **THEN** that turn's learning completion does not settle the intervening request
