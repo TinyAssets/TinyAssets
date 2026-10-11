@@ -4,7 +4,7 @@ phases:
   test:
     commands:
       - >-
-        python3 "$DEVICEFARM_TEST_PACKAGE_PATH/review_xctest.py"
+        python3 "$DEVICEFARM_XCTEST_BUILD_DIRECTORY/review_xctest.py"
         --xctestrun "$DEVICEFARM_XCUITESTRUN_FILE"
         --destination "platform=iOS,id=$DEVICEFARM_DEVICE_UDID"
         --output "$DEVICEFARM_LOG_DIR/review"

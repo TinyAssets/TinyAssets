@@ -238,25 +238,25 @@ production on Simulator; that proof alone is not Apple's required device video.
    enable root MFA. Use an administrator identity for the following one-time setup;
    do not create root access keys.
 2. Open [Device Farm in Oregon](https://us-west-2.console.aws.amazon.com/devicefarm/home?region=us-west-2).
-   Choose **Mobile Device Testing ? Projects ? Create project**, name it
+   Choose **Mobile Device Testing > Projects > Create project**, name it
    `tinyassets-app-review`, and copy its ARN. This enables use of Device Farm;
    select metered testing, not a monthly device slot. All workflow calls use
    `us-west-2`, Device Farm's mobile-testing region.
-3. In **IAM ? Users ? Create user**, name it `tinyassets-review-video`, with no
+3. In **IAM > Users > Create user**, name it `tinyassets-review-video`, with no
    console access. Add the inline policy below, substituting your 12-digit account
    ID and the project UUID (the text after `project:` in its ARN). Do not attach
    AdministratorAccess, S3, IAM or any other service permissions.
-4. Under that user's **Security credentials ? Create access key**, select
+4. Under that user's **Security credentials > Create access key**, select
    **Application running outside AWS**. Copy the key ID and secret directly into
-   GitHub **TinyAssets/TinyAssets ? Settings ? Environments ? app-store ? Add
+   GitHub **TinyAssets/TinyAssets > Settings > Environments > app-store > Add
    environment secret** as `AWS_DEVICEFARM_ACCESS_KEY_ID` and
    `AWS_DEVICEFARM_SECRET_ACCESS_KEY`. Add the project ARN as
    `AWS_DEVICEFARM_PROJECT_ARN`. The existing `APP_STORE_REVIEW_USERNAME` and
    `APP_STORE_REVIEW_PASSWORD` remain in that environment; do not put any value in
    source, workflow inputs, chat, screenshots or command arguments.
-5. In **Actions ? iOS App Review video ? Run workflow**, use the PR branch for
+5. In **Actions > iOS App Review video > Run workflow**, use the PR branch for
    testing (after merge, `main`) and leave **dry_run=true** first. Before the new
-   workflow is registered on main, use **iOS build ? Run workflow** on the PR branch
+   workflow is registered on main, use **iOS build > Run workflow** on the PR branch
    with **review_video_proof=true**, which invokes the same dry run. A successful
    run compiles both runners, builds a signed IPA and completes the production
    Simulator journey without AWS calls. If the reviewer has no working model
@@ -307,8 +307,8 @@ to this project's resources, and no other AWS service is granted. See the
 
 **Cost, checked 2026-10-11:** [AWS pricing](https://aws.amazon.com/device-farm/pricing/)
 lists **$0.17/device-minute** and a limited-time **1,000-minute one-time trial**
-(normally 250 minutes). Confirm the trial balance in your new account. One 10?20
-minute run is about **$1.70?$3.40** after trial; the 30-minute device timeout is
+(normally 250 minutes). Confirm the trial balance in your new account. One 10-20
+minute run is about **$1.70-$3.40** after trial; the 30-minute device timeout is
 about **$5.10** in device time, plus any billable service setup time. GitHub macOS
 runner usage and the reviewer's model usage are separate. No monthly device slot
 is needed. Dry run incurs no AWS usage.

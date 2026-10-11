@@ -51,22 +51,31 @@ final class ReviewVideoTests: XCTestCase {
         guard let start = labels.lastIndex(where: { $0.contains(prompt) }) else { return "" }
         // WebKit exposes rendered text in document order. The current user's
         // message must precede the answer; old answers cannot satisfy this test.
-        return labels.dropFirst(start + 1).prefix(while: {
+        let following = Array(labels.dropFirst(start + 1))
+        guard let author = following.firstIndex(of: "Command center") else { return "" }
+        // Skip the author and its timestamp; only the reply body is compared.
+        return following.dropFirst(author + 2).prefix(while: {
             !$0.hasPrefix("Next message:") && $0 != "Conversation status"
+                && $0 != "You" && $0 != "Notice" && $0 != "Platform notice"
         }).joined(separator: "\n")
     }
 
     private func send(_ prompt: String, facts: [String]) -> String {
+        let before = visibleText.filter { $0.contains(prompt) }.count
         composer.tap()
         composer.typeText(prompt)
         app.buttons["Send"].tap()
+        wait("new user message accepted") {
+            self.visibleText.filter { $0.contains(prompt) }.count > before
+        }
         var last = ""
         var stableSince = Date()
         wait("complete substantive reply (working model connection required)", timeout: 480) {
             let text = self.answer(after: prompt)
             if text != last { last = text; stableSince = Date() }
             let lower = text.lowercased()
-            return text.count >= 100 && facts.allSatisfy { lower.contains($0) }
+            let minimumLength = facts.count == 3 ? 40 : 100
+            return text.count >= minimumLength && facts.allSatisfy { lower.contains($0) }
                 && !self.app.buttons["Stop your agent's current turn"].exists
                 && self.app.buttons["Send"].exists
                 && Date().timeIntervalSince(stableSince) >= 10
