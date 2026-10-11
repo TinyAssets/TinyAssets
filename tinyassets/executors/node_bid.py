@@ -216,12 +216,10 @@ def execute_node_bid(
 
     # Write artifact.
     try:
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+        from tinyassets.universe_files import write_data_path
+
         out_file = artifact_dir / "output.json"
-        out_file.write_text(
-            json.dumps(result, indent=2, default=str),
-            encoding="utf-8",
-        )
+        write_data_path(out_file, json.dumps(result, indent=2, default=str))
         evidence_url = f"file://{out_file.resolve().as_posix()}"
     except Exception as exc:  # noqa: BLE001
         return NodeBidResult(

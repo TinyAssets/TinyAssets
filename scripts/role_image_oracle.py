@@ -1088,8 +1088,8 @@ print(sum(1 for _ in Path('/data').rglob('*')) + 1)
 """
 
 
-def stage_migrate(args):
-    """The runbook's step 4, on a fresh production-shaped layout-2 volume."""
+def stage_restore(args):
+    """Restore exact backup inode labels, without running the offline migration."""
     repo = Path(__file__).resolve().parents[1]
     docker("volume", "rm", "-f", args.volume, check=False)
     docker("volume", "create", "--label", "tinyassets.disposable=true",
@@ -1114,7 +1114,8 @@ def stage_migrate(args):
                            extra=['--rm', '--network', 'none', '-v',
                                   f'{archive.parent}:/backup:ro'])
         made = subprocess.run(restore + strip + ['-xzpf', '/backup/' + archive.name, '-C', '/data',
-                                        '--numeric-owner', '--acls', '--xattrs', '--same-owner'],
+                                        '--numeric-owner', '--no-acls', '--xattrs',
+                                        '--xattrs-include=system.posix_acl_*', '--same-owner'],
                               capture_output=True, text=True, encoding='utf-8')
     else:
         made = subprocess.run(build + [
@@ -1125,6 +1126,27 @@ def stage_migrate(args):
     inventory = (f'restored backup: {len(names)} archive members' if args.backup_archive
                  else f'production-shaped fixture: {made.stdout.strip()} names')
     expect(made.returncode == 0, inventory + made.stderr[-2000:])
+
+    if args.backup_archive:
+        # Only the isolated clone's cloud-instance provenance is changed. Never
+        # use production credentials for turns; its network is internal below.
+        configured = subprocess.run(_posture(
+            f'{args.prefix}-fixture', args.image, args.volume, user='0', caps=MIGRATION_CAPS,
+            entrypoint='/opt/venv/bin/python', extra=['--rm', '--network', 'none']) + [
+                '-I', '-B', '-c',
+                "import json; from pathlib import Path; "
+                "Path('/data/platform-expected-instance.json').write_text(json.dumps("
+                + repr(dict(schema='platform_expected_instance', version=1,
+                            expected_instance_id=METADATA_INSTANCE_ID)) + '))'],
+            capture_output=True, text=True)
+        expect(configured.returncode == 0, 'clone-only metadata identity configured: '
+               + configured.stderr[-1000:])
+    return {"inventory": inventory}
+
+
+def stage_migrate(args):
+    """Offline cutover proof on the restored volume."""
+    inventory = stage_restore(args)["inventory"]
 
     def migrate(*flags):
         run = _posture(f"{args.prefix}-migrate", args.image, args.volume, user="0",
@@ -1143,19 +1165,9 @@ def stage_migrate(args):
     after = migrate("--check")
     expect(after.returncode == 0 and after.stdout == "",
            f"--check after the apply: 0 diffs{after.stdout[-2000:]}{after.stderr[-2000:]}")
-    if args.backup_archive:
-        # Only the isolated clone's cloud-instance provenance is changed. Never
-        # use production credentials for turns; its network is internal below.
-        configured = subprocess.run(_posture(
-            f'{args.prefix}-fixture', args.image, args.volume, user='1001', caps=(),
-            entrypoint='/opt/venv/bin/python', extra=['--rm', '--network', 'none']) + [
-                '-I', '-B', '-c',
-                "import json; from pathlib import Path; "
-                "Path('/data/platform-expected-instance.json').write_text(json.dumps("
-                + repr(dict(schema='platform_expected_instance', version=1,
-                            expected_instance_id=METADATA_INSTANCE_ID)) + '))'],
-            capture_output=True, text=True)
-        expect(configured.returncode == 0, 'clone-only metadata identity configured')
+    repeated = migrate('--snapshot', args.prefix + '-snapshot', '--snapshot-bytes', '1')
+    expect(repeated.returncode == 0 and json.loads(repeated.stdout)['changed'] == 0,
+           'repeated offline cutover changes zero entries')
     return {"inventory": inventory, "apply": applied.stdout.strip(),
             "check_before_diffs": len(before.stdout.splitlines())}
 
@@ -1240,7 +1252,7 @@ def _metadata(args, *, start):
     return name
 
 
-def stage_serve(args):
+def stage_serve(args, *, keep=False):
     """The image's real CMD in compose's posture; every proof taken from the host."""
     _metadata(args, start=True)
     docker("rm", "-f", f"{args.prefix}-serve", check=False)
@@ -1309,7 +1321,8 @@ def stage_serve(args):
     expect(canary.returncode == 0,
            f"`ta-op canary` answers the MCP surface: {canary.stdout.strip()[-400:]}"
            f"{canary.stderr[-600:]}")
-    docker("rm", "-f", f"{args.prefix}-serve", check=False)
+    if not keep:
+        docker("rm", "-f", f"{args.prefix}-serve", check=False)
     return {"processes": roles, "docker_top": top.stdout.strip().splitlines(),
             "pulse": pulse.stdout.strip()[-400:], "canary": canary.stdout.strip()[-400:]}
 
@@ -1393,8 +1406,102 @@ def stage_runs(args):
     return stage_chat(args, runs_only=True)
 
 
-STAGES = {"migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
-          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs}
+def stage_writers(args):
+    """Actual daemon requests/periodic bodies, followed by owner custody checks."""
+    _metadata(args, start=True)
+    program = Path(__file__).with_name('role_writer_probe.py').read_text(encoding='utf-8')
+    command = _posture(f'{args.prefix}-writers', args.image, args.volume,
+        user=COMPOSE_USER, caps=COMPOSE_CAPS, entrypoint='/opt/venv/bin/python',
+        extra=['--rm', '-i', '--network', args.network])
+    result = subprocess.run(command + ['-I', '-B', '-'], input=program,
+        text=True, encoding='utf-8', capture_output=True, timeout=600)
+    for line in result.stdout.splitlines():
+        if line.startswith('OWNER WRITER PASS '):
+            print(line, flush=True)
+        if line.startswith('OWNER WRITERS PASS ') and result.returncode == 0:
+            return json.loads(line.removeprefix('OWNER WRITERS PASS '))
+    raise RuntimeError('owner writer guard failed: ' + result.stderr[-4000:])
+
+
+def stage_repair(args):
+    """Repair the fresh backup online, then replay the former writers online."""
+    serving = stage_serve(args, keep=True)
+    program = r'''
+import hashlib, json, os, runpy, stat
+from pathlib import Path
+m = runpy.run_path('/usr/local/libexec/ta-migrate.py')
+base = Path('/data')
+
+def inventory():
+    digest = hashlib.sha256()
+    count = 0
+    with m['_root'](base) as fd:
+        reservations, admitted, retired = m['_admission_log'](
+            fd, database_reader=m['_live_database'])
+    for center in sorted(set(admitted) - retired):
+        root = base / center
+        for child in sorted(root.iterdir()):
+            if child.name != '.agent-workspace' and (child.name.startswith('.') or
+                    child.name in ('owner.json', 'provider_definitions.json')):
+                continue
+            for path in [child, *sorted(child.rglob('*'))] if child.is_dir() else [child]:
+                info = path.lstat()
+                content = (hashlib.sha256(path.read_bytes()).hexdigest()
+                           if stat.S_ISREG(info.st_mode) else
+                           os.readlink(path) if stat.S_ISLNK(info.st_mode) else '')
+                digest.update(json.dumps([str(path.relative_to(base)), stat.S_IFMT(info.st_mode),
+                                          info.st_ino, content]).encode())
+                count += 1
+    return {'entries': count, 'sha256': digest.hexdigest()}
+
+def prove():
+    before = inventory()
+    result = m['repair_content_online'](base, snapshot=BACKUP, apply=True)
+    after = inventory()
+    assert before == after, 'online repair changed a path, inode or content digest'
+    repeated = m['repair_content_online'](base, snapshot=BACKUP, apply=True)
+    assert repeated['changed'] == 0, 'online repair is not idempotent'
+    assert inventory() == after, 'repeat changed content'
+    return dict(repair=result, repeated=repeated['changed'], inventory=after)
+
+actual = prove()
+# Reproduce both nonempty history and the old empty wiki category in the same
+# running production copy. Root is used only by this explicit fixture/operator.
+root = base / CENTER
+history = root / 'soul_versions'
+assert history.is_dir() and list(history.iterdir()), 'history replay needs real history'
+for path in [history, *history.rglob('*'), root / 'config.yaml']:
+    info = path.lstat()
+    assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+    assert not stat.S_ISREG(info.st_mode) or info.st_nlink == 1
+    os.chown(path, 1001, 1001, follow_symlinks=False)
+category = root / 'wiki/drafts/oracle-old-empty'
+category.mkdir()
+os.chown(category, 1001, 1001)
+replay = prove()
+assert replay['repair']['changed'] >= 5, 'damage replay did not exercise all histories'
+print(json.dumps(dict(actual=actual, replay=replay)))
+'''
+    command = _posture(f'{args.prefix}-repair', args.image, args.volume, user='0',
+        caps=MIGRATION_CAPS, entrypoint='/opt/venv/bin/python',
+        extra=['--rm', '--network', 'none'])
+    result = subprocess.run(command + ['-I', '-B', '-c',
+        f'CENTER={args.command_center!r}\nBACKUP={Path(args.backup_archive).name!r}\n' + program],
+        capture_output=True, text=True, encoding='utf-8', timeout=600)
+    expect(result.returncode == 0, 'online repair preserves every visible path/inode/digest: '
+           + result.stderr[-2000:])
+    pulse = docker('exec', f'{args.prefix}-serve', '/usr/local/libexec/ta-op', 'pulse')
+    expect(pulse.returncode == 0, 'the same serving daemon remains healthy after online repair')
+    docker('rm', '-f', f'{args.prefix}-serve')
+    proof = json.loads(result.stdout)
+    print('ONLINE REPAIR PASS ' + json.dumps(proof), flush=True)
+    return dict(serving=serving, proof=proof)
+
+
+STAGES = {"restore": stage_restore, "repair": stage_repair,
+          "migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
+          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs,
+          "writers": stage_writers}
 
 
 def main(argv=None):
@@ -1421,7 +1528,7 @@ def main(argv=None):
     args.volume = args.volume or f"{args.prefix}-data"
     args.network = args.network or f"{args.prefix}-net"
     args.legs = tuple(name for name in args.legs.split(",") if name)
-    if ({'chat', 'runs'} & set(args.stages.split(','))
+    if ({'chat', 'runs', 'repair'} & set(args.stages.split(','))
             and (not args.backup_archive or not args.command_center)):
         parser.error('chat acceptance requires --backup-archive and --command-center')
     if args.backup_archive and ('providers' in args.stages.split(',') or
@@ -1448,7 +1555,7 @@ def main(argv=None):
             print(f"\n=== {name} ===", flush=True)
             report[name] = STAGES[name](args)
     finally:
-        for suffix in ("serve", "cells", "fixture", "migrate", "chat"):
+        for suffix in ("serve", "cells", "fixture", "migrate", "chat", "writers", "repair"):
             docker("rm", "-f", f"{args.prefix}-{suffix}", check=False)
         _metadata(args, start=False)
         if not args.keep:

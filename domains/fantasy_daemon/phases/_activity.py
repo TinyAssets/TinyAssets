@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import write_data_path
+
 logger = logging.getLogger(__name__)
 
 # Guards all reads/writes to status.json across threads (heartbeat + nodes).
@@ -50,10 +52,9 @@ def activity_log(
         log_path = Path(universe_path) / "activity.log"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         body = f"[{tag}] {message}" if tag else message
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{ts}] {body}\n")
-    except OSError:
-        logger.debug("Failed to write activity.log entry: %s", message)
+        write_data_path(log_path, f"[{ts}] {body}\n", mode="append")
+    except OSError as exc:
+        logger.warning("Failed to append activity at %s: %s", log_path, exc)
 
 
 def update_phase(state: dict[str, Any], phase: str) -> None:
@@ -73,8 +74,6 @@ def update_phase(state: dict[str, Any], phase: str) -> None:
                 data = json.loads(status_path.read_text(encoding="utf-8"))
             data["current_phase"] = phase
             data["last_updated"] = datetime.now(timezone.utc).isoformat()
-            status_path.write_text(
-                json.dumps(data, indent=2) + "\n", encoding="utf-8",
-            )
+            write_data_path(status_path, json.dumps(data, indent=2) + "\n")
         except (OSError, json.JSONDecodeError):
             logger.debug("Failed to update phase in status.json")
