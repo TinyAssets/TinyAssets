@@ -46,6 +46,7 @@ ERROR_CODES = frozenset(
         "configuration_missing",
         "rate_alarm",
         "probe_failed",
+        "shared_disk_full",
     }
 )
 
@@ -54,6 +55,8 @@ def failure_code(error: object) -> str:
     """Classify locally; callers must never publish the input exception text."""
     name = type(error).__name__
     message = str(error).lower()
+    if "shared disk" in message and ("nearly" in message or "disk_limit" in message):
+        return "shared_disk_full"
     if "owner content" in message and ("frame" in message or "proof" in message):
         return "content_frame_invalid"
     if (

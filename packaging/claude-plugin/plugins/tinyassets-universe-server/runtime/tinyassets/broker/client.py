@@ -34,6 +34,7 @@ def _raise_for(end: dict[str, Any]) -> None:
     from tinyassets.storage.outbound_connections import (
         AmbiguousProxyOutcome,
         ConnectionAuthorizationError,
+        GrantPathRefused,
         GrantResolutionError,
         OutboundDeadlineExceeded,
         ProxyRequestError,
@@ -42,6 +43,8 @@ def _raise_for(end: dict[str, Any]) -> None:
 
     error_class = end.get("error_class")
     outcome = end.get("outcome")
+    if error_class == "GrantPathRefused":
+        raise GrantPathRefused("requested method and path are not covered by the connection grant")
     if error_class == "InferenceUsageStopped":
         from tinyassets.storage.agent_request_usage import InferenceUsageStopped
 

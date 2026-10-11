@@ -122,6 +122,7 @@ def _run_alarm_script(overall: str, **config: object) -> dict:
         env={
             **os.environ,
             "OVERALL": overall,
+            "PAGE_NEEDED": str(config.get("pageNeeded", True)).lower(),
             "PROBE_STATUS": "",
             "PROBE_MSG": "",
             "LABEL": "p0-outage",
@@ -302,3 +303,11 @@ def test_wiki_probe_uses_gha_output_mode_and_preserves_diagnostic() -> None:
     assert "output=$(" in run and "2>&1" in run
     assert "echo \"wiki_msg<<${_delim}\"" in run
     assert "echo \"$output\"" in run
+
+
+def test_disk_warning_opens_issue_without_paging_and_critical_pages_existing_issue():
+    warning = _run_alarm_script("red", measuredRed=True, pageNeeded=False)
+    assert warning["outputs"]["issue_number"] == "99"
+    assert warning["outputs"]["page_eligible"] == "false"
+    critical = _run_alarm_script("red", openIssue={"number": 99}, pageNeeded=True)
+    assert critical["outputs"]["page_eligible"] == "true"

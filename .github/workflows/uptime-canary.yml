@@ -78,6 +78,7 @@ jobs:
       status: ${{ steps.combine.outputs.status }}
       msg: ${{ steps.combine.outputs.msg }}
       overall: ${{ steps.combine.outputs.overall }}
+      page_needed: ${{ steps.combine.outputs.page_needed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -248,12 +249,21 @@ jobs:
           echo "=== wiki canary (${PROBE_URL}) exit=$code ==="
           echo "$output"
 
+      - name: Probe shared disk pressure
+        id: disk_probe
+        continue-on-error: true
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+        run: python scripts/disk_health_canary.py
+
       # Classification never fails the step; only a measured red emits the
       # versioned failure receipt consumed by exact-attempt history reads.
       - name: Combine canary results
         id: combine
         if: always()
         env:
+          DISK_STATUS: ${{ steps.disk_probe.outputs.disk_status }}
+          DISK_MSG: ${{ steps.disk_probe.outputs.disk_msg }}
           HANDSHAKE_STATUS: ${{ steps.probe.outputs.handshake_status }}
           TOOL_STATUS: ${{ steps.tool_probe.outputs.tool_status }}
           ACTIVITY_STATUS: ${{ steps.activity_probe.outputs.activity_status }}
@@ -321,6 +331,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           OVERALL: ${{ needs.probe.outputs.overall }}
+          PAGE_NEEDED: ${{ needs.probe.outputs.page_needed }}
           PROBE_STATUS: ${{ needs.probe.outputs.status }}
           PROBE_MSG: ${{ needs.probe.outputs.msg }}
           LABEL: ${{ env.ALARM_ISSUE_LABEL }}
@@ -472,7 +483,7 @@ jobs:
                 console.log(`appended RED to #${openIssue.number}`);
                 // Escalation path — not a first alarm, but the ladder may
                 // still re-page at 1h/4h/24h.
-                core.setOutput('page_eligible', 'true');
+                core.setOutput('page_eligible', process.env.PAGE_NEEDED === 'true' ? 'true' : 'false');
                 core.setOutput('issue_number', String(openIssue.number));
                 core.setOutput('is_first_alarm', 'false');
                 return;
@@ -494,7 +505,7 @@ jobs:
                 });
                 console.log(`opened issue #${result.data.number} (threshold crossed)`);
                 // First-alarm path — always pages.
-                core.setOutput('page_eligible', 'true');
+                core.setOutput('page_eligible', process.env.PAGE_NEEDED === 'true' ? 'true' : 'false');
                 core.setOutput('issue_number', String(result.data.number));
                 core.setOutput('is_first_alarm', 'true');
               } else {

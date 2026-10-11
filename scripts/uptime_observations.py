@@ -6,7 +6,7 @@ import os
 import uuid
 from collections.abc import Mapping
 
-PROBES = ("handshake", "tool", "activity", "revert", "wiki")
+PROBES = ("handshake", "tool", "activity", "revert", "wiki", "disk")
 
 
 def classify_observations(
@@ -28,6 +28,7 @@ def classify_observations(
     return {
         "overall": "red" if red else "unknown" if unknown else "green",
         "status": statuses[red[0]] if red else "unknown" if unknown else "0",
+        "page_needed": any(name != "disk" or statuses[name] != "80" for name in red),
         "observations": observations,
     }
 
@@ -48,6 +49,7 @@ def main() -> int:
     delimiter = "RESULT_" + uuid.uuid4().hex
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write(f"overall={result['overall']}\nstatus={result['status']}\n")
+        output.write(f"page_needed={str(result['page_needed']).lower()}\n")
         output.write(f"msg<<{delimiter}\n{message}\n{delimiter}\n")
     summary = ["### Scheduled Layer-1 observation", "", f"- Result: {result['overall']}"]
     summary.extend(

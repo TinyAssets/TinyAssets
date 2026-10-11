@@ -491,6 +491,10 @@ class OutboundDeadlineExceeded(SsrfValidationError):
     """
 
 
+class GrantPathRefused(SsrfValidationError):
+    """The caller's method/path is outside the grant; no endpoint data crosses IPC."""
+
+
 class ConnectionAuthorizationError(ProxyRequestError):
     """The connection's authorization could not be made current.
 
@@ -1366,6 +1370,11 @@ class CredentialBlindBroker:
             )
         except BrokerStreamStop:
             raise
+        except GrantPathRefused:
+            self._record_error(resource, grant_id, verb, "grant_path_refused")
+            raise GrantPathRefused(
+                "requested method and path are not covered by the connection grant"
+            ) from None
         except AmbiguousProxyOutcome:
             self._record_error(
                 resource,
@@ -2684,7 +2693,7 @@ def _enforce_endpoint_allowlist(
         if not _query_permitted(query_items, endpoint):
             continue
         return endpoint
-    raise SsrfValidationError("outbound endpoint is not on the connection allowlist")
+    raise GrantPathRefused("outbound endpoint is not on the connection allowlist")
 
 
 _REALTIME_VOICE_PROTOCOL = "tinyassets.voice.v1"

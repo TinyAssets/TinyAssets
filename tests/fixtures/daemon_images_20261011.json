@@ -1,0 +1,159 @@
+{
+  "source": "Surviving IDs and containerd digest aliases observed via read-only production docker images/inspect 2026-10-11. Eleven deleted-image IDs are synthetic; count/size/alias shape reconstruct the incident.",
+  "images": [
+    {
+      "Id": "sha256:122b29932ce005e728791f58a5497c7dfe640e1313c7a92df46b80b59fe3bab8",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:122b29932ce005e728791f58a5497c7dfe640e1313c7a92df46b80b59fe3bab8"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:122b29932ce005e728791f58a5497c7dfe640e1313c7a92df46b80b59fe3bab8"
+      ],
+      "Created": "2026-10-11T08:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:ee1ab8757e2bb6f3846d4d4d9a1bd33926162fbb27af2aa484084c8190dd422b",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:ee1ab8757e2bb6f3846d4d4d9a1bd33926162fbb27af2aa484084c8190dd422b"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:ee1ab8757e2bb6f3846d4d4d9a1bd33926162fbb27af2aa484084c8190dd422b"
+      ],
+      "Created": "2026-10-11T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:5640acbc38cce08baf997a93687b92e0c905420d49a1bff3e5ade93b75507df6",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:5640acbc38cce08baf997a93687b92e0c905420d49a1bff3e5ade93b75507df6"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon:5acadd7a2bf0"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000002"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000002"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000003"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000003"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000004"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000004"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000005"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000005"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000006"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000006"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000007"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000007"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000008"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000008"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000009"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:0000000000000000000000000000000000000000000000000000000000000009"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:000000000000000000000000000000000000000000000000000000000000000a"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:000000000000000000000000000000000000000000000000000000000000000a"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    },
+    {
+      "Id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+      "RepoDigests": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:000000000000000000000000000000000000000000000000000000000000000b"
+      ],
+      "RepoTags": [
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:000000000000000000000000000000000000000000000000000000000000000b"
+      ],
+      "Created": "2026-10-09T01:00:00Z",
+      "Size": 4340000000
+    }
+  ]
+}

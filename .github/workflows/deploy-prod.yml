@@ -519,6 +519,18 @@ jobs:
       # waiting deploy. A P0 repair must not sit 45 min behind a polite wait, so
       # the wait YIELDS -- proceeds to the swap now -- as soon as any of them is
       # queued (YIELD_WORKFLOWS).
+      - name: Prune daemon images and require pull headroom
+        id: disk_prepare
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          helper="/tmp/daemon-image-retention-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.py"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/daemon_image_retention.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${helper}"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${helper} --apply --prepare-pull'"
+          echo "helper=${helper}" >> "$GITHUB_OUTPUT"
+
       - name: Wait for in-flight turns
         id: turns
         # The cap (which includes the prefetch) + one worst-case poll + cleanup.
@@ -532,6 +544,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           YIELD_WORKFLOWS: p0-outage-triage.yml restart-daemon.yml install-host-services.yml apply-daemon-env.yml
         run: bash deploy/wait_for_turns.sh
+
+      - name: Recheck disk before fail-safe pull
+        timeout-minutes: 5
+        env:
+          RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${RETENTION_HELPER} --check-headroom'"
 
       - name: Run fail-safe deploy on the droplet
         id: deploy
@@ -847,12 +868,13 @@ jobs:
           IMAGE_DIGEST: ${{ steps.tag.outputs.digest }}
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           DEPLOYED_IMAGE: ${{ steps.deploy.outputs.deployed_image }}
+          PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
           BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
           now="$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)"
           cat > release-state.json <<EOF
-          {"receipt_available":true,"git_sha":"${GIT_SHA}","image_tag":"${IMAGE_TAG}","image_digest":"${IMAGE_DIGEST}","build_run_id":"${BUILD_RUN_ID}","build_run_url":"https://github.com/${{ github.repository }}/actions/runs/${BUILD_RUN_ID}","deploy_run_id":"${{ github.run_id }}","deploy_run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}","schema_migration_rev":"not_applicable","canary_bundle_status":"not_run","deployed_at":"${now}","rollback_target":"","actor":"${{ github.actor }}","repository":"${{ github.repository }}","workflow_event":"${{ github.event_name }}","extra":{"active_git_sha":"${GIT_SHA}","active_identity_status":"running_healthy","active_image_digest":"${IMAGE_DIGEST}","active_image_ref":"${DEPLOYED_IMAGE}","active_source_provenance":"digest_revision_label","image_ref":"${IMAGE_REF}","image_mutation_started":true,"outcome":"succeeded","production_mutation_started":true,"release_state_version":2,"rollback_attempted":false,"rollback_reason":"not_needed","rollback_result":"not_attempted","running_image_ref":"${DEPLOYED_IMAGE}","forward_canary_status":"passed","forward_deploy_status":"succeeded","terminal_at":"${now}"}}
+          {"receipt_available":true,"git_sha":"${GIT_SHA}","image_tag":"${IMAGE_TAG}","image_digest":"${IMAGE_DIGEST}","build_run_id":"${BUILD_RUN_ID}","build_run_url":"https://github.com/${{ github.repository }}/actions/runs/${BUILD_RUN_ID}","deploy_run_id":"${{ github.run_id }}","deploy_run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}","schema_migration_rev":"not_applicable","canary_bundle_status":"not_run","deployed_at":"${now}","rollback_target":"${PREV_IMAGE}","actor":"${{ github.actor }}","repository":"${{ github.repository }}","workflow_event":"${{ github.event_name }}","extra":{"active_git_sha":"${GIT_SHA}","active_identity_status":"running_healthy","active_image_digest":"${IMAGE_DIGEST}","active_image_ref":"${DEPLOYED_IMAGE}","active_source_provenance":"digest_revision_label","image_ref":"${IMAGE_REF}","image_mutation_started":true,"outcome":"succeeded","production_mutation_started":true,"release_state_version":2,"rollback_attempted":false,"rollback_reason":"not_needed","rollback_result":"not_attempted","running_image_ref":"${DEPLOYED_IMAGE}","forward_canary_status":"passed","forward_deploy_status":"succeeded","terminal_at":"${now}"}}
           EOF
           python scripts/release_containment.py release-state.json
           scp -i ~/.ssh/do_deploy -o BatchMode=yes release-state.json \
@@ -880,46 +902,17 @@ jobs:
             --assert-contains "${GIT_SHA}"
 
       - name: Enforce daemon image retention (post-canary)
-        # Every deploy pulls a ~2.7 GB daemon image; on 2026-09-24 the droplet
-        # held 23 of them (50 GB disk, 87% used) because retention only acted
-        # above a pressure threshold and the dedicated timer was weekly.
-        #
-        # This runs only after the public canary is green and the protected
-        # receipt names the target revision, i.e. after the canary rollback
-        # step can no longer fire. It starts the SAME installed unit the daily
-        # timer and the hourly disk-watch use -- fence then host-mutation lock,
-        # registry-verified, at most four removals, bounded budget -- rather
-        # than a second copy of the policy. Keep set (scripts/
-        # daemon_image_retention.py): the running image, every container's
-        # image, the configured TINYASSETS_IMAGE and receipt rollback_target,
-        # anything newer than the running image, and the two newest older
-        # daemon images. Everything else is removed regardless of disk percent.
-        #
-        # A retention refusal must not fail a deploy that succeeded: that would
-        # open a deploy-failed issue and suppress the install-host-services
-        # chain, which only runs after a successful deploy. It is a warning, and
-        # the daily timer plus the hourly disk-watch retry.
+        # Use this revision's policy on the first repaired deploy as well as later
+        # timer installs. Failure is visible and blocks further successful pulls.
         id: retention
         if: ${{ success() }}
-        continue-on-error: true
         timeout-minutes: 5
+        env:
+          RETENTION_HELPER: ${{ steps.disk_prepare.outputs.helper }}
         run: |
-          set -uo pipefail
-          rc=0
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'bash -s' <<'REMOTE' || rc=$?
-          set -uo pipefail
-          status=0
-          sudo systemctl start tinyassets-prune.service || status=$?
-          invocation="$(systemctl show --property=InvocationID --value tinyassets-prune.service)"
-          if [ -n "${invocation}" ]; then
-            sudo journalctl --no-pager --output=cat "_SYSTEMD_INVOCATION_ID=${invocation}" | tail -n 20
-          fi
-          df -h / | tail -n 1
-          exit "${status}"
-          REMOTE
-          if [ "${rc}" -ne 0 ]; then
-            echo "::warning::post-deploy image retention did not complete (rc=${rc}); the daily timer and hourly disk-watch retry. The pass report is above."
-          fi
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${RETENTION_HELPER} --apply'"
 
       - name: Retire platform LLM logins from the host
         # The platform has no LLM (AGENTS.md Hard Rule 15). The new image and

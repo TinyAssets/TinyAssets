@@ -816,7 +816,7 @@ Reconciliation SHALL enumerate successful `Deploy prod` workflow runs filtered t
 ### Requirement: Disk-pressure timer preserves ordered alert, rotation, and disposable-host remediation
 The system SHALL provide a persistent systemd timer definition with five-minute post-boot, one-hour-since-active, and minute-27 calendar triggers plus a 180-second oneshot service sourcing `/etc/tinyassets/env`; the repository artifact alone SHALL NOT claim that a particular host installed or enabled it. The service SHALL declare three sequential commands in this order: disk alerting, run-transcript rotation, and bounded daemon-image retention. Disk alerting SHALL return 1 at or above `DISK_WARN_PCT` (default 80) whether it opens an issue, lacks a token, or runs dry, and the service SHALL accept status 1 so that the ordered commands still execute. Unexpected process statuses other than 0 or 1 SHALL still fail the unit.
 
-Alarm and retention SHALL measure pressure as `100 * (1 - available_bytes / total_bytes)`, with zero available and positive total measured as100%. Retention SHALL remove only individually registry-verified immutable TinyAssets daemon cache images under deployment serialization. Its keep set SHALL be all container references (running or stopped), the current daemon image, every daemon image at least as new as the current one, the two newest older daemon images, and the configured and receipt rollback references. In the default `count` mode (`TINYASSETS_DAEMON_IMAGE_RETENTION_MODE`), every pass SHALL remove images outside the keep set regardless of disk pressure; pressure at or above the default85% trigger SHALL grade the pass as relieved (at or below the75% low watermark) or unmet (exit1). The `threshold` mode SHALL keep the original behaviour: no removal below the trigger, and removal stops at the low watermark. Any other mode value SHALL refuse before work. A candidate whose registry recovery cannot be proved SHALL be preserved and reported while the pass continues with the remaining candidates, within at most eight verification attempts; such a pass SHALL NOT report success. A pass with nothing to remove SHALL NOT take the host locks. Post-deploy, daily and hourly cleanup SHALL use this same narrow policy, never broad prune, journal vacuum, volume, container or user-data deletion. Each pass SHALL stop at four removals or its120-second work budget.
+Alarm and retention SHALL measure pressure as `100 * (1 - available_bytes / total_bytes)`, with zero available and positive total measured as100%. Retention SHALL remove only individually registry-verified immutable TinyAssets daemon cache images under deployment serialization. Its keep set SHALL be all container references (running or stopped), the current daemon image, the configured image, the receipt rollback reference (or newest older image when absent), and explicit mutable tag pins. In the default `count` mode (`TINYASSETS_DAEMON_IMAGE_RETENTION_MODE`), every pass SHALL remove images outside the keep set regardless of disk pressure; pressure at or above the default85% trigger SHALL grade the pass as relieved (at or below the75% low watermark) or unmet (exit1). The `threshold` mode SHALL keep the original behaviour: no removal below the trigger, and removal stops at the low watermark. Any other mode value SHALL refuse before work. A candidate whose registry recovery cannot be proved SHALL be preserved and reported while the pass continues with the remaining candidates, within at most 64 verification attempts; such a pass SHALL NOT report success. Applied passes SHALL take the host locks for dangling cleanup even when there are no excess daemon digests. Truly unreferenced images without tags or digests MAY be removed non-force with their dangling parent layers. Post-deploy, daily and hourly cleanup SHALL use this same narrow policy, never broad prune, journal vacuum, volume, container or user-data deletion. Each pass SHALL stop at 32 daemon removals plus at most 32 dangling images, or its120-second work budget.
 
 Registry verification SHALL occur before acquiring the fence-then-mutation locks; the locked phase SHALL have a maximum60-second budget. Any fence-state file SHALL refuse deletion. The current configured image and authoritative volume-root release receipt SHALL be reread before every removal. Unknown image-store filesystem mapping SHALL refuse even dry-run planning. Image removal SHALL require both an explicit apply argument and an exact retention-specific operator opt-in. Absent/0 opt-in SHALL keep retention read-only; malformed values SHALL refuse before work. Installing/enabling timers alone SHALL NOT authorize image removal. This flag SHALL NOT alter alarm or transcript rotation behavior; installed dry-run proof SHALL invoke the helper directly.
 
@@ -836,7 +836,7 @@ Registry verification SHALL occur before acquiring the fence-then-mutation locks
 #### Scenario: Excess daemon cache is removed by count, not by pressure
 - **WHEN** count mode runs below the pressure trigger, guards permit mutation and exact registry recovery is verified
 - **THEN** only unreferenced immutable daemon image refs outside the keep set are removed non-force, oldest first, with fresh reference checks under the lock
-- **AND** the running image, every container reference, the configured and receipt rollback refs, newer images and the two newest older images remain
+- **AND** the running image, every container reference, the configured image, one rollback and explicit tag pins remain
 
 #### Scenario: Recoverable old daemon cache relieves pressure
 - **WHEN** pressure reaches85%, guards permit mutation and exact registry recovery is verified
@@ -860,7 +860,7 @@ Registry verification SHALL occur before acquiring the fence-then-mutation locks
 #### Scenario: Dry-run, post-deploy and daily scheduling remain narrow
 - **WHEN** retention runs dry, through the daily cleanup timer, or from the deploy workflow after the public canary and protected receipt are green
 - **THEN** dry-run never deletes and every entrypoint obeys the identical keep set, recovery and preservation gates
-- **AND** a post-deploy retention failure is a warning that does not fail the successful deploy
+- **AND** a post-deploy retention failure fails the workflow visibly; the dedicated prune service does not treat incomplete cleanup as success
 
 ### Requirement: No uptime probe expects the platform to hold a model
 
@@ -1063,3 +1063,14 @@ The check runs before the swap and outside the host-mutation lock, from deploy-p
 #### Scenario: An unverifiable probe is never read as idle
 - **WHEN** the probe upload is missing, partial or stale, or the sibling container cannot run
 - **THEN** the poll is unknown, and only three consecutive unknowns let the deploy proceed (`check_unavailable`)
+
+### Requirement: Disk pressure cannot silently disable tools
+The deploy SHALL prune excess daemon images before pulling and refuse a new pull without 10 GiB free and usage below 80%. Retention SHALL preserve running/container images, one rollback and explicit pins, accept digest-pulled untagged images and release evidence larger than 64 KiB, and reclaim dangling layers without pruning volumes. Incomplete cleanup SHALL be visible. Authenticated canary health SHALL alert at 80% and page at 90% via the uptime alert path.
+
+#### Scenario: Repeated digest deployments
+- **WHEN** old digest-pulled daemon images accumulate and containment metadata exceeds 64 KiB
+- **THEN** retention removes excess images while preserving running, rollback and cutover images
+
+#### Scenario: Pressure escalation
+- **WHEN** measured disk usage reaches 80% or 90%
+- **THEN** uptime issues warn at 80% and become page eligible at 90%
