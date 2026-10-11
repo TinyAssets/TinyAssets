@@ -27,8 +27,16 @@ is set; the files stay on disk and are not rewritten as plaintext.
 2. On the server, in `/etc/tinyassets/env`, set `TINYASSETS_VAULT_MASTER_KEY` to
    that value and `TINYASSETS_VAULT_MASTER_KEY_ID=1`. Leave
    `TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS` unset.
-3. Re-render the daemon env and restart the daemon so the process sees the
-   variables. Then deploy the envelope build.
+3. Re-render and restart, then confirm the process has the key, and only then
+   deploy the envelope build:
+
+   ```bash
+   sudo tinyassets-env render-daemon-env
+   systemctl restart tinyassets-daemon
+   docker exec tinyassets-daemon /usr/local/libexec/ta-op printenv TINYASSETS_VAULT_MASTER_KEY_ID
+   ```
+
+   The id command must print `1`. Do not print the key itself.
 4. Keep the key with the other server secrets. Losing it makes every vault
    sealed with it unreadable.
 

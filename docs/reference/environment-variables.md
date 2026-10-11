@@ -234,6 +234,15 @@ not add a second default in the meantime.
 Losing the key that wrapped a vault makes that vault unreadable. There is no
 plaintext backup.
 
+### Rollback
+
+- Before this build has read any vault, the files are still legacy plaintext.
+  The previous image can read them. Roll the image back.
+- After a vault has been migrated, the previous image cannot open that file.
+  Stay on this build, or restore that command center's `.credential-vault.json`
+  from a backup taken before the first read under this build. Do not delete the
+  master key while any envelope still names it.
+
 ## Feature flags
 
 Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-insensitive). Defaults chosen so out-of-the-box behavior matches current tier-1 contract.
