@@ -266,7 +266,9 @@ def resolve_git_common_dir(
 #: otherwise. Never the CLI's own default: on a ChatGPT account `codex exec`
 #: defaults to a model the account rejects in seconds (gpt-6.1-sol, 2026-10-02),
 #: and ~/.codex/config.toml is whatever it last said, named nowhere in a result.
-DEFAULT_CODEX_MODEL = "gpt-6-astra"
+#: GPT-6 Sol is OpenAI's coding/agentic model and its Codex guidance for everyday
+#: and complex coding (2026-10-11 research); Astra stays the escalation model.
+DEFAULT_CODEX_MODEL = "gpt-6-sol"
 #: Reasoning effort when --effort / WORKFLOW_CODEX_EFFORT is not given.
 DEFAULT_CODEX_EFFORT = "medium"
 

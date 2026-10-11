@@ -17,7 +17,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
     --prompt-file brief.md
 
 # Have Codex fix something in a worktree (write mode):
-python scripts/peer_agent.py codex --model gpt-6-astra --out output/codex-fix.md \
+python scripts/peer_agent.py codex --model gpt-6-sol --out output/codex-fix.md \
     --prompt "Fix the failing test in tests/test_universe_nodes.py and run it" \
     --cwd ../wf-bug126 --write
 
@@ -71,9 +71,9 @@ Two more habits that fell out of the same incident:
 - **Default (read-only-ish).** claude: plain `-p` (Read/Glob/Grep allowed, edit/bash denied). codex: `-s read-only -c approval_policy=never`. Safe to point at the live checkout.
 - **`--write` (full agent).** claude: `--dangerously-skip-permissions`. codex: `--full-auto` (workspace-write sandbox — weak on Windows). **Always point `--cwd` at a `wf-*` worktree in write mode, never the live checkout or main.** The peer can then edit, run tests, and iterate on its own.
 
-Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
+Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — the GPT-6 models reject it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are pinned, not inherited.** claude: `--model fable`. codex: `gpt-6-astra`/`medium` is the wrapper default (`DEFAULT_CODEX_MODEL`); the CLI's own default is rejected by a ChatGPT account. Override only with a stated reason (`--model`, `WORKFLOW_CODEX_MODEL`). A failed run writes `[peer_agent] ERROR` + full stderr to `--out`.
+**Models are pinned, not inherited.** claude: `--model fable`. codex: `gpt-6-sol`/`medium` is the wrapper default (escalate hard lanes to `--model gpt-6-astra`) (`DEFAULT_CODEX_MODEL`); the CLI's own default is rejected by a ChatGPT account. Override only with a stated reason (`--model`, `WORKFLOW_CODEX_MODEL`). A failed run writes `[peer_agent] ERROR` + full stderr to `--out`.
 
 ## When to use which peer
 

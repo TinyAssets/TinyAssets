@@ -310,7 +310,7 @@ def test_codex_pins_model_and_effort_by_default(monkeypatch) -> None:
 
     command = peer_agent.build_codex_cmd(_args(write=False), "C:\\result.md")
 
-    assert command[command.index("-m") + 1] == "gpt-6-astra"
+    assert command[command.index("-m") + 1] == "gpt-6-sol"
     assert "model_reasoning_effort=medium" in command
 
 
