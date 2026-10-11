@@ -292,7 +292,7 @@ class ConnectionTokens:
         return ConnectionAuthorizationError(detail)
 
     def current(self, destination: str, credential: str, *, rejected: str = "",
-                refresh_request=None) -> TokenBundle:
+                refresh_request=None, reread=None) -> TokenBundle:
         """The bundle whose access token to send now.
 
         ``rejected`` is an access token the service just answered 401 to; the
@@ -313,8 +313,11 @@ class ConnectionTokens:
             refresh_request(destination, hashlib.sha256(rejected.encode()).hexdigest()
                             if rejected else "")
             try:
-                return decode(self._read(destination))
-            except (LookupError, ValueError):
+                # The broker has no master key. When the daemon opened this
+                # secret, it opens the replacement too; otherwise re-read here.
+                raw = reread() if reread is not None else self._read(destination)
+                return decode(raw)
+            except (LookupError, ValueError, RuntimeError):
                 raise self._failed("refreshed authorization is unreadable; reconnect") from None
         if not self._allow_local_refresh:
             raise self._failed("daemon refresh admission is unavailable")

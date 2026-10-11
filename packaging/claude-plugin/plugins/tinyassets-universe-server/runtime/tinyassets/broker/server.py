@@ -142,6 +142,9 @@ class _Stream:
     refresh_sequence: int = 0
     refresh_result: bool | None = None
     refresh_pending: bool = False
+    vault_sequence: int = 0
+    vault_result: str | None = None
+    vault_pending: bool = False
 
 
 class BrokerServer:
@@ -311,6 +314,24 @@ class _Connection:
                         or stream.refresh_result is not None):
                     raise rf.FrameError("invalid refresh acknowledgement")
                 stream.refresh_result = doc["ok"]
+                stream.wake.notify_all()
+        elif op == "VAULT_OPEN_ACK" and stream is not None:
+            with stream.wake:
+                fields = set(doc)
+                token = doc.get("token")
+                valid = (
+                    fields == {"op", "sequence", "ok", "token"}
+                    if doc.get("ok") is True
+                    else fields == {"op", "sequence", "ok"}
+                )
+                if (not valid or type(doc.get("sequence")) is not int
+                        or type(doc.get("ok")) is not bool
+                        or not stream.vault_pending
+                        or doc["sequence"] != stream.vault_sequence
+                        or stream.vault_result is not None
+                        or (doc["ok"] and not isinstance(token, str))):
+                    raise rf.FrameError("invalid vault open acknowledgement")
+                stream.vault_result = token if doc["ok"] else ""
                 stream.wake.notify_all()
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
@@ -743,7 +764,8 @@ class _Connection:
                 threading.Thread(
                     target=self._run, args=(stream, dispatch, grant_id, verb, request,
                                             doc.get("idle_s"), doc.get("inference_usage"),
-                                            doc.get("refresh") is True),
+                                            doc.get("refresh") is True,
+                                            doc.get("vault_open") is True),
                     name=f"broker-stream-{stream_id}", daemon=True,
                 ).start()
             except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
@@ -807,9 +829,35 @@ class _Connection:
             with stream.wake:
                 stream.refresh_pending = False
 
+    def _vault_open(self, stream: _Stream, credential_ref: str) -> str:
+        """Ask the daemon for this grant's secret. The master key stays there."""
+        with stream.wake:
+            self._checkpoint(stream)
+            stream.vault_sequence += 1
+            stream.vault_result = None
+            stream.vault_pending = True
+        try:
+            self.send(rf.control(stream.id, {
+                "op": "VAULT_OPEN", "sequence": stream.vault_sequence,
+                "credential_ref": credential_ref}), stream)
+            with stream.wake:
+                while stream.vault_result is None:
+                    self._checkpoint(stream)
+                    stream.wake.wait(min(0.1, max(0, stream.deadline - time.monotonic())))
+                self._checkpoint(stream)
+                token = stream.vault_result
+                stream.vault_result = None
+            if not token:
+                raise RuntimeError("credential reference is unavailable")
+            return token
+        finally:
+            with stream.wake:
+                stream.vault_pending = False
+                stream.vault_result = None
+
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
              request: dict[str, Any], idle_s: Any, inference_usage=None,
-             refresh_enabled: bool = False) -> None:
+             refresh_enabled: bool = False, vault_open_enabled: bool = False) -> None:
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
             if stream.cancelled:
@@ -831,6 +879,8 @@ class _Connection:
                 **({"body": stream.upload} if stream.upload is not None else {}),
                 **({"refresh_request": lambda destination, rejected: self._refresh(
                     stream, destination, rejected)} if refresh_enabled else {}),
+                **({"vault_open": lambda ref: self._vault_open(stream, ref)}
+                   if vault_open_enabled else {}),
                 **({"inference_usage": inference_usage, "operation_id": stream.op_id}
                    if inference_usage is not None else {}),
             )

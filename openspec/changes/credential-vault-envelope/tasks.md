@@ -7,3 +7,4 @@
 - [x] 1.5 Document the variable names, generation, rotation, and the pre-deploy owner step.
 - [x] 1.6 Test migration, idempotence, tamper, a missing key, and rotation.
 - [x] 1.7 Run ruff, structural guards, and the vault tests.
+- [x] 1.8 The daemon opens an http secret for the broker. The broker does not receive the master key.

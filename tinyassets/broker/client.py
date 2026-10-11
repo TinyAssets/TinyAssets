@@ -84,7 +84,7 @@ class BrokerClient:
     def __init__(self, path: Path, *, principal: str, command_center: str,
                  fence: Callable[[], tuple[int, str]], timeout: float = 660.0,
                  verify_peer: Callable[[socket.socket], None] | None = None,
-                 refresh_factory=None) -> None:
+                 refresh_factory=None, vault_open_factory=None) -> None:
         self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
@@ -92,6 +92,7 @@ class BrokerClient:
         self._timeout = timeout
         self._verify_peer = verify_peer
         self._refresh_factory = refresh_factory
+        self._vault_open_factory = vault_open_factory
         self._lock = threading.Lock()
 
     def ledger_query(self, *, query: str, grant_id: str,
@@ -330,6 +331,8 @@ class BrokerClient:
                 inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
         refresh = (self._refresh_factory(grant_id, connection_id)
                    if self._refresh_factory is not None else None)
+        vault_open = (self._vault_open_factory(grant_id, connection_id)
+                      if self._vault_open_factory is not None else None)
         generation, token = self._fence()
         open_doc = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
@@ -343,6 +346,8 @@ class BrokerClient:
             open_doc["idle_s"] = idle_s
         if refresh is not None:
             open_doc["refresh"] = True
+        if vault_open is not None:
+            open_doc["vault_open"] = True
         from tinyassets.storage.outbound_connections import (
             AmbiguousProxyOutcome,
             ProxyRequestError,
@@ -358,7 +363,8 @@ class BrokerClient:
             if self._verify_peer is not None:
                 self._verify_peer(sock)  # before sending any owner-channel factor
             try:
-                head, body, end = self._exchange(sock, open_doc, refresh=refresh)
+                head, body, end = self._exchange(
+                    sock, open_doc, refresh=refresh, vault_open=vault_open)
             except (OSError, rf.FrameError):
                 # Transport only (typed ENDs are raised below, outside this
                 # try): the request may have reached the broker and left it.
@@ -375,7 +381,8 @@ class BrokerClient:
         }
 
     @staticmethod
-    def _exchange(sock: socket.socket, open_doc: dict[str, Any], *, refresh=None
+    def _exchange(sock: socket.socket, open_doc: dict[str, Any], *, refresh=None,
+                  vault_open=None
                   ) -> tuple[dict[str, Any] | None, bytearray, dict[str, Any]]:
         """The stream to its END, raising only transport errors."""
 
@@ -383,6 +390,7 @@ class BrokerClient:
         head: dict[str, Any] | None = None
         body = bytearray()
         refresh_sequence = 0
+        vault_sequence = 0
         while True:
             frame = rf.read_frame_blocking(sock)
             if frame is None:
@@ -409,6 +417,23 @@ class BrokerClient:
                     pass
                 sock.sendall(rf.control(_STREAM_ID, {
                     "op": "REFRESH_ACK", "sequence": refresh_sequence, "ok": ok}))
+            elif doc["op"] == "VAULT_OPEN":
+                if (type(doc.get("sequence")) is not int
+                        or doc["sequence"] != vault_sequence + 1):
+                    raise rf.FrameError("unexpected vault open sequence")
+                vault_sequence += 1
+                token = None
+                try:
+                    if vault_open is not None:
+                        token = vault_open(doc)
+                except Exception:  # noqa: BLE001 - never send credential or key text
+                    token = None
+                if isinstance(token, str) and token:
+                    ack = {"op": "VAULT_OPEN_ACK", "sequence": vault_sequence,
+                           "ok": True, "token": token}
+                else:
+                    ack = {"op": "VAULT_OPEN_ACK", "sequence": vault_sequence, "ok": False}
+                sock.sendall(rf.control(_STREAM_ID, ack))
             elif doc["op"] == "HEAD":
                 head = doc
             elif doc["op"] == "END":

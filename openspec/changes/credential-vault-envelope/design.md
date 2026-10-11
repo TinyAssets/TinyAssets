@@ -26,6 +26,7 @@
 4. **Migration.** Legacy JSON (a list, or an object with `schema_version` or `credentials`) is sealed, decrypted, and compared. The file is replaced only when the bytes match and the on-disk bytes are still the ones that were read. A vault mutation lock, not provider-assignment admission, covers that replace: launches hold admission shared while they read. Permission to replace is required; a reader that cannot write still receives records and leaves the legacy file for a writer.
 5. **Rotation.** New seals use the active id. Old envelopes open with `key_by_id`. `rewrap_credential_vault` reseals. The next ordinary write does too.
 6. **Fail closed.** Any existing vault file requires a usable master key before its bytes are treated as credentials. A missing file is still an empty list.
+7. **The daemon opens the envelope.** The broker applies the outbound secret and does not receive the master key. On an http grant it asks the daemon, over the stream it already reauthorized, for that grant's `vault://http/` secret. The daemon opens the vault and returns only that secret. A different ref is refused. File modes stay broker-read, daemon-write; reading the ciphertext is not opening it.
 
 ## Risks / Trade-offs
 
@@ -33,6 +34,7 @@
 - **Key loss.** Envelopes sealed with that key do not open. There is no plaintext backup.
 - **CLI artifacts.** `auth.json` and similar files are still plaintext under the existing modes.
 - **Engine UID.** Filtering the key out of child environments does not hide `/proc` from a process that shares the daemon uid. That limit is already documented for other daemon secrets.
+- **Secret on the daemon–broker socket.** The broker needs the one secret it is about to send. That value crosses the existing owner socket for that grant only. The master key does not.
 - **Commented template lines.** `deploy/tinyassets-env.template` gains commented unset names so the engine-inheritance inventory covers them. No workflow, renderer, or secret value changes.
 
 ## Migration Plan

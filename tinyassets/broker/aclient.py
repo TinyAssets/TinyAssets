@@ -35,7 +35,8 @@ _END = object()
 
 
 class _Stream:
-    def __init__(self, client: AsyncBrokerClient, stream_id: int, refresh=None) -> None:
+    def __init__(self, client: AsyncBrokerClient, stream_id: int, refresh=None,
+                 vault_open=None) -> None:
         self._client = client
         self.id = stream_id
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -44,6 +45,8 @@ class _Stream:
         self.admitted = False
         self._refresh = refresh
         self._refresh_sequence = 0
+        self._vault_open = vault_open
+        self._vault_sequence = 0
 
     async def _next(self) -> Any:
         item = await self.queue.get()
@@ -77,6 +80,24 @@ class _Stream:
                         pass
                     await self._client._send(rf.control(self.id, {
                         "op": "REFRESH_ACK", "sequence": self._refresh_sequence, "ok": ok}))
+                elif item["op"] == "VAULT_OPEN":
+                    if (type(item.get("sequence")) is not int
+                            or item["sequence"] != self._vault_sequence + 1):
+                        raise rf.FrameError("unexpected vault open sequence")
+                    self._vault_sequence += 1
+                    token = None
+                    try:
+                        if self._vault_open is not None:
+                            token = await asyncio.to_thread(self._vault_open, item)
+                    except Exception:  # noqa: BLE001 - no credential or key text in the ack
+                        token = None
+                    if isinstance(token, str) and token:
+                        ack = {"op": "VAULT_OPEN_ACK", "sequence": self._vault_sequence,
+                               "ok": True, "token": token}
+                    else:
+                        ack = {"op": "VAULT_OPEN_ACK", "sequence": self._vault_sequence,
+                               "ok": False}
+                    await self._client._send(rf.control(self.id, ack))
         return self._head
 
     async def body(self) -> AsyncIterator[bytes]:
@@ -96,13 +117,14 @@ class _Stream:
 class AsyncBrokerClient:
     def __init__(self, path: Path, *, principal: str, command_center: str,
                  fence: Callable[[], tuple[int, str]], verify_peer=None,
-                 refresh_factory=None) -> None:
+                 refresh_factory=None, vault_open_factory=None) -> None:
         self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
         self._fence = fence
         self._verify_peer = verify_peer
         self._refresh_factory = refresh_factory
+        self._vault_open_factory = vault_open_factory
         self._ids = itertools.count(1)
         self._streams: dict[int, _Stream] = {}
         self._reader: asyncio.StreamReader | None = None
@@ -182,9 +204,12 @@ class AsyncBrokerClient:
 
         refresh = (await asyncio.to_thread(self._refresh_factory, grant_id, connection_id)
                    if self._refresh_factory is not None else None)
+        vault_open = (await asyncio.to_thread(
+            self._vault_open_factory, grant_id, connection_id)
+            if self._vault_open_factory is not None else None)
         await self._connect()
         generation, token = self._fence()
-        stream = _Stream(self, next(self._ids), refresh)
+        stream = _Stream(self, next(self._ids), refresh, vault_open)
         self._streams[stream.id] = stream
         document = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
@@ -196,6 +221,8 @@ class AsyncBrokerClient:
             document["idle_s"] = idle_s
         if refresh is not None:
             document["refresh"] = True
+        if vault_open is not None:
+            document["vault_open"] = True
         try:
             await self._send(rf.control(stream.id, document))
         except AmbiguousProxyOutcome:

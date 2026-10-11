@@ -71,6 +71,28 @@ def http_credential_record(*, destination: str, token: str) -> dict[str, Any]:
     }
 
 
+def read_http_credential(universe_dir: str | Path, destination: str) -> str:
+    """The secret stored for one http destination.
+
+    The daemon calls this. The broker does not: it has no master key, and asks
+    the daemon for this value. Errors name no secret and no key.
+    """
+    record_key = (destination or "").strip()
+    if not record_key:
+        raise RuntimeError("credential reference is unavailable")
+    for record in load_credential_vault(universe_dir):
+        if str(record.get("credential_type") or "").strip().lower() != "http":
+            continue
+        if str(record.get("destination") or "").strip() != record_key:
+            continue
+        for key in ("token", "access_token", "secret", "api_key"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        raise RuntimeError("credential reference is unavailable")
+    raise RuntimeError("credential reference is unavailable")
+
+
 #: When the document NOW STORED in a subscription record was last replaced by a
 #: refresh, as the CLI's own ``auth.json`` spells it. Read to decide whether the
 #: platform refreshes before launch: a document past the CLI's refresh threshold

@@ -853,8 +853,9 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
                     connection_id: str) -> _BrokerChannel:
     """The broker's channel. A broker that is not running is a loud refusal.
 
-    There is no second channel to fall back to: the credential and the ledger
-    live in the broker's own tree, and this process cannot open either.
+    There is no second channel to fall back to: the ledger lives in the
+    broker's own tree, and this process cannot open it. The daemon opens the
+    vault envelope and passes only the secret for this grant.
     """
     from tinyassets.broker.client import BrokerClient
     from tinyassets.broker.refresh import prepare
@@ -864,10 +865,15 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
     if supervisor is None:
         raise ProxyRequestError("the credential broker is not running")
 
+    from tinyassets.broker.vault_open import prepare as prepare_vault_open
+
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
                           verify_peer=supervisor.verify_broker,
                           refresh_factory=lambda grant, connection: prepare(
+                              data_root, principal=principal, command_center=command_center,
+                              grant_id=grant, connection_id=connection),
+                          vault_open_factory=lambda grant, connection: prepare_vault_open(
                               data_root, principal=principal, command_center=command_center,
                               grant_id=grant, connection_id=connection))
     return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
@@ -1002,7 +1008,8 @@ class CredentialBlindBroker:
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
                  deadline_at: float | None = None, inference_usage=None,
-                 operation_id: str | None = None, body=None, refresh_request=None) -> Any:
+                 operation_id: str | None = None, body=None, refresh_request=None,
+                 vault_open=None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1063,9 +1070,16 @@ class CredentialBlindBroker:
             _validate_connection_credential_scheme(
                 resource.connection_type, resource.credential_ref
             )
-            credential = self._resolve_credential(
-                resource.credential_ref, resource.connection_type
-            )
+            # The broker process has no master key. For an http grant it asks
+            # the daemon, which opens the envelope and returns this secret.
+            # In-process callers that still hold the key resolve locally.
+            http_grant = (resource.connection_type or "").strip().lower() == "http"
+            if vault_open is not None and http_grant:
+                credential = vault_open(resource.credential_ref)
+            else:
+                credential = self._resolve_credential(
+                    resource.credential_ref, resource.connection_type
+                )
         except Exception:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError(
@@ -1123,10 +1137,12 @@ class CredentialBlindBroker:
                 with guard():
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
-                    return self._oauth_bundle(resource, grant_id, verb, credential,
-                                              rejected=rejected, refresh_request=refresh_request)
-            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected,
-                                      refresh_request=refresh_request)
+                    return self._oauth_bundle(
+                        resource, grant_id, verb, credential, rejected=rejected,
+                        refresh_request=refresh_request, vault_open=vault_open)
+            return self._oauth_bundle(
+                resource, grant_id, verb, credential, rejected=rejected,
+                refresh_request=refresh_request, vault_open=vault_open)
 
         if oauth:
             from tinyassets.connection_oauth.tokens import decode
@@ -1206,15 +1222,23 @@ class CredentialBlindBroker:
 
     def _oauth_bundle(
         self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
-        *, rejected: str = "", refresh_request=None,
+        *, rejected: str = "", refresh_request=None, vault_open=None,
     ) -> Any:
         if self._oauth_tokens is None:
             self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
+        reread = None
+        if vault_open is not None:
+            ref = resource.credential_ref
+
+            def reread() -> str:
+                return vault_open(ref)
+
         try:
             return self._oauth_tokens.current(destination, credential, rejected=rejected,
-                **({"refresh_request": refresh_request} if refresh_request is not None else {}))
+                **({"refresh_request": refresh_request} if refresh_request is not None else {}),
+                **({"reread": reread} if reread is not None else {}))
         except ConnectionAuthorizationError:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
@@ -1465,19 +1489,9 @@ class _GeneralVaultCredentialResolver:
         record_key = ref[len(prefix):].strip()
         if not record_key:
             raise RuntimeError("credential reference is unavailable")
-        from tinyassets.credential_vault import load_credential_vault
+        from tinyassets.credential_vault import read_http_credential
 
-        for record in load_credential_vault(self._universe_dir):
-            if str(record.get("credential_type") or "").strip().lower() != "http":
-                continue
-            if str(record.get("destination") or "").strip() != record_key:
-                continue
-            for key in ("token", "access_token", "secret", "api_key"):
-                value = record.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-            raise RuntimeError("credential reference is unavailable")
-        raise RuntimeError("credential reference is unavailable")
+        return read_http_credential(self._universe_dir, record_key)
 
 
 class _TrustedCredentialResolver:

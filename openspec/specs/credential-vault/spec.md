@@ -52,6 +52,8 @@ Key rotation SHALL store `key_id` on the envelope. A retired key still available
 
 In-memory records returned by `load_credential_vault`, and the non-secret summary returned by `write_credential_vault`, SHALL keep their existing shapes. The broker read and daemon write file modes below SHALL still apply to the envelope file. Parse and authentication errors SHALL NOT include the file body, a secret, or key material.
 
+The daemon SHALL be the process that opens an envelope. The broker SHALL NOT receive the master key. For an http grant the broker SHALL ask the daemon, on that stream, for the grant's current `vault://http/` credential, and the daemon SHALL return only that secret. A different credential ref SHALL be refused. A failed open acknowledgement SHALL carry no secret.
+
 Materialized credential artifacts (for example a Codex `auth.json` or a Claude config directory) and per-launch snapshots are not part of this envelope. Their at-rest protection SHALL be POSIX ownership, mode and ACL:
 
 Where every role shares one uid, which is a developer host or a desktop install:
@@ -104,6 +106,11 @@ Best-effort `chmod` is inert on operating systems that do not honor POSIX modes.
 - **THEN** load returns the records
 - **AND** `rewrap_credential_vault` stores the active key id
 - **AND** load still returns the records after the retired key is no longer configured
+
+#### Scenario: The daemon opens one http secret for the broker
+- **WHEN** the broker serves an http grant and does not hold the master key
+- **THEN** the daemon opens that grant's vault record and returns only that secret
+- **AND** a request for a different credential ref is refused without returning a secret
 
 #### Scenario: The broker reads the vault and cannot write it
 - **WHEN** the daemon writes a credential to the vault in the production container
