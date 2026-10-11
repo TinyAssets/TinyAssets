@@ -5,7 +5,7 @@
 
 ## 2. Build (each PR ships alone, net-negative, deletions included)
 
-- [ ] 2.1 Measure: inventory every caller of `call_provider`,
+- [x] 2.1 Measure: inventory every caller of `call_provider`,
       `call_with_policy(_sync)` and the allocation constructors, and count
       stored `llm_policy.difficulty_override` nodes on a production copy.
       Correct the design's deletion table with measured spans. Verify: the
