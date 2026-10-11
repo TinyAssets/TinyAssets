@@ -528,7 +528,7 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/daemon_image_retention.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${helper}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${helper} --apply --prepare-pull'"
+              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${helper} --apply --prepare-pull"
           echo "helper=${helper}" >> "$GITHUB_OUTPUT"
 
       - name: Wait for in-flight turns
@@ -553,7 +553,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${RETENTION_HELPER} --check-headroom --image-ref ${IMAGE_REF}'"
+              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${RETENTION_HELPER} --check-headroom --image-ref ${IMAGE_REF}"
 
       - name: Run fail-safe deploy on the droplet
         id: deploy
@@ -914,7 +914,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -c 'set -a; source /etc/tinyassets/env; set +a; python3 ${RETENTION_HELPER} --apply'"
+              "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env /usr/bin/python3 ${RETENTION_HELPER} --apply"
 
       - name: Retire platform LLM logins from the host
         # The platform has no LLM (AGENTS.md Hard Rule 15). The new image and

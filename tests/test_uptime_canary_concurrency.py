@@ -61,6 +61,7 @@ async function runEvent(event, ordinal) {
   const summaries = [];
   const mutationStart = state.mutations;
   process.env.OVERALL = event.overall;
+  process.env.PAGE_NEEDED = event.overall === 'red' ? 'true' : 'false';
   process.env.PROBE_STATUS = event.overall === 'red' ? '3' : '0';
   process.env.PROBE_MSG = `shared-state ${event.overall}`;
   process.env.LABEL = 'p0-outage';
