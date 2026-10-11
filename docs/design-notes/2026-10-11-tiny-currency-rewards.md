@@ -232,7 +232,7 @@ Not legal advice. The owner cannot afford a lawyer now, so the path above avoids
 
 ## A personal currency for every account
 
-Owner concept, 2026-10-11, analyzed here and not adopted. Each new account gets its own crypto token. Rewards are split three ways: some `tiny` to the user's wallet or a platform wallet, some `tiny` locked forever in a liquidity pool paired with that personal token, and some of the personal token to the user's wallet or a platform wallet. This is not legal advice.
+Owner concept, clarified 2026-10-11, analyzed here and not adopted. Each new account gets its own crypto token. That token is publicly tradable and sendable to the user's own wallet. From the day the account opens it has a pool against `tiny`, and the `tiny` in that pool is locked forever. Rewards are split three ways: some `tiny` to the user's wallet or a platform wallet, some `tiny` into that locked pool, and some of the personal token to the user's wallet or a platform wallet. These are public markets, not internal points. This is not legal advice.
 
 **Evidence.** Nothing in the repo creates a token per account. There is no contract source, no factory, and no liquidity-pool module. A search for a pool, a pair, or a per-user currency contract returned nothing in product code. Account identity today is the sign-in the legal page describes (WorkOS). Opening an account does not deploy a contract.
 
@@ -250,6 +250,42 @@ The steps, none of which exist here:
 4. Ongoing rewards split into liquid `tiny`, more `tiny` added to the pool (which needs more personal tokens on the other side, or it just moves the price), and liquid personal tokens.
 
 "To their wallet or a platform wallet" splits the same unit into self-custody or custody. A platform wallet the user can later withdraw from is the custody the earlier clarification said to avoid. A platform wallet the user cannot withdraw from is an in-app balance, which is the sink problem again.
+
+Sending the personal token to the user's wallet, with a pool already open, means they can sell it the same day. The liquid `tiny` is one payment. The personal tokens plus the `tiny` sitting in the pool are a second payment, collected by selling. The lock does not sit between those two steps.
+
+### Pool design when `tiny` is the base (inference)
+
+Nothing in the repo defines a pool, so this is the usual constant-product pool (the two reserves multiply to a constant), which is the structure behind "paired from day one." Call the reserves `T` for `tiny` and `P` for the personal token.
+
+The quoted price of one personal token is `T / P` in `tiny`. A day-one pool has no other book. That ratio is the entire market. A swap moves both reserves. Selling personal tokens increases `P` and decreases `T`. The new quoted price is lower. Buying does the opposite. The execution price of the trade is worse than the quote the trader saw, and the gap grows as the trade gets larger relative to `T`. That gap is the price impact.
+
+A thin pool is a small `T`. A few units of `tiny` then move `T / P` by a large fraction. The number people advertise, price times total supply, can be far above the `tiny` anyone can actually remove. The `tiny` that can come out is bounded by `T`. In a constant-product pool a seller approaches that reserve and does not take the last unit, but most of a thin reserve leaves in one trade. Day-one liquidity is therefore a thin book unless the platform seeds a large `T` for every account. A large seed is a large grant. A small seed is a price that a single wallet can set.
+
+Adding more `tiny` to the pool later, without adding personal tokens in proportion, moves the quoted price up by itself. That is a reward transaction changing the published price, not a fan deciding the work is worth more.
+
+### How a thin pool is manipulated (inference)
+
+The personal tokens paid to the wallet are the inventory. The pool is the bid. The holder sells some of that inventory into `T` and receives `tiny`. One sale is enough to knock the quote down and to extract most of a thin reserve. The same wallet, or a second wallet, can buy a small amount of `tiny`'s worth of the personal token and print a much higher quote, then point at that quote. Trading back and forth prints volume. None of this requires breaking the lock. The lock is what keeps the bid in place so the sale has something to hit.
+
+The three-way reward makes the trade free for the recipient. They were given the personal tokens. They were not required to buy them. Their sale is not a round trip. It is a withdrawal of the seeded `tiny`.
+
+### Impermanent loss, and who bears it (inference)
+
+Impermanent loss is the gap between holding the two assets and leaving them in the pool while the price moves. Here the liquidity receipt is locked, so nobody can take the "just hold" side later. The position that bears the gap is the locked one, and the `tiny` in it was deposited by the reward program. That is the platform, or whatever budget funded the seed.
+
+When recipients sell, `T` falls and `P` rises. The pool has converted `tiny` into personal tokens that are being sold down. Against simply keeping the `tiny`, the locked position is worse, and it cannot be closed. The sellers hold the `tiny`. When outsiders buy and the quoted price rises, the pool has sold personal tokens along the way and holds more `tiny`. Against having held the personal tokens, the locked position missed that rise, and it still cannot be closed. Fees, if the pool charges them, accrue to the same locked receipt. A burned receipt cannot collect them, so they do not repay the seeder.
+
+The user who received liquid tokens does not bear this as a liquidity provider. They bear the personal token's price only on the amount they keep. They can sell the rest into the seed before the quote collapses.
+
+### What locking `tiny` forever does to `tiny` supply (inference)
+
+Two different movements, and they are easy to mix up.
+
+While a pool is idle, the seeded `tiny` is not in a wallet. Liquid supply of `tiny` is lower by `T`. If that `tiny` was minted to create the pool, total supply went up and liquid supply did not. The lock warehouses new `tiny`. It does not destroy it. If that `tiny` was bought with subscription revenue, the warehouse is cash the platform can no longer spend, because the receipt cannot be withdrawn.
+
+When someone sells the personal token, `T` leaves the pool for their wallet. Liquid `tiny` goes back up, in the seller's hands. The platform does not get it back. Idle pools freeze a grant. Traded pools pay the grant to sellers. Neither is a floor under the personal token: the quote can fall toward zero as `T` shrinks. Neither supports a market for `tiny` except by parking newly minted `tiny` where the platform cannot retrieve it, until a seller retrieves it for themselves.
+
+So day-one locked liquidity drains the reward budget into the first sellers, and it immobilizes whatever they do not sell. It does not support `tiny` as a currency. It spends `tiny` to make each personal token tradable.
 
 ### What a safe build would take (inference)
 
@@ -273,11 +309,11 @@ That list is larger than the USDC payout in the section above, and it needs the 
 | Mass account creation | If signup deploys a token, or seeds `tiny` into a pool, new accounts are a faucet and a gas bill. Free sign-in (the legal page's tier-1 "no KYC") is the wrong door for a mint. |
 | Wash trading | The creator, or a second wallet they control, buys the personal token against the pool. The quoted price rises. Nothing about the lock checks who is trading. |
 | Rug-pull optics | "Liquidity locked forever" is a sentence people use to sound safe. The lock does not keep the `tiny` in the pool once trading starts. If any mint or admin key survives, the holder of that key can drain the pool, and if the platform holds the key, the platform is the one who can. |
-| Pump and dump | The locked `tiny` is the exit. Buy the personal token, show a higher price, sell it back, and the `tiny` leaves with the seller. Fans who bought later are the ones left holding the personal token. |
+| Pump and dump | The locked `tiny` is the exit, and it exists on day one. A thin reserve makes the quoted price cheap to move and bounds how much `tiny` the sale can take. Fans who buy the printed quote are left holding the personal token. |
 
 ### Legal and consumer exposure (inference, not legal advice)
 
-One `tiny` is already an unclassified public token. A token per account is a new public token for every user, deployed by the platform. Strangers can buy it from the pool. That is many instruments, each with a price, and the platform is the issuer of all of them if the factory runs at signup. The consumer harm is specific: a lock sounds like the money is safe, and the money can still be swapped out. The legal page would have to say that, per token, before anyone is invited to buy. The owner cannot afford that review. This design asks for more of it than a single `tiny`, not less. Store rules (design §9.5 and §9.6) already question showing one token in the apps. A catalog of user tokens is the same question multiplied.
+One `tiny` is already an unclassified public token. A token per account, sendable to a wallet and paired on day one, is a new public token for every user, deployed by the platform, with strangers able to buy it from the first block. The legal and abuse risks of a publicly tradable token apply on signup, not at a later listing. That is many instruments, each with a price, and the platform is the issuer of all of them if the factory runs at signup. The consumer harm is specific: a lock sounds like the money is safe, and the money can still be swapped out. The legal page would have to say that, per token, before anyone is invited to buy. The owner cannot afford that review. This design asks for more of it than a single `tiny`, not less. Store rules (design §9.5 and §9.6) already question showing one token in the apps. A catalog of user tokens is the same question multiplied.
 
 ### Tax (inference, not tax advice)
 
@@ -287,23 +323,21 @@ A user could be treated as receiving three things: liquid `tiny`, personal token
 
 Each account would be several chain transactions: deploy or mint, approve, create the pool, add both sides, lock the receipt, and later reward transfers. **TODO:** current Base fees were not measured for this note. Fees on an L2 are small per transaction and unbounded across free signups if the platform pays. The inventory cost that matters more than gas is the `tiny` sitting in pools that never trade, or leaving those pools through the first swap. Dead pools do not return that `tiny` if the receipt is locked forever.
 
-### The same benefits, without a token (inference)
+### What this is not
 
-The reasons to want this are that a creator gains when people value their work, and that fans can gather around a creator. Both already have a safer shape.
+The concept above is a public market per account. An off-chain point is a different product. It can carry the same "your work was used" signal, and it cannot be sent to a wallet or sold for `tiny`. It is listed here only as the thing that is safer to launch first, not as a description of the personal token.
 
-- **Aligned incentives.** The revenue-share ledger pays a creator, in cents, when paid subscribers use their published piece. That payment goes up when use goes up. It does not require a price.
-- **A fan economy.** Use is the support. A tip in USDC, if one is ever built, is a fan paying a creator in money the fan already holds. A public count of paid use, with small numbers hidden, is the gathering, without a ticker.
-- **Points.** An off-chain number per creator, increased only by the same seat-time meter, not transferable, not priced, not paired. The creator sees it. Nobody can buy it, dump it, or rug it. It can later be the input to a USDC payout. It does not become a coin by itself.
+- **Aligned incentives without a quote.** The revenue-share ledger pays a creator, in cents, when paid subscribers use their published piece. That payment goes up when use goes up.
+- **A fan signal without a pool.** A public count of paid use, with small numbers hidden, or a later tip in USDC. No ticker, so no thin book to paint.
+- **Points.** An off-chain number per creator, increased only by that seat-time meter, not sendable and not paired. It can be the input to a USDC payout. It does not become the personal token by adding a pool later without the risks above.
 
-A personal token adds a price and a pool on top of that number. The price is what creates the wash trade, the dump, and the "locked" sentence that over-promises. The number does not need the price.
+### Safest to launch first
 
-### Minimal safe experiment
+**Inference. Not legal advice.** The personal token is a public tradable instrument with an exit into `tiny` on day one. That is the last thing to launch, not the first. Order:
 
-**Inference. Not legal advice.** Do not deploy a factory. Do not deploy one token on a testnet as the experiment. A testnet coin per account rehearses the spam and the lock sentence under the same brand.
-
-1. Pick one creator who already has a published piece. Show them two figures from the ledger this note already describes: credited seat-time of paid use, and the cent estimate of their revenue share. The figures are not transferable and have no price.
-2. The pass is that the creator can see whether anyone used the piece, and the cents match cash actually collected. The fail is a screen that looks like a market, a balance they can send, or a pool.
-3. Stop. If what they wanted was a tradeable coin, that is a later decision, one creator at a time, with counsel, and not a mint on signup.
+1. **The cent ledger, shown to one creator.** Credited seat-time of paid use, and the cent estimate of the revenue share. Not sendable, no price, no pool. The pass is that the cents match cash actually collected. The fail is a screen that looks like a market. This is the experiment. It does not deploy a contract.
+2. **USDC, or dollars, to a wallet or bank they control,** from that same ledger, once cash has actually been collected. That is the first payout. It does not mint `tiny` and it does not open a pool.
+3. **Do not open personal-token pools,** including a single testnet pool under this brand, until a live `tiny` exists for a reason other than seeding exits, and until the public-token questions in the counsel list can be paid for. A day-one pool is a public offer of a thin market whose locked `tiny` is the bid. Launching it first spends the budget the safer payout needs, and it does so into the first sale.
 
 ## What this note did not do
 
