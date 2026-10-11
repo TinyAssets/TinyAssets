@@ -88,7 +88,7 @@ fresh `TurnRequestBudget` roots, 9 admission gates on the model path.
    `tiny/` (the founder's app agent) 7, `cursor/` 1, with five more open.
    The coordination failures:
    - The REST API was built twice (#4589, #4602). Both add a public
-     `/api`, against Fact 11.
+     `/api` (founder-approved as a public door, 2026-10-11).
    - #4608 and #4609 overlap this registry.
    - The isolation stack was stranded by the cutover re-steer.
    - The Codex model pin changed four times.
