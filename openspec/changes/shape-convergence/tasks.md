@@ -59,7 +59,7 @@ excluded. The PR measures the real figure, and a positive net does not merge.
         `automation-event-triggers`, `served-inbound-webhook-triggers` and
         `automation-schedule-timezone` into one wake-triggers change.
       - Turn `target-architecture` tasks into pointers to C6, C7 and C9.
-      - #4589 closed as the duplicate of #4602 (done). Founder 2026-10-11: `/api/v1`
+      - #4589 closed as the duplicate of #4602 (done). Founder 2026-10-11: `/api`
         is an allowed public door (S25, Fact 11); #4602 keeps it.
 
       Gate-file change: one cross-family round.
