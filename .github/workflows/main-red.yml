@@ -7,7 +7,7 @@ name: Main red
 # `heavy-tests` (a red baseline) and quarantined/flaky tests never trigger it.
 #
 # This is the safety net that lets the merge-group gate run only the tests a
-# group can affect (docs/decisions/ADR-019-lean-ci-successor.md):
+# group can affect (docs/decisions/ADR-020-lean-ci-successor.md):
 # the full suite still runs on every merge, here, and a break is acted on.
 #
 # Runs default-branch code only and never executes the commit under test. The

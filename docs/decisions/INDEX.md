@@ -17,6 +17,8 @@ acceptance except its Status line (ADR-005).
 - [ADR-016-identity-follows-the-account.md](ADR-016-identity-follows-the-account.md) — WorkOS AuthKit · one principal across every client · no anonymous principal · Claude/ChatGPT/browser parity
 - [ADR-017-knowledge-is-files-okf-by-default.md](ADR-017-knowledge-is-files-okf-by-default.md) — OKF bundle is the default canonical knowledge form · indexes are derived
 - [ADR-018-command-centers-are-exportable.md](ADR-018-command-centers-are-exportable.md) — one action exports a runnable, publish-ready folder · not yet built
+- [ADR-020-lean-ci-successor.md](ADR-020-lean-ci-successor.md) — affected tests and structural guards on PRs; full suite after merge
+- [ADR-021-token-test-currency-boundary.md](ADR-021-token-test-currency-boundary.md) — paid-market experiments use test tiny on Base Sepolia
 - [ADR-004-merge-attribution-and-the-deploy-gap.md](ADR-004-merge-attribution-and-the-deploy-gap.md) — merged-is-not-deployed and PRs stuck BEHIND are ONE root cause: the default `GITHUB_TOKEN` cannot originate the events this repo's automation needs · measured #2259 vs #2260 · host mints a PAT/App token
 - [ADR-003-required-test-aggregator.md](ADR-003-required-test-aggregator.md) — `required-tests`: the first required check that tests behaviour · runs unconditionally · no-new-failures ratchet · host `gh api` command to make it required
 - [2026-07-13-paid-market-founder-signoffs.md](2026-07-13-paid-market-founder-signoffs.md) — founder sign-offs D1 write gate · D2 ledger coexistence · D3 droplet concurrency · D4 serialization rule + differential testing

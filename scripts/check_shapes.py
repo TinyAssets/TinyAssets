@@ -184,6 +184,18 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/credential_vault.py", ""), ("tinyassets/broker/browser_vault.py", "")),
         ceiling=2,
     ),
+    "N1": Shape(("tinyassets/owner_door/**", "tinyassets/onboarding/**")),  # inbound-door
+    "N2": Shape(("tinyassets/control_plane/**",)),  # notify-path
+    "N3": Shape(  # call-sites, opt-in-flags
+        ("tinyassets/model_call.py", "tinyassets/agent_loop/**")
+    ),
+    "N4": Shape(("tinyassets/boxes/**",)),  # box-view
+    "N5": Shape(("tinyassets/boxes/**",)),  # egress-gate
+    "N6": Shape(("tinyassets/boxes/**",)),  # box-snapshot
+    "N7": Shape(("tinyassets/broker/**",)),  # spend-path
+    "N8": Shape(("tinyassets/boxes/**",)),  # host-paths
+    "N9": Shape(("tinyassets/model_call.py",)),  # call-sites, media-receipt
+    "N10": Shape(("tinyassets/boxes/**", "tinyassets/broker/**")),  # owner-policy-write
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {
@@ -207,7 +219,7 @@ PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
     r"\s*\(\s*['\"](/[^'\"]*)"
 )
-PUBLIC_ROOTS = frozenset({"/mcp", "/api/v1", "/app"})
+PUBLIC_ROOTS = frozenset({"/mcp", "/api", "/hooks/inbound", "/app"})
 DOC_HOMES = (
     "docs/architecture.md",
     "docs/host-actions.md",
@@ -222,7 +234,7 @@ DOC_HOMES = (
 def registry_rows(text: str) -> dict[str, str]:
     rows: dict[str, str] = {}
     for line in text.splitlines():
-        match = re.match(r"\| (B\d+|S\d+) \|", line)
+        match = re.match(r"\| (B\d+|S\d+|N\d+) \|", line)
         if match:
             rows[match.group(1)] = line.split("|")[5].strip()
     return rows

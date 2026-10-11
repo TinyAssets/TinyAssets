@@ -1,4 +1,4 @@
-# ADR-019: Lean CI on the affected path
+# ADR-020: Lean CI on the affected path
 
 ## Status
 

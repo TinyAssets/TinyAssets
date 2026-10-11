@@ -1,4 +1,4 @@
-# ADR-020: Test currency boundary
+# ADR-021: Test currency boundary
 
 ## Status
 

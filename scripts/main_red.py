@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """React to a red required-test run on main: re-run once, then revert or alarm.
 
-Lean-CI lever L1 (docs/decisions/ADR-019-lean-ci-successor.md)
+Lean-CI lever L1 (docs/decisions/ADR-020-lean-ci-successor.md)
 moves the full required suite out of the merge-group gate and onto the
 post-merge run on main. That is only safe if a red main is acted on at once,
 so this runs after every Tests run on main (.github/workflows/main-red.yml):

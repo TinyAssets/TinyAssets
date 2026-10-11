@@ -13,10 +13,10 @@ def test_shape_registry():
 def test_registry_parity_catches_added_row():
     rows = check_shapes.registry_rows(
         "| S1 | one | path | old | drifted | guard | C3 |\n"
-        "| S29 | new | path | old | drifted | guard | C13 |"
+        "| N11 | new | path | old | unbuilt | guard | C13 |"
     )
-    assert rows["S29"] == "drifted"
-    assert set(rows) - set(check_shapes.SHAPES) == {"S29"}
+    assert rows["N11"] == "unbuilt"
+    assert set(rows) - set(check_shapes.SHAPES) == {"N11"}
 
 
 def test_old_count_is_a_ceiling(tmp_path: Path):
@@ -48,8 +48,13 @@ def test_public_route_and_opt_in_flag_on_existing_file():
         problem.startswith("opt-in-flags:") for problem in check_shapes.added_line_problems(changes)
     )
     assert not check_shapes.added_line_problems(
-        {"tinyassets/universe_server.py": 'app.mount("/api/v1", api)'}
+        {
+            "tinyassets/universe_server.py": (
+                'app.mount("/api", api)\napp.mount("/hooks/inbound", inbound)'
+            )
+        }
     )
+    assert check_shapes.PUBLIC_ROOTS == {"/mcp", "/api", "/hooks/inbound", "/app"}
     assert check_shapes.added_line_problems(
         {"tinyassets/onboarding/__init__.py": 'Route("/other", handler)'}
     ) == ["public-routes: tinyassets/onboarding/__init__.py mounts /other"]
