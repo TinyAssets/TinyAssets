@@ -233,9 +233,10 @@ video** workflow (`.github/workflows/ios-review-video.yml`) runs the six-step
 Guideline 2.1 packet on one physical AWS iPhone. It first runs the same test against
 production on Simulator; that proof alone is not Apple's required device video.
 
-1. At [AWS account signup](https://portal.aws.amazon.com/billing/signup), create an
-   account, complete email/phone/payment verification, choose Basic support, and
-   enable root MFA. Use an administrator identity for the following one-time setup;
+1. Use [AWS advanced account signup](https://docs.aws.amazon.com/accounts/latest/reference/getting-started.html)
+   to create a standard AWS account, complete email/phone/payment verification,
+   choose the Paid account plan (pay as you go) and Basic support, and enable root
+   MFA. Use an administrator identity for the following one-time setup;
    do not create root access keys.
 2. Open [Device Farm in Oregon](https://us-west-2.console.aws.amazon.com/devicefarm/home?region=us-west-2).
    Choose **Mobile Device Testing > Projects > Create project**, name it

@@ -55,6 +55,7 @@ jobs:
   build-ios:
     if: ${{ !inputs.review_video_proof || inputs.review_video_compile_only }}
     runs-on: macos-15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -143,6 +144,12 @@ jobs:
         run: bash mobile/scripts/build_review_tests.sh
 
       - name: Verify signed-out Simulator launch without reviewer credentials
+        if: github.event_name == 'workflow_dispatch' && inputs.review_video_compile_only
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run signed-out Simulator launch and inspect the recording
         if: github.event_name == 'workflow_dispatch' && inputs.review_video_compile_only
         run: |
           bash mobile/scripts/run_review_simulator.sh --launch-only

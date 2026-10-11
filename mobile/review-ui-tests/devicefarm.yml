@@ -1,6 +1,9 @@
 version: 0.1
 ios_test_host: default
 phases:
+  install:
+    commands:
+      - devicefarm-cli use python 3.12
   test:
     commands:
       - >-

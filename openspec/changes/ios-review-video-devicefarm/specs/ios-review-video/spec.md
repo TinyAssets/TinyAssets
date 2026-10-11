@@ -8,7 +8,7 @@ The UI test SHALL assert the six review shots against production, capture named 
 - **THEN** the test and workflow fail instead of publishing a passing result.
 
 ### Requirement: Credential-safe bounded recording
-The dispatch workflow SHALL inject reviewer credentials at runtime, type the password only in a secure field, exclude private test configuration and raw logs from artifacts, and record one iPhone 14+ on the newest available iOS with a 30-minute device timeout.
+The dispatch workflow SHALL inject reviewer credentials at runtime, paste the password only in a secure field without per-key echo, exclude private test configuration and raw logs from artifacts, encrypt video/screenshot evidence before public artifact upload, and record one iPhone 14+ on the newest available iOS with a 30-minute device timeout.
 
 #### Scenario: Dry run
 - **WHEN** dry_run is true

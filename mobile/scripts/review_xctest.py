@@ -121,14 +121,16 @@ def run_test(source: Path, destination: str, output: Path, launch_only: bool = F
                         str(result),
                         "-parallel-testing-enabled",
                         "NO",
+                        "-test-timeouts-enabled",
+                        "YES",
                         "-maximum-test-execution-time-allowance",
-                        "1500",
+                        "300" if launch_only else "1500",
                         f"-only-testing:ReviewUITests/ReviewVideoTests/{test}",
                     ],
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     env=env,
-                    timeout=1650,
+                    timeout=420 if launch_only else 1650,
                 )
             found = export_shots(result, output, private) if result.exists() else set()
             result_code = 0 if process.returncode == 0 and found == expected_shots else 1
