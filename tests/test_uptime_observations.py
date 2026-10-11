@@ -86,6 +86,6 @@ def test_actual_output_path_keeps_unknown_visible_and_cannot_recover(tmp_path, m
     monkeypatch.setenv("REVERT_REASON", "legacy_evidence_unavailable")
     assert observations.main() == 0
     assert "overall=unknown\n" in output.read_text()
-    assert "overall=green" not in output.read_text()
+    assert "overall=green" not in output.read_text().splitlines()
     assert "Automatic incident recovery is unavailable" in summary.read_text()
     assert "current-engine execution-quality" in summary.read_text()

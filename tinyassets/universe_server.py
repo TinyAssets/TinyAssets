@@ -4059,8 +4059,10 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             _identity = current_identity_or_none()
             if _identity is not None and _identity.user_id == CANARY.user_id:
                 from tinyassets.capability_health import RATES
+                from tinyassets.disk_health import snapshot as disk_snapshot
 
                 payload['capability_health'] = RATES.snapshot()
+                payload['disk_health'] = disk_snapshot()
                 payload["platform_runtime_provenance"] = sanitized_peek_fields(
                     peek_platform_runtime_provenance()
                 )

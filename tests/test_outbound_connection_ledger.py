@@ -598,7 +598,7 @@ def test_http_broker_composition_resolves_through_real_general_vault_resolver(
     # plaintext injection, NO fake _http. The request targets a non-allowlisted
     # host so the real driver's allowlist refuses it — proving the credential was
     # RESOLVED THROUGH THE REAL GENERAL RESOLVER (else the audit would record
-    # "credential unavailable", not "destination request failed").
+    # "credential unavailable", not "grant_path_refused").
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     ledger = _make_http_ledger_with_vault(tmp_path)
 
@@ -621,7 +621,7 @@ def test_http_broker_composition_resolves_through_real_general_vault_resolver(
     # Reached the driver layer via the REAL general resolver — NOT
     # "credential unavailable" (a resolution failure) and NOT a startup crash.
     assert [record["reason"] for record in audit.records()] == [
-        "destination request failed"
+        "grant_path_refused"
     ]
     assert "real-vault-http-token" not in json.dumps(audit.records())
 

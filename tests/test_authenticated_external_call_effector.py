@@ -476,7 +476,9 @@ def test_out_of_allowlist_path_is_refused(tmp_path, monkeypatch):
         loop.stop()
 
     assert evidence.get("delivered") is not True
-    assert evidence["error_kind"] == "outbound_request_failed"
+    assert evidence["error_kind"] == "grant_path_refused"
+    assert "POST /v1/secret-exfil" in evidence["error"]
+    assert "/v1/messages" not in json.dumps(evidence)
     # Refused at the allowlist BEFORE any socket — nothing reached the endpoint.
     assert loop.recorded == []
     assert "real-vault-http-token" not in json.dumps(evidence)
@@ -574,13 +576,14 @@ def test_served_broker_resolves_credential_and_stays_blind(tmp_path, monkeypatch
         base_path=str(universe_dir),
     )
 
-    assert evidence["error_kind"] == "outbound_request_failed"
+    assert evidence["error_kind"] == "grant_path_refused"
+    assert "POST /v1/messages" in evidence["error"]
     assert "real-vault-http-token" not in json.dumps(evidence)
 
     audit = _read_audit(data_root, "grant-http")
-    # "destination request failed" (reached the driver) NOT "credential
-    # unavailable" — the worker DID resolve the vault credential.
-    assert [r["reason"] for r in audit] == ["destination request failed"]
+    # A typed endpoint refusal proves the real worker reached the driver
+    # after resolving the credential. No credential crosses the boundary.
+    assert [r["reason"] for r in audit] == ["grant_path_refused"]
     assert "real-vault-http-token" not in json.dumps(audit)
 
 

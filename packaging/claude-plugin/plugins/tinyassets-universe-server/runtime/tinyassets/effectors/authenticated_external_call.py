@@ -1325,6 +1325,21 @@ def _run(
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.
+        from urllib.parse import urlsplit
+
+        from tinyassets.storage.outbound_connections import GrantPathRefused
+
+        if isinstance(exc, GrantPathRefused):
+            # Echo only the request the caller already supplied, never a broker
+            # message, query, credential substitution, redirect or allowlist.
+            path = urlsplit(url).path or "/"
+            return {
+                "error": f"{verb} {path} is not covered by this connection grant",
+                "error_kind": "grant_path_refused",
+                "matched_output_key": matched_key,
+                "connection_id": connection_id,
+                "grant_id": grant_id,
+            }
         failure = getattr(exc, "failure", None)
         if isinstance(failure, dict):
             # A connection whose authorization could not be made current (an

@@ -150,7 +150,7 @@ def test_pulse_requires_a_bearer_and_canary_read_names_nothing(client, tmp_path)
     # assertion is that no user or universe fact can drift into the receipt.
     assert set(body) == {
         "git_sha", "image_tag", "deployed_at", "uptime_seconds",
-        "platform_runtime_provenance", "capability_health",
+        "platform_runtime_provenance", "capability_health", "disk_health",
     }
     assert body["git_sha"] == "abc123def4567890"
     assert body["image_tag"] == "ghcr.io/x/y:abc123def456"

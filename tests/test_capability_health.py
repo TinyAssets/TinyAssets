@@ -10,6 +10,20 @@ from tinyassets import capability_health as health
 from tinyassets.core_capabilities import CAPABILITIES, failure_code, validate_report
 
 
+def test_shared_disk_refusal_is_logged_and_drives_rate_alarm(monkeypatch, caplog):
+    from tinyassets.universe_tools import UniverseToolError
+
+    rates = health.CapabilityRates()
+    monkeypatch.setattr(health, "RATES", rates)
+    for owner in ("a", "b"):
+        for _ in range(3):
+            health.record_exception("bash", UniverseToolError(
+                "the shared disk is nearly full, so the tool jail will not start; nothing ran"
+            ), owner=owner)
+    assert rates.snapshot()["alarms"][0]["code"] == "shared_disk_full"
+    assert "capability_failure capability=bash code=shared_disk_full" in caplog.text
+
+
 def test_rates_detect_total_failure_and_spikes_without_retaining_user_material():
     now = [0]
     rates = health.CapabilityRates(lambda: now[0])

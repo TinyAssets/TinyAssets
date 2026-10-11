@@ -160,6 +160,19 @@ def test_a_request_streams_through_the_broker_and_collects_like_request_close(br
     assert len(broker.sent) == 1
 
 
+def test_grant_path_refusal_survives_real_broker_ipc_without_exception_text(broker):
+    from tinyassets.storage.outbound_connections import GrantPathRefused
+
+    def refused():
+        raise GrantPathRefused("secret endpoint inventory must not cross IPC")
+
+    broker.upstreams["next"] = refused
+    with pytest.raises(GrantPathRefused) as error:
+        _call(broker)
+    assert "not covered by the connection grant" in str(error.value)
+    assert "secret" not in str(error.value)
+
+
 def test_another_principals_grant_is_refused_before_anything_is_sent(broker):
     from tinyassets.storage.outbound_connections import GrantResolutionError
 

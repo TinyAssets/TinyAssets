@@ -2284,3 +2284,30 @@ def test_restore_bundle_is_not_blocked_by_a_failed_render(box: Box):
     assert box.env_image() == OLD_IMAGE
     assert "continuing the restore" in restored.stderr
     assert "placeholder" not in restored.stdout + restored.stderr
+
+
+@pytest.mark.parametrize("headroom_status", [0, 2])
+def test_pull_headroom_is_enforced_under_mutation_lock(box: Box, headroom_status):
+    box.stage_bundle()
+    helper = box.root / "headroom.py"
+    helper.write_text(
+        "import fcntl, os, sys\n"
+        "assert sys.argv[1:] == ['--check-headroom', '--image-ref', " + repr(NEW_IMAGE) + "]\n"
+        "with open(os.environ['LOCK_FILE'], 'r') as stream:\n"
+        "    try:\n"
+        "        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    except BlockingIOError:\n"
+        "        pass\n"
+        "    else:\n"
+        "        raise AssertionError('host lock not held')\n"
+        f"sys.exit({headroom_status})\n", encoding="utf-8",
+    )
+    before = box.live()
+    completed = box.run(NEW_IMAGE, DISK_HEADROOM_HELPER=str(helper))
+    assert completed.returncode == (0 if headroom_status == 0 else 1), completed.stderr
+    if headroom_status:
+        assert "insufficient disk headroom" in completed.stderr
+        assert "pull " not in box.docker_calls_text()
+        assert box.live() == before
+    else:
+        assert "pull " in box.docker_calls_text()

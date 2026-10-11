@@ -1,6 +1,6 @@
 # Count-based recoverable daemon image cache retention only: keep the running
 # image, every container reference, the configured and receipt rollback refs,
-# anything newer than the running image and the two newest older images;
+# one rollback image and explicit tag pins;
 # remove the rest (bounded, registry-verified). Pressure grades the pass.
 # Started by the daily timer AND by deploy-prod.yml after a green canary.
 # Same policy and serialization as hourly cleanup; no broad Docker prune.
@@ -12,7 +12,6 @@ After=docker.service
 
 [Service]
 Type=oneshot
-SuccessExitStatus=1
 EnvironmentFile=/etc/tinyassets/env
 WorkingDirectory=/opt/tinyassets-host-uptime/current
 ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/disk_autoprune.py --apply
