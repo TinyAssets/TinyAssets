@@ -19,8 +19,7 @@ No longer the direction: "a global goals engine", Goal ladders, and fantasy as t
 Where any older doc disagrees with this section, this section wins.
 <!-- direction:end -->
 
-Map: `docs/architecture.md`; why: `docs/decisions/`. Other rules live where
-they apply.
+Map, why: `docs/architecture.md`, `docs/decisions/`.
 
 ## Live state
 
@@ -32,8 +31,8 @@ they apply.
 | Who has what | branches and open PRs |
 | Narrative | git log: your commit message |
 
-Orient: the Direction above, then `python scripts/openspec_flow.py audit`.
-Write durable state before replying.
+Orient: Direction, § Shape registry, `scripts/openspec_flow.py audit`.
+Converge a shape; add no second path. Write durable state before replying.
 
 ## The loop
 
@@ -65,8 +64,8 @@ Write durable state before replying.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.
-11. `https://tinyassets.io/mcp` is the only public endpoint; `mcp.tinyassets.io`
-    is internal, never documented. After DNS/tunnel/connector edits:
+11. Public doors: `tinyassets.io/mcp` and `/api/v1` (keyed agents); `mcp.` is
+    internal. After DNS/tunnel/connector edits:
     `python scripts/mcp_public_canary.py --assert-handles`.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
