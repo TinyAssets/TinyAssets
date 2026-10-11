@@ -109,27 +109,22 @@ def test_line_ratchet_catches_growth_without_file_growth(tmp_path: Path):
     assert check_shapes.old_lines(shape, tmp_path) == 2
 
 
-def test_s22_counts_mentions_outside_target_homes_not_target_lines(tmp_path: Path, monkeypatch):
+def test_s22_counts_new_universe_modules_not_mentions(tmp_path: Path):
     root = tmp_path / "tinyassets"
     root.mkdir()
+    # Target homes and mentions inside ordinary files never count: a routine fix
+    # that adds `universe_id` somewhere must pass.
     (root / "universe_tools.py").write_text("universe\nextra fix\n", encoding="utf-8")
     (root / "universe_server.py").write_text("universe\n", encoding="utf-8")
-    (root / "legacy.py").write_text("universe_name = 'Universe'\n", encoding="utf-8")
+    (root / "legacy.py").write_text("universe_id = 'Universe'\n", encoding="utf-8")
     shape = check_shapes.SHAPES["S22"]
     assert "S22" not in check_shapes.LINE_CEILINGS
-    assert check_shapes.old_count(shape, tmp_path) == 2
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "architecture.md").write_text(
-        "| S22 | name | target | old | drifted | guard | slice |\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(check_shapes, "SHAPES", {"S22": replace(shape, ceiling=2)})
-    monkeypatch.setattr(check_shapes, "base_shape_problems", lambda root: [])
-    monkeypatch.setattr(check_shapes, "git_added_lines", lambda root: {})
-    monkeypatch.setattr(check_shapes, "deleted_doc_references", lambda root: [])
-    assert check_shapes.check(tmp_path, added=set()) == []
-    (root / "legacy.py").write_text("command_center_name = 'center'\n", encoding="utf-8")
-    assert check_shapes.old_count(check_shapes.SHAPES["S22"], tmp_path) == 0
+    assert check_shapes.old_count(shape, tmp_path) == 0
+    # A new universe_* module counts; renaming it to command_center lowers the count.
+    (root / "universe_extra.py").write_text("x = 1\n", encoding="utf-8")
+    assert check_shapes.old_count(shape, tmp_path) == 1
+    (root / "universe_extra.py").rename(root / "command_center_extra.py")
+    assert check_shapes.old_count(shape, tmp_path) == 0
     assert check_shapes.registered_path("tinyassets/universe_tools.py", shape.paths[1])
     assert check_shapes.registered_path("tinyassets/universe_server.py", shape.paths[2])
     assert not check_shapes.registered_path(

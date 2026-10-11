@@ -176,8 +176,11 @@ SHAPES: dict[str, Shape] = {
             "tinyassets/universe_tools.py",
             "tinyassets/universe_server.py",
         ),
-        (("tinyassets/**/*.py", r"(?i)universe"),),
-        ceiling=13069,
+        # The rename ratchet: no new universe_* module (renames lower the count);
+        # new *Universe* classes/defs are refused by the S22 entry symbol. Mentions
+        # inside existing files are renamed as each slice touches them.
+        (("tinyassets/**/universe_*.py", ""),),
+        ceiling=10,
     ),
     "S23": Shape(("domains/fantasy_daemon/state/book_state.py",)),
     "S24": Shape(("tinyassets/owner_door/**",)),
@@ -227,7 +230,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
     "S22": r"\b(?:class|def)\s+\w*Universe\w*\b",
 }
 # Genuinely old file probes also have a line ratchet: growing an existing file
-# cannot hide behind an unchanged file count. S22 counts mentions instead.
+# cannot hide behind an unchanged file count.
 LINE_CEILINGS = {"S3": 2434, "S5": 4552, "S9": 4638, "S15": 7547}
 FLOOR_RAISE_SHAPES = frozenset({"S3", "S5", "S9", "S15"})
 FLOOR_REASON = re.compile(r"\b(?:security|data[ -]loss|outage)\b", re.I)
