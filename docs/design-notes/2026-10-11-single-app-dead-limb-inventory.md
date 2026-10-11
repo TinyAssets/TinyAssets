@@ -116,7 +116,7 @@ The replacement is named. The code is still referenced.
 | A long-running author or researcher (fantasy daemon, research probe) | A skill or package the owner edits in the command center (Direction item 3), talking through the same chat. | `domains/*` entry points, the Phase 5 bridge in `tinyassets/__main__.py`, repo-root yaml goals. | Direction text. Domain entry points still load. |
 | Multi-step work with a goal and a branch | The agent's own files and `ta`, or a graph the chat compiles, scoped to one command center. | The global goals engine and `api/market.py` escrow. | Direction retires the goals engine. Canonical handles still say `run_graph` / `branch_id`. **Inference:** the graph machinery stays until a chat-only loop replaces those handles. That is separate from renting a model, below. |
 | Paying contributors for a published command center | `openspec/changes/creator-revenue-share/` (proposal, 2026-10-01). A share of a subscriber's fee, in `tiny`, for published command-center pieces. | The old paid-market modules. The proposal says #4209 deleted that code and this change does not bring it back. | Proposal text. Different payer and different good from model rental. |
-| Model marketplace / capacity sharing | A listed model the provider router can select, with a metered grant and a payment. Detail below. | `host_pool` REST, git-backed `bids/`, and flag-off escrow as the implementation. | The pieces exist and do a nearby job. None of them rents an LLM endpoint today. |
+| Model marketplace / capacity sharing | A community pool of other people's hosted models. Free and subscription accounts both draw from it. Detail below. | `host_pool` REST, git-backed `bids/`, and flag-off escrow as the implementation. | The pieces exist and do a nearby job. None of them rents an LLM endpoint today. |
 | Several machines sharing work (host pool, tray heartbeat) | The model-marketplace section, if the shared thing is a model. The hosted cell already runs with the owner's machine off. `openspec/changes/private-network-attach/` is a proposal for reaching a private network, with no product code in that change's proposal. | Supabase `host_pool` and a tray that bids for graph nodes. | `platform_secrets.py` comment. Proposal file exists. |
 | Notes and a wiki the agent keeps | Already the direction of pages and soul files inside the command center (`read_page` / `write_page`). | The root `knowledge/` and `pages/` trees as a second wiki. | `knowledge/INDEX.md` is cited from `knowledge/SCHEMA.md`, `WebSite/04-deep-dive-v2-product-truth.md`, and `docs/historical/INDEX.md` (3 files). **Inference:** a scratch wiki, not the app. |
 | Ideas inbox | Keep the habit of writing ideas down. The app does not need `ideas/` as a runtime. | Treating `ideas/PIPELINE.md` as a work queue beside `openspec/changes/`. | `scripts/capture_idea.py` and `ideas/INBOX.md` reference the inbox (search hit `ideas/INBOX` in 22 files, many of them inside `ideas/` and old plans). |
@@ -158,6 +158,66 @@ Metering can read token counts the chat response already may include (`usage` on
 | Payments | Integer MicroTokens, a 1% take, flag default off, test tiny only until the 2026-04-29 boundary is opened. The paid-market spec says a fractional JSON amount can be truncated by `int(...)`, and node-bid settlement is not race-atomic. Creator revenue share is a different flow and refuses to revive this code. | Charging a card or sending mainnet `tiny` is a new money decision. The founder has to open it. Doing it by flipping `TINYASSETS_PAID_MARKET` reopens the actor fallback. |
 | Trust | The host-pool poller does not claim work, so a human still chooses. Model id on a bring-your-own connection is a string the connector typed. Tool support is declared, not probed. | The renter cannot tell from the platform whether the weights match the listing. A hostile model can lie in the completion. There is no reputation store in the pieces above. |
 | Uptime | Direction item 8: the hosted app works with the owner's machine off. A listed local model is down when the lender's machine is down. The host-pool heartbeat is a REST `updated_at` loop inside a client the daemon does not import. `owner_binding.py` forbids falling back to the platform's own model when the lender is dark. | A marketplace that auto-fails over to a different lender's model would break the "explicit authority" rule unless the renter accepted that lender too. Spare capacity is not a platform SLA. |
+
+#### Free tier and subscription on a contributor pool
+
+**Product context, from the owner on 2026-10-11.** The experience he wants people to have without bringing a key is a basic good free tier, plus a paid subscription for more. Both would run on other users' hosted local models, a community inference pool. Today, in his framing, the free paths are OpenRouter within its limit, or a self-hosted model that only some people can stand up, or a paid ChatGPT or Claude subscription.
+
+**What the code does now (evidence).** This is narrower than that framing, and it is not a pool.
+
+| Fact | Where |
+|---|---|
+| OpenRouter is the guided connect card. | `tinyassets/providers/acquisition_presets.json` is one document, `openrouter_user_models_v1`, inference URL `https://openrouter.ai/api/v1/chat/completions`. The key is the user's. |
+| OpenRouter's free allowance in our data is 50 requests a day on models whose id ends in `:free`, resetting UTC. A credited account is recorded as 1000 requests a day after `$10`. | `tinyassets/providers/daily_cap_offers.json`, comment in `free_sources.py` citing OpenRouter's limits doc on 2026-10-01. `None` in other caps means unconfirmed, not zero. |
+| Other free or trial key cards are still installed: Groq, Google AI Studio, Mistral, Cerebras. | `tinyassets/providers/free_source_presets.json` and `openspec/specs/free-source-pooling/spec.md`. **Inference:** the owner calling OpenRouter the only fully free path is a product judgment about which of these is actually usable, not a claim that the other cards are gone. |
+| ChatGPT is the subscription card. Codex and Claude Code are the only subscription CLI executors. | `subscription_cards.json`. `provider_resolver.py`. |
+| A local model reaches the hosted app only as the lender's own HTTPS endpoint. | Connect form and the SSRF checks in the earlier section of this note. |
+| Free versus paid does not choose a model. | `tinyassets/usage_policy.py`: two tiers, `free` and `paid`. Free defaults are 3 concurrent agent seats and 2 GiB. Paid defaults are 8 seats and 20 GiB. The module says there are no rate meters of any kind. Founder line quoted there: the tier does not depend on which connections the account has. Checkout is `POST /app/billing/checkout` through `tinyassets/billing/stripe_adapter.py`. **TODO:** whether that checkout is charging live customers was not checked. |
+| One account does not use another's model. | `free-source-pooling` spec, scenario "Other owner". `owner_binding.py`. |
+| Health today is "this credential failed auth," in process memory, not latency or load. | `tinyassets/providers/source_health.py`. |
+| Tool support and context on a custom endpoint are declared (`tools: true`, context `32768`), not measured. | Connect form in `app.html`. `model_policy.py` drops a model whose `tools` is not true when the turn needs tools. |
+| Model "class" is parsed from the id string. It is not a quality score. | `tinyassets/providers/model_class.py`. |
+| Daily exhaustion of a source cools that source and tries the owner's next accepted source. | `free-source-pooling` spec. |
+
+**How the two tiers could work on a pool.** **Inference.** Nothing below is implemented.
+
+Routing stays the provider router. A pool member is an `api_key_http` grant with an explicit authority kind, as in the section above. Free and paid accounts both select from members that advertised tool support and a context large enough for an agent turn. They do not select `ollama-local`, and they do not silently pick some other owner's private key.
+
+Quality is a band on that advertisement, not a vendor name. A member probed as able to call tools, with a context at least the bound the agent needs, is eligible for the free tier. A member that also clears a higher bar the owner sets later (longer context, a tool-use check that passed, recent success) is preferred for the subscription tier. `model_class.py` cannot be that bar. It only groups ids.
+
+Fair use keeps today's seat caps (concurrency) and adds a pool-only daily turn cap, because `usage_policy.py` has no rate meter. Free gets a small daily cap. Subscription gets a larger one and the higher band when a member in that band is healthy. Over the cap, the turn waits or tells the person, the same way seats queue. It does not drop the turn. A member that returns 429 or a daily refusal uses the cooldown `free-source-pooling` already describes, then the router tries another healthy member the account is allowed to use.
+
+Contributor incentives stay off in the first experiment. Later, a credit is the right shape: hours contributed become calls the contributor can spend, or a discount on the subscription they already pay through Stripe. Cash or mainnet `tiny` stays behind the 2026-04-29 test-currency boundary and the flag-off escrow path. Paying contributors by flipping `TINYASSETS_PAID_MARKET` reopens the actor fallback recorded in `paid-market-economy`.
+
+Fallback when the pool is thin is the person's own OpenRouter card or their ChatGPT or Claude subscription, which already exist. A platform-held OpenRouter key that answers when no volunteer is up would be the platform supplying a model. `owner_binding.py` and Direction forbid that unless the owner explicitly opens it as spent money. **Inference:** do not build that backstop in the first experiment.
+
+**Architecture it needs, and what exists.**
+
+| Piece | Needed for a pool | Already in the repo |
+|---|---|---|
+| Host agent on the contributor's machine | A process that stays up, advertises the model, and accepts work without the contributor pasting a URL each boot. | The host tray (`tinyassets/desktop/`) runs a daemon. It is not a model relay. `desktop-app/` is a window on the hosted app. |
+| Reverse tunnel or private attach | The droplet must reach a model that is not on the public internet, without the contributor leaving an open port. | Outbound HTTPS to a public address works. Private and loopback addresses are refused. `private-network-attach` is a proposal with no product code. |
+| Metering | Requests and tokens per renter and per contributor, so fair use and credits have a number. | OpenRouter usage cost has a decoder (`openrouter_usage_cost` in `agent_inference.py`). Chat-messages `usage` is best-effort and may be absent. Account policy has seats and storage only. |
+| Health | A member that is down, slow, or failing tools comes out of rotation. | `SourceHealth` remembers an auth failure until success. The host-pool heartbeat updates `updated_at` and is not imported by the daemon. |
+| Capability advertising | Tools, context, and wire, from a probe, shown to the router. | The connect form sends `tools: true` and context `32768`. `provider-capability-negotiation` is for auxiliary metadata such as voice on the owner's current connection. It does not probe a model. |
+
+**Risks, added to the ones above.**
+
+| Risk | Evidence | Inference |
+|---|---|---|
+| Prompt privacy | The body is posted to the granted host. Free-source pooling refuses another owner's source so this does not happen now. | Every free and paid call on the pool is read by a stranger's process. The product has to say that in the connect and on the first turn. A host that logs prompts is outside the platform's control. |
+| Abuse | Grants are the authorization. The paid-market flag defaults off. | A free tier with no daily cap lets one account occupy every volunteer. Contributors can be asked to run someone else's disallowed traffic. Both need a cap and a way to pull a member out. |
+| Quality and latency | Tool turns require a tool codec. A declared `tools: true` is not a test. Seats queue rather than fail. | A small local model that rejects tools cannot be the free tier. A model that accepts tools slowly makes the free tier feel broken. The subscription band is meaningless until a probe separates the two. |
+| Legal and payments | Test tiny only, until the 2026-04-29 boundary is opened. Stripe checkout exists as a route. Escrow identity can fall back to an env user. | Hosting other people's prompts on a volunteer machine, and paying that volunteer, are decisions the founder has not signed in this note. **TODO:** no lawyer reviewed this, and live Stripe charges were not checked. |
+| Cold start | OpenRouter's recorded free path is 50 `:free` requests a day on the user's own key. The pool has zero members. | With few hosts the free experience is the OpenRouter card people already have. Promising "community hosted" before several models pass a tool probe leaves the free tier empty the first evening a volunteer turns their machine off. |
+
+**Smallest first experiment.** Do not build a host agent, a tunnel service, credits, or a platform OpenRouter key.
+
+1. One volunteer connects a model they already expose over public HTTPS, using the current "Your own server" form, on their own account. The pass is one real agent turn that uses tools. If the model rejects tools or `stream`, stop. `model_policy.py` will not select that model for a turn that needs tools. A text-only turn can still run. The free tier people would feel is the tool turn, so a model that fails it is not the free tier.
+2. If that turn works, one other test account receives a grant the volunteer approves, capped to a handful of turns a day, with a sentence on the turn that the prompt is leaving the platform for that host. No payment. When the volunteer is offline, the test account is told to use their own OpenRouter or ChatGPT connection. Nothing automatically spends platform money.
+3. Write down latency, whether tools succeeded, and what the volunteer could see of the prompt. That note decides whether a second volunteer is worth a host agent.
+
+Success is one stranger's agent turn on one volunteer's model, with the privacy line shown, and a clear stop when the machine is off. Failure of tools or a refusal to show the privacy line ends the experiment. The host client, reverse tunnel, quality bands, and credits are the project after that evidence, and they are spec-first because they change authority and, later, money.
 
 **Do not prune these pieces in the same PR that would build this.** They are the only map of the old money and host-share behavior. Building the marketplace is its own change: public grant shape, storage, authority, and money, which is spec-first under `AGENTS.md`.
 
