@@ -10,7 +10,7 @@ The owner's intent, clarified 2026-10-11: `tiny` is payment for creator work and
 
 Nothing pays anyone in `tiny` today. **Evidence:** the fine-print page says no currency moves, and no module sends Destiny or `test tiny`. The legal page describes a Base Sepolia `test tiny` rail that the code does not run.
 
-**Inference, the low-risk order.** Accrue what the platform owes as an append-only payable, in cents of subscription cash actually collected. That payable is not a token and not a balance the platform holds for the user. When counsel and the 2026-04-29 phase opening allow a settlement, the same ledger closes the payable in one of two ways: a transfer to a wallet the user proved they control, or retirement of the payable against a platform charge. After a wallet transfer the user can hold the token, move it, or spend it by signing a transfer back. The platform does not keep a key to those tokens and does not keep a withdrawable balance of them.
+**Inference, the low-risk order.** Accrue what the platform owes as an append-only payable, in cents of subscription cash actually collected. That payable is not a token and not a balance the platform holds for the user. Wallet payout is the settlement that matters. In-app spend does not give a heavy earner anywhere to put the balance. The instrument that does, without issuing a new token, is an existing dollar stablecoin bought with revenue the platform has already collected and sent to a wallet the user controls. Issuing `tiny` stays off that path. The owner cannot afford a lawyer; this note is not a substitute for one, and the staging below is chosen to avoid a new legal object rather than to declare the payout legal.
 
 ## What the name is (evidence)
 
@@ -160,22 +160,68 @@ Daily accrual can be a row in this ledger. A daily on-chain send is a separate c
 
 **Compute work.** The token shape does not change the 2026-10-11 prompt rule. A host whose machine runs another user's prompt is not a payable. A public-task pool still sends plaintext to a third-party host. A machine serving its own account is bring-your-own-model, and there is no payout for running one's own work. A future workload that never carries user content would be a new spec before any compute row is written. Until then the ledger has no compute-reward source.
 
+## Sink and demand (owner, 2026-10-11)
+
+Wallet payout is the point of the program. In-app spending is a weak sink. Someone who hosts a lot of compute, or whose published pieces are used a lot, already has a subscription, some storage, and a seat cap. Those are small bills. The rest of what they earned would sit in the app with nothing to buy. **Inference** from that observation and from what the product actually sells.
+
+| Sink the owner named | What exists (evidence) | Does it absorb what was issued? (inference) |
+|---|---|---|
+| Own subscription | `stripe_adapter.py` can start Checkout. The fine-print page describes premium as the same product with higher allowances, names $20 a month, and says the site has no upgrade control yet. **TODO:** live charges were not checked. | A capped personal bill. Someone who earns more than their own subscription keeps the surplus. The people paid the most are the ones whose work others use, so they are the ones most likely to be over that bill. |
+| Cloud storage | The tier table is 2 GiB free and 20 GiB paid (`usage_policy.py`). There is no second product for buying more after that. | One step, then it stops. A host who does not store much never spends it. |
+| Concurrent runs | 3 seats free, 8 paid. Over the cap, work waits. It is not a meter the user buys down. | Same shape as storage: one step up, then nothing left to purchase. |
+| Buying other creators' shapes | No purchase flow. The creator-revenue-share proposal takes a cut of subscription revenue the platform already collected. It is not a shop where one user pays another in `tiny`. | If it were built as a shop, a purchase moves a balance from buyer to seller. The total owed to creators does not fall. Net publishers still accumulate. |
+| Tipping | No tip action in the app or the payment modules. | A tip would move a balance between users. It does not retire supply. |
+| Compute purchases | The platform has no model of its own (ADR-006). Another user's machine must not see this user's prompts. No compute shop exists. | There is no sink here today. A market in which hosts are the sellers and also the people with nothing to buy does not clear inside the app. |
+
+**Inference.** In-platform sinks do not balance issuance. Subscription, storage, and seats are the only real things to buy, they are small and capped, and they are already priced in dollars through Stripe. Shapes and tips, if added, recirculate. Compute cannot be sold under the prompt rule. A closed `tiny` balance therefore piles up with the heaviest earners, which is the failure the owner described. A wallet payout in a coin that already spends in the outside economy is what gives that surplus somewhere to go. A wallet payout in a new `tiny` that has no outside market recreates the same pile, one hop later, in the user's wallet.
+
+## Staged payouts, without a new token and without a lawyer on retainer
+
+This is not legal advice. The owner cannot afford counsel. That constraint is a reason to avoid inventing a token, a DAO, or a custom issuance structure. It is not a finding that a payout is permitted. The stages below use money the platform already collected and an asset someone else already issues. They still leave tax reporting, sanctions screening, and the question of whether sending a stablecoin is money transmission. Those do not disappear because the coin is familiar. Staying small, paying only from collected revenue, and not advertising a new coin is the practical bound while counsel is unaffordable. The first time the program is large enough to pay for a lawyer is the time to get one, and it is the earliest time to consider issuing `tiny`.
+
+| | Pay in an existing stablecoin (USDC on Base is the one the settlement code already names, as testnet USDC) | Issue `tiny` |
+|---|---|---|
+| What the user receives | Dollars, in their own wallet, spendable anywhere USDC is accepted. | A new transferable token. Spendable inside TinyAssets, and outside only if someone else wants it. |
+| Where the money comes from | A share of Stripe revenue actually collected, after fees, refunds, and chargebacks. The platform buys USDC with that cash and pushes it. No mint. | Either a mint, or the platform buys `tiny` on the market with the same cash. A mint creates supply with no outside buyer. A buy is the steady buy-pressure design §9.1 asked counsel about. |
+| Sink problem | The outside economy is the sink. A heavy host does not need to buy more GiB. | Unsolved. In-app sinks are the list above. No outside demand exists in this product. |
+| New legal object | No new asset. The remaining questions are about sending an existing payment token and about information reporting. | A new transferable token paid for other people's use of the product, which is the classification question. The legal page's "not a security" line does not answer it. |
+| Custody | Same rule either way: push to an address the user proved, do not keep a balance for them. A short batch of USDC in a founder-signed wallet is platform cash in transit, and it should be emptied by the send. | Same, plus the temptation to leave `tiny` "in the app" because there is nowhere else for it to go. That would be the custody the owner wants to avoid, and the pile the sink problem creates. |
+| What has to be true first | Collected revenue, a ledger, a destination address, a record of the send. | All of that, plus a reason someone who is not being paid would hold the token, plus a lawyer. |
+| Honest cost | Crypto sends can still be regulated activity. Card-to-stablecoin for third parties can conflict with a processor's rules (design §9.4). Users without a wallet are unpaid until they have one. Gas and a manual send are real. | The brand matches the site. The economics do not. Issuing it before there is outside demand pays people in something they cannot use, which is the weak in-app program with extra steps. |
+
+**Inference.** Stablecoin from real revenue is the wallet payout that matches the economics. Issuing `tiny` does not, until something outside this app creates demand for it. That demand is not subscriptions, storage, seats, tips, or shape purchases.
+
+A dollar payout to a bank account is even smaller as a new structure, and it spends in the same outside economy. It is not a crypto wallet. Offer it beside USDC for people who do not want a wallet. Do not build a third instrument.
+
+## Lowest-risk way to pay contributors from revenue share
+
+**Inference, and not legal advice.** "Lowest risk" here means the smallest new structure that still gets money out of collected revenue into the contributor's own hands. It does not mean the send has been cleared.
+
+1. **Pay only cash that arrived.** The pool is a founder-set share of Stripe charges that have cleared refunds and chargebacks. The proposal's undecided range was 10–30%, with 20% as a sketch. Start at the low end of what the founder can actually send. If nothing was collected, nobody is paid. Do not mint the difference.
+2. **One ledger, in cents.** The row is "this account is owed this many cents for this period." It closes when USDC (or a bank payment of the same cents) lands in their hands. It does not close into a `tiny` balance.
+3. **Creators first.** The meter is seat time of a published piece, once that piece can be named. Self-use pays nothing. This is the creator-revenue-share proposal's Phase A math, settled in USDC instead of in `tiny`.
+4. **Compute hosts are not in this payout.** A machine that saw another user's prompt is not a payable, whatever the coin. The sink story is a second reason: those hosts are who would accumulate an in-app balance. Solving the sink with USDC does not make that workload acceptable.
+5. **Push, don't hold.** The user proves an address. The founder sends the batch and does not leave their share sitting in a platform wallet. No withdraw button, because there is no balance left behind.
+6. **Records a person can keep without a law firm.** Who was paid, how many cents, which period, which transaction. Ask for a tax form before the first real send rather than after the total gets large. Check the destination against the public sanctions list before the send, and skip the send if it matches. The legal page's claim that Chainalysis already does this is still false; a manual check is not that product, and it is the check that fits a program too small to buy one.
+7. **Do not issue `tiny`, do not flip `TINYASSETS_PAID_MARKET`, and do not turn the legal page's test rail on.** Those create the custom structure this stage exists to avoid.
+8. **Revisit `tiny` only when both are true:** holders who are not payees want it for a reason that is not "we paid them in it," and the program can pay for counsel. Until then the published Base contract stays reference-only.
+
 ## Recommended minimal path
 
-**Inference.** Counsel is required before step 3. Steps 1 and 2 do not move a token.
+**Inference. Not legal advice.** The owner cannot afford counsel. Steps 1 and 2 move no money. Step 3 is a USDC send of collected revenue, not an issuance of `tiny`. It is the lowest-structure wallet payout this note can describe, and it is not a clearance.
 
-1. **One payable ledger, no token yet.** Append-only micro-USD rows from cash actually collected. No wallet field required to accrue. No TINY price. No withdraw button. No "earn crypto" string. This is Phase A of `creator-revenue-share`. It is not built.
-2. **Creator rows only, and only once D9 can name the piece.** One record per released seat. Compute rows stay absent. Leave `TINYASSETS_PAID_MARKET` off. Do not write these rows into `settlement_ledger.py`. Do not revive the 2026-07-08 NAV mint.
-3. **Settlement, only after counsel and the phase opening.** The 2026-04-29 note, the creator-revenue-share spec, and the legal page change in that same change. Two closes, both on the ledger from step 1: `settled_in_kind` (no chain), or `settled_on_chain` to an address the user proved, from a founder-signed Safe that does not retain per-user balances, with sanctions screening already running and tax identity already collected. The first on-chain rehearsal, if counsel allows one, uses a new Sepolia contract, not `0x0BB570…` on Base. Mainnet chain id 8453 stays off the allowlist until that opening.
-4. **Spend after the user holds tokens.** A user-signed transfer in, recorded on the same ledger. No deposit account and no path that sends those tokens back as a withdrawal.
-5. **Copy later, with counsel.** The legal page matches the fine print until step 3 is real: no currency moves, the published contracts are reference-only, KYC and OFAC screening are not implemented.
+1. **One payable ledger, in cents.** Append-only rows from cash actually collected. No `tiny` price, no in-app balance, no withdraw button. This is Phase A of `creator-revenue-share`. It is not built.
+2. **Creator rows only, and only once a published piece can be named.** One record per released seat. Compute rows stay absent. Leave `TINYASSETS_PAID_MARKET` off. Do not write these rows into `settlement_ledger.py`. Do not revive the 2026-07-08 NAV mint.
+3. **Pay the cents out in USDC to a wallet the user proved, or in dollars to a bank.** Founder-signed, batch emptied, sanctions list checked first, tax form collected before the first send. In-kind retirement is optional and does not fix the sink problem. Do not mint `tiny` and do not buy the published Base contract.
+4. **Issue `tiny` only later,** when someone other than a payee has a reason to hold it and the program can pay for counsel. Until then the 2026-04-29 boundary stays closed.
+5. **Copy, in a later change.** The legal page matches the fine print until a payout is real: no currency moves, the published contracts are reference-only, and the KYC and OFAC products named on the page are not running.
 
 ## Where counsel is needed
 
-Not legal advice. Do not treat a recommendation above as permission to send a token.
+Not legal advice. The owner cannot afford a lawyer now, so the path above avoids a new token instead of waiting on a custom legal structure. That is a staging choice. It is not a conclusion that a USDC payout, a bank payout, or a later `tiny` issuance is permitted. Do not treat this note as permission to send money. When the program can pay for advice, the questions are:
 
-- Whether this transferable payment token is a security, a commodity, a digital tool, or something else, including the effect of the platform buying it with subscription revenue (design §9.1). The page's "not a security" line is not an answer.
-- Whether buying and delivering it, even into a wallet the platform does not control, is money transmission or a crypto-asset service (design §9.2). Whether the in-kind close avoids that step.
+- Whether sending USDC, bought with card revenue, to a contributor's wallet is money transmission or conflicts with the card processor's rules (design §9.2 and §9.4). This is the question the staged plan does not answer.
+- Whether a later `tiny` is a security, a commodity, a digital tool, or something else, including the effect of the platform buying it with subscription revenue (design §9.1). The page's "not a security" line is not an answer.
 - Whether a short-lived batch in a founder-signed Safe is custody of platform funds only, and which product behaviors (a withdrawable app balance, a deposit address, per-user tokens left in the Safe) would be custody of user funds.
 - Tax forms, the reporting threshold, withholding, and fair-market value on the transfer date (design §9.3). Whether a same-brand testnet token creates a reporting or disclosure duty.
 - The KYC threshold and the sanctions screen that must exist before a send. The page's $1,000 / Sumsub / Chainalysis sentences are not that program.
