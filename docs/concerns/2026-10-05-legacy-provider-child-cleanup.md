@@ -15,7 +15,7 @@ charged until relocated. Existing native sessions and credentials must survive.
 `scripts/cleanup_provider_child.py` defaults to a read-only inventory. It moves
 only one explicitly selected home's old subtree to a private, same-filesystem
 archive outside **all** universe storage. It never deletes files. Design and
-refusal matrix: `docs/design-notes/2026-10-05-provider-child-cleanup.md`.
+refusal matrix: `2026-10-05-provider-child-cleanup.md (archived in git)`.
 
 Operator procedure (not executed in this lane):
 

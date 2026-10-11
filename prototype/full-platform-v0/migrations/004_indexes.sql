@@ -1,5 +1,5 @@
 -- Track A — Hot-path indexes for daemon-economy first-draft.
--- Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §6.
+-- Spec: 2026-04-19-track-a-schema-auth-rls.md (archived in git) §6.
 -- Idempotent (CREATE INDEX IF NOT EXISTS).
 
 -- nodes — owner lookup + domain/status listing.

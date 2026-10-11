@@ -95,5 +95,5 @@ Normal guarded merge #3577 landed 8f1b47609330f06924246a692740448836672a48
 at 2026-09-09T04:53:16Z. Image build 34312713141 started for that revision.
 Deployment 34312901542 subsequently succeeded at 04:57:38Z, with authenticated
 canary and protected containment proof for 8f1b47609330. Full dated commands,
-scope and rollback: `docs/reviews/2026-09-08-engine-edit-subcap-proof.md`.
+scope and rollback: `2026-09-08-engine-edit-subcap-proof.md (archived in git)`.
 Owner-rendered acceptance remains a separate open gate.

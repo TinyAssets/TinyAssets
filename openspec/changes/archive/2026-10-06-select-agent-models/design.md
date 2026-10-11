@@ -142,7 +142,7 @@ AgentCodec uses that adapter directly; historical function imports delegate only
 for compatibility. Authority, source admission, tools and cost checks stay outside
 translation. This internal boundary does not publish a new owner-authored wire
 schema or promise unknown message formats/CLIs. Reviewed implementation and
-frozen compatibility proof: docs/reviews/2026-09-11-agent-envelope-proof.md.
+frozen compatibility proof: 2026-09-11-agent-envelope-proof.md (archived in git).
 
 ## Open Questions / pre-build gate
 
@@ -162,7 +162,7 @@ and exact-head review remain. This does not complete arbitrary CLI support.
 Implement the internal advisory ordering kernel first, with no API, storage,
 clock, network, dispatch or credential imports. Independent Claude review ADAPT
 and lead disposition are recorded in
-`docs/reviews/2026-09-09-model-policy-shape-review.md`. The broad authority review
+`2026-09-09-model-policy-shape-review.md (archived in git)`. The broad authority review
 timed out without a verdict; public/storage/authority changes remain gated.
 
 Inputs separately carry current selection, saved default and accepted fallbacks.

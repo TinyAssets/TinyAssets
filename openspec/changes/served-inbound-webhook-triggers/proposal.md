@@ -1,6 +1,6 @@
 # Served inbound webhooks: the app agent can give its owner a trigger URL
 
-Capability C16 (`docs/reviews/2026-09-24-capability-gap-audit.md`, PR #3947):
+Capability C16 (`2026-09-24-capability-gap-audit.md (archived in git)`, PR #3947):
 scheduled and event-triggered runs fire as the owner with no host online.
 
 ## Why

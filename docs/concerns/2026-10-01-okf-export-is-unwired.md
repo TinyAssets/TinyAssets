@@ -21,7 +21,7 @@ engine tools, scripts, deploy and packaging and found no caller either.
   requirements).
 - No user surface calls it. The dark-code sweep (#4213) found it test-only. It was kept because of PLAN Rule 4
   ("custody must stay exportable", now ADR-018): deleting it would drop the principle silently.
-- `docs/reviews/2026-09-24-capability-gap-audit.md` C4 ("export your own data and workflows") is the user-facing
+- `2026-09-24-capability-gap-audit.md (archived in git)` C4 ("export your own data and workflows") is the user-facing
   form of the same gap.
 
 ## Resolution

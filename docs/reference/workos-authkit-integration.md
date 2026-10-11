@@ -1,7 +1,7 @@
 # WorkOS AuthKit ↔ MCP Resource Server — implementation recipe
 
 Pointer-loaded reference (ADR-002) for the founder-identity build. Design + decision
-live in `docs/design-notes/2026-06-26-founder-and-universe-identity.md` §3.0; this doc
+live in `2026-06-26-founder-and-universe-identity.md (archived in git)` §3.0; this doc
 is the *how* for slice 1. Synthesized from WorkOS's own 2026 docs (sources at bottom).
 
 > **Status:** research synthesis (Claude, 2026-06-26); **live values + AS metadata resolved

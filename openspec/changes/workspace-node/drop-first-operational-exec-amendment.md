@@ -27,7 +27,7 @@
 
 # Drop-first operational exec amendment
 
-Approved shape. `docs/reviews/2026-09-20-drop-first-ops-shape-disposition.md`
+Approved shape. `2026-09-20-drop-first-ops-shape-disposition.md (archived in git)`
 carries the coordinator disposition, the `DISAGREE_EVIDENCE` correction to the
 legacy-entry predicate, and the opposite-family compatibility review's
 `APPROVE` with two binding conditions. Both conditions are implemented here.
@@ -213,7 +213,7 @@ this correction.
 
 ## Native evidence (root, 2026-09-21) — local fixtures, not production
 
-`docs/reviews/2026-09-21-drop-first-native-local-proof.md` is the root
+`2026-09-21-drop-first-native-local-proof.md (archived in git)` is the root
 coordinator's verbatim artifact, copied into this branch. Source candidate is
 this exact head. In one sentence each, what it establishes and what it does not:
 

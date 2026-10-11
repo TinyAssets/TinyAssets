@@ -4,7 +4,7 @@ The founder's standing goal (2026-09-24): every basic capability a user should
 have, whether or not a current user is blocked by it, carried until it is
 **cleared**. Cleared means deployed, succeeds through the real app,
 regressions green and spec synced. Derived from PLAN.md and specs in
-[the gap audit](../../../docs/reviews/2026-09-24-capability-gap-audit.md) (C-numbers).
+the gap audit (archived in git) (C-numbers).
 Detailed per-slice evidence while Codex worked lives on the unpushed branch
 `codex/connect-cross-user-nodes`
 (`openspec/changes/consolidate-platform-resource-policy/remaining-work.md` and

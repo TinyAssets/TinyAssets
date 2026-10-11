@@ -1,6 +1,6 @@
 """Host dashboard and MCP inspect surface tests.
 
-Covers docs/specs/phase_h_preflight.md §4.4:
+Covers phase_h_preflight.md (archived in git) §4.4:
 
 - `daemon_overview` action (8)
 - `set_tier_config` action (6)

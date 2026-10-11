@@ -484,7 +484,7 @@ reader dependency and must not be wholesale shipped from branch ancestry.
 ## Explicit admitted-origin recovery checkpoint (2026-09-20)
 
 Full independent Fable96232 ADAPT is retained in
-`docs/reviews/2026-09-20-admitted-origin-shape-review.md`; root accepted the
+`2026-09-20-admitted-origin-shape-review.md (archived in git)`; root accepted the
 corrections recorded in `origin-recovery-amendment.md` before implementation.
 Added only the reviewed origin kind/version/options fields with additive legacy
 defaults and exact immutable replay comparison. Direct v1 keeps original typed

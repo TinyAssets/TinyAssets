@@ -20,9 +20,9 @@
 Design + approved amendment + delta scenarios:
 `drop-first-operational-exec-amendment.md` (staging preface at its head);
 coordinator disposition and opposite-family compatibility review (both
-2026-09-20) in `docs/reviews/2026-09-20-drop-first-ops-shape-disposition.md`;
+2026-09-20) in `2026-09-20-drop-first-ops-shape-disposition.md (archived in git)`;
 root native proof on local fixtures 2026-09-21 in
-`docs/reviews/2026-09-21-drop-first-native-local-proof.md`. Shape APPROVED; no
+`2026-09-21-drop-first-native-local-proof.md (archived in git)`. Shape APPROVED; no
 further shape review needed. The reviewed source is preserved at
 `84c116ae45992a974f6ca9625131b42509b15ae5` (PR #3894, draft); its 27-file
 tree carried 13 release-critical paths against the scope guard's hard cap of 8,
@@ -69,4 +69,4 @@ are the release gate for this work, not separate delivery work.
 
 ## 3. Land
 
-- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `docs/reviews/2026-09-21-drop-first-native-local-proof.md`; installed production ownership/mode and legacy-identity version verified, managed-bootstrap proof remains local), CI image build of slice 1 and live `/usr/local/libexec/ta-op version` on the deployed image (done 2026-09-21, PR #3895), then slice 2 (live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`); installed-helper delta synced 2026-09-20 (slice 1) and the three slice-2 deltas synced 2026-09-21; still to do: sync the remaining workspace deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
+- [ ] 3.1 Release gate and land: native proof per `deploy/native/NATIVE-TEST-PLAN.md` (root ran rows 1–16 and 18 on local fixtures 2026-09-21, row 17 on a local fixture install only — `2026-09-21-drop-first-native-local-proof.md (archived in git)`; installed production ownership/mode and legacy-identity version verified, managed-bootstrap proof remains local), CI image build of slice 1 and live `/usr/local/libexec/ta-op version` on the deployed image (done 2026-09-21, PR #3895), then slice 2 (live `ta-op pulse` healthcheck green, public canary, rendered `ui-test`); installed-helper delta synced 2026-09-20 (slice 1) and the three slice-2 deltas synced 2026-09-21; still to do: sync the remaining workspace deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`

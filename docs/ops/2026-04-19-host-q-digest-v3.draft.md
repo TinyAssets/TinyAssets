@@ -34,7 +34,7 @@ The dev queue and host-decision queue are now structured around four active work
 
 **Open caveat:** Do NOT resume affected daemons (specifically the universes that ran during the unbound-window) until dev ships #49 (Fix E DB-derivative cleanup). The orphan facts in `story.db::extracted_facts` and `story.db::character_states` from the drift-window are still on disk; resuming a daemon now would pull them as canonical context. Time-bomb-coupled gap is still open until #49 lands.
 
-**Reference:** `docs/audits/user-chat-intelligence/2026-04-19-mission26-sporemarch-echoes.md` §1 + §4 (cross-session pattern); `docs/audits/2026-04-19-schema-migration-followups.md` §3.4 (the time-bomb-coupling).
+**Reference:** `2026-04-19-mission26-sporemarch-echoes.md (archived in git)` §1 + §4 (cross-session pattern); `2026-04-19-schema-migration-followups.md (archived in git)` §3.4 (the time-bomb-coupling).
 
 ---
 
@@ -47,7 +47,7 @@ The dev queue and host-decision queue are now structured around four active work
 2. The **self-auditing-tools** principle as a Cross-Cutting Principle — trust-critical tools include their own caveats (structured evidence + structured caveats + chatbot composes narrative).
 3. The **engine/domain seam is named** — every action lives in exactly one of `tinyassets/api/` or `domains/<name>/api/`. No third location.
 
-**These are load-bearing for refactor dispatch** (hotspots #1-#3 in `docs/audits/2026-04-19-project-folder-spaghetti.md`) AND for the §11 Track Q decision in Q5 below AND for engine/domain separation (#11 design note).
+**These are load-bearing for refactor dispatch** (hotspots #1-#3 in `2026-04-19-project-folder-spaghetti.md (archived in git)`) AND for the §11 Track Q decision in Q5 below AND for engine/domain separation (#11 design note).
 
 **Choices:**
 - **(a) Approve as-is.** Replace PLAN.md with the draft. R2 bid-package promotion (pre-staged at `docs/exec-plans/active/2026-04-19-bid-package-promotion.md`) executes as the first canonical Module Layout commit. R7 storage split scoping (in nav flight) follows.
@@ -228,4 +228,4 @@ Per host-issued directive ("you reason through ambiguities to a recommendation; 
 
 - Whether digest v3 promotes immediately or waits a longer cycle. (Lead decides at promotion time.)
 - The 11+ Q-fp-residual full-platform §11 questions (Q11-Q34 in the full-platform note). Same pre-answering pass should apply to those once Q1-Q3 ratify, but those are deferred to v4 per §"Full-platform §11 residual" above.
-- Whether to fold STATUS.md concern-trim recommendation (from `docs/audits/2026-04-19-concerns-post-session.md` §5) into the same conversation. (Lead decides per host-managed concerns rule.)
+- Whether to fold STATUS.md concern-trim recommendation (from `2026-04-19-concerns-post-session.md (archived in git)` §5) into the same conversation. (Lead decides per host-managed concerns rule.)

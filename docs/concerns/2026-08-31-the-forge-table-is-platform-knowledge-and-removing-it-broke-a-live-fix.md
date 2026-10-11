@@ -24,7 +24,7 @@ consent read as missing.
 Hours later, on `claude/labeled-credential-fields`, I **deleted that table** —
 and rewrote #2753's own regression test (`test_git_host_is_not_the_api_host.py`)
 to assert the opposite. Caught by a Codex review before it landed
-(`docs/reviews/2026-08-31-codex-labelled-credential-fields.md`, R3), restored
+(`2026-08-31-codex-labelled-credential-fields.md (archived in git)`, R3), restored
 from `main`.
 
 ## The argument I made, which is not worthless

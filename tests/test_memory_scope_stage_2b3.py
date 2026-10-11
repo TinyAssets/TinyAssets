@@ -1,6 +1,6 @@
 """Memory-scope Stage 2b.3 — Stage-1 assertion extension + flag + ACL fixture.
 
-Exec plan: ``docs/exec-plans/completed/2026-04-16-memory-scope-stage-2b.md``
+Exec plan: ``2026-04-16-memory-scope-stage-2b.md (archived in git)``
 §3 (assertion extension), §4 (flag gating), §5 (private-universe fixture).
 
 Stage 2b.3 ships three guarantees tests here pin down:

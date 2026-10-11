@@ -70,6 +70,6 @@ platform's own authority model does not allow.
 
 ## Related
 
-- `docs/reviews/2026-08-27-codex-paste-deposit-review.md`
+- `2026-08-27-codex-paste-deposit-review.md (archived in git)`
 - `docs/concerns/2026-08-27-credential-deposit-refusals-are-unobservable.md`
 - `docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md`

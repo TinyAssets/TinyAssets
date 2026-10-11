@@ -1,6 +1,6 @@
 """Track A — 6 load-bearing invariants.
 
-Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §8.
+Spec: 2026-04-19-track-a-schema-auth-rls.md (archived in git) §8.
 
     1. Schema compiles cleanly + RLS policies load.
     2. RLS enforcement at DB layer (non-owner cannot SELECT owned rows).

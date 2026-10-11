@@ -3,7 +3,7 @@
 The founder's app agent could not add a cross-family review step. Its raw
 HTTP POST to OpenRouter was refused for missing accounting, and its "Codex
 review" step ran on the default Claude model. The cause is structural, not a
-missing patch (`docs/design-notes/2026-10-11-harness-architecture-audit.md`):
+missing patch (`2026-10-11-harness-architecture-audit.md (archived in git)`):
 
 - **Six model-call paths**: native CLI turns, the HTTP agent turn,
   `call_with_policy` for workflow prompts, `call_provider` for platform

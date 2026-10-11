@@ -184,7 +184,7 @@ release into one `gh workflow run` — but nothing waits on it.
 `5c6e4844-2ca2-438c-8aec-a189efb0ebb2` for iOS 1.0 / build 1.0.0 (3).
 App Store Connect shows **Waiting for Review**. On approval, select **Release This
 Version** and verify that the United States product page offers the install.
-Receipt: `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
+Receipt: `2026-09-09-ios-app-review-submission-receipt.md (archived in git)`.
 
 **Apple Developer Program membership is active.** Checked 2026-09-03, not inferred from
 the purchase receipt: the signed-in portal exposes App Store Connect and Certificates,

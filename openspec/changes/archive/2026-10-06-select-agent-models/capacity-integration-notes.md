@@ -4,7 +4,7 @@ Implementation within existing tasks2.2/2.3, not a new proposal or deployed clai
 The source-derived shape received opposite-family review before implementation.
 Scoped candidate continuation is now built locally; public policy consumption
 and the model picker remain unwired. Exact964c58f2 implementation independently
-APPROVE417s; follow-ups retained in docs/reviews/2026-09-10-model-capacity-review.md.
+APPROVE417s; follow-ups retained in 2026-09-10-model-capacity-review.md (archived in git).
 
 Official sources read September10 05:56UTC:
 
@@ -83,5 +83,5 @@ after the known stop-hook recap.13 composition tests independently passed5.05s.
 
 Local implementation verification September10 2026: 52 focused tests pass;
 broader 16-file group passes515 Windows/515 actual Docker Linux, zero skips.
-See docs/reviews/2026-09-10-model-capacity-proof.md. No provider call, live tool
+See 2026-09-10-model-capacity-proof.md (archived in git). No provider call, live tool
 effect, deploy or picker completion is claimed by these synthetic composition tests.

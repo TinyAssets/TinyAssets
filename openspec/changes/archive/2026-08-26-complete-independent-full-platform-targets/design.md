@@ -1,6 +1,6 @@
 ## Context
 
-`docs/audits/2026-07-22-openspec-full-coverage-audit.md` classifies four
+`2026-07-22-openspec-full-coverage-audit.md (archived in git)` classifies four
 independent target groups as absent from both canonical as-built specs and
 complete active changes. Their primary provenance is the integrated
 full-platform architecture (§§5, 8, 13, 14, 24, 26, 27, 30, 32, and 33) plus

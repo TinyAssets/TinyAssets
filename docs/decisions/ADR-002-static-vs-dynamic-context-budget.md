@@ -21,7 +21,7 @@ This repo had the split in practice but never as a *reviewed* decision, and the
 always-loaded payload had grown unaudited: a 2026-04-28 cross-check measured
 `AGENTS.md` at ~17.6 KB; by 2026-06-24 it had tripled to ~56 KB with no
 guardrail noticing. Basis:
-`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`
+`2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md (archived in git)`
 (R4 / context-engineering).
 
 ## Decision

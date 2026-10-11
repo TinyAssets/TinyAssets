@@ -18,7 +18,7 @@
 
 The ratified TINY spec already frames a mind as a personification — §3 *"Tiny = mind #0 … dogfooding how anyone personifies their own intelligence,"* §9 the voice engine, §7 the soul/org-chart, §1 "summon a mind." What it does not yet state is the **interaction-layer invariant**: that every surface interaction with a universe is that universe's personification acting, plus the behavioral defaults (embody/first-person, OAuth→persona binding, visitor governance, surface modulation). Host directive 2026-06-24 supplies these and resolved the forks: embody (first person); the mind IS the personification (invariant, not a new organ); visitor persona is a composable default over a substrate floor.
 
-Codex cross-provider review (2026-06-25, `docs/audits/2026-06-25-universe-personification-codex-review.md`): **ADAPT** — direction right, but the draft left security + host-memory boundaries *prompt-enforced*, which is not a real boundary. The 7 adaptations below are folded.
+Codex cross-provider review (2026-06-25, `2026-06-25-universe-personification-codex-review.md (archived in git)`): **ADAPT** — direction right, but the draft left security + host-memory boundaries *prompt-enforced*, which is not a real boundary. The 7 adaptations below are folded.
 
 This sits above the brain (`brain-canonical-store`, PR #1369): the brain produces the **authorized** assembled view; the personification governs how that already-authorized view is voiced and to whom. Soul (== universe brain, per the prior host ruling) supplies governance; the personification is the named interaction projection of the whole mind.
 

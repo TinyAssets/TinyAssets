@@ -19,8 +19,8 @@ saved September9 app acknowledgment; September21's consolidated five-control
 reply also confirms accurate cancelled-run/unstarted-node status. The delivery
 change is archived at openspec/changes/archive/2026-09-21-close-workflow-control-gaps.
 This is not a reason to assume cancellation is still only advisory. Evidence:
-docs/reviews/2026-09-09-workflow-control-gaps-proof.md and
-docs/reviews/2026-09-21-served-node-policy-deployment.md. The broader jail-descendant
+2026-09-09-workflow-control-gaps-proof.md (archived in git) and
+2026-09-21-served-node-policy-deployment.md (archived in git). The broader jail-descendant
 and cleanup proof below remains separate, not closed by between-node cancellation.
 
 Keep remaining proof precise: this directed app reply and local Windows child

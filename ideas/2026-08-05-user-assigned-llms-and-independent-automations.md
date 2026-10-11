@@ -7,7 +7,7 @@ change. Needs `openspec propose` before any implementation.
 returning `held / setup_required (missing: compute, model_access)` and a created
 automation stuck at `activation.state: stopped` with cloud-drain
 `runtime_instance_count: 0`. Evidence:
-`docs/audits/2026-08-05-mvp-end-to-end-walk.md`.
+`2026-08-05-mvp-end-to-end-walk.md (archived in git)`.
 
 ## Verbatim
 

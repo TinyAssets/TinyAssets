@@ -25,7 +25,7 @@ hash the owner id. Provenance columns (`contribution_events.actor_id`,
 ...) were left as history, so attribution is now split across two ids for one person, and the
 16 background-automation bindings still authorize the old principal until re-issued.
 
-Verdict and boundary: `docs/reviews/2026-08-29-codex-subject-migration-boundary.md`.
+Verdict and boundary: `2026-08-29-codex-subject-migration-boundary.md (archived in git)`.
 
 ## Why it matters
 

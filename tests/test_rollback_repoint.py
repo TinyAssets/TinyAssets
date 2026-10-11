@@ -1,6 +1,6 @@
 """Phase B post-rollback goal-canonical re-point tests (Task #22).
 
-Spec: docs/design-notes/2026-04-25-surgical-rollback-proposal.md §2.4 +
+Spec: 2026-04-25-surgical-rollback-proposal.md (archived in git) §2.4 +
 cross-DB refinement note in tinyassets/rollback.py module docstring.
 
 Covers:

@@ -1,7 +1,7 @@
 """The file_bug -> investigation auto-trigger is gone, and filing stays ordinary.
 
 The forward-trigger plan was retired at
-``docs/exec-plans/completed/2026-04-25-file-bug-wiring.md``; Hard Rule 15 (the
+``2026-04-25-file-bug-wiring.md (archived in git)``; Hard Rule 15 (the
 platform has no LLM, 2026-09-24) deleted the compatibility helpers
 themselves. These tests prove the helpers are absent and ``file_bug`` touches
 no queue or trigger state.

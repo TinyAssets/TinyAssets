@@ -18,7 +18,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Fly.io Machines deployed** at `min=2, max=8`, regions `ord` primary + `fra` secondary.
 - [ ] **Supabase Pro project provisioned** with daily backups enabled.
 - [ ] **Weekly pg_dump → R2 running + verified-restorable** within last 30 days (per §Data below).
-- [ ] **Plan-B self-host migration playbook rehearsed** at least once (per `docs/specs/2026-04-19-plan-b-selfhost-migration-playbook.md` §3.4).
+- [ ] **Plan-B self-host migration playbook rehearsed** at least once (per `2026-04-19-plan-b-selfhost-migration-playbook.md (archived in git)` §3.4).
 
 ## B. Identity + access
 
@@ -43,7 +43,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 ## D. Data
 
-- [ ] **All schema migrations from `docs/specs/2026-04-18-full-platform-schema-sketch.md` §1** applied cleanly on production Supabase.
+- [ ] **All schema migrations from `2026-04-18-full-platform-schema-sketch.md (archived in git)` §1** applied cleanly on production Supabase.
 - [ ] **`workflow_analytics` Postgres role** created + training-excluded fields access-revoked (per spec #25 §2.6).
 - [ ] **`training_excluded = true` structural enforcement verified** — any query as `workflow_analytics` role errors on training-excluded rows (smoke test green).
 - [ ] **Weekly pg_dump scheduled** + client-side-encrypted with `age` (per `SUCCESSION.md §3.2`).
@@ -62,7 +62,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 
 ## F. Moderation
 
-- [ ] **`docs/moderation_rubric.md` v1.0 merged** into `TinyAssets/` main branch.
+- [ ] **`moderation_rubric.md (archived in git)` v1.0 merged** into `TinyAssets/` main branch.
 - [ ] **Admin pool includes ≥2 `host_admin` mod_role rows** in production Supabase (not just in runbook — in the database).
 - [ ] **≥1 tier-3 volunteer mod recruited** + accepted rubric + granted `volunteer` mod_role.
 - [ ] **All 4 moderation tables** (flags/decisions/appeals + users ALTER) migrated.
@@ -102,7 +102,7 @@ Single authoritative gate. **Every box below MUST be checked before any public l
 - [ ] **Privacy policy live at `tinyassets.io/legal/privacy`**.
 - [ ] **Terms of Service live at `tinyassets.io/legal/terms`**.
 - [ ] **Privacy contract verified** against `docs/decisions/ADR-010-private-by-default.md` and the live chatbot instructions.
-- [ ] **`control_station` prompt rendered from the directive-relocation audit §3** in production MCP gateway (historical filename: `docs/audits/2026-04-18-universe-server-directive-relocation-plan.md`).
+- [ ] **`control_station` prompt rendered from the directive-relocation audit §3** in production MCP gateway (historical filename: `2026-04-18-universe-server-directive-relocation-plan.md (archived in git)`).
 - [ ] **DMCA counter-notice email address** published in ToS.
 - [ ] **Security report channel `security@tinyassets.io` monitored** + initial response SLA documented.
 

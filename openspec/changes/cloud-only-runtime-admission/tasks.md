@@ -130,7 +130,7 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
 
 ## September 23 deployed-slice evidence
 
-[Release and rendered acceptance](../../../docs/reviews/2026-09-23-cloud-admission-deployed-acceptance.md)
+Release and rendered acceptance (archived in git)
 records PR3919/042cdce8, exact-head cross-family approval, hosted Linux and
 Docker results, deployment35805988252 and the original rendered retest11.
 
@@ -152,7 +152,7 @@ retirement write boundary (`tinyassets/runtime_reconcile.py::_apply_plan`) now
 requires process admission; `main` reports the refusal through its existing
 sanitized JSON/exit-2 channel. Red-first and green evidence, with the exact
 commands and counts, is in
-[docs/reviews/2026-09-23-cloud-retirement-admission.md](../../../docs/reviews/2026-09-23-cloud-retirement-admission.md).
+2026-09-23-cloud-retirement-admission.md (archived in git) (archived in git).
 This closed `docs/concerns/2026-09-23-runtime-reconcile-retirement-ungated.md`
 (deleted in the same change) and synced one scoped maintenance requirement into
 the main spec. **Evidence class:** executable runtime proof for the retirement

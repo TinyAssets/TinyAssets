@@ -2,7 +2,7 @@
 
 Covers judge_run / list_judgments / compare_runs / suggest_node_edit /
 get_node_output against the acceptance criteria in
-``docs/specs/community_branches_phase4.md``.
+``community_branches_phase4.md (archived in git)``.
 """
 
 from __future__ import annotations

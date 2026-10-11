@@ -22,7 +22,7 @@ checks, and new-connector verification.
 ## PROBE-001 — Full-stack smoke (cutover acceptance)
 
 **Validated:** 2026-04-20 (DO-cutover acceptance mission)
-**Source audit:** `docs/audits/user-chat-intelligence/2026-04-20-do-cutover-acceptance.md`
+**Source audit:** `2026-04-20-do-cutover-acceptance.md (archived in git)`
 **Persona:** bare-curious-user (no persona framing; minimal context)
 **Connector URL under test:** `https://tinyassets.io/mcp`
 **Apex URL under test:** `https://tinyassets.io/` (Layer-1 wrapper requires HTTP 200)
@@ -98,7 +98,7 @@ paper on deep space population — can you walk me through it?
 **Current disposition:** SUSPENDED for public/anonymous use as of 2026-07-24;
 the prompt below is historical and MUST NOT be executed against public `/mcp`.
 
-**Validated:** code-fix landed 2026-04-28 (`_real_browser_probe` reimplemented as `claude_chat ask` subprocess + trace-block parser); still awaits host `--once` smoke + Task Scheduler `TinyAssets-Canary-L2` activation for live status. Freshness check 2026-05-01: `Get-ScheduledTask -TaskName TinyAssets-Canary-L2` returned no task. Original implementation (`lead_browser.navigate` + `claude_chat.send_and_wait`) referenced symbols that never existed — see `docs/design-notes/2026-04-19-layer2-canary-scope.md §Wiring runbook` for the recovery + API contract.
+**Validated:** code-fix landed 2026-04-28 (`_real_browser_probe` reimplemented as `claude_chat ask` subprocess + trace-block parser); still awaits host `--once` smoke + Task Scheduler `TinyAssets-Canary-L2` activation for live status. Freshness check 2026-05-01: `Get-ScheduledTask -TaskName TinyAssets-Canary-L2` returned no task. Original implementation (`lead_browser.navigate` + `claude_chat.send_and_wait`) referenced symbols that never existed — see `2026-04-19-layer2-canary-scope.md (archived in git) §Wiring runbook` for the recovery + API contract.
 **Source script:** `scripts/uptime_canary_layer2.py` (canary) + `scripts/claude_chat.py` (subprocess driver — `cmd_ask` is the canonical entry point).
 **Persona:** `uptime_canary` (dedicated automated persona; CDP profile at `C:\Users\Jonathan\.claude-ai-profile`).
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -299,7 +299,7 @@ PROBE-001/002 prove the daemon answers MCP. PROBE-004 proves a tool handler runs
 The invocation below is historical/internal evidence only; restore it only
 through an authenticated operator surface or after safe status projection.
 
-**Validated:** registration 2026-04-26 — script live since revert-loop spec landed; spec at `docs/design-notes/2026-04-23-revert-loop-canary-spec.md`. Scheduled in CI as the `revert_loop_probe` step in `.github/workflows/uptime-canary.yml`, runs every 5 min on the GHA cron after handshake + tool canaries pass.
+**Validated:** registration 2026-04-26 — script live since revert-loop spec landed; spec at `2026-04-23-revert-loop-canary-spec.md (archived in git)`. Scheduled in CI as the `revert_loop_probe` step in `.github/workflows/uptime-canary.yml`, runs every 5 min on the GHA cron after handshake + tool canaries pass.
 **Source script:** `scripts/revert_loop_canary.py`
 **Persona:** `revert-loop-canary` (automated; client name `revert-loop-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -381,7 +381,7 @@ Runs automatically on the `*/15 * * * *` cron schedule + manual `workflow_dispat
 
 ### Why this probe earns a catalog slot
 
-The 2026-04-19 P0 outage-postmortem (`docs/audits/2026-04-20-public-mcp-outage-postmortem.md`) §3 named "no out-of-band probe" as the load-bearing gap that allowed a 69-min silent outage. PROBE-001/002/004 all probe `/mcp` over HTTP; if the apex CNAME vanishes (NXDOMAIN), HTTP probes fail in distinguishable but similar-looking ways. PROBE-007 narrows diagnosis: a DNS-red without HTTP-red is a name-resolution / propagation issue; a DNS-red with HTTP-red corroborates a tunnel/dashboard-state regression. Distinct from `uptime-canary.yml` which probes Cloudflare-Worker-fronted HTTP — DNS-canary probes one layer below.
+The 2026-04-19 P0 outage-postmortem (`2026-04-20-public-mcp-outage-postmortem.md (archived in git)`) §3 named "no out-of-band probe" as the load-bearing gap that allowed a 69-min silent outage. PROBE-001/002/004 all probe `/mcp` over HTTP; if the apex CNAME vanishes (NXDOMAIN), HTTP probes fail in distinguishable but similar-looking ways. PROBE-007 narrows diagnosis: a DNS-red without HTTP-red is a name-resolution / propagation issue; a DNS-red with HTTP-red corroborates a tunnel/dashboard-state regression. Distinct from `uptime-canary.yml` which probes Cloudflare-Worker-fronted HTTP — DNS-canary probes one layer below.
 
 ### When to use
 
@@ -473,7 +473,7 @@ Runs automatically on the `17 7 * * *` cron (07:17 UTC daily) + manual `workflow
 
 ### Why this probe earns a catalog slot
 
-Per `docs/audits/2026-04-20-public-mcp-outage-postmortem.md` §6: "Highest-priority post-canary addition: tier-3 OSS clone nightly probe. That surface is just as public as the MCP connector and has zero monitoring today — the project is one bad commit away from 'fresh contributors silently bounce because pip install -e . fails.'" PROBE-001..008 all probe the running daemon; PROBE-009 alone probes the contributor onboarding surface. Catches dirty-tree commits, missing files, broken pyproject.toml, dropped symbols, and import-graph regressions that running-daemon probes cannot see.
+Per `2026-04-20-public-mcp-outage-postmortem.md (archived in git)` §6: "Highest-priority post-canary addition: tier-3 OSS clone nightly probe. That surface is just as public as the MCP connector and has zero monitoring today — the project is one bad commit away from 'fresh contributors silently bounce because pip install -e . fails.'" PROBE-001..008 all probe the running daemon; PROBE-009 alone probes the contributor onboarding surface. Catches dirty-tree commits, missing files, broken pyproject.toml, dropped symbols, and import-graph regressions that running-daemon probes cannot see.
 
 ### When to use
 

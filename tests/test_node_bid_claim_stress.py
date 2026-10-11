@@ -1,6 +1,6 @@
 """Multi-daemon git-race claim stress tests.
 
-Covers docs/specs/phase_h_preflight.md §4.1 #6 (R5, invariant 6).
+Covers phase_h_preflight.md (archived in git) §4.1 #6 (R5, invariant 6).
 
 Six ``@pytest.mark.slow`` scenarios that pin the G.2 race-bypass fix:
 

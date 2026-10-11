@@ -6,7 +6,7 @@
 
 ## Why
 
-An owner should be able to authorize an outside agent to message chosen TinyAssets agents and see/control their command center without handing every OAuth client the owner's entire authority. The [preserved research](../../../docs/design-notes/2026-10-05-outside-agents-both-ways.md) (C1-C4, G1-G4/G6) identifies missing client attribution, delegation and revocation on the existing public MCP surface.
+An owner should be able to authorize an outside agent to message chosen TinyAssets agents and see/control their command center without handing every OAuth client the owner's entire authority. The preserved research (archived in git) (C1-C4, G1-G4/G6) identifies missing client attribution, delegation and revocation on the existing public MCP surface.
 
 Authoritative founder direction, 2026-10-05:
 > if a user connects their Muse agent to TinyAssets then the Muse agent should be able to send messages to the agents and see and control your command center. If they have a ChatGPT dot similar or any other agent they want to authorize like maybe their own OpenClaw agent they already have. We should also be able to connect to their Muse or other agents and talk to them if connected and authorized.

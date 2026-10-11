@@ -4,7 +4,7 @@ Short ledger connecting landed work back to the idea that produced it.
 
 ## Entries
 
-- [2026-07-19] **Agent Village (RETIRED 2026-08-26 — `command_center/` deleted; see docs/handoffs/2026-08-26-open-lanes.md) — web command center (`command_center/`).**
+- [2026-07-19] **Agent Village (RETIRED 2026-08-26 — `command_center/` deleted; see 2026-08-26-open-lanes.md (archived in git)) — web command center (`command_center/`).**
   Phone-accessible living map of every agent working the repo (Claude, Codex,
   Kimi, …) with tap-to-talk, universe sky-islands with daemon chat (local
   notes + live `converse`), a world zoom over live universes + the commons,

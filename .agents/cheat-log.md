@@ -5,7 +5,7 @@ user-authored workflow. It does not authorize a privileged platform loop,
 hidden automation, automatic task dispatch, repair, filing, merge, or deploy.
 
 Historical entries from the retired operating model are preserved at
-`docs/historical/loop-uptime-maintenance/cheat-log.md`.
+`cheat-log.md (archived in git)`.
 
 Format per entry:
 

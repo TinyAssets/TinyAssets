@@ -1,7 +1,7 @@
 ## Context
 
 This is step 1 of the 2026-10-11 decision
-(`docs/design-notes/2026-10-11-harness-architecture-audit.md`). It is
+(`2026-10-11-harness-architecture-audit.md (archived in git)`). It is
 foundation work: one boundary that later steps build on (Direction 5). The
 existing parts are reused, not rebuilt:
 

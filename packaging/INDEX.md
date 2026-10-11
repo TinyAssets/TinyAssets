@@ -10,9 +10,9 @@ Map for packaging, distribution, and marketplace surfaces.
 
 - [mcpb/README.md](mcpb/README.md)
 - [claude-plugin/README.md](claude-plugin/README.md)
-- [docs/mcpb_packaging.md](../docs/mcpb_packaging.md)
-- [docs/distribution_validation.md](../docs/distribution_validation.md)
-- [docs/conway_readiness_strategy.md](../docs/conway_readiness_strategy.md)
+- mcpb_packaging.md (archived in git) (archived in git)
+- distribution_validation.md (archived in git) (archived in git)
+- conway_readiness_strategy.md (archived in git) (archived in git)
 
 ## Packaging Areas
 

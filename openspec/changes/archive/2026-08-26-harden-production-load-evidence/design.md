@@ -1,6 +1,6 @@
 ## Context
 
-The Forever Rule makes §14 concurrency/load evidence part of the definition of done for uptime-track capabilities. Today, capability changes carry distinct workload counts, thresholds, fault mixes, and invariants, but they repeatedly restate how evidence must be recorded. The only umbrella artifact, `docs/specs/2026-04-18-load-test-harness-plan.md`, predates the current architecture and assumes one monolithic S1–S8 implementation.
+The Forever Rule makes §14 concurrency/load evidence part of the definition of done for uptime-track capabilities. Today, capability changes carry distinct workload counts, thresholds, fault mixes, and invariants, but they repeatedly restate how evidence must be recorded. The only umbrella artifact, `2026-04-18-load-test-harness-plan.md (archived in git)`, predates the current architecture and assumes one monolithic S1–S8 implementation.
 
 This change introduces a target-only `production-load-evidence` capability. It follows the layered registry/adapter pattern already used by `evaluation-runtime-and-scenarios`, but remains separate because it evaluates system capacity and failure behavior rather than daemon output quality.
 

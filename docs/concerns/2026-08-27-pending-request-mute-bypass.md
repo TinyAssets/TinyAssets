@@ -55,5 +55,5 @@ human-originated one. That belongs with the provider-authority work, not here.
 
 ## Related
 
-- `docs/reviews/2026-08-27-codex-paste-deposit-review.md`
+- `2026-08-27-codex-paste-deposit-review.md (archived in git)`
 - `docs/concerns/2026-08-27-served-provider-authority-is-converse-only.md`

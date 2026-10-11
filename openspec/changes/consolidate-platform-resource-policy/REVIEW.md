@@ -90,5 +90,5 @@ quiescent/live WAL behavior, read-only SQL restrictions and ACL-race regression.
 
 Required Linux CI tested an identical full tree; deployment, public canary and
 protected revision containment passed for merge `0eb1388f` on September 9 UTC.
-[Exact evidence](../../../docs/reviews/2026-09-08-workspace-resource-policy-proof.md).
+Exact evidence (archived in git).
 Rendered acceptance remains owner-held, not inferred from these gates.

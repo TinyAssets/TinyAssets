@@ -130,7 +130,7 @@ Rollback: normal fail-safe deploy of prior immutable image if startup or public
 connector health regresses. No migration or user-state rollback is needed.
 
 Final independent review approved 2026-09-05 00:10 UTC; durable artifact:
-`docs/reviews/2026-09-05-codex-catalogue-compat-claude.md`. The strengthened smoke
+`2026-09-05-codex-catalogue-compat-claude.md (archived in git)`. The strengthened smoke
 inspects actual model tool specs and MCP bearer headers. Both old and new CLI
 pass; native file patching is explicitly reported as unchanged baseline,
 contained by the existing read-only mounts. Keepalive and both non-served
@@ -208,7 +208,7 @@ account default. App retest remains the final proof; no checklist row is closed.
 Release queue, 2026-09-05 02:12 UTC: PR #2977 merged as
 `9d361262896519c1ab3c05c4154d6aac0a151588` at 02:08:56 UTC. Final independent
 round-3 review APPROVE is recorded in
-`docs/reviews/2026-09-05-provider-native-model-defaults-claude.md`; no fourth round.
+`2026-09-05-provider-native-model-defaults-claude.md (archived in git)`; no fourth round.
 The first Linux run found two new failures (concern index entry and static command
 shape parsing); mechanical corrections are pushed and 242 focused local tests
 pass, 3 skip. Fresh required Linux run 33937064317 passed: 14,642 tests passed,
@@ -458,7 +458,7 @@ were verified separately from the earlier retest and repository proof is read-on
 All nine original checklist rows now have rendered PASS evidence. The former
 manual webhook-renewal host action is resolved and removed, not left stale.
 Detailed requirement/evidence map:
-`docs/reviews/2026-09-08-workflow-checklist-live-acceptance.md`.
+`2026-09-08-workflow-checklist-live-acceptance.md (archived in git)`.
 
 The deployment/retest checklist goal is achieved on this evidence, not on unit
 tests or invented provider-general claims. Broader provider/model-selection

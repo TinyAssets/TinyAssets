@@ -1,6 +1,6 @@
 """Phase C.3 — TaskProducer protocol + registry.
 
-Per docs/specs/taskproducer_phase_c.md §1. Pure infra ship: no
+Per taskproducer_phase_c.md (archived in git) §1. Pure infra ship: no
 producers register in C.3, so the registry is empty at import time.
 Tests cover the protocol shape + registry semantics (idempotent
 re-register, order-preserving iteration, reset hook).

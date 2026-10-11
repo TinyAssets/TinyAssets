@@ -7,7 +7,7 @@ related:
   - .agents/uptime_alarms.log (audited subject)
   - scripts/watchdog.py (production watchdog source)
   - tests/test_watchdog.py (test pollution source)
-  - docs/audits/2026-04-23-p0-auto-recovery-trace.md (prior baseline — different signature)
+  - 2026-04-23-p0-auto-recovery-trace.md (archived in git) (prior baseline — different signature)
   - docs/ops/post-redeploy-validation-runbook.md §7 (downstream consumer)
 ---
 
@@ -128,7 +128,7 @@ correspond to **65 distinct pytest invocations** over five days.
 
 ### Against the 2026-04-23 audit baseline
 
-`docs/audits/2026-04-23-p0-auto-recovery-trace.md` documents three
+`2026-04-23-p0-auto-recovery-trace.md (archived in git)` documents three
 **actual** P0 events on the droplet (issues #51, #52, #53) at
 11:43 / 17:49 / 22:11 UTC on 2026-04-23. **Zero of those timestamps
 appear in `uptime_alarms.log`** (the 04-23 day is entirely absent from

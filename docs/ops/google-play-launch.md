@@ -570,7 +570,7 @@ Sign in details, Target audience (18+), Data safety, Advertising ID, and the
 foreground-service declaration were submitted with the 15-change review batch on
 2026-09-08. Data safety's Preview retains the verified types and lists both password
 and OAuth account creation; Advertising ID remains saved as **No**. Full evidence is in
-`docs/audits/2026-09-03-google-play-console-readonly-reconciliation.md`.
+`2026-09-03-google-play-console-readonly-reconciliation.md (archived in git)`.
 
 Done:
 
@@ -643,7 +643,7 @@ Open, with what each actually waits on:
       access.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
-      in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
+      in `2026-09-03-android-store-release-claude-review.md (archived in git)`.
 - [ ] Production roll out (§11) — your final click.
 
 ### How to build a signed AAB with no GitHub secrets

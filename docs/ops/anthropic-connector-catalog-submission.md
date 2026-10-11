@@ -226,8 +226,8 @@ Directory listing may not be achievable at MVP launch if the submission process 
 
 ## 7. Cross-reference
 
-- **Spec:** `docs/specs/2026-04-18-mcp-gateway-skeleton.md` — OAuth 2.1 + PKCE implementation.
-- **Spec:** `docs/specs/2026-04-18-web-app-landing-and-catalog.md` §2 — `/connect` + `/legal` pages.
+- **Spec:** `2026-04-18-mcp-gateway-skeleton.md (archived in git)` — OAuth 2.1 + PKCE implementation.
+- **Spec:** `2026-04-18-web-app-landing-and-catalog.md (archived in git)` §2 — `/connect` + `/legal` pages.
 - **Runbook:** `SUCCESSION.md` §2 — `ops@` + `security@` aliases that the submission references.
 - **Memory:** `project_daemon_product_voice.md` — "Summon the daemon" copy.
 - **Memory:** `project_q13_q14_resolutions.md` — multilingual posture (relevant to Q10).

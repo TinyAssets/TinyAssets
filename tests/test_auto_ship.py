@@ -1,7 +1,7 @@
 """Tests for ``tinyassets.auto_ship.validate_ship_request`` (PR #198 Phase 1).
 
 Covers the auto-ship safety envelope from
-``docs/milestones/auto-ship-canary-v0.md`` §6:
+``auto-ship-canary-v0.md (archived in git)`` §6:
   - §6.1 required packet fields + value gates
   - §6.2 allowed ship classes + allowed/forbidden path prefixes
   - §6.3 diff-size / binary / secret checks

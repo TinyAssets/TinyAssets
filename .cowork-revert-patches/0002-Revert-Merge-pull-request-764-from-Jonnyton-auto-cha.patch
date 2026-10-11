@@ -29,10 +29,10 @@ index c63e4ab..1815a7f 100644
  
  ### Feature flags
  
-diff --git a/docs/planning/phase7_4_identity_wiring_scope.md b/docs/planning/phase7_4_identity_wiring_scope.md
+diff --git a/phase7_4_identity_wiring_scope.md (archived in git) b/phase7_4_identity_wiring_scope.md (archived in git)
 index 4dd7365..8ff2ea9 100644
---- a/docs/planning/phase7_4_identity_wiring_scope.md
-+++ b/docs/planning/phase7_4_identity_wiring_scope.md
+--- a/phase7_4_identity_wiring_scope.md (archived in git)
++++ b/phase7_4_identity_wiring_scope.md (archived in git)
 @@ -35,21 +35,7 @@ strings.
  
  ## 2. Commit author format — recommendation

@@ -1,6 +1,6 @@
 """Goal subscription and pool producer tests.
 
-Covers docs/specs/phase_f_preflight.md §4.4:
+Covers phase_f_preflight.md (archived in git) §4.4:
 
 - BranchTaskProducer protocol (4 tests)
 - GoalPoolProducer (8 tests)

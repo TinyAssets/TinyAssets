@@ -161,7 +161,7 @@ SHAPES: dict[str, Shape] = {
     "S19": Shape(
         ("packaging/claude-plugin/build_plugin.py",),
         (("packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/**", ""),),
-        ceiling=737,
+        ceiling=6,
     ),
     "S20": Shape(("docs/architecture.md", "docs/decisions/**", "openspec/**")),
     "S21": Shape(
@@ -207,11 +207,26 @@ ENTRY_SYMBOLS: dict[str, str] = {
         r"\b(?:def\s+(?:session_start|start_agent|make_interactive_agent_turn)\s*\("
         r"|class\s+\w*Admission\b)"
     ),
-    "S5": r"\bdef\s+(?:load_agent_definition|agent_definition)\b",
+    "S5": (
+        r"\b(?:def\s+(?:load_agent_definition|agent_definition|stage_import|parse_settings)\b"
+        r"|class\s+(?:SettingsSnapshot|AgentInterchange\w*)\b)"
+    ),
     "S6": r"\bdef\s+(?:load_extension|build_revision)\b",
     "S8": r"\bdef\s+(?:box_access|admit_box)\b",
     "S12": r"\bdef\s+(?:register_mcp_handle|register_handle)\b",
+    "S3": r"\bclass\s+(?:ClaudeProvider|CodexProvider|AppServerTurn)\b",
+    "S9": r"\bclass\s+(?:Scheduler|CloudContinuation\w*|BranchTask)\b",
+    "S15": r"\bclass\s+(?:HostPool\w*|HeartbeatLoop|BidPoller)\b",
+    "S22": r"\b(?:class|def)\s+\w*Universe\w*\b",
 }
+# File probes also have a line ratchet: growing an existing file cannot hide
+# behind an unchanged file count. Entry symbols above catch moved implementations.
+LINE_CEILINGS = {"S3": 2434, "S5": 4552, "S9": 4638, "S15": 7547, "S22": 11095}
+VENDOR_FILE_CEILING = 147
+MIRROR_ROOT = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+VENDOR_NAMES = re.compile(
+    r"anthropic|chatgpt|claude|codex|gemini|grok|groq|kimi|mistral|ollama|openai|openrouter", re.I
+)
 DUAL_FLAGS = re.compile(
     r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING|ASSIGNED_QUEUE_CONSUMER)\b"
 )
@@ -219,7 +234,7 @@ PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
     r"\s*\(\s*['\"](/[^'\"]*)"
 )
-PUBLIC_ROOTS = frozenset({"/mcp", "/api", "/hooks/inbound", "/app"})
+PUBLIC_ROOTS = frozenset({"/", "/mcp", "/api", "/hooks/inbound", "/app"})
 DOC_HOMES = (
     "docs/architecture.md",
     "docs/host-actions.md",
@@ -257,12 +272,61 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
     total = 0
     for glob, pattern in shape.old:
         for path in files(glob, root):
+            if shape is SHAPES["S19"]:
+                counterpart = (
+                    root / "tinyassets" / path.relative_to(root / MIRROR_ROOT / "tinyassets")
+                    if path.is_relative_to(root / MIRROR_ROOT / "tinyassets")
+                    else None
+                )
+                if counterpart is not None and counterpart.is_file():
+                    continue
             total += (
                 len(re.findall(pattern, path.read_text(encoding="utf-8", errors="replace")))
                 if pattern
                 else 1
             )
     return total
+
+
+def old_lines(shape: Shape, root: Path = ROOT) -> int:
+    paths = {path for glob, pattern in shape.old if not pattern for path in files(glob, root)}
+    return sum(
+        len(path.read_text(encoding="utf-8", errors="replace").splitlines()) for path in paths
+    )
+
+
+def vendor_file_count(root: Path = ROOT) -> int:
+    return sum(
+        bool(VENDOR_NAMES.search(path.read_text(encoding="utf-8", errors="replace")))
+        for path in files("tinyassets/**/*.py", root)
+    )
+
+
+def deleted_doc_references(root: Path = ROOT) -> list[str]:
+    base = _merge_base(root)
+    if base is None:
+        return []
+    deleted = set(
+        subprocess.check_output(
+            ["git", "diff", "--diff-filter=D", "--name-only", base], cwd=root, text=True
+        ).splitlines()
+    )
+    deleted = {path for path in deleted if path.startswith("docs/")}
+    if not deleted:
+        return []
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
+    problems = []
+    for rel in tracked:
+        path = root / rel
+        if not path.is_file():
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (UnicodeError, OSError):
+            continue
+        for ref in {item.rstrip(".,;") for item in re.findall(r"docs/[\w./-]+", source)} & deleted:
+            problems.append(f"deleted-doc-reference: {rel} cites {ref}")
+    return sorted(problems)
 
 
 def recorded_shapes(
@@ -321,6 +385,27 @@ def base_shape_problems(root: Path = ROOT) -> list[str]:
             problems.append(f"{shape_id} ceiling: old-path probe removed")
         if not set(forbid) <= set(current.forbid):
             problems.append(f"{shape_id} converged: forbidden-path probe removed")
+    tree = ast.parse(baseline.stdout)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == "VENDOR_FILE_CEILING"
+            for target in node.targets
+        ):
+            prior = ast.literal_eval(node.value)
+            if VENDOR_FILE_CEILING > prior:
+                problems.append(
+                    f"vendor-names ceiling: pin raised {prior} -> {VENDOR_FILE_CEILING}"
+                )
+        if any(
+            isinstance(target, ast.Name) and target.id == "LINE_CEILINGS" for target in node.targets
+        ):
+            for shape_id, prior in ast.literal_eval(node.value).items():
+                if LINE_CEILINGS.get(shape_id, 0) > prior:
+                    problems.append(
+                        f"{shape_id} line ceiling: pin raised {prior} -> {LINE_CEILINGS[shape_id]}"
+                    )
     return problems
 
 
@@ -362,7 +447,6 @@ def git_added(root: Path = ROOT) -> set[str]:
     added = set(
         git("diff", "--no-renames", "--name-only", "--diff-filter=A", merge_base).splitlines()
     )
-    added.update(git("ls-files", "--others", "--exclude-standard").splitlines())
     return {path.replace("\\", "/") for path in added}
 
 
@@ -402,8 +486,10 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
         ):
             problems.append(f"opt-in-flags: {rel} selects a second path")
         for route in PUBLIC_ROUTE.findall(source):
-            if route.split("/{", 1)[0] not in PUBLIC_ROOTS and not any(
-                route.startswith(root + "/") for root in PUBLIC_ROOTS
+            if (
+                route.split("/{", 1)[0] not in PUBLIC_ROOTS
+                and not route.startswith("/.well-known/")
+                and not any(route.startswith(root + "/") for root in PUBLIC_ROOTS)
             ):
                 problems.append(f"public-routes: {rel} mounts {route}")
     return problems
@@ -417,6 +503,9 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     if missing or extra:
         problems.append(f"registry-parity: missing={missing}, extra={extra}")
     problems.extend(base_shape_problems(root))
+    vendor_files = vendor_file_count(root)
+    if vendor_files > VENDOR_FILE_CEILING:
+        problems.append(f"vendor-names ceiling: {vendor_files} > {VENDOR_FILE_CEILING}")
     for shape_id, shape in SHAPES.items():
         if shape_id not in rows:
             continue
@@ -424,6 +513,10 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
         status = rows[shape_id].lower()
         if count > shape.ceiling:
             problems.append(f"{shape_id} ceiling: old path {count} > {shape.ceiling}")
+        if shape_id in LINE_CEILINGS and old_lines(shape, root) > LINE_CEILINGS[shape_id]:
+            problems.append(
+                f"{shape_id} line ceiling: old path grew beyond {LINE_CEILINGS[shape_id]}"
+            )
         if status == "converged" and count:
             problems.append(f"{shape_id} converged: {count} old-path occurrences remain")
         if status == "drifted" and shape.old and not count:
@@ -447,6 +540,8 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             problems.append(f"doc-homes: {rel}")
         if path.suffix not in {".py", ".js", ".ts"} or rel.startswith("tests/"):
             continue
+        if rel.startswith(MIRROR_ROOT):
+            continue
         source = path.read_text(encoding="utf-8", errors="replace")
         for shape_id, pattern in ENTRY_SYMBOLS.items():
             if not any(registered_path(rel, glob) for glob in SHAPES[shape_id].paths) and re.search(
@@ -464,9 +559,10 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             problems.append(f"adr-has-spec: {adr.relative_to(root)}")
     for proposal in files("openspec/changes/*/proposal.md", root):
         source = proposal.read_text(encoding="utf-8")
-        for name in re.findall(r"(?i)\bsupersedes?\s+[`'\"]?([a-z][a-z0-9-]+)", source):
+        for name in re.findall(r"(?i)\bsupersedes?\s*:?\s*[`'\"]?([a-z][a-z0-9-]+)", source):
             if (root / "openspec/changes" / name).exists():
                 problems.append(f"superseded-open: {proposal.parent.name} supersedes {name}")
+    problems.extend(deleted_doc_references(root))
     return problems
 
 

@@ -1,5 +1,5 @@
 """Revert-loop canary tests (Lane 4a per
-docs/design-notes/2026-04-23-revert-loop-canary-spec.md).
+2026-04-23-revert-loop-canary-spec.md (archived in git)).
 
 Covers the 6 test surfaces named in the spec Test Strategy §:
 0/2/3 REVERTs (OK), 3/10min (WARN), 5/20min (CRITICAL), 3/20min (below

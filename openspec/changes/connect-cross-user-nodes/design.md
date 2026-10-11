@@ -1,7 +1,7 @@
 ## Context
 
 Proposed implementation, not as-built truth. Grounding and independent source-fit
-review: `docs/reviews/2026-09-09-cross-user-delivery-existing-boundaries.md`.
+review: `2026-09-09-cross-user-delivery-existing-boundaries.md (archived in git)`.
 Owner intent: the 00:41-00:50 PDT app conversation on September 9, preserved in
 `docs/concerns/2026-09-09-cross-user-deliverable-connections.md`.
 
@@ -282,7 +282,7 @@ implementation task, not founder choices unless an actual authority decision ari
    credentials or claim a same-owner pair proves the boundary.
 
 First independent shape review returned ADAPT, with five findings captured in
-`docs/reviews/2026-09-09-cross-user-node-shape-review.md`. The concrete interfaces
+`2026-09-09-cross-user-node-shape-review.md (archived in git)`. The concrete interfaces
 below close the pre-build source questions; runtime tests and exact-head review
 must still verify them. The authorized second app identity remains live-proof work.
 

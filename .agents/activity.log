@@ -58,7 +58,7 @@ for narrative that helps the next session orient and then stops mattering.
 - Focus-verified #362: `tests/test_auto_ship.py` 66 passed; ruff passed; plugin build import probe ok; diff-check passed. Still requires Claude-family checker.
 - Focus-verified #360: ruff/plugin build/diff-check passed, but broader wiki test group still fails on known `file_bug` compact-response `branch_task` mismatch; treat as merge-order blocked, not slug-code failed.
 - Remaining true non-Codex blockers: Claude/Cowork checker keys where required, visible CI/status rollups on auto-change PRs, loop self-rework on #327/#324/#286, duplicate closure after newer PRs settle, and schedule/queue liveness.
-[2026-05-30] claude-code: in-node paced enqueue verb merged DARK (#1214). Closes driver-branch gap (backfill cut #1212). NEEDS CODEX REVIEW before TINYASSETS_NODE_ENQUEUE_ENABLED flips live — brief+adversarial Qs at docs/audits/2026-05-30-in-node-enqueue-codex-review.md. Composability proven: built branch cca3c93b632e via connector, validation ok.
+[2026-05-30] claude-code: in-node paced enqueue verb merged DARK (#1214). Closes driver-branch gap (backfill cut #1212). NEEDS CODEX REVIEW before TINYASSETS_NODE_ENQUEUE_ENABLED flips live — brief+adversarial Qs at 2026-05-30-in-node-enqueue-codex-review.md (archived in git). Composability proven: built branch cca3c93b632e via connector, validation ok.
 2026-06-24 [claude-code] SDLC/Claude-Code best-practices adoption: verified scorecard + context-budget invariant + test-suite collection fix (8287/0). Wove Codex-via-MCP into CLAUDE.md; ran Codex opposite-provider review of eval-gate design note -> ADAPT (caught wrong S2 wiring point; 3 adaptations gate build). Branch worktree-sdlc-best-practices-adoption.
 2026-06-24 [claude-code] R5 shared-config mechanism shipped (settings.shared.json + setup_claude_settings.py, 6 tests). Dogfooded Codex-MCP for independent self-review of session code -> SHIP (no correctness issues). Adoption branch now 4 commits; autonomous portion complete, remainder host/navigator-gated.
 2026-07-13 [claude-code] Paid-market core landed from Downloads drop (2026-07-08/09 Fable design sprint + 07-11 additions): tinyassets/paid_market pure-logic pkg (12 modules), 177 tests green standalone (--noconftest), fast matcher w/ DP-differential spec test, migrations 006/007/008 into prototype chain, dead 002_rls -> attic (initdb-order fix), 15 sprint docs -> docs/ + exec-plans/active. Branch worktree-paid-market-core, draft PR opening. P0 write-gate + P1 /data/wiki filed as STATUS Concern (still open per drop). Wave 2 gated on OpenSpec step-1.5 + founder sign-offs (WORK-2026-07-11 section 5).
@@ -87,7 +87,7 @@ success, canary passed. Two user-visible changes are live:
   - 519fb2ea first-contact birth moved from get_status to converse
 
 READ FIRST IF YOU TOUCH FIRST CONTACT OR PROVIDERS:
-  - docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md
+  - 2026-07-22-first-contact-birth-moves-to-converse.md (archived in git)
     (host-approved 2026-07-22; supersedes the 2026-07-15 auto-birth directive)
   - output/user_sim_session.md, entries dated 2026-07-22
 
