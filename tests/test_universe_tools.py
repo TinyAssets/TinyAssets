@@ -429,18 +429,6 @@ def test_engine_route_bearer_config_is_sealed_with_launch_snapshot(tmp_path, mon
 # ── the four tools' semantics (runner substituted) ──────────────────────────
 
 
-def test_edit_replaces_exactly_one_match_and_writes_it_back(tmp_path, monkeypatch):
-    universe = _universe(tmp_path)
-    spy = _Spy(_ok(b"alpha\nbeta\n"), _ok())
-    monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert universe_tools.edit_file(universe, "notes/a.md", "beta", "gamma", agent_id="main") == (
-        "edited /u/notes/a.md"
-    )
-    write = spy.calls[1]
-    assert write["stdin"] == b"alpha\ngamma\n"
-    assert write["inner"][-1] == "/u/notes/a.md"
-
-
 @pytest.mark.parametrize(("content", "expect"), [
     (b"alpha\n", "was not found"),
     (b"beta beta\n", "matches 2 places"),

@@ -153,12 +153,6 @@ WORKDIR /build
 # production daemon (scripts/runtime_paths.py), so add nothing the runtime does
 # not read.
 COPY pyproject.toml ./
-COPY tinyassets/ ./tinyassets/
-COPY domains/ ./domains/
-# fantasy_daemon is the node-execution runtime invoked by
-# tinyassets.cloud_worker. Without it in the image, the cloud worker
-# supervisor crash-loops with `No module named fantasy_daemon`.
-COPY fantasy_daemon/ ./fantasy_daemon/
 
 # Drop-first operational exec wrapper. Compiled HERE, in the builder stage
 # that already carries build-essential (see the apt block above); the final
@@ -175,11 +169,16 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
     && ldd /tmp/ta-op 2>&1 | grep -q 'not a dynamic executable' \
     && { /tmp/ta-op nosuchmode; [ $? -eq 78 ]; }
 
-# Install into a venv that we'll copy to the final stage. Keeps the
-# final image free of pip metadata + build tools.
+# Dependencies depend on metadata, not application source. Runtime edits must
+# not reinstall this dependency tree and Chromium on every PR image build.
 RUN python -m venv --copies /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,browser]"
+    /opt/venv/bin/python -c 'import subprocess,sys,tomllib; p=tomllib.load(open("pyproject.toml","rb"))["project"]; subprocess.check_call([sys.executable,"-m","pip","install","--no-cache-dir",*p["dependencies"],*p["optional-dependencies"]["mcp"],*p["optional-dependencies"]["browser"]])'
+
+COPY tinyassets/ ./tinyassets/
+COPY domains/ ./domains/
+# The node-execution runtime invoked by tinyassets.cloud_worker.
+COPY fantasy_daemon/ ./fantasy_daemon/
 
 # ---------- Stage 2: final ----------
 
@@ -300,12 +299,8 @@ RUN chown root:root /usr/local/libexec/ta-op \
 
 WORKDIR /app
 
-# Copy the populated venv + source from the builder.
+# Copy the dependency-only venv before the independently cached browser install.
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /build/tinyassets /app/tinyassets
-COPY --from=builder /build/domains /app/domains
-COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
-COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 
 # Headless Chromium for the custom-UI preview (openspec custom-ui-assets D6:
 # `read_graph target="app_ui_preview"` renders a person's own UI so the agent
@@ -326,6 +321,14 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
     chmod -R a+rX /opt/ms-playwright &&\
     /opt/venv/bin/python -c "from playwright.sync_api import sync_playwright" &&\
     ls -d /opt/ms-playwright/chromium_headless_shell-*
+
+COPY --from=builder /build/tinyassets /app/tinyassets
+COPY --from=builder /build/domains /app/domains
+COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
+COPY --from=builder /build/pyproject.toml /app/pyproject.toml
+# Install the actual package metadata and entry points against /app. Dependencies
+# above use the same pyproject extras and are not resolved a second time.
+RUN /opt/venv/bin/pip install --no-cache-dir --no-deps -e ".[mcp,browser]"
 
 # Static data files required at runtime.
 # world_rules.lp is the ASP constraint program; asp_engine.py resolves it

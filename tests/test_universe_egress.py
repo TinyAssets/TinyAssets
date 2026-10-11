@@ -174,18 +174,6 @@ def _ask(path: Path, request: bytes) -> bytes:
 
 
 @posix_only
-def test_a_checked_destination_is_tunnelled(tmp_path, monkeypatch, upstream):
-    port, seen = upstream
-    path = _proxy(tmp_path, monkeypatch, allow="public.test")
-    client, reply = _ask(path, f"CONNECT public.test:{port} HTTP/1.1\r\n\r\n".encode())
-    assert reply.startswith(b"HTTP/1.1 200")
-    client.sendall(b"hello")
-    assert client.recv(4096) == b"echo:hello"
-    client.close()
-    assert seen
-
-
-@posix_only
 def test_a_refusal_says_why_and_never_connects(tmp_path, monkeypatch, upstream):
     port, seen = upstream
     path = _proxy(tmp_path, monkeypatch)

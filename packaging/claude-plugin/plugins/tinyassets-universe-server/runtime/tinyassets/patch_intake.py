@@ -49,6 +49,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tinyassets.capability_health import observed
+
 logger = logging.getLogger(__name__)
 
 #: Effector-consent sink for "this universe may send patch requests to <intake>".
@@ -414,6 +416,7 @@ def _how(receiver_id: str, label: str, *, granted: bool, pending: bool) -> str:
     )
 
 
+@observed('patch_request')
 def send_patch_request(universe_id: str, principal_id: str, title: Any, details: Any) -> dict:
     """Send through an owner-authored private source and the native delivery core."""
     import hashlib

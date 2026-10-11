@@ -37,7 +37,8 @@ def test_docker_smoke_push_runs_only_on_main() -> None:
         "an unfiltered push trigger builds every agent-branch push on top of "
         "that branch's PR run"
     )
-    assert "pull_request" in triggers, "PRs must still get the Docker smoke"
+    assert "pull_request" in triggers, "PR events report the optional proof as skipped"
+    assert _job("docker-build.yml", "build-smoke")["if"] == "github.event_name != 'pull_request'"
 
 
 def test_mobile_builds_do_not_run_on_pull_requests() -> None:
@@ -51,14 +52,13 @@ def test_mobile_builds_do_not_run_on_pull_requests() -> None:
 
 #: Heavy `pull_request` workflows that skip while a PR is a draft, mapped to the
 #: job that carries the condition. Measured 2026-10-03 over the last 100
-#: completed PR runs: these five spent 311 of 436 runner-minutes, and
-#: merge-group runs queue behind them.
+#: completed PR runs. Isolation proofs wait until a PR is ready.
 _DRAFT_SKIPPING = {
+    "linux-jail-proof.yml": "linux-jail-proof",
+    "real-browser-proof.yml": "real-browser-proof",
     "preview-security.yml": "contract",
     "build-bundle.yml": "stage-and-probe",
     "docker-build.yml": "build-smoke",
-    "real-browser-proof.yml": "real-browser-proof",
-    "linux-jail-proof.yml": "linux-jail-proof",
 }
 
 #: Branch-protection contexts on `main`, read 2026-10-03. A job whose name is
@@ -84,7 +84,11 @@ def _job(name: str, job_id: str) -> dict:
 def test_heavy_pull_request_jobs_skip_drafts() -> None:
     """The cut itself: a draft push must not spend a runner on these."""
     for name, job_id in _DRAFT_SKIPPING.items():
-        assert _job(name, job_id).get("if") == _DRAFT_CONDITION, name
+        expected = (_DRAFT_CONDITION if name != "docker-build.yml"
+                    else "github.event_name != 'pull_request'")
+        assert _job(name, job_id).get("if") == expected, name
+        if expected != _DRAFT_CONDITION:
+            assert _triggers(name)["push"]["branches"] == ["main"]
 
 
 def test_draft_skipping_workflows_rerun_when_a_pr_becomes_ready() -> None:

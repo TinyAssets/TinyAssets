@@ -606,6 +606,10 @@ def test_the_final_stage_ships_the_ui_preview_headless_shell():
     assert install < final.index("USER tinyassets"), "installed as root, before USER"
     assert "chmod -R a+rX /opt/ms-playwright" in final
     assert '".[mcp,browser]"' in text
+    assert final.index("COPY --from=builder /build/tinyassets") > install
+    assert final.index('pip install --no-cache-dir --no-deps -e ".[mcp,browser]"') > install
+    builder = text.split("# ---------- Stage 2: final ----------", 1)[0]
+    assert builder.index('p["dependencies"]') < builder.index('COPY tinyassets/ ./tinyassets/')
     extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     # One extra, shared with the real-browser CI proof: two names for the same
     # pin would let the image and the proof drift onto different Chromium builds.

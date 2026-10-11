@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "affected_tests.py"
 _spec = importlib.util.spec_from_file_location("affected_tests", _SCRIPT)
 assert _spec and _spec.loader
@@ -91,10 +93,34 @@ def test_a_test_naming_a_file_by_path_is_selected(tmp_path):
 
 
 def test_a_changed_test_runs_and_a_deleted_one_does_not(tmp_path):
-    root = _repo(tmp_path, {"tests/test_mine.py": "import json\n"})
+    root = _repo(tmp_path, {
+        "tests/test_mine.py": "import json\n",
+        "tests/test_long.py": "import json\n",
+        "tests/test_cell.py": "import pytest\npytestmark=pytest.mark.role_split\n",
+        "tests/test_browser.py": "import playwright.async_api\n",
+        "tests/test_cloud.py": "from tests.cloud_runtime_fixture import cloud_runtime\n",
+        "tests/test_shell.py": (
+            "from tinyassets import universe_tools as tools\ntools.bash(None, 'true')\n"),
+        "tests/test_world.py": "from tests.test_universe_tools_jail import world\n",
+        "tests/test_guard.py": "import json\n",
+        "scripts/ci_structural_guards.py": (
+            "def targets(): return ['tests/test_guard.py', 'tests/test_mine.py::test_one']\n"),
+        "tests/test_heavy.py": "import json\n",
+        ".github/test-durations.json": '{"tests/test_long.py": 6}',
+        ".github/heavy-test-files.txt": 'tests/test_heavy.py\n',
+    })
     assert at.select(["tests/test_mine.py", "tests/test_gone.py"], root)[0] == [
         "tests/test_mine.py"
     ]
+    assert at.pr_tier(None, root) == [
+        'tests/test_browser.py', 'tests/test_cell.py', 'tests/test_cloud.py',
+        'tests/test_long.py', 'tests/test_mine.py', 'tests/test_shell.py', 'tests/test_world.py',
+    ]
+    assert at.pr_tier([], root) == []
+    for path in ('Dockerfile', 'tinyassets/role_tools.py', 'deploy/role_decoder.py',
+                 'scripts/core_capability_image.py', '.github/workflows/tests.yml'):
+        assert at.needs_image([path]), path
+    assert not at.needs_image(['docs/concerns/example.md', 'tests/test_example.py'])
 
 
 def test_an_unmentioned_non_python_change_selects_nothing(tmp_path):
@@ -103,11 +129,28 @@ def test_an_unmentioned_non_python_change_selects_nothing(tmp_path):
 
 
 def test_shared_infrastructure_runs_everything(tmp_path):
-    root = _repo(tmp_path, {"tests/test_a.py": "import json\n"})
+    root = _repo(tmp_path, {
+        "tests/test_a.py": "import json\n",
+        "scripts/ci_required_tests.py": "",
+        "tests/test_ledger.py": 'LEDGER = ".github/known-failing-tests.txt"\n',
+        "tests/test_wf.py": 'WF = ROOT / ".github" / "workflows" / "tests.yml"\n',
+        "tests/test_req.py": "from scripts import ci_required_tests\n",
+    })
     for rel in ("tests/conftest.py", "pyproject.toml", ".github/known-failing-tests.txt"):
         selected, reasons = at.select([rel], root)
         assert selected is None, rel
         assert "shared test infrastructure" in reasons[0]
+    for rel in ("tests/conftest.py", "pyproject.toml"):
+        assert at.select([rel], root, pr=True)[0] is None, rel
+    # A PR changing CI machinery runs the tests that read or import it, not ALL;
+    # ordinary and gate mode stay ALL.
+    assert at.select([".github/known-failing-tests.txt"], root, pr=True)[0] == [
+        "tests/test_ledger.py"]
+    assert at.select([".github/workflows/tests.yml"], root, pr=True)[0] == ["tests/test_wf.py"]
+    assert at.select(["scripts/ci_required_tests.py"], root, pr=True)[0] == [
+        "tests/test_req.py"]
+    assert at.select(["scripts/ci_required_tests.py"], root)[0] is None
+    assert at.gate_selection([".github/workflows/tests.yml"], root)[0] is None
 
 
 def test_a_module_conftest_loads_at_runtime_runs_everything(tmp_path):
@@ -119,11 +162,15 @@ def test_a_module_conftest_loads_at_runtime_runs_everything(tmp_path):
             "tinyassets/shared.py": "def boot():\n    import tinyassets.lazy\n",
             "tinyassets/lazy.py": "",
             "tests/test_a.py": "import tinyassets.lazy\n",
+            "tests/test_b.py": "import json\n",
         },
     )
     selected, reasons = at.select(["tinyassets/lazy.py"], root)
     assert selected is None
     assert "conftest" in reasons[0]
+    # PR mode runs its importers; any selected test loads conftest's closure anyway.
+    assert at.select(["tinyassets/lazy.py"], root, pr=True)[0] == ["tests/test_a.py"]
+    assert at.gate_selection(["tinyassets/lazy.py"], root)[0] is None
 
 
 def test_a_conftest_that_will_not_import_raises_rather_than_guessing(tmp_path):
@@ -138,15 +185,21 @@ def test_a_conftest_that_will_not_import_raises_rather_than_guessing(tmp_path):
 
 def test_a_python_file_no_test_reaches_runs_everything(tmp_path):
     root = _repo(tmp_path, {"tinyassets/orphan.py": "", "tests/test_a.py": "import json\n"})
-    selected, reasons = at.select(["tinyassets/orphan.py"], root)
-    assert selected is None
-    assert "no test reaches" in reasons[0]
+    for pr in (False, True):
+        selected, reasons = at.select(["tinyassets/orphan.py"], root, pr=pr)
+        assert selected is None
+        assert "no test reaches" in reasons[0]
 
 
 def test_a_deleted_source_module_runs_everything(tmp_path):
     """Its importers are invisible: the graph is built from the tree without it."""
     root = _repo(tmp_path, {"tests/test_a.py": "import json\n"})
     selected, reasons = at.select(["tinyassets/gone.py"], root)
+    assert selected is None
+    assert "deleted or moved" in reasons[0]
+    # PR mode skips the machinery trigger but keeps this backoff.
+    selected, reasons = at.select(
+        [".github/known-failing-tests.txt", "tinyassets/gone.py"], root, pr=True)
     assert selected is None
     assert "deleted or moved" in reasons[0]
 
@@ -189,6 +242,9 @@ def test_cli_writes_all_for_a_full_suite_trigger(tmp_path, monkeypatch):
     )
     assert at.main() == 0
     assert out.read_text(encoding="utf-8") == "ALL\n"
+    monkeypatch.setattr("sys.argv", ["affected_tests.py", "--changed", "x", "--pr", "--gate"])
+    with pytest.raises(SystemExit, match="separate tiers"):
+        at.main()
 
 
 def test_every_full_suite_trigger_exists_in_the_repo():

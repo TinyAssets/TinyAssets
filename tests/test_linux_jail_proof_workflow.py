@@ -130,7 +130,9 @@ def _code_text() -> str:
 
 def test_triggers_are_pull_request_paths_plus_dispatch_only():
     triggers = _triggers(_load())
-    assert set(triggers) == {"pull_request", "workflow_dispatch"}
+    assert set(triggers) == {"pull_request", "push", "workflow_dispatch"}
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["paths"] == triggers["pull_request"]["paths"]
     paths = triggers["pull_request"]["paths"]
     assert paths, "pull_request must be path-scoped, not repo-wide"
     for required in (

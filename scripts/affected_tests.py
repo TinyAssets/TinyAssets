@@ -23,8 +23,10 @@ A test file is selected when ANY of these holds:
 When unsure it selects EVERYTHING (output ``ALL``):
 
 - a conftest, pytest config, the dependency manifest or the gate's own
-  machinery changed;
-- a changed module is in a conftest's import closure (every test loads it);
+  machinery changed (PR mode selects the machinery's own contract tests
+  instead; the image gate and the conservative queue still run);
+- a changed module is in a conftest's import closure (every test loads it;
+  PR mode selects its importers, since any selected test loads it too);
 - a changed .py file outside ``tests/`` is selected by nothing, since an
   unmapped module means the static graph cannot see who loads it;
 - a non-test .py file was deleted or moved: the graph is built from the new
@@ -41,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import os
 import re
 import subprocess
@@ -55,16 +58,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GRAPH_ROOTS = ("tinyassets", "scripts", "tests", "fantasy_daemon", "domains", "packaging")
 BARE_NAME_DIRS = ("", "scripts", "tests")
 
-# Any change here can move the verdict of an arbitrary test.
-FULL_SUITE_TRIGGERS = (
-    "pyproject.toml",
-    "tests/__init__.py",
+# Any change here can move the verdict of an arbitrary test. The CI machinery
+# only decides WHICH tests run and how a verdict is read, so a PR selects the
+# tests that read or import it; the queue still runs everything.
+CI_MACHINERY = (
     ".github/known-failing-tests.txt",
     ".github/heavy-test-files.txt",
     ".github/workflows/tests.yml",
     "scripts/ci_required_tests.py",
     "scripts/affected_tests.py",
 )
+FULL_SUITE_TRIGGERS = ("pyproject.toml", "tests/__init__.py", *CI_MACHINERY)
 
 # Basenames too common to mean "this test reads that file".
 GENERIC_BASENAMES = {
@@ -266,21 +270,30 @@ def select(
     root: Path = REPO_ROOT,
     graph: Graph | None = None,
     shared: set[str] | None = None,
+    pr: bool = False,
 ) -> tuple[list[str] | None, list[str]]:
     """Return (test files, reasons). ``None`` means run the whole suite.
 
     `graph` and `shared` may be passed in to reuse them across many calls
-    (measurement scripts); left out, they are built for `root`.
+    (measurement scripts); left out, they are built for `root`. `pr` maps a
+    CI_MACHINERY change, or a module in a conftest's closure, to the tests
+    that import or name it instead of ALL: a selected test still loads every
+    conftest dependency, so a startup break fails it. Conftest edits, the
+    manifest, unreached and deleted source still select ALL.
     """
     reasons: list[str] = []
     changed = sorted({c.replace("\\", "/") for c in changed if c.strip()})
     for rel in changed:
+        if pr and rel in CI_MACHINERY:
+            continue
         if rel in FULL_SUITE_TRIGGERS or rel.rsplit("/", 1)[-1] == "conftest.py":
             return None, [f"{rel}: shared test infrastructure"]
 
     graph = graph or Graph(root)
     tests = sorted(rel for rel in graph.files if is_test_file(rel))
-    if shared is None:
+    if pr:
+        shared = set()
+    elif shared is None:
         shared = loaded_by_conftests(graph, root)
     for rel in changed:
         if rel in shared:
@@ -408,11 +421,45 @@ def changed_files(base: str) -> list[str]:
     return out.splitlines()
 
 
+def pr_tier(selected: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
+    """Deduplicate full structural files; retain affected execution proofs.
+
+    Required CI's existing heavy-file exclusion still applies. Neither duration
+    nor a jail/browser marker can remove an affected file from the PR run.
+    """
+    heavy = {line.split('#', 1)[0].strip() for line in
+             (root / '.github/heavy-test-files.txt').read_text().splitlines()}
+    # The required structural job already executes these exact full files.
+    # Partial node-ID targets must leave their other cases in the affected tier.
+    structural_files = set()
+    guard_script = root / 'scripts/ci_structural_guards.py'
+    if guard_script.is_file():
+        spec = importlib.util.spec_from_file_location('pr_structural_targets', guard_script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        structural_files = {target for target in module.targets() if '::' not in target}
+    candidates = selected if selected is not None else sorted(
+        p.relative_to(root).as_posix() for p in (root / 'tests').rglob('test_*.py'))
+    return [name for name in candidates if name not in structural_files and name not in heavy]
+
+
+def needs_image(changed: list[str], root: Path = REPO_ROOT) -> bool:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from scripts.runtime_paths import runtime_inputs
+
+    inputs = runtime_inputs(root, 'HEAD')
+    return any(inputs.covers(name) or name.startswith('scripts/core_capability')
+               or name in ('scripts/affected_tests.py', '.github/workflows/tests.yml')
+               for name in changed)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", help="git ref to diff against (merge-base ...HEAD)")
     ap.add_argument("--changed", nargs="*", help="explicit changed paths instead of --base")
     ap.add_argument("--out", help="write the selection here; ALL means the whole suite")
+    ap.add_argument('--pr', action='store_true', help='select affected tests for a PR')
     ap.add_argument(
         "--gate",
         action="store_true",
@@ -426,9 +473,12 @@ def main() -> int:
     args = ap.parse_args()
     if (args.base is None) == (args.changed is None):
         raise SystemExit("pass exactly one of --base or --changed")
+    if args.pr and args.gate:
+        raise SystemExit("--pr and --gate are separate tiers; pass one")
     changed = args.changed if args.changed is not None else changed_files(args.base)
     try:
-        selected, reasons = (gate_selection if args.gate else select)(changed)
+        selected, reasons = (
+            gate_selection(changed) if args.gate else select(changed, pr=args.pr))
     except RuntimeError as exc:
         # Unsure what is shared -> run everything, and say why. On the gate path
         # this is the ONLY safe direction, and it is loud: the reason is printed
@@ -436,6 +486,9 @@ def main() -> int:
         # dependencies installed lands here -- the conftest import probe needs
         # pytest -- which is why the select job installs before asking.
         selected, reasons = None, [f"selection failed, running the whole suite: {exc}"]
+    if args.pr:
+        selected = pr_tier(selected)
+        reasons.append('PR tier: affected tests in the jail; full structural files deduplicated')
     body = "ALL\n" if selected is None else "".join(f"{t}\n" for t in selected)
     for line in reasons:
         print(line, file=sys.stderr)

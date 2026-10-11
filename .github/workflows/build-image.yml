@@ -42,6 +42,9 @@ on:
       # model addition sat in the repo and never reached anyone.
       - 'models/**'
       - 'scripts/mcp_public_canary.py'
+      - 'scripts/core_capability_live.py'
+      - 'scripts/core_capability_alert.py'
+      - '.github/actions/core-capability-canary/**'
       # The app is the second public surface, and deploy-prod.yml runs this as a
       # post-deploy gate with the same rollback authority as the MCP canary —
       # which makes it a runtime input. A change here the pre-filter never sees

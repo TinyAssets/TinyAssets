@@ -4,8 +4,9 @@
 The required shards are packed by these per-file durations
 (ci_required_tests.shard_of). A single run is noisy -- on 2026-10-01 one shard
 ran the same files a median 2.7x slower than another run did -- so each file's
-value is its MEDIAN over the last few successful runs. A stale table only
-costs balance, never coverage; refresh when the shard times drift apart.
+value is its MEDIAN over the last few successful runs. A stale table costs
+shard balance and PR tier placement; the conservative queue still covers all
+files. Refresh when shard times drift apart.
 
     python scripts/refresh_test_durations.py               # last 5 runs, via gh
     python scripts/refresh_test_durations.py --junit a.xml b.xml
