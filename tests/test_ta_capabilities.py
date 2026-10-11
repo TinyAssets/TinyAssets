@@ -259,7 +259,7 @@ def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch
                              runtime_root=tmp_path / "runtime")
     try:
         assert call(service, path="/not-allowed")["result"]["error_kind"] == (
-            "outbound_request_failed")
+            "grant_path_refused")
         assert loop.recorded == []
     finally:
         loop.stop()

@@ -7,10 +7,8 @@ Two modes, selected by ``TINYASSETS_DAEMON_IMAGE_RETENTION_MODE``:
     registry-verified daemon image outside the keep set, whatever the disk
     percentage: the running image, every image any container (running or
     stopped) references, the configured ``TINYASSETS_IMAGE``, the release
-    receipt's ``rollback_target``, every image at least as new as the running
-    one (a pulled candidate or a roll-forward target), and the two newest older
-    images -- the deploy workflow's captured canary-rollback target plus one
-    spare. That is the last three deployed digests on the normal path.
+    receipt's ``rollback_target``, and one rollback image. Explicit mutable tags
+    pin images, including the cutover rollback.
     Pressure at or above the trigger still grades the pass, so disk the rule
     cannot relieve stays loud (``pressure_unmet``, exit 1).
 
@@ -44,13 +42,15 @@ MUTATION_LOCK = Path("/var/lock/tinyassets-host-mutation.lock")
 FENCE_STATE = Path("/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json")
 MAX_OUTPUT = 4 * 1024 * 1024
 MODES = ("count", "threshold")
-# Older daemon images kept besides the running one: N=3 distinct digests total.
-KEEP_OLDER = 2
-MAX_REMOVALS = 4
+# The newest older image bridges the swap-to-receipt canary window.
+KEEP_OLDER = 1
+MAX_REMOVALS = 32
 # Registry proof per pass is bounded so one unrecoverable image cannot starve
 # the rest, and so the locked phase always keeps its 60-second budget.
-MAX_VERIFY_ATTEMPTS = 8
+MAX_VERIFY_ATTEMPTS = 64
 LOCKED_BUDGET = 60
+RECEIPT_MAX_BYTES = 16 * 1024 * 1024  # includes the full Git containment inventory
+PULL_FREE_BYTES = 10 * 1024**3  # ~4.3 GiB image plus extraction and runtime reserve
 
 
 class Refusal(Exception):
@@ -210,7 +210,7 @@ def read_receipt(docker, containers):
     if not root.is_absolute():
         raise Refusal("invalid_release_mount")
     try:
-        raw = read_regular(root / "release-state.json", 65536)
+        raw = read_regular(root / "release-state.json", RECEIPT_MAX_BYTES)
         receipt = json.loads(raw)
         if not isinstance(receipt, dict) or not isinstance(receipt.get("rollback_target"), str):
             raise ValueError
@@ -257,9 +257,7 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
         if not any(immutable(ref) for ref in digests):
             continue
         created = stamp(row.get("Created"))
-        if created >= current_time:
-            protected.add(identity)
-        else:
+        if created < current_time:
             older.append((created, identity))
         # Containerd can repeat the exact immutable digest in RepoTags. This
         # is not a mutable alias; every extra or different alias stays excluded.
@@ -272,6 +270,44 @@ def candidates(images, containers, daemon, configured, receipt, keep_older=KEEP_
         for _, identity, ref in sorted(eligible)
         if identity not in protected
     ], sorted(protected)
+
+
+def check_pull_headroom(docker=None, environ=None, disk_fn=shutil.disk_usage, image_ref=""):
+    """Check root and Docker's actual image filesystem, after retention."""
+    docker = docker or Docker(time.monotonic() + 30)
+    env = os.environ if environ is None else environ
+    if image_ref:
+        if not immutable(image_ref):
+            raise Refusal("invalid_pull_reference")
+        images, _ = docker.inventory()
+        if any(image_ref in (row.get("RepoDigests") or []) for row in images):
+            return  # An immutable cached image needs no download/extraction reserve.
+    info = docker.json("info", "--format", "{{json .}}")
+    store = storage_path(info, env.get("TINYASSETS_IMAGE_RETENTION_STORAGE_PATH", ""))
+    for path in sorted({"/", store}):
+        usage = disk_fn(path)
+        pct = pressure(path, disk_fn=lambda _: usage)
+        if pct >= 80 or usage.free < PULL_FREE_BYTES:
+            raise Refusal("deploy_disk_headroom_insufficient")
+
+
+def prune_dangling(docker):
+    """Remove truly unreferenced image IDs and their dangling parent layers.
+
+    A digest-pulled rollback is not disposable merely because its tag is <none>.
+    No force, volume, build-cache or system prune is used.
+    """
+    images, containers = docker.inventory()
+    used = {row["Image"] for row in containers}
+    removed = []
+    for row in images:
+        if (row["Id"] not in used and not row.get("RepoTags")
+                and not row.get("RepoDigests")):
+            docker.command("image", "rm", row["Id"])
+            removed.append(row["Id"])
+            if len(removed) >= MAX_REMOVALS:
+                break
+    return removed
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -504,18 +540,31 @@ def retain(
                         break
                 report["selected"].append(choice)
                 if not dry_run:
-                    docker.command("image", "rm", choice["ref"])
+                    # Non-force removal by ID also releases containerd's digest
+                    # alias; Docker removes unreferenced parent layers by default.
+                    docker.command("image", "rm", choice["image_id"])
                     report["removed"].append(choice["ref"])
                     print(json.dumps(dict(event="daemon_image_removed", ref=choice["ref"])))
                     report["after_pct"] = measure(path)
+    if not dry_run and acting:
+        with locker():
+            docker.deadline = min(deadline, clock() + LOCKED_BUDGET)
+            report["dangling_removed"] = prune_dangling(docker)
+        images, containers = docker.inventory()
+        daemon, receipt = receipt_reader(docker, containers)
+        remaining, _ = candidates(images, containers, daemon, config_reader(), receipt)
+        report["remaining"] = len(remaining)
+        report["after_pct"] = measure(path)
     if dry_run:
         report["status"] = "dry_run" if acting else "below_threshold"
+    elif counting and report["remaining"]:
+        report["status"] = "retention_incomplete"
     elif triggered:
         report["status"] = (
             "pressure_relieved" if report["after_pct"] <= low else "pressure_unmet"
         )
     elif counting:
-        report["status"] = "retention_incomplete" if report["unverified"] else "retained"
+        report["status"] = "retention_incomplete" if report["remaining"] else "retained"
     return report
 
 
@@ -526,8 +575,16 @@ def main(argv=None):
         action="store_true",
         help="request removal; also requires TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY=1",
     )
+    parser.add_argument("--prepare-pull", action="store_true",
+                        help="require completed pruning and disk headroom before a pull")
+    parser.add_argument("--check-headroom", action="store_true")
+    parser.add_argument("--image-ref", default="")
     options = parser.parse_args(argv)
     try:
+        if options.check_headroom:
+            check_pull_headroom(image_ref=options.image_ref)
+            print(json.dumps(dict(status="pull_headroom_ok")))
+            return 0
         activation = os.environ.get("TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY", "0")
         if activation not in ("0", "1"):
             raise Refusal("invalid_retention_activation")
@@ -542,6 +599,10 @@ def main(argv=None):
             low=float(os.environ.get("DISK_AUTOPRUNE_LOW_PCT", "75")),
             mode=mode,
         )
+        if options.prepare_pull:
+            if report["status"] not in ("retained", "pressure_relieved"):
+                raise Refusal("pre_pull_retention_incomplete")
+            check_pull_headroom(image_ref=options.image_ref)
     except (Refusal, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
         reason = str(exc) if isinstance(exc, Refusal) else "evidence_unavailable"
         print(json.dumps(dict(status="refused", reason=reason)))

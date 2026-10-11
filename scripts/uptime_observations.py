@@ -6,7 +6,7 @@ import os
 import uuid
 from collections.abc import Mapping
 
-PROBES = ("handshake", "tool", "activity", "revert", "wiki")
+PROBES = ("handshake", "tool", "activity", "revert", "wiki", "disk")
 
 
 def classify_observations(
@@ -16,6 +16,8 @@ def classify_observations(
     for name in PROBES:
         code = statuses.get(name, "")
         state = "green" if code == "0" else "red" if code.isdecimal() else "unknown"
+        if name == "disk":
+            state = {"0": "green", "80": "warning", "90": "critical"}.get(code, "unknown")
         reason = "observed" if state != "unknown" else "result_unavailable"
         if (
             name == "revert" and code == "5" and revert_observation == "unknown"
@@ -28,6 +30,10 @@ def classify_observations(
     return {
         "overall": "red" if red else "unknown" if unknown else "green",
         "status": statuses[red[0]] if red else "unknown" if unknown else "0",
+        "page_needed": bool(red),
+        "disk_overall": "red" if observations["disk"]["state"] in ("warning", "critical")
+        else observations["disk"]["state"],
+        "disk_page_needed": observations["disk"]["state"] == "critical",
         "observations": observations,
     }
 
@@ -48,6 +54,9 @@ def main() -> int:
     delimiter = "RESULT_" + uuid.uuid4().hex
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write(f"overall={result['overall']}\nstatus={result['status']}\n")
+        output.write(f"page_needed={str(result['page_needed']).lower()}\n")
+        output.write(f"disk_overall={result['disk_overall']}\n")
+        output.write(f"disk_page_needed={str(result['disk_page_needed']).lower()}\n")
         output.write(f"msg<<{delimiter}\n{message}\n{delimiter}\n")
     summary = ["### Scheduled Layer-1 observation", "", f"- Result: {result['overall']}"]
     summary.extend(

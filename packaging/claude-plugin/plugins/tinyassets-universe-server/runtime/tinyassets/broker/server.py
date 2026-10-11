@@ -80,6 +80,7 @@ END_WAIT_S = 5.0
 ERROR_CLASSES = frozenset({
     "PermissionError", "GrantResolutionError", "AmbiguousProxyOutcome",
     "OutboundDeadlineExceeded", "ConnectionAuthorizationError", "ProxyRequestError",
+    "GrantPathRefused",
     "SsrfValidationError", "fenced", "duplicate", "expired", "refused",
     "InferenceUsageStopped", "InferenceUsageRequired", "ProviderAuthorityHeldError",
 })

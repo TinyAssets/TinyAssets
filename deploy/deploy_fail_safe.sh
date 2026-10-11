@@ -1485,6 +1485,14 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
 fi
 
 # --- 2. pull the new image (still no prod mutation) -----------------------
+# Recheck under the host lock: a timer may have reclaimed the prefetch while
+# waiting for turns. Cached immutable images do not need another pull reserve.
+if [ -n "${DISK_HEADROOM_HELPER:-}" ]; then
+  if ! (set -a; source "$ENV_FILE"; set +a
+        python3 "$DISK_HEADROOM_HELPER" --check-headroom --image-ref "$NEW_IMAGE"); then
+    err "insufficient disk headroom for candidate pull; prod untouched"; exit 1
+  fi
+fi
 if ! docker pull "$NEW_IMAGE" >/dev/null 2>&1; then
   err "failed to pull ${NEW_IMAGE}; prod untouched"; exit 1
 fi

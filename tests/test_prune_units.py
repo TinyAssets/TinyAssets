@@ -70,7 +70,7 @@ def test_service_does_not_opt_itself_into_destructive_retention():
     # operator opt-in. A timer must not hardcode that authority in the unit.
     assert "EnvironmentFile=/etc/tinyassets/env" in _svc()
     assert "TINYASSETS_DAEMON_IMAGE_RETENTION_APPLY" not in _svc()
-    assert "SuccessExitStatus=1" in _svc()
+    assert "SuccessExitStatus=1" not in _svc()
 
 
 def test_service_after_docker():
@@ -165,12 +165,34 @@ def test_deploy_runs_retention_after_canary_and_receipt_are_green():
 def test_post_deploy_retention_runs_the_installed_unit_and_never_fails_the_deploy():
     step = next(s for s in _deploy_steps() if s.get("name") == RETENTION_STEP)
     run = step["run"]
-    # The same installed, locked, registry-verified path the timers use -- not
+    # The same locked, registry-verified policy the timers use -- not
     # a second copy of the policy and never a broad Docker prune.
-    assert "systemctl start tinyassets-prune.service" in run
+    assert "python3 ${RETENTION_HELPER} --apply" in run
     for forbidden in ("image prune", "system prune", "builder prune", "image rm"):
         assert forbidden not in run
-    # The deploy already succeeded; a retention refusal must not open a
-    # deploy-failed issue or suppress the install-host-services chain.
-    assert step.get("continue-on-error") is True
+    # Historical test identity retained: the repaired contract now requires
+    # a retention refusal to fail the workflow loudly.
+    assert not step.get("continue-on-error")
     assert int(step.get("timeout-minutes", 0)) <= 5
+
+
+def test_pre_pull_cleanup_and_headroom_cover_prefetch_and_final_pull():
+    steps = _deploy_steps()
+    names = [step.get("name") for step in steps]
+    before = names.index("Prune daemon images and require pull headroom")
+    wait = names.index("Wait for in-flight turns")
+    recheck = names.index("Recheck disk before fail-safe pull")
+    deploy = names.index("Run fail-safe deploy on the droplet")
+    assert before < wait < recheck < deploy
+    assert "scripts/daemon_image_retention.py" in steps[before]["run"]
+    assert "--apply --prepare-pull" in steps[before]["run"]
+    assert "--check-headroom" in steps[recheck]["run"]
+    assert all(not steps[index].get("continue-on-error") for index in (before, recheck))
+
+
+def test_final_pull_checks_headroom_under_the_host_lock():
+    script = (Path(__file__).resolve().parents[1] / "deploy/deploy_fail_safe.sh").read_text()
+    assert script.index('flock -w "$LOCK_WAIT" 9') < script.index('--check-headroom --image-ref')
+    assert script.index('--check-headroom --image-ref') < script.index('docker pull "$NEW_IMAGE"')
+    step = next(s for s in _deploy_steps() if s.get("id") == "deploy")
+    assert "DISK_HEADROOM_HELPER='${RETENTION_HELPER}'" in step["run"]
