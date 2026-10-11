@@ -19,6 +19,7 @@ target.resources_build_phase.add_file_reference(group.new_file('app-store-review
 target.build_configurations.each do |config|
   config.build_settings.merge!({
     'PRODUCT_BUNDLE_IDENTIFIER' => 'io.tinyassets.app.ReviewUITests',
+    'PRODUCT_NAME' => '$(TARGET_NAME)',
     'SWIFT_VERSION' => '5.0',
     'GENERATE_INFOPLIST_FILE' => 'YES',
     'TEST_TARGET_NAME' => 'App',

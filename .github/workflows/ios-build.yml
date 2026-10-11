@@ -26,6 +26,10 @@ on:
         description: Build review packages and run the production UI journey (no AWS calls)
         type: boolean
         default: false
+      review_video_compile_only:
+        description: Compile review UI tests without accessing app-store or running AWS
+        type: boolean
+        default: false
   push:
     branches: [main, feat/ios-app]
     paths:
@@ -42,14 +46,14 @@ permissions:
 
 jobs:
   review-video-proof:
-    if: github.event_name == 'workflow_dispatch' && inputs.review_video_proof
+    if: github.event_name == 'workflow_dispatch' && inputs.review_video_proof && !inputs.review_video_compile_only
     uses: ./.github/workflows/ios-review-video.yml
     with:
       dry_run: true
     secrets: inherit
 
   build-ios:
-    if: ${{ !inputs.review_video_proof }}
+    if: ${{ !inputs.review_video_proof || inputs.review_video_compile_only }}
     runs-on: macos-15
     permissions:
       contents: read
@@ -133,6 +137,10 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/TinyAssetsDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             build | tail -40
+
+      - name: Compile the review UI test for Simulator and physical iPhone
+        if: github.event_name == 'workflow_dispatch' && inputs.review_video_compile_only
+        run: bash mobile/scripts/build_review_tests.sh
 
       - name: Capture authentic App Store screenshots
         if: github.event_name == 'workflow_dispatch' && inputs.capture_store_screenshots
