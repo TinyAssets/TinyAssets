@@ -3,8 +3,9 @@
 What the system is today, as a map for finding code. Intent and principles live
 in [README § Direction](../README.md#direction); why a choice stands lives in
 [`docs/decisions/`](decisions/INDEX.md); as-built behaviour lives in
-[`openspec/specs/`](../openspec/specs/). This file holds no rationale, history or
-status. Update it when a module boundary moves.
+[`openspec/specs/`](../openspec/specs/). This file holds no rationale or
+history. The one status it holds is the [Shape registry](#shape-registry). Update
+it when a module boundary moves.
 
 ## Names
 
@@ -127,21 +128,48 @@ ASP engine over `data/world_rules.lp`.
 | `.github/workflows/` | Build, deploy, uptime canary, P0 triage, DR drill, release reconcile. |
 | `scripts/` | Canaries, `deployed_sha.py`, invariants, OpenSpec flow, guards. |
 
-## Invariants
+## Shape registry
 
-These hold everywhere and are checked by tests or scripts. Each names its
-decision.
+One row per declared shape: the single path it names, what still runs beside
+it, and the guard that fails CI when a second path appears or the old one
+survives its cutover. Measured on `origin/main` `358e8c7c5ec`, 2026-10-11.
+**converged** = one path; **drifted** = the old path is still live, often
+behind a flag; **unbuilt** = declared, not built; **unverified** = not
+measured. A named test is a guard that runs today; a *planned* id becomes a
+structural guard in convergence item C1. A drifted row's guard is a ceiling
+that only falls; at zero the row reads converged and the guard forbids
+regrowth. **Removed by** names the item in the convergence plan
+(`openspec/changes/shape-convergence/`) that deletes the second path.
 
-- No platform LLM call; every model call carries one owner's authority
-  (ADR-006, `tinyassets/providers/owner_binding.py`).
-- No vendor names or code paths outside dev tooling (ADR-007).
-- Every execution belongs to one command center and its owner (ADR-009).
-- New command centers, nodes and branches are born `private` (ADR-010).
-- The owner door imports no bounding module (ADR-011,
-  `tests/test_owner_door_import_boundary.py`).
-- The public MCP surface is the canonical handle set
-  (`scripts/mcp_public_canary.py --assert-handles`; ADR-013).
-- Accumulating graph state uses `Annotated[list, operator.add]`.
-- Fail loudly: a missing dependency is an error, never a plausible fallback.
+| # | Shape (source) | The one path | Second path still live (lines) | Status | Guard | Removed by |
+|---|---|---|---|---|---|---|
+| S1 | One model call (Dir 2, ADR-006/007, D6) | `model_call.call(model_ref, context, parent)` -> broker; receipt per call | `call_provider` 22 sites, `call_with_policy(_sync)` 5 defs, MCP-sampling reviewer, 5 `TurnRequestBudget` roots, one-provider authority (`router.py:1902`), mocks (`graph_compiler.py:1741`); ~31 routing/refusal/parity fixes since 09-27 | drifted | `call-sites`, `budget-roots` (planned) | C3 |
+| S2 | One way to start an agent (Dir 2, ADR-014) | `session.start(agent, input, parent)` in the control plane; chat, agent node, child session, wake and automation call it | 32 entry points, 24 live, 4 distinct starters, 9 admission gates (`universe_intelligence._call_writer`, `_ForegroundRunProviderSession`, `background_served_provider`, `cloud_automation_continuation`, `fantasy_daemon`) | drifted | `spawn-entry` (planned) | C3, C5, C7, C8 |
+| S3 | One loop (D6, ADR-012) | `agent_loop/` thin loop (1.5k) | native CLI loops `claude_provider` 1335, `codex_provider` 607, `codex_app_server` 492; thin loop dark behind `TINYASSETS_AGENT_LOOP` | drifted | `opt-in-flags` (planned) | C9 |
+| S4 | No provider-specific code (Dir 2, ADR-007) | connection primitives; vendors are data | 141 files name a vendor; `FALLBACK_CHAINS`, `_build_fallback_router`, `_CLI_REFS/_PROTOCOLS/_PROVIDER_CLASSES`, `openai_device.py` 543, `TINYASSETS_ALLOW_CLAUDE_SERVING`, CLIs in `Dockerfile` | drifted | `vendor-names` (planned, same ratchet as `check_channel_agnostic.py`) | C3, C9 |
+| S5 | One agent definition (Dir 2, ADR-014) | `agents/<name>/` files | `custom_agents.py` 2556, `agent_interchange.py` 1793, templates 329, `harness_settings.py` 203 beside `agent_definition.py` 63; `agent_runtime_manifest` literal | drifted | `test_one_agent_definition` (move into structural guards) | C8 |
+| S6 | One extension unit (Dir 2) | v2 activated revisions (`extension_manifest.py`) | v1 workspace executables (`ta_cli.py:54-105`); `api/extensions.py` 1108; 6 changes it superseded still open | drifted | `test_one_extension_unit` (move in) | C10 |
+| S7 | Four tools + `ta` (Dir 2) | `universe_tools.py`, `ta_cli.py` | second handle server `engine_mcp_server.py` 5031 (15 tools) | converged for the model; drifted behind it | `test_served_tool_guidance`, `test_converse_turn_cost` | C10 |
+| S8 | One box per owner (ADR-012, Dir 5) | `BoxProvider` (`boxes/`, 1.8k), attached once at admission | 34 `role_*` cells (7.9k), all added after ADR-012; `BoxProvider` has no production caller; `target-architecture` 0/12; 17 cell fixes, six (#4576-#4581) the day after the cutover | drifted | `test_universe_path_io_guard`; `role-cells` (planned) | C6 |
+| S9 | Control plane is the only always-on layer (ADR-012) | `control_plane/` (1.4k) | `scheduler.py` thread started unconditionally; `automations` 2651, `cloud_automation_continuation` 3027 (retired, still shipped), `dispatcher`, `producers/`, `branch_tasks.py` beside `branch_tasks_v2.py`; no wake handler registered; three wake/notify mechanisms (`agent_wakes`, `request_continuations`, control-plane wake); scheduler retired #4097, re-added #4276, #4590 | drifted | `test_control_plane_inventory` | C7 |
+| S10 | Platform state outside boxes (ADR-012) | `storage/` stores | `daemon_server.py` 5261, 27 `CREATE TABLE` | drifted | `test_storage_registry(_complete)`, `test_owner_stores` | C6 |
+| S11 | Owner door complete, model door bounded (ADR-011) | `owner_door/`, `/app/api/*` | none | converged | `test_owner_door_import_boundary`, `test_app_reads_use_owner_door` | — |
+| S12 | Canonical public handles (ADR-013) | 7 handles in `universe_server.py` | local `mcp_server.py` 442 still a console script | converged at `/mcp` | `mcp_public_canary.py --assert-handles`, `test_mcp_instruction_surfaces` | C5 |
+| S13 | No platform LLM (ADR-006) | owner-bound calls only | platform helpers (`reflexion`, `raptor`, `agentic_search`, `extract_learning`) on `call_provider`; whether each carries owner authority is not checked | unverified | `test_platform_has_no_llm` (move in) | C3 |
+| S14 | Identity follows the account; private by default (ADR-016, ADR-010) | `_current_actor` raises without a subject; every creation path writes `private` | none | converged | `test_private_by_default` (move in) | — |
+| S15 | Cloud only, zero hosts (ADR-008, Dir 8) | the hosted cell | `host_pool/` 734 (dead), tray host `desktop/` 4.4k + `tinyassets_tray.py` 961, `fantasy_daemon/` runner 6.8k, compose `slack-agent` pointing at a missing module | drifted | `host-paths` (planned) | C5 |
+| S16 | One app, thin shells (Dir 1, 7) | `onboarding/` at `/app`; `mobile/`, `desktop-app/` load it | none for chat; the tray host is S15 | converged | `test_onboarding_app` routes | — |
+| S17 | Knowledge is files (ADR-017); export (ADR-018) | OKF bundle canonical, indexes derived; one export action | `memory/`, `retrieval/`, `knowledge/`, `daemon_brain.py` (10.7k) canonical; bundle is seed-only; `okf_export.py` unwired | unbuilt | none yet | C12 |
+| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains as entry points, `api/market.py` 4380 goals/escrow, `bid/`, `treasury/` | drifted | `domain-entry-points` (planned) | C5, C10 |
+| S19 | Built artifacts are not committed | `build_plugin.py` stages the mirror at package time | `packaging/claude-plugin/.../runtime/` byte copy (737 files, ~336k lines) | unbuilt | `check_mirror_parity.py` (inverts to "no tracked mirror") | C4 |
+| S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | `docs/design-notes` 61, `docs/specs` 52, `docs/exec-plans` 73, `docs/audits` 267, `docs/reviews` 89, `docs/historical` 28 (~97k lines) | drifted | `doc-homes` (planned): no new file outside a home | C1 |
+| S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | 98 open changes; 16 complete but unarchived; changes marked superseded still open | drifted | `superseded-open` (planned); `shape-reconcile.yml` | C2 |
+| S22 | Command center naming | `command_center` in code and storage | 13 `universe_*` modules (18k), 13.4k mentions | drifted | `universe-name` ratchet (planned); renamed as each slice touches a file | each slice |
+| S23 | Accumulating state; fail loudly (Facts 5, 8) | `Annotated[list, operator.add]`; a missing dependency is an error | the S1 mocks | converged except S1 | `test_capability_health` | C3 |
+| S24 | One durable send (commit before publish) | an owner message is stored once, then dispatched | send paths not measured; 11 lost or duplicate-send fixes (#4290 ... #4615, #4614 open) | unverified | `send-path` (planned) | C11 |
+| S25 | One public endpoint (Fact 11) | `https://tinyassets.io/mcp` and `/app` | open PRs #4589 and #4602 each add a public `/api/v1` | at risk (unmerged) | `public-routes` (planned) | C2 closes one, folds the other into S1/S12 |
+| S26 | Exactly two account limits (seats, storage) | `usage_policy.py` | five open limit changes; cleanup #4134 (1/3), #4136 (2/3), no 3/3 | drifted | `limit-names` (planned) | C2 fold, C7 |
+| S27 | Zero hosts online, recoverable (Dir 8, ADR-012) | off-region backup, key escrow, standby | Litestream deferred (#4284); escrow and backup PRs #4279, #4283, #4332, #4333 closed | unbuilt | DR drill workflow | C6 |
 
-Known gaps against these: [`docs/concerns/`](concerns/).
+Findings against a row go in [`docs/concerns/`](concerns/); a new shape is a
+new row with its guard in the same PR.

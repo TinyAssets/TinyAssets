@@ -19,8 +19,7 @@ No longer the direction: "a global goals engine", Goal ladders, and fantasy as t
 Where any older doc disagrees with this section, this section wins.
 <!-- direction:end -->
 
-Map: `docs/architecture.md`; why: `docs/decisions/`. Other rules live where
-they apply.
+Map, why: `docs/architecture.md`, `docs/decisions/`.
 
 ## Live state
 
@@ -32,8 +31,8 @@ they apply.
 | Who has what | branches and open PRs |
 | Narrative | git log: your commit message |
 
-Orient: the Direction above, then `python scripts/openspec_flow.py audit`.
-Write durable state before replying.
+Orient: Direction, § Shape registry, `scripts/openspec_flow.py audit`.
+Converge a shape; add no second path. Write durable state before replying.
 
 ## The loop
 
