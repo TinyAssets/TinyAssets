@@ -6,6 +6,7 @@ that all test modules can reuse.
 
 from __future__ import annotations
 
+import base64
 import os
 import pathlib
 import sys
@@ -86,6 +87,26 @@ def _request_admission_hmac_key(monkeypatch):
         "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
         "pytest-only-request-admission-hmac-key-0123456789abcdef",
     )
+
+
+# Not a production key. Tests that need a missing or different master key
+# change the environment inside the test. Production refuses to start vault
+# access when TINYASSETS_VAULT_MASTER_KEY is unset.
+_TEST_VAULT_MASTER_KEY = base64.urlsafe_b64encode(b"\x11" * 32).decode("ascii")
+
+
+@pytest.fixture(autouse=True)
+def _credential_vault_master_key(monkeypatch):
+    """Give every test an explicit vault master key. There is no silent default."""
+
+    from tinyassets.vault_envelope import set_vault_key_provider
+
+    monkeypatch.setenv("TINYASSETS_VAULT_MASTER_KEY", _TEST_VAULT_MASTER_KEY)
+    monkeypatch.setenv("TINYASSETS_VAULT_MASTER_KEY_ID", "test-1")
+    monkeypatch.delenv("TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS", raising=False)
+    set_vault_key_provider(None)
+    yield
+    set_vault_key_provider(None)
 
 
 # The capability set an issued test credential carries unless a test asks for

@@ -6123,9 +6123,8 @@ def _set_engine_byo_api_key(uid, udir, data, preferred_writer) -> str:
         vault_summary = write_credential_vault(udir, [{
             "credential_type": "llm_api_key",
             "service": service,
-            # base64 at rest (the vault's existing convention; _secret_value
-            # decodes secret_b64). Envelope encryption is the deferred hardening
-            # flagged in the credential-custody research.
+            # base64 is the in-record encoding (_secret_value decodes
+            # secret_b64). The vault file is envelope-encrypted at rest.
             "secret_b64": base64.b64encode(api_key.encode("utf-8")).decode("ascii"),
         }])
     except ValueError as exc:

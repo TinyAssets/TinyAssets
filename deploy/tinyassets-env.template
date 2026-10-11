@@ -80,6 +80,13 @@ TINYASSETS_WIKI_CANARY_TOKEN=
 # TINYASSETS_BILLING_ENTITLEMENT_KEY=
 # WORKOS_API_KEY=
 # TINYASSETS_SESSION_SEAL_KEY=
+# Credential-vault master key. Required on the daemon before the envelope
+# build is deployed, or every vault read and write fails closed. 32 bytes,
+# base64url or 64-char hex. Generation, rotation, and the pre-deploy step:
+# docs/reference/environment-variables.md
+# TINYASSETS_VAULT_MASTER_KEY=
+# TINYASSETS_VAULT_MASTER_KEY_ID=
+# TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS=
 # TINYASSETS_IDENTITY_FINGERPRINT_KEY=
 # TINYASSETS_FCM_SERVICE_ACCOUNT_JSON=
 # TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY=

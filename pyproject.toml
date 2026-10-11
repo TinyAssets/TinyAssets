@@ -74,6 +74,9 @@ dependencies = [
     # OAuth 2.1 Resource Server: validate WorkOS AuthKit bearer JWTs (PyJWT + JWKS).
     # The [crypto] extra pulls cryptography for RS256 signature verification.
     "pyjwt[crypto]>=2.8,<3.0",
+    # Imported directly by tinyassets/vault_envelope.py (AES-GCM). Transitive
+    # through pyjwt[crypto] today; declared so a minimal install still seals vaults.
+    "cryptography>=43",
 ]
 
 [project.scripts]

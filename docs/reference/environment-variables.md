@@ -154,6 +154,9 @@ The daemon's explicit Compose `environment` block contains configuration only.
 | `TINYASSETS_APP_INGRESS_HMAC_KEY` | app-ingress.env | Removed; template reserves it for daemon ingress and the slack-agent caller. No Python reader remains under `tinyassets/` at this head, including the engine. Compose still injects it. |
 | `TINYASSETS_WIKI_CANARY_TOKEN` | shared env | Removed; `auth/wiki_canary.py` verifies the daemon's canary principal, and external health probes send it. Engine HTTP uses a fresh per-engine bearer and binds its owner directly. |
 | `TINYASSETS_SESSION_SEAL_KEY` | shared env | Removed even before `session_store.arm()` pops it; `onboarding/session_store.py` seals daemon app refresh sessions. |
+| `TINYASSETS_VAULT_MASTER_KEY` | shared env | Removed; `vault_envelope.py` wraps credential-vault data keys. The daemon must have this set before envelope code is deployed. |
+| `TINYASSETS_VAULT_MASTER_KEY_ID` | shared env | Removed; id written on new envelopes. Defaults to `1` when the master key is set and this is unset. |
+| `TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS` | shared env | Removed; retired `key_id=material` entries so older envelopes still open during rotation. |
 | `TINYASSETS_IDENTITY_FINGERPRINT_KEY` | shared env | Retained with an explicit reason: engine `get_status` delegates to `api/status.py`, which computes the principal fingerprint; `engine_read_views.py` preserves identity evidence. |
 | `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` | shared env, optional | Retained with an explicit reason: engine `write_graph` request-from-user calls `api/pending_requests.py:request_from_user` → `_notify_owner` → `owner_notifications.py` → `notify.resolve_transports` → FCM. |
 | `TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY` | shared env, optional | Retained for the same owner-notification path through `notify.resolve_transports` → Web Push. |
@@ -182,6 +185,54 @@ the daemon and `tini` still share a UID and PID namespace. An engine compromise
 can recover daemon credentials from `/proc/1/environ` or the daemon's environ
 under the existing Linux access rules, even when its own env is filtered. See
 [the engine UID concern](../concerns/2026-10-04-engine-mcp-shares-daemon-uid.md).
+
+## Credential vault master key
+
+The daemon seals `.credential-vault.json` with a data key wrapped by this master
+key. Envelope code refuses every vault read and write when the key is missing.
+It does not write a plaintext vault and it does not invent a key.
+
+Set this on the production server **before** deploying a build that contains
+the envelope. Add the lines to `/etc/tinyassets/env`, re-render the daemon
+copy, and restart the daemon so the process environment contains them. Then
+deploy. The first successful read of a legacy vault replaces that file only
+after a decrypt round-trip matches the original records.
+
+Generate a key (32 bytes). Keep it with the other server secrets. Do not commit
+it and do not put it in a chat log.
+
+```
+python -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+| Var | What to set |
+|-----|-------------|
+| `TINYASSETS_VAULT_MASTER_KEY` | The generated value. base64url (padding optional) or 64-character hex. |
+| `TINYASSETS_VAULT_MASTER_KEY_ID` | `1` for the first key. Required in the file so a later rotation has an id to name. |
+| `TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS` | Unset until the first rotation. |
+
+A managed secret store can replace the environment provider later
+(`tinyassets.vault_envelope.set_vault_key_provider`). The variable names above
+stay the default until that store exists. TODO(owner): choose that store; do
+not add a second default in the meantime.
+
+### Rotation
+
+1. Generate a second key the same way.
+2. Set `TINYASSETS_VAULT_MASTER_KEY` to the new value and
+   `TINYASSETS_VAULT_MASTER_KEY_ID` to a new id (`2`).
+3. Set `TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS` to `1=<previous key material>`
+   (comma-separate further retired `key_id=material` pairs).
+4. Restart the daemon.
+5. Reseal each command center with
+   `tinyassets.credential_vault.rewrap_credential_vault`, or wait for the next
+   write of that vault. Until then the retired id must stay in the previous-key
+   list. A new write already uses the active id.
+6. After every vault file's `key_id` is the active id, remove the retired entry
+   and restart.
+
+Losing the key that wrapped a vault makes that vault unreadable. There is no
+plaintext backup.
 
 ## Feature flags
 

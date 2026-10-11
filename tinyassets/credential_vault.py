@@ -16,10 +16,19 @@ import re
 import secrets
 import sqlite3
 import stat
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
+
+from tinyassets.universe_files import read_data_path
+from tinyassets.vault_envelope import (
+    is_envelope,
+    open_document,
+    require_active_key,
+    seal_document,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -445,34 +454,189 @@ def _merge_single_record(
     ]
 
 
-def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
-    """Load and validate the per-universe vault.
+def _private_vault_file(path: Path) -> bool:
+    """Return False when *path* is missing.
 
-    Missing vaults are treated as empty. Malformed vaults raise ValueError so a
-    daemon cannot silently grant or lose authority due to a bad secret file.
+    A symlink, hard link, or other non-regular file raises. The bytes are not
+    read, so a link cannot be followed into a migration write.
     """
-    path = credential_vault_path(universe_dir)
-    if not path.is_file():
-        return []
+    try:
+        source_stat = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    is_reparse_point = bool(
+        getattr(source_stat, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+    if (
+        not stat.S_ISREG(source_stat.st_mode)
+        or is_reparse_point
+        or source_stat.st_nlink != 1
+    ):
+        raise ValueError("credential vault source is not a private regular file")
+    return True
+
+
+def _vault_json(raw: bytes) -> Any:
+    """Parse vault bytes. The error names a position, never the file body."""
+    text = None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # `UnicodeDecodeError.object` is the whole file — the same consequence
+        # as JSONDecodeError.doc. Raise outside this handler.
+        text = None
+    if text is None:
+        raise ValueError("credential vault is not valid JSON at an undecodable byte")
     payload = None
     malformed = ""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
-        # `UnicodeDecodeError.object` is the whole file too — a second channel
-        # with the same consequence as JSONDecodeError.doc, found only because
-        # a reviewer tried invalid UTF-8 rather than invalid JSON.
-        malformed = "an undecodable byte"
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        # `exc.doc` is the ENTIRE vault file — every token for every service.
-        # Chaining it, or interpolating `exc`, hands the whole thing to any
-        # traceback, log, or error collector. Keep only the position, and raise
-        # after this handler exits so no chain survives (`from None` clears
-        # __cause__ but leaves __context__).
         malformed = f"line {exc.lineno} column {exc.colno}"
     if malformed:
         raise ValueError(f"credential vault is not valid JSON at {malformed}")
+    return payload
+
+
+def _legacy_vault(payload: Any) -> bool:
+    if is_envelope(payload):
+        return False
+    if isinstance(payload, list):
+        return True
+    return isinstance(payload, dict) and (
+        "credentials" in payload or "schema_version" in payload
+    )
+
+
+def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
+    """Load and validate the per-universe vault.
+
+    Missing vaults are treated as empty. A present file requires the master
+    key: legacy JSON is migrated to an envelope after a decrypt round-trip
+    matches, and an envelope that does not authenticate raises. Malformed
+    vaults raise ValueError so a daemon cannot silently grant or lose
+    authority due to a bad secret file.
+    """
+    return _load_credential_vault(universe_dir, allow_migrate=True)
+
+
+def _load_credential_vault(
+    universe_dir: str | Path, *, allow_migrate: bool,
+) -> list[dict[str, Any]]:
+    path = credential_vault_path(universe_dir)
+    if not _private_vault_file(path):
+        return []
+    # A file is present. Refuse before interpreting bytes when the key is
+    # missing so a legacy vault is never returned as a plaintext fallback.
+    require_active_key()
+    universe_name = Path(universe_dir).name
+    raw = read_data_path(path)
+    if raw is None:
+        return []
+    payload = _vault_json(raw)
+    if is_envelope(payload):
+        return _records_from_payload(
+            open_document(payload, universe_name=universe_name)
+        )
+    if _legacy_vault(payload):
+        records = _records_from_payload(payload)
+        outcome = "deferred"
+        if allow_migrate:
+            outcome = _migrate_legacy_vault(path, raw, records, universe_name)
+        if outcome == "reread":
+            return _load_credential_vault(universe_dir, allow_migrate=False)
+        return records
     return _records_from_payload(payload)
+
+
+_vault_lock_held = threading.local()
+_vault_thread_locks: dict[str, threading.RLock] = {}
+_vault_thread_locks_guard = threading.Lock()
+
+
+def _vault_thread_lock(key: str) -> threading.RLock:
+    with _vault_thread_locks_guard:
+        lock = _vault_thread_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _vault_thread_locks[key] = lock
+        return lock
+
+
+@contextmanager
+def _vault_mutation_lock(directory: Path) -> Iterator[None]:
+    """Serialize vault replacement across threads and processes.
+
+    Separate from provider-assignment admission: a launch holds that lock
+    shared while it reads the vault, and admission is not reentrant. This
+    lock is what lets that read migrate a legacy file without waiting on
+    itself. The same thread may re-enter for one directory. The lock is the
+    directory inode, so a failed publish does not leave a lock file behind.
+    """
+    key = str(directory.resolve(strict=False))
+    thread_lock = _vault_thread_lock(key)
+    thread_lock.acquire()
+    fd: int | None = None
+    acquired_flock = False
+    try:
+        held: set[str] | None = getattr(_vault_lock_held, "dirs", None)
+        if held is None:
+            held = set()
+            _vault_lock_held.dirs = held
+        if key in held:
+            yield
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        fd = os.open(directory, os.O_RDONLY)
+        if os.name != "nt":
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            acquired_flock = True
+        held.add(key)
+        try:
+            yield
+        finally:
+            held.discard(key)
+            if acquired_flock:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        thread_lock.release()
+
+
+def _migrate_legacy_vault(
+    path: Path,
+    original: bytes,
+    records: list[dict[str, Any]],
+    universe_name: str,
+) -> str:
+    """Replace a legacy vault after the sealed bytes decrypt to the same document.
+
+    Returns ``migrated``, ``deferred`` (this process cannot replace the file),
+    or ``reread`` (the bytes changed and the caller must load again). A
+    verification failure raises and leaves *path* untouched. The seal is
+    bound to *universe_name*, the command-center directory name.
+    """
+    sealed = seal_document(
+        {"schema_version": 1, "credentials": records},
+        universe_name=universe_name,
+    )
+    try:
+        with _vault_mutation_lock(path.parent):
+            if not _private_vault_file(path):
+                return "reread"
+            current = read_data_path(path)
+            if current is None or current != original:
+                return "reread"
+            _persist_role_vault(path, sealed)
+            return "migrated"
+    except PermissionError:
+        return "deferred"
 
 
 def _prepare_credential_write(
@@ -599,15 +763,22 @@ def _persist_credential_vault_file(
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
     path = credential_vault_path(universe)
-    data = (
-        json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
-        + "\n"
+    # Seal before the temp file exists. A missing key or a failed round-trip
+    # raises here and leaves any previous file untouched.
+    data = seal_document(
+        {"schema_version": 1, "credentials": records},
+        universe_name=universe.name,
     )
     _persist_role_vault(path, data)
 
 
 def _persist_role_vault(path: Path, data: str) -> None:
     """Assign the read-only broker group before publishing a replacement inode."""
+    with _vault_mutation_lock(path.parent):
+        _write_role_vault(path, data)
+
+
+def _write_role_vault(path: Path, data: str) -> None:
     import tempfile
 
     from tinyassets.role_modes import BROKER_READ_GID, VAULT_FILE_MODE
@@ -717,6 +888,24 @@ def forget_credential(
     return removed
 
 
+def rewrap_credential_vault(universe_dir: str | Path) -> dict[str, Any]:
+    """Seal the vault again under the active master key.
+
+    Used after the active key id changes, while the retired key is still
+    available from the key provider. Records are not logged. A vault already
+    wrapped by the active key is still resealed with a new data key.
+    """
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    universe = Path(universe_dir).resolve(strict=False)
+    with provider_assignment_admission().exclusive(universe):
+        if not credential_vault_path(universe).is_file():
+            return {"credential_count": 0}
+        records = load_credential_vault(universe)
+        _persist_credential_vault_file(universe, records)
+    return {"credential_count": len(records)}
+
+
 def write_credential_vault(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
@@ -742,6 +931,7 @@ def write_credential_vault(
     # (e.g. bad Codex base64) mutates NOTHING — no directory, no lock, no schema,
     # no vault file. Pure, side-effect-free; the merge below re-runs it.
     _records_from_payload(credentials)
+    require_active_key()
 
     with provider_assignment_admission().exclusive(universe):
         result = _write_credential_vault_locked(universe, credentials, owner, uid)
@@ -809,6 +999,7 @@ def exclusive_credential_vault(universe_dir: str | Path) -> Iterator[Callable[..
         def write(credentials, *, owner_user_id=None, universe_id=None) -> dict:
             owner, uid = _write_identity(universe, owner_user_id, universe_id)
             _records_from_payload(credentials)
+            require_active_key()
             return _write_credential_vault_locked(universe, credentials, owner, uid)
 
         yield write

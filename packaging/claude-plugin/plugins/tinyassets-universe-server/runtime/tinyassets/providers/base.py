@@ -675,6 +675,12 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     env = os.environ.copy()
     for name in API_KEY_PROVIDER_ENV_VARS:
         env.pop(name, None)
+    # The vault master key is daemon configuration. Host-local children copy
+    # the process environment; they do not need it, and must not receive it.
+    from tinyassets.vault_envelope import VAULT_KEY_ENV_NAMES
+
+    for name in VAULT_KEY_ENV_NAMES:
+        env.pop(name, None)
     return env
 
 

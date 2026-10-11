@@ -73,6 +73,12 @@ DAEMON_AUTH_ENV: frozenset[str] = frozenset({
     "TINYASSETS_WIKI_CANARY_TOKEN",
     # Normally popped by session_store.arm(); also protect launches before arm.
     "TINYASSETS_SESSION_SEAL_KEY",
+    # Credential-vault master key. The daemon seals and opens vault files.
+    # Engine and broker children must not inherit it. A managed secret store
+    # can replace the env provider later; these names stay the default.
+    "TINYASSETS_VAULT_MASTER_KEY",
+    "TINYASSETS_VAULT_MASTER_KEY_ID",
+    "TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS",
 })
 
 # Explicit exceptions in the deployment-inventory test, with actual engine

@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Per-universe typed credential store (as-built: flat JSON guarded by best-effort file permissions) with daemon-side resolvers and a provider auth env overlay so a universe runs on its founder's assigned engine, not the host's.
+Per-universe typed credential store. The vault file is an authenticated envelope; filesystem permissions still restrict who can read the ciphertext. Daemon-side resolvers and a provider auth env overlay so a universe runs on its founder's assigned engine, not the host's.
 ## Requirements
 ### Requirement: Per-Universe Typed Credential Store
 
@@ -40,10 +40,19 @@ The system SHALL treat a missing vault file as an empty credential set so an abs
 - **WHEN** a vault file exists but is not valid JSON
 - **THEN** `load_credential_vault` raises a `ValueError` describing the parse failure instead of returning partial or empty data
 
-### Requirement: As-Built Storage Protection Is Filesystem Permissions Only
+### Requirement: Vault File Is Envelope-Encrypted And Filesystem Permissions Still Apply
 
-The vault file and any materialized credential artifacts (for example a Codex `auth.json` or a Claude config directory) SHALL be persisted as unencrypted content on disk. The only at-rest
-protection SHALL be POSIX ownership, mode and ACL.
+The vault file `.credential-vault.json` SHALL be an authenticated envelope, not the credential document. Version 1 of that envelope SHALL contain a random 32-byte data key wrapped by AES-GCM under a master key, and the credential document encrypted by AES-GCM under that data key, using the `cryptography` library. The on-disk file SHALL NOT contain a credential secret as recoverable cleartext or as base64. Base64 fields inside the decrypted document (`token_b64`, `secret_b64`, `auth_json_b64`) remain an encoding.
+
+The master key SHALL come from a pluggable provider. The default provider SHALL read `TINYASSETS_VAULT_MASTER_KEY` (32 bytes as base64url or 64-character hex), `TINYASSETS_VAULT_MASTER_KEY_ID` (default `1` when unset), and `TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS` (comma-separated `key_id=material` entries for retired keys). A missing, invalid, or unknown key SHALL fail closed: the vault file is left unchanged, no plaintext vault is written, and no credential records are returned. There SHALL be no ephemeral key and no plaintext fallback.
+
+A legacy unencrypted vault (a JSON list, or a JSON object that has `schema_version` or `credentials` and is not an envelope) SHALL be migrated on load when a master key is configured. Migration SHALL seal the loaded records, decrypt that seal, and replace the file only when the decrypted bytes match the bytes that were sealed. If verification fails, or the file bytes change before replacement, the original file SHALL remain. Migration SHALL be idempotent: loading an envelope SHALL NOT rewrite it except when a caller reseals under the active key. The document SHALL be bound to the command-center directory name so a file copied into a different command center does not authenticate.
+
+Key rotation SHALL store `key_id` on the envelope. A retired key still available to the provider SHALL open that envelope. The next write, and `rewrap_credential_vault`, SHALL seal under the active key.
+
+In-memory records returned by `load_credential_vault`, and the non-secret summary returned by `write_credential_vault`, SHALL keep their existing shapes. The broker read and daemon write file modes below SHALL still apply to the envelope file. Parse and authentication errors SHALL NOT include the file body, a secret, or key material.
+
+Materialized credential artifacts (for example a Codex `auth.json` or a Claude config directory) and per-launch snapshots are not part of this envelope. Their at-rest protection SHALL be POSIX ownership, mode and ACL:
 
 Where every role shares one uid, which is a developer host or a desktop install:
 - the vault file and secret files SHALL be `0o600`;
@@ -66,16 +75,35 @@ Per-launch credential snapshots SHALL be daemon-owned:
 Every one of these modes SHALL come from the single declaration shared by the migration and
 every runtime site that creates or re-modes these paths.
 
-As-built limitation: there is no encryption at rest, no cipher and no key management. Base64
-fields such as `token_b64` and `secret_b64` are an encoding, not encryption. Best-effort
-`chmod` is inert on operating systems that do not honor POSIX modes.
+Best-effort `chmod` is inert on operating systems that do not honor POSIX modes.
 
-#### Scenario: Secret is stored in cleartext under a restricted file mode
+#### Scenario: Secret is not recoverable from the vault file
 - **WHEN** a credential with a plaintext or base64-encoded secret is written to the vault
-- **THEN** the on-disk `.credential-vault.json` contains that secret as recoverable cleartext
-  (directly or base64-decodable) with no ciphertext layer
-- **AND** on operating systems that honor POSIX permissions the file mode is restricted,
-  while the content itself remains unencrypted
+- **THEN** the on-disk `.credential-vault.json` is an envelope whose bytes do not contain that secret as cleartext or as base64
+- **AND** loading the vault returns the secret to the caller
+- **AND** on operating systems that honor POSIX permissions the file mode is restricted
+
+#### Scenario: Legacy vault migrates once and a failed check leaves it in place
+- **WHEN** a legacy `schema_version` 1 vault file is loaded and the master key is configured
+- **THEN** the records are returned and the file is replaced with an envelope
+- **AND** a second load returns the same records without requiring the legacy bytes
+- **AND** if the sealed bytes do not decrypt to the same document, the original file is unchanged and the load raises
+
+#### Scenario: Tampered ciphertext does not open
+- **WHEN** an envelope's ciphertext bytes are altered
+- **THEN** `load_credential_vault` raises and returns no records
+- **AND** the error does not include the credential or the file body
+
+#### Scenario: Missing master key fails closed
+- **WHEN** a vault file exists and `TINYASSETS_VAULT_MASTER_KEY` is unset
+- **THEN** load and write raise
+- **AND** no plaintext vault file is written and the existing file is unchanged
+
+#### Scenario: Rotation opens the previous key and reseals with the active key
+- **WHEN** an envelope names a retired key id that the provider still holds, and the active key id is different
+- **THEN** load returns the records
+- **AND** `rewrap_credential_vault` stores the active key id
+- **AND** load still returns the records after the retired key is no longer configured
 
 #### Scenario: The broker reads the vault and cannot write it
 - **WHEN** the daemon writes a credential to the vault in the production container

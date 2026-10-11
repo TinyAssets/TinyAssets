@@ -16,6 +16,26 @@ whose next step is *"the founder logs into Cloudflare."*
 |---|---|
 | Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup opens a canary-not-provisioned warning/issue; it never blocks or rolls back a deploy. |
 
+## Set the credential-vault master key before the envelope deploy
+
+The envelope build refuses vault reads and writes until the daemon has a master
+key. Deploying it first leaves every stored credential unreadable until the key
+is set; the files stay on disk and are not rewritten as plaintext.
+
+1. Generate a 32-byte key:
+   `python -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`
+2. On the server, in `/etc/tinyassets/env`, set `TINYASSETS_VAULT_MASTER_KEY` to
+   that value and `TINYASSETS_VAULT_MASTER_KEY_ID=1`. Leave
+   `TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS` unset.
+3. Re-render the daemon env and restart the daemon so the process sees the
+   variables. Then deploy the envelope build.
+4. Keep the key with the other server secrets. Losing it makes every vault
+   sealed with it unreadable.
+
+Rotation and the variable formats: [environment variables](reference/environment-variables.md#credential-vault-master-key).
+
+---
+
 ## Isolation production refusal acceptance (2026-10-10)
 
 | Item | Smallest founder-only action |

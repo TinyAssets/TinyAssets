@@ -121,6 +121,9 @@ def test_daemon_auth_inventory_has_only_the_audited_readers():
         "TINYASSETS_APP_INGRESS_HMAC_KEY": set(),
         "TINYASSETS_WIKI_CANARY_TOKEN": {"auth/wiki_canary.py"},
         "TINYASSETS_SESSION_SEAL_KEY": {"onboarding/session_store.py", "universe_server.py"},
+        "TINYASSETS_VAULT_MASTER_KEY": {"vault_envelope.py"},
+        "TINYASSETS_VAULT_MASTER_KEY_ID": {"vault_envelope.py"},
+        "TINYASSETS_VAULT_PREVIOUS_MASTER_KEYS": {"vault_envelope.py"},
     }
     for name, readers in expected.items():
         found = {
