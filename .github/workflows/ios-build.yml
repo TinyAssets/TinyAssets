@@ -22,6 +22,10 @@ on:
         required: false
         default: false
         type: boolean
+      review_video_proof:
+        description: Build review packages and run the production UI journey (no AWS calls)
+        type: boolean
+        default: false
   push:
     branches: [main, feat/ios-app]
     paths:
@@ -37,7 +41,15 @@ permissions:
   contents: read
 
 jobs:
+  review-video-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.review_video_proof
+    uses: ./.github/workflows/ios-review-video.yml
+    with:
+      dry_run: true
+    secrets: inherit
+
   build-ios:
+    if: ${{ !inputs.review_video_proof }}
     runs-on: macos-15
     permissions:
       contents: read

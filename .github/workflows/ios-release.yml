@@ -5,6 +5,17 @@ name: iOS signed release
 # App Review. See docs/ops/app-store-launch.md.
 
 on:
+  workflow_call:
+    inputs:
+      marketing_version:
+        type: string
+        default: "1.0.0"
+      build_number:
+        type: string
+        default: ""
+      upload_to_testflight:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       marketing_version:

@@ -226,86 +226,99 @@ order. Only the Play one is on a 14-day clock, so it goes first.
 The clock starts when 12 people are actually opted in, and it runs for 14 days. Tell the
 lead the day it starts. The full engagement plan is in that section below.
 
-### Apple: record the review video on a physical iPhone
+### Apple: enable automated physical-iPhone review video
 
-This is Apple's actual ask (Guideline 2.1). Install build 3 from the TestFlight invite
-already sent to you, on an iPhone updated to the latest iOS. Record the six steps in
-`docs/ops/app-store-submission-packet.md`, "Guideline 2.1 response packet". A simulator
-recording is refused. Hand the `.mov` to the lead. The agent attaches it with the written
-answers and resubmits only after the lead's explicit go. First have the agent verify the real inline
-connect flow with the reviewer account; the founder rejected an interim review key.
-Record only once that flow and a substantive reply work live. Full history is item
-12 under "Apple App Store: enroll" below.
+Founder direction 2026-10-11: no personal iPhone is needed. The **iOS App Review
+video** workflow (`.github/workflows/ios-review-video.yml`) runs the six-step
+Guideline 2.1 packet on one physical AWS iPhone. It first runs the same test against
+production on Simulator; that proof alone is not Apple's required device video.
 
-#### No iPhone? Record it on a cloud real iPhone (2026-10-04)
+1. At [AWS account signup](https://portal.aws.amazon.com/billing/signup), create an
+   account, complete email/phone/payment verification, choose Basic support, and
+   enable root MFA. Use an administrator identity for the following one-time setup;
+   do not create root access keys.
+2. Open [Device Farm in Oregon](https://us-west-2.console.aws.amazon.com/devicefarm/home?region=us-west-2).
+   Choose **Mobile Device Testing ? Projects ? Create project**, name it
+   `tinyassets-app-review`, and copy its ARN. This enables use of Device Farm;
+   select metered testing, not a monthly device slot. All workflow calls use
+   `us-west-2`, Device Farm's mobile-testing region.
+3. In **IAM ? Users ? Create user**, name it `tinyassets-review-video`, with no
+   console access. Add the inline policy below, substituting your 12-digit account
+   ID and the project UUID (the text after `project:` in its ARN). Do not attach
+   AdministratorAccess, S3, IAM or any other service permissions.
+4. Under that user's **Security credentials ? Create access key**, select
+   **Application running outside AWS**. Copy the key ID and secret directly into
+   GitHub **TinyAssets/TinyAssets ? Settings ? Environments ? app-store ? Add
+   environment secret** as `AWS_DEVICEFARM_ACCESS_KEY_ID` and
+   `AWS_DEVICEFARM_SECRET_ACCESS_KEY`. Add the project ARN as
+   `AWS_DEVICEFARM_PROJECT_ARN`. The existing `APP_STORE_REVIEW_USERNAME` and
+   `APP_STORE_REVIEW_PASSWORD` remain in that environment; do not put any value in
+   source, workflow inputs, chat, screenshots or command arguments.
+5. In **Actions ? iOS App Review video ? Run workflow**, use the PR branch for
+   testing (after merge, `main`) and leave **dry_run=true** first. Before the new
+   workflow is registered on main, use **iOS build ? Run workflow** on the PR branch
+   with **review_video_proof=true**, which invokes the same dry run. A successful
+   run compiles both runners, builds a signed IPA and completes the production
+   Simulator journey without AWS calls. If the reviewer has no working model
+   connection, the test fails; arrange the normal user connection first, never an
+   interim review-only inference key.
+6. Dispatch **iOS App Review video** with **dry_run=false** to authorize one metered
+   physical run. Download `ios-review-physical-iphone-<run-id>` from its artifacts:
+   MP4, named per-step PNGs, test status, device/iOS version and source SHA. Runs
+   fail if the journey, splash, recording or screenshot evidence is incomplete.
+   Review all six shots, password masking, and the recorded OS against Apple's
+   latest-public-iOS request before sending it to the lead. Apple attachment and
+   resubmission still require the lead's explicit go.
 
-Apple asks for a **physical** device, not your own device. BrowserStack App Live
-rents real iPhones you drive from your browser, with TestFlight preinstalled, and
-records the session to `.mp4`. Checked 2026-10-04:
-[TestFlight on App Live](https://browserstack.com/docs/app-live/app-source/testflight)
-(iPhone 14 or newer only) and
-[session recording](https://browserstack.com/docs/app-live/session-debugging/record-session)
-(Chrome only, up to 20 minutes, download as `.mp4`). Step 5 also needs
-[file injection](https://www.browserstack.com/docs/app-live/media/file-injection),
-which is available only on **Team Pro or Enterprise Pro**. Confirm that entitlement,
-enough uninterrupted session time for all six steps, and a qualifying device before
-purchasing access. The [trial limits](https://www.browserstack.com/support/faq/plans-pricing/plans/what-do-i-get-with-a-free-trial)
-do not establish that the full recording can be completed on a trial.
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyReviewProjectAndItsChildren",
+      "Effect": "Allow",
+      "Action": "devicefarm:*",
+      "Resource": [
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:project:PROJECT_UUID",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:upload:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:run:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:job:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:suite:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:test:PROJECT_UUID/*",
+        "arn:aws:devicefarm:us-west-2:ACCOUNT_ID:artifact:PROJECT_UUID/*"
+      ]
+    },
+    {
+      "Sid": "DiscoverPublicIPhones",
+      "Effect": "Allow",
+      "Action": "devicefarm:ListDevices",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "us-west-2"}}
+    }
+  ]
+}
+```
 
-AWS Device Farm also has real iPhones. Its shared-device service re-signs the
-uploaded app with a wildcard profile and removes entitlements
-([FAQ](https://aws.amazon.com/device-farm/faqs/)). An ad-hoc-signed `.ipa` is a possible
-fallback preparation path, not a requirement established by that FAQ. Re-signing
-changes what Apple sees, so confirm that a fallback recording can satisfy the review
-request before using it.
+The separate read-only `ListDevices` statement is required: AWS does not support
+resource-level permissions for this action. A literal project-ARN-only policy
+cannot discover the newest iPhone/iOS. All mutation permissions above are confined
+to this project's resources, and no other AWS service is granted. See the
+[AWS service authorization table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_devicefarm.html).
 
-**Before you start:**
-- Verify the real inline connect flow and a reviewer reply before recording.
-  The proposal alone is not proof that this works in production; no interim key renewal.
-- Have the App Review account's email and password ready: Windows Credential Manager,
-  the `play-review@tinyassets.io` entry. You type them on the cloud phone. Never show the
-  password on screen (step 2).
-- Save `docs/ops/app-store-review-sample.txt` somewhere you can upload from (step 5).
-- Use **Chrome** on your PC. Recording only works there.
+**Cost, checked 2026-10-11:** [AWS pricing](https://aws.amazon.com/device-farm/pricing/)
+lists **$0.17/device-minute** and a limited-time **1,000-minute one-time trial**
+(normally 250 minutes). Confirm the trial balance in your new account. One 10?20
+minute run is about **$1.70?$3.40** after trial; the 30-minute device timeout is
+about **$5.10** in device time, plus any billable service setup time. GitHub macOS
+runner usage and the reviewer's model usage are separate. No monthly device slot
+is needed. Dry run incurs no AWS usage.
 
-**Set up the cloud iPhone:**
-1. Sign in at browserstack.com → **App Live**.
-2. In **Select Source**, choose **Install via TestFlight**.
-3. Verify that an iPhone 14 or newer with TestFlight is available on the **latest
-   public iOS version required by Apple's request**. Check its actual OS version;
-   the newest version in the vendor's list may be older. If no qualifying device
-   exists, report that blocker rather than substituting an older iOS.
-4. On the cloud phone, open TestFlight and sign in with **your** Apple ID. That's the
-   Account Holder, already invited to the `Internal` group with build 3. Install
-   **TinyAssets**.
-5. Before recording, open TinyAssets once and close it so the first-run install
-   prompts are out of the way. Then swipe it away so the recording starts from a cold
-   launch.
-
-**Record:** click **Record Session** in the App Live toolbar, then perform these six
-steps in order, without cutting. They're the shot list from the 2.1 response packet.
-
-| # | Do | Apple must see |
-|---|---|---|
-| 1 | Tap the TinyAssets icon. | The native splash, then the signed-out screen. |
-| 2 | Choose email and password and sign in with the App Review account. Type the password in the masked field only, never in a visible notes app. | A normal sign-in into the reviewer's account. |
-| 3 | Wait for the reviewer's private universe to load. | You're inside the app. Show the real inline connect flow if a connection is needed; no subscription or payment step. |
-| 4 | Send: `Give me a three-step plan to launch a small bakery's online orders, and keep it short.` Wait for the full reply. Then swipe TinyAssets away (force quit), relaunch it, and show the same conversation still there. | A real AI reply, and the conversation surviving a force quit. |
-| 5 | Attach `app-store-review-sample.txt` (use App Live's **Files & Media → File → Upload new file**, then pick it under **Files → Chrome → Injected Files** in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
-| 6 | Open Account / Privacy and show the **Delete my account** path. **Do not** confirm deletion. | That account deletion is reachable in the app. |
-
-Click **End Recording**, then **Download** to save the `.mp4`.
-
-**After:**
-- Sign out of TestFlight and of your Apple ID on the cloud phone before ending the
-  session.
-- Hand the `.mp4` to the lead (drop it in the chat or a shared folder). The agent
-  checks all six steps are visible and the password never is. Then it attaches the
-  video with the drafted written answers and resubmits build 3 only on the lead's
-  explicit go.
-- If App Live has no iPhone with TestFlight available, or the recording fails, say so.
-  The agent can prepare an AWS Device Farm fallback, but must first verify its OS,
-  signing and recording behavior against the same review request.
+Device Farm re-signs the uploaded current-source app. The artifact records its
+SHA; it must not be described as the old build 3 binary. The workflow deletes its
+AWS run metadata and uploaded packages after downloading evidence because the
+restricted run environment carries reviewer credentials. Keep the GitHub artifact
+(the retention is 14 days); failures also retain available evidence. No AWS
+account, access keys or paid run is created by the builder.
 
 ---
 
