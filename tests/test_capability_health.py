@@ -120,6 +120,7 @@ def test_capability_image_sets_a_vault_master_key_before_it_writes():
     ).read_text(encoding="utf-8")
     assert "TINYASSETS_VAULT_MASTER_KEY=base64.urlsafe_b64encode(" in source
     assert 'TINYASSETS_VAULT_MASTER_KEY_ID="1"' in source
+    assert "os.chown(p, DAEMON_UID, BROKER_READ_GID)" in source
 
 
 def test_capability_image_keeps_real_execution_seams():

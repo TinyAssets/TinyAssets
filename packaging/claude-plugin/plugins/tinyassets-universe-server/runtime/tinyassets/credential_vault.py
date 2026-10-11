@@ -781,13 +781,17 @@ def _persist_role_vault(path: Path, data: str) -> None:
 def _write_role_vault(path: Path, data: str) -> None:
     import tempfile
 
-    from tinyassets.role_modes import BROKER_READ_GID, VAULT_FILE_MODE
+    from tinyassets.role_modes import BROKER_READ_GID, DAEMON_UID, VAULT_FILE_MODE
 
     fd, name = tempfile.mkstemp(prefix=".vault-", suffix=".tmp", dir=path.parent)
     temporary = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
+            # A root writer (the capability image) would otherwise leave uid 0,
+            # which the owner-tree read refuses. The daemon is already uid 1001
+            # and keeps it. The broker group is set either way.
+            published_uid = DAEMON_UID if os.geteuid() == 0 else -1
+            os.fchown(handle.fileno(), published_uid, BROKER_READ_GID)
             os.fchmod(handle.fileno(), VAULT_FILE_MODE)
             handle.write(data)
             handle.flush()

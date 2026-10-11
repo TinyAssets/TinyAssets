@@ -198,6 +198,16 @@ def test_a_same_owner_hardlink_reads(tmp_path, operation):
         os.close(fd)
 
 
+def test_daemon_broker_vault_ownership_is_an_admitted_read_identity() -> None:
+    from tinyassets import role_modes
+
+    text = Path(role_modes.__file__).read_text(encoding="utf-8")
+    assert "DAEMON_UID = 1001" in text
+    assert "BROKER_READ_GID = 1102" in text
+    assert wfs._DAEMON == (1001, 1001)
+    assert wfs._DAEMON_BROKER == (1001, 1102)
+
+
 @posix_only
 def test_read_returns_the_bytes_of_a_regular_file(tmp_path: Path) -> None:
     (tmp_path / "repo").mkdir()

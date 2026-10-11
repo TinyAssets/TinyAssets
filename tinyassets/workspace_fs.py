@@ -60,6 +60,10 @@ _HEX = frozenset("0123456789abcdefABCDEF")
 _MAX_TREE_DEPTH = 64
 #: The daemon's own inode label (role_modes.DAEMON_UID, its primary group).
 _DAEMON = (1001, 1001)
+#: A vault the daemon publishes for the broker. uid stays the daemon;
+#: gid is role_modes.BROKER_READ_GID so mode 0640 is group-readable.
+#: It is not 1001:1001, and it is still a daemon file.
+_DAEMON_BROKER = (1001, 1102)
 
 
 class UnsafePoolPath(OSError):
@@ -755,10 +759,13 @@ def _open_regular_beneath(
                 f"{str(relpath)!r} is not a regular file (mode {info.st_mode:#o}); "
                 "a workspace read never opens a device, a FIFO or a directory"
             )
-        # The daemon's own writes in an owner tree are 1001:1001 (it cannot
-        # chown). No owner can alias one in: it cannot open another owner's
-        # tree, hardlink a file it cannot open, or have a link followed here.
-        if identity is not None and (info.st_uid, info.st_gid) not in (identity, _DAEMON):
+        # The daemon's own writes in an owner tree are 1001:1001 when it
+        # cannot chown, or 1001:1102 when it publishes a broker-readable vault.
+        # No owner can alias one in: it cannot open another owner's tree,
+        # hardlink a file it cannot open, or have a link followed here.
+        if identity is not None and (info.st_uid, info.st_gid) not in (
+            identity, _DAEMON, _DAEMON_BROKER,
+        ):
             raise UnsafePoolPath(
                 f"{str(relpath)!r} does not belong to the admitted owner identity"
             )

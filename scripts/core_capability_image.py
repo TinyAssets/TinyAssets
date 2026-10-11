@@ -544,10 +544,12 @@ def image_check(args):
                 seed
                 + [
                     "-c",
-                    "from pathlib import Path; "
-                    '[(p.write_text(\'{"schema_version":1,"credentials":[]}\')) '
+                    "import os; from pathlib import Path; "
+                    "from tinyassets.role_modes import BROKER_READ_GID, DAEMON_UID; "
+                    "[(p.write_text('{\"schema_version\":1,\"credentials\":[]}'), "
+                    "os.chown(p, DAEMON_UID, BROKER_READ_GID)) "
                     "for p in Path('/data').glob('*/.credential-vault.json')]; "
-                    "import os, pwd; uid=pwd.getpwnam('tinyassets').pw_uid; "
+                    "import pwd; uid=pwd.getpwnam('tinyassets').pw_uid; "
                     "[(p.write_text('{}'), os.chown(p,uid,uid)) for i in range(300) "
                     "for p in [Path('/data/u-alice') / ('.capability-sidecar-'+str(i))]]",
                 ],
