@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from review_xctest import CREDENTIALS, SHOTS
@@ -124,6 +125,36 @@ def cleanup(client, run: str | None, uploads: list[str], output: Path) -> None:
         raise RuntimeError("AWS cleanup incomplete")
 
 
+def sweep(client, project: str, output: Path, *, now: datetime | None = None) -> None:
+    """Recover killed-run leftovers in this dedicated project before each paid run.
+
+    Two hours exceeds the entire workflow job timeout. Snapshot pagination before
+    deleting, attempt every resource, and fail closed before sending new secrets.
+    """
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=2)
+    runs = [
+        run for run in pages(client, "list_runs", "runs", arn=project) if run["created"] < cutoff
+    ]
+    uploads = [
+        upload["arn"]
+        for upload in pages(client, "list_uploads", "uploads", arn=project)
+        if upload["created"] < cutoff
+    ]
+    failed = []
+    for run in runs:
+        try:
+            cleanup(client, run["arn"], [], output)
+        except RuntimeError:
+            failed.append({"operation": "delete_run", "arn": run["arn"]})
+    try:
+        cleanup(client, None, uploads, output)
+    except RuntimeError:
+        failed.extend(json.loads((output / "cleanup-required.json").read_text()))
+    if failed:
+        (output / "cleanup-required.json").write_text(json.dumps(failed, indent=2) + "\n")
+        raise RuntimeError("Old Device Farm resources remain; no new run scheduled")
+
+
 def collect(client, run: str, output: Path) -> tuple[list[Path], bool]:
     """List at run/job/suite/test scope; collect only video and allowlisted evidence."""
     scopes = [run]
@@ -198,9 +229,10 @@ def execute(ipa: Path, tests: Path, output: Path) -> None:
             connect_timeout=15, read_timeout=60, retries={"max_attempts": 3, "mode": "standard"}
         ),
     )
+    output.mkdir(parents=True, exist_ok=True)
+    sweep(client, project, output)
     device = select_device(list(pages(client, "list_devices", "devices", arn=project)))
     print(f"Selected {device['name']} / iOS {device['os']}; one device, 30 minute timeout")
-    output.mkdir(parents=True, exist_ok=True)
     created: list[str] = []
     run = None
     completed = False
@@ -283,6 +315,10 @@ def execute(ipa: Path, tests: Path, output: Path) -> None:
     finally:
         # Run metadata contains credentials. Once evidence is downloaded (also
         # on failure), remove it; the workflow artifact is the retained evidence.
+        # GitHub can send SIGTERM shortly after SIGINT. Let cleanup continue
+        # through repeated signals; SIGKILL is recovered by the next-run sweep.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         cleanup(client, run, created, output)
 
 

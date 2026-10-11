@@ -27,7 +27,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require main for secret-bearing review dispatch
+        env:
+          REVIEW_REF: ${{ github.ref }}
+        run: test "$REVIEW_REF" = refs/heads/main
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install evidence dependency without secrets
+        run: python -m pip install --disable-pip-version-check 'cryptography==46.0.3'
+      - name: Reject missing or placeholder evidence recipient
+        run: python mobile/scripts/review_evidence.py validate-recipient
+
   signed-app:
+    needs: preflight
     uses: ./.github/workflows/ios-release.yml
     with:
       marketing_version: ${{ inputs.marketing_version }}
@@ -35,6 +55,7 @@ jobs:
     secrets: inherit
 
   build-runners:
+    needs: preflight
     runs-on: macos-15
     timeout-minutes: 25
     steps:
@@ -99,6 +120,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/review-iphonesimulator/Build/Products"
           unzip -q "$RUNNER_TEMP/simulator-download/review-simulator-products.zip" -d "$RUNNER_TEMP/review-iphonesimulator/Build/Products"
+      - name: Install evidence dependencies without secrets
+        run: python3 -m pip install --disable-pip-version-check 'cryptography==46.0.3' 'opencv-python-headless==4.11.0.86'
       - name: Exercise production on a fresh Simulator
         env:
           APP_STORE_REVIEW_USERNAME: ${{ secrets.APP_STORE_REVIEW_USERNAME }}
@@ -106,14 +129,10 @@ jobs:
         run: bash mobile/scripts/run_review_simulator.sh
       - name: Verify native splash appears in the recording
         run: |
-          python3 -m pip install --disable-pip-version-check 'opencv-python-headless==4.11.0.86'
           python3 mobile/scripts/verify_review_video.py "$RUNNER_TEMP/review-simulator/simulator-proof.mp4" "$RUNNER_TEMP/review-simulator"
       - name: Encrypt private Simulator evidence
         if: always()
-        env:
-          APP_STORE_REVIEW_PASSWORD: ${{ secrets.APP_STORE_REVIEW_PASSWORD }}
         run: |
-          python3 -m pip install --disable-pip-version-check 'cryptography==46.0.3'
           python3 mobile/scripts/review_evidence.py encrypt "$RUNNER_TEMP/review-simulator" "$RUNNER_TEMP/review-simulator.enc"
       - name: Save encrypted Simulator evidence (not Apple's physical-device proof)
         if: always()
@@ -127,7 +146,10 @@ jobs:
   devicefarm:
     needs: [signed-app, simulator]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Leaves room for bounded orchestration, cleanup, encryption and upload.
+    # GitHub Actions has no configurable cancel-timeout-minutes; the next paid
+    # run sweeps old metadata if forced cancellation kills in-process cleanup.
+    timeout-minutes: 75
     environment: app-store
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -146,7 +168,7 @@ jobs:
           name: ios-review-tests
           path: ${{ runner.temp }}/tests
       - name: Install orchestration dependencies
-        run: python -m pip install --disable-pip-version-check 'boto3==1.43.111' 'opencv-python-headless==4.11.0.86'
+        run: python -m pip install --disable-pip-version-check 'boto3==1.43.111' 'opencv-python-headless==4.11.0.86' 'cryptography==46.0.3'
       - name: Validate packages, then stop before AWS or record on one physical iPhone
         env:
           REVIEW_DRY_RUN: ${{ inputs.dry_run }}
@@ -161,10 +183,7 @@ jobs:
             --output "$RUNNER_TEMP/review-devicefarm"
       - name: Encrypt private physical-device evidence
         if: always() && !inputs.dry_run
-        env:
-          APP_STORE_REVIEW_PASSWORD: ${{ secrets.APP_STORE_REVIEW_PASSWORD }}
         run: |
-          python -m pip install --disable-pip-version-check 'cryptography==46.0.3'
           python mobile/scripts/review_evidence.py encrypt "$RUNNER_TEMP/review-devicefarm" "$RUNNER_TEMP/review-devicefarm.enc"
       - name: Save encrypted physical-device video and step screenshots
         if: always() && !inputs.dry_run

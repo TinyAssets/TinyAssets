@@ -1,0 +1,3 @@
+PLACEHOLDER: The lead must run python scripts/review_evidence_keygen.py
+and replace this entire file with its public PEM output. CI refuses this file.
+Never commit the private key from %USERPROFILE%\.tinyassets\review-evidence.key.

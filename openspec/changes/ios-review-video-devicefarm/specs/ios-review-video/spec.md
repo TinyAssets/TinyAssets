@@ -17,3 +17,22 @@ The dispatch workflow SHALL inject reviewer credentials at runtime, paste the pa
 #### Scenario: Physical completion
 - **WHEN** Device Farm completes
 - **THEN** non-passing results or missing video/step screenshots fail the workflow and available recording evidence is retained.
+
+### Requirement: Public artifacts require an independent recipient key
+Evidence SHALL use ephemeral X25519, HKDF-SHA256 and AES-256-GCM to a committed public recipient key, never derive a key from reviewer credentials. Key generation SHALL create an owner-only local private key without overwriting or printing it. Decryption SHALL read that private key locally.
+
+#### Scenario: Recipient is not configured
+- **WHEN** the committed public key is absent, invalid or a placeholder
+- **THEN** preflight fails before signing or credential-bearing jobs start.
+
+#### Scenario: Wrong private key or tampered ciphertext
+- **WHEN** evidence authentication fails
+- **THEN** decryption fails before creating any output files.
+
+### Requirement: Main-only dispatch and cancellation recovery
+Secret-bearing review dispatches SHALL require main. Dependencies SHALL install with pinned versions in separate steps without secrets. IAM SHALL grant explicit project-scoped recording/cleanup operations plus ListRuns/ListUploads for recovery and global ListDevices for discovery.
+
+#### Scenario: Runner was forcibly terminated
+- **WHEN** the next physical run starts
+- **THEN** it first sweeps runs and uploads older than two hours in the dedicated project, stops unfinished old runs before deletion, attempts every old resource, and refuses a new run if cleanup fails.
+- **AND** dry runs continue to make no AWS calls; absent a next physical run, the lead must remove leftovers manually.

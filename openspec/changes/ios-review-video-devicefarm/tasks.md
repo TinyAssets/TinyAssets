@@ -24,6 +24,15 @@ This proves the launch and evidence harness only. The preceding dependency-insta
 failure was resolved by selecting CI Python before pip installs.
 Full signed/credentialed proof was rejected before
 execution in run 38100020133: app-store environment permits main only. Founder
-authorization for a temporary exact-branch allowance is pending; no environment
+must dispatch credentialed proof from main after merge; no environment
 protection was changed and no AWS calls were made. Do not call the six-step
 Simulator journey or physical recording proven until those runs succeed.
+
+Security fix round: independent X25519 recipient encryption, owner-only local
+keygen, fail-closed placeholder, explicit IAM, main-only dispatch, secret-free
+dependency installs and next-physical-run cancellation sweep implemented.
+92 focused Windows tests and 11 Linux-oracle review tests pass; Ruff and
+actionlint pass. The affected heavy-file Linux run has 155 passes and 30 failures,
+all in test_deploy_prod_workflow.py; that file and deploy-prod.yml are byte-identical
+to origin/main. Cross-family review: APPROVE; AGREE (no floor/correctness findings).
+The lead must commit the generated public key before main dispatch can proceed.
