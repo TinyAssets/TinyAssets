@@ -1,14 +1,16 @@
-# Destiny (tiny): what exists, what the site says, and a credits-first shape
+# Destiny (tiny): wallet payout, platform spend, and what exists today
 
 Date: 2026-10-11
 Status: research note. No code and no site text changed.
-This is not legal advice. It records what the repo and the site say, and where a later counsel review has to answer before any payout exists.
+This is not legal advice. Facts below are labeled evidence. Recommendations and risk readings are labeled inference. Counsel has to answer the questions in the last section before any token moves.
 
-The owner's intent, stated for this note: `tiny` is the payout for creator rewards and for compute rewards (hosts lending compute, creators publishing shapes that people use).
+The owner's intent, clarified 2026-10-11: `tiny` is payment for creator work and for compute work. It is a transferable on-chain token. The user holds it in their own wallet (self-custody) and can move it, or they spend it on the platform. The platform should not custody user funds.
 
 ## Where this stands
 
-Nothing pays anyone in `tiny` today. The careful public line is on the fine-print page: no paid work market, and no currency moves. The legal page describes a Base Sepolia `test tiny` settlement rail and daemon-host rewards that the code does not run. The low-risk shape is an off-chain ledger of internal credits, denominated in cents of subscription revenue actually collected, with no token balance, no wallet, and no cash-out, until counsel reviews the questions already listed in `openspec/changes/creator-revenue-share/design.md` §9 and the founder opens the 2026-04-29 real-currency phase in the same change as the legal page.
+Nothing pays anyone in `tiny` today. **Evidence:** the fine-print page says no currency moves, and no module sends Destiny or `test tiny`. The legal page describes a Base Sepolia `test tiny` rail that the code does not run.
+
+**Inference, the low-risk order.** Accrue what the platform owes as an append-only payable, in cents of subscription cash actually collected. That payable is not a token and not a balance the platform holds for the user. When counsel and the 2026-04-29 phase opening allow a settlement, the same ledger closes the payable in one of two ways: a transfer to a wallet the user proved they control, or retirement of the payable against a platform charge. After a wallet transfer the user can hold the token, move it, or spend it by signing a transfer back. The platform does not keep a key to those tokens and does not keep a withdrawable balance of them.
 
 ## What the name is (evidence)
 
@@ -84,53 +86,107 @@ A search of the marketing pages (`page.tsx`, `start`, `build`, `developers`) fou
 | Legal page: not backed by a managed pool; "Portfolio Backed Currency" is deprecated. | The 2026-07-08 exec plan still describes TINY as a claim on a pool of assets, minted at NAV. That code is not in the tree. The two documents disagree. |
 | 2026-04-29 note: do not say the product pays in mainnet Destiny. | The legal page does say mainnet payouts are not current. It does say a test rail is the thing TinyAssets settles on. |
 
-## Risk flags (inference, except where a file is named)
+## Chain status (evidence)
 
-Not a determination. `creator-revenue-share` design §9 already tells the founder to get counsel before mainnet, and lists the questions below. This note adds the mismatch between the legal page and the code, which §9 does not inventory line by line.
+| Chain | What the repo and the site say | What the running code does |
+|---|---|---|
+| Base mainnet, chain id 8453 | `token-info.json`: Destiny `0x0BB570E30f0b3C5D909C08e3316Dade9C1Dc7fE0`, `workflow_status` `reference-only`, plus a second address `0xa446E417c9379863bD279CE715De59a80879bAfE`. The 2026-04-29 note cites BaseScan and a Coinbase asset page for the name Destiny / TINY. **TODO:** those pages were not re-fetched. `treasury_config.toml` mainnet address is empty. | No payout, no signer, no mainnet client. |
+| PulseChain | Address `0x92a242f94db176082Df4D386B366f4217ab7fAFd`, reference-only. The JSON has a `buy` URL. The legal page renders the explorer link, not the buy URL. | Nothing. |
+| BSC | Address `0x839108AaecB749e8F33cc68bb6D6323F61206322`, marked legacy. | Nothing. |
+| Base Sepolia, chain id 84532 | Policy name for current work is `test tiny`. `token-info.json` phase "test tiny settlement" is `planned`. No Sepolia token address is in `token-info.json`. `settlement_backend.py` names Circle testnet USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` and talks to a mock client. `treasury_config.toml` publishes wallet `0x3023f144fdaEC0F3E5F75125D55B9BAe3AEEdEb1`. The creator-revenue-share spec allowlist starts as `{84532}` and forbids a mainnet transaction until a recorded phase opening. | The mock USDC path is off unless `TINYASSETS_SETTLEMENT_BACKEND=base_sepolia`. It does not send `tiny`. The Sepolia wallet is not wired to that backend. **TODO:** balances were not read on chain. |
 
-- **Securities.** Paying creators, from subscription revenue, in a token the site names as its currency can be read as buyers or holders expecting profit from the platform's efforts. Design §9 question 1 says that, and notes that scheduled platform buying is steady buy pressure. The legal page's "not a security" and the JSON `is_security: false` are the site's own classification. The page also says a securities attorney has not reviewed it. The 2026-07-08 plan says the NAV-fund version is plausibly a security. Inference: do not build that fund, and do not treat the page's "not a security" line as clearance.
-- **Money transmission.** Design §9 question 2: buying a token and sending it to third parties as compensation may be money transmission (FinCEN or a state regime such as the NY BitLicense) or a crypto-asset service under EU MiCA. The legal JSON already lists New York BitLicense as "scope review" pending. An internal credit that cannot be withdrawn, sold, or transferred to a wallet is a different object from a token send. Inference: the credit should be non-transferable and non-redeemable until that question is answered.
-- **Tax reporting.** Design §9 question 3: W-9 / W-8BEN, the US information-reporting threshold, withholding on non-US creators, EU DAC7 / DAC8, and fair-market value on the payout date. The JSON's "we do not file 1099-MISC at v0" is paired with "payouts are disabled." Inference: that sentence becomes a problem if payouts start and the page is not rewritten in the same change. Confirm the dollar threshold with counsel; the design note already says the historical $600 figure may have changed for 2026.
-- **Sanctions and KYC.** The legal page states real-time screening and a KYC threshold as facts, and also says wallets are not live. Inference: a representation that screening happens, while no code screens, is the exposure. Opening a wallet or a payout without building the screen the page already promises is worse. The fine print's "no currency moves" is the statement that matches the software.
-- **Consumer-protection and terms.** The legal page is labeled draft, the operating entity is unformed, and it still says that using the site is agreement to those terms, with a liability cap of the lesser of fees paid in 12 months or USD 100, plus a class-action waiver. The page itself says it does not exclude liability that cannot be excluded. Separately, "settles solely on the test tiny rail" and "rewards remain on" that rail describe a payout mechanism the software does not run. Inference: that is a false-statement problem even if `tiny` is never a security. The fine print is the accurate public line. This note does not edit either page.
-- **Store rules.** Design §9 questions 5 and 6: Google Play and Apple restrict crypto offered for completing tasks, and the apps are store clients of the hosted service. Inference: earnings and token balances do not belong in those shells.
-- **Stripe.** Design §9 question 4: card revenue that funds token purchases for third parties may engage Stripe's restricted-business terms. Inference: a shadow ledger that does not buy tokens does not take that step.
+**Inference.** Sending the published Base contract is mainnet money, even if a test happened first on Sepolia. A Sepolia token at a different address can rehearse a transfer. It is not the asset the site and the 2026-04-29 note point at on Base. There is no deployed `test tiny` contract in this repo to rehearse against.
 
-## How rewards would attach, if they are built later (inference)
+## The product shape the clarification asks for (inference, built on the evidence above)
 
-**Creator rewards** already have a shape that does not need a token. From the creator-revenue-share proposal, not from code:
+Two ways a person receives or uses `tiny`, and neither one leaves their tokens in the platform's hands.
 
-1. A published command-center piece is identified. Attribution waits on the bundle manifest the proposal calls D9. That manifest was not re-verified in this pass. **TODO.**
-2. When a seat is released, one usage record stores that call's credited time and which third-party pieces took part. `universe_seats.release` does not write that record today.
-3. The pool is a founder-set share of Stripe revenue actually collected, after fees, refunds, and chargebacks. The proposal recommends 20% inside a 10–30% range and says the number is not decided. Self-use and platform-owned pieces count in the denominator and pay nobody, so an account cannot receive more than it paid.
-4. The ledger is integer micro-USD. It does not store a TINY price. Phase A in the proposal is this shadow ledger and creator metrics, with no payout.
+1. **Wallet payout.** The platform transfers tokens to an address the user proved they control. After that transfer the user holds a normal transferable token. They can move it with their own wallet. The platform has no key for that address.
+2. **Platform spend.** Either the unpaid amount is retired because the user takes a platform charge (seats, storage, a subscription credit), or, once they already hold tokens, they sign a transfer from their wallet to a platform address at the moment they buy something. Tokens that arrive that way belong to the platform. They are not a deposit the user can withdraw.
 
-That phase is the integration point. Seats are the meter. Storage is not a creator meter. A second meter of "shapes used" would duplicate the seat record the proposal already chose.
+The creator-revenue-share design already sketches the payout leg, and it is not built. **Evidence**, design §7 and §8: a Safe on Base whose owner is the founder's hardware wallet; no spending-limit module; a proposer key that can propose and cannot spend; a gas key with a small ETH float; the founder signs each batch; the creator proves the address with an EIP-712 message (EIP-1271 / ERC-6492 for a smart wallet); a changed address waits out a cooling-off period; a row is paid only when the chain `Transfer` event is seen. The allowlist starts at Base Sepolia. That design holds platform funds for the length of a batch. It does not hold a user's wallet.
 
-The founder's 2026-10-04 "pay daily" line is not a reason to send a daily token transfer. The open concern says to pick daily accrual versus a settlement threshold before any implementation, and not to weaken the founder-signed batch. Accrual can be daily inside the micro-USD ledger. Settlement, if it ever exists, stays a later phase.
+**Inference.** A balance in the app that the user can withdraw later, or tokens sitting in the Safe labeled as a user's balance, is custody. The payable in the ledger is an amount the platform owes. It becomes the user's property when the chain transfer lands, or it disappears when the payable is retired in kind. There is no third state in which the platform is keeping their coins.
 
-**Compute rewards** do not have a compliant meter.
+## One ledger for payout and for spend (inference)
 
-- Lending a machine to other users' prompts puts those prompts on that machine. The 2026-10-11 hard requirement forbids that. A reward for it would pay for a non-compliant design.
-- A pool of tasks the user marks public still sends plaintext to a third-party host. The inventory note does not carve that out.
-- Capacity used by the same account that owns the machine is bring-your-own-model, not a payout. There is nothing to pay the owner for running their own work.
-- A platform-authored health probe contains no user content and is not a product someone pays for.
+Yes. One append-only book should be the source of truth. The chain is how a wallet row closes. It is not a second set of books.
 
-So compute-pool metering is not an input to `tiny`. If a later design has a workload that never carries user content and the owner still wants to pay for it, that is a new spec (storage, authority, and money). It is not a flag on the escrow path.
+A row is an integer micro-USD obligation, the same unit the creator-revenue-share proposal already chose, so the book does not store a TINY price. Settlement is one of:
 
-## Recommended minimal design
+| Close | What happens | What the platform holds |
+|---|---|---|
+| `settled_on_chain` | Founder-signed transfer to the proved address. Amount of tokens is the amount the buy actually filled, recorded from the transfer. | Nothing of the user's after the event. |
+| `settled_in_kind` | The obligation is applied to a platform charge (more seats, more storage, a subscription credit). No token is bought. | Nothing. |
+| Incoming spend | The user already holds tokens and signs a transfer in. A new row records the transfer hash and what it paid for. | The received tokens are platform property, not a user balance. |
 
-Do this, and do not do the rest. All of it is inference from the evidence above, and it stays behind counsel for anything that leaves the building as money.
+`tinyassets/payments/settlement_ledger.py` is a different book: escrow gross, fee, and net, behind the paid-market flag, with a 1% take. **Evidence:** it is the old node-market ledger. **Inference:** creator and compute rows should not be written there. One new ledger, not three (escrow, plus credits, plus a chain balance).
 
-1. **Internal credits only.** An append-only ledger of integer micro-USD obligations, filled only from subscription cash the platform has actually collected. Non-transferable. Not redeemable for cash, for `tiny`, or for `test tiny`. No wallet field. No price of TINY. No "earn crypto" string. This is Phase A of `creator-revenue-share`, and it is not built.
-2. **No public token and no cash-out.** Do not deploy a `test tiny` contract, do not point `BaseSepoliaBackend` at Destiny, do not flip `TINYASSETS_PAID_MARKET`, and do not revive the NAV mint in the 2026-07-08 plan. Testnet tokens that people can sell or that the site calls "rewards" are still a public claim. The 2026-04-29 boundary stays closed until counsel answers design §9 and the founder opens the phase in a change that updates that note and the legal page together. The proposal's own spec already says a mainnet transaction is forbidden before that change.
-3. **Copy, in a later change, not this one.** Make the legal page match the fine print: no currency moves; test-tiny settlement is not live; the Base, PulseChain, and BSC addresses are reference-only and TinyAssets does not settle on them; KYC and OFAC screening are not implemented. Delete or stop rendering `is_security: false` and the "daemons earn test tiny" sentence until counsel writes the replacement. This note does not edit the site.
-4. **Creator credits use the seat, when D9 exists.** One usage record per released seat. Unpublished and self-owned pieces pay nothing. Show creators aggregate counts only after the privacy question in design §9.8 is answered. The legal page currently says the apps run no analytics.
-5. **Compute rewards stay off.** No host is paid for other users' inference. Own-account GPU use is not a reward program.
-6. **Leave the old money code dark.** The 1% MicroToken math and the flag-off escrow ledger are the map of the old node market. They are the wrong rail for creator credits. Building credits does not require turning them on.
+Daily accrual can be a row in this ledger. A daily on-chain send is a separate choice. `docs/concerns/2026-10-04-creator-daily-settlement-design.md` says the proposal's daily line and the design's monthly batch disagree, and that the founder-signed batch stays. **Inference:** accrue daily, settle on the batch the founder can still sign, and do not leave per-user tokens in the Safe between batches.
+
+## Securities and token classification
+
+**Evidence.** The legal page says Destiny is intended to function as a digital tool and/or digital commodity under an April 2026 SEC "Project Crypto" release, and that it is intended to qualify for a mature-blockchain carve-out in the Digital Asset Market Clarity Act (H.R. 3633). The same page says that Act has not passed the Senate, says "not a security," and says a securities attorney has not reviewed the page. `legal-info.json` has `is_security: false`. The 2026-07-08 exec plan says a NAV-mint fund "is very plausibly a security" and must stay internal until counsel signs off. That fund code is absent. Design §9.1 asks whether paying creators in this token, funded by revenue the platform uses to buy it, is an expectation-of-profit narrative.
+
+**Inference.** A transferable token, paid for other people's use of the product, which holders can move and which the platform buys with subscription revenue, is the shape counsel has to classify before the first send. The page's "not a security" line is not that classification. The NAV-fund design conflicts with the page's "not a managed pool" line and should not be the issuance model. Counsel's question is the transferable payment token itself: what it is when the user can hold it and sell it, and what the buy-pressure of platform purchases does to that answer. A Sepolia rehearsal under the same brand is part of the same question if the public site calls it `tiny`.
+
+## Money transmission and custody
+
+**Evidence.** Design §9.2 asks whether buying a token and sending it to third parties is money transmission (FinCEN or a state regime such as the NY BitLicense) or a crypto-asset service under EU MiCA. The legal JSON lists New York BitLicense as pending scope review. No transmitter license, no custody module, and no user-key store exist in the tree. The Safe design keeps spending power on the founder's hardware key.
+
+**Inference.** Self-custody removes the platform's power over tokens after delivery. It does not, by itself, answer whether the act of buying and delivering them is money transmission. Counsel has to say that before mainnet sends. The in-kind close (`settled_in_kind`) delivers no token and so does not take that step. A user-signed spend delivers tokens the user already holds; the platform receives its own property and cannot send it back out as a "withdrawal." Avoid a deposit address, a withdraw button, and a per-user token balance in the Safe.
+
+## Tax reporting
+
+**Evidence.** Design §9.3 lists W-9 / W-8BEN, the US information-reporting threshold (historically $600, and the design says to confirm a 2026 change), withholding on non-US creators, EU DAC7 and DAC8, and fair-market value on the payout date. The legal JSON says real-token payouts are disabled at v0 and that, once they are live, hosts at ≥ USD 600/year equivalent get a CSV and the platform does not file 1099-MISC at v0. The rendered tax paragraph says users are responsible for their own tax and does not repeat the CSV line.
+
+**Inference.** A transfer into a wallet the user controls is the likely moment of receipt, valued at the price the buy actually paid. The platform still may have reporting duties for that payout. Collect tax identity before the first mainnet send, and rewrite the "we do not file" sentence in the same change. Counsel and a tax advisor set the form, the threshold, and withholding. Testnet tokens are a question for them if the brand is the same one that trades, or that the site points at, on mainnet.
+
+## KYC and sanctions
+
+**Evidence.** The legal page says tier-2 hosts are subject to KYC at USD 1,000 lifetime via Sumsub, Persona, or Onfido, and that wallet connections are screened against OFAC in real time via Chainalysis or TRM. The same page says wallets are not live. No code calls those vendors. Design §8 says addresses are checked before every payout run. That check is not built.
+
+**Inference.** Screen the destination address before each send, and hold the payable when the screen fails. After a self-custody transfer the platform cannot pull the tokens back, so the screen has to happen first. Build the screen before describing it as live. Whether KYC is required at $1,000, at the first payout, or at some other line is a counsel question. The page's current sentence is ahead of the software.
+
+## Consumer disclosures
+
+**Evidence.** Terms are Draft v0. The operating entity is unformed. The page says use is agreement, caps liability at the lesser of 12 months of fees or USD 100, and includes a class-action waiver, while also saying it does not exclude liability that cannot be excluded. It says the test rail is how TinyAssets settles. The fine print says no currency moves. Store questions are design §9.5 and §9.6 (Play and Apple limits on crypto for completing tasks).
+
+**Inference.** Before any send, and in a later copy change, the public pages have to say: settlement is not live yet; a future payout goes to a wallet the user controls and the platform cannot recover it; the token can be moved and can lose value; it is not insured; testnet and mainnet are different contracts; the platform does not hold user funds; compute pay exists only for work that does not put someone else's prompts on the host's machine. "Not a security" stays out until counsel writes it. Earnings and token balances stay out of the store shells until §9.5 and §9.6 are answered. This note does not edit the site.
+
+## How the two rewards meet that ledger (inference)
+
+**Creator work.** The proposal's meter still fits. One usage record when a seat is released, naming the published pieces in that call. A founder-set share of collected Stripe revenue, after fees, refunds, and chargebacks, is split by that time. Self-use and platform-owned pieces pay nothing. Attribution waits on the bundle manifest the proposal calls D9. **TODO:** that manifest was not re-verified here. `universe_seats.release` does not write the usage record today. Those rows are the payables. They close later by wallet transfer or in-kind retirement. Seats are the meter. Storage is not a creator meter.
+
+**Compute work.** The token shape does not change the 2026-10-11 prompt rule. A host whose machine runs another user's prompt is not a payable. A public-task pool still sends plaintext to a third-party host. A machine serving its own account is bring-your-own-model, and there is no payout for running one's own work. A future workload that never carries user content would be a new spec before any compute row is written. Until then the ledger has no compute-reward source.
+
+## Recommended minimal path
+
+**Inference.** Counsel is required before step 3. Steps 1 and 2 do not move a token.
+
+1. **One payable ledger, no token yet.** Append-only micro-USD rows from cash actually collected. No wallet field required to accrue. No TINY price. No withdraw button. No "earn crypto" string. This is Phase A of `creator-revenue-share`. It is not built.
+2. **Creator rows only, and only once D9 can name the piece.** One record per released seat. Compute rows stay absent. Leave `TINYASSETS_PAID_MARKET` off. Do not write these rows into `settlement_ledger.py`. Do not revive the 2026-07-08 NAV mint.
+3. **Settlement, only after counsel and the phase opening.** The 2026-04-29 note, the creator-revenue-share spec, and the legal page change in that same change. Two closes, both on the ledger from step 1: `settled_in_kind` (no chain), or `settled_on_chain` to an address the user proved, from a founder-signed Safe that does not retain per-user balances, with sanctions screening already running and tax identity already collected. The first on-chain rehearsal, if counsel allows one, uses a new Sepolia contract, not `0x0BB570…` on Base. Mainnet chain id 8453 stays off the allowlist until that opening.
+4. **Spend after the user holds tokens.** A user-signed transfer in, recorded on the same ledger. No deposit account and no path that sends those tokens back as a withdrawal.
+5. **Copy later, with counsel.** The legal page matches the fine print until step 3 is real: no currency moves, the published contracts are reference-only, KYC and OFAC screening are not implemented.
+
+## Where counsel is needed
+
+Not legal advice. Do not treat a recommendation above as permission to send a token.
+
+- Whether this transferable payment token is a security, a commodity, a digital tool, or something else, including the effect of the platform buying it with subscription revenue (design §9.1). The page's "not a security" line is not an answer.
+- Whether buying and delivering it, even into a wallet the platform does not control, is money transmission or a crypto-asset service (design §9.2). Whether the in-kind close avoids that step.
+- Whether a short-lived batch in a founder-signed Safe is custody of platform funds only, and which product behaviors (a withdrawable app balance, a deposit address, per-user tokens left in the Safe) would be custody of user funds.
+- Tax forms, the reporting threshold, withholding, and fair-market value on the transfer date (design §9.3). Whether a same-brand testnet token creates a reporting or disclosure duty.
+- The KYC threshold and the sanctions screen that must exist before a send. The page's $1,000 / Sumsub / Chainalysis sentences are not that program.
+- Stripe's terms if card revenue is converted to buy the token (design §9.4).
+- Apple and Google Play rules for showing or earning the token inside the apps (design §9.5 and §9.6).
+- The consumer disclosure text, the unformed operating entity, and the draft terms, before the legal page describes a live rail.
+- The open product rule on compute: no payable for a host that would see another user's prompts. That one is a product requirement from 2026-10-11, not a counsel question.
 
 ## What this note did not do
 
 - No chain read of the Base, PulseChain, BSC, or Sepolia addresses.
 - No check that Stripe is charging live customers.
-- No counsel review. Design §9 is the question list to send, plus the public-sentence mismatch in the table above.
+- No counsel review.
+- No edit to the legal page or any other site text.
