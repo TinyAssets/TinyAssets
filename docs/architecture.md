@@ -167,7 +167,7 @@ regrowth. **Removed by** names the item in the convergence plan
 | S22 | Command center naming | `command_center` in code and storage | 13 `universe_*` modules (18k), 13.4k mentions | drifted | `universe-name` ratchet (planned); renamed as each slice touches a file | each slice |
 | S23 | Accumulating state; fail loudly (Facts 5, 8) | `Annotated[list, operator.add]`; a missing dependency is an error | the S1 mocks | converged except S1 | `test_capability_health` | C3 |
 | S24 | One durable send (commit before publish) | an owner message is stored once, then dispatched | send paths not measured; 11 lost or duplicate-send fixes (#4290 ... #4615, #4614 open) | unverified | `send-path` (planned) | C11 |
-| S25 | One public endpoint (Fact 11) | `https://tinyassets.io/mcp` and `/app` | open PRs #4589 and #4602 each add a public `/api/v1` | at risk (unmerged) | `public-routes` (planned) | C2 closes one, folds the other into S1/S12 |
+| S25 | Two public doors (Fact 11; founder 2026-10-11) | `https://tinyassets.io/mcp` for MCP clients and `/api/v1` for keyed programmatic agents, same handles and authority; `/app` for the app | duplicate REST PR #4589 closed; #4602 is the one REST PR | converged once #4602 lands | `public-routes` (planned): exactly `/mcp`, `/api/v1`, `/app` | — |
 | S26 | Exactly two account limits (seats, storage) | `usage_policy.py` | five open limit changes; cleanup #4134 (1/3), #4136 (2/3), no 3/3 | drifted | `limit-names` (planned) | C2 fold, C7 |
 | S27 | Zero hosts online, recoverable (Dir 8, ADR-012) | off-region backup, key escrow, standby | Litestream deferred (#4284); escrow and backup PRs #4279, #4283, #4332, #4333 closed | unbuilt | DR drill workflow | C6 |
 
