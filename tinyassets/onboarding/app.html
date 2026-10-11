@@ -9321,7 +9321,7 @@
   // Begin protected inline approval cards.
   const ApprovalHandoff = {
     ref:new URLSearchParams(location.search).get('approval'), requestId:null, returnUrl:null,
-    async start(id){
+    async start(id,ready=()=>true){
       const epoch=MCP._loginEpoch;
       let client=DESKTOP_SHELL?'desktop':'web';
       if(NATIVE){
@@ -9329,6 +9329,7 @@
         client=window.Capacitor.getPlatform()==='ios'?'ios':
           info.id==='io.tinyassets.app.debug'?'android-debug':'android';
       }
+      if(epoch!==MCP._loginEpoch)throw new Error('Account changed.');
       const response=await fetch('/app/approval-handoff',{
         method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},
         body:JSON.stringify({request_id:id,client})
@@ -9336,7 +9337,11 @@
       const value=await response.json();
       if(epoch!==MCP._loginEpoch)throw new Error('Account changed.');
       if(!response.ok)throw new Error(value.error||'Could not open the browser.');
-      await openExternal(new URL(value.launch_path,location.origin).href);
+      const url=new URL(value.launch_path,location.origin);
+      if(url.origin!==location.origin||!url.pathname.startsWith('/app/approval-handoff/'))
+        throw new Error('Invalid request link. Try again.');
+      if(!ready(url.href))return;
+      await openExternal(url.href);
     },
     async restore(){
       if(!this.ref)return true;
@@ -9672,40 +9677,102 @@
   };
   const RequestSheets = {
     seen:new Set(), selected:null,
-    open(id,interactive=true){
-      if(((typeof NATIVE!=='undefined'&&NATIVE)||
-          (typeof DESKTOP_SHELL!=='undefined'&&DESKTOP_SHELL))&&!ApprovalHandoff.ref){
-        if(interactive)ApprovalHandoff.start(id).catch(error=>railFailed(error.message));
-        return;
+    entry(req){
+      let entry=railNodes.get(req.request_id);
+      if(!entry){
+        const node=document.createElement('section');node.className='rtab'+(isOptionalRequest(req)?' rtab--optional':'');node.hidden=true;
+        const heading=document.createElement('h3');heading.textContent=req.action?.type==='approve_action'?'Action approval':req.title;
+        node.appendChild(heading);entry={node,body:false};railNodes.set(req.request_id,entry);
       }
-      this.selected=id; railOpen=id;
+      if(entry.node.parentNode!==$('rail-items'))$('rail-items').appendChild(entry.node);
+      return entry;
+    },
+    show(title){
+      $('rail-head').textContent=title;
+      $('request-history')?.setAttribute('hidden','');
+      $('rail-add-panel').hidden=true;$('btn-rail-add').hidden=true;
+      if(!$('request-rail').open)$('request-rail').showModal();
+    },
+    unavailable(message){
+      this.selected=null;railOpen=null;
+      for(const node of $('rail-items').children)node.hidden=true;
+      let error=$('request-open-error');
+      if(!error){error=document.createElement('p');error.id='request-open-error';
+        error.setAttribute('role','alert');$('request-rail').appendChild(error);}
+      error.hidden=false;error.textContent=message;this.show('Request unavailable');
+    },
+    handoff(req,entry){
+      const box=document.createElement('div'),status=document.createElement('p');
+      const title=document.createElement('p');title.textContent=req.title;
+      const error=document.createElement('p'),link=document.createElement('a'),retry=document.createElement('button');
+      const cancel=document.createElement('button');
+      status.setAttribute('role','status');error.setAttribute('role','alert');error.hidden=true;
+      link.textContent='Open request in browser';link.className='btn btn--primary';link.hidden=true;
+      retry.textContent='Open again';retry.type='button';retry.className='btn';
+      cancel.textContent='Cancel';cancel.type='button';cancel.className='btn';
+      cancel.onclick=()=>{this.selected=null;railOpen=null;$('request-rail').close();};
+      box.append(title,status,error,link,retry,cancel);entry.node.appendChild(box);entry.body=true;
+      const epoch=MCP._loginEpoch,home=queueScope;
+      const current=()=>epoch===MCP._loginEpoch&&home===queueScope&&
+        this.selected===req.request_id&&box.isConnected&&$('request-rail').open;
+      let busy=false;
+      const launch=async reuse=>{
+        if(busy||!current())return;
+        busy=true;retry.disabled=true;error.hidden=true;
+        status.textContent='Opening this request in your browser…';
+        try{
+          if(reuse)await openExternal(link.href);
+          else await ApprovalHandoff.start(req.request_id,url=>{
+            if(!current())return false;
+            link.href=url;link.hidden=false;return true;
+          });
+          if(current())status.textContent='Opened in your browser to finish securely';
+        }catch(failure){if(current()){
+          status.textContent='This request is still waiting for you.';
+          error.textContent='Could not open this request: '+failure.message;error.hidden=false;
+        }}finally{busy=false;retry.disabled=false;}
+      };
+      entry.launch=()=>launch(false);retry.onclick=entry.launch;
+      link.onclick=event=>{event.preventDefault();launch(true);};
+    },
+    open(id,interactive=true){
+      try{
+      const folded=foldedModelAccess(railCache);
+      if(folded?.request_id===id)id=railCache.find(isSetupRequest).request_id;
       const req=railCache.find(row=>row.request_id===id);
-      if(!req)return;
-      const host=$('rail-items'), sheet=$('request-rail');
-      let entry=railNodes.get(id);
-      if(!entry)return;
+      if(!req){this.unavailable('This request is no longer available. Reopen Needs you to see current requests.');return;}
+      // Match server NON_CONSENT_ACTIONS: only answer/notify stay in-app; every other action requires protected owner proof, including Clear/decline.
+      const handoff=((typeof NATIVE!=='undefined'&&NATIVE)||
+        (typeof DESKTOP_SHELL!=='undefined'&&DESKTOP_SHELL))&&!ApprovalHandoff.ref&&
+        !['answer','notify'].includes(req.action?.type);
+      // Polls may refresh a visible handoff, but only a gesture may start one.
+      if(handoff&&!interactive&&this.selected!==id)return;
+      this.selected=id; railOpen=id;
+      if($('request-open-error'))$('request-open-error').hidden=true;
+      const host=$('rail-items'),entry=this.entry(req);
       if(!entry.body){
+        if(handoff)this.handoff(req,entry);
+        else{
         entry.node.appendChild(req.action&&req.action.type==='connect_browser'?BrowserLogin.build(req):
           req.action&&req.action.type==='approve_action'
           ?InlineApprovals.build(req):isSetupRequest(req)?connectBody(req):railBody(req));
         entry.body=true;
+        }
       }
       for(const node of host.children)node.hidden=node!==entry.node;
-      $('rail-head').textContent=req.action&&req.action.type==='approve_action'?'Action approval':req.title;
-      $('request-history')?.setAttribute('hidden','');
-      $('rail-add-panel').hidden=true; $('btn-rail-add').hidden=true;
-      if(!sheet.open)sheet.showModal();
+      this.show(req.action&&req.action.type==='approve_action'?'Action approval':req.title);
+      if(handoff){if(interactive)entry.launch();return;}
       if(req.action?.type==='connect_browser'){
         for(const child of entry.node.children)if(child.browserStart)child.browserStart();
       }
-      const folded=isSetupRequest(req)?foldedModelAccess(railCache):null;
-      OwnerUnread.viewed(folded?[id,folded.request_id]:[id]);
+      OwnerUnread.viewed(isSetupRequest(req)&&folded?[id,folded.request_id]:[id]);
       if(typeof railDeepItem!=='undefined' && railDeepItem &&
          (typeof railLink==='undefined'||!railLink)){
         const item=$('item_'+id+'::'+railDeepItem);
         railDeepItem=null;
         if(item){item.scrollIntoView({block:'nearest'});item.focus();}
       }
+      }catch(error){this.unavailable('Could not open this request: '+error.message);}
     },
     inbox(){
       const sheet=$('needs-you'); const host=$('needs-you-items');host.textContent='';
@@ -9713,7 +9780,7 @@
       railCache.filter(row=>row!==folded&&!isOptionalRequest(row)).forEach(row=>{
         const button=document.createElement('button');button.type='button';button.className='btn';
         button.textContent=(row.action?.type==='approve_action'?'Action approval':row.title)+' \u00b7 '+(row.agent||'Your agent');
-        button.onclick=()=>{sheet.close();this.open(row.request_id);};host.appendChild(button);
+        button.onclick=()=>{this.open(row.request_id);if($('request-rail').open)sheet.close();};host.appendChild(button);
       });
       if(!host.children.length)host.textContent='Nothing needs you right now.';
       if(!sheet.open)sheet.showModal();
@@ -9721,6 +9788,7 @@
     },
     history(){
       railOpen=null;this.selected=null;
+      if($('request-open-error'))$('request-open-error').hidden=true;
       $('needs-you').close();const sheet=$('request-rail');
       for(const node of $('rail-items').children)node.hidden=true;
       $('rail-add-panel').hidden=true;$('btn-rail-add').hidden=true;
@@ -9729,6 +9797,7 @@
     },
     reset(){
       this.seen.clear();this.selected=null;
+      $('request-open-error')?.remove();
       OwnerUnread.viewedAsks.clear();OwnerUnread.seen.clear();OwnerUnread.paint({messages:0,asks:0});
       for(const id of ['request-rail','needs-you']){const node=$(id);if(node?.open)node.close();}
       if($('needs-you-items'))$('needs-you-items').textContent='';
@@ -9764,11 +9833,7 @@
       }
       for(const row of visible){
         if(isOptionalRequest(row)&&railOpen!==row.request_id)continue;
-        if(!railNodes.has(row.request_id)){
-          const node=document.createElement('section');node.className='rtab'+(isOptionalRequest(row)?' rtab--optional':'');node.hidden=true;
-          const heading=document.createElement('h3');heading.textContent=row.action?.type==='approve_action'?'Action approval':row.title;
-          node.appendChild(heading);$('rail-items').appendChild(node);railNodes.set(row.request_id,{node,body:false});
-        }
+        this.entry(row);
       }
       const pending=visible.filter(row=>!isOptionalRequest(row));
       let signins=$('browser-signins');

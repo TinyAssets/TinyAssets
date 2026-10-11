@@ -361,7 +361,19 @@ require the protected owner session.
 
 ### Requirement: Native request decisions remain in the authenticated browser
 
-The app SHALL open native request sheets in the system browser using an expiring opaque owner-bound reference. A bearer or launch reference MUST NOT establish approval proof. Browser sign-in SHALL complete server-owned PKCE before displaying the same request sheet, and a valid browser session SHALL be reused. Decisions, ordinary replies and unrecorded dismissals SHALL use the existing server decision paths. Returning to the app SHALL carry only an opaque completion reference and refresh server state.
+The app SHALL open ordinary `answer` and `notify` requests in-app on web, native and desktop, including patch recommendations represented as ordinary answers. Requests requiring protected owner proof SHALL use the system browser on native and desktop through an expiring opaque owner-bound reference. A bearer or launch reference MUST NOT establish approval proof. Browser sign-in SHALL complete server-owned PKCE before displaying the same request sheet, and a valid browser session SHALL be reused. Decisions, ordinary replies and unrecorded dismissals SHALL use the existing server decision paths. Returning to the app SHALL carry only an opaque completion reference and refresh server state.
+
+#### Scenario: Every inbox click opens a visible result
+- **WHEN** an owner taps a request in Needs you
+- **THEN** the app builds its sheet on demand, including a folded model-access request's setup sheet
+- **AND** a missing request or rendering failure opens a visible error instead of silently closing the inbox
+- **AND** ordinary answers support Accept, answer and Clear in-app; notifications support Dismiss
+
+#### Scenario: Protected handoff remains visible
+- **WHEN** a native or desktop owner opens a request requiring protected owner proof
+- **THEN** the app keeps the request title and a visible browser handoff sheet with Open again and Cancel
+- **AND** launch failures show a retryable error; refreshing the list never launches a browser automatically
+- **AND** browser completion refreshes the authenticated list without treating its return link as approval
 
 #### Scenario: Native cookie isolation
 - **WHEN** a signed-in WebView has no protected owner cookie
