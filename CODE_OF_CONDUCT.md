@@ -20,14 +20,10 @@ private information.
 
 ## Reporting
 
-Email [ops@tinyassets.io](mailto:ops@tinyassets.io), the general address the
-public site publishes. If it bounces, use
-[jonathan.m.farnsworth@gmail.com](mailto:jonathan.m.farnsworth@gmail.com).
-
-TODO(owner): confirm `ops@tinyassets.io` is delivered. `SUCCESSION.md`
-(2026-04-19) still has alias routing unchecked. Also name any chat or forum
-this conduct file should cover, if one exists. None is linked from the
-public start page today.
+Email [info@tinyassets.io](mailto:info@tinyassets.io). That is the mailbox
+the maintainer reads. An `ops@tinyassets.io` alias may be added later. The
+public site still publishes `ops@tinyassets.io`. None of the public start
+page links a chat or forum this file should also cover.
 
 The maintainer reads reports. This file does not promise a reply window.
 The maintainer may edit or hide a comment, lock a thread, or block an

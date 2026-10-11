@@ -31,15 +31,11 @@ The opt-in page the site publishes is:
 Open that link in the Google account you use on the phone. If Play lets
 you become a tester, install from Play afterwards so the app can update.
 
-During the closed test only invited accounts can join. The start page
-says to write to [ops@tinyassets.io](mailto:ops@tinyassets.io) to be
-added. Use that address. Say which Google account email should be on the
-tester list.
-
-TODO(owner): confirm `ops@tinyassets.io` is delivered.
-`SUCCESSION.md` (2026-04-19) still lists that alias as not yet routed.
-Until you confirm it, tester mail can also go to
-[jonathan.m.farnsworth@gmail.com](mailto:jonathan.m.farnsworth@gmail.com).
+During the closed test only invited accounts can join. Write to
+[info@tinyassets.io](mailto:info@tinyassets.io) to be added, and say which
+Google account email should be on the tester list. The public start page
+still names `ops@tinyassets.io`. An `ops@` alias may be added later; until
+then use `info@tinyassets.io`.
 
 What this page does not know, and will not invent: how many testers are
 on the list, which build Play is serving today, or when a public listing

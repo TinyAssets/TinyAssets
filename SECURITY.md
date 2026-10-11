@@ -2,19 +2,11 @@
 
 ## Reporting
 
-Email [security@tinyassets.io](mailto:security@tinyassets.io). That is the
-address the public site already publishes (`WebSite/site-react/lib/site.ts`,
-developers page).
-
-The maintainer address published in this repository is
-[jonathan.m.farnsworth@gmail.com](mailto:jonathan.m.farnsworth@gmail.com)
-(also in `pyproject.toml` and the README). Use it if the `security@` address
-bounces.
-
-TODO(owner): `SUCCESSION.md` (dated 2026-04-19) still lists `ops@` and
-`security@` routing as an unchecked item, and it says those aliases were "to
-be provisioned." Confirm both mailboxes are delivered and monitored, then
-update that file. This policy does not prove the mailbox works.
+Email [info@tinyassets.io](mailto:info@tinyassets.io). That is the mailbox
+the maintainer reads. `security@tinyassets.io` and `ops@tinyassets.io`
+aliases may be added later. The public site
+(`WebSite/site-react/lib/site.ts`) still publishes `security@tinyassets.io`;
+that address is not this policy's contact until the alias exists.
 
 GitHub private vulnerability reporting is **disabled** on this repository
 (checked 2026-10-11 via the private-vulnerability-reporting API,
