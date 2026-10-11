@@ -12,12 +12,6 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
-## Device sign-in store updates (2026-10-10)
-
-After [PR #4594](https://github.com/TinyAssets/TinyAssets/pull/4594) merges and its web routes deploy, run the existing main-only signing workflows. Upload Android `app-release.aab` (package `io.tinyassets.app`, code **8**, version **1.0.7**) from `android-release.yml` to the Play closed-testing track. Upload the exported `.ipa` named in `release-manifest.json` from the `tinyassets-ios-1.0.1-<build>` artifact of `ios-release.yml` (version **1.0.1**, next unused build number) to App Store Connect, select it for review and submit. The feature branch cannot produce signed store files: Android requires main history; Apple's `app-store` environment rejects feature branches. Do not upload the debug APK or an unsigned bundle. Verify Google sign-in, return, and password suggestions on a physical Android/iPhone before submission. [Build/proof details](../openspec/changes/all-devices-polish/design.md).
-
-Release note for Android 1.0.6 and earlier: cached `app.*` / `appdebug.*` sign-ins keep a package-pinned compatibility return until **2026-10-24 00:00 UTC**. Reopening the hosted app loads the new return-secret flow; publish 1.0.7 before the cutoff and tell testers to reopen/update if an old sign-in expires. Desktop and iOS binaries must be rebuilt from the #4594 fix head: the earlier downloaded desktop packages and iOS compile predate callback-secret delivery and are superseded.
-
 ## Isolation production refusal acceptance (2026-10-10)
 
 | Item | Smallest founder-only action |
@@ -204,108 +198,44 @@ If billing is not switched on, there is nothing to do.
 
 ---
 
-## Store launch: two founder steps (2026-10-04)
+## Google Play: finish the closed test and launch
 
-Play needs founder testing actions; Apple also needs a verified live connection flow.
-Apple asked for more information
-(Guideline 2.1) and has build 3; Play approved build 4 on the closed track. The map is
-`docs/ops/mobile-launch-handoff.md`. The two steps are independent, so do them in any
-order. Only the Play one is on a 14-day clock, so it goes first.
+Founder Console snapshot supplied for the 2026-10-11 goal: `alpha` has build 6
+(1.0.5, Oct 3), Google Group `testers-community@googlegroups.com`, 12 testers
+continuously opted in for 9 days, and no Console notifications.
 
-### Google Play: opt in and recruit the 12 testers
+1. After this PR merges, run **Android release AAB** on `main`:
+   `gh workflow run android-release.yml --ref main`. Existing signing and Firebase
+   secrets are present; no environment approval is configured for Android.
+2. Download `tinyassets-release-aab`; upload **1.0.7 / code 8** to the existing
+   **alpha** track **before 2026-10-24 00:00 UTC**, the old sign-in compatibility
+   cutoff. Install/test it through Play, including system-browser sign-in, return,
+   and a real reply. Keep the same tester group and continuous opt-ins.
+3. On/after Console confirms **12 testers for 14 continuous days** (expected
+   **Oct 15–16**, not a guaranteed unlock date), click **Apply for production**.
+   Fill the marked founder facts in the [draft answers](ops/google-play-launch.md#production-access-questionnaire)
+   and paste them. After access approval, submit the tested release to production
+   and complete rollout after review; access approval alone does not publish the app.
 
-1. On your phone's Google account, open `https://play.google.com/apps/testing/io.tinyassets.app`.
-   This is Play's standard opt-in address for the closed (Alpha) track. Play Console →
-   **Test and release → Closed testing → Alpha → Testers → Copy link** shows the
-   authoritative one. Tap **Become a tester**.
-2. Add 15 to 18 people's Google-account emails to the `Founder devices` tester list on
-   the same page. Only add people who said yes. The extra 3 to 6 cover drop-offs.
-3. Send each of them the opt-in link, using the invitation text under "start the
-   12-tester closed test" below.
+## Apple: record the review video and resubmit
 
-The clock starts when 12 people are actually opted in, and it runs for 14 days. Tell the
-lead the day it starts. The full engagement plan is in that section below.
+Build 3 (1.0) remains under the Guideline 2.1 information request; #4594's
+system-browser sign-in is merged and live but needs a new native build.
 
-### Apple: record the review video on a physical iPhone
-
-This is Apple's actual ask (Guideline 2.1). Install build 3 from the TestFlight invite
-already sent to you, on an iPhone updated to the latest iOS. Record the six steps in
-`docs/ops/app-store-submission-packet.md`, "Guideline 2.1 response packet". A simulator
-recording is refused. Hand the `.mov` to the lead. The agent attaches it with the written
-answers and resubmits only after the lead's explicit go. First have the agent verify the real inline
-connect flow with the reviewer account; the founder rejected an interim review key.
-Record only once that flow and a substantive reply work live. Full history is item
-12 under "Apple App Store: enroll" below.
-
-#### No iPhone? Record it on a cloud real iPhone (2026-10-04)
-
-Apple asks for a **physical** device, not your own device. BrowserStack App Live
-rents real iPhones you drive from your browser, with TestFlight preinstalled, and
-records the session to `.mp4`. Checked 2026-10-04:
-[TestFlight on App Live](https://browserstack.com/docs/app-live/app-source/testflight)
-(iPhone 14 or newer only) and
-[session recording](https://browserstack.com/docs/app-live/session-debugging/record-session)
-(Chrome only, up to 20 minutes, download as `.mp4`). Step 5 also needs
-[file injection](https://www.browserstack.com/docs/app-live/media/file-injection),
-which is available only on **Team Pro or Enterprise Pro**. Confirm that entitlement,
-enough uninterrupted session time for all six steps, and a qualifying device before
-purchasing access. The [trial limits](https://www.browserstack.com/support/faq/plans-pricing/plans/what-do-i-get-with-a-free-trial)
-do not establish that the full recording can be completed on a trial.
-
-AWS Device Farm also has real iPhones. Its shared-device service re-signs the
-uploaded app with a wildcard profile and removes entitlements
-([FAQ](https://aws.amazon.com/device-farm/faqs/)). An ad-hoc-signed `.ipa` is a possible
-fallback preparation path, not a requirement established by that FAQ. Re-signing
-changes what Apple sees, so confirm that a fallback recording can satisfy the review
-request before using it.
-
-**Before you start:**
-- Verify the real inline connect flow and a reviewer reply before recording.
-  The proposal alone is not proof that this works in production; no interim key renewal.
-- Have the App Review account's email and password ready: Windows Credential Manager,
-  the `play-review@tinyassets.io` entry. You type them on the cloud phone. Never show the
-  password on screen (step 2).
-- Save `docs/ops/app-store-review-sample.txt` somewhere you can upload from (step 5).
-- Use **Chrome** on your PC. Recording only works there.
-
-**Set up the cloud iPhone:**
-1. Sign in at browserstack.com → **App Live**.
-2. In **Select Source**, choose **Install via TestFlight**.
-3. Verify that an iPhone 14 or newer with TestFlight is available on the **latest
-   public iOS version required by Apple's request**. Check its actual OS version;
-   the newest version in the vendor's list may be older. If no qualifying device
-   exists, report that blocker rather than substituting an older iOS.
-4. On the cloud phone, open TestFlight and sign in with **your** Apple ID. That's the
-   Account Holder, already invited to the `Internal` group with build 3. Install
-   **TinyAssets**.
-5. Before recording, open TinyAssets once and close it so the first-run install
-   prompts are out of the way. Then swipe it away so the recording starts from a cold
-   launch.
-
-**Record:** click **Record Session** in the App Live toolbar, then perform these six
-steps in order, without cutting. They're the shot list from the 2.1 response packet.
-
-| # | Do | Apple must see |
-|---|---|---|
-| 1 | Tap the TinyAssets icon. | The native splash, then the signed-out screen. |
-| 2 | Choose email and password and sign in with the App Review account. Type the password in the masked field only, never in a visible notes app. | A normal sign-in into the reviewer's account. |
-| 3 | Wait for the reviewer's private universe to load. | You're inside the app. Show the real inline connect flow if a connection is needed; no subscription or payment step. |
-| 4 | Send: `Give me a three-step plan to launch a small bakery's online orders, and keep it short.` Wait for the full reply. Then swipe TinyAssets away (force quit), relaunch it, and show the same conversation still there. | A real AI reply, and the conversation surviving a force quit. |
-| 5 | Attach `app-store-review-sample.txt` (use App Live's **Files & Media → File → Upload new file**, then pick it under **Files → Chrome → Injected Files** in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
-| 6 | Open Account / Privacy and show the **Delete my account** path. **Do not** confirm deletion. | That account deletion is reachable in the app. |
-
-Click **End Recording**, then **Download** to save the `.mp4`.
-
-**After:**
-- Sign out of TestFlight and of your Apple ID on the cloud phone before ending the
-  session.
-- Hand the `.mp4` to the lead (drop it in the chat or a shared folder). The agent
-  checks all six steps are visible and the password never is. Then it attaches the
-  video with the drafted written answers and resubmits build 3 only on the lead's
-  explicit go.
-- If App Live has no iPhone with TestFlight available, or the recording fails, say so.
-  The agent can prepare an AWS Device Farm fallback, but must first verify its OS,
-  signing and recording behavior against the same review request.
+1. After this PR merges, run `gh workflow run ios-release.yml --ref main -f marketing_version=1.0.1 -f upload_to_testflight=true`.
+   Leave the build number blank for the workflow run number (must be unused).
+   Approve the **app-store** environment for signing and, when requested, upload.
+   All six signing/upload secrets exist; no replacement is requested.
+2. Attach the processed **1.0.1** build to TestFlight Internal and the App Store
+   version for resubmission. With the dedicated reviewer credentials held privately
+   in App Store Connect, verify system-browser sign-in returns to TinyAssets,
+   the real connection flow works, and a substantive reply arrives. Do not reuse
+   build 3 or an interim review-only key for this proof.
+3. On a physical iPhone (owned or cloud-hosted) running the latest public iOS,
+   record the [six-shot list and complete the written response](ops/app-store-submission-packet.md#guideline-21-response-packet).
+   Keep passwords and connection credentials masked. Attach the video and written
+   answers to the unresolved 2.1 request, then resubmit the selected 1.0.1 build.
+   Confirm release settings and the public install page after approval.
 
 ---
 
@@ -557,22 +487,6 @@ will know what real usage looks like before the number matters.
 
 ---
 
-### Phone app — send the first message and see it answered
-
-*Live and proven on the founder's S24+ via adb (2026-08-22): OpenAI link completes, PONG inside the
-sandbox on the founder's own subscription. Shipped as #2466 (FGS vs the Android freezer), #2467
-(auto serving binding), #2468 (codex sandbox tmpfs home + systempaths/cap_drop), #2469 (HttpOnly
-refresh); APK `android-latest`.*
-
-What is missing is one real message from the founder, answered. Everything up to that is verified.
-
-Owed alongside it: codex refresh-token persistence across a rotating turn, and the deploy step must
-install `deploy/compose.yml` -- the droplet was patched in place, so a container recreate loses it.
-
-Recovered 2026-08-27 from PR #2463, which carried it on the retired board and had no other home.
-
----
-
 ### First-class Voice — stop before microphone acceptance after browser speech deploys
 
 **Do not send a credential in chat and do not buy a platform key.** Voice must keep using the same
@@ -612,385 +526,6 @@ bounded proof remain explicit founder decisions.
 ---
 
 ## Credentials and accounts
-
-### Google Play: `WORKOS_API_KEY` reaches the daemon — VERIFIED 2026-09-02, nothing for you
-
-Account deletion removes the user's WorkOS record through the management API, and that
-upstream deletion is also what ends sessions on other devices (their refresh handles are
-opaque to the daemon). The key is not in the repo or in `deploy/`, so I checked the host:
-`/etc/tinyassets/env` carries exactly one `WORKOS_API_KEY=` line, and
-`docker exec tinyassets-daemon printenv WORKOS_API_KEY` returns an `sk_`-prefixed value of
-the expected length. So a real deletion will remove the sign-in identity, which is what
-`/legal` and `/account` promise.
-
-If that ever stops being true, deletion still removes every byte of the user's data and
-reports `identity: not_configured`, tells the user, and writes a receipt under
-`.account-deletions/` — check it with
-`python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
-Delete this paragraph on the next host-actions pass.
-
-### Apple App Store: enroll — signing and TestFlight cannot start without it
-
-**Standing founder authorization (2026-09-03):** drive all ordinary Apple-required
-setup and completion steps for the iPhone Store objective without repeated approval,
-including required account/app attestations, API access and least-privilege credentials,
-signing/provisioning, builds, verified metadata/privacy answers, screenshots, uploads,
-TestFlight validation, App Review submission, and release/publication. Interrupt only
-for a new monetary charge, an irreversible destructive action, a material choice Apple
-does not require, or personal/legal facts that cannot be established truthfully from
-verified project/account evidence. Computer-use actions that policy requires to be
-confirmed at action time still follow that higher-level confirmation rule.
-
-**Checked 2026-09-03, not assumed.** The account holder completed Apple's official
-creation form, but the final step returned only **"Your account cannot be created at
-this time."** There is no field-specific email, phone, birthday, country, or password
-validation on the page, and no new Apple email arrived. Apple Account and iCloud Sign-In
-were available on Apple's System Status page, so this is not a documented system-wide
-outage. The visible evidence cannot distinguish a temporary server-side rejection from
-a browser/network-specific rejection; it does not support claiming a phone-reuse,
-region, locked-account, or device-limit cause. Apple Support then reported making an
-unspecified change on its side and asked for one new creation attempt. After the account
-holder retried, the browser reached the signed-in Apple Account **Sign-In & Security**
-page and showed two-factor authentication with a trusted phone number. Account creation
-is therefore complete. The account holder confirmed that result and closed the completed
-Apple Support chat.
-
-Everything autonomous on the iOS build side is staged — the Capacitor platform,
-`tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
-manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy copy.
-None of it can produce an installable app without account-owned signing material.
-
-1. **Complete — Apple Account created and verified (2026-09-03).** The signed-in account
-   page shows two-factor authentication and a trusted phone number. The account holder
-   also accepted the Apple Developer Agreement and declined optional developer-news email.
-
-2. **Complete — enrollment purchased and membership activated (2026-09-03).** The account
-   holder completed personal information and Secure Checkout. The signed-in developer portal
-   now shows program resources, a Team ID, and a 2027 renewal date. The Apple Developer
-   Program License Agreement and Apple Developer Agreement both show accepted on 2026-09-03.
-   At that checkpoint no signing assets or App Store Connect API credentials existed.
-3. **Complete — explicit App ID and App Store Connect record created (2026-09-03).** Verified in the
-   signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
-   Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
-   Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
-   The founder then confirmed record creation. Apple ID `6808434444`. Product
-   metadata are saved. Build 3 is attached to
-   the `Internal` TestFlight group, selected for App Store Version 1.0, and its
-   en-US **What to Test** and beta app description are saved. The group has manual
-   Xcode-build distribution, one Account Holder tester, and a live invitation. The free price
-   schedule is confirmed; current submission and availability state is recorded
-   in items 10–12 below.
-4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
-   Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
-   private key. The active `TinyAssets App Store 2026` profile is App Store type for
-   `io.tinyassets.app`, contains that one certificate, and expires 2027-09-03. The
-   encrypted P12 and password, verified profile, and Developer-role `TinyAssets CI Upload`
-   App Store Connect API key are present as all six secrets named in §3.
-   The protected GitHub environment `app-store` is complete: founder approval is required,
-   and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
-   On 2026-09-10 a separate App Manager team key named `TinyAssets Release` replaced
-   the protected API key ID/private-key secrets and was backed up in Windows Credential
-   Manager. Protected verify-only run `34562826944` proved the replacement key against
-   Apple's retained App Review account and contact record. The private key remains outside
-   this repository. Receipt:
-   `docs/audits/2026-09-10-ios-review-recovery-access.md`.
-5. **Complete — Xcode 26 build accepted and processed by TestFlight (2026-09-03).**
-   Exact fix revision `6ccb3d24` received a Claude Opus **AGREE** review and landed in
-   PR #2798 as `76d795a1`. Every exact-head PR check passed, including `build-ios` and
-   `required-tests`. Protected run `33827279907` produced signed build 1.0.0 (3);
-   Apple reported no upload errors; App Store Connect matched its delivery UUID and
-   now shows Build 3 as **Ready to Submit** under Version 1.0.0. Receipt:
-   `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
-6. **Complete — authenticated TestFlight/App Store metadata (2026-09-03).** The
-   founder reauthenticated, after which the beta app description and marketing URL
-   were saved, Build 3 was selected for App Store Version 1.0, and the free price
-   schedule was confirmed. On 2026-09-10 the release mode was changed to automatic
-   after approval. The Account Holder was added to the internal group and Apple now
-   shows one tester, one build, and an **Invited** state for Build 3. Receipt:
-   `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
-   Recovery update: `docs/audits/2026-09-10-ios-review-recovery-access.md`.
-7. **Complete — age rating and tested-platform scope (2026-09-03).** The live
-   questionnaire is saved at 18+ (19+ in Korea; earlier operating systems show
-   17+ with Apple's regional exceptions). Untested Apple Silicon Mac and Apple
-   Vision Pro availability are disabled and saved. Storefront availability is
-   still unset. Factual App Review Notes describing the pinned Capacitor shell,
-   absent commerce/advertising/voice UI, and critical review paths are also saved;
-   no reviewer credential or personal contact detail was persisted at that point.
-8. **Complete — required screenshots (2026-09-03).** Manual macOS CI run
-   `33839432494` built the simulator app from Build 3's exact source, captured and
-   validated `1284x2778` iPhone and `2064x2752` iPad images, and both images were
-   visually inspected and uploaded. App Store Connect shows `1 of 10 Screenshots`
-   in each required set after reload. Receipt:
-   `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`.
-9. **Complete — reviewer identity and contact block (2026-09-09).** The dedicated
-   `play-review@tinyassets.io` password was rotated in WorkOS, saved in Windows
-   Credential Manager and the protected `app-store` environment, then verified by
-   protected run `34330379943`. Apple retained the matching sign-in requirement,
-   reviewer username/password, and all four contact fields. No password or phone value
-   is stored in this repository.
-10. **Complete — US-first availability and DSA declaration (2026-09-09).** The 27 EU
-   storefronts are **Not Available**, automatic future-country availability is off,
-   and the United States remains **Available on App Release** within 148 enabled
-   storefronts. TinyAssets' app-specific DSA status is saved as non-trader for this
-   non-EU initial release.
-11. **Complete — live privacy publication (2026-09-09).** PR #3616 landed as
-   `caccc05c`; Pages deployment run `34334601760` succeeded; the live
-   `https://tinyassets.io/legal/#privacy` page was reloaded and verified; and App
-   Store Connect published the four-type privacy disclosure. Review receipt:
-   `docs/audits/2026-09-09-ios-privacy-publication-review.md`.
-12. **Rejected for information — Apple App Review (2026-09-09 17:56 PDT).** TinyAssets
-   iOS 1.0, build 1.0.0 (3), is **Rejected** with submission state **Unresolved Issues**.
-   Apple's only cited issue is **Guideline 2.1 - Information Needed - New App Submission**:
-   the account's limited review history triggers a latest-iOS physical-device recording
-   plus purpose, audience, access, service, regional, and regulated-content answers.
-   Submission ID `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release is now automatic after
-   approval. Do not
-   cancel the submission. The reusable response packet is in
-   `docs/ops/app-store-submission-packet.md`; receipt:
-   `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
-
-   **Smallest founder-only action:** accept the live TestFlight invitation for the
-   Account Holder on a physical iPhone updated to the latest iOS, install Build 3, and
-   capture the six-step recording in the response
-   packet, then make the `.mov` available to this task. Apple explicitly requires a
-   physical device, so a simulator recording must not be substituted. App Store Connect
-   sign-in/2FA is also required whenever the visible session expires. All written answers,
-   Notes-field preparation, attachment, and resubmission remain agent-owned, subject to
-   the required action-time confirmation before sending the reviewer reply.
-
-   **Prepared 2026-09-10 (superseded 2026-10-04):** the dedicated App Review
-   account was provisioned with a capped, expiring, zero-cost inference connection
-   and completed a rendered production turn. The current plan requires a verified
-   real inline connect flow instead. Protected read-only run `34522734323` then reverified Apple's retained reviewer
-   account/contact block and unchanged `UNRESOLVED_ISSUES` / `REJECTED` state at 12:50 PDT.
-   PR #3830 / merge `f497050f6586ae70f41e98f78c412932176a46c7` is deployed and
-   verified: Capacitor shells keep Voice hidden and uninitialized, the browser client
-   retains Voice, and protected deploy run `34523794549` passed the public canary and
-   exact-revision receipt gate. Build 3's defensive microphone usage string remains in
-   the binary; the submitted reachable UI and declared review scope remain voice-dark.
-   The reviewer needed no provider setup or payment details. The only outstanding founder
-   action in this lane is the physical-device recording (and Apple sign-in/2FA when the
-   visible App Store Connect session has expired).
-
-   **Prepared 2026-09-10, access recovery:** the App Manager `TinyAssets Release` key
-   is protected and live-verified by run `34562826944`; TestFlight retained its feedback,
-   privacy, contact, and demo-account details; the Account Holder tester is **Invited**
-   with Build 3 attached; and App Store Version 1.0 is `AFTER_APPROVAL`. No beta-review
-   submission was started. Receipt:
-   `docs/audits/2026-09-10-ios-review-recovery-access.md`.
-
-**Apple preflight evidence (2026-09-09):** **Add for Review** succeeded after
-Content Rights, published privacy information, screenshots, reviewer credentials and
-contact details, storefront availability, and DSA status were complete. **Submit for
-Review** then succeeded and App Store Connect reloaded to **Waiting for Review**.
-Apple's 2026-09-09 Guideline 2.1 information request supersedes the earlier wait state.
-
-### Google Play: start the 12-tester closed test — this is the 14-day clock
-
-**This is the long pole for Play, and only you can start it.** A personal developer
-account cannot apply for production access until it has run a **closed test with at
-least 12 testers opted in continuously for 14 days**. The 14 days are wall-clock:
-nothing an agent does shortens them, and the clock does not start until the testers are
-actually in. Every other Play item finishes in hours; this one finishes in a fortnight,
-so starting it late is what sets the public launch date.
-
-Alongside the Apple enrolment above, this is one of **two clocks worth starting today**.
-They run in parallel and neither depends on the other.
-
-What it needs from you:
-
-1. Recruit **15–18 people with Google accounts** so ordinary drop-off cannot take the
-   continuously opted-in count below 12. Ask for a clear yes before adding an address;
-   do not place personal email addresses in this repository.
-2. Play Console → **Test and release → Testing → Closed testing** → create one track.
-   Prefer a dedicated Google Group because membership can be maintained without
-   rewriting the release; an email list is acceptable if that is simpler.
-3. Promote the already phone-verified bundle (or a strictly newer version code), copy
-   the opt-in link, and send the invitation below. The 14-day clock begins only after
-   at least 12 people have actually opted in, not when invitations are sent.
-4. Keep a private tracker with invitee, consent, opt-in confirmed, install confirmed,
-   Android/device, three task results, feedback, and opt-out date. Check the Play
-   tester count daily and recruit replacements early. Never remove a tester during the
-   window unless they ask to leave.
-
-Suggested invitation (send only after the closed-track link exists):
-
-> TinyAssets is running a private 14-day Google Play test. Please open **[opt-in
-> link]** while signed into the Google account you gave me, tap **Become a tester**,
-> install from Play, and stay opted in through **[end date and timezone]**. During the
-> test, please try: (1) launch/sign-in, (2) open Connect and return without exposing a
-> credential, and (3) send one ordinary test message if your account is configured.
-> Report crashes, stuck screens, sign-in trouble, or confusing copy at **[private
-> feedback route]**. Do not enter confidential or regulated information. You may leave
-> at any time; tell me so I can replace the test slot.
-
-Engagement plan — Google can reject a production-access application for insufficient
-testing even when the count/duration minimum was met:
-
-| When | Operator check | Tester request |
-|---|---|---|
-| Day 0 | Confirm ≥12 actual opt-ins in Play; save the start timestamp and expected end timestamp. | Opt in and install from Play. |
-| Days 1–3 | Triage install/sign-in failures; replace drop-offs before the count falls below 12. | Complete launch/sign-in and one navigation task. |
-| Days 4–10 | Review feedback plus Play crashes/ANRs; ship fixes only with a higher version code and re-smoke. | Exercise Connect return/cancel and an ordinary message where configured. |
-| Days 11–13 | Confirm ≥12 remain opted in and all launch-blocking defects have dispositions. | Recheck the latest build and submit final feedback. |
-| After 14 complete days | Capture the Console eligibility state before applying for production access. | No action unless asked to verify a fix. |
-
-This does not require daily use from every person, but it does require a real,
-representative test rather than twelve idle list entries. Google's current rule and
-engagement guidance are at
-<https://support.google.com/googleplay/android-developer/answer/14151465>.
-
-After the 14 days: apply for production access, which Google reviews separately, and
-only then can the app be promoted to Production and be publicly downloadable.
-
-Do not confuse this with the internal-testing track already running — internal testing
-does not count toward the requirement, no matter how long it runs.
-
-### Google Play: reusable reviewer account — DONE 2026-09-03
-
-Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
-behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
-**Yes** — the form's own Yes branch lists "Google Account sign in, and / or SSO", which is
-exactly what we use. Google then warns, in the dialog itself:
-
-> "If we can't review your app, you may be prevented from releasing updates, or your app
-> may be removed from Google Play. Reviewers are unable to create accounts, **use their own
-> existing accounts**, or use free trials to access your app. They are also unable to
-> contact you for more information."
-
-**Live identity reconciliation, 2026-09-03:** the WorkOS dashboard admin and sole
-TinyAssets team member remains Jonathan Farnsworth, `jonathan.m.farnsworth@gmail.com`,
-with the Admin role. Google Play Console is also signed in with that address.
-
-Email + Password is **enabled** in the production WorkOS environment with the
-recommended strong policy (10-character minimum, complexity score 3, breached-password
-rejection). GoDaddy Email & Office now has the dedicated alias
-`play-review@tinyassets.io` on the TinyAssets-controlled `info@tinyassets.io` mailbox;
-that mailbox forwards to the founder's primary Gmail and keeps its own copy.
-
-The dedicated AuthKit user **Play Reviewer** is `play-review@tinyassets.io`, WorkOS id
-`user_01M1N3BFV6N1V1C9PP1NEWCCHP`. WorkOS shows Verified + Active, Email + Password,
-no organization membership, no connected accounts, and sign-in count **2**. The two
-password authentications reached the same isolated empty reviewer universe. After the
-one-time address verification, the repeat sign-in required no MFA or email challenge;
-the intervening Cloudflare human check was browser abuse protection, not an account
-second factor. Both sessions were signed out after proof.
-
-Play Console now shows **Sign in details** under Actioned, last edited 2026-09-03, with
-the `Play Reviewer` credentials and observed instructions: sign in with Email + Password,
-then choose **Skip for now** on the Connect screen to enter the empty reviewer universe.
-No organization, integrations, connected accounts, or founder data are attached. The
-optional Google/trusted-partner device feedback switch is off. The verified rotated
-credential was saved and submitted for review on 2026-09-08. The actual password exists
-only in Windows Credential Manager and Play's credential field and is intentionally
-absent from this repository.
-
-The mistaken `simkalholdingsllc+tinyassets-play-review@gmail.com` WorkOS user was
-permanently deleted only after the correct alias, delivery path, two sign-ins, and Play
-save were all proven. It never became the saved Play credential.
-
-WorkOS documents that AuthKit supports Email + Password and that the hosted UI exposes
-only the methods enabled in the dashboard
-(<https://workos.com/docs/authkit/email-password>,
-<https://workos.com/docs/authkit/hosted-ui>). Keep this reviewer as a dedicated password
-user; do not attach a founder/personal provider credential. Re-check the saved credential
-immediately before every submitted build. Google's reviewer-access requirements are at
-<https://support.google.com/googleplay/android-developer/answer/15748846>.
-
-**What it gated:** Sign in details, Target audience (**18 and over**), Data safety,
-and the foreground-service declaration were submitted with the 15-change review batch
-on 2026-09-08. Play approved and published the batch at 10:35 PM PT. Data safety lists
-both password and OAuth account creation. Content
-rating remains complete (IARC, submitted 2026-09-02, Everyone / PEGI 3 / USK 0 /
-ClassInd L).
-
-**This does not block a real install.** Play's internal testing track explicitly works
-"before you've finished setting up your app" — the App content checklist gates *production*
-access, not internal testing. The shortest path to the app being installable from Play by a
-real person is the upload keystore below, not this section.
-
-### Google Play: upload-keystore secrets — DONE 2026-09-04
-
-Authenticated repository state rechecked 2026-09-08: all four
-`ANDROID_UPLOAD_*` secret names are present. Values remain unreadable by design.
-
-The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
-generated 2026-09-01 into `~/.tinyassets/android/` on your machine. The release workflow
-signs with secrets an agent is not allowed to set (`gh secret set` is denied to it). Run, in
-a Git Bash at the repo root:
-
-```bash
-D="$HOME/.tinyassets/android"
-# `tr -d` is load-bearing: upload-keystore.env has Windows CRLF endings, so a
-# plain `. "$D/upload-keystore.env"` puts a trailing carriage return on every
-# value. A CR inside the secret makes the signing step fail with
-# "Keystore was tampered with, or password was incorrect", which sends you
-# hunting a corrupt keystore instead of a line ending. Verified 2026-09-03.
-set -a; . <(tr -d '\r' < "$D/upload-keystore.env"); set +a
-tr -d '\r\n' < "$D/tinyassets-upload.jks.b64" | gh secret set ANDROID_UPLOAD_KEYSTORE_B64
-printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
-printf '%s' "$ANDROID_UPLOAD_KEY_ALIAS"        | gh secret set ANDROID_UPLOAD_KEY_ALIAS
-printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD"     | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
-```
-
-To confirm the secrets took, re-run the release workflow: the signing step prints
-`upload certificate fingerprint verified` before it signs, and fails closed if the
-restored keystore does not carry certificate
-`D0:BC:F2:...:B2:11`. I have already verified that the keystore on disk carries
-exactly that certificate, so a mismatch after this points at the secret, not the key.
-
-**The alternative that needs no secrets at all.** I can build and sign the bundle
-locally in a container (JDK 21, node 22, Android SDK 36) and upload the `.aab` to
-the Console by hand — no GitHub secrets involved. That path is already working.
-The secrets are still worth setting, because they are what makes *every future
-release* one command instead of a manual build.
-
-Then back the keystore up somewhere that is not this laptop.
-
-What remains after the secrets, and who does it (`docs/ops/google-play-launch.md` §11):
-
-| Step | State |
-|---|---|
-| Play Console: app created, declarations accepted | **done** 2026-09-02 |
-| Store listing, graphics, privacy URL, Ads/Government/Financial/Health | **done** |
-| Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
-| Data safety | **done** 2026-09-03; submitted for review with the 15-change batch on 2026-09-08 |
-| Internal-testing tester list | **done** — "Founder devices" attached to the track |
-| Build the signed AAB | **done** 2026-09-08 — merged source `ea3f1092`; GitHub workflow run `34297030257` built and signed code `4 (1.0.3)`. Downloaded AAB SHA-256: `d647d073ae62088c8dba0795b883d4449b31c5ab3eb37f2304adde949e352cc3`. |
-| Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
-| Corrected internal release `2 (1.0.1)` | **done** 2026-09-03 21:42 PT — merged source `bf432f1b2dbe`; signed AAB accepted; Play shows Active and Available to internal testers. |
-| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **partially done 2026-09-08** — Google Play installed `3 (1.0.2)` on Samsung S24+ / Android 16 and Android reported `com.android.vending` as installer. WorkOS sign-in succeeded. The corrected debug build proved the provider notification/cancel path. Install Play-signed `4 (1.0.3)` and send one review-safe message to finish the row. |
-| Sign in details | **done 2026-09-08** — the dedicated reviewer account and rotated 40-character password were verified end-to-end, transferred directly from Windows Credential Manager, and saved in Play without exposing or persisting the value. |
-| Target audience | **done** 2026-09-03 — 18 and over; submitted for review 2026-09-08 |
-| Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; submitted for review 2026-09-08 |
-| Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
-| Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; submitted for review 2026-09-08 |
-| Closed test: 12 testers for 14 days, then apply for production access | **you** — Play approved and published signed code `4 (1.0.3)` on 2026-09-08 at 10:35 PM PT. The Alpha track says **Available to selected testers** across all 177 configured regions. The one-member `Founder devices` list is attached, and its invited founder Google account now sees the live opt-in page with **Become a tester**. The founder has not opted in yet. Opt in that account and recruit at least 11 more real Google-account testers; the 14-day clock begins only when 12 remain continuously opted in. |
-| Promote to Production → submit for review → **Roll out** | you (final click) |
-
-### Google Play: review and submit the foreground-service declaration
-
-The Android bundle declares a `dataSync` foreground service because **Connect
-OpenAI** starts a short-lived local callback listener while subscription OAuth is
-open in the external browser. For apps targeting Android 14+, Play requires a
-foreground-service declaration. The live form observed 2026-09-08 asks for **Data
-sync → Network processing → Other** and one public video link. This is a Console
-attestation, so the final truth check and submission are yours.
-
-After installing the next candidate from Play:
-
-1. Review the prepared real-phone video. It shows **Connect OpenAI** entering its
-   pending state and the foreground notification appearing immediately; unrelated
-   notifications are masked. Android service state and the return-to-app screenshot
-   separately confirm that cancellation stops the service. If Play requests a longer
-   continuous demonstration, retake it before submitting.
-2. In Play Console, open **App content → Foreground service permissions** and use
-   the staged wording and video shot list in
-   `docs/ops/android-release-verification.md`.
-3. Submit only if the recording confirms that exact behavior. If the notification
-   remains, the callback cannot be interrupted as described, or the function has
-   changed, stop and return the discrepancy to an agent instead of attesting to the
-   draft.
 
 ### Mint the PAT that unblocks the deploy chain
 
