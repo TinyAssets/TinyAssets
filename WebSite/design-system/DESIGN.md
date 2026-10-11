@@ -16,9 +16,9 @@ the web app, so the site and the product stop looking like two products.
 The core distinction is **claim versus evidence, made typographic**: prose is
 serif or sans; every live value, id, and timestamp is mono, always.
 
-The subject of the site is the user's **universe** (their own cloud agent
-with storage, connections, automations, and a brain). Copy sells outcomes
-("it merged its own PR"), never mechanisms ("AI-powered workflow engine").
+The subject of the site is one app for the user's own agents, a model they
+bring, and setups they can share. Copy does not open with "AI-powered
+workflow engine" or "global goals engine".
 
 ## 2. Color (semantic roles → CSS variables)
 

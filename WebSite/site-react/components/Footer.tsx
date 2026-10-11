@@ -11,8 +11,7 @@ export function Footer() {
         <div className={styles.brand}>
           <TinyAssetsMark size={26} />
           <p className={styles.line}>
-            <strong>TinyAssets</strong> is the platform. <strong>Tiny</strong> is the command center you
-            talk to. The code is open source under MIT on{" "}
+            <strong>TinyAssets</strong> is one app for your own agents. The code is open source under MIT on{" "}
             <a href={SITE.repo} target="_blank" rel="noreferrer">
               GitHub
             </a>
@@ -32,9 +31,9 @@ export function Footer() {
         <div className={styles.col}>
           <span className="eyebrow">Read</span>
           <ul>
-            <li><Link href="/build/">How a command center builds</Link></li>
-            <li><Link href="/commons/">Commons</Link></li>
-            <li><Link href="/developers/">Developers</Link></li>
+            <li><Link href="/build/">How it works</Link></li>
+            <li><Link href="/commons/">Creators</Link></li>
+            <li><Link href="/developers/">Source</Link></li>
             <li><Link href="/fine-print/">Fine print</Link></li>
           </ul>
         </div>
@@ -44,7 +43,6 @@ export function Footer() {
             <li><Link href="/legal/">Terms and privacy</Link></li>
             <li><Link href="/account/">Your account</Link></li>
             <li><a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a></li>
-            <li><a href={`mailto:${SITE.contact.security}`}>{SITE.contact.security}</a></li>
           </ul>
         </div>
       </div>
