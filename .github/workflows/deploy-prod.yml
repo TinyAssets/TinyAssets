@@ -577,7 +577,7 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes -o ConnectTimeout=10 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo bash -c 'set -euo pipefail; set -a; source /etc/tinyassets/env; set +a; timeout 840s python3 /tmp/repair_content_after_deploy.py ${IMAGE_REF}'"
+            "sudo systemd-run --quiet --wait --pipe --collect -p EnvironmentFile=/etc/tinyassets/env -p RuntimeMaxSec=840 /usr/bin/python3 /tmp/repair_content_after_deploy.py ${IMAGE_REF}"
 
       - name: Alert on incomplete owner content repair
         if: ${{ always() && steps.content_repair.outcome == 'failure' }}
