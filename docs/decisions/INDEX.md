@@ -10,7 +10,8 @@ acceptance except its Status line (ADR-005).
 - [ADR-009-nothing-runs-outside-a-users-command-center.md](ADR-009-nothing-runs-outside-a-users-command-center.md) — every execution belongs to one owner, who can see, pause and delete it · no platform fleet
 - [ADR-010-private-by-default.md](ADR-010-private-by-default.md) — every creation path writes `private` · exposure is an explicit owner act · privacy guidance is commons content
 - [ADR-011-owner-door-complete-model-door-bounded.md](ADR-011-owner-door-complete-model-door-bounded.md) — the app's reads are complete · only the model door bounds · `AccountType` is the one per-account input
-- [ADR-012-sealed-box-target-architecture.md](ADR-012-sealed-box-target-architecture.md) — one sealed box per command center · control plane is the only always-on layer · capacity later
+- [ADR-012-sealed-box-target-architecture.md](ADR-012-sealed-box-target-architecture.md) — one sealed box per command center (amended by ADR-019) · control plane is the only always-on layer · capacity later
+- [ADR-019-one-box-per-owner.md](ADR-019-one-box-per-owner.md) — one box per owner runs the loop, tools, browser and CLIs · gVisor driver · owner-only policy enforced at the box boundary · email via the owner's connector
 - [ADR-013-primitives-not-operators.md](ADR-013-primitives-not-operators.md) — ship the missing primitive, not an operator · irreducibility finding for new handles · no graph-size caps · test via the app agent · generator, evaluator and ground truth separate
 - [ADR-014-an-agent-is-a-node.md](ADR-014-an-agent-is-a-node.md) — an agent node runs the `converse` turn under the owner's grant
 - [ADR-015-only-the-floor-blocks-a-deploy.md](ADR-015-only-the-floor-blocks-a-deploy.md) — the six floor classes · everything else is tracked and re-judged after live use · outages equal severity
