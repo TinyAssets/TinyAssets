@@ -113,6 +113,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "one broker stream waits for the daemon's refresh answer only until "
         "that stream's own deadline; nothing reschedules",
     ),
+    "tinyassets/broker/server.py::_Connection._vault_open": (
+        CALL_SCOPED,
+        "one broker stream waits for the daemon to open that grant's vault "
+        "secret only until the stream's own deadline; nothing reschedules",
+    ),
     "tinyassets/role_node.py::run": (
         CALL_SCOPED, "one node-sandbox cell is supervised until exit or its call deadline",
     ),

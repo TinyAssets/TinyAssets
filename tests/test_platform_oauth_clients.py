@@ -296,19 +296,22 @@ def test_scoped_daemon_refresh_works_without_secret_in_child(configured, provide
 
     env = child_env(os.environ)
     env[service.ENV] = json.dumps(config)
+    # The child asks the daemon to refresh. It does not open the envelope:
+    # the master key stays in the parent, which is what reads the new token.
+    env["TEST_REJECTED"] = before.access_token
     script = """
 import json, os
 from tinyassets.connection_oauth.discovery import resolve_offer
-from tinyassets.connection_oauth.tokens import ConnectionTokens, decode
-from tinyassets.connection_oauth import directory
+from tinyassets.connection_oauth import directory, service
 assert not directory._secrets
+assert 'TINYASSETS_VAULT_MASTER_KEY' not in os.environ
 assert not any(n.endswith('_SECRET') and n.startswith('TINYASSETS_OAUTH_') for n in os.environ)
 offer, reason = resolve_offer({}, ['api.tasklark.io'])
 assert not reason and offer['source'] == 'directory'
-t = ConnectionTokens(universe_dir=os.environ['TEST_UNIVERSE'], owner_user_id='owner-1')
-old = t._read('tasklark')
-new = t.current('tasklark', old, rejected=decode(old).access_token)
-assert new.access_token != decode(old).access_token
+result = service.call(json.loads(os.environ[service.ENV]), {
+    "op": "refresh", "destination": "tasklark", "rejected": os.environ["TEST_REJECTED"],
+})
+assert result == {"ok": True}
 print('ok')
 """
     env["TEST_UNIVERSE"] = str(app / UID)

@@ -71,10 +71,12 @@ def test_broker_receives_the_secret_the_daemon_opened(discovery, monkeypatch):  
     seen = []
 
     def dispatch_for(*_args):
-        def dispatch(grant, verb, request, *, guard, vault_open=None, **kwargs):
+        def dispatch(grant, verb, request, *, guard, **kwargs):
             del grant, verb, request, kwargs
+            from tinyassets.broker.vault_open import current_open
+
             with guard():
-                seen.append(vault_open("vault://http/synthetic"))
+                seen.append(current_open.get()("vault://http/synthetic"))
             return Script([b"opened"])
 
         return dispatch
@@ -98,10 +100,12 @@ def test_a_different_ref_returns_no_secret(discovery):  # noqa: F811
     _deposit(discovery)
 
     def dispatch_for(*_args):
-        def dispatch(grant, verb, request, *, guard, vault_open=None, **kwargs):
+        def dispatch(grant, verb, request, *, guard, **kwargs):
             del grant, verb, request, kwargs
+            from tinyassets.broker.vault_open import current_open
+
             with guard():
-                vault_open("vault://http/other")
+                current_open.get()("vault://http/other")
             return Script([b"opened"])
 
         return dispatch

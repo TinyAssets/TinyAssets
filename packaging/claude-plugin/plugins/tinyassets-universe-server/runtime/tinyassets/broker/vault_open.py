@@ -8,7 +8,16 @@ carries no secret.
 """
 from __future__ import annotations
 
+import contextvars
 from pathlib import Path
+
+#: Set on the broker stream thread for the duration of one dispatch. Scripted
+#: test dispatches ignore it. Production dispatch reads it and does not take
+#: the opener as a new argument, so a dispatch that does not open vaults is
+#: unchanged.
+current_open: contextvars.ContextVar = contextvars.ContextVar(
+    "tinyassets_vault_open", default=None,
+)
 
 
 def prepare(data_root, *, principal, command_center, grant_id, connection_id):
@@ -21,15 +30,17 @@ def prepare(data_root, *, principal, command_center, grant_id, connection_id):
         return None
     prefix = "vault://http/"
     ref = resource.credential_ref or ""
+    # A foreign scheme on an http row is the broker's existing fail-closed
+    # path. Returning no opener leaves that refusal as a proxy error.
     if not ref.startswith(prefix):
-        raise PermissionError("vault open custody is unavailable")
+        return None
     destination = ref[len(prefix):]
     root = Path(data_root).resolve()
     universe = root / command_center
     if (universe.parent != root or universe.resolve() != universe
             or not destination or len(destination) > 128 or "/" in destination
             or destination in (".", "..")):
-        raise PermissionError("vault open scope is unavailable")
+        return None
 
     def open_record(document):
         from tinyassets.credential_vault import read_http_credential

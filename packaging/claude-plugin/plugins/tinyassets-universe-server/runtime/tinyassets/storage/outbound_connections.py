@@ -1073,9 +1073,12 @@ class CredentialBlindBroker:
             # The broker process has no master key. For an http grant it asks
             # the daemon, which opens the envelope and returns this secret.
             # In-process callers that still hold the key resolve locally.
+            from tinyassets.broker.vault_open import current_open
+
+            opener = vault_open if vault_open is not None else current_open.get()
             http_grant = (resource.connection_type or "").strip().lower() == "http"
-            if vault_open is not None and http_grant:
-                credential = vault_open(resource.credential_ref)
+            if opener is not None and http_grant:
+                credential = opener(resource.credential_ref)
             else:
                 credential = self._resolve_credential(
                     resource.credential_ref, resource.connection_type
@@ -1139,10 +1142,10 @@ class CredentialBlindBroker:
                         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
                     return self._oauth_bundle(
                         resource, grant_id, verb, credential, rejected=rejected,
-                        refresh_request=refresh_request, vault_open=vault_open)
+                        refresh_request=refresh_request, vault_open=opener)
             return self._oauth_bundle(
                 resource, grant_id, verb, credential, rejected=rejected,
-                refresh_request=refresh_request, vault_open=vault_open)
+                refresh_request=refresh_request, vault_open=opener)
 
         if oauth:
             from tinyassets.connection_oauth.tokens import decode

@@ -868,22 +868,30 @@ class _Connection:
                       stream)
             if stream.upload is not None:
                 self.send(rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream)
-            upstream = dispatch(
-                grant_id, verb, request, stream=True,
-                idle_s=(min(idle_s, DEFAULT_IDLE_S)
-                        if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
-                guard=lambda: self._guard(stream),
-                on_connect=lambda sock: self._connected(stream, sock),
-                checkpoint=lambda: self._checkpoint(stream),
-                deadline_at=stream.deadline,
-                **({"body": stream.upload} if stream.upload is not None else {}),
-                **({"refresh_request": lambda destination, rejected: self._refresh(
-                    stream, destination, rejected)} if refresh_enabled else {}),
-                **({"vault_open": lambda ref: self._vault_open(stream, ref)}
-                   if vault_open_enabled else {}),
-                **({"inference_usage": inference_usage, "operation_id": stream.op_id}
-                   if inference_usage is not None else {}),
+            from tinyassets.broker.vault_open import current_open
+
+            opener_token = (
+                current_open.set(lambda ref: self._vault_open(stream, ref))
+                if vault_open_enabled else None
             )
+            try:
+                upstream = dispatch(
+                    grant_id, verb, request, stream=True,
+                    idle_s=(min(idle_s, DEFAULT_IDLE_S)
+                            if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
+                    guard=lambda: self._guard(stream),
+                    on_connect=lambda sock: self._connected(stream, sock),
+                    checkpoint=lambda: self._checkpoint(stream),
+                    deadline_at=stream.deadline,
+                    **({"body": stream.upload} if stream.upload is not None else {}),
+                    **({"refresh_request": lambda destination, rejected: self._refresh(
+                        stream, destination, rejected)} if refresh_enabled else {}),
+                    **({"inference_usage": inference_usage, "operation_id": stream.op_id}
+                       if inference_usage is not None else {}),
+                )
+            finally:
+                if opener_token is not None:
+                    current_open.reset(opener_token)
             stream.upstream = upstream
             if stream.cancelled:
                 raise _Cancelled
