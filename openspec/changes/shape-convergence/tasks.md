@@ -12,7 +12,7 @@ The reconciler lists their state.
 Each net figure is an estimate of executable plus document lines, mirror
 excluded. The PR measures the real figure, and a positive net does not merge.
 
-- [ ] 2.1 **C1 Guards, document homes, document prune.** Add
+- [x] 2.1 **C1 Guards, document homes, document prune.** Add
       `scripts/check_shapes.py` with one `SHAPES` table keyed S1–S27, plus
       `tests/test_shape_registry.py`. Register it in
       `scripts/ci_structural_guards.py`. Checks: registry-parity, ceiling,

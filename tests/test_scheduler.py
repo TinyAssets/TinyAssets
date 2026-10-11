@@ -1,6 +1,6 @@
 """Tests for tinyassets/scheduler.py — scheduled + event-triggered branch invocation.
 
-Spec: docs/vetted-specs.md §Scheduled + event-triggered branch invocation.
+Spec: openspec/specs/user-owned-automations/spec.md §Scheduled + event-triggered branch invocation.
 """
 
 from __future__ import annotations

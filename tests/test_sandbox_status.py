@@ -1,6 +1,6 @@
 """Tests for sandbox availability surface.
 
-Spec: docs/vetted-specs.md §Loud sandbox-unavailable surface.
+Spec: openspec/specs/scratch-storage/spec.md §Loud sandbox-unavailable surface.
 
 Covers:
   * tinyassets.providers.base.check_bwrap_failure — raises SandboxUnavailableError on match.

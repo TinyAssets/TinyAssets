@@ -1,6 +1,7 @@
 """Tests for per-node llm_policy override.
 
-docs/vetted-specs.md — "Per-node llm_policy override" (navigator-vetted 2026-04-22).
+openspec/specs/provider-routing/spec.md
+Topic: "Per-node llm_policy override" (navigator-vetted 2026-04-22).
 
 Coverage:
 - pinned preferred provider used when available

@@ -1,6 +1,6 @@
 """Content-addressed branch snapshot storage.
 
-Spec: docs/vetted-specs.md §publish_version.
+Spec: openspec/specs/community-patch-loop/spec.md §publish_version.
 Rollback design: docs/ops/post-redeploy-validation-runbook.md.
 
 A published version is a write-once snapshot of a BranchDefinition's full

@@ -1,6 +1,7 @@
 """Tests for gate bonus MCP actions: stake_bonus, unstake_bonus, release_bonus.
 
-Spec: docs/vetted-specs.md §Gate bonuses — staked payouts attached to gate milestones.
+Spec: openspec/specs/paid-market-economy/spec.md.
+Topic: Gate bonuses — staked payouts attached to gate milestones.
 """
 
 from __future__ import annotations

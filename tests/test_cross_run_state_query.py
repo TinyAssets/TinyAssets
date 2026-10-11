@@ -1,6 +1,6 @@
 """Tests for query_runs — cross-run state query primitive.
 
-Spec: docs/vetted-specs.md §Cross-run state query primitive.
+Spec: openspec/specs/graph-execution-substrate/spec.md §Cross-run state query primitive.
 Implementation: tinyassets/runs.py::query_runs + universe_server.py::_action_query_runs.
 """
 
