@@ -10,7 +10,7 @@ The owner's intent, clarified 2026-10-11: `tiny` is payment for creator work and
 
 Nothing pays anyone in `tiny` today. **Evidence:** the fine-print page says no currency moves, and no module sends Destiny or `test tiny`. The legal page describes a Base Sepolia `test tiny` rail that the code does not run.
 
-**Inference, the low-risk order.** Accrue what the platform owes as an append-only payable, in cents of subscription cash actually collected. That payable is not a token and not a balance the platform holds for the user. Wallet payout is the settlement that matters. In-app spend does not give a heavy earner anywhere to put the balance. The instrument that does, without issuing a new token, is an existing dollar stablecoin bought with revenue the platform has already collected and sent to a wallet the user controls. Issuing `tiny` stays off that path. The owner cannot afford a lawyer; this note is not a substitute for one, and the staging below is chosen to avoid a new legal object rather than to declare the payout legal.
+**Inference, the low-risk order.** Accrue what the platform owes as an append-only payable, in cents of subscription cash actually collected. That payable is not a token and not a balance the platform holds for the user. Wallet payout is the settlement that matters. In-app spend does not give a heavy earner anywhere to put the balance. The instrument that does, without issuing a new token, is an existing dollar stablecoin bought with revenue the platform has already collected and sent to a wallet the user controls. Issuing `tiny` stays off that path. The owner cannot afford a lawyer; this note is not a substitute for one, and the staging below is chosen to avoid a new legal object rather than to declare the payout legal. A personal currency for every account, with `tiny` locked in a pool beside it, is a later section. It is not part of this path.
 
 ## What the name is (evidence)
 
@@ -229,6 +229,81 @@ Not legal advice. The owner cannot afford a lawyer now, so the path above avoids
 - Apple and Google Play rules for showing or earning the token inside the apps (design §9.5 and §9.6).
 - The consumer disclosure text, the unformed operating entity, and the draft terms, before the legal page describes a live rail.
 - The open product rule on compute: no payable for a host that would see another user's prompts. That one is a product requirement from 2026-10-11, not a counsel question.
+
+## A personal currency for every account
+
+Owner concept, 2026-10-11, analyzed here and not adopted. Each new account gets its own crypto token. Rewards are split three ways: some `tiny` to the user's wallet or a platform wallet, some `tiny` locked forever in a liquidity pool paired with that personal token, and some of the personal token to the user's wallet or a platform wallet. This is not legal advice.
+
+**Evidence.** Nothing in the repo creates a token per account. There is no contract source, no factory, and no liquidity-pool module. A search for a pool, a pair, or a per-user currency contract returned nothing in product code. Account identity today is the sign-in the legal page describes (WorkOS). Opening an account does not deploy a contract.
+
+### How it would work (inference)
+
+A standard automated-market-maker pool is two piles of tokens. Anyone can swap one pile for the other. The price is the ratio of the piles. The liquidity-provider position is itself a token (or a receipt). "Locked forever" means that receipt is sent somewhere nobody can call withdraw: a burn address, or a contract with no release. The creator cannot pull the piles out.
+
+What that does not do: it does not stop swaps. A buyer of the personal token pays `tiny` into the pool and takes personal tokens out. A seller does the reverse and takes `tiny` out. The `tiny` the owner described as locked is the pile sellers drain. The lock stops one rug, removing the piles. It does not stop the other, selling into the piles.
+
+The steps, none of which exist here:
+
+1. On account creation, a factory deploys a new token, or mints a new id from one contract. The supply has to be fixed in that same transaction, and any mint or admin key has to be gone. A key that can mint more personal tokens later can sell the new mint into the pool and take the `tiny`.
+2. A pool is created for the pair (`tiny`, personal token). Creating it needs both sides. The personal-token side is a mint. The `tiny` side is real `tiny`, which this product does not have a live supply of.
+3. The liquidity receipt is locked. The person does not hold a withdrawable claim on the pool.
+4. Ongoing rewards split into liquid `tiny`, more `tiny` added to the pool (which needs more personal tokens on the other side, or it just moves the price), and liquid personal tokens.
+
+"To their wallet or a platform wallet" splits the same unit into self-custody or custody. A platform wallet the user can later withdraw from is the custody the earlier clarification said to avoid. A platform wallet the user cannot withdraw from is an in-app balance, which is the sink problem again.
+
+### What a safe build would take (inference)
+
+Safe here means the creator cannot mint, cannot pull the pool, and cannot be surprised by a price that was never a price. It does not mean the token is a good product.
+
+- No deploy on signup. An empty account has no fans and no revenue. A token for it is a ticker with a pool and nobody behind it.
+- One token only after that account has published a piece and has been paid real revenue, and only if they ask.
+- Fixed supply, mint authority destroyed in the deploy transaction, no pause key, no upgrade key. The platform keeps none of those keys either.
+- The `tiny` side of the pool, if it exists at all, comes from that account's own already-paid earnings, capped, and not from a grant to every new user.
+- The lock is described as "the creator cannot withdraw the reserves." It is not described as price support, safety, or a floor.
+- The user pays the chain fee, or the deploy is limited to accounts that have already earned. The platform does not pay gas for anonymous signups.
+- Destination addresses screened before the deploy. One token per person, not per email.
+- Even then, anyone can buy the personal token and sell it back for the `tiny` in the pool. That trade is the product. A build that forbids the trade has no pool.
+
+That list is larger than the USDC payout in the section above, and it needs the lawyer the owner cannot afford. It also needs a live `tiny`, which the sink section says not to issue yet.
+
+### Abuse (inference)
+
+| Risk | What the mechanism allows |
+|---|---|
+| Mass account creation | If signup deploys a token, or seeds `tiny` into a pool, new accounts are a faucet and a gas bill. Free sign-in (the legal page's tier-1 "no KYC") is the wrong door for a mint. |
+| Wash trading | The creator, or a second wallet they control, buys the personal token against the pool. The quoted price rises. Nothing about the lock checks who is trading. |
+| Rug-pull optics | "Liquidity locked forever" is a sentence people use to sound safe. The lock does not keep the `tiny` in the pool once trading starts. If any mint or admin key survives, the holder of that key can drain the pool, and if the platform holds the key, the platform is the one who can. |
+| Pump and dump | The locked `tiny` is the exit. Buy the personal token, show a higher price, sell it back, and the `tiny` leaves with the seller. Fans who bought later are the ones left holding the personal token. |
+
+### Legal and consumer exposure (inference, not legal advice)
+
+One `tiny` is already an unclassified public token. A token per account is a new public token for every user, deployed by the platform. Strangers can buy it from the pool. That is many instruments, each with a price, and the platform is the issuer of all of them if the factory runs at signup. The consumer harm is specific: a lock sounds like the money is safe, and the money can still be swapped out. The legal page would have to say that, per token, before anyone is invited to buy. The owner cannot afford that review. This design asks for more of it than a single `tiny`, not less. Store rules (design §9.5 and §9.6) already question showing one token in the apps. A catalog of user tokens is the same question multiplied.
+
+### Tax (inference, not tax advice)
+
+A user could be treated as receiving three things: liquid `tiny`, personal tokens, and whatever claim they have on a pool they cannot withdraw. Fair market value of a token whose only price is a pool the platform just filled is a number the filler chose. Reporting that, for every account, on every reward, is a system. Later buyers who swap in and out may have their own dispositions. Who is taxed on `tiny` that sits in a locked pool, the platform or the user, is not answered by the lock. A tax advisor would have to answer it before the first deploy. The cent ledger in the payout section does not have this problem: the value is the dollars collected.
+
+### Gas and infrastructure (inference)
+
+Each account would be several chain transactions: deploy or mint, approve, create the pool, add both sides, lock the receipt, and later reward transfers. **TODO:** current Base fees were not measured for this note. Fees on an L2 are small per transaction and unbounded across free signups if the platform pays. The inventory cost that matters more than gas is the `tiny` sitting in pools that never trade, or leaving those pools through the first swap. Dead pools do not return that `tiny` if the receipt is locked forever.
+
+### The same benefits, without a token (inference)
+
+The reasons to want this are that a creator gains when people value their work, and that fans can gather around a creator. Both already have a safer shape.
+
+- **Aligned incentives.** The revenue-share ledger pays a creator, in cents, when paid subscribers use their published piece. That payment goes up when use goes up. It does not require a price.
+- **A fan economy.** Use is the support. A tip in USDC, if one is ever built, is a fan paying a creator in money the fan already holds. A public count of paid use, with small numbers hidden, is the gathering, without a ticker.
+- **Points.** An off-chain number per creator, increased only by the same seat-time meter, not transferable, not priced, not paired. The creator sees it. Nobody can buy it, dump it, or rug it. It can later be the input to a USDC payout. It does not become a coin by itself.
+
+A personal token adds a price and a pool on top of that number. The price is what creates the wash trade, the dump, and the "locked" sentence that over-promises. The number does not need the price.
+
+### Minimal safe experiment
+
+**Inference. Not legal advice.** Do not deploy a factory. Do not deploy one token on a testnet as the experiment. A testnet coin per account rehearses the spam and the lock sentence under the same brand.
+
+1. Pick one creator who already has a published piece. Show them two figures from the ledger this note already describes: credited seat-time of paid use, and the cent estimate of their revenue share. The figures are not transferable and have no price.
+2. The pass is that the creator can see whether anyone used the piece, and the cents match cash actually collected. The fail is a screen that looks like a market, a balance they can send, or a pool.
+3. Stop. If what they wanted was a tradeable coin, that is a later decision, one creator at a time, with counsel, and not a mint on signup.
 
 ## What this note did not do
 
