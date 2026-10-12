@@ -11,13 +11,13 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 from scripts import check_shapes, openspec_flow
 
 ROOT = Path(__file__).resolve().parent.parent
 TITLE = "Shape reconciliation"
-ROW_LINE = re.compile(r"^Registry row\(s\):\s*(.*)$", re.MULTILINE | re.IGNORECASE)
+LABEL = "shape-registry"
+ROW_LINE = re.compile(r"^\ufeff?Registry row\(s\):\s*(.*)$", re.MULTILINE | re.IGNORECASE)
 ROW_ID = re.compile(r"\b(?:B[12]|S(?:[1-9]|1\d|2[0-8])|N(?:10|[1-9]))\b")
 FLEET_PREFIXES = (
     "cursor/",
@@ -247,21 +247,22 @@ def main() -> int:
     if args.dry_run:
         sys.stdout.write(body)
         return 0
-    query = f'repo:{args.repo} in:title "{TITLE}" type:issue'
-    issues = gh(f"search/issues?q={quote(query)}&per_page=100")["items"]
+    issues = pages(f"repos/{args.repo}/issues?state=all&per_page=100")
     matches = [issue for issue in issues if "pull_request" not in issue and issue["title"] == TITLE]
     if len(matches) > 1:
         raise RuntimeError(f"{len(matches)} '{TITLE}' issues exist; refusing to choose")
     if matches:
         issue = matches[0]
-        if issue.get("body") != body or issue["state"] != "open":
+        existing_labels = {label["name"] for label in issue.get("labels", [])}
+        labels = sorted(existing_labels | {LABEL})
+        if issue.get("body") != body or issue["state"] != "open" or LABEL not in existing_labels:
             gh(
                 f"repos/{args.repo}/issues/{issue['number']}",
                 "--method",
                 "PATCH",
                 "--input",
                 "-",
-                input_data=json.dumps({"body": body, "state": "open"}),
+                input_data=json.dumps({"body": body, "state": "open", "labels": labels}),
             )
         print(issue["html_url"])
     else:
@@ -271,7 +272,7 @@ def main() -> int:
             "POST",
             "--input",
             "-",
-            input_data=json.dumps({"title": TITLE, "body": body}),
+            input_data=json.dumps({"title": TITLE, "body": body, "labels": [LABEL]}),
         )
         print(issue["html_url"])
     return 0

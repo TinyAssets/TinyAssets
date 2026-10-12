@@ -44,8 +44,6 @@ observation SHALL NOT claim host-global exclusion.
 
 ## MODIFIED Requirements
 
-## ADDED Requirements
-
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and admitted-definition guards
 
 `resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only

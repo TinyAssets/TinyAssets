@@ -12,6 +12,10 @@ permissions:
   issues: write
   pull-requests: read
 
+concurrency:
+  group: shape-reconcile
+  cancel-in-progress: false
+
 jobs:
   reconcile:
     runs-on: ubuntu-latest
