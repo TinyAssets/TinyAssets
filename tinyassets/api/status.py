@@ -452,7 +452,22 @@ def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
-    """Return host-wide provider evidence without a command center."""
+    """Return host-wide provider evidence without a command center.
+
+    ``llm_endpoint_bound`` is a HOST heuristic and is NOT the model any universe
+    selected. No universe id enters this function: it probes the daemon's own
+    process -- OLLAMA_HOST, ANTHROPIC_BASE_URL, a logged-in ``claude`` -- so a
+    value here says nothing about which source a universe will run on, whether
+    that source has capacity, or whose credential it uses. Codex is not a host
+    binding; its sign-in lives in the owner's custody.
+
+    A universe's actual choices live behind ``read_graph target=model_options``
+    (authorized sources, saved default, ordered fallbacks). Reading this field as
+    a universe's selection produced the live 2026-09-20 misdiagnosis: the agent
+    saw a host hint, concluded the universe had selected that source, and told
+    the owner an operator had to switch the global binding. Nested under
+    ``active_host`` because that is exactly what it describes.
+    """
     import shutil as _shutil
 
     api_key_enabled = api_key_providers_enabled()
@@ -669,11 +684,10 @@ def _provider_auth_snapshot() -> dict[str, Any]:
     from tinyassets.providers.base import subscription_auth_health
 
     writers: dict[str, Any] = {}
-    known_states: list[str] = []
+    statuses: list[str] = []
     for name in _SUBSCRIPTION_WRITERS:
         # allow_probe=False: get_status is an MCP request path and must
-        # never block on the codex live-probe subprocess (up to 120s).
-        # Fast paths + cached verdicts only; the worker gate owns probing.
+        # never block on a live-probe subprocess. Fast paths only.
         health = subscription_auth_health(name, allow_probe=False)
         status = health["status"]
         detail = {
@@ -681,11 +695,10 @@ def _provider_auth_snapshot() -> dict[str, Any]:
             "not_logged_in": "subscription auth unavailable; reauthentication required",
         }.get(status, "subscription auth state inconclusive")
         writers[name] = {"status": status, "detail": detail}
-        if health["status"] in ("ok", "not_logged_in"):
-            known_states.append(health["status"])
-    all_down = bool(known_states) and all(
-        s == "not_logged_in" for s in known_states
-    )
+        statuses.append(status)
+    # Unknown is not logged-out. A writer with no host probe must not turn one
+    # dead writer into "every subscription writer is unauthenticated".
+    all_down = bool(statuses) and all(status == "not_logged_in" for status in statuses)
     return {"writers": writers, "all_writers_unauthenticated": all_down}
 
 

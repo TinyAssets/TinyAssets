@@ -30,16 +30,25 @@ from tinyassets.providers.base import subscription_auth_health  # noqa: E402
 
 
 def test_codex_ok_when_auth_json_present(tmp_path, monkeypatch):
+    """A host Codex auth file is not a verdict. The package runner reads owner custody."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text("{}", encoding="utf-8")
     health = subscription_auth_health("codex")
-    assert health["status"] == "ok"
-    assert health["provider"] == "codex"
+    assert health == {
+        "provider": "codex",
+        "status": "unknown",
+        "detail": "no subscription-auth probe for this provider",
+    }
 
 
 def test_codex_not_logged_in_when_auth_json_absent(tmp_path, monkeypatch):
+    """Absence of a host auth file is not logged-out either. Same inconclusive probe."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    assert subscription_auth_health("codex")["status"] == "not_logged_in"
+    assert subscription_auth_health("codex") == {
+        "provider": "codex",
+        "status": "unknown",
+        "detail": "no subscription-auth probe for this provider",
+    }
 
 
 # ---- subscription_auth_health: claude-code --------------------------------
@@ -87,25 +96,38 @@ def test_liveness_provider_auth_block_ok(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
 
     out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
+    # The host file does not authenticate Codex. Claude's token does.
+    assert out["provider_auth"]["writers"]["codex"]["status"] == "unknown"
     assert out["provider_auth"]["writers"]["claude-code"]["status"] == "ok"
     assert out["provider_auth"]["all_writers_unauthenticated"] is False
     assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
+    assert not any("writer_unauthenticated" in w for w in out["warnings"])
 
 
 def test_liveness_all_writers_unauthenticated_warns(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-absent"))
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
+    """Both checked writers logged out is the total alarm. An unknown writer is not."""
+    from tinyassets.providers import base as provider_base
+
+    def logged_out(name, *, allow_probe=True):
+        return {"provider": name, "status": "not_logged_in", "detail": "absent"}
+
+    monkeypatch.setattr(provider_base, "subscription_auth_health", logged_out)
 
     out = _compute_supervisor_liveness(tmp_path)
+    assert set(out["provider_auth"]["writers"]) == {"codex", "claude-code"}
+    assert all(
+        info["status"] == "not_logged_in"
+        for info in out["provider_auth"]["writers"].values()
+    )
     assert out["provider_auth"]["all_writers_unauthenticated"] is True
     assert any("all_writers_unauthenticated" in w for w in out["warnings"])
+    assert not any("writer_unauthenticated" in w for w in out["warnings"])
 
 
 def test_liveness_partial_writer_warns(tmp_path, monkeypatch):
-    # The exact 2026-06-25 shape: claude dead, codex alive. Must warn even
-    # though the loop still produces (Codex review finding #1).
+    # Claude dead, Codex inconclusive. A host auth.json must not read as Codex
+    # alive, and it must not turn the one dead writer into "every writer is
+    # unauthenticated" (the 2026-06-25 partial-outage distinction).
     codex_home = tmp_path / "codex"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text("{}", encoding="utf-8")
@@ -116,7 +138,7 @@ def test_liveness_partial_writer_warns(tmp_path, monkeypatch):
     out = _compute_supervisor_liveness(tmp_path)
     assert out["provider_auth"]["all_writers_unauthenticated"] is False
     assert out["provider_auth"]["writers"]["claude-code"]["status"] == "not_logged_in"
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
+    assert out["provider_auth"]["writers"]["codex"]["status"] == "unknown"
     assert any("writer_unauthenticated" in w for w in out["warnings"])
     assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
 

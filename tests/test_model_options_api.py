@@ -379,3 +379,15 @@ def test_enumeration_support_accepts_executor_override_without_invoking_it(monke
     monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"future-source": native}))
     assert _native_enumeration("future-source") == "supported"
     assert _native_enumeration("absent") == "unavailable"
+
+
+def test_the_shipped_package_executor_reports_enumeration_support(monkeypatch):
+    """Catalogue support follows the package executor, not the provider name."""
+    from tinyassets.api.model_options import _native_enumeration
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+
+    monkeypatch.setattr(
+        provider_calls, "_real_router",
+        ProviderRouter({"codex": ExternalAgentProvider("codex")}),
+    )
+    assert _native_enumeration("codex") == "supported"

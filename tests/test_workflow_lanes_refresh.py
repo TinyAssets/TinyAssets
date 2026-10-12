@@ -118,16 +118,18 @@ def test_a_foreground_run_refreshes_before_its_receipt_and_still_completes(
 
     monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
     spent = _rotating_spend(monkeypatch)
+    calls = _counting_refresh(monkeypatch)
 
     response, provider, _ = foreground._run_branch(
         tmp_path, monkeypatch, authenticate_request, foreground._branch(node_count=2),
     )
 
     assert response["terminal_status"] == "completed", response["terminal_error"]
-    # Once for the run, before its one receipt -- not once per node.
-    assert spent == ["r-1"]
+    # The seam runs once, before the receipt, and does not spend the package token.
+    assert calls == [OWNER]
+    assert spent == []
     assert len(provider.calls) == 2
-    assert _stored_refresh_token(tmp_path) == "r-2"
+    assert _stored_refresh_token(tmp_path) == "r-1"
     assert _custody_matches_the_vault(tmp_path)
 
 
@@ -232,8 +234,8 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
             child._refresh_sign_ins()
 
             assert calls == [OWNER]
-            assert spent == ["r-1"]
-            assert _stored_refresh_token(tmp_path) == "r-2"
+            assert spent == []
+            assert _stored_refresh_token(tmp_path) == "r-1"
             assert _custody_matches_the_vault(tmp_path)
             assert not parent._sign_ins_refreshed
             child_checks[0] = True
@@ -248,8 +250,9 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
     )
     assert child_checks == [True], "the child refresh assertions must complete"
     assert response["terminal_status"] == "completed", response
-    assert spent == ["r-1"]
-    assert _stored_refresh_token(tmp_path) == "r-2"
+    assert calls == [OWNER, OWNER]
+    assert spent == []
+    assert _stored_refresh_token(tmp_path) == "r-1"
     assert _custody_matches_the_vault(tmp_path)
 
 
@@ -302,15 +305,17 @@ def test_a_background_automation_refreshes_before_its_receipt_and_still_succeeds
     tmp_path, monkeypatch,
 ):
     spent = _rotating_spend(monkeypatch)
+    calls = _counting_refresh(monkeypatch)
 
     reason, fake, run = run_automation_once(
         tmp_path, monkeypatch, setup_serving=lambda: _redeposit_stale(tmp_path),
     )
 
     assert reason.startswith("ok:ran:"), (reason, run and run.get("error"))
-    assert spent == ["r-1"]
+    assert calls == [OWNER]
+    assert spent == []
     assert len(fake.calls) == 1
-    assert _stored_refresh_token(tmp_path) == "r-2"
+    assert _stored_refresh_token(tmp_path) == "r-1"
     assert _custody_matches_the_vault(tmp_path)
 
 
@@ -322,6 +327,7 @@ def test_a_background_agent_node_on_native_codex_refreshes_and_completes(
     from tinyassets.providers.base import ProviderResponse
 
     spent = _rotating_spend(monkeypatch)
+    calls = _counting_refresh(monkeypatch)
     launched: list[str] = []
 
     async def native(self, prompt, system, config, *, universe_dir=None):
@@ -346,9 +352,12 @@ def test_a_background_agent_node_on_native_codex_refreshes_and_completes(
     )
 
     assert reason.startswith("ok:ran:"), (reason, run and run.get("error"), work_agent.errors)
-    assert spent == ["r-1"]
-    # The launch ran on the ROTATED sign-in, not the stale one.
-    assert launched == ["r-2"]
+    # The platform does not spend a package token. The sealed copy is the stored
+    # document; the CLI's own refresh is carried back by custody compare-and-swap.
+    assert calls == [OWNER]
+    assert spent == []
+    assert launched == ["r-1"]
+    assert _stored_refresh_token(tmp_path) == "r-1"
     assert _custody_matches_the_vault(tmp_path)
 
 
@@ -372,7 +381,8 @@ def test_a_multi_node_background_automation_refreshes_once_and_keeps_its_receipt
 
     assert reason.startswith("ok:ran:"), (reason, run and run.get("error"))
     assert calls == [OWNER]
-    assert spent == ["r-1"]
+    assert spent == []
+    assert _stored_refresh_token(tmp_path) == "r-1"
     assert len(fake.calls) == 2
     with sqlite3.connect(authority_db_path(tmp_path)) as conn:
         receipts = conn.execute("SELECT COUNT(*) FROM provider_work_receipts").fetchone()[0]

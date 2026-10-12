@@ -350,6 +350,7 @@ def test_llm_endpoint_bound_ollama_takes_priority_over_anthropic(
 
 
 def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> None:
+    """A host codex binary plus auth.json is not a host endpoint."""
     auth_dir = tmp_path / ".codex"
     auth_dir.mkdir()
     (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
@@ -359,10 +360,11 @@ def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> No
         which_map={"codex": "/usr/local/bin/codex"},
         home=tmp_path,
     )
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> None:
+    """CODEX_HOME is owner-job state, not a host binding, even when HOME is empty."""
     codex_home = tmp_path / "persistent-codex-home"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text("{}", encoding="utf-8")
@@ -376,7 +378,7 @@ def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> No
         home=empty_home,
     )
 
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_openai_key_without_codex_cli_falls_through(
@@ -425,19 +427,28 @@ def test_llm_endpoint_bound_unset_when_nothing_available(monkeypatch) -> None:
 def test_llm_endpoint_bound_codex_takes_priority_over_claude(
     monkeypatch, tmp_path,
 ) -> None:
+    """Host Codex files do not outrank a logged-in Claude, and do not bind alone."""
     auth_dir = tmp_path / ".codex"
     auth_dir.mkdir()
     (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
-    hint = _get_endpoint_hint(
+    which_map = {
+        "codex": "/usr/local/bin/codex",
+        "claude": "/usr/local/bin/claude",
+    }
+    unset = _get_endpoint_hint(
         monkeypatch,
         env={},
-        which_map={
-            "codex": "/usr/local/bin/codex",
-            "claude": "/usr/local/bin/claude",
-        },
+        which_map=which_map,
         home=tmp_path,
     )
-    assert hint == "codex"
+    claude = _get_endpoint_hint(
+        monkeypatch,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": "tok"},
+        which_map=which_map,
+        home=tmp_path,
+    )
+    assert unset == "unset"
+    assert claude == "claude"
 
 
 # ─────────────────────────────────────────────────────────────────────

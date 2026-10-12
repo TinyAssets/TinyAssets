@@ -50,10 +50,16 @@ def test_openai_key_maps_to_codex_only(tmp_path):
         "service": "openai",
         "secret_b64": base64.b64encode(b"sk-openai-test").decode("ascii"),
     }])
-    assert provider_auth_env_overrides(tmp_path, "codex")["OPENAI_API_KEY"] == "sk-openai-test"
-    # The wrong provider does not receive it (no cross-provider bleed).
-    assert "OPENAI_API_KEY" not in provider_auth_env_overrides(tmp_path, "claude-code")
-    assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides(tmp_path, "claude-code")
+    # The deposit still resolves to the OpenAI env name. Codex no longer takes a
+    # child-process overlay: the package runner materializes owner custody, and
+    # the key must not leak onto Claude's overlay either.
+    assert resolve_llm_api_key(tmp_path, "OPENAI_API_KEY") == "sk-openai-test"
+    assert provider_auth_env_overrides(tmp_path, "codex") == {}
+    claude = provider_auth_env_overrides(tmp_path, "claude-code")
+    assert "OPENAI_API_KEY" not in claude
+    assert "ANTHROPIC_API_KEY" not in claude
+    child = subprocess_env_for_provider("claude-code", universe_dir=tmp_path)
+    assert "sk-openai-test" not in child.values()
 
 
 def test_set_engine_action_writes_vault_and_config(tmp_path, monkeypatch):

@@ -119,7 +119,7 @@ def test_a_refused_refresh_records_the_rejection_and_a_fixed_one_clears_it(
     write_credential_vault(
         universe,
         [llm_subscription_credential_record(
-            service="codex", auth_json_b64=base64.b64encode(document.encode()).decode(),
+            service="claude", auth_json_b64=base64.b64encode(document.encode()).decode(),
         )],
         owner_user_id="owner", universe_id=UID,
     )
@@ -131,9 +131,9 @@ def test_a_refused_refresh_records_the_rejection_and_a_fixed_one_clears_it(
     with pytest.raises(ProviderAuthenticationError):
         subscription_refresh.refresh_deposited_subscriptions(
             base_path=tmp_path, universe_dir=universe,
-            owner_user_id="owner", universe_id=UID, launching="codex",
+            owner_user_id="owner", universe_id=UID, launching="claude",
         )
-    assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"codex"}
+    assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"claude"}
 
     # ...and a refresh that then works takes the card away without the owner acting.
     monkeypatch.setattr(
@@ -143,7 +143,7 @@ def test_a_refused_refresh_records_the_rejection_and_a_fixed_one_clears_it(
     )
     subscription_refresh.refresh_deposited_subscriptions(
         base_path=tmp_path, universe_dir=universe,
-        owner_user_id="owner", universe_id=UID, launching="codex",
+        owner_user_id="owner", universe_id=UID, launching="claude",
     )
     assert refresh_rejected_sources(tmp_path, universe_id=UID) == {}
 
@@ -151,7 +151,11 @@ def test_a_refused_refresh_records_the_rejection_and_a_fixed_one_clears_it(
 def test_a_rejection_for_another_source_is_still_recorded(tmp_path, monkeypatch):
     """A non-launching source's dead sign-in does not fail the launch, but the owner
     must still be asked -- otherwise the card only ever appears for whichever source
-    happened to be launching when it died."""
+    happened to be launching when it died.
+
+    Codex is not that seam: its CLI owns the token, so a dead Codex document is
+    neither spent nor carded here. Claude, which this seam still refreshes, is.
+    """
     import base64
 
     from tinyassets import subscription_refresh
@@ -176,26 +180,31 @@ def test_a_rejection_for_another_source_is_still_recorded(tmp_path, monkeypatch)
     write_credential_vault(
         universe,
         [
-            llm_subscription_credential_record(service="codex", auth_json_b64=doc("r-dead")),
-            llm_subscription_credential_record(service="claude", auth_json_b64=doc("r-live")),
+            llm_subscription_credential_record(service="codex", auth_json_b64=doc("r-package")),
+            llm_subscription_credential_record(service="claude", auth_json_b64=doc("r-dead")),
         ],
         owner_user_id="owner", universe_id=UID,
     )
     _endpoint_from_the_credential(monkeypatch)
+    asked: list[str] = []
 
     def spend(document, **_):
+        asked.append(document.refresh_token)
         if document.refresh_token == "r-dead":
             raise RefreshRejected("the stored sign-in is no longer accepted; sign in again")
         return subscription_refresh._rebuild(
             document, access_token="a-2", refresh_token="r-live", id_token="")
 
     monkeypatch.setattr(subscription_refresh, "_spend", spend)
-    # Launching the HEALTHY source: no raise, and the dead one still gets its card.
+    # Launching the package source: no raise. The other source still gets its card,
+    # and the package token is not spent on the way.
     subscription_refresh.refresh_deposited_subscriptions(
         base_path=tmp_path, universe_dir=universe,
-        owner_user_id="owner", universe_id=UID, launching="claude",
+        owner_user_id="owner", universe_id=UID, launching="codex",
     )
-    assert "codex" in refresh_rejected_sources(tmp_path, universe_id=UID)
+    assert asked == ["r-dead"]
+    rejected = refresh_rejected_sources(tmp_path, universe_id=UID)
+    assert set(rejected) == {"claude"}
 
 
 def _deposit(universe_dir, service="codex", refresh="r-1"):
