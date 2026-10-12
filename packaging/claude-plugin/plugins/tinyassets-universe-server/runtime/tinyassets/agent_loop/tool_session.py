@@ -96,6 +96,8 @@ async def open_loop_tools(
     session_key: str = "",
     turn: str = "",
     ta_turn: str = "",
+    model_budget=None,
+    model_parent=None,
     capability_grant: Sequence[str] | None = None,
 ) -> AsyncIterator[LoopToolSession]:
     """Open the turn's tools. ``bind_box`` binds the handle once, here.
@@ -124,6 +126,7 @@ async def open_loop_tools(
             engine = await stack.enter_async_context(open_engine_tools(
                 actor_id=actor_id, graph_id=graph_id, enabled_tools=transport_names,
                 capability_grant=capability_grant, timeout=timeout,
+                model_budget=model_budget, model_parent=model_parent,
                 session_key=session_key, turn=turn,
             ))
             engine_tools = {tool.name: tool for tool in engine.tools}

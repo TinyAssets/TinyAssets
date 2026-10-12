@@ -430,26 +430,7 @@ def _resolve_claude_cmd() -> tuple[list[str], bool]:
 
 
 def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
-    """Wire the owner's engine MCP route into the served turn.
-
-    Founder directive 2026-08-12: the universe agent gets the SAME MCP handles
-    the founder's browser chatbot has. This seals a one-server ``--mcp-config``
-    into the launch snapshot (the only daemon-written state the provider cell
-    receives) and returns the flags that admit EXACTLY that one server:
-
-      * ``--strict-mcp-config`` grants ONLY the servers in ``--mcp-config`` and
-        excludes the logged-in claude.ai account connectors. Verified 2026-08-13:
-        with strict + a single-server config, ``mcp__codex__codex`` is
-        unreachable.
-
-    The server is the owner's persistent HTTP engine route
-    (``engine_mcp_http``); inside the cell, its loopback port is the pinned
-    relay socket and nothing else. FAIL-CLOSED: no actor, graph, live route or
-    launch snapshot returns no flags, and the caller refuses the turn rather
-    than relax its tool policy. There is no stdio engine: an engine inside the
-    owner's cell could not reach the platform's stores, and one outside it
-    would be an unconfined daemon child.
-    """
+    """Seal the owner's single engine route into the strict CLI launch."""
     del universe_dir
     actor_id = (config.engine_mcp_actor_id or "").strip()
     graph_id = (config.engine_mcp_graph_id or "").strip()
@@ -459,7 +440,12 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     import json as _json
 
     from tinyassets.engine_mcp_http import read_engine_mcp_route
-    from tinyassets.engine_steering import route_with_session, session_of, turn_of
+    from tinyassets.engine_steering import (
+        issue_model_reference,
+        route_with_session,
+        session_of,
+        turn_of,
+    )
     from tinyassets.role_provider_execution import seal_launch_file
     from tinyassets.served_tools import granted_tools
     from tinyassets.storage import data_dir
@@ -473,6 +459,8 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     model_url = route_with_session(
         route.url, session_of(config), turn_of(),
         grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config),
+        model_reference=issue_model_reference(config.request_budget,
+                                               config.model_launch_parent),
         context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
     )
     model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"

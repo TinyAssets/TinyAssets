@@ -177,6 +177,154 @@ def test_parent_stop_fences_a_joined_child(source):
     assert parent.receipt()["attempts"][0]["state"] == "not_sent"
 
 
+def test_model_launch_reference_is_allocation_scoped_and_revoked_on_close(source):
+    parent = make_budget(source)
+    store = UsageStore(source.root)
+    try:
+        with pytest.raises(ProviderAuthorityHeldError):
+            parent.issue_launch_reference("turn", "turn-a", "agent-a", 1)
+        parent.link("turn", "turn-a")
+        reference = parent.issue_launch_reference("turn", "turn-a", "agent-a", 1)
+        assert parent.issue_launch_reference("turn", "turn-a", "agent-a", 1) == reference
+        with pytest.raises(ProviderAuthorityHeldError, match="parent changed"):
+            parent.issue_launch_reference("turn", "turn-b", "agent-a", 1)
+        with pytest.raises(ProviderAuthorityHeldError):
+            store.resolve_launch_reference("bob", "cc-alice", reference)
+        with pytest.raises(ProviderAuthorityHeldError):
+            store.resolve_launch_reference("alice", "cc-bob", reference)
+        assert store.resolve_launch_reference("alice", "cc-alice", reference) == {
+            "usage_id": parent.usage_id, "authority_kind": "turn",
+            "authority_id": "turn-a", "agent_binding_id": "agent-a",
+            "binding_revision": 1,
+        }
+        assert parent.receipt()["reserved"] == 0
+    finally:
+        parent.close()
+    with pytest.raises(ProviderAuthorityHeldError, match="ended"):
+        store.resolve_launch_reference("alice", "cc-alice", reference)
+
+
+def test_model_launch_grant_cannot_be_edited_or_moved():
+    from tinyassets.served_tools import launch_grant, model_reference_from_grant
+
+    reference = "a" * 64
+    grant = launch_grant("key", "thread", "turn", ("bash",),
+                         model_reference=reference)
+    assert model_reference_from_grant("key", "thread", "turn", grant) == reference
+    assert model_reference_from_grant("key", "thread", "other", grant) is None
+    assert model_reference_from_grant("other", "thread", "turn", grant) is None
+    assert model_reference_from_grant("key", "thread", "turn",
+                                      grant.replace(reference, "b" * 64)) is None
+
+
+def test_ta_model_call_joins_parent_once_and_rejects_supplied_authority(source, monkeypatch):
+    from tinyassets.providers.execution_receipt import ExecutionReceipt
+    from tinyassets.providers.model_call import ModelResult
+    from tinyassets.ta_capabilities import Capabilities, ExecutionContext
+
+    parent = make_budget(source)
+    parent.link("turn", "turn-a")
+    reference = parent.issue_launch_reference("turn", "turn-a", "agent-a", 1)
+    observed = []
+
+    async def routed(request, authority):
+        observed.append((authority, request))
+        budget = request.context.config.request_budget
+        ordinal = reserve(source, budget)
+        budget.dispatched(ordinal)
+        budget.settle_invocation(ordinal, "succeeded")
+        return ModelResult(
+            ProviderResponse(text="answer", provider="connected", model="model",
+                             family="test", latency_ms=1.0),
+            ExecutionReceipt(provider="connected", model="model",
+                             model_status="reported", usage_id=budget.usage_id,
+                             parent_usage_id=authority.usage_id, outcome="succeeded"),
+        )
+
+    monkeypatch.setattr("tinyassets.providers.model_call.call", routed)
+    monkeypatch.setattr("tinyassets.custom_agents.get_binding", lambda *args, **kwargs: {
+        "created_by": "alice", "revision": 1,
+    })
+    monkeypatch.setattr("tinyassets.providers.served_model_plan.connected_sources",
+                        lambda *args: frozenset({"api_key_http:connected"}))
+    service = Capabilities(
+        source.root / "cc-alice", ExecutionContext("cc-alice", "alice", "main"),
+        [], None, lambda: None, capability_grant=("bash",), model_reference=reference)
+    unsigned = Capabilities(
+        source.root / "cc-alice", ExecutionContext("cc-alice", "alice", "main"),
+        [], None, lambda: None, capability_grant=("bash",))
+    call = {"op": "call", "name": "model",
+            "arguments": {"model": "api_key_http:connected/model",
+                          "messages": [{"role": "user", "content": "hello"}]}}
+    try:
+        assert "no model authority" in asyncio.run(unsigned.dispatch(call))["error"]
+        forged = asyncio.run(service.dispatch({
+            **call, "arguments": {**call["arguments"], "usage_id": parent.usage_id}}))
+        assert "cannot name" in forged["error"]
+        assert parent.receipt()["reserved"] == 0
+        result = asyncio.run(service.dispatch(call))["result"]
+        assert result["text"] == "answer"
+        assert result["receipt"]["parent_usage_id"] == parent.usage_id
+        assert len(observed) == 1 and parent.receipt()["reserved"] == 1
+        assert parent.receipt()["attempts"][0]["state"] == "succeeded"
+    finally:
+        parent.close()
+    assert "ended" in asyncio.run(service.dispatch(call))["error"]
+
+
+def test_run_model_call_enforces_receipt_sources_before_reservation(source, monkeypatch):
+    from tinyassets.provider_work_authority import ProviderWorkReceiptState
+    from tinyassets.providers.execution_receipt import ExecutionReceipt
+    from tinyassets.ta_capabilities import Capabilities, ExecutionContext
+
+    parent = make_budget(source)
+    parent.link("run", "run-a")
+    reference = parent.issue_launch_reference("run", "run-a", "receipt-a")
+    receipt = SimpleNamespace(
+        state=ProviderWorkReceiptState.ACTIVE, principal_id="alice",
+        universe_id="cc-alice", work_item_id="run-a",
+        admitted_sources=("api_key_http:admitted",),
+    )
+    monkeypatch.setattr(
+        "tinyassets.storage.provider_work_authority."
+        "SQLiteProviderWorkAuthorityStore.get_receipt",
+        lambda self, _id: receipt,
+    )
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.resolve_serving_agent_binding",
+        lambda *args, **kwargs: {"agent_binding_id": "agent-a", "revision": 1},
+    )
+    monkeypatch.setattr("tinyassets.providers.served_model_plan.connected_sources",
+                        lambda *args: frozenset({"api_key_http:admitted",
+                                                "api_key_http:new"}))
+    observed = []
+
+    async def routed(request, authority):
+        observed.append((request, authority))
+        return SimpleNamespace(text="answer", receipt=ExecutionReceipt(
+            provider="admitted", model="model", model_status="reported",
+            parent_usage_id=authority.usage_id),
+            response=SimpleNamespace(agent_reply=None))
+
+    monkeypatch.setattr("tinyassets.providers.model_call.call", routed)
+    service = Capabilities(
+        source.root / "cc-alice", ExecutionContext("cc-alice", "alice", "main"),
+        [], None, lambda: None, capability_grant=("bash",), model_reference=reference)
+    def request(model):
+        return {"op": "call", "name": "model", "arguments": {
+            "model": model, "messages": [{"role": "user", "content": "hello"}]}}
+    try:
+        denied = asyncio.run(service.dispatch(request("api_key_http:new/model")))
+        assert "admitted live source" in denied["error"]
+        assert parent.receipt()["reserved"] == 0
+        allowed = asyncio.run(service.dispatch(request("api_key_http:admitted/model")))
+        assert allowed["result"]["text"] == "answer"
+        assert observed[0][1].usage_id == parent.usage_id
+        assert observed[0][0].context.launch_reference == reference
+    finally:
+        parent.close()
+
+
 def test_child_release_does_not_close_parent(source):
     parent = make_budget(source)
     try:

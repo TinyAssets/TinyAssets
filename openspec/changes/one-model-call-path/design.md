@@ -206,10 +206,10 @@ reference the broker already uses for HTTP sends
 
 1. **At launch.** The two launch sites that sign an engine route
    (`claude_provider` engine flags, `engine_tool_client`) run inside an
-   admitted attempt. There, the platform issues a launch reference for that
-   attempt from its own allocation (`config.request_budget`): a random secret
-   whose hash row records owner, command center, `usage_id`, the parent
-   attempt's ordinal and the parent's authority (the run's receipt ID, or the
+   admitted allocation. There, the platform issues one launch reference for
+   that allocation (`config.request_budget`), shared across its rounds: a random
+   secret whose hash row records owner, command center, `usage_id` and the
+   parent's authority (the run's receipt ID, or the
    turn's agent binding ID and revision). The secret goes inside the signed
    grant, so the MAC covers it; editing or moving it voids the grant.
 2. **At `ta call model`.** The engine verifies the grant (as today), takes the
@@ -225,7 +225,7 @@ reference the broker already uses for HTTP sends
    pass the live membership check (D2), and for a run also the receipt's
    `admitted_sources` (2.4). The journal link comes from the allocation's own
    `agent_request_usage_links` row, never from the route's live turn ID.
-4. **Revocation.** When the parent attempt settles, or the parent is stopped,
+4. **Revocation.** When the parent allocation settles, or is stopped,
    the reference row goes inactive in the same transaction (as
    `settle_invocation` already does for HTTP references). Any later
    `ta call model` from that launch fails loudly with "this launch's model

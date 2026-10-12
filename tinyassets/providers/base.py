@@ -400,6 +400,9 @@ class ModelConfig:
 
     request_budget: TurnRequestBudget | None = field(default=None, repr=False, compare=False)
     """Server-owned parent ledger; not wire data, quota evidence or authority."""
+    model_launch_parent: tuple[str, str, str, int | None] | None = field(
+        default=None, repr=False, compare=False)
+    """Server-derived allocation link and turn binding or run receipt for engine tools."""
     request_purpose: str = "reply"
     request_attempt: int | None = field(default=None, repr=False, compare=False)
     """Router-owned ordinal. The HTTP broker consumes it; never caller authority."""

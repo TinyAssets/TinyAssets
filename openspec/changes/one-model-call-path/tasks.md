@@ -57,15 +57,15 @@
       double settlement and cross-owner allocation join. Verify: a retry and a
       child call settle on the parent exactly once, and a parent stop ends the
       child. Net below 0.
-- [ ] 2.7 `ta` `model` capability and refusal (D6, D6a, D7). Build: at the
-      two engine-launch sites, issue a launch reference for the current
-      attempt from its allocation (reuse `issue_reference`; the row records
-      owner, command center, `usage_id`, ordinal and the parent authority) and
+- [x] 2.7 `ta` `model` capability and refusal (D6, D6a, D7). Build: at the
+      two engine-launch sites, issue one launch reference for the current
+      allocation, shared across its rounds (reuse the broker's private reference
+      pattern; the row records owner, command center, `usage_id` and parent authority) and
       put it inside the signed launch grant's MAC. In the engine, `ta call
       model` and the action reviewer resolve that reference from the verified
       grant only, check owner and command center against the engine server and
       that the allocation is open, then call `model_call.call` joined to that
-      `usage_id`. Deactivate the reference when the parent attempt settles or
+      `usage_id`. Deactivate the reference when the parent allocation settles or
       stops. Replace the refusal text with D6's fixed message. Delete:
       `_turn_reviewer` and MCP sampling, the `review_provider` plumbing, the
       `agent_review` bound sampling callback, the `engine_mcp_server.py`
@@ -73,7 +73,7 @@
       cross-family `peer-agents` round. Verify: `ta call model` returns text
       and a receipt whose attempt settles on the parent allocation once; an
       edited grant, a grant from another owner's engine, a request naming its
-      own `usage_id`, and a call after the parent attempt settled are each
+      own `usage_id`, and a call after the parent allocation settled are each
       refused before reservation; an unsigned launch gets the fixed "no model
       authority" message; a raw POST to a model connection is refused with the
       fixed text before anything is sent; `git grep create_message` finds no

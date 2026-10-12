@@ -871,6 +871,8 @@ class _BackgroundAssignedProviderSession:
                 from tinyassets.providers.base import ModelConfig, UniverseContext
 
                 carrier, snapshot_dir, provider = launch
+                work_id = carrier._receipt.work_item_id
+                self._request_budget.link("run", work_id)
                 universe_dir = self._base_path / self._task.universe_id
                 call_kwargs = dict(kwargs)
                 call_config = config
@@ -886,7 +888,11 @@ class _BackgroundAssignedProviderSession:
                 if isinstance(call_config, ModelConfig):
                     # A workflow node call: each provider confines it to the
                     # owner's universe in its own way (ModelConfig.workflow_node).
-                    call_config = replace(call_config, workflow_node=True)
+                    call_config = replace(
+                        call_config, workflow_node=True,
+                        model_launch_parent=("run", work_id,
+                                             carrier.work_receipt_id, None),
+                    )
                 call_kwargs.update(
                     operation=BACKGROUND_BRANCH_RUN_OPERATION,
                     policy=policy,

@@ -57,6 +57,7 @@ class ModelContext:
     agent_observer: Any = None
     agent_execution_kind: str | None = None
     router: Any = None
+    launch_reference: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +143,15 @@ def _allocation(context: ModelContext, parent: Parent):
     cfg = context.config or ModelConfig()
     budget = cfg.request_budget
     request_owner = ""
+    launch_owner = ""
+    if context.launch_reference is not None:
+        from tinyassets.storage.agent_request_usage import UsageStore
+
+        launch = UsageStore(universe.universe_dir.parent).resolve_launch_reference(
+            parent.owner, parent.command_center, context.launch_reference)
+        if parent.usage_id != launch["usage_id"]:
+            raise PermissionError("Model call allocation changed")
+        launch_owner = parent.owner
     if request_carrier is not None:
         from tinyassets.auth.middleware import validate_provider_request_carrier
 
@@ -157,7 +167,7 @@ def _allocation(context: ModelContext, parent: Parent):
         request_owner = capability.principal_id
     owner = (authority.owner_user_id if authority is not None else
              carrier._receipt.principal_id if carrier is not None else
-             request_owner or (budget.owner if budget is not None else ""))
+             request_owner or launch_owner or (budget.owner if budget is not None else ""))
     if not owner and not parent.owner:
         raise ProviderAuthorityHeldError(
             "Connect your provider: an owner-bound source is required"

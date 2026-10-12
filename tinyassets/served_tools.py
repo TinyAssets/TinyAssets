@@ -211,7 +211,8 @@ def _launch_grant_mac(key: str, session_key: str, turn: str, names: str) -> str:
                     hashlib.sha256).hexdigest()
 
 
-def launch_grant(key: str, session_key: str, turn: str, tools) -> str:
+def launch_grant(key: str, session_key: str, turn: str, tools, *,
+                 model_reference: str = "") -> str:
     """The platform's signed statement of one launch's served tools, or "".
 
     The launcher takes ``tools`` from ``granted_tools(config)`` and the key from
@@ -227,6 +228,11 @@ def launch_grant(key: str, session_key: str, turn: str, tools) -> str:
             raise PermissionError("outside work requires a signed engine launch")
         return ""
     names = ",".join(t for t in BACKEND_ENGINE_CAPABILITIES if t in set(tools))
+    if model_reference:
+        from tinyassets.storage.agent_request_usage import _reference_hash
+
+        _reference_hash(model_reference)
+        names += ",model~" + model_reference
     if outside is not None:
         import base64
         import json
@@ -251,6 +257,25 @@ def verified_launch_grant(key: str, session_key: str, turn: str,
     ):
         return None
     return tuple(t for t in BACKEND_ENGINE_CAPABILITIES if t in set(names.split(",")))
+
+
+def model_reference_from_grant(key: str, session_key: str, turn: str,
+                               grant: str) -> str | None:
+    """Return only a reference covered by this exact engine launch's MAC."""
+    from tinyassets.storage.agent_request_usage import _reference_hash
+
+    if verified_launch_grant(key, session_key, turn, grant) is None:
+        return None
+    names = grant.rpartition(".")[0].split(",")
+    references = [name.removeprefix("model~") for name in names
+                  if name.startswith("model~")]
+    if len(references) != 1:
+        return None
+    try:
+        _reference_hash(references[0])
+    except Exception:
+        return None
+    return references[0]
 
 
 def connections_granted(tools) -> bool:
