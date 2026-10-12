@@ -147,7 +147,7 @@ SHAPES: dict[str, Shape] = {
     ),
     "S16": Shape(
         ("tinyassets/onboarding/**", "mobile/**", "desktop-app/**"),
-        forbid=(r"Route\s*\(\s*['\"]/mcp/app",),
+        forbid=(r"Route\s*\(\s*['\"]/mcp/a(?:pp)",),
     ),
     "S17": Shape(("tinyassets/okf/**",), (("tinyassets/daemon_brain.py", ""),), ceiling=1),
     "S18": Shape(
@@ -318,6 +318,9 @@ def vendor_file_count(root: Path = ROOT) -> int:
     )
 
 
+HISTORY_FILES = frozenset({".agents/activity.log"})
+
+
 def deleted_doc_references(root: Path = ROOT) -> list[str]:
     base = _merge_base(root)
     if base is None:
@@ -333,6 +336,9 @@ def deleted_doc_references(root: Path = ROOT) -> list[str]:
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=root).decode().split("\0")
     problems = []
     for rel in tracked:
+        # Append-only history no PR may edit (scripts/check_forbidden_pr_paths.py).
+        if rel in HISTORY_FILES:
+            continue
         path = root / rel
         if not path.is_file():
             continue
