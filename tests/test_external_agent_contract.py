@@ -2,6 +2,8 @@
 import copy
 import hashlib
 import json
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,3 +38,81 @@ def test_invalid_package_refused_before_launch(mutation):
     mutation(document["external_agents"][0])
     with pytest.raises(ExtensionError):
         parse_manifest(json.dumps(document).encode())
+
+
+def test_final_turn_summary_supplies_text_when_item_event_is_missing():
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
+    from tinyassets.providers.base import ModelConfig
+
+    turn = JsonRpcJob(
+        SimpleNamespace(), job=resolve("codex").row["job"], agent="codex",
+        tools=None, profile=ModelConfig().stream_timeout_profile(),
+        start=time.monotonic(), turn_wait=5, tool_wait=5,
+    )
+    turn._dispatch({"method": "thread/tokenUsage/updated", "params": {
+        "tokenUsage": {"last": {"inputTokens": 26, "outputTokens": 7}}}})
+    turn._dispatch({"method": "turn/completed", "params": {"turn": {
+        "status": "completed", "items": [
+            {"type": "agentMessage", "text": "ORACLE_OK"}],
+    }}})
+    assert turn.outcome.messages == ["ORACLE_OK"]
+    assert turn.outcome.usage_seen
+
+
+def test_failed_native_turn_receipts_a_bounded_vendor_class():
+    from tinyassets.exceptions import ProviderError
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
+    from tinyassets.external_agents.runner import _job_failure_reason
+    from tinyassets.providers.base import ModelConfig
+
+    turn = JsonRpcJob(
+        SimpleNamespace(), job=resolve("codex").row["job"], agent="codex",
+        tools=None, profile=ModelConfig().stream_timeout_profile(),
+        start=time.monotonic(), turn_wait=5, tool_wait=5,
+    )
+    turn.phase = "stream"
+    turn._dispatch({"method": "turn/completed", "params": {"turn": {
+        "status": "failed", "error": {"code": "invalid_grant", "message": "secret-value"},
+    }}})
+    reason = _job_failure_reason(ProviderError(
+        "external-agent turn did not complete with text and usage"),
+        turn, turn.outcome)
+    assert "vendor_auth" in reason
+    assert "secret-value" not in reason
+
+
+def test_unavailable_codex_binding_is_loud(tmp_path):
+    import asyncio
+
+    from tinyassets.exceptions import ExternalAgentUnavailable
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+    from tinyassets.providers.base import ModelConfig
+
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    with pytest.raises(ExternalAgentUnavailable) as failure:
+        asyncio.run(ExternalAgentProvider("codex").complete(
+            "hello", "system", ModelConfig(invocation_owner_user_id="owner"),
+            universe_dir=center))
+    assert failure.value.agent == "codex"
+    assert failure.value.reason == "not_signed_in"
+
+
+def test_job_declaration_uses_the_one_agent_definition():
+    from mcp.types import Tool
+
+    from tinyassets.agent_definition import agent_definition
+    from tinyassets.external_agents.jsonrpc_job import dynamic_tools, method_params
+    from tinyassets.served_tools import FOUR_MODEL_TOOLS
+
+    definition = agent_definition([
+        Tool(name=name, description=name, inputSchema={"type": "object"})
+        for name in FOUR_MODEL_TOOLS], "Owner instructions")
+    job = resolve("codex").row["job"]
+    params = method_params(job["start"], {
+        "model": "gpt-6.1-sol", "workdir": "/agent-home/jobs/job",
+        "system": definition.instructions,
+    })
+    assert params["baseInstructions"] == definition.instructions
+    assert [tool["name"] for tool in dynamic_tools(definition)] == list(FOUR_MODEL_TOOLS)
+    assert job["tools"]["define_at"] == "/dynamicTools"

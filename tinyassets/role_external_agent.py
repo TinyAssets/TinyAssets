@@ -129,7 +129,7 @@ def check_proof(cell, identity, source, *, sockets=None):
 async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir=None, limit,
                       execution=False, engine_route=None, external_agent=False,
                       auth_files=None, auth=None, workdir=None, nonce=None,
-                      owner_user_id=None):
+                      owner_user_id=None, catalogue_rewrite=None, requested_model=None):
     from tinyassets import role_decoder, role_relays, universe_egress
     from tinyassets.broker.owner_identities import owner_identity
     from tinyassets.role_scope import owner_principal
@@ -195,6 +195,8 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir=None, limit
                 'auth_files': {name: base64.b64encode(data).decode('ascii')
                                for name, data in auth_files.items()},
                 'writeback': True, 'nonce': nonce, 'engine_port': engine_port,
+                'catalogue_rewrite': catalogue_rewrite,
+                'requested_model': requested_model,
             }, separators=(',', ':')).encode() + b'\n'
             if len(config) >= 64 * 1024:
                 raise ValueError('external-agent config exceeds its bound')
@@ -264,6 +266,14 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir=None, limit
     return proc
 
 
+class AuthWriteback(dict):
+    """Validated cell trailer; the CLI exit is checked after custody writeback."""
+
+    def __init__(self, files, exit_code):
+        super().__init__(files)
+        self.exit_code = exit_code
+
+
 class CellLauncher:
     """Production external-agent launcher through the one owner cell admission."""
 
@@ -272,7 +282,8 @@ class CellLauncher:
         self.owner_user_id = owner_user_id
         self._nonces = {}
 
-    async def spawn(self, argv, env, *, home, workdir, egress, auth_files, auth):
+    async def spawn(self, argv, env, *, home, workdir, egress, auth_files, auth,
+                    catalogue_rewrite=None, requested_model=None):
         from tinyassets.role_scope import owner_principal
 
         if (home != '/agent-home' or egress != self.universe_dir.name
@@ -285,6 +296,7 @@ class CellLauncher:
             universe_dir=self.universe_dir, limit=4 * 1024 * 1024,
             external_agent=True, auth_files=auth_files, auth=auth,
             workdir=workdir, nonce=nonce, owner_user_id=self.owner_user_id,
+            catalogue_rewrite=catalogue_rewrite, requested_model=requested_model,
         )
         self._nonces[id(proc)] = nonce
         return proc
@@ -305,22 +317,22 @@ class CellLauncher:
             stdout = asyncio.create_task(bounded(proc.stdout))
             stderr = asyncio.create_task(bounded(proc.stderr))
             try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
+                await asyncio.wait_for(proc.wait(), timeout=15)
                 output_bytes = await asyncio.wait_for(stdout, timeout=5)
                 await asyncio.wait_for(stderr, timeout=5)
             except BaseException:
                 proc.revoke()
                 await proc.wait()
                 raise
-            if proc.returncode != 0:
-                raise RuntimeError('external-agent process failed')
             lines = output_bytes.splitlines()
             if not lines:
                 raise RuntimeError('external-agent writeback trailer is absent')
             trailer = json.loads(lines[-1])
-            if trailer.get('nonce') != nonce or trailer.get('exit') != 0:
+            if trailer.get('nonce') != nonce or trailer.get('exit') != proc.returncode:
                 raise RuntimeError('external-agent writeback trailer differs from launch')
-            return {name: base64.b64decode(encoded, validate=True)
-                    for name, encoded in trailer['external_agent_writeback'].items()}
+            return AuthWriteback({
+                name: base64.b64decode(encoded, validate=True)
+                for name, encoded in trailer['external_agent_writeback'].items()
+            }, proc.returncode)
         finally:
             proc.close_stdio()

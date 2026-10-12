@@ -125,22 +125,6 @@ def test_diagnostic_probe_refuses_immediately(monkeypatch):
         pass
 
 
-def test_the_auth_probe_is_the_only_non_waiting_caller():
-    """Mutation guard: a user-facing path must not quietly adopt the refusing form."""
-    import pathlib as _pathlib
-
-    from tinyassets.providers import base as provider_base
-
-    src = _pathlib.Path(provider_base.__file__).read_text(encoding="utf-8")
-    assert "with try_provider_slot():" in src, "the probe must not queue"
-    for module_name in ("tinyassets.providers.router",):
-        import importlib
-
-        mod = importlib.import_module(module_name)
-        text = _pathlib.Path(mod.__file__).read_text(encoding="utf-8")
-        assert "try_provider_slot" not in text, (
-            f"{module_name} serves user turns; it must use deadline admission"
-        )
 
 
 def test_a_slot_is_released_when_the_call_raises(monkeypatch):
@@ -394,82 +378,9 @@ class TestTheBoundActuallyBindsInTheRouter:
         assert "try_provider_slot" not in src, "user turns must use deadline admission"
 
 
-class TestTheLifecycleGapsCodexFound:
-    """Codex REJECT 2026-08-28, findings 3 and 4 — a slot freed while its subprocess
-    lived, and a real `codex exec` that spawned outside the bound entirely."""
 
-    def test_cancellation_kills_the_subprocess_it_accounted_for(self):
-        """Reproduced as `{'slot_live': 0, 'subprocess_killed': False}`: the slot came
-        back while the ~189 MB process was still running, so the bound drifted further
-        from reality with every cancellation until the box ran out of memory it
-        believed was free."""
-        import pathlib
 
-        from tinyassets.providers import codex_provider
 
-        src = pathlib.Path(codex_provider.__file__).read_text(encoding="utf-8")
-        # Anchor on the text call (served agent turns run over the app server
-        # and are cancelled through their exit stack; tests/test_codex_app_server.py
-        # ::test_cancelling_the_turn_ends_the_process covers that path).
-        body = src.split("proc.communicate(input=full_input", 1)[1][:1600]
-        assert "except BaseException:" in body, (
-            "only asyncio.TimeoutError was cleaned up; cancellation is the case that "
-            "actually happens, and CancelledError is a BaseException"
-        )
-        # It must actually kill, not merely re-raise.
-        after = body.split("except BaseException:", 1)[1]
-        assert "_terminate(proc)" in after
-
-    def test_an_already_dead_process_does_not_mask_the_real_exception(self):
-        """`proc.kill()` on a finished process raises ProcessLookupError on POSIX,
-        which would replace CancelledError with something confusing."""
-        from tinyassets.providers.codex_provider import _terminate
-
-        class _Dead:
-            returncode = 0
-
-            def kill(self):
-                raise ProcessLookupError("already reaped")
-
-        _terminate(_Dead())  # must not raise
-
-    def test_the_auth_probe_is_single_flighted_for_real(self, monkeypatch):
-        """A bare lock only SERIALIZES. Codex reproduced two simultaneous misses
-        spawning two probes 81 ms apart, because the second took the lock after the
-        first released and then ran its own. The second caller has to wait for the
-        first's ANSWER."""
-        import threading as _t
-
-        from tinyassets.providers import base
-
-        base._auth_probe_memo.invalidate()
-        calls, lock = [], _t.Lock()
-
-        def slow_probe(timeout_s):
-            with lock:
-                calls.append(1)
-            time.sleep(0.05)
-            return {"status": "ok", "detail": "fake"}
-
-        monkeypatch.setattr(base, "_codex_live_auth_probe_uncached", slow_probe)
-        start = _t.Barrier(6)
-        out = []
-
-        def worker():
-            start.wait()
-            out.append(base._codex_live_auth_probe(1.0))
-
-        ts = [_t.Thread(target=worker) for _ in range(6)]
-        for t in ts:
-            t.start()
-        for t in ts:
-            t.join(timeout=30)
-        assert len(out) == 6, "every caller must get an answer"
-        assert len(calls) == 1, (
-            f"{len(calls)} probes for 6 simultaneous callers — serialized, not "
-            "single-flighted; each spawns a real ~189 MB codex exec"
-        )
-        base._auth_probe_memo.invalidate()
 
 
 class TestTheBoundBindsBehaviourally:

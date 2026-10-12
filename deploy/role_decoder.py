@@ -169,6 +169,11 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
                 argv.extend(['--bind-fd', str(fd), destination])
     elif mounted:
         argv.extend(['--ro-bind-fd' if measure else '--bind-fd', '3', '/workspace'])
+    if external_agent:
+        # A killed cell cannot run its finally block. Keep per-job auth and
+        # workdirs in a private mount that vanishes when the cell is reaped.
+        argv.extend(['--perms', '0700', '--size', str(32 * 1024 * 1024),
+                     '--tmpfs', '/agent-home/jobs'])
     argv.extend(["--proc", "/proc", "--dev", "/dev"])
     if package or provider_exec or external_agent:
         argv.extend(['--size', str(256 * 1024 * 1024)])

@@ -243,15 +243,11 @@ def _build_fallback_router() -> "Optional[ProviderRouter]":
     except Exception:
         logger.debug("ClaudeProvider not available")
 
-    try:
-        from tinyassets.providers.codex_provider import CodexProvider
-        if CodexProvider.is_available():
-            router.register(CodexProvider())
-            logger.info("Registered CodexProvider")
-        else:
-            logger.debug("codex binary not found - CodexProvider skipped")
-    except Exception:
-        logger.debug("CodexProvider not available")
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+    from tinyassets.external_agents.registry import PACKAGES
+
+    for agent in PACKAGES:
+        router.register(ExternalAgentProvider(agent))
 
     try:
         from tinyassets.providers.ollama_provider import OllamaProvider

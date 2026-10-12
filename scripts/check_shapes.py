@@ -76,15 +76,18 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/codex_provider.py", ""),
             ("tinyassets/providers/codex_app_server.py", ""),
         ),
-        ceiling=3,
+        ceiling=1,
     ),
     "S4": Shape(
         ("tinyassets/providers/**", "tinyassets/connections/**"),
         (
+            ("tinyassets/providers/claude_provider.py", ""),
+            ("tinyassets/providers/codex_provider.py", ""),
+            ("tinyassets/providers/codex_app_server.py", ""),
             ("tinyassets/providers/router.py", r"\bFALLBACK_CHAINS\b"),
             ("tinyassets/onboarding/openai_device.py", ""),
         ),
-        ceiling=4,
+        ceiling=3,
     ),
     "S5": Shape(
         ("tinyassets/agent_definition.py", "agents/**"),
@@ -231,10 +234,10 @@ ENTRY_SYMBOLS: dict[str, str] = {
 }
 # Genuinely old file probes also have a line ratchet: growing an existing file
 # cannot hide behind an unchanged file count.
-LINE_CEILINGS = {"S3": 2434, "S5": 4552, "S9": 4638, "S15": 7547}
+LINE_CEILINGS = {"S3": 1335, "S5": 4552, "S9": 4638, "S15": 7547}
 FLOOR_RAISE_SHAPES = frozenset({"S3", "S5", "S9", "S15"})
 FLOOR_REASON = re.compile(r"\b(?:security|data[ -]loss|outage)\b", re.I)
-VENDOR_FILE_CEILING = 147
+VENDOR_FILE_CEILING = 145
 MIRROR_ROOT = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
 VENDOR_NAMES = re.compile(
     r"anthropic|chatgpt|claude|codex|gemini|grok|groq|kimi|mistral|ollama|openai|openrouter", re.I

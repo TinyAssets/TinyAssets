@@ -1286,30 +1286,6 @@ class TestInteractiveNoSleep:
 
 
 class TestBackwardSafeNonStreaming:
-    @pytest.mark.asyncio
-    async def test_other_provider_still_returns_terminal_response(self):
-        from unittest.mock import AsyncMock, patch
-
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            resp = await CodexProvider().complete("prompt", "system", ModelConfig())
-
-        assert isinstance(resp, ProviderResponse)
-        assert resp.text == "codex output"
-        assert resp.provider == "codex"
 
     @pytest.mark.asyncio
     async def test_claude_complete_json_is_unchanged_terminal_response(self):

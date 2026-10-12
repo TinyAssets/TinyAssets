@@ -11,7 +11,7 @@ import concurrent.futures
 import threading
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -496,16 +496,6 @@ class TestProviderRegistration:
                 router.register(ClaudeProvider())
             assert "claude-code" not in router.available_providers
 
-    def test_codex_provider_not_registered_when_binary_absent(self):
-        """codex must not appear in available_providers when 'codex' binary is missing."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        with patch("shutil.which", return_value=None):
-            assert not CodexProvider.is_available()
-            router = ProviderRouter()
-            if CodexProvider.is_available():
-                router.register(CodexProvider())
-            assert "codex" not in router.available_providers
 
     def test_claude_provider_registered_when_binary_present(self):
         """claude-code is registered when 'claude' binary is found."""
@@ -514,12 +504,6 @@ class TestProviderRegistration:
         with patch("shutil.which", return_value="/usr/local/bin/claude"):
             assert ClaudeProvider.is_available()
 
-    def test_codex_provider_registered_when_binary_present(self):
-        """codex is registered when 'codex' binary is found."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        with patch("shutil.which", return_value="/usr/local/bin/codex"):
-            assert CodexProvider.is_available()
 
     def test_effective_chain_excludes_unregistered_providers(self):
         """Runtime chain skips absent CLI providers instead of advertising them first."""
@@ -683,188 +667,6 @@ class TestClaudeProvider:
 # =====================================================================
 
 
-class TestCodexProvider:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            resp = await provider.complete("prompt", "system", ModelConfig())
-
-        assert resp.text == "codex output"
-        assert resp.provider == "codex"
-        assert resp.family == "openai"
-
-    @pytest.mark.asyncio
-    async def test_error_raises_provider_error(self):
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"bad"))
-        mock_proc.returncode = 2
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            with pytest.raises(ProviderError):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    async def test_empty_stdout_raises_provider_error(self):
-        """Empty stdout with exit 0 must raise ProviderError, not return ''."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            with pytest.raises(ProviderError, match="empty response"):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    async def test_auth_failure_exit_0_raises_provider_error(self):
-        """codex v0.122 exits 0 on 401 but emits Unauthorized in stderr."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(
-            b"",
-            b"Error: 401 Unauthorized - Reconnecting...",
-        ))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            with pytest.raises(ProviderError, match="auth-error"):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("override", [None, "", " \t"])
-    async def test_skip_git_repo_check_in_command_without_bwrap(self, monkeypatch, override):
-        """codex exec must bypass sandbox only when bwrap is unavailable."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        if override is None:
-            monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
-        else:
-            monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            response = await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert "--skip-git-repo-check" in captured_cmd, (
-            f"Expected --skip-git-repo-check in command: {captured_cmd}"
-        )
-        assert "--dangerously-bypass-approvals-and-sandbox" in captured_cmd
-        assert "--full-auto" not in captured_cmd
-        for name in ("apps", "plugins", "remote_plugin"):
-            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
-        assert "--ephemeral" in captured_cmd
-        assert "-C" in captured_cmd
-        assert "-m" not in captured_cmd and "--model" not in captured_cmd
-        assert "gpt-5.4" not in captured_cmd
-        assert response.model == "provider-default"
-
-    @pytest.mark.asyncio
-    async def test_runs_in_the_cells_own_empty_workspace(self):
-        """Never the platform checkout: the cell's private scratch directory."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert captured_cmd[captured_cmd.index("-C") + 1] == "/tmp/workspace"
-
-    @pytest.mark.asyncio
-    async def test_model_can_be_overridden_by_env(self, monkeypatch):
-        """Operators can move the provider forward after the deployed CLI supports it."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "future-model-2030")
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert captured_cmd[captured_cmd.index("-m") + 1] == "future-model-2030"
 
 
 # =====================================================================

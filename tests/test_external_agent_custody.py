@@ -1,4 +1,5 @@
 """A CLI refresh may carry its pin; a newer owner deposit always wins."""
+import asyncio
 import base64
 import json
 import sqlite3
@@ -9,7 +10,7 @@ from tinyassets.credential_vault import (
     load_credential_vault,
     write_credential_vault,
 )
-from tinyassets.external_agents.home import Custody, compare_and_swap
+from tinyassets.external_agents.home import Custody, compare_and_swap, exclusive_refresh
 from tinyassets.external_agents.registry import resolve
 from tinyassets.storage import db_path
 
@@ -72,3 +73,76 @@ def test_new_owner_deposit_discards_stale_cli_writeback(tmp_path):
     auth = resolve("codex").row["auth"]
     assert not compare_and_swap(custody, auth, {"auth.json": _bytes("stale-cli")})
     assert _stored(center) == "new-owner-deposit"
+
+
+def test_parallel_jobs_cannot_spend_the_same_refresh_token(tmp_path):
+    center = tmp_path / CENTER
+    center.mkdir()
+    _deposit(center, "old")
+    custody = _custody(center)
+    auth = resolve("codex").row["auth"]
+
+    async def race():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        second_entered = asyncio.Event()
+
+        async def first():
+            async with exclusive_refresh(custody):
+                entered.set()
+                await release.wait()
+                assert compare_and_swap(custody, auth, {"auth.json": _bytes("rotated")})
+
+        async def second():
+            await entered.wait()
+            async with exclusive_refresh(custody):
+                second_entered.set()
+                assert not custody.current()  # stale pin never enters another CLI
+
+        one = asyncio.create_task(first())
+        two = asyncio.create_task(second())
+        await entered.wait()
+        await asyncio.sleep(0.1)
+        assert not second_entered.is_set()
+        release.set()
+        await asyncio.gather(one, two)
+
+    asyncio.run(race())
+    assert _stored(center) == "rotated"
+
+
+def test_failed_cli_exit_still_returns_its_rotated_token(tmp_path):
+    from tinyassets.role_external_agent import CellLauncher
+
+    class Process:
+        returncode = 1
+
+        def __init__(self):
+            self.stdin = self
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            trailer = {"nonce": "n", "exit": 1, "external_agent_writeback": {
+                "auth.json": base64.b64encode(_bytes("rotated")).decode()}}
+            self.stdout.feed_data((json.dumps(trailer) + "\n").encode())
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+
+        def close(self):
+            pass
+
+        async def wait(self):
+            return 1
+
+        def close_stdio(self):
+            pass
+
+    launcher = CellLauncher(universe_dir=tmp_path, owner_user_id=OWNER)
+
+    async def close():
+        proc = Process()
+        launcher._nonces[id(proc)] = "n"
+        return await launcher.close(proc)
+
+    returned = asyncio.run(close())
+    assert returned.exit_code == 1
+    assert returned["auth.json"] == _bytes("rotated")

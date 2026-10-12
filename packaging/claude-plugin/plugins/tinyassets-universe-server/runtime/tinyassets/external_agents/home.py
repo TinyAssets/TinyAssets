@@ -1,9 +1,13 @@
 """One-job credential transfer between owner custody and an external-agent cell."""
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import os
 import stat
+import time
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +23,11 @@ from tinyassets.credential_vault import (
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 MAX_AUTH_BYTES = 8 * 1024 * 1024
+_LOCK_WAIT_SECONDS = 30
+
+
+class RefreshBusyError(TimeoutError):
+    """Another owner job still holds the token-spending lease."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +50,52 @@ class Custody:
 
     def current(self) -> bool:
         return self.reload() == self.reference
+
+
+@asynccontextmanager
+async def exclusive_refresh(custody: Custody):
+    """Hold the owner/service token-spending lock through CLI and writeback."""
+    import fcntl  # The serving daemon and owner cells run on Linux.
+
+    root = custody.universe_dir.resolve(strict=True).parent
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    with ExitStack() as stack:
+        stack.callback(os.close, root_fd)
+        try:
+            os.mkdir('.platform', 0o711, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        else:
+            os.chmod('.platform', 0o711, dir_fd=root_fd, follow_symlinks=False)
+        platform_fd = os.open('.platform', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=root_fd)
+        stack.callback(os.close, platform_fd)
+        info = os.fstat(platform_fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o711:
+            raise PermissionError('external-agent refresh lock parent is invalid')
+        key = hashlib.sha256((custody.owner_user_id + '\0' +
+                              custody.reference.service).encode()).hexdigest()
+        fd = os.open('external-agent-refresh-' + key,
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=platform_fd)
+        stack.callback(os.close, fd)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600):
+            raise PermissionError('external-agent refresh lock file is invalid')
+        deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RefreshBusyError('external-agent credential refresh busy') from None
+                await asyncio.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def materialize(custody: Custody, auth: dict) -> dict[str, bytes]:

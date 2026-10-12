@@ -21,9 +21,13 @@ class Package:
         return self.row["name"]
 
     @property
+    def install_root(self) -> Path:
+        return Path("/opt") / f"{self.name}-install"
+
+    @property
     def executable(self) -> Path:
         install = self.row["install"]
-        return Path("/opt") / f"{self.name}-install/node_modules/.bin/{install['bin']}"
+        return self.install_root / "node_modules" / ".bin" / install["bin"]
 
 
 def _load() -> dict[str, Package]:

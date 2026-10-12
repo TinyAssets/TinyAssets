@@ -16,24 +16,11 @@ import pytest
 
 from tinyassets.branches import NodeDefinition
 from tinyassets.providers.base import ModelConfig
-from tinyassets.providers.codex_provider import _reasoning_effort_args
 
 
 def test_modelconfig_carries_reasoning_effort():
     assert ModelConfig().reasoning_effort == ""
     assert ModelConfig(reasoning_effort="low").reasoning_effort == "low"
-
-
-@pytest.mark.parametrize("effort,expected", [
-    ("low", ["-c", "model_reasoning_effort=low"]),
-    ("MINIMAL", ["-c", "model_reasoning_effort=minimal"]),
-    ("high", ["-c", "model_reasoning_effort=high"]),
-    ("", []),
-    (None, []),
-    ("bogus", []),
-])
-def test_codex_effort_flag_mapping(effort, expected):
-    assert _reasoning_effort_args(effort) == expected
 
 
 def test_node_definition_round_trips_effort():

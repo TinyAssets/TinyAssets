@@ -34,7 +34,6 @@ from unittest.mock import MagicMock, patch
 #: The adapter modules that import ``aspawn_owned`` into their own namespace.
 PROVIDER_MODULES = (
     "tinyassets.providers.claude_provider",
-    "tinyassets.providers.codex_provider",
 )
 
 

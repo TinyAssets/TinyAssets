@@ -40,19 +40,22 @@ SHALL end the job with a typed error and a bounded, redacted excerpt.
 - **THEN** the runner refuses that call and the job continues or ends with
   the refusal recorded
 
-### Requirement: The agent home is owner-private and never temporary
+### Requirement: The agent mount is owner-private and job auth is ephemeral
 Before the owner box exists, the runner SHALL launch in the owner's existing
 provider cell, admitted once per job, with `HOME` and the package's home
 variable inside a persistent owner-private agent home mounted at
 `/agent-home`. The agent home SHALL live outside every command-center tree,
 be owned by the owner identity with mode 0700, and be mounted into no other
-cell. No CLI home SHALL be under the temporary directory. The runner SHALL
+cell. Its `/agent-home/jobs` subtree SHALL be a private mode-0700 tmpfs so a
+killed cell cannot retain auth bytes on disk. No CLI home SHALL be under
+`/tmp`. The runner SHALL
 reach the process only through the `Launcher` seam, so that the box launcher
 replaces the cell launcher without changing packages, runner or receipts.
 
 #### Scenario: Codex lists models from its home
 - **WHEN** the owner's Codex catalogue is refreshed on the production image
-- **THEN** the CLI runs with its home under `/agent-home`, not `/tmp`
+- **THEN** the CLI runs with its home under `/agent-home/jobs` on the private
+  tmpfs, not `/tmp`
 - **AND** the refresh succeeds and lists models
 
 #### Scenario: another owner's home is invisible

@@ -18,7 +18,6 @@ rig = composition.rig
 
 
 @pytest.mark.parametrize("adapter,method", [
-    ("codex_provider", "complete"),
     ("claude_provider", "complete"),
     ("claude_provider", "complete_json"),
 ])
@@ -34,7 +33,7 @@ def test_native_text_only_refuses_before_environment_argv_or_spawn(
     import importlib
 
     module = importlib.import_module("tinyassets.providers." + adapter)
-    cls = module.CodexProvider if adapter == "codex_provider" else module.ClaudeProvider
+    cls = module.ClaudeProvider
     attempts = []
 
     def forbidden(*args, **kwargs):
@@ -43,10 +42,7 @@ def test_native_text_only_refuses_before_environment_argv_or_spawn(
 
     monkeypatch.setattr(module, "aspawn_owned", forbidden)
     monkeypatch.setattr(module, "subprocess_env_for_provider", forbidden)
-    if adapter == "codex_provider":
-        monkeypatch.setattr(cls, "native_command_resolver", staticmethod(forbidden))
-    else:
-        monkeypatch.setattr(module, "_resolve_claude_cmd", forbidden)
+    monkeypatch.setattr(module, "_resolve_claude_cmd", forbidden)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "ambient-home"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "ambient-claude"))
     with pytest.raises(ProviderAuthorityHeldError, match="does not support enforced text-only"):
@@ -63,13 +59,22 @@ def test_empty_claude_allowlist_does_not_enable_review(tmp_path):
         _sandbox_cli_args(ModelConfig(text_only=True, allowed_tools=()), tmp_path)
 
 
+def test_external_agent_text_only_refuses_before_custody(tmp_path, monkeypatch):
+    from tinyassets.external_agents import provider as module
+
+    monkeypatch.setattr(module, "_custody", lambda *a, **k: pytest.fail("custody reached"))
+    with pytest.raises(ProviderAuthorityHeldError, match="does not support enforced text-only"):
+        asyncio.run(module.ExternalAgentProvider("codex").complete(
+            "review", "requirements", ModelConfig(text_only=True), universe_dir=tmp_path))
+
+
 def test_router_refuses_unsupported_selected_provider_without_fallback(rig):
+    from tinyassets.external_agents.provider import ExternalAgentProvider
     from tinyassets.providers.claude_provider import ClaudeProvider
-    from tinyassets.providers.codex_provider import CodexProvider
 
     # Other registered executors do not authorize a substitution. The native
     # provider is selected by the real receipt; it must refuse before complete.
-    rig["router"].register(CodexProvider())
+    rig["router"].register(ExternalAgentProvider("codex"))
     rig["router"].register(ClaudeProvider())
     result = rig["fire"]()
     assert result["error_kind"] == "auto_review_unavailable"
@@ -183,32 +188,6 @@ def test_http_reply_cannot_smuggle_tool_request_alongside_verdict(http, tool):
     assert len(proxy.calls) == 1  # Inference only; no follow-up tool dispatch exists.
 
 
-def test_codex_metadata_registration_reuses_read_only_install_mounts(tmp_path, monkeypatch):
-    from tinyassets.providers import codex_provider as codex
-    from tinyassets.providers.provider_jail import UniverseView, _install_binds
-
-    install = tmp_path / "install"
-    install.mkdir()
-    wrapper = install / "codex"
-    wrapper.touch()
-    binary_tree = install / "vendor"
-    binary_tree.mkdir()
-    binary = binary_tree / "codex"
-    binary.touch()
-    universe = tmp_path / "data" / "universe"
-    universe.mkdir(parents=True)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(universe.parent))
-    monkeypatch.setattr(codex, "_resolved_codex_executable", lambda argv: (wrapper, binary))
-    monkeypatch.setattr(codex, "_codex_binary_tree", lambda executable: binary_tree)
-    assert callable(codex.CodexProvider.native_install_mounts)
-    paths = codex.CodexProvider().native_install_mounts([str(wrapper)])
-    assert paths == (binary_tree, install)
-    view = UniverseView(universe_dir=universe, mounts=())
-    binds = _install_binds(paths, view, [])
-    assert binds and all(binds[index] == "--ro-bind" for index in range(0, len(binds), 3))
-    assert str(universe) not in binds
-    with pytest.raises(ProviderAuthorityHeldError, match="overlaps command center data"):
-        _install_binds([universe], view, [])
 
 
 def test_foreground_attempt_cannot_drop_review_restriction(rig):

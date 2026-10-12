@@ -326,7 +326,7 @@ def test_provider_spawn_sites_own_their_family_through_one_module():
     root = Path(__file__).resolve().parents[1] / "tinyassets"
     group_tokens = ("start_new_session", "CREATE_NEW_PROCESS_GROUP")
 
-    for provider in ("providers/claude_provider.py", "providers/codex_provider.py"):
+    for provider in ("providers/claude_provider.py",):
         source = (root / provider).read_text(encoding="utf-8", errors="replace")
         assert "aspawn_owned" in source, (
             f"{provider} no longer spawns through owned_process; its CLI's "

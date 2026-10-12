@@ -35,13 +35,32 @@ def _template(value):
         raise ExtensionError("invalid external-agent template value")
 
 
+def expand_template(value, values: dict):
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        return values[value[1:-1]]
+    if isinstance(value, dict):
+        return {key: expand_template(item, values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [expand_template(item, values) for item in value]
+    return value
+
+
+def pointer(document, path: str):
+    value = document
+    for part in path.removeprefix("/").split("/"):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
 def _argv(value):
-    if not isinstance(value, list) or len(value) > 32:
+    if not isinstance(value, list) or len(value) > 128:
         raise ExtensionError("invalid external-agent argv")
     for item in value:
         if not isinstance(item, str):
             raise ExtensionError("invalid external-agent argv")
-        _template(item)
+        _text(item)
 
 
 def _pointer(value):
@@ -98,8 +117,9 @@ def validate_agent(row):
             raise ExtensionError("invalid external-agent auth environment")
     catalogue = _fields(row["catalogue"], {"transport", "argv", "initialize", "list", "row"},
                         {"transport", "argv", "list", "row"})
-    job = _fields(row["job"], {"transport", "argv", "start", "resume", "input",
-                                 "session_handle", "tools", "events", "cancel"},
+    job = _fields(row["job"], {"transport", "argv", "initialize", "start", "resume", "input",
+                                 "session_handle", "configured_model", "tools", "events", "cancel",
+                                 "catalogue_rewrite"},
                   {"transport", "argv", "start", "resume", "input",
                    "session_handle", "tools", "events", "cancel"})
     for operation in (catalogue, job):
@@ -111,6 +131,29 @@ def validate_agent(row):
                        {"method", "params", "notification"})
         _text(init["notification"])
         _method(init, {"notification"})
+    if "initialize" in job:
+        init = _fields(job["initialize"], {"method", "params", "notification"},
+                       {"method", "params", "notification"})
+        _method(init, {"notification"})
+        _text(init["notification"])
+    if "catalogue_rewrite" in job:
+        rewrite = _fields(job["catalogue_rewrite"],
+                          {"source", "setting", "clear_fields", "remove_fields", "model_field"},
+                          {"source", "setting", "clear_fields", "model_field"})
+        if not _FILE.fullmatch(rewrite["source"]):
+            raise ExtensionError("invalid external-agent catalogue source")
+        _text(rewrite["setting"])
+        _text(rewrite["model_field"])
+        if (not isinstance(rewrite["clear_fields"], dict)
+                or not rewrite["clear_fields"]):
+            raise ExtensionError("invalid external-agent catalogue rewrite")
+        for key, value in rewrite["clear_fields"].items():
+            _text(key)
+            _template(value)
+        if not isinstance(rewrite.get("remove_fields", []), list):
+            raise ExtensionError("invalid external-agent catalogue remove fields")
+        for key in rewrite.get("remove_fields", []):
+            _text(key)
     listed = _fields(catalogue["list"], {"method", "params", "items", "cursor",
                                             "cursor_param"}, {"method", "params", "items"})
     _method(listed, {"items", "cursor", "cursor_param"})
@@ -128,6 +171,8 @@ def validate_agent(row):
     for field in ("start", "resume", "input"):
         _method(job[field])
     _pointer(job["session_handle"])
+    if "configured_model" in job:
+        _pointer(job["configured_model"])
     tools = _fields(job["tools"], {"mode", "define_at", "call_method"}, {"mode"})
     if tools["mode"] not in ("dynamic_rpc", "mcp_config"):
         raise ExtensionError("unsupported external-agent tool mode")
@@ -140,7 +185,7 @@ def validate_agent(row):
         if not isinstance(event, dict) or not isinstance(event.get("method"), str):
             raise ExtensionError("invalid external-agent event")
         for key, value in event.items():
-            if key == "method":
+            if key in {"method", "agent_type", "success"}:
                 _text(value)
             else:
                 _pointer(value)

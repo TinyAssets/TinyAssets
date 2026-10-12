@@ -12,6 +12,7 @@ import shutil
 import signal
 import stat
 import subprocess
+from pathlib import Path
 
 from tinyassets.role_provider_cell import read_config, resolve_executable, safe_environment
 
@@ -149,13 +150,15 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
     os.chmod('/agent-home', 0o700)
     if type(config) is not dict or set(config) != {
         'argv', 'env', 'home_dir', 'workdir', 'auth_files', 'writeback', 'nonce',
-        'engine_port',
+        'engine_port', 'catalogue_rewrite', 'requested_model',
     }:
         raise ValueError('invalid external-agent config')
     argv, env = config['argv'], config['env']
     name, workdir = config['home_dir'], config['workdir']
     files, writeback = config['auth_files'], config['writeback']
     nonce, engine_port = config['nonce'], config['engine_port']
+    rewrite = config['catalogue_rewrite']
+    requested_model = config['requested_model']
     if (not isinstance(argv, list) or not 1 <= len(argv) <= 128
             or any(type(arg) is not str or len(arg) > 4096 or '\0' in arg for arg in argv)
             or not isinstance(env, dict) or len(env) > 128
@@ -163,6 +166,17 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
             or not isinstance(files, dict) or len(files) > 16
             or type(writeback) is not bool
             or not isinstance(nonce, str) or not re.fullmatch('[a-f0-9]{32}', nonce)
+            or (rewrite is not None and not isinstance(rewrite, dict))
+            or (isinstance(rewrite, dict) and (
+                set(rewrite) != {'source', 'setting', 'model_field',
+                                 'clear_fields', 'remove_fields'}
+                or not isinstance(rewrite.get('source'), str)
+                or not _FILE.fullmatch(rewrite['source'])
+                or not isinstance(rewrite.get('setting'), str)
+                or not re.fullmatch('[a-z_]{1,80}', rewrite['setting'])
+            ))
+            or (requested_model is not None and
+                (not isinstance(requested_model, str) or len(requested_model) > 200))
             or ((engine_port is not None) != engine)
             or (engine and (not egress or type(engine_port) is not int
                             or not 1024 <= engine_port <= 65535))
@@ -177,9 +191,15 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
              'USERPROFILE': '/agent-home', 'TMPDIR': '/tmp', 'TMP': '/tmp',
              'TEMP': '/tmp', 'LANG': 'C.UTF-8'}
     clean_env = {**safe_environment(env), **fixed}
-    home = _directory('/agent-home', name)
     _directory('/agent-home', 'jobs')
+    if os.stat('/agent-home/jobs').st_dev == os.stat('/agent-home').st_dev:
+        raise PermissionError('external-agent job home is not ephemeral')
     job = _directory('/agent-home/jobs', workdir.rsplit('/', 1)[1])
+    home = _directory(job, name)
+    shared_home = '/agent-home/' + name
+    clean_env = {key: home if value == shared_home else value
+                 for key, value in clean_env.items()}
+    clean_env.update(HOME=job, USERPROFILE=job)
     written = []
     try:
         for filename, encoded in files.items():
@@ -190,6 +210,16 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
             written.append(filename)
         os.chdir(job)
         command = argv
+        if rewrite is not None:
+            from tinyassets.external_agents.catalogue_rewrite import from_install
+
+            install, separator, _ = argv[0].partition('/node_modules/')
+            if not separator or not install.startswith('/opt/'):
+                raise ValueError('external-agent catalogue source is outside install')
+            catalogue = from_install(Path(install), rewrite, requested_model)
+            _file(job + '/model-catalog.json', catalogue)
+            command = [*argv, '-c', rewrite['setting'] + '=' +
+                       json.dumps(job + '/model-catalog.json')]
         if egress:
             from tinyassets.universe_egress import FORWARDER, PROXY_ENV
 
@@ -198,15 +228,22 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
             if engine:
                 specs.append(f'{engine_port}=/provider-engine.sock')
             command = ['/opt/venv/bin/python', '-I', '-S', '-c', FORWARDER,
-                       *specs, '--', *argv]
+                       *specs, '--', *command]
         proc = subprocess.Popen(command, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=clean_env, close_fds=True,
                                 start_new_session=True)
         code = _pump(proc, writeback=writeback)
         if writeback:
-            changed = {name: base64.b64encode(_read_file(home + '/' + name)).decode('ascii')
-                       for name in written}
+            changed = {}
+            for name in written:
+                try:
+                    data = _read_file(home + '/' + name)
+                except FileNotFoundError:
+                    if code == 0:
+                        raise RuntimeError('external-agent auth writeback disappeared') from None
+                else:
+                    changed[name] = base64.b64encode(data).decode('ascii')
             _write_all(1, (json.dumps({'external_agent_writeback': changed,
                                        'nonce': nonce, 'exit': code}) + '\n').encode())
         return code

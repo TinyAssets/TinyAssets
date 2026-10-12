@@ -2,25 +2,29 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from tinyassets.exceptions import ProviderError
+from tinyassets.exceptions import ExternalAgentUnavailable, ProviderError, ProviderTimeoutError
 from tinyassets.external_agents import receipts, registry
-from tinyassets.external_agents.home import Custody, compare_and_swap, materialize
-from tinyassets.providers.native_catalogue import NativeCatalogue
+from tinyassets.external_agents.home import (
+    Custody,
+    RefreshBusyError,
+    compare_and_swap,
+    exclusive_refresh,
+    materialize,
+)
+from tinyassets.providers.base import ProviderResponse
 from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 from tinyassets.providers.native_jsonrpc_discovery import (
     NativeControlProtocol,
     NativeJsonRpcProtocol,
-    parse_model_page,
+    read_native_catalogue,
 )
-
-_MAX_BYTES = 4 * 1024 * 1024
-_MAX_PAGES = 64
-_MAX_MODELS = 4096
 
 
 def _key(pointer: str) -> str:
@@ -53,60 +57,16 @@ def _protocol(operation: dict):
     return NativeControlProtocol(**common)
 
 
-async def _read(proc, protocol, operation):
-    consumed = 0
-
-    async def send(message):
-        proc.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
-        await proc.stdin.drain()
-
-    async def response(token):
-        nonlocal consumed
-        while True:
-            line = await proc.stdout.readline()
-            consumed += len(line)
-            if not line or consumed > _MAX_BYTES:
-                raise ValueError("external-agent catalogue incomplete or oversized")
-            message = json.loads(line)
-            if type(message) is not dict:
-                raise ValueError("invalid external-agent catalogue envelope")
-            result = protocol.decode_response(message, token)
-            if result is not None:
-                return result
-
-    if protocol.initialize_method is not None:
-        token = protocol.request_token(0)
-        await send(protocol.encode_request(
-            protocol.initialize_method, token,
-            operation["initialize"]["params"],
-        ))
-        await response(token)
-    if protocol.initialized_notification is not None:
-        await send(protocol.encode_notification(protocol.initialized_notification))
-    models, defaults, cursors = [], [], set()
-    cursor = None
-    for index in range(1, _MAX_PAGES + 1):
-        params = dict(operation["list"]["params"])
-        if cursor is not None:
-            params[operation["list"]["cursor_param"]] = cursor
-        token = protocol.request_token(index)
-        await send(protocol.encode_request(protocol.list_method, token, params))
-        page, recommended, cursor = parse_model_page(await response(token), protocol)
-        models.extend(page)
-        defaults.extend(recommended)
-        if len(models) > _MAX_MODELS or len(set(defaults)) > 1:
-            raise ValueError("external-agent catalogue limit or conflicting defaults")
-        if cursor is None:
-            return NativeCatalogue(tuple(models), defaults[0] if defaults else None,
-                                   datetime.now(timezone.utc))
-        if cursor in cursors:
-            raise ValueError("external-agent catalogue cursor repeated")
-        cursors.add(cursor)
-    raise ValueError("external-agent catalogue page limit exceeded")
-
-
 async def run_catalogue(agent: str, launch, custody: Custody) -> NativeDiscoverySnapshot:
     """One receipted package operation under exact owner custody."""
+    try:
+        async with exclusive_refresh(custody):
+            return await _run_catalogue_locked(agent, launch, custody)
+    except RefreshBusyError:
+        raise ProviderError('external-agent credential refresh busy') from None
+
+
+async def _run_catalogue_locked(agent, launch, custody):
     package = registry.resolve(agent)
     if package.row["auth"]["service"] != custody.reference.service:
         raise PermissionError("external-agent package service differs from custody")
@@ -129,8 +89,10 @@ async def run_catalogue(agent: str, launch, custody: Custody) -> NativeDiscovery
                                   workdir="/agent-home/jobs/" + secrets.token_hex(16),
                                   egress=universe.name, auth_files=original,
                                   auth=package.row["auth"])
-        async with asyncio.timeout(receipts.DEADLINE_SECONDS):
-            catalogue = await _read(proc, _protocol(operation), operation)
+        catalogue = await read_native_catalogue(
+            argv, protocol=_protocol(operation), env=env, cwd=None,
+            universe_dir=universe, timeout=receipts.DEADLINE_SECONDS, process=proc,
+        )
         completed = datetime.now(timezone.utc)
         if not custody.current():
             raise PermissionError("external-agent custody changed during catalogue")
@@ -153,6 +115,8 @@ async def run_catalogue(agent: str, launch, custody: Custody) -> NativeDiscovery
                         raise RuntimeError("external-agent custody carry was lost")
                     if result is not None:
                         result = replace(result, custody=carried)
+                if getattr(returned, "exit_code", 0) != 0:
+                    raise RuntimeError("external-agent process failed")
             except BaseException as exc:
                 if error is None:
                     error = exc
@@ -167,3 +131,180 @@ async def run_catalogue(agent: str, launch, custody: Custody) -> NativeDiscovery
             raise error
         raise ProviderError("external-agent catalogue failed: " + type(error).__name__) from None
     return result
+
+
+async def _engine_tools(stack, config):
+    """The same owner-pinned tool route used by the other served executors."""
+    from tinyassets.served_tools import granted_tools, model_tools
+
+    actor = (config.engine_mcp_actor_id or "").strip()
+    center = (config.engine_mcp_graph_id or "").strip()
+    enabled = model_tools(config)
+    if not (config.engine_mcp_enabled and actor and center and enabled):
+        return None
+    from tinyassets.engine_steering import session_of, turn_of
+    from tinyassets.engine_tool_client import open_engine_tools
+
+    return await stack.enter_async_context(open_engine_tools(
+        actor_id=actor, graph_id=center, enabled_tools=enabled,
+        capability_grant=granted_tools(config),
+        timeout=config.stream_timeout_profile().absolute_cap_s,
+        session_key=session_of(config), turn=turn_of(),
+        context_tokens=getattr(config.selected_model, "context_tokens", None),
+    ))
+
+
+def _job_failure_reason(error, turn, outcome) -> str:
+    """A bounded diagnostic containing no model output or credential bytes."""
+    if error is None:
+        return ""
+    result = outcome or (turn.outcome if turn is not None else None)
+    if isinstance(error, ProviderError) and result is not None:
+        if isinstance(error, ProviderTimeoutError):
+            kind = getattr(error, "failure_class", None) or "timeout"
+        elif "did not complete with text and usage" in str(error):
+            kind = "incomplete"
+        elif "refused" in str(error):
+            kind = "refused_" + (turn.refused_method.replace("/", "_") or "unknown")
+        elif "exited" in str(error):
+            kind = "exited"
+        else:
+            kind = "protocol"
+        status = (result.status if result.status in {"completed", "failed", "interrupted"}
+                  else "unknown")
+        phase = turn.phase.replace("/", "_") if turn is not None else "unknown"
+        return (f"{kind}:{phase}:{status}:text{int(bool(result.messages))}:"
+                f"usage{int(result.usage_seen)}:vendor_{result.error_class}")
+    return type(error).__name__
+
+
+async def run_job(agent: str, launch, custody: Custody, *, prompt: str,
+                  system: str, config) -> ProviderResponse:
+    """Execute one native turn and settle its custody and job receipt."""
+    try:
+        async with exclusive_refresh(custody):
+            return await _run_job_locked(agent, launch, custody, prompt=prompt,
+                                         system=system, config=config)
+    except RefreshBusyError:
+        raise ExternalAgentUnavailable(agent, config.native_model_id or '',
+                                       'credential_refresh_busy') from None
+
+
+async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
+    from tinyassets import agent_sessions
+    from tinyassets.agent_definition import agent_definition
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob, tools_digest
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+    package = registry.resolve(agent)
+    model = config.native_model_id or ""
+    universe = custody.universe_dir.resolve(strict=True)
+    if (custody.reference.service != package.row["auth"]["service"]
+            or not config.invocation_owner_user_id
+            or config.invocation_owner_user_id != custody.owner_user_id):
+        raise ExternalAgentUnavailable(agent, model, "owner_custody_mismatch")
+    receipt_id = receipts.admit_job(
+        universe.parent, owner=custody.owner_user_id, universe_id=universe.name,
+        agent=agent, package_digest=package.digest,
+        custody_digest=custody.reference.reference_digest, requested_model=model,
+    )
+    proc = None
+    turn = None
+    original = {}
+    outcome = None
+    error = None
+    started = time.monotonic()
+    try:
+        original = materialize(custody, package.row["auth"])
+        job = package.row["job"]
+        if job["transport"] != "jsonrpc":
+            raise ValueError("external-agent job transport is unsupported")
+        async with contextlib.AsyncExitStack() as stack:
+            tools = await _engine_tools(stack, config)
+            definition = agent_definition(tools.tools if tools else (), system)
+            ref = config.agent_session
+            session_model = model + ":" + tools_digest(definition)
+            with agent_sessions.exclusive(ref) as locked:
+                record = (agent_sessions.resumable(
+                    ref, adapter=agent, model=session_model, prompt=prompt)
+                    if locked else None)
+                resume = str(record["handle"]) if record else ""
+                input_text = ref.resume_prompt if record else prompt
+                workdir = "/agent-home/jobs/" + secrets.token_hex(16)
+                argv = [str(package.executable), *job["argv"]]
+                home = "/agent-home/" + package.row["auth"]["home_dir"]
+                proc = await launch.spawn(
+                    argv, {package.row["auth"]["home_env"]: home},
+                    home="/agent-home", workdir=workdir, egress=universe.name,
+                    auth_files=original, auth=package.row["auth"],
+                    catalogue_rewrite=job.get("catalogue_rewrite"),
+                    requested_model=model or None,
+                )
+                turn = JsonRpcJob(
+                    proc, job=job, agent=agent, tools=tools,
+                    profile=config.stream_timeout_profile(), start=time.monotonic(),
+                    turn_wait=900.0, tool_wait=900.0,
+                )
+                outcome = await turn.run(
+                    definition=definition, model=model or None,
+                    input_text=input_text, effort=config.reasoning_effort or None,
+                    workdir=workdir, resume=resume,
+                )
+                if (outcome.status != job["events"]["done"]["success"]
+                        or not outcome.messages or not outcome.usage_seen):
+                    raise ProviderError("external-agent turn did not complete with text and usage")
+                if not custody.current():
+                    raise PermissionError("external-agent custody changed during job")
+                if locked and ref is not None:
+                    agent_sessions.save(ref, adapter=agent, model=session_model,
+                                        handle=outcome.thread_id, system=system)
+    except BaseException as exc:
+        error = exc
+        if (isinstance(exc, (asyncio.CancelledError, ProviderTimeoutError))
+                and turn is not None and turn.outcome.thread_id):
+            cancel = package.row["job"]["cancel"]
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(turn.notify(cancel["method"], {
+                    "threadId": turn.outcome.thread_id})), timeout=2)
+    finally:
+        if proc is not None:
+            try:
+                returned = await launch.close(proc)
+                changed = {name: data for name, data in returned.items()
+                           if name in original and data != original[name]}
+                if changed and not compare_and_swap(custody, package.row["auth"], changed):
+                    raise PermissionError("external-agent custody changed before writeback")
+                if getattr(returned, "exit_code", 0) != 0:
+                    raise RuntimeError("external-agent process failed")
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+        reason = _job_failure_reason(error, turn, outcome)
+        receipts.finish_job(
+            universe.parent, receipt_id,
+            outcome="succeeded" if error is None else (
+                "cancelled" if isinstance(error, asyncio.CancelledError) else
+                "timed_out" if isinstance(error, (TimeoutError, ProviderTimeoutError))
+                else "failed"),
+            reason=reason,
+            reported_model=outcome.reported_model if outcome else "",
+            native_session=outcome.thread_id if outcome else "",
+            input_tokens=outcome.input_tokens if outcome and outcome.usage_seen else None,
+            output_tokens=outcome.output_tokens if outcome and outcome.usage_seen else None,
+        )
+    if error is not None:
+        if not isinstance(error, Exception):
+            raise error
+        if isinstance(error, ExternalAgentUnavailable):
+            raise error
+        raise ExternalAgentUnavailable(agent, model, reason) from None
+    return ProviderResponse(
+        text=outcome.messages[-1].strip(), provider=agent,
+        model=model or "provider-default", requested_model=model,
+        configured_model=outcome.configured_model or model,
+        reported_model=outcome.reported_model, family=package.row["family"],
+        latency_ms=(time.monotonic() - started) * 1000,
+        input_tokens=outcome.input_tokens, output_tokens=outcome.output_tokens,
+        cost_microunits=(outcome.input_tokens + outcome.output_tokens) * 100,
+        native_evidence=NativeCompletionEvidence(agent, False, True, "unknown"),
+    )

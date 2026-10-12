@@ -60,10 +60,11 @@ from fantasy_daemon.memory.manager import MemoryManager  # noqa: E402
 from fantasy_daemon.memory.promises import SeriesPromiseTracker  # noqa: E402
 from fantasy_daemon.memory.versioning import OutputVersionStore  # noqa: E402
 from fantasy_daemon.providers.claude_provider import ClaudeProvider  # noqa: E402
-from fantasy_daemon.providers.codex_provider import CodexProvider  # noqa: E402
 from fantasy_daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
 from fantasy_daemon.providers.router import ProviderRouter  # noqa: E402
 from tinyassets.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
+from tinyassets.external_agents.provider import ExternalAgentProvider  # noqa: E402
+from tinyassets.external_agents.registry import PACKAGES  # noqa: E402
 
 logger = logging.getLogger("fantasy_author")
 
@@ -108,11 +109,8 @@ def _build_provider_router() -> ProviderRouter:
     else:
         logger.info("claude binary not found — ClaudeProvider skipped")
 
-    if CodexProvider.is_available():
-        router.register(CodexProvider())
-        logger.info("Registered CodexProvider")
-    else:
-        logger.info("codex binary not found — CodexProvider skipped")
+    for agent in PACKAGES:
+        router.register(ExternalAgentProvider(agent))
 
     # Local provider.
     try:

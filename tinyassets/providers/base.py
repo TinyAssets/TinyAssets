@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
 from tinyassets.addressed_agents import MAIN_AGENT
-from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 
 if TYPE_CHECKING:
     from tinyassets.auth.middleware import ProviderRequestCarrier
@@ -596,7 +595,6 @@ def api_key_providers_enabled() -> bool:
 HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CONFIG_DIR",
-    "CODEX_HOME",
 )
 
 _PROVIDER_CHILD_INHERITED_ENV_VARS: tuple[str, ...] = (
@@ -641,7 +639,6 @@ _PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",
     }),
-    "codex": frozenset({"CODEX_HOME", "OPENAI_API_KEY"}),
 }
 
 
@@ -728,7 +725,7 @@ def _preflight_provider_auth_paths(
     universe_root: Path,
     configured_auth_path: Path | None,
 ) -> None:
-    service = "claude" if provider_name == "claude-code" else "codex"
+    service = "claude"
     default_materialization = universe_root / ".credentials" / service
     _resolved_universe_child(universe_root, default_materialization)
     if configured_auth_path is not None:
@@ -773,7 +770,6 @@ def _provider_child_runtime_env(
         "xdg_runtime": runtime_root / "xdg-runtime",
         "temp": runtime_root / "tmp",
         "claude_config": runtime_root / "auth-empty" / "claude",
-        "codex_home": runtime_root / "auth-empty" / "codex",
     }
     paths = {
         name: _resolved_universe_child(universe_dir, path)
@@ -797,7 +793,6 @@ def _provider_child_runtime_env(
         "TMP": str(paths["temp"]),
         "TEMP": str(paths["temp"]),
         "CLAUDE_CONFIG_DIR": str(paths["claude_config"]),
-        "CODEX_HOME": str(paths["codex_home"]),
         "AWS_EC2_METADATA_DISABLED": "true",
     })
     home = paths["home"]
@@ -816,7 +811,7 @@ def _valid_provider_auth_overlay(
     for name, value in overlay.items():
         if name not in allowed or not isinstance(value, str) or not value:
             return False
-        if name not in {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}:
+        if name != "CLAUDE_CONFIG_DIR":
             continue
         try:
             _resolved_universe_child(universe_dir, Path(value))
@@ -888,9 +883,7 @@ def subprocess_env_for_provider(
             if snapshot.is_symlink() or not snapshot.is_dir():
                 raise ValueError("credential snapshot is unavailable")
             env = _provider_child_runtime_env(provider_name, universe_root)
-            if provider_name == "codex":
-                env["CODEX_HOME"] = str(snapshot)
-            else:
+            if provider_name == "claude-code":
                 # The sealed snapshot stores the claude OAuth token in
                 # auth.json. Claude Code authenticates from
                 # CLAUDE_CODE_OAUTH_TOKEN (see entrypoint).
@@ -923,17 +916,12 @@ def subprocess_env_for_provider(
             apply_provider_auth_env,
             credential_vault_path,
             resolve_claude_config_dir,
-            resolve_codex_home,
         )
 
         _preflight_vault_source(
             universe_root, credential_vault_path(universe_root),
         )
-        configured_auth_path = (
-            resolve_claude_config_dir(universe_root)
-            if provider_name == "claude-code"
-            else resolve_codex_home(universe_root)
-        )
+        configured_auth_path = resolve_claude_config_dir(universe_root)
         _preflight_provider_auth_paths(
             provider_name, universe_root, configured_auth_path,
         )
@@ -975,394 +963,7 @@ def subprocess_env_for_provider(
     return env
 
 
-# ---------------------------------------------------------------------------
-# Codex refresh-viability probe (layered on top of the presence check below).
-# ---------------------------------------------------------------------------
-
-# Signatures captured live 2026-07-14 by running `codex exec` against the
-# dead token stranded on the old workflow-data volume (exit code was 0 even
-# on failure, so output text — stdout+stderr — is the only reliable signal).
-# Matched case-insensitively (Codex review: the CLI's casing is not a
-# contract). Additionally the probe mirrors CodexProvider's silent-auth
-# heuristic: EMPTY stdout + a broad auth signal in stderr is also dead —
-# broad signals are only trusted when the model produced no reply, so
-# model text can never false-positive.
-_CODEX_AUTH_FAILURE_PATTERNS: tuple[str, ...] = (
-    "your access token could not be refreshed",
-    "please log out and sign in again",
-    "401 unauthorized",
-)
-_CODEX_SILENT_AUTH_SIGNALS: tuple[str, ...] = (
-    "401", "unauthorized", "reconnecting", "auth",
-)
-
-_AUTH_PROBE_PROMPT = "Reply with exactly: OK"
-
-
-DEFAULT_CODEX_AUTH_FRESH_S = 24 * 3600.0
-DEFAULT_AUTH_PROBE_TTL_S = 1800.0
-DEFAULT_AUTH_PROBE_TIMEOUT_S = 120.0
-
-_PROBE_FALSY = {"0", "false", "off", "no"}
-
-# Live-probe verdict cache. The supervisor calls the gate every loop tick;
-# the probe subprocess must not run per tick. The AUTHORITATIVE cache is a
-# small JSON file NEXT TO auth.json (shared volume): production runs the
-# daemon and workers as separate containers sharing CODEX_HOME, so an
-# in-memory dict would let a worker quarantine while the daemon's
-# get_status kept reporting "ok" (Codex review 2026-07-14). The in-memory
-# layer below remains as a fallback for read-only CODEX_HOMEs.
-PROBE_CACHE_FILENAME = ".tinyassets_auth_probe.json"
-
-_auth_probe_cache: dict[str, tuple[float, dict[str, str]]] = {}
-
-
-def _reset_auth_probe_cache() -> None:
-    """Test seam (in-memory layer only; tests isolate the disk layer via
-    per-test CODEX_HOME tmp dirs)."""
-    _auth_probe_cache.clear()
-
-
-def _read_probe_cache_file(codex_home: Path) -> tuple[float, dict[str, str]] | None:
-    """Read the cross-process verdict file; any corruption reads as absent."""
-    import json as _json
-    import math
-
-    try:
-        data = _json.loads(
-            (codex_home / PROBE_CACHE_FILENAME).read_text(encoding="utf-8"),
-        )
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    checked_at = data.get("checked_at")
-    status = data.get("status")
-    detail = data.get("detail")
-    if not isinstance(checked_at, (int, float)) or not math.isfinite(float(checked_at)):
-        return None
-    if status not in ("ok", "not_logged_in") or not isinstance(detail, str):
-        return None
-    return float(checked_at), {
-        "provider": "codex", "status": status, "detail": detail,
-    }
-
-
-def _write_probe_cache_file(
-    codex_home: Path, checked_at: float, health: dict[str, str],
-) -> None:
-    """Best-effort atomic write of the cross-process verdict file."""
-    import json as _json
-
-    payload = _json.dumps({
-        "checked_at": checked_at,
-        "status": health["status"],
-        "detail": health["detail"],
-    }, ensure_ascii=True)
-    target = codex_home / PROBE_CACHE_FILENAME
-    tmp = target.with_suffix(".json.tmp")
-    try:
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, target)
-    except OSError:
-        pass  # read-only home: the in-memory layer still covers this process
-
-
-def _viability_probe_enabled() -> bool:
-    raw = os.environ.get("TINYASSETS_AUTH_VIABILITY_PROBE", "").strip().lower()
-    return raw not in _PROBE_FALSY
-
-
-def _finite_positive_env_s(var: str, default: float) -> float:
-    """Parse a seconds env var; only finite positive values are accepted
-    (same hardening class as the idle-cycle window — Codex review
-    2026-07-14: ``inf``/``nan`` must not silently disable comparisons)."""
-    import math
-
-    raw = os.environ.get(var, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if not math.isfinite(value) or value <= 0:
-        return default
-    return value
-
-
-def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> float | None:
-    """Age in seconds of the auth.json ``last_refresh`` field.
-
-    The file-mtime fallback applies ONLY to a VALID JSON object that lacks a
-    usable ``last_refresh`` (e.g. a mid-write `codex login`). An unreadable
-    or corrupt auth.json returns ``None`` — suspicious, so the caller
-    escalates to the live probe instead of trusting mtime (Codex review
-    2026-07-14: a fresh file containing garbage must not read viable and
-    claim-and-poison)."""
-    import json as _json
-    import math
-    import time as _time
-    from datetime import datetime, timezone
-
-    auth_path = codex_home / "auth.json"
-    current = _time.time() if now is None else now
-    try:
-        data = _json.loads(auth_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    raw = data.get("last_refresh")
-    if isinstance(raw, str) and raw.strip():
-        try:
-            text = raw.strip()
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            parsed = datetime.fromisoformat(text)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            age = current - parsed.timestamp()
-            if math.isfinite(age):
-                return age
-        except (ValueError, TypeError, OverflowError):
-            # A present-but-unparseable last_refresh is suspicious, not
-            # mtime-fresh.
-            return None
-    try:
-        return current - auth_path.stat().st_mtime
-    except OSError:
-        return None
-
-
-
-#: Real single-flight, not just serialization. A bare lock only serializes: Codex
-#: reproduced two simultaneous cache misses spawning two probes 81 ms apart, because the
-#: second acquired the lock after the first released and then ran its own. The second
-#: caller must wait for the first's ANSWER — correct here, because the result describes
-#: the machine's credentials, not the caller.
-#:
-#: `TTLMemo` already is single-flight plus a short TTL, and is tested against exactly
-#: this stampede, so this reuses it rather than hand-rolling the primitive twice.
-_auth_probe_memo = _TTLMemo(max_entries=4)
-#: SINGLE-FLIGHT ONLY, not caching. Codex asked for single-flight and I first shipped a
-#: 30-second cache, which is a different thing: it also serves SEQUENTIAL callers a stale
-#: verdict, so a re-login would read `not_logged_in` for half a minute. Concurrent
-#: duplicates are what cost a ~189 MB spawn; a later caller asking again deserves a real
-#: answer.
-_AUTH_PROBE_TTL_S = 0.0
-
-
-def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
-    """Single-flighted, admission-bounded wrapper around the real probe.
-
-    The probe spawns a REAL `codex exec`, so it costs the same ~189 MB as any provider
-    turn — and it used to run outside the admission bound entirely, before the router.
-    Both fixed here: one probe at a time, and it counts against the limit like anything
-    else that spawns.
-
-    On a busy box this degrades to "inconclusive" rather than queueing. The probe is a
-    diagnostic, and making a diagnostic wait behind real user turns is the wrong trade.
-    `try_provider_slot` checks immediately rather than waiting for admission.
-    """
-    from tinyassets.provider_admission import ProviderBusy, try_provider_slot
-
-    def _run() -> dict[str, str]:
-        try:
-            with try_provider_slot():
-                return _codex_live_auth_probe_uncached(timeout_s)
-        except ProviderBusy:
-            return {"status": "inconclusive",
-                    "detail": "provider slots busy; auth probe deferred"}
-
-    return _auth_probe_memo.get("codex", _run, ttl=_AUTH_PROBE_TTL_S)
-
-
-def _codex_live_auth_probe_uncached(timeout_s: float) -> dict[str, str]:
-    """One tiny real ``codex exec`` call; the only check that catches a
-    dead refresh token (``codex login status`` reads the file locally and
-    reported "Logged in" for the very token that 401'd — live 2026-07-14).
-
-    Returns ``{"status": "ok"|"not_logged_in"|"inconclusive", "detail"}``.
-    Uses whatever ``codex`` is on PATH so flock-wrapper deployments keep
-    their single-use refresh-token serialization.
-    """
-    import subprocess
-    import tempfile
-
-    from tinyassets.providers.codex_provider import _resolve_codex_cmd
-
-    base_cmd, use_shell = _resolve_codex_cmd()
-    cmd = [
-        *base_cmd, "exec", "--skip-git-repo-check", "-s", "read-only",
-        _AUTH_PROBE_PROMPT,
-    ]
-    # Admission and single-flight belong to the WRAPPER, not here. Doing both in both
-    # places double-counted the bound — one probe reported `admitted=2, peak=2`, and at
-    # limit 1 the inner acquire refused itself into a false "inconclusive" having
-    # spawned nothing (Codex round 3).
-    try:
-        proc = subprocess.run(
-            cmd if not use_shell else subprocess.list2cmdline(cmd),
-            shell=use_shell,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            cwd=tempfile.gettempdir(),
-        )
-    except FileNotFoundError:
-        return {"status": "inconclusive",
-                "detail": "codex binary not on PATH; probe skipped"}
-    except subprocess.TimeoutExpired:
-        return {"status": "inconclusive",
-                "detail": f"live auth probe timed out after {timeout_s:.0f}s"}
-    except OSError as exc:
-        return {"status": "inconclusive",
-                "detail": f"live auth probe could not run: {exc}"}
-
-    stdout = proc.stdout or ""
-    stderr = proc.stderr or ""
-    combined_lower = f"{stdout}\n{stderr}".lower()
-    matched = next(
-        (p for p in _CODEX_AUTH_FAILURE_PATTERNS if p in combined_lower), None,
-    )
-    # CodexProvider silent-auth mirror: empty stdout + a broad auth signal
-    # in stderr is dead too. Broad signals are only trusted when the model
-    # produced NO reply, so probe/model text can never false-positive.
-    if matched is None and not stdout.strip():
-        matched = next(
-            (s for s in _CODEX_SILENT_AUTH_SIGNALS if s in stderr.lower()),
-            None,
-        )
-    if matched is not None:
-        return {
-            "status": "not_logged_in",
-            "detail": (
-                f"refresh-viability probe FAILED (matched {matched!r}); "
-                "token is dead despite auth.json being present — run a "
-                "fresh `codex login` for this CODEX_HOME"
-            ),
-        }
-    if proc.returncode != 0:
-        return {"status": "inconclusive",
-                "detail": f"live auth probe exit {proc.returncode} without an "
-                          "auth-failure signature"}
-    if not stdout.strip():
-        return {"status": "inconclusive",
-                "detail": "live auth probe returned empty output without an "
-                          "auth-failure signature"}
-    return {"status": "ok", "detail": "live auth probe passed (real call ok)"}
-
-
-def _codex_refresh_viability(
-    codex_home: Path, *, allow_probe: bool = True,
-) -> dict[str, str]:
-    """Layered viability verdict for a PRESENT auth.json (see the
-    subscription_auth_health docs below for the full ladder).
-
-    ``allow_probe=False`` is for latency-sensitive callers (get_status —
-    an MCP request must never block on a probe subprocess): it serves the
-    freshness fast path and any cached verdict, and reports stale creds as
-    "ok" with a probe-deferred detail instead of probing inline. The
-    quarantine decision itself lives in the claim gate, which always
-    probes.
-    """
-    import time as _time
-
-    presence_ok = {
-        "provider": "codex", "status": "ok",
-        "detail": f"auth.json present at {codex_home}",
-    }
-    if not _viability_probe_enabled():
-        return presence_ok
-
-    fresh_s = _finite_positive_env_s(
-        "TINYASSETS_CODEX_AUTH_FRESH_S", DEFAULT_CODEX_AUTH_FRESH_S,
-    )
-    age = _codex_last_refresh_age_s(codex_home)
-    if age is not None and 0 <= age < fresh_s:
-        presence_ok["detail"] = (
-            f"auth.json present at {codex_home}; last_refresh "
-            f"{age:.0f}s ago (< {fresh_s:.0f}s) — refresh-viable"
-        )
-        return presence_ok
-
-    ttl_s = _finite_positive_env_s(
-        "TINYASSETS_AUTH_PROBE_TTL_S", DEFAULT_AUTH_PROBE_TTL_S,
-    )
-    now = _time.time()
-    # Disk cache first (cross-process/container truth: the worker's probe
-    # verdict must be visible to the daemon's get_status), then the
-    # in-memory layer (covers read-only CODEX_HOMEs).
-    cached = _read_probe_cache_file(codex_home)
-    if cached is None:
-        cached = _auth_probe_cache.get(str(codex_home))
-    if cached is not None and 0 <= now - cached[0] < ttl_s:
-        return dict(cached[1])
-
-    if not allow_probe:
-        presence_ok["detail"] = (
-            f"auth.json present at {codex_home}; last_refresh stale "
-            f"(age {'unknown' if age is None else f'{age:.0f}s'}) — live "
-            "probe deferred to the worker gate"
-        )
-        return presence_ok
-
-    timeout_s = _finite_positive_env_s(
-        "TINYASSETS_AUTH_PROBE_TIMEOUT_S", DEFAULT_AUTH_PROBE_TIMEOUT_S,
-    )
-    probe = _codex_live_auth_probe(timeout_s)
-    if probe["status"] == "not_logged_in":
-        health = {"provider": "codex", "status": "not_logged_in",
-                  "detail": probe["detail"]}
-    else:
-        # "ok" and "inconclusive" both read ok: only a POSITIVE dead
-        # signature quarantines (false not_logged_in on a healthy worker is
-        # worse; a false ok still fails at call time + trips loop_stalled).
-        health = {"provider": "codex", "status": "ok",
-                  "detail": f"auth.json present at {codex_home}; {probe['detail']}"}
-    _auth_probe_cache[str(codex_home)] = (now, dict(health))
-    _write_probe_cache_file(codex_home, now, health)
-    return health
-
-
-# Subscription-auth health. The 2026-06-25 loop-wedge root cause was a worker
-# whose claude-code auth was dead (no credentials) that kept claiming tasks
-# and failing every one, poisoning the queue for ~3 weeks undetected.
-# ``is_available()`` only checks the binary is on PATH (``shutil.which``); it
-# does NOT check login state. This helper checks login state so workers can
-# self-quarantine before claiming, and get_status can surface dead writer
-# auth instead of leaving it buried in logs.
-#
-# Returns ``{"provider", "status", "detail"}`` where status is one of:
-#   "ok"            — subscription credentials are present (and, for codex,
-#                     refresh-viable per the layered probe below)
-#   "not_logged_in" — credentials are missing or proven dead (the actionable
-#                     failure)
-#   "unknown"       — no checkable subscription auth here (API-key providers,
-#                     ollama, or an unrecognized name); callers never gate on it
-#
-# Codex gets a layered refresh-viability check on top of presence
-# (live-proven gap 2026-07-14: a stale /data/.codex/auth.json stranded by the
-# Jun-27 volume migration passed BOTH this presence check AND `codex login
-# status`, yet 401'd at call time — the exact 2026-06-25 queue-poison class):
-#   1. presence — auth.json missing => not_logged_in (unchanged fast path).
-#   2. freshness — auth.json `last_refresh` (fallback: file mtime) younger
-#      than TINYASSETS_CODEX_AUTH_FRESH_S => ok without any subprocess. An
-#      actively-used token is refreshed by real calls, so busy workers never
-#      pay for a probe.
-#   3. live probe — stale creds trigger one tiny `codex exec` call (the check
-#      that actually caught the dead token; `codex login status` only reads
-#      the file locally and lies). Output matching the refresh-failure
-#      signatures => not_logged_in (quarantine BEFORE the queue is poisoned).
-#      Verdicts are cached per CODEX_HOME for TINYASSETS_AUTH_PROBE_TTL_S.
-#
-# Failure philosophy per the claude-code note below: inconclusive probe
-# outcomes (binary missing, timeout, transport error) read "ok" — a false
-# "ok" still fails at call time and trips loop_stalled; only a POSITIVE dead
-# signature quarantines. The probe invokes whatever `codex` is on PATH, so
-# deployments that ship the flock wrapper for the single-use refresh-token
-# chain keep their serialization.
+# Subscription authentication health remains on the legacy Claude path.
 def subscription_auth_health(
     provider_name: str, *, allow_probe: bool = True,
 ) -> dict[str, str]:
@@ -1372,12 +973,6 @@ def subscription_auth_health(
     spawns the live-probe subprocess; serves fast paths + cached verdicts.
     """
     name = (provider_name or "").strip()
-    if name == "codex":
-        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-        if not (codex_home / "auth.json").is_file():
-            return {"provider": name, "status": "not_logged_in",
-                    "detail": f"no auth.json at {codex_home}"}
-        return _codex_refresh_viability(codex_home, allow_probe=allow_probe)
     if name == "claude-code":
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
             return {"provider": name, "status": "ok",
@@ -1416,10 +1011,6 @@ _BWRAP_FAILURE_PATTERNS: tuple[str, ...] = (
     # --proc mount EPERM inside the sandbox namespace.
     "bwrap: Can't mount proc",
     "Can't mount proc on",
-    # codex's launcher takes a lock in the sandboxed CODEX_HOME; a read-only
-    # home dies here. Scoped to that exact path so unrelated lock errors are
-    # not misread as sandbox failures.
-    "cannot open lock file /codex-home/.lock",
 )
 
 

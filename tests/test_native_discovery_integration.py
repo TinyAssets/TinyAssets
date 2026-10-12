@@ -195,6 +195,9 @@ def test_unavailable_enumeration_keeps_provider_default_usable(native, monkeypat
 def test_workflow_discovered_model_has_sealed_versioned_evidence(
     tmp_path, monkeypatch, authenticate_request,
 ):
+    # This fixture exercises the synthetic provider's legacy enumeration seam.
+    # The shipped Codex package is covered by the runner acceptance instead.
+    monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
     snapshots = []
 
     async def enumerate_models(self, *, universe_dir, credential_snapshot_dir):

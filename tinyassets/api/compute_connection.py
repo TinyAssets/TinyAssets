@@ -39,7 +39,7 @@ _NOT_FOUND: dict[str, Any] = {"error": "not_found", "resource": "connection"}
 
 # subscription_cli refs we can run in-daemon (CLI subprocess). Everything else is
 # api_key_http (open). Kept in lockstep with provider_resolver._CLI_PROVIDER_CLASSES.
-_CLI_REFS = ("codex", "claude-code")
+_CLI_REFS = ("claude-code",)
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -170,10 +170,12 @@ def connect_compute(*, universe_id: str = "", payload: Any = None) -> dict[str, 
         if gate is not None:
             return gate
     elif access_method == "subscription_cli":
-        if ref not in _CLI_REFS:
+        from tinyassets.external_agents.registry import PACKAGES
+
+        if ref not in (*_CLI_REFS, *PACKAGES):
             return {
                 "error": "connection_setup_invalid",
-                "detail": f"subscription_cli ref must be one of {list(_CLI_REFS)}",
+                "detail": f"subscription_cli ref must be one of {list((*_CLI_REFS, *PACKAGES))}",
             }
     # An unknown access_method falls through to register_definition, which rejects it.
 

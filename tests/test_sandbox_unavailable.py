@@ -509,36 +509,3 @@ class TestClaudeProviderBwrapDetection:
             ):
                 result = asyncio.run(provider.complete("hello", "", ModelConfig()))
         assert result.text == "response text"
-
-
-class TestCodexProviderBwrapDetection:
-    def test_raises_sandbox_unavailable_on_bwrap_stderr(self):
-        from tinyassets.providers.base import ModelConfig
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        bwrap_stderr = b"bwrap: No permissions to create a new namespace\n"
-        proc = _make_proc_mock(returncode=0, stdout=b"some output", stderr=bwrap_stderr)
-
-        provider = CodexProvider()
-
-        with patch.object(sys, "platform", "linux"):
-            with fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=proc,
-            ):
-                with pytest.raises(SandboxUnavailableError):
-                    asyncio.run(provider.complete("hello", "", ModelConfig()))
-
-    def test_normal_stderr_does_not_raise(self):
-        from tinyassets.providers.base import ModelConfig
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        proc = _make_proc_mock(returncode=0, stdout=b"codex output", stderr=b"info log")
-
-        provider = CodexProvider()
-
-        with patch.object(sys, "platform", "linux"):
-            with fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=proc,
-            ):
-                result = asyncio.run(provider.complete("hello", "", ModelConfig()))
-        assert result.text == "codex output"

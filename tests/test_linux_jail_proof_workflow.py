@@ -140,7 +140,7 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "scripts/ci_assert_junit_case.py",
         "tinyassets/node_sandbox.py",
         "tests/test_delivery_node_rpc.py",
-        "tinyassets/providers/codex_provider.py",
+        "tinyassets/external_agents/runner.py",
         "tests/test_jail_seccomp_profiles.py",
         "tinyassets/providers/provider_jail.py",
         "tinyassets/providers/owned_process.py",

@@ -1,35 +1,4 @@
-"""Refresh a deposited subscription document on the PLATFORM side, before launch.
-
-A CLI provider is launched with a throwaway read-only copy of the vault's
-``llm_subscription`` document (``credential_vault.snapshot_llm_subscription_credential``).
-The CLI refreshes its own token when that document is near expiry -- and on the
-sandboxed path it cannot even do that, because ``/codex-home`` is a tmpfs with
-each credential file bound read-only, so the write fails. Either way the source
-rotates the refresh token and the rotation never reaches the vault, so every
-later launch replays a spent single-use refresh token and the source answers that
-it was already used. That is the founder's subscription failing every turn since
-2026-09-24.
-
-So the platform refreshes first, through the ONE shared core
-(:func:`tinyassets.credential_refresh.refresh_credential`): under the
-per-credential thread and file locks, with the vault's exclusive admission held
-BEFORE the refresh token is spent, and the rotated document written atomically
-under that hold. The launch copy is then taken from a document that does not need
-refreshing, so nothing inside the jail has to.
-
-Two things this deliberately does NOT do:
-
-- It does not refresh a document whose freshness cannot be read. A document with
-  no expiry and no ``last_refresh`` may be a shape this code did not write, and
-  spending its refresh token on a guess is the one irreversible move here.
-- It does not refresh a record that stores its document as a PATH rather than
-  inline. Writing the document inline would clear the record's path fields
-  (``_merge_subscription_records`` drops the whole alias slot), silently
-  migrating the owner's storage shape as a side effect of a refresh. Such a
-  record launches exactly as it does today.
-
-Nothing here logs, returns or formats the document or any token in it.
-"""
+"""Refresh a deposited subscription document in custody before launch."""
 
 from __future__ import annotations
 
@@ -318,27 +287,6 @@ def _stored(universe_dir: Path, service: str) -> tuple[dict[str, Any], str] | No
     return record, encoded.strip()
 
 
-def refresh_before_launch(
-    *,
-    universe_dir: str | Path,
-    service: str,
-    owner_user_id: str | None,
-    universe_id: str,
-    token_url: str = "",
-    client_id: str = "",
-    now: float | None = None,
-) -> bool:
-    """Whether a rotated document was written; see :func:`_refresh_document`.
-
-    Carries nothing: with no proven owner the accepted source must be renewed
-    after a rotation, exactly as before.
-    """
-    return bool(_refresh_document(
-        universe_dir=universe_dir, service=service, owner_user_id=owner_user_id,
-        universe_id=universe_id, token_url=token_url, client_id=client_id, now=now,
-    ))
-
-
 def _refresh_document(
     *,
     universe_dir: str | Path,
@@ -575,160 +523,6 @@ def _source_endpoint(document: _Document, token_url: str, client_id: str) -> tup
 
 
 
-def adopt_newer_on_disk_document(
-    *,
-    universe_dir: str | Path,
-    service: str,
-    owner_user_id: str | None,
-    universe_id: str,
-    now: float | None = None,
-) -> bool:
-    """Take a materialized home's document into the vault when it is NEWER.
-
-    ``ensure_codex_home_from_vault`` no longer overwrites an on-disk document with
-    the vault's, which is right — but on its own it leaves a rotation the CLI made
-    in a writable home living ONLY on disk, where a platform refresh reading the
-    vault would spend the older refresh token beside it. This is the other half:
-    newest wins, and the vault is where "newest" has to end up.
-
-    Newer is decided by the documents' own ``last_refresh`` stamps, under the same
-    lock as every other write. A document with no readable stamp is never
-    preferred over one that has a stamp: that is a guess, and the refresh token is
-    single-use. Returns True when the on-disk document was adopted.
-
-    Never raises for an unreadable document: a launch must not fail because a file
-    beside its credential could not be parsed.
-    """
-    from tinyassets.credential_vault import llm_subscription_credential_record
-
-    universe = Path(universe_dir)
-    key = service.strip().lower()
-    stored = _stored(universe, key)
-    if stored is None:
-        return False
-    auth_file = _materialized_document(universe, stored[0])
-    if auth_file is None:
-        return False
-    try:
-        candidate = _parse(base64.b64encode(auth_file.read_bytes()).decode("ascii"))
-        current = _parse(stored[1])
-    except (OSError, RefreshError):
-        return False
-    moment = time.time() if now is None else now
-    if not _strictly_newer(candidate, current, moment, stored[0]):
-        return False
-
-    def read() -> _Document:
-        latest = _stored(universe, key)
-        if latest is None:
-            raise RefreshError("the stored authorization is unreadable; reconnect")
-        return _parse(latest[1])
-
-    try:
-        refresh_credential(
-            universe_dir=universe,
-            lock_id=f"llm_subscription::{key}",
-            owner_user_id=owner_user_id,
-            universe_id=universe_id,
-            read=read,
-            # Re-decided inside the locks against whatever is stored NOW: a holder
-            # before us may already have written something newer still.
-            # Re-decided inside the locks against whatever is stored NOW, with
-            # that read's OWN record, so the fallback stamp belongs to the
-            # document it is compared against.
-            stale=lambda latest: _strictly_newer(
-                candidate, latest, moment, (_stored(universe, key) or (None,))[0]),
-            # No network: the source already issued this document.
-            spend=lambda latest: candidate,
-            records=lambda fresh: [
-                llm_subscription_credential_record(
-                    service=key,
-                    auth_json_b64=fresh.encoded(),
-                    last_refresh=fresh.last_refresh,
-                )
-            ],
-            subject="sign-in",
-        )
-    except RefreshError:
-        return False
-    return True
-
-
-#: The file name a stored sign-in document is materialized under. Named by the
-#: FORMAT, not by any source: this module resolves it out of the record's own
-#: values rather than knowing which key any particular source uses.
-_DOCUMENT_FILENAME = "auth.json"
-
-
-def _materialized_document(universe: Path, record: dict[str, Any]) -> Path | None:
-    """The record's own on-disk document, if it has one inside this universe.
-
-    Every value of the record is treated as a possible path instead of a fixed
-    list of key names, for two reasons. The key differs per source
-    (``<source>_home`` / ``home`` / ``auth_home`` / ``path`` /
-    ``<source>_json_path``), and naming them here would put per-source knowledge
-    in the substrate, which is the thing that is measured and refused.
-
-    Containment is enforced exactly as the vault enforces it: the resolved path
-    must be inside the universe, and neither it nor the file may be a link. A
-    value that is not a path simply does not resolve to one.
-    """
-    try:
-        root = universe.resolve(strict=True)
-    except OSError:
-        return None
-    for value in record.values():
-        if not isinstance(value, str) or not value.strip():
-            continue
-        try:
-            resolved = Path(value.strip())
-            resolved = resolved if resolved.is_absolute() else root / resolved
-            resolved = resolved.resolve(strict=False)
-            if not resolved.is_relative_to(root):
-                continue
-            candidate = (
-                resolved if resolved.name == _DOCUMENT_FILENAME
-                else resolved / _DOCUMENT_FILENAME
-            )
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            if candidate.parent.is_symlink():
-                continue
-            return candidate
-        except (OSError, ValueError):
-            continue
-    return None
-
-
-def _strictly_newer(
-    candidate: _Document, current: _Document, now: float, record: dict[str, Any] | None = None,
-) -> bool:
-    """Whether ``candidate`` is a different document with a strictly newer stamp.
-
-    ``record`` is the vault record holding ``current``, and it is not optional in
-    spirit: the materializer's comparator falls back to the RECORD's stamp when the
-    stored document carries none, and without the same fallback here the two
-    disagreed. Concretely (Codex refute-review, P1 #4): a freshly deposited
-    document with no internal stamp, whose record is stamped today, lost to a
-    yesterday-stamped document on disk -- so adoption restored yesterday's
-    credential over the deposit the materializer had just correctly preferred.
-    """
-    if candidate.refresh_token == current.refresh_token:
-        return False
-    theirs = _stamp_age(candidate.last_refresh, now)
-    if theirs is None:
-        return False  # unstamped: never preferred, however different it looks
-    ours = _stamp_age(current.last_refresh, now)
-    if ours is None and record is not None:
-        from tinyassets.credential_vault import HTTP_DEPOSITED_AT, SUBSCRIPTION_LAST_REFRESH
-
-        for field in (SUBSCRIPTION_LAST_REFRESH, HTTP_DEPOSITED_AT):
-            ours = _stamp_age(str(record.get(field) or ""), now)
-            if ours is not None:
-                break
-    return ours is None or theirs < ours
-
-
 def refresh_deposited_subscriptions(
     *,
     base_path: str | Path,
@@ -737,48 +531,13 @@ def refresh_deposited_subscriptions(
     universe_id: str,
     launching: str = "",
 ) -> None:
-    """The launch-path seam: make every refreshable stored document current.
-
-    ``owner_user_id`` is the owner the CALLER has proved (the served request's
-    principal), and it is used for one thing: carrying the accepted binding onto a
-    rotated document (:func:`renew_accepted_source`). Required and non-empty,
-    because a rotation that cannot be renewed is worse than no rotation: the
-    binding still pins the old record digest, so serving refuses with "connect
-    your provider" -- and keeps refusing, since the next launch finds a fresh
-    document and renews nothing (live 2026-09-28, the founder's universe). The
-    vault writes themselves stay ownership-neutral: a refresh replaces bytes for a
-    credential the owner already deposited and never touches its ownership row.
-
-    Called BEFORE custody is resolved, outside any transaction (it makes a
-    network call, and holds the vault while it does). Iterates the universe's
-    subscription records rather than being told a provider: a record is
-    refreshable when it stores an inline document this module can read, which is
-    a property of the record, not of a vendor. A record that is not refreshable
-    launches exactly as it does today.
-
-    ``launching`` names the ONE service this launch is about to use, and is the
-    only one whose finished sign-in may raise. Raising for any of them let a
-    second, unrelated subscription's dead credential kill a launch that was never
-    going to use it (Codex refute-review, P1 #2) -- the owner has more than one
-    deposited source precisely so one of them being dead does not matter. A
-    non-launching source is still refreshed (it will be somebody's launch soon,
-    and a stale document costs a turn), just never at this launch's expense. An
-    empty ``launching`` means the caller does not know yet, so nothing raises.
-
-    A raise is :class:`~tinyassets.exceptions.ProviderAuthenticationError`, so the
-    router marks the source for reconnect and the turn continues to the next model
-    the owner allowed -- instead of the cooldown a ``ProviderUnavailableError``
-    would buy, which stops the turn.
-
-    A TRANSPORT failure is swallowed: the stored document may still work, and a
-    launch must not be lost to a blip in a service that is not even the one the
-    turn is talking to.
-    """
+    """Refresh owner-deposited inline documents before a launch."""
     from tinyassets.credential_vault import (
         clear_refresh_rejected,
         load_credential_vault,
         record_refresh_rejected,
     )
+    from tinyassets.external_agents.registry import PACKAGES
     from tinyassets.principals import named_principal
 
     owner = named_principal(owner_user_id)
@@ -798,20 +557,13 @@ def refresh_deposited_subscriptions(
         # own words; it is not this seam's business to pre-empt it.
         return
     for service in services:
+        if service in PACKAGES:
+            continue  # the installed CLI refreshes and the runner carries its custody
         if not service or not _deposited_by(base_path, universe_id, service, owner):
             # Another principal's deposit is never spent or adopted on this
             # owner's turn: proving the serving binding is not proving every
             # credential in the vault (Codex refute-review on #4076, P1).
             continue
-        # Adopt first: a document the CLI already rotated in a writable home is
-        # newer than the vault's, and refreshing the vault's copy would spend a
-        # refresh token that document has already replaced.
-        adopted = adopt_newer_on_disk_document(
-            universe_dir=universe,
-            service=service,
-            owner_user_id=None,
-            universe_id=universe_id,
-        )
         try:
             rotated = _refresh_document(
                 universe_dir=universe,
@@ -838,19 +590,19 @@ def refresh_deposited_subscriptions(
             ) from None
         except RefreshError:
             rotated = False  # transient: launch with what is stored
-        if rotated or adopted:
+        if rotated:
             # A source that just produced a working authorization is not refused any
             # more, so the card goes. Cleared here rather than only on a deposit,
             # because a rotation the CLI made on disk fixes it without the owner
             # doing anything, and a card for a connection that works is worse than
             # no card.
             clear_refresh_rejected(base_path, universe_id=universe_id, service=service)
-        if rotated == CARRIED and not adopted:
+        if rotated == CARRIED:
             # Same owner, same account, new tokens: custody's pin moved with the
             # bytes, the consent did not change, and nothing downstream needs to
             # be republished -- which is what keeps receipts in flight valid.
             continue
-        if rotated or adopted or _accepted_custody_is_stale(
+        if rotated or _accepted_custody_is_stale(
             base_path, universe, owner, universe_id, service,
         ):
             # Also when nothing rotated HERE: a rotation whose renewal did not land

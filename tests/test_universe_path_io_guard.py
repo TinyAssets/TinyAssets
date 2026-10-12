@@ -180,13 +180,10 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/credential_vault.py": [
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
-        "_on_disk_document_is_newer: .read_text()",
         "_read_credential_material: .read_bytes()",
         "_remove_snapshot_tree: .unlink()",
         "_remove_snapshot_tree: .unlink()",
         "_write_exclusive_snapshot_file: os.open()",
-        "ensure_codex_home_from_vault: .write_bytes()",
-        "ensure_codex_home_from_vault: .write_text()",
         "load_credential_vault: .read_text()",
     ],
     "tinyassets/daemon_brain.py": [
@@ -219,6 +216,14 @@ PINNED: dict[str, list[str]] = {
         "_write_routes: os.open()",
         "_write_routes: os.replace()",
         "read_engine_mcp_route: .read_text()",
+    ],
+    # The refresh lock uses descriptor-relative O_NOFOLLOW opens and fstat
+    # ownership/mode checks; materialize reads a sealed snapshot the same way.
+    "tinyassets/external_agents/home.py": [
+        "exclusive_refresh: os.open()",
+        "exclusive_refresh: os.open()",
+        "exclusive_refresh: os.open()",
+        "materialize: os.open()",
     ],
     "tinyassets/idle_cycle.py": [
         "_read_stamp: .read_text()",
@@ -304,17 +309,10 @@ PINNED: dict[str, list[str]] = {
         "write_record: os.replace()",
     ],
     "tinyassets/providers/base.py": [
-        "_codex_last_refresh_age_s: .read_text()",
-        "_read_probe_cache_file: .read_text()",
-        "_write_probe_cache_file: .write_text()",
-        "_write_probe_cache_file: os.replace()",
         "subprocess_env_for_provider: .read_text()",
     ],
     # ``claude_provider`` had two in ``_engine_mcp_flags``; they are gone from
     # the tree, and this ratchet only ever shrinks, so the pin goes with them.
-    "tinyassets/providers/codex_provider.py": [
-        "_resolved_codex_executable: .open()",
-    ],
     "tinyassets/providers/definition.py": [
         "_load: .read_text()",
         "_write: .unlink()",
@@ -328,6 +326,15 @@ PINNED: dict[str, list[str]] = {
         "_remove_tree: os.unlink()",
         "admit_center: os.open()",
         "admit_center: os.open()",
+    ],
+    # The owner-home path is opened descriptor-relative with O_NOFOLLOW and
+    # checked for the expected owner/mode before the launcher receives it.
+    "tinyassets/role_external_agent.py": [
+        "_owner_home: os.open()",
+        "_owner_home: os.open()",
+        "_owner_home: os.open()",
+        "_owner_home: os.open()",
+        "aspawn_cell: os.open()",
     ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
@@ -384,9 +391,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/storage_accounting.py": [
         "_commons_pages: .read_bytes()",
-    ],
-    "tinyassets/subscription_refresh.py": [
-        "adopt_newer_on_disk_document: .read_bytes()",
     ],
     "tinyassets/subscriptions.py": [
         "_read_raw: .read_text()",

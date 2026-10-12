@@ -1,24 +1,4 @@
-"""Codex translation of the one agent definition: ``codex app-server``.
-
-The served agent turn runs Codex as a JSON-RPC app server whose ONLY
-model-visible tools are the definition's tools, declared as
-``thread/start.dynamicTools``. Codex executes none of them: each call arrives
-here as an ``item/tool/call`` request and is forwarded through the same
-owner-pinned engine route every other provider's tools use
-(``engine_tool_client.open_engine_tools``), so every Codex tool call crosses
-our route and its pre-tool fences.
-
-No MCP server is configured, so Codex adds none of its MCP resource tools
-(``codex-rs/core/src/tools/spec_plan.rs`` ``add_mcp_resource_tools``,
-rust-v0.160.0, added whenever any MCP server is configured). The bundled model
-catalog pins code mode (``apply_patch`` inside ``exec``) and the
-collaboration tools to every GPT-5.6+/GPT-6 model, and no flag removes them,
-so the launch supplies ``model_catalog_json`` with those per-model tool fields
-cleared. A signed-in ChatGPT session keeps that catalog as authoritative
-(``model/list`` still returns it after a live turn; 2026-10-05, codex-cli
-0.160.0). The captures and the live check are recorded in
-``openspec/changes/starter-agent-out-of-plumbing/implementation-evidence.md``.
-"""
+"""Bounded JSON-RPC job stream for a manifest-declared external agent."""
 
 from __future__ import annotations
 
@@ -26,10 +6,8 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
@@ -37,64 +15,7 @@ from tinyassets.exceptions import (
     ProviderIdleTimeoutError,
     ProviderProtocolError,
 )
-from tinyassets.providers import codex_launch_contract as contract
-from tinyassets.providers.codex_launch_contract import SERVED_LAUNCH_ARGS
-
-__all__ = ["SERVED_LAUNCH_ARGS", "AppServerTurn", "reduced_catalog"]
-
-logger = logging.getLogger(__name__)
-
-#: Methods a client may answer; anything else Codex asks is declined.
-_TOOL_CALL = "item/tool/call"
-
-
-def reduced_catalog(bundled: dict, model: str | None) -> dict:
-    """``codex_launch_contract.reduced_catalog``, failing as a provider error."""
-    try:
-        return contract.reduced_catalog(bundled, model)
-    except ValueError as exc:
-        raise ProviderError(str(exc)) from None
-
-
-_BUNDLED: dict[tuple, dict] = {}
-
-
-async def bundled_catalog(base_cmd: list[str]) -> dict:
-    """``codex debug models --bundled`` for this binary, cached by its stat.
-
-    Static data shipped in the binary, read in the owner's provider cell with
-    no credential in its environment, so no account state is read.
-    """
-    from tinyassets.providers.codex_provider import _resolved_codex_executable
-    from tinyassets.providers.owned_process import aspawn_owned, kill_owned_tree
-
-    try:
-        real, _ = _resolved_codex_executable(base_cmd)
-        stat = real.stat()
-        key = (str(real), stat.st_size, stat.st_mtime_ns)
-    except (OSError, ProviderError, ValueError):
-        key = (tuple(base_cmd), None, None)
-    if key in _BUNDLED:
-        return _BUNDLED[key]
-    proc = await aspawn_owned(
-        [*base_cmd, "debug", "models", "--bundled"], env={},
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        async with asyncio.timeout(60):
-            stdout, _stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise ProviderError("codex bundled model catalog is unavailable")
-        catalog = json.loads(stdout)
-    except (OSError, TimeoutError, ValueError) as exc:
-        raise ProviderError("codex bundled model catalog is unavailable") from exc
-    finally:
-        kill_owned_tree(proc)
-    if not isinstance(catalog, dict):
-        raise ProviderError("codex bundled model catalog is malformed")
-    _BUNDLED[key] = catalog
-    return catalog
+from tinyassets.external_agents.contract import expand_template, pointer
 
 
 def dynamic_tools(definition) -> list[dict]:
@@ -109,31 +30,9 @@ def tools_digest(definition) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
-def thread_resume_params(definition, thread_id: str) -> dict:
-    """``thread/resume`` with the definition's CURRENT instructions.
-
-    A resumed thread otherwise keeps the instructions it started with: on
-    codex-cli 0.160.0 a resume without ``baseInstructions`` sends the stored
-    ones, and one with them sends only the new ones (request capture,
-    2026-10-06, K2 implementation evidence). The tools persist with the
-    thread, and a changed tool set never resumes (``tools_digest``).
-    """
-    return {"threadId": thread_id, "baseInstructions": definition.instructions}
-
-
-def thread_start_params(definition, *, model: str | None, cwd: str, ephemeral: bool) -> dict:
-    """``thread/start`` carrying exactly the definition's tools and instructions."""
-    params = {
-        "dynamicTools": dynamic_tools(definition),
-        "baseInstructions": definition.instructions,
-        "cwd": cwd, "ephemeral": ephemeral,
-        # Codex runs nothing itself, so neither its approvals nor its own
-        # sandbox has anything to govern; our jail confines the process.
-        "approvalPolicy": "never", "sandbox": "danger-full-access",
-    }
-    if model:
-        params["model"] = model
-    return params
+def method_params(operation: dict, values: dict) -> dict:
+    """Expand only the placeholders declared by the package contract."""
+    return expand_template(operation["params"], values)
 
 
 def tool_result_items(result) -> tuple[bool, list[dict]]:
@@ -167,11 +66,23 @@ def _failure_items(text: str) -> dict:
     return {"success": False, "contentItems": [{"type": "inputText", "text": text}]}
 
 
-def _scrubbed(text: str, limit: int = 300) -> str:
-    """Server-supplied text with secrets removed BEFORE clipping: it reaches logs."""
-    from tinyassets.providers.codex_provider import _redacted_stderr_excerpt
-
-    return _redacted_stderr_excerpt(" ".join(str(text).splitlines()), limit=limit)
+def _vendor_error_class(error: dict) -> str:
+    """Reduce untrusted vendor details to a fixed, non-secret receipt category."""
+    if not error:
+        return "missing"
+    detail = " ".join(str(error.get(key) or "")[:500].lower()
+                      for key in ("code", "type", "message"))
+    classes = {
+        "auth": ("401", "403", "unauthorized", "authentication", "refresh token", "invalid_grant"),
+        "rate_limit": ("429", "rate limit", "quota"),
+        "timeout": ("timeout", "timed out", "deadline"),
+        "network": ("connection", "network", "dns", "transport"),
+        "server": ("500", "502", "503", "504", "server error"),
+    }
+    for kind, tokens in classes.items():
+        if any(token in detail for token in tokens):
+            return kind
+    return "other"
 
 
 @dataclass
@@ -180,35 +91,27 @@ class TurnOutcome:
 
     thread_id: str = ""
     configured_model: str = ""
+    reported_model: str = ""
     messages: list[str] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     usage_seen: bool = False
     status: str = ""
-    error: str = ""
+    error_class: str = "missing"
     tool_calls: int = 0
 
 
-class AppServerTurn:
-    """Drive one turn over the app server's stdio JSON-RPC.
+class JsonRpcJob:
+    """One bounded native JSON-RPC turn, with serial tool calls and timeouts.
 
-    Timing follows the exec reader it replaces: before the first server
-    message the launch budget applies; inside the turn silence is generation
-    (``turn_wait``); while one of OUR tool calls is running the allowance is
-    ``tool_wait``; the absolute cap bounds the whole turn. An authenticated
-    mapper heartbeat extends an output idle wait without pretending it is
-    model progress. Unparsable output is never progress. ``turn/completed`` ends
-    it -- the process is ours and is ended by the caller.
-
-    Tool calls run one at a time, in the order Codex asked for them, so a call
-    queued behind one that stops an activity meets the engine route's fence
-    after the stop. A tool call that fails outside the engine client's typed
-    errors fails the turn with that cause instead of leaving Codex waiting.
+    Only authenticated progress extends idle time; the caller owns teardown.
     """
 
-    def __init__(self, proc, *, tools, profile, start: float,
-                 turn_wait: float, tool_wait: float) -> None:
+    def __init__(self, proc, *, job: dict, agent: str, tools, profile,
+                 start: float, turn_wait: float, tool_wait: float) -> None:
         self.proc = proc
+        self.job = job
+        self.agent = agent
         self.tools = tools
         self.profile = profile
         self.start = start
@@ -228,7 +131,8 @@ class AppServerTurn:
         self._done = asyncio.Event()
         self._failed = asyncio.Event()
         self._failure: BaseException | None = None
-        self._last_error = ""
+        self.refused_method = ""
+        self.phase = "initialize"
 
     async def _write(self, message: dict) -> None:
         async with self._write_lock:
@@ -302,7 +206,7 @@ class AppServerTurn:
         self._heard = True
         params = message.get("params") or {}
         if "id" in message:
-            if method == _TOOL_CALL:
+            if method == self.job["tools"]["call_method"]:
                 self._spawn(self._call_tool(message["id"], params), self._tool_tasks)
             else:
                 # Approvals, user input, elicitation, token refresh: none of
@@ -311,35 +215,52 @@ class AppServerTurn:
                     "code": -32601, "message": f"{method} is not available"}}),
                     self._other_tasks)
             return
-        if method == "turn/started":
+        events = self.job["events"]
+        if method == events["model"]["method"]:
             self._in_turn = True
+            reported = pointer(params, events["model"]["value"])
+            if isinstance(reported, str):
+                self.outcome.reported_model = _label(reported)
         elif method == "error":
             # Reported, never terminal: Codex may be retrying. Kept only as the
             # reason for a failed turn that names none of its own.
             error = params.get("error") or {}
-            if isinstance(error, dict) and error.get("message"):
-                self._last_error = str(error["message"])
-        elif method == "item/completed":
-            item = params.get("item") or {}
-            if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
-                self.outcome.messages.append(item["text"])
-        elif method == "thread/tokenUsage/updated":
-            last = (params.get("tokenUsage") or {}).get("last") or {}
+            if isinstance(error, dict) and error:
+                self.outcome.error_class = _vendor_error_class(error)
+        elif method == events.get("item_done", {}).get("method"):
+            event = events["item_done"]
+            if pointer(params, event["type"]) == event["agent_type"]:
+                message = pointer(params, event["text"])
+                if isinstance(message, str):
+                    self.outcome.messages.append(message)
+        elif method == events["usage"]["method"]:
+            usage = events["usage"]
             try:
-                self.outcome.input_tokens += int(last.get("inputTokens", 0))
-                self.outcome.output_tokens += (int(last.get("outputTokens", 0))
-                                               + int(last.get("reasoningOutputTokens", 0)))
+                self.outcome.input_tokens += int(pointer(params, usage["input"]) or 0)
+                self.outcome.output_tokens += int(pointer(params, usage["output"]) or 0)
+                if "reasoning_output" in usage:
+                    self.outcome.output_tokens += int(
+                        pointer(params, usage["reasoning_output"]) or 0)
                 self.outcome.usage_seen = True
             except (TypeError, ValueError):
                 pass
-        elif method == "turn/completed":
+        elif method == events["done"]["method"]:
             turn = params.get("turn") or {}
-            self.outcome.status = str(turn.get("status") or "")
+            event = events["done"]
+            self.outcome.status = str(pointer(params, event["status"]) or "")
+            if not self.outcome.messages and "items" in event:
+                items = pointer(params, event["items"])
+                if isinstance(items, list):
+                    for item in items:
+                        if (isinstance(item, dict)
+                                and pointer(item, event["item_type"]) == event["agent_type"]):
+                            message = pointer(item, event["item_text"])
+                            if isinstance(message, str):
+                                self.outcome.messages.append(message)
             error = turn.get("error") or {}
             if isinstance(error, dict):
-                self.outcome.error = str(error.get("message") or "")
-            if self.outcome.status != "completed" and not self.outcome.error:
-                self.outcome.error = self._last_error
+                if error:
+                    self.outcome.error_class = _vendor_error_class(error)
             # The turn is over: nothing it started is still owed an answer.
             for task in list(self._tool_tasks):
                 task.cancel()
@@ -360,7 +281,7 @@ class AppServerTurn:
     def _attach(self, exc: ProviderError) -> ProviderError:
         """Name where the turn was when it stopped, as the exec reader did."""
         exc.attempt_telemetry = {
-            "provider": "codex",
+            "provider": self.agent,
             "failure_class": getattr(exc, "failure_class", None),
             "phase": "streaming" if self._heard else "launch",
             "tool_phase": ("in_tool" if self._tool_tasks
@@ -373,7 +294,7 @@ class AppServerTurn:
 
     def _tool_failure(self) -> ProviderError:
         error = self._attach(ProviderError(
-            f"codex tool call failed unexpectedly: {type(self._failure).__name__}"))
+            f"{self.agent} tool call failed unexpectedly: {type(self._failure).__name__}"))
         error.__cause__ = self._failure
         return error
 
@@ -404,13 +325,13 @@ class AppServerTurn:
                     line = finished.result()
                 except (ValueError, asyncio.LimitOverrunError):
                     raise self._attach(ProviderProtocolError(
-                        "codex app-server line exceeded the reader buffer limit")) from None
+                        "external-agent JSON-RPC line exceeded the reader buffer limit")) from None
                 if not line:
                     for future in self._pending.values():
                         if not future.done():
-                            future.set_exception(ProviderError("codex app-server exited"))
+                            future.set_exception(ProviderError("external agent exited"))
                     raise self._attach(
-                        ProviderError("codex app-server exited before the turn completed"))
+                        ProviderError("external agent exited before the turn completed"))
                 try:
                     message = json.loads(line)
                 except ValueError:
@@ -430,15 +351,15 @@ class AppServerTurn:
     def _timeout(self, absolute: bool) -> None:
         if absolute:
             raise self._attach(InteractiveDeadlineError(
-                f"codex exceeded the {self.profile.absolute_cap_s:.0f}s absolute "
+                f"{self.agent} exceeded the {self.profile.absolute_cap_s:.0f}s absolute "
                 "interactive cap while still progressing"))
         raise self._attach(ProviderIdleTimeoutError(
-            "codex app-server produced no protocol event within its allowance "
+            f"{self.agent} produced no protocol event within its allowance "
             "(idle watchdog fired; no provider cooldown)"))
 
-    async def run(self, *, thread: tuple[str, dict], input_text: str,
-                  effort: str | None) -> TurnOutcome:
-        """``thread`` is ``("thread/start", params)`` or ``("thread/resume", params)``."""
+    async def run(self, *, definition, model: str | None, input_text: str,
+                  effort: str | None, workdir: str, resume: str = "") -> TurnOutcome:
+        """Start or resume a package-declared JSON-RPC native session."""
         reader = asyncio.create_task(self.read())
         try:
             async def call(method, params):
@@ -448,7 +369,7 @@ class AppServerTurn:
                                                  return_when=asyncio.FIRST_COMPLETED)
                     if waiter not in done:
                         reader.result()  # raises the reader's classified stop
-                        raise ProviderError(f"codex app-server ended during {method}")
+                        raise ProviderError(f"external agent ended during {method}")
                     reply = waiter.result()
                 finally:
                     # Never leave a request behind: not after a reader stop, and
@@ -457,29 +378,47 @@ class AppServerTurn:
                         waiter.cancel()
                         await asyncio.wait({waiter}, timeout=1)
                 if "error" in reply:
-                    message = (reply.get("error") or {}).get("message") or ""
-                    raise ProviderError(
-                        f"codex app-server refused {method}: {_scrubbed(message)}")
+                    self.refused_method = method
+                    raise ProviderError(f"external agent refused {method}")
                 return reply.get("result") or {}
 
-            await call("initialize", {"clientInfo": {"name": "tinyassets", "version": "1"},
-                                      "capabilities": {"experimentalApi": True}})
-            await self.notify("initialized", {})
-            started = await call(*thread)
-            record = started.get("thread") or {}
-            self.outcome.thread_id = str(record.get("id") or "")
+            init = self.job["initialize"]
+            self.phase = init["method"]
+            await call(init["method"], init["params"])
+            await self.notify(init["notification"], {})
+            values = {"model": model, "effort": effort, "workdir": workdir,
+                      "session": resume, "input": [{"type": "text", "text": input_text}],
+                      "system": definition.instructions,
+                      "mcp_config": None}
+            phase = self.job["resume"] if resume else self.job["start"]
+            self.phase = phase["method"]
+            params = method_params(phase, values)
+            if not resume:
+                params[self.job["tools"]["define_at"].removeprefix("/")] = dynamic_tools(definition)
+                if model is None:
+                    params.pop("model", None)
+            started = await call(phase["method"], params)
+            self.outcome.thread_id = str(pointer(started, self.job["session_handle"]) or "")
             # The model the thread is configured with -- the CLI's own pick when
             # none was requested. Configuration, never answering-model evidence.
-            self.outcome.configured_model = _label(record.get("model") or started.get("model"))
+            self.outcome.configured_model = _label(
+                pointer(started, self.job["configured_model"]))
             if not self.outcome.thread_id:
-                raise ProviderProtocolError("codex app-server returned no thread id")
-            turn: dict[str, Any] = {"threadId": self.outcome.thread_id,
-                                    "input": [{"type": "text", "text": input_text}]}
-            if effort:
-                turn["effort"] = effort
-            await call("turn/start", turn)
+                raise ProviderProtocolError("external agent returned no session handle")
+            values["session"] = self.outcome.thread_id
+            turn = method_params(self.job["input"], values)
+            if not effort:
+                turn.pop("effort", None)
+            self.phase = self.job["input"]["method"]
+            await call(self.phase, turn)
             self._in_turn = True
+            self.phase = "stream"
             await reader
+            if not self.outcome.reported_model:
+                # This protocol reports the model on thread/start, while
+                # turn/started carries no model in Codex 0.160.0. Both values
+                # come from the CLI; never substitute the requested model.
+                self.outcome.reported_model = self.outcome.configured_model
             return self.outcome
         finally:
             if not reader.done():

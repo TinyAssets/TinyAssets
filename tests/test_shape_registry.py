@@ -152,7 +152,7 @@ def test_raising_a_ceiling_fails_against_the_base_pin(monkeypatch):
 
 def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypatch):
     baseline = Path(check_shapes.__file__).read_text(encoding="utf-8")
-    monkeypatch.setitem(check_shapes.LINE_CEILINGS, "S3", 2435)
+    monkeypatch.setitem(check_shapes.LINE_CEILINGS, "S3", 1336)
     event = tmp_path / "event.json"
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
@@ -167,19 +167,19 @@ def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypat
         ):
             return check_shapes.base_shape_problems()
 
-    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+    assert "S3 line ceiling: pin raised 1335 -> 1336" in base_problems()
 
     monkeypatch.delitem(check_shapes.LINE_CEILINGS, "S3")
     assert "S3 line ceiling: pin removed" in base_problems()
-    monkeypatch.setitem(check_shapes.LINE_CEILINGS, "S3", 2435)
+    monkeypatch.setitem(check_shapes.LINE_CEILINGS, "S3", 1336)
 
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
     monkeypatch.setenv("GITHUB_SHA", "queued-head")
     event.write_text(json.dumps({"merge_group": {"head_sha": "queued-head"}}), encoding="utf-8")
-    assert "S3 line ceiling: pin raised 2434 -> 2435" not in base_problems()
+    assert "S3 line ceiling: pin raised 1335 -> 1336" not in base_problems()
     monkeypatch.setenv("GITHUB_SHA", "different-head")
-    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+    assert "S3 line ceiling: pin raised 1335 -> 1336" in base_problems()
     event.write_text(
         json.dumps(
             {
@@ -191,7 +191,7 @@ def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypat
         ),
         encoding="utf-8",
     )
-    assert "S3 line ceiling: pin raised 2434 -> 2435" not in base_problems()
+    assert "S3 line ceiling: pin raised 1335 -> 1336" not in base_problems()
     event.write_text(
         json.dumps(
             {
@@ -203,12 +203,12 @@ def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypat
         ),
         encoding="utf-8",
     )
-    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+    assert "S3 line ceiling: pin raised 1335 -> 1336" in base_problems()
     event.write_text(
         json.dumps({"pull_request": {"labels": [], "body": "Floor fix: outage."}}),
         encoding="utf-8",
     )
-    assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+    assert "S3 line ceiling: pin raised 1335 -> 1336" in base_problems()
 
 
 def test_git_added_uses_the_pr_diff_not_untracked_files():

@@ -221,7 +221,8 @@ owner:
   `role_external_agent.py`). The existing owner provider cell, admitted once
   per job through the existing owner launcher. Its fixed environment
   changes:
-  - `HOME=/agent-home`, `<auth.home_env>=/agent-home/<auth.home_dir>`. The
+  - `HOME=/agent-home`, `<auth.home_env>=/agent-home/jobs/<job id>/<auth.home_dir>`.
+    `/agent-home/jobs` is a private mode-0700 tmpfs for each cell. The
     agent home is a persistent, owner-private directory at
     `<data_root>/.platform/owners/<owner>/agent-home/`, uid and gid of the
     owner identity, mode 0700, created no-follow. It is outside every
@@ -231,7 +232,7 @@ owner:
   - `TMPDIR=/tmp` stays a per-job tmpfs. Nothing the CLI keeps lives there,
     which is what Codex's check requires.
   - The workdir is `/agent-home/jobs/<job id>`, created per job and removed
-    after it.
+    after it. A killed cell loses the tmpfs and its auth bytes with it.
   - The sealed snapshot mount, `AUTH_DIR=/tmp/provider-auth`, and the copy
     step are deleted; the runner materializes auth files instead (D5).
   - Discovery and execution become one cell kind, `external-agent`, with
@@ -248,11 +249,12 @@ owner:
 - Auth material comes only from the broker's custody snapshot for
   `(owner, command center, auth.service)`, revalidated before materializing
   and again before write-back.
-- The runner writes `auth.files` into `/agent-home/<home_dir>/` at job start
-  and deletes them at job end, including on cancel and crash recovery (the
-  next job start deletes stale auth files before writing new ones). Between
-  jobs the home holds only non-secret state: config, caches and native
-  session files.
+- The runner writes `auth.files` into the private job subtree at start and
+  deletes them at clean exit. Cancellation, OOM kill and process revocation
+  release the tmpfs without leaving an auth file on the persistent mount.
+- Catalogue and job launches hold a cross-process owner-and-service lock from
+  materialization through custody compare-and-swap. A waiting job with a stale
+  custody pin refuses its launch; two CLIs cannot spend the same refresh token.
 - `auth.writeback`: after the process ends, the runner reads each declared
   file (no-follow, regular, size-bounded) and asks the broker to replace the
   custody record with compare-and-swap on the snapshot digest it started

@@ -7,7 +7,7 @@ against the owner's serving binding -- and is served only by the provider that
 authority names, on that universe's own credentials. There is no platform
 fallback chain, no host pin and no host-credential provider; a call without
 owner authority is refused before any provider is touched
-(``tinyassets/providers/owner_binding.py``). ``FALLBACK_CHAINS`` survives only
+(``tinyassets/providers/owner_binding.py``). The built-in names survive only
 as the catalogue of built-in executor names status surfaces report.
 """
 
@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
+    ExternalAgentUnavailable,
     InteractiveDeadlineError,
     ProviderAuthenticationError,
     ProviderAuthorityHeldError,
@@ -126,12 +127,7 @@ def _provider_invocation_carrier(
     return carrier
 
 def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
-    """The engine MCP route this call's provider jail may reach, if any.
-
-    The same three fields every adapter checks before wiring the engine server
-    (``claude_provider._engine_mcp_flags``, ``codex_provider._served_engine_tools``);
-    the route itself is re-read, owner-checked, by the jail's relay.
-    """
+    """The owner-checked engine route this call's provider jail may reach."""
     actor_id = (cfg.engine_mcp_actor_id or "").strip()
     graph_id = (cfg.engine_mcp_graph_id or "").strip()
     if not (cfg.engine_mcp_enabled and actor_id and graph_id):
@@ -495,11 +491,7 @@ class ProviderRouter:
     quota : QuotaTracker | None
         Shared quota tracker.  A default is created if not supplied.
     chain_drain_empty_threshold, auth_health
-        Accepted for caller compatibility and never used. The first detected
-        a drained platform chain falling back to the host's local model; the
-        second probed the HOST's subscription login -- the codex probe being
-        itself a real ``codex exec`` on the host's credentials. Hard Rule 15
-        removed the chain, so neither has anything to act on.
+        Accepted for caller compatibility; both belong to retired host paths.
     """
 
     def __init__(
@@ -509,9 +501,7 @@ class ProviderRouter:
         chain_drain_empty_threshold: int | None = None,
         auth_health: Callable[[str], dict[str, str]] | None = None,
     ) -> None:
-        # ``chain_drain_empty_threshold`` and ``auth_health`` are accepted for
-        # caller compatibility and never used: both served the retired platform
-        # fallback chain (local-model drain detection, host-login pruning).
+        # Legacy caller arguments have no serving effect.
         del chain_drain_empty_threshold, auth_health
         self._providers: dict[str, BaseProvider] = providers or {}
         self._quota = quota or QuotaTracker()
@@ -578,7 +568,7 @@ class ProviderRouter:
     ) -> tuple[list[str], list[ProviderAttemptDiagnostic]]:
         """Return registered providers from *chain* plus explicit exclusions.
 
-        ``FALLBACK_CHAINS`` records preference order, but runtime routing must
+        Built-in names record preference order, but runtime routing must
         only advertise and iterate providers that were actually registered at
         startup. Missing CLI-backed providers, such as ``claude-code`` in the
         cloud image, are reported as exclusions rather than silent phantom
@@ -1727,6 +1717,8 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
+            except ExternalAgentUnavailable:
+                raise
             except ProviderUnavailableError as exc:
                 if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE,
                               owner=quota_owner, reason="provider_unavailable"):

@@ -33,12 +33,12 @@ _ALL_BUILTIN = sorted({name for chain in FALLBACK_CHAINS.values() for name in ch
 
 
 def _builtin_executor_classes() -> dict[str, type]:
+    from tinyassets.external_agents.provider import ExternalAgentProvider
     from tinyassets.providers.claude_provider import ClaudeProvider
-    from tinyassets.providers.codex_provider import CodexProvider
     from tinyassets.providers.ollama_provider import OllamaProvider
 
-    classes = (ClaudeProvider, CodexProvider, OllamaProvider)
-    return {cls.name: cls for cls in classes}
+    classes = (ClaudeProvider, OllamaProvider)
+    return {**{cls.name: cls for cls in classes}, "codex": ExternalAgentProvider}
 
 
 class _SpyProvider(BaseProvider):

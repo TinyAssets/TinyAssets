@@ -99,3 +99,46 @@ def status(base: Path, *, owner: str, universe_id: str, agent: str,
         age = (now - datetime.fromisoformat(completed)).total_seconds()
         return "fresh" if 0 <= age <= FRESH_SECONDS else "stale"
     return "failed: " + (reason or outcome)
+
+
+def admit_job(base: Path, *, owner: str, universe_id: str, agent: str,
+              package_digest: str, custody_digest: str, requested_model: str) -> int:
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS external_agent_job_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL,
+            execution TEXT NOT NULL, native_agent TEXT NOT NULL,
+            package_digest TEXT NOT NULL, custody_digest TEXT NOT NULL,
+            requested_model TEXT NOT NULL, reported_model TEXT NOT NULL DEFAULT '',
+            native_session TEXT NOT NULL DEFAULT '',
+            input_tokens INTEGER, output_tokens INTEGER,
+            usage_provenance TEXT NOT NULL DEFAULT 'unknown',
+            admitted_at TEXT NOT NULL, completed_at TEXT, outcome TEXT,
+            reason TEXT NOT NULL DEFAULT '')""")
+        row = conn.execute("""INSERT INTO external_agent_job_receipts
+            (owner_user_id, universe_id, execution, native_agent, package_digest,
+             custody_digest, requested_model, admitted_at)
+            VALUES (?, ?, 'native_agent', ?, ?, ?, ?, ?)""",
+            (owner, universe_id, agent, package_digest, custody_digest,
+             requested_model, _now()))
+        conn.commit()
+        return row.lastrowid
+
+
+def finish_job(base: Path, receipt_id: int, *, outcome: str, reason: str = "",
+               reported_model: str = "", native_session: str = "",
+               input_tokens: int | None = None, output_tokens: int | None = None):
+    if outcome not in {"succeeded", "failed", "timed_out", "cancelled"}:
+        raise ValueError("invalid external-agent job outcome")
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        changed = conn.execute("""UPDATE external_agent_job_receipts SET
+            completed_at=?, outcome=?, reason=?, reported_model=?, native_session=?,
+            input_tokens=?, output_tokens=?, usage_provenance=?
+            WHERE id=? AND completed_at IS NULL""",
+            (_now(), outcome, reason[:80], reported_model[:200], native_session[:200],
+             input_tokens, output_tokens,
+             "cli_reported" if input_tokens is not None and output_tokens is not None
+             else "unknown", receipt_id))
+        if changed.rowcount != 1:
+            raise RuntimeError("external-agent job receipt already settled")
+        conn.commit()
