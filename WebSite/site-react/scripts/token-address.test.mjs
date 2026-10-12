@@ -33,7 +33,9 @@ test("the published token address is the primary address in token-info.json", ()
   const contracts = source("components/TokenContracts.tsx");
   assert.match(contracts, /token-info\.json/);
   assert.match(contracts, /deploy\.address_main/);
-  assert.match(contracts, /deploy\.address_others/);
+  assert.doesNotMatch(contracts, /address_others/);
+  assert.match(contracts, /legacy address; no TinyAssets action/);
+  assert.match(contracts, /1:1 migration reference/);
   assert.doesNotMatch(contracts, hex);
 
   for (const file of ["app/legal/page.tsx", "app/token/page.tsx", "components/CopyAddress.tsx"]) {

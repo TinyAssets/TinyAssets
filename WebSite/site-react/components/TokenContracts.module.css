@@ -40,3 +40,9 @@
   word-break: break-all;
   font-size: 13px;
 }
+.note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-3);
+}
