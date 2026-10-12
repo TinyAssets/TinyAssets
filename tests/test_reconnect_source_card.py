@@ -185,6 +185,67 @@ def test_a_rejection_for_another_source_is_still_recorded(tmp_path, monkeypatch)
     assert "codex" in refresh_rejected_sources(tmp_path, universe_id=UID)
 
 
+def test_inline_source_refusal_still_raises_and_success_clears_its_card(tmp_path, monkeypatch):
+    """The non-package refresh seam still owns its rejection and repair card."""
+    from tinyassets import subscription_refresh
+    from tinyassets.credential_refresh import RefreshRejected
+    from tinyassets.exceptions import ProviderAuthenticationError
+
+    universe = tmp_path / UID
+    universe.mkdir()
+    _deposit(universe, service="claude", refresh="r-dead")
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_: True)
+    monkeypatch.setattr(subscription_refresh, "_source_endpoint",
+                        lambda *_: ("https://issuer.example/token", "client"))
+
+    def refused(*_args, **_kwargs):
+        raise RefreshRejected("stored sign-in rejected")
+
+    monkeypatch.setattr(subscription_refresh, "_spend", refused)
+    with pytest.raises(ProviderAuthenticationError):
+        subscription_refresh.refresh_deposited_subscriptions(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner",
+            universe_id=UID, launching="claude",
+        )
+    assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"claude"}
+
+    monkeypatch.setattr(subscription_refresh, "_spend", lambda doc, **_: (
+        subscription_refresh._rebuild(doc, access_token="a-2", refresh_token="r-live",
+                                      id_token="")))
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner",
+        universe_id=UID, launching="claude",
+    )
+    assert refresh_rejected_sources(tmp_path, universe_id=UID) == {}
+
+
+def test_nonlaunching_inline_source_refusal_does_not_spend_package_token(tmp_path, monkeypatch):
+    """A refused secondary sign-in records its card without failing the package launch."""
+    from tinyassets import subscription_refresh
+    from tinyassets.credential_refresh import RefreshRejected
+
+    universe = tmp_path / UID
+    universe.mkdir()
+    _deposit(universe, service="codex", refresh="r-package")
+    _deposit(universe, service="claude", refresh="r-dead")
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_: True)
+    monkeypatch.setattr(subscription_refresh, "_source_endpoint",
+                        lambda *_: ("https://issuer.example/token", "client"))
+    spent = []
+
+    def refused(doc, **_):
+        spent.append(doc.refresh_token)
+        raise RefreshRejected("stored sign-in rejected")
+
+    monkeypatch.setattr(subscription_refresh, "_spend", refused)
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner",
+        universe_id=UID, launching="codex",
+    )
+    assert spent == ["r-dead"]
+    assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"claude"}
+
+
 def _deposit(universe_dir, service="codex", refresh="r-1"):
     """A real subscription record, because a card only stands for a live credential."""
     import base64
