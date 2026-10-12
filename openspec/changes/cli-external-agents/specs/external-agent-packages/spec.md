@@ -136,6 +136,16 @@ reported model SHALL come only from the package's declared model event.
   models; `reported_model` is empty with `model_status: unknown` unless the
   package's declared model event supplied an answering model
 
+#### Scenario: subscription jobs carry no per-call charge
+- **WHEN** a CLI package uses an unmetered subscription credential
+- **THEN** its reply receipt records `execution: native_agent` and zero
+  per-call cost even when the CLI reports token usage
+
+#### Scenario: post-turn learning failure remains visible
+- **WHEN** learning after a delivered reply fails
+- **THEN** the reply remains delivered and its receipt names a classified
+  `learning_failure` reason
+
 ### Requirement: Catalogue status is derived from refresh receipts
 Each catalogue refresh SHALL write a receipt with the agent, package digest,
 custody reference digest, start and completion times, outcome, model count,
@@ -148,3 +158,22 @@ but not started by the deadline SHALL become `failed: not_started`.
 - **WHEN** a Codex catalogue refresh fails
 - **THEN** the connection shows `failed:` with the reason
 - **AND** it never shows a pending state without a refresh in flight
+
+#### Scenario: retained enumeration is not never-run
+- **WHEN** an owner-scoped enumeration snapshot lists models but predates the
+  refresh receipt ledger
+- **THEN** the catalogue status is `fresh` or `stale` from the snapshot age,
+  never `never_run`
+
+#### Scenario: package catalogues do not inherit another agent's ids
+- **WHEN** Codex and Claude are both connected for one owner
+- **THEN** each model picker lists only its package's enumeration and
+  package-scoped verified or reviewed model ids
+
+#### Scenario: terminal credential refusal is structured
+- **WHEN** a package's declared terminal error field equals its declared auth
+  refusal code
+- **THEN** the pinned source shows a reconnect notice without trying a
+  different registered source
+- **AND** an unrelated error message containing `unauthorized` does not mark
+  the credential invalid

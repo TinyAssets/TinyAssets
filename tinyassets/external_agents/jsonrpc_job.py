@@ -221,13 +221,10 @@ class JsonRpcJob:
         elif method == events["done"]["method"]:
             event = events["done"]
             self.outcome.status = str(pointer(params, event["status"]) or "")
-            failure = pointer(params, "/turn/error")
-            if isinstance(failure, dict):
-                code = str(failure.get("code") or "").lower()
-                message = str(failure.get("message") or "").lower()
-                self.outcome.auth_rejected = any(marker in code or marker in message
-                    for marker in ("invalid_grant", "unauthorized", "not logged in",
-                                   "authentication required", "refresh token rejected"))
+            self.outcome.auth_rejected = (
+                "auth_error" in event
+                and pointer(params, event["auth_error"]) == event["auth_code"]
+            )
             if not self.outcome.messages and "items" in event:
                 items = pointer(params, event["items"])
                 if isinstance(items, list):

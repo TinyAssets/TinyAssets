@@ -127,11 +127,31 @@ def test_codex_terminal_auth_error_is_classified_without_leaking_its_message():
         start=time.monotonic(), turn_wait=5, tool_wait=5,
     )
     turn._dispatch({"method": "turn/completed", "params": {"turn": {
-        "status": "failed", "error": {"code": "invalid_grant", "message": "secret-value"},
+        "status": "failed", "error": {
+            "message": "secret-value", "codexErrorInfo": "unauthorized"},
     }}})
     assert turn.outcome.auth_rejected
     assert _job_failure_reason(ProviderAuthenticationError("fresh sign-in"), turn,
                                turn.outcome) == "auth_invalid"
+
+
+def test_codex_terminal_non_auth_error_does_not_mark_credential_invalid():
+    import time
+
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
+    from tinyassets.providers.base import ModelConfig
+
+    turn = JsonRpcJob(
+        SimpleNamespace(returncode=None), job=resolve("codex").row["job"],
+        agent="codex", tools=None, profile=ModelConfig().stream_timeout_profile(),
+        start=time.monotonic(), turn_wait=5, tool_wait=5,
+    )
+    turn._dispatch({"method": "turn/completed", "params": {"turn": {
+        "status": "failed", "error": {
+            "message": "Tool returned 401 unauthorized",
+            "codexErrorInfo": "other"},
+    }}})
+    assert not turn.outcome.auth_rejected
 
 
 def test_job_declaration_uses_the_one_agent_definition():

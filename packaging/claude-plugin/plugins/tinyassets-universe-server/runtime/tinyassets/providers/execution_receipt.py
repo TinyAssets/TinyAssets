@@ -182,7 +182,6 @@ def receipt_from_response(
     response: ProviderResponse,
     *,
     requested: ModelRef | None = None,
-    purpose: str = "reply",
 ) -> ExecutionReceipt:
     """Detach the completed call's evidence without inferring unknown usage as zero."""
     reported = _label(response.reported_model, 200)
