@@ -133,7 +133,7 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
         "note": "Drafted reserved uptime canary page.",
     }
     assert (
-        tmp_path / "wiki" / "drafts" / "notes" / "uptime-probe.md"
+        tmp_path / ".wiki" / "drafts" / "notes" / "uptime-probe.md"
     ).read_text(encoding="utf-8") == "real-transport-roundtrip"
 
     read = _post_mcp(

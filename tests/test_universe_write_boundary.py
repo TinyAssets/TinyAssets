@@ -249,7 +249,7 @@ class TestPrivateCanonRelay:
 
         assert out.get("status") != "relay_to_command_center", out
         commons_hits = list(
-            (universe_base / "wiki").rglob("shared-reference.md")
+            (universe_base / ".wiki").rglob("shared-reference.md")
         )
         assert commons_hits, out
         universe_hits = list(

@@ -107,9 +107,13 @@ def test_missing_admission_is_not_reported_as_a_missing_scope(monkeypatch, tmp_p
     assert "could not be created" in out["error"]
 
 
-def test_missing_create_scope_is_still_a_scope_error(signed_in, monkeypatch, tmp_path):
+def test_missing_create_scope_is_still_a_scope_error(monkeypatch, tmp_path):
+    from tests.test_first_contact import _login
+
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    signed_in("reader-1", ["read", "list"])
+    # Dev mode does not enforce scopes. WorkOS resolve-always does, and a
+    # token without the costly effect must not be told the home is missing.
+    _login("reader-1", caps=["read", "submit_request", "list"])
     out = json.loads(us.converse(message="Hello"))
     assert out.get("auth_scope_required") is True
     assert "home_unavailable" not in out
