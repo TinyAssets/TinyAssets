@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import sys
 
-import pytest
+try:
+    import pytest
+except ModuleNotFoundError:  # ci_required_tests reads targets() where pytest is absent
+    pytest = None
 
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
@@ -198,6 +201,8 @@ class GuardResults:
 
 
 def main() -> int:
+    if pytest is None:
+        raise RuntimeError("structural guards need pytest installed")
     results = GuardResults()
     code = pytest.main(["-q", "--tb=short", "--durations=10", *targets()], plugins=[results])
     return int(code) or int(bool(results.problems))
