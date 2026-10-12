@@ -39,6 +39,9 @@ def refusal_category(detail) -> str:
     """Classify upstream errors without carrying their text into a receipt."""
     message = (detail.get("message", "") if isinstance(detail, dict)
                else str(detail)).lower()
+    if any(word in message for word in ("temporarily unavailable", "capacity",
+                                        "high demand", "high-demand")):
+        return "transient_capacity"
     if (any(word in message for word in ("model not found", "unknown model",
                                           "model unavailable", "unsupported model"))
             or ("model" in message and any(word in message for word in (

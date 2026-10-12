@@ -116,10 +116,17 @@ def test_package_turn_has_native_receipt_and_no_subscription_call_price(tmp_path
     assert row == ("native_agent", "succeeded", "")
 
 
-def test_package_model_refusal_is_classified_and_remembered(tmp_path, monkeypatch):
+@pytest.mark.parametrize("message, category, marked", [
+    ("Unknown model gpt-5.6-sol", "model_unavailable", True),
+    ("Model gpt-5.6-sol is temporarily unavailable due to capacity",
+     "transient_capacity", False),
+])
+def test_package_model_refusal_is_classified_and_remembered(
+    tmp_path, monkeypatch, message, category, marked,
+):
     from tinyassets.exceptions import ExternalAgentUnavailable, ProviderError
     from tinyassets.external_agents import runner
-    from tinyassets.external_agents.jsonrpc_job import TurnOutcome
+    from tinyassets.external_agents.jsonrpc_job import TurnOutcome, refusal_category
     from tinyassets.external_agents.registry import resolve
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
@@ -149,7 +156,8 @@ def test_package_model_refusal_is_classified_and_remembered(tmp_path, monkeypatc
             self.outcome = TurnOutcome()
 
         async def run(self, **_kwargs):
-            raise ProviderError("external agent refused thread/start:model_unavailable")
+            raise ProviderError(
+                f"external agent refused thread/start:{refusal_category({'message': message})}")
 
     monkeypatch.setattr("tinyassets.external_agents.jsonrpc_job.JsonRpcJob", Job)
 
@@ -168,12 +176,15 @@ def test_package_model_refusal_is_classified_and_remembered(tmp_path, monkeypatc
             "codex", Launch(), custody, prompt="hello", system="system",
             config=ModelConfig(invocation_owner_user_id="owner",
                                native_model_id="gpt-5.6-sol")))
-    assert failure.value.reason == "job_failed:refused:thread/start:model_unavailable"
+    expected = (f"job_failed:refused:thread/start:{category}"
+                if marked else "job_failed:refused")
+    assert failure.value.reason == expected
     marks = active_refused_models(tmp_path, owner_user_id="owner")
-    assert [(mark.connection_id, mark.model_id) for mark in marks] == [
-        ("codex", "gpt-5.6-sol")]
-    assert refreshes == [{"base": tmp_path, "owner": "owner",
+    assert [(mark.connection_id, mark.model_id) for mark in marks] == (
+        [("codex", "gpt-5.6-sol")] if marked else [])
+    assert refreshes == ([{"base": tmp_path, "owner": "owner",
                           "universe_id": "u-owner", "provider": "codex"}]
+                         if marked else [])
 
 
 def test_package_refusal_category_never_carries_upstream_text():
@@ -181,6 +192,10 @@ def test_package_refusal_category_never_carries_upstream_text():
 
     assert refusal_category({"message": "Unknown model SECRET_TOKEN"}) == "model_unavailable"
     assert refusal_category({"message": "SECRET_TOKEN"}) == "unknown"
+    assert refusal_category({"message": "Model is temporarily unavailable"}) == (
+        "transient_capacity")
+    assert refusal_category({"message": "High demand for this model"}) == (
+        "transient_capacity")
 
 
 def test_package_rpc_refusal_names_phase_and_sanitized_category():
@@ -221,7 +236,7 @@ def test_package_rpc_refusal_names_phase_and_sanitized_category():
     assert str(failure.value) == "external agent refused thread/start:model_unavailable"
 
 
-def test_stale_package_rows_and_refused_models_are_not_pickable():
+def test_stale_source_and_refused_model_remain_pickable():
     from dataclasses import replace
 
     from tinyassets.providers.agent_model_plan import AgentModelPlan
@@ -237,30 +252,39 @@ def test_stale_package_rows_and_refused_models_are_not_pickable():
         Pricing,
     )
 
-    ref = ModelRef("codex", "gpt-5.6-sol")
-    listed = Model("gpt-5.6-sol", True, frozenset({"text"}),
+    ref = ModelRef("codex", "gpt-6-sol")
+    listed = Model("gpt-6-sol", True, frozenset({"text"}),
                    pricing=Pricing("fresh", unmetered=True),
                    availability_basis="executor_enumerated")
+    other = Model("gpt-6.1-sol", True, frozenset({"text"}),
+                  pricing=Pricing("fresh", unmetered=True),
+                  availability_basis="executor_enumerated")
     default = Model("", True, frozenset({"text"}),
                     pricing=Pricing("fresh", unmetered=True),
                     availability_basis="executor_default")
     catalog = Catalog("owner", "u-owner", (ConnectionModels(
         "codex", "native-subscription:codex", "subscription", "fresh", True, True,
-        (default, listed), default_model_id=""),))
+        (default, listed, other), default_model_id=""),))
     plan = AgentModelPlan(catalog, ModelPolicy(0, "automatic", ()),
                           Interaction(True, frozenset({"text"}), frozenset()),
                           refused_models=(ref,))
     document = model_options_document(
         catalog, plan, (Ineligible(ModelRef("codex", ""), "stale", scope="source"),))
     rows = {row["reference"]["model_id"]: row for row in document["options"]}
-    assert rows[""]["reasons"] == []
-    assert {reason["reason"] for reason in rows[ref.model_id]["reasons"]} == {
-        "stale", "recently_refused"}
+    assert all(row["in_candidate_catalog"] and row["reasons"] == []
+               for row in rows.values())
+    assert "recently_refused" in rows[ref.model_id]["labels"]
+    assert document["order"][-1] == {"provider_ref": "codex", "model_id": ref.model_id}
+    assert document["source_failures"] == [{
+        "provider_ref": "codex",
+        "reasons": [{"reason": "stale", "component": ""}],
+    }]
     retry = model_options_document(catalog, replace(plan, policy=ModelPolicy(
-        0, "explicit", (), current_selection=ref)), ())
+        0, "explicit", (), saved_default=ref)),
+        (Ineligible(ModelRef("codex", ""), "stale", scope="source"),))
     retried = next(row for row in retry["options"]
                    if row["reference"]["model_id"] == ref.model_id)
-    assert retried["reasons"] == []
+    assert retried["in_candidate_catalog"] and retried["reasons"] == []
 
 
 def test_job_stream_does_not_report_thread_configuration_as_answering_model():

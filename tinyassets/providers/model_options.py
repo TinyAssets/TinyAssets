@@ -29,9 +29,6 @@ def model_options_document(
         ModelRef(connection.connection_id, model.model_id)
         for connection in plan.catalog.connections for model in connection.models
     }
-    refused = (set(plan.refused_models) if plan.policy.mode == "automatic"
-               and plan.policy.current_selection is None
-               and plan.policy.saved_default is None else set())
     reasons: dict[ModelRef, list[dict[str, str]]] = {}
     source_reasons: dict[str, list[dict[str, str]]] = {}
     for item in (*rejected, *order.ineligible):
@@ -54,16 +51,11 @@ def model_options_document(
                     and "recent_sign_in_failure" not in labels):
                 labels.append("recent_sign_in_failure")
             row_reasons = list(reasons.get(ref, []))
-            if ref in refused:
-                row_reasons.append({"reason": "recently_refused", "component": ""})
             for reason in source_reasons.get(ref.connection_id, []):
                 # Refresh diagnostics belong on the source, not on independently
                 # admitted choices. Any row reason disables the desktop picker.
                 # A pending/failed catalogue must not revoke accepted access.
-                if (ref in admitted
-                        and not (model.availability_basis == "executor_enumerated"
-                                 and reason["reason"] == "stale")
-                        and reason["reason"] in {
+                if (ref in admitted and reason["reason"] in {
                             "native_catalogue_unavailable", "native_enumeration_unsupported",
                             "refreshing", "never_run", "stale",
                             "catalogue_refresh_unavailable",
