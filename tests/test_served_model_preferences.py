@@ -433,7 +433,7 @@ def test_refresh_selects_new_best_model_without_saved_policy_change(agent, monke
     assert ModelPreferenceStore(agent.served.rig.base).get("owner", "u-models").generation == 0
 
 
-def test_paid_new_best_model_uses_observed_price_ceiling(agent, monkeypatch):
+def test_paid_new_best_model_is_not_a_free_fallback(agent, monkeypatch):
     original = discovery_snapshot.read_http_discovery_document
     paid_id = "new-vendor/paid-model"
 
@@ -452,9 +452,7 @@ def test_paid_new_best_model_uses_observed_price_ceiling(agent, monkeypatch):
 
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", paid_model)
     assert _converse(agent, monkeypatch) == "finished exact answer"
-    assert all(wire[1]["body"]["model"] == paid_id for wire in agent.wires)
-    assert all(wire[1]["body"]["provider"]["max_price"]["prompt"] == "1"
-               for wire in agent.wires)
+    assert all(wire[1]["body"]["model"] == authority.MODEL for wire in agent.wires)
 
 
 @pytest.mark.parametrize("choice", [{}, {"version": 2}, {"owner_user_id": "other"}])

@@ -258,15 +258,10 @@ def test_fresh_model_must_fit_permitted_cost_and_capabilities(served, monkeypatc
     else:
         row["id"] = "another-model"
     monkeypatch.setattr(snapshots, "read_http_discovery_document", lambda **kwargs: {"data": [row]})
-    if change == "paid":
-        assert _call(served).text == "selected answer"
-        assert served.wire[0][1]["body"]["provider"]["max_price"]["prompt"] == "1"
-        assert auth._active_provider_request(served.capability)["invocations"] == 1
-    else:
-        with pytest.raises(ProviderAuthorityHeldError):
-            _call(served)
-        assert served.wire == []
-        assert auth._active_provider_request(served.capability)["invocations"] == 0
+    with pytest.raises(ProviderAuthorityHeldError):
+        _call(served)
+    assert served.wire == []
+    assert auth._active_provider_request(served.capability)["invocations"] == 0
 
 
 @pytest.mark.parametrize(
@@ -275,7 +270,7 @@ def test_fresh_model_must_fit_permitted_cost_and_capabilities(served, monkeypatc
         ({}, True),
         ({"input_cache_read": "0"}, True),
         ({"web_search": "0.01"}, False),
-        ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, True),
+        ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, False),
         ({"unknown_component": "0"}, False),
     ],
 )
@@ -287,8 +282,6 @@ def test_real_selected_dispatch_uses_optional_pricing(served, monkeypatch, extra
         response = _call(served)
         assert response.text == "selected answer"
         assert served.wire[0][1]["body"]["provider"]["max_price"]["request"] == "0"
-        if "overrides" in extra:
-            assert served.wire[0][1]["body"]["provider"]["max_price"]["prompt"] == "1"
         assert auth._active_provider_request(served.capability)["invocations"] == 1
     else:
         with pytest.raises(ProviderAuthorityHeldError):
@@ -625,15 +618,11 @@ def test_async_discovery_rechecks_changes_after_releasing_admission(
                         conn.execute(sql, ("u-models",))
                         conn.commit()
             release.set()
-            if change == "assignment":
-                assert (await task).text == "selected answer"
-                assert len(served.wire) == 1
-            else:
-                with pytest.raises(ProviderAuthorityHeldError):
-                    await task
-                assert served.wire == []
-                if change != "request":
-                    assert auth._active_provider_request(served.capability)["invocations"] == 0
+            with pytest.raises(ProviderAuthorityHeldError):
+                await task
+            assert served.wire == []
+            if change != "request":
+                assert auth._active_provider_request(served.capability)["invocations"] == 0
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)

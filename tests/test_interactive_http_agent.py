@@ -497,7 +497,7 @@ def test_over_cap_replacement_is_rejected_after_fresh_discovery(agent, monkeypat
         if len(agent.wires) >= 2 and "models/user" in kwargs["url"]:
             for model in value["data"]:
                 if model["id"] == alternate:
-                    model["pricing"]["prompt"] = "26"
+                    model["pricing"]["prompt"] = "0.001"
         return value
 
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", withdrawn)

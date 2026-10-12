@@ -1153,9 +1153,24 @@ def _served_request_agent(base_path, universe, request_carrier, role, operation)
     return capability, agent
 
 
-def _selected_chain(store, base_path, universe, capability, agent, selection):
-    """Read the selected owner's live custody, independent of saved assignment."""
+def accepted_connected_model_access(assignment, owner, provider):
+    """Read the owner's accepted scope and cost authority from the assignment."""
     from tinyassets.provider_assignment_manifest import ModelAccess
+
+    if assignment is None or assignment.owner_user_id != owner or assignment.state != "ready":
+        raise PermissionError("connected model access is unavailable")
+    if assignment.manifest_digest:
+        member = next((item for item in assignment.candidates if item.provider == provider), None)
+        if member is not None:
+            return member.access
+    elif assignment.provider == provider and provider in _SERVED_PROVIDER_SERVICE:
+        # A legacy native binding accepted only its provider default.
+        return ModelAccess("explicit", ("",))
+    raise PermissionError("model source is outside accepted access")
+
+
+def _selected_chain(store, base_path, universe, capability, agent, selection):
+    """Read the selected owner's live custody and accepted model access."""
     from tinyassets.provider_serving_binding import current_connected_source_custody
     from tinyassets.providers.model_policy import ModelRef
 
@@ -1167,19 +1182,19 @@ def _selected_chain(store, base_path, universe, capability, agent, selection):
             conn, base=Path(base_path), universe=universe,
             owner=capability.principal_id, provider=selection.connection_id,
         )
+        assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
+        access = accepted_connected_model_access(
+            assignment, capability.principal_id, selection.connection_id,
+        )
         conn.rollback()
     if selection.connection_id.startswith("api_key_http:"):
         from tinyassets.providers.discovery_snapshot import refresh_model_discovery
-        from tinyassets.providers.work_model_selection import observed_price_caps
 
-        snapshot = refresh_model_discovery(
+        refresh_model_discovery(
             owner_user_id=capability.principal_id, universe_id=universe.name,
             definition_id=selection.connection_id.removeprefix("api_key_http:"),
         )
-        caps = observed_price_caps(snapshot)
-    else:
-        caps = None
-    return selection.connection_id, custody, ModelAccess("discovered", cost_caps=caps)
+    return selection.connection_id, custody, access
 
 
 def check_served_agent_tool_authority(universe_context) -> str:

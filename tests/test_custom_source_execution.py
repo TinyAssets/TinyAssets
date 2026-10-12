@@ -193,17 +193,13 @@ def test_unknown_capacity_scope_on_a_spending_source_continues_within_its_ceilin
     assert all(b == billed[0] for b in billed)
 
 
-def test_published_source_price_is_carried_as_a_strict_ceiling(running):
+def test_published_source_does_not_authorize_paid_model(running):
     wire = json.loads(running.source.catalogue_json)
     wire["inventory"]["items"][0]["tariff"]["output"] = 10
     running.source.catalogue_json = json.dumps(wire)
-    running.source.refresh()
-    assert interactive.run(running.agent) == "finished exact answer"
-    assert running.agent.wires
-    for _, request in running.agent.wires:
-        billing = request["body"]["billing"]
-        assert billing["enforce"] == {"strict": True}
-        assert int(billing["ceilings"]["1"]) > 0
+    with pytest.raises(ProviderAuthorityHeldError):
+        interactive.run(running.agent)
+    assert not running.agent.wires
 
 
 def test_selection_uses_captured_quantities_and_rechecks_publication(rig, source):

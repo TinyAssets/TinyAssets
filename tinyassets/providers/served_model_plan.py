@@ -14,6 +14,7 @@ from tinyassets.custom_agents import get_binding
 from tinyassets.exceptions import ProviderError
 from tinyassets.provider_assignment import (
     _served_request_agent,
+    accepted_connected_model_access,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
 )
@@ -471,8 +472,6 @@ def prepare_owned_model_plan(
             assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
             from types import SimpleNamespace
 
-            from tinyassets.provider_assignment_manifest import ModelAccess
-
             chains, rejected = [], []
             for provider in sorted(connected_sources(base, universe, owner, conn=conn)):
                 try:
@@ -483,8 +482,14 @@ def prepare_owned_model_plan(
                     rejected.append(Ineligible(ModelRef(provider, ""), "source_revoked",
                                                scope="source"))
                 else:
+                    try:
+                        access = accepted_connected_model_access(assignment, owner, provider)
+                    except PermissionError:
+                        rejected.append(Ineligible(ModelRef(provider, ""), "source_not_accepted",
+                                                   scope="source"))
+                        continue
                     member = SimpleNamespace(
-                        provider=provider, access=ModelAccess(model_scope="discovered"),
+                        provider=provider, access=access,
                         credential_reference_id=custody.reference_id,
                         credential_reference_generation=custody.generation,
                         credential_reference_digest=custody.reference_digest,
@@ -586,12 +591,6 @@ def prepare_owned_model_plan(
                 # authority, pricing or the agent's contract excludes execution.
                 all_models.append(snapshot.models)
                 snapshots.append(snapshot)
-                member.access = ModelAccess(
-                    model_scope="discovered",
-                    cost_caps=tuple(
-                        (name, 25_000_000) for name in sorted(snapshot.contract().price_components)
-                    ),
-                )
                 snapshot, filtered, required, caps, denied = _http_models(
                     owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
                 )
