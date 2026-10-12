@@ -227,6 +227,7 @@ def test_challenge_path_exempts_only_the_app_route():
     assert mw._auth_challenge_path("/app/callback") is True  # not the served path
     assert mw._auth_challenge_path("/app/token/x") is True  # exact-match only, no prefix bypass
     assert mw._auth_challenge_path("/.well-known/oauth-protected-resource") is False
+    assert mw._auth_challenge_path("/.well-known/oauth-protected-resource/mcp") is False
 
 
 def test_app_api_subtree_is_challenged_after_the_apex_move():
@@ -337,6 +338,7 @@ def test_the_connector_family_verdicts_are_untouched_by_the_move():
         "/mcp/pulse": True,
         "/mcp/.well-known/oauth-protected-resource": False,
         "/.well-known/oauth-protected-resource": False,
+        "/.well-known/oauth-protected-resource/mcp": False,
         "/": False,
         "/not-mcp": False,
         "/catalog": False,

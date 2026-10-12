@@ -122,6 +122,13 @@ def starlette_discovery_routes() -> list[Any]:
             methods=["GET"],
         ),
         Route(
+            # RFC 9728 path insertion. A resource of
+            # https://tinyassets.io/mcp is fetched here, not under /mcp.
+            "/.well-known/oauth-protected-resource/mcp",
+            _handle_protected_resource_metadata,
+            methods=["GET"],
+        ),
+        Route(
             "/mcp/.well-known/oauth-protected-resource",
             _handle_protected_resource_metadata,
             methods=["GET"],

@@ -9,7 +9,10 @@
 //     404 handler → "Session terminated" in Claude.ai (the 2026-04-19 P0).
 //
 // Fix:
-//   This Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`.
+//   This Worker runs on routes `tinyassets.io/mcp*`, `tinyassets.io/app*`,
+//   and the apex OAuth discovery documents
+//   `/.well-known/oauth-protected-resource*` and
+//   `/.well-known/oauth-authorization-server*`.
 //   Requests to `/mcp` (the connector endpoint) and `/app` (the web app) are
 //   forwarded to the internal tunnel origin at `mcp.tinyassets.io`,
 //   authenticated via Cloudflare Access service-token headers. The broad
@@ -279,6 +282,13 @@ function shouldProxy(pathname) {
     // to be `tinyassets.io/app*` and cannot be an exact `tinyassets.io/app`.
     if (pathname === '/mcp' || pathname.startsWith('/mcp/')) return true;
     if (pathname === '/app' || pathname.startsWith('/app/')) return true;
+    // Apex OAuth discovery. RFC 9728 inserts the resource path, so
+    // https://tinyassets.io/mcp is fetched at
+    // /.well-known/oauth-protected-resource/mcp. These are exact pathnames:
+    // /.well-known/openai-apps-challenge stays on the website origin.
+    if (pathname === '/.well-known/oauth-protected-resource') return true;
+    if (pathname === '/.well-known/oauth-protected-resource/mcp') return true;
+    if (pathname === '/.well-known/oauth-authorization-server') return true;
     return false;
 }
 

@@ -92,6 +92,21 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/assets/logo.png'), false);
     });
 
+    // RFC 9728 inserts the resource path. https://tinyassets.io/mcp is fetched
+    // at the apex, which the /mcp* route never matches.
+    it('accepts the apex OAuth discovery documents', () => {
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server'), true);
+    });
+
+    it('does not proxy other well-known paths or a longer discovery suffix', () => {
+        assert.equal(shouldProxy('/.well-known/openai-apps-challenge'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp/extra'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource-extra'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/extra'), false);
+    });
+
     // The app moved from /mcp/app to the apex /app on 2026-09-30. The Worker is
     // the only thing standing between that path and the website origin, so the
     // binding is load-bearing: without these the app URL 404s from GitHub Pages.

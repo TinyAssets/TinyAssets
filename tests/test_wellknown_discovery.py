@@ -58,6 +58,7 @@ def test_prm_workos_without_resource_falls_back_to_base(monkeypatch):
 def test_discovery_routes_include_prm_paths():
     paths = {r.path for r in starlette_discovery_routes()}
     assert "/.well-known/oauth-protected-resource" in paths
+    assert "/.well-known/oauth-protected-resource/mcp" in paths
     assert "/mcp/.well-known/oauth-protected-resource" in paths
     assert "/.well-known/oauth-authorization-server" in paths
     # /mcp-prefixed AS metadata too — prod routes only /mcp*, so the apex path
@@ -135,6 +136,7 @@ def test_prm_routes_served_200(monkeypatch):
     client = TestClient(app)
     for path in (
         "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
         "/mcp/.well-known/oauth-protected-resource",
     ):
         resp = client.get(path)

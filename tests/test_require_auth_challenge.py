@@ -252,6 +252,8 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/mcp/pulse/extra", True),
         ("/mcp/.well-known/oauth-protected-resource", False),
         ("/.well-known/oauth-protected-resource", False),
+        ("/.well-known/oauth-protected-resource/mcp", False),
+        ("/.well-known/oauth-authorization-server", False),
         ("/not-mcp", False),
         ("/", False),
         # The retired path (moved to the apex /app on 2026-09-30) keeps no

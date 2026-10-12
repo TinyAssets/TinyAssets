@@ -527,6 +527,7 @@ def _inbound_hooks_enabled() -> bool:
 #: a pattern.
 _DISCOVERY_PATHS = frozenset({
     "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
     "/mcp/.well-known/oauth-protected-resource",
     "/.well-known/oauth-authorization-server",
     "/mcp/.well-known/oauth-authorization-server",

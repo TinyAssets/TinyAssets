@@ -56,6 +56,15 @@ compatibility_flags = []
 #                       take the site's paths away. Do not narrow this route
 #                       without re-proving the callback URLs.
 #
+# OAuth discovery documents are not under /mcp or /app. RFC 9728 path
+# insertion for resource https://tinyassets.io/mcp is
+# /.well-known/oauth-protected-resource/mcp. A Cloudflare route matches the
+# entire URL including the query string, so these bindings are suffix
+# wildcards of the document name: an exact path would miss the same URL
+# with a query. They stop at that name so /.well-known/openai-apps-challenge
+# stays on the website origin. worker.js shouldProxy accepts only the three
+# exact pathnames; any other suffix this binding delivers is a 404 here.
+#
 # Cloudflare route syntax uses `*` as a match-any wildcard (zero or more of ANY
 # character -- it does not respect path-segment or label boundaries).
 # Zone name must match the Cloudflare zone that owns tinyassets.io.
@@ -63,6 +72,8 @@ compatibility_flags = []
 routes = [
     { pattern = "tinyassets.io/mcp*", zone_name = "tinyassets.io" },
     { pattern = "tinyassets.io/app*", zone_name = "tinyassets.io" },
+    { pattern = "tinyassets.io/.well-known/oauth-protected-resource*", zone_name = "tinyassets.io" },
+    { pattern = "tinyassets.io/.well-known/oauth-authorization-server*", zone_name = "tinyassets.io" },
 ]
 
 # Observability — enable request logs so post-P0 debugging has a trail.
