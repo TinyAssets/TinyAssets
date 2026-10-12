@@ -333,14 +333,24 @@ def test_invalid_membership_changes_nothing(scene, invalid):
     assert _root(scene) is None
 
 
-def test_manifest_without_model_discovery_cannot_enable_serving(scene):
+def test_manifest_without_model_discovery_cannot_enable_serving(scene, monkeypatch):
     from tinyassets.daemon_server import set_founder_home
+    from tinyassets.providers.discovery_http import ModelDiscoveryUnavailable
 
     set_founder_home(
         scene[0], founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
     )
     result = _publish(scene)
     before = _root(scene)
+    attempted = []
+
+    def unavailable(*, definition_id, **_kwargs):
+        attempted.append(definition_id)
+        raise ModelDiscoveryUnavailable("discovery_unavailable")
+
+    monkeypatch.setattr(
+        "tinyassets.providers.discovery_snapshot.refresh_model_discovery", unavailable,
+    )
     with pytest.raises(PermissionError, match="no eligible model"):
         set_serving(
             base_path=scene[0],
@@ -351,6 +361,9 @@ def test_manifest_without_model_discovery_cannot_enable_serving(scene):
             expected_revision=result["agent_binding"]["revision"],
             enabled=True,
         )
+    # The second manifest member has no live model-use source. A saved explicit
+    # model in that manifest cannot replace discovery of the connected source.
+    assert attempted == [scene[3].id]
     assert _root(scene) == before
     assert get_binding(
         scene[0], universe_id="u-owner", binding_id=scene[5]["agent_binding_id"],
