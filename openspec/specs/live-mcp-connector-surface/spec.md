@@ -25,6 +25,17 @@ Each prompt SHALL return its registered behavioral guide and SHALL expose its fu
 - **THEN** the server responds with a valid MCP `serverInfo` + `protocolVersion` and returns a non-empty advertised tool list
 - **AND** the response is delivered as either JSON or an SSE `event: message` frame, both of which are valid Streamable-HTTP responses
 
+#### Scenario: A sessionless SSE probe does not fail tool discovery
+
+- **WHEN** an authenticated client GETs `/mcp` with `Accept` including `text/event-stream` and no `Mcp-Session-Id`, which is the probe a streamable-HTTP client sends before `initialize`
+- **THEN** the server returns HTTP 405 Method Not Allowed, with `Allow` including `POST`, and does not return HTTP 400 "Missing session ID"
+- **AND** the same bearer can then `initialize`, send `notifications/initialized`, and `tools/list`, and the list is the canonical handle set
+
+#### Scenario: The trailing-slash URL is the same endpoint
+
+- **WHEN** an authenticated client POSTs `initialize` to `/mcp/`
+- **THEN** the server handles that request as `/mcp` and does not answer with a redirect
+
 #### Scenario: Prompt listing returns the exact catalog
 - **WHEN** an MCP client lists prompts on the live server
 - **THEN** the response contains the four names, titles, and tag sets above with no additional registered prompt

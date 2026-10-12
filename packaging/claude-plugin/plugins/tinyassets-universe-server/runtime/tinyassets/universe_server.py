@@ -3783,6 +3783,42 @@ def _is_mcp_transport_request(request) -> bool:  # type: ignore[no-untyped-def]
     return "text/event-stream" in accept
 
 
+def _collapse_canonical_mcp_slash(scope: dict) -> dict:
+    """Treat ``/mcp/`` as ``/mcp`` without an HTTP redirect.
+
+    Starlette's slash redirect is a 307 whose ``Location`` is built from the
+    Host the tunnel presents (``mcp.tinyassets.io``). A client that follows it
+    leaves ``https://tinyassets.io`` and many drop ``Authorization`` on the
+    way, so the bearer that just finished AuthKit never reaches ``initialize``.
+    The protected resource is one URL; the trailing slash is not a second one.
+    """
+    if scope.get("path") != "/mcp/":
+        return scope
+    scope = dict(scope)
+    scope["path"] = "/mcp"
+    raw_path = scope.get("raw_path")
+    if isinstance(raw_path, (bytes, bytearray)) and raw_path.endswith(b"/"):
+        scope["raw_path"] = bytes(raw_path[:-1])
+    return scope
+
+
+def _sessionless_sse_probe(request) -> bool:  # type: ignore[no-untyped-def]
+    """True for a transport GET that has no session yet.
+
+    The streamable-HTTP spec says a server that will not open a
+    server-to-client stream for this request MUST answer 405 Method Not
+    Allowed, and the client then continues with POST ``initialize``. The
+    pinned SDK instead allocates a session and answers 400 "Missing session
+    ID". Clients that probe with GET immediately after OAuth treat that 400
+    as a failed tool discovery and never send ``tools/list``.
+    """
+    if request.method.upper() != "GET":
+        return False
+    if (request.headers.get("mcp-session-id") or "").strip():
+        return False
+    return _is_mcp_transport_request(request)
+
+
 def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
     accept = request.headers.get("accept", "").lower()
     return "text/html" in accept
@@ -3792,7 +3828,10 @@ class _MCPDiscoveryMiddleware:
     """Serve discovery output on non-transport canonical /mcp GETs.
 
     Browser-like clients receive HTML. Default curl and JSON probes receive
-    compact JSON. FastMCP transport traffic passes through unchanged.
+    compact JSON. FastMCP transport traffic passes through unchanged, except
+    a sessionless SSE probe, which is answered 405 here so it never becomes
+    a "Missing session ID" 400, and ``/mcp/``, which is the same route as
+    ``/mcp`` with no redirect.
     """
 
     def __init__(self, app):  # type: ignore[no-untyped-def]
@@ -3809,14 +3848,34 @@ class _MCPDiscoveryMiddleware:
         if path not in {"/mcp", "/mcp/"}:
             await self.app(scope, receive, send)
             return
+        scope = _collapse_canonical_mcp_slash(scope)
         # Build a Request-like view to inspect headers
         from starlette.requests import Request
+        from starlette.responses import HTMLResponse, JSONResponse
 
         request = Request(scope, receive=receive)
+        if _sessionless_sse_probe(request):
+            # 405, not 400. Allow lists the methods the endpoint actually
+            # serves; POST is the one the client must use to initialize.
+            # no-store: a cached 405 on GET /mcp would skip the 401 that
+            # starts OAuth for a client that has no bearer yet.
+            response = JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "server-error",
+                    "error": {"code": -32600, "message": "Method Not Allowed"},
+                },
+                status_code=405,
+                headers={
+                    "Allow": "GET, POST, DELETE",
+                    "Cache-Control": "no-store",
+                },
+            )
+            await response(scope, receive, send)
+            return
         if _is_mcp_transport_request(request):
             await self.app(scope, receive, send)
             return
-        from starlette.responses import HTMLResponse, JSONResponse
 
         if _wants_discovery_html(request):
             response = HTMLResponse(_MCP_DISCOVERY_HTML)
