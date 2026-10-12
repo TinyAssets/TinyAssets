@@ -2653,4 +2653,3 @@ class TestTrayMode:
         text = pyw.read_text(encoding="utf-8")
         assert '"--tunnel"' not in text
 
-
