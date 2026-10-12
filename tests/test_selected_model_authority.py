@@ -258,10 +258,15 @@ def test_fresh_model_must_fit_permitted_cost_and_capabilities(served, monkeypatc
     else:
         row["id"] = "another-model"
     monkeypatch.setattr(snapshots, "read_http_discovery_document", lambda **kwargs: {"data": [row]})
-    with pytest.raises(ProviderAuthorityHeldError):
-        _call(served)
-    assert served.wire == []
-    assert auth._active_provider_request(served.capability)["invocations"] == 0
+    if change == "paid":
+        assert _call(served).text == "selected answer"
+        assert served.wire[0][1]["body"]["provider"]["max_price"]["prompt"] == "1"
+        assert auth._active_provider_request(served.capability)["invocations"] == 1
+    else:
+        with pytest.raises(ProviderAuthorityHeldError):
+            _call(served)
+        assert served.wire == []
+        assert auth._active_provider_request(served.capability)["invocations"] == 0
 
 
 @pytest.mark.parametrize(
@@ -270,7 +275,7 @@ def test_fresh_model_must_fit_permitted_cost_and_capabilities(served, monkeypatc
         ({}, True),
         ({"input_cache_read": "0"}, True),
         ({"web_search": "0.01"}, False),
-        ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, False),
+        ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, True),
         ({"unknown_component": "0"}, False),
     ],
 )
@@ -282,6 +287,8 @@ def test_real_selected_dispatch_uses_optional_pricing(served, monkeypatch, extra
         response = _call(served)
         assert response.text == "selected answer"
         assert served.wire[0][1]["body"]["provider"]["max_price"]["request"] == "0"
+        if "overrides" in extra:
+            assert served.wire[0][1]["body"]["provider"]["max_price"]["prompt"] == "1"
         assert auth._active_provider_request(served.capability)["invocations"] == 1
     else:
         with pytest.raises(ProviderAuthorityHeldError):
@@ -303,10 +310,10 @@ def test_model_context_limit_refuses_without_truncation_or_launch(served):
     assert served.wire == []
 
 
-def test_absent_selection_keeps_v2_legacy_execution_hold(served):
-    with pytest.raises(ProviderAuthorityHeldError):
-        _call(served, context=replace(served.context, model_selection=None))
-    assert served.wire == []
+def test_absent_selection_uses_connected_model(served):
+    context = replace(served.context, model_selection=None)
+    assert _call(served, context=context).text == "selected answer"
+    assert served.wire[0][1]["body"]["model"] == MODEL
 
 
 @pytest.mark.parametrize(
@@ -395,7 +402,7 @@ def test_explicit_universe_allowlist_still_narrows_selected_authority(served, al
     assert served.wire == []
 
 
-def test_revoked_primary_does_not_prevent_independent_accepted_member(served, monkeypatch):
+def test_revoked_primary_does_not_prevent_independent_connected_source(served, monkeypatch):
     from tests.test_model_discovery_capability import DESCRIPTOR
     from tinyassets.providers.definition import register_definition
 
@@ -486,9 +493,7 @@ def test_revoked_primary_does_not_prevent_independent_accepted_member(served, mo
         row = conn.execute(
             "SELECT binding_id, state FROM served_provider_budget_reservations"
         ).fetchone()
-    assignment = load_provider_assignment(rig.base, universe_id="u-models")
-    member = next(m for m in assignment.candidates if m.provider == response.provider)
-    assert tuple(row) == (member.binding_id, "succeeded")
+    assert row[0].startswith("connected_") and row[1] == "succeeded"
 
 
 def test_without_selected_authority_router_discards_configuration_override(tmp_path):
@@ -531,12 +536,16 @@ def test_request_revocation_refuses_before_discovery(served, reader):
 def blocked_discovery(served, reader, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     calls = []
+    catalogue_reads = 0
 
     def read(**kwargs):
+        nonlocal catalogue_reads
         calls.append(kwargs)
         if "models/user" in kwargs["url"]:
-            entered.set()
-            assert release.wait(5), "test failed to release discovery"
+            catalogue_reads += 1
+            if catalogue_reads == 2:
+                entered.set()
+                assert release.wait(5), "test failed to release discovery"
         return reader[1](**kwargs)
 
     monkeypatch.setattr(snapshots, "read_http_discovery_document", read)
@@ -614,11 +623,15 @@ def test_async_discovery_rechecks_changes_after_releasing_admission(
                         conn.execute(sql, ("u-models",))
                         conn.commit()
             release.set()
-            with pytest.raises(ProviderAuthorityHeldError):
-                await task
-            assert served.wire == []
-            if change != "request":
-                assert auth._active_provider_request(served.capability)["invocations"] == 0
+            if change == "assignment":
+                assert (await task).text == "selected answer"
+                assert len(served.wire) == 1
+            else:
+                with pytest.raises(ProviderAuthorityHeldError):
+                    await task
+                assert served.wire == []
+                if change != "request":
+                    assert auth._active_provider_request(served.capability)["invocations"] == 0
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)
@@ -642,12 +655,12 @@ def test_cancelled_router_does_not_launch_or_duplicate_discovery(served, blocked
             assert auth._active_provider_request(served.capability)["invocations"] == 0
             second = asyncio.create_task(_async_call(served))
             await asyncio.sleep(0)
-            assert not second.done() and len(calls) == 1
+            assert not second.done() and len([c for c in calls if "models/user" in c["url"]]) == 3
             release.set()
             await asyncio.wait_for(second, 5)
             assert len(served.wire) == 1
             assert auth._active_provider_request(served.capability)["invocations"] == 1
-            assert len([c for c in calls if "models/user" in c["url"]]) == 1
+            assert len([c for c in calls if "models/user" in c["url"]]) == 4
             assert not snapshots._INFLIGHT
         finally:
             release.set()

@@ -193,13 +193,17 @@ def test_unknown_capacity_scope_on_a_spending_source_continues_within_its_ceilin
     assert all(b == billed[0] for b in billed)
 
 
-def test_published_source_does_not_authorize_paid_model(running):
+def test_published_source_price_is_carried_as_a_strict_ceiling(running):
     wire = json.loads(running.source.catalogue_json)
     wire["inventory"]["items"][0]["tariff"]["output"] = 10
     running.source.catalogue_json = json.dumps(wire)
-    with pytest.raises(ProviderAuthorityHeldError):
-        interactive.run(running.agent)
-    assert not running.agent.wires
+    running.source.refresh()
+    assert interactive.run(running.agent) == "finished exact answer"
+    assert running.agent.wires
+    for _, request in running.agent.wires:
+        billing = request["body"]["billing"]
+        assert billing["enforce"] == {"strict": True}
+        assert int(billing["ceilings"]["1"]) > 0
 
 
 def test_selection_uses_captured_quantities_and_rechecks_publication(rig, source):
@@ -270,6 +274,6 @@ def test_revoked_source_is_revalidated_before_tool_dispatch(running):
     running.response.before_reply = lambda: running.agent.served.rig.ledger.revoke_grant(
         "grant-models",
     )
-    with pytest.raises(PermissionError, match="^open provider connection authority unavailable$"):
+    with pytest.raises(PermissionError, match="not connected for this owner"):
         interactive.run(running.agent)
     assert len(running.agent.wires) == 1 and not running.agent.tools

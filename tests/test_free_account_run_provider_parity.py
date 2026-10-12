@@ -969,7 +969,6 @@ def test_an_emptied_catalogue_names_the_eligibility_gap_not_a_missing_provider(
     carry; the owner was previously told to connect the provider they had.
     """
     from tinyassets.providers.owner_binding import CONNECT_PROVIDER_MESSAGE
-    from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     authenticate_request(A_OWNER)
     _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
@@ -978,7 +977,7 @@ def test_an_emptied_catalogue_names_the_eligibility_gap_not_a_missing_provider(
     record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
 
     assert record["status"] == "failed"
-    assert NO_ELIGIBLE_MODEL in record["error"], record["error"]
+    assert "no eligible work model remains" in record["error"], record["error"]
     assert CONNECT_PROVIDER_MESSAGE not in record["error"]
     assert wires[A_OWNER].requests == []
 
@@ -1115,7 +1114,7 @@ def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
         tmp_path, universe_id=A_HOME, principal_id=A_OWNER,
         provider_call=lambda *args, **kwargs: "",
     )
-    session._capture_choices()
+    session._capture_choices((provider,))
     order = session._work_candidates
     assert order is not None, "a run with nothing saved built no model order"
     assert order.automatic is True
@@ -1123,18 +1122,10 @@ def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
     assert {ref.connection_id for ref in order.order} == {provider}
 
 
-def test_a_legacy_assignment_without_a_manifest_keeps_its_existing_path(
+def test_a_legacy_assignment_without_a_manifest_uses_connected_source_order(
     tmp_path, monkeypatch, authenticate_request,
 ):
-    """Always returning a document must not change a legacy universe.
-
-    `prepare_owned_model_plan` reports no plan for a no-manifest assignment, and
-    `prepare_captured_choices` passes that through as no captured choices -- so
-    the pre-existing single-provider path is still what a legacy universe takes.
-    Seeded through the real legacy route (`model_access=None`), not by editing a
-    stored row: a hand-blanked `manifest_digest` is refused as an invalid
-    assignment digest, which would prove nothing about this branch.
-    """
+    """A legacy assignment is a preference over the same connected source set."""
     from tests.test_run_provider_session import _seed_serving_assignment
     from tinyassets.daemon_server import initialize_author_server, set_founder_home
     from tinyassets.foreground_run_provider import captured_work_preference
@@ -1155,6 +1146,9 @@ def test_a_legacy_assignment_without_a_manifest_keeps_its_existing_path(
     )
     assert document is not None and document["saved"] is None
 
-    assert prepare_captured_choices(
+    choices = prepare_captured_choices(
         Path(tmp_path), owner=A_OWNER, universe=A_HOME, document=document,
-    ) is None
+        sources=("codex",),
+    )
+    assert choices is not None and choices.automatic
+    assert all(ref.connection_id == "codex" for ref in choices.order)

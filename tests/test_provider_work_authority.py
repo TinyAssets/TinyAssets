@@ -409,5 +409,3 @@ def test_store_rejects_each_coherent_identity_or_scope_transfer(
                 ProviderWorkBindingFence(binding),
                 forged,
             )
-
-

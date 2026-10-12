@@ -1138,7 +1138,10 @@ def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     from tinyassets.providers.base import UniverseContext
 
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-stream")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-stream",
+        admitted_sources=frozenset({provider}),
+    )
     carrier.provider = provider
     carrier.role = role
     carrier.operation = "run_graph"

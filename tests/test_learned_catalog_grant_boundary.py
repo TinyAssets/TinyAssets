@@ -1,23 +1,4 @@
-"""A learned model id is a candidate to GRANT, never an admitted one.
-
-Written before the fix, on the lead's instruction, because the first version of
-this change asserted the property from the ABSENCE of a call to
-``accepted_native_selection`` instead of from the artefact. Codex refuted it: the
-native path did ``catalog = filtered = _native_models(...)`` and handed the same
-object to ``admitted``, so a contributed id arrived with
-``in_candidate_catalog=true``, the dropdown treated it as usable, selection
-succeeded, and only EXECUTION rejected it. Selectable choices that fail is the
-"looks real, isn't" failure Hard Rule 8 exists to prevent.
-
-So this asserts the document a client actually reads, on both sides of the grant:
-
-* contributed, not granted -> ``in_candidate_catalog`` false AND a reason saying
-  why, so the dropdown files it under "Needs access" rather than offering it;
-* granted -> admitted, selectable, and a turn really runs on it.
-
-The second half is what makes the first half worth having. A store that only ever
-refused would pass a negative assertion and be useless.
-"""
+"""Learned model ids remain visible without becoming connected execution choices."""
 
 from __future__ import annotations
 
@@ -110,7 +91,7 @@ def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(config
         "and it must say WHY it is not selectable, or the dropdown cannot file it "
         "under 'Needs access' and the owner is left guessing")
     reasons = {reason["reason"] for reason in row["reasons"]}
-    assert "model_access_optin_required" in reasons, reasons
+    assert "never_run" in reasons, reasons
     # It must not reach the routing order either: an unusable id in the fallback
     # chain is a turn that fails later for no reason the user can see.
     assert all(item["model_id"] != LEARNED_ID for item in document["order"])
@@ -119,18 +100,13 @@ def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(config
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
-def test_granting_access_makes_a_listed_id_selectable_and_runnable(
+def test_binding_manifest_cannot_grant_a_listed_id(
         configured, monkeypatch):
-    """The other half: after the grant it is a real choice, and a turn runs on it.
-
-    This is the founder's actual ask -- "i cant seem to select fable" -- so the
-    test has to end with a turn that ran, not with a flag.
-    """
+    """A saved binding manifest cannot turn public model history into authority."""
     _learn(monkeypatch, configured)
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    # The one-tap grant the access sheet offers, as its payload: add the learned id
-    # to this universe's accepted model access for that source.
+    # A legacy binding manifest once granted this id. It is preference data now.
     granted = custom_agents(
         action="bind_serving_provider", universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
@@ -144,9 +120,8 @@ def test_granting_access_makes_a_listed_id_selectable_and_runnable(
     assert granted["status"] == "ready"
     document = _document(configured, granted["agent_binding"])
     row = _row(document, LEARNED_ID)
-    assert row is not None and row["in_candidate_catalog"] is True, (
-        "once the owner grants access to a learned id it must become a real choice")
-    assert row["reasons"] == [], row["reasons"]
+    assert row is not None and row["in_candidate_catalog"] is False
+    assert {reason["reason"] for reason in row["reasons"]} == {"never_run"}
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
@@ -337,10 +312,8 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
         "and must say it is THEIR history, not that two other owners verified it")
     # Still a candidate, not an admitted one: their access may have narrowed since.
     assert row["in_candidate_catalog"] is False
-    assert {reason["reason"] for reason in row["reasons"]} == {"model_access_optin_required"}
+    assert {reason["reason"] for reason in row["reasons"]} == {"never_run"}
     # It is on no shared list: a typed id is personal forever.
     from tinyassets.providers.public_model_lists import read_list
 
     assert SOLO_ID not in read_list("subscription")
-
-

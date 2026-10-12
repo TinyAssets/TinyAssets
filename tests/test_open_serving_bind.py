@@ -34,8 +34,12 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     universe_dir.mkdir()
 
     from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import set_founder_home
     from tinyassets.providers.definition import register_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+    set_founder_home(tmp_path, founder_sub="owner-1", universe_id="u-owner",
+                     platform_generated=True)
 
     ledger = ConnectionLedger(
         tmp_path / ".broker" / "outbound.db", data_root=tmp_path,

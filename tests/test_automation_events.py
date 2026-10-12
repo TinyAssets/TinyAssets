@@ -8,9 +8,9 @@ each match stores a ``once`` wake, which the real consumer pump fires.
 Driven through the real emitters: a real run row taken terminal by the real
 status writer, a real pending request answered through the connector's own
 ``answer_request``, the real ``register_automation``, the real store and the
-real consumer. The only substitute is ``_execute``, the seam
-``tinyassets.automations`` names for tests -- it fakes the graph a wake runs,
-never the event, the scheduling or the checks.
+real consumer. The graph executor is substituted; the shared-home co-admin
+cases also supply Carol's connected source at the source-list boundary.
+Neither substitute changes event emission, scheduling, or owner matching.
 """
 
 from __future__ import annotations
@@ -87,6 +87,21 @@ def home(tmp_path: Path, monkeypatch) -> Path:
 def _as(actor: str | None):
     return identity_context(
         None if actor is None else Identity(user_id=actor, username=actor)
+    )
+
+
+def _allow_carol_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply co-admin readiness while Alice keeps her real source custody."""
+    from tinyassets.providers import served_model_plan
+
+    actual = served_model_plan.connected_sources
+    monkeypatch.setattr(
+        served_model_plan,
+        "connected_sources",
+        lambda base, universe, owner, **kw: (
+            frozenset({"codex"}) if owner == "acct_carol"
+            else actual(base, universe, owner, **kw)
+        ),
     )
 
 
@@ -259,11 +274,12 @@ def test_another_users_run_in_the_owners_universe_wakes_nothing(home: Path) -> N
 
 
 def test_a_co_admin_sharing_the_home_wakes_only_their_own_subscriptions(
-    home: Path,
+    home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Carol is an admin whose home is also Alice's universe. Her run must not
     spend Alice's subscription, and her own subscription is hers to wake."""
     carol = "acct_carol"
+    _allow_carol_source(monkeypatch)
     _seed_owner(home, owner=carol)
     _seed_branch(home, branch_def_id="branch_carols", author=carol,
                  visibility="private")
@@ -278,12 +294,13 @@ def test_a_co_admin_sharing_the_home_wakes_only_their_own_subscriptions(
 
 
 def test_a_recovered_run_wakes_only_its_own_owner_not_a_co_admin(
-    home: Path,
+    home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex refute 2026-09-28, P1: Alice and Carol share a home, each following
     A. Alice's background run is recovered at boot with nobody bound; only
     Alice's subscription wakes."""
     carol = "acct_carol"
+    _allow_carol_source(monkeypatch)
     _seed_owner(home, owner=carol)
     _seed_branch(home, branch_def_id="branch_carols", author=carol,
                  visibility="private")

@@ -268,9 +268,12 @@ def test_a_revoked_source_refuses_the_saved_choice_rather_than_substituting(
     _observe_sessions(monkeypatch)
     branch, connection = _seed(tmp_path, monkeypatch, authenticate_request)
     _save_preference(tmp_path, connection)
+    from tinyassets.storage.outbound_connections import ConnectionLedger
 
-    result, _provider, captured = _run(tmp_path, monkeypatch, authenticate_request, branch,
-                                       authority_case="revoked")
+    ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
+    ledger.revoke_grant("http_grant_" + "a" * 32)
+
+    result, _provider, captured = _run(tmp_path, monkeypatch, authenticate_request, branch)
 
     assert result["terminal_status"] == "failed"
     assert work_agent.wires == []

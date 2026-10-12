@@ -8,6 +8,7 @@ def reconnect_owned_binding(base: Path, *, uid: str, owner: str) -> dict:
     from tinyassets.custom_agents import reconnect_binding_candidates_in_transaction
     from tinyassets.onboarding.serving import _require_current_admin
     from tinyassets.provider_assignment import load_provider_assignment_in_transaction
+    from tinyassets.providers.connection_lifecycle import intentionally_disconnected
     from tinyassets.shared_self import require_founder_home
     from tinyassets.storage.current_home import check_current_home
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
@@ -19,7 +20,7 @@ def reconnect_owned_binding(base: Path, *, uid: str, owner: str) -> dict:
         check_current_home(conn, owner, uid)
         assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
         if (assignment is None or assignment.owner_user_id != owner
-                or assignment.state != "unassigned"):
+                or not intentionally_disconnected(base, owner=owner, uid=uid)):
             raise PermissionError("explicit_disconnection_required")
         bindings = reconnect_binding_candidates_in_transaction(conn, universe_id=uid,
             owner=owner, provider_ref=assignment.binding_id)

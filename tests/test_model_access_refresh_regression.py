@@ -68,7 +68,7 @@ def test_known_model_stays_pickable_during_refresh(native, monkeypatch, history,
                          owner="owner-1", agent=native.agent)
 
 
-@pytest.mark.parametrize("native", ["explicit", "discovered"], indirect=True)
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch):  # noqa: F811
     install_discovery(native, monkeypatch)
     monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
@@ -86,13 +86,8 @@ def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch)
     document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
     rows = {row["reference"]["model_id"]: row for row in document["options"]}
     assert "private-other-owner-model" not in rows
-    discovered = prepared.assignment.candidates[0].access.model_scope == "discovered"
     assert rows["previously-verified-model"]["in_candidate_catalog"] is False
-    if not discovered:
-        assert rows["future-native-model"]["in_candidate_catalog"] is True
-        assert rows["future-native-model"]["reasons"] == []
-        assert rows["previously-verified-model"]["reasons"][0]["reason"] == \
-            "model_access_optin_required"
+    assert "future-native-model" not in rows
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)

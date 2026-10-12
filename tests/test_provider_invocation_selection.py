@@ -158,5 +158,3 @@ def test_connected_selection_has_no_assignment_or_binding_authority():
     assert ProviderInvocationSelection.from_dict(chosen.to_dict()) == chosen
     with pytest.raises(ValueError, match="assignment authority"):
         replace(chosen, binding_digest=DIGEST)
-
-

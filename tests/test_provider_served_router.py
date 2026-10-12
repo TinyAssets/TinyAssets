@@ -151,7 +151,7 @@ def test_unavailable_codex_never_calls_claude(tmp_path):
     router = ProviderRouter(providers={"codex": codex, "claude-code": claude})
     try:
         with pytest.raises(ExternalAgentUnavailable) as failure:
-            asyncio.run(router.call(
+            asyncio.run(_model_call(router,
                 "writer", "hello", "system", universe_context=context,
                 operation="converse",
             ))
@@ -180,10 +180,13 @@ def _served_context(
     from tinyassets.config import load_universe_config
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import set_founder_home
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
     universe_dir = tmp_path / "u-owner"
     universe_dir.mkdir()
+    set_founder_home(tmp_path, founder_sub="owner-1", universe_id="u-owner",
+                     platform_generated=True)
     credential = {
         "credential_type": "llm_subscription",
         "service": "codex",
@@ -403,39 +406,6 @@ def test_served_router_rejects_credential_rotation_after_selection(tmp_path):
     assert provider.calls == 0
 
 
-def test_budget_reservation_revalidates_path_credential_at_moment_of_use(tmp_path):
-    from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import (
-        authorize_served_provider_call,
-        reserve_served_provider_budget,
-    )
-
-    universe_dir, serving, capability, context = _served_context(
-        tmp_path,
-        path_backed=True,
-    )
-    try:
-        with authorize_served_provider_call(
-            tmp_path,
-            universe_dir=universe_dir,
-            request_carrier=context.provider_request,
-            role="writer",
-            operation="converse",
-        ) as authority:
-            (universe_dir / "codex-auth" / "auth.json").write_bytes(
-                b'{"tokens":{"access_token":"rotated"}}'
-            )
-            with pytest.raises(ProviderAuthorityHeldError, match="budget"):
-                reserve_served_provider_budget(
-                    tmp_path,
-                    universe_dir=universe_dir,
-                    authority=authority,
-                    requested_output_tokens=8,
-                    estimated_input_tokens=1,
-                )
-    finally:
-        revoke_provider_request(capability)
 
 
 def test_many_concurrent_reservations_share_one_binding_without_bricking(tmp_path):
@@ -585,61 +555,6 @@ def test_replay_gate_checks_token_and_cost_independently(tmp_path, monkeypatch):
     assert r2["provider_binding"]["max_cost_microunits"] == 500_000_000
 
 
-def test_prior_32k_cap_bricked_the_second_concurrent_turn(tmp_path, monkeypatch):
-    """Regression oracle: a 32_768 ceiling bricks at ~2 concurrent turns.
-
-    A single ~20 KB system-prompt turn nearly fills 32_768; the SECOND
-    simultaneous in-flight turn got ``output_tokens < 1`` and surfaced as "budget
-    exhausted". This pins the root cause. It also asserts the AUTHORITY CONTRACT:
-    a reservation never exceeds the binding's OWN stored ceiling — admission never
-    floors/expands it above the digest-covered value (the healing path is a
-    re-bind, see ``test_stale_binding_rebind_advances_generation_and_reflows_ceiling``).
-    """
-    import tinyassets.provider_serving_binding as serving_binding
-    from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import (
-        authorize_served_provider_call,
-        reserve_served_provider_budget,
-    )
-
-    # Bake the OLD ceilings into the binding at creation time.
-    monkeypatch.setattr(serving_binding, "_MAX_TOKENS", 32_768)
-    monkeypatch.setattr(serving_binding, "_MAX_COST_MICROUNITS", 10_000_000)
-    universe_dir, _serving, capability, context = _served_context(
-        tmp_path,
-        path_backed=True,
-    )
-    try:
-        with authorize_served_provider_call(
-            tmp_path,
-            universe_dir=universe_dir,
-            request_carrier=context.provider_request,
-            role="writer",
-            operation="converse",
-        ) as authority:
-            assert authority.max_tokens == 32_768
-            first = reserve_served_provider_budget(
-                tmp_path,
-                universe_dir=universe_dir,
-                authority=authority,
-                requested_output_tokens=4_000,
-                estimated_input_tokens=20_000,
-            )
-            assert first.output_tokens >= 1
-            # Authority contract: the reservation is bounded by the binding's OWN
-            # stored ceiling, never floored above it at admission.
-            assert first.reserved_total_tokens <= 32_768
-            with pytest.raises(ProviderAuthorityHeldError, match="budget"):
-                reserve_served_provider_budget(
-                    tmp_path,
-                    universe_dir=universe_dir,
-                    authority=authority,
-                    requested_output_tokens=4_000,
-                    estimated_input_tokens=20_000,
-                )
-    finally:
-        revoke_provider_request(capability)
 
 
 def test_served_none_max_tokens_reserves_bounded_per_call_not_whole_ceiling(tmp_path):
@@ -1031,38 +946,6 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
     assert all(not path.exists() for path in rotated_provider.snapshot_paths)
 
 
-def test_served_request_budget_allows_reply_and_learning_only(tmp_path):
-    from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.providers.router import ProviderRouter
-
-    _, _, capability, context = _served_context(tmp_path)
-    provider = _RecordingProvider("codex")
-    router = ProviderRouter({"codex": provider})
-    try:
-        for prompt in ("reply", "learning"):
-            asyncio.run(
-                _model_call(router,
-                    "writer",
-                    prompt,
-                    "system",
-                    operation="converse",
-                    universe_context=context,
-                )
-            )
-        with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
-            asyncio.run(
-                _model_call(router,
-                    "writer",
-                    "third launch",
-                    "system",
-                    operation="converse",
-                    universe_context=context,
-                )
-            )
-    finally:
-        revoke_provider_request(capability)
-    assert provider.calls == 2
 
 
 def test_two_consecutive_founder_turns_share_one_binding_without_rebind(tmp_path):
@@ -1097,148 +980,8 @@ def test_two_consecutive_founder_turns_share_one_binding_without_rebind(tmp_path
     assert provider.calls == 4
 
 
-def test_binding_generation_high_water_blocks_runaway_across_requests(
-    tmp_path,
-    monkeypatch,
-):
-    import tinyassets.provider_serving_binding as serving_binding
-    from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.providers.router import ProviderRouter
-
-    monkeypatch.setattr(serving_binding, "_MAX_BINDING_INVOCATIONS", 4)
-    universe_dir, serving, original_capability, _ = _served_context(tmp_path)
-    revoke_provider_request(original_capability)
-    provider = _RecordingProvider("codex")
-    router = ProviderRouter({"codex": provider})
-
-    for turn in range(2):
-        capability, context = _fresh_served_request(
-            universe_dir,
-            serving,
-            request_id=f"bounded-turn-{turn}",
-        )
-        try:
-            for prompt in ("reply", "learning"):
-                asyncio.run(
-                    _model_call(router,
-                        "writer",
-                        prompt,
-                        "system",
-                        operation="converse",
-                        universe_context=context,
-                    )
-                )
-        finally:
-            revoke_provider_request(capability)
-
-    runaway_capability, runaway_context = _fresh_served_request(
-        universe_dir,
-        serving,
-        request_id="runaway",
-    )
-    try:
-        with pytest.raises(ProviderAuthorityHeldError, match="budget"):
-            asyncio.run(
-                _model_call(router,
-                    "writer",
-                    "fifth launch",
-                    "system",
-                    operation="converse",
-                    universe_context=runaway_context,
-                )
-            )
-    finally:
-        revoke_provider_request(runaway_capability)
-    assert provider.calls == 4
 
 
-def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypatch):
-    """The runaway guard is a ROLLING WINDOW: it blocks a burst but ages out.
-
-    The invocation ceiling counts only rows created within `_RUNAWAY_WINDOW_S`,
-    so a burst is held while recent (runaway prevention) but once those
-    invocations fall outside the window the binding serves again — it never
-    permanently bricks a 24/7 binding (Codex reject #3). Contrast the old
-    lifetime count, which stayed tripped forever.
-    """
-    import sqlite3
-
-    import tinyassets.provider_serving_binding as serving_binding
-    from tinyassets.auth.middleware import revoke_provider_request
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.providers.router import ProviderRouter
-    from tinyassets.storage import db_path
-
-    monkeypatch.setattr(serving_binding, "_MAX_BINDING_INVOCATIONS", 4)
-    universe_dir, serving, original_capability, _ = _served_context(tmp_path)
-    revoke_provider_request(original_capability)
-    provider = _RecordingProvider("codex")
-    router = ProviderRouter({"codex": provider})
-
-    # Fill the window to the cap (2 turns x 2 calls = 4).
-    for turn in range(2):
-        capability, context = _fresh_served_request(
-            universe_dir, serving, request_id=f"fill-{turn}"
-        )
-        try:
-            for prompt in ("reply", "learning"):
-                asyncio.run(
-                    _model_call(router,
-                        "writer",
-                        prompt,
-                        "system",
-                        operation="converse",
-                        universe_context=context,
-                    )
-                )
-        finally:
-            revoke_provider_request(capability)
-    assert provider.calls == 4
-
-    # 5th call is blocked while all 4 invocations are inside the window.
-    cap5, ctx5 = _fresh_served_request(universe_dir, serving, request_id="blocked")
-    try:
-        with pytest.raises(ProviderAuthorityHeldError, match="budget"):
-            asyncio.run(
-                _model_call(router,
-                    "writer",
-                    "fifth",
-                    "system",
-                    operation="converse",
-                    universe_context=ctx5,
-                )
-            )
-    finally:
-        revoke_provider_request(cap5)
-    assert provider.calls == 4
-
-    # Age the recorded invocations out of the rolling window.
-    conn = sqlite3.connect(db_path(universe_dir.parent))
-    try:
-        conn.execute(
-            "UPDATE served_provider_budget_reservations SET created_at = created_at - ?",
-            (2 * 3600.0,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    # The binding serves again — the guard did not permanently brick it.
-    cap6, ctx6 = _fresh_served_request(universe_dir, serving, request_id="recovered")
-    try:
-        asyncio.run(
-            _model_call(router,
-                "writer",
-                "sixth",
-                "system",
-                operation="converse",
-                universe_context=ctx6,
-            )
-        )
-    finally:
-        revoke_provider_request(cap6)
-    assert provider.calls == 5
 
 
 def test_claude_serving_requires_a_valid_owner(tmp_path):

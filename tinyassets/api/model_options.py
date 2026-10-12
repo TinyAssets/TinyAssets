@@ -19,7 +19,6 @@ from tinyassets.provider_serving_binding import (
     _PROVIDER_SERVICE,
     ServingProviderHeld,
     _canonical_universe,
-    _current_serving_authority,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.definition import list_definitions
@@ -42,6 +41,7 @@ from tinyassets.providers.served_model_plan import (
     _assert_plan_snapshot,
     _http_models,
     _native_models,
+    connected_sources,
     prepare_owned_model_plan,
 )
 from tinyassets.storage.current_home import CurrentHomeChanged, check_current_home
@@ -137,15 +137,11 @@ def _collect(base, owner, uid):
             if assignment is not None and assignment.owner_user_id != owner:
                 raise PermissionError("model catalogue assignment unavailable")
             native = _native_inventory(conn, universe, owner)
-            legacy = None
+            live_sources = connected_sources(base, universe, owner, conn=conn)
+            legacy_provider = None
             if agent is not None and assignment is not None and not assignment.manifest_digest:
-                try:
-                    legacy = _current_serving_authority(
-                        conn, store=store, universe_dir=universe, base_path=base,
-                        owner_user_id=owner, universe_id=uid, agent=agent,
-                    )
-                except PermissionError:
-                    pass
+                if assignment.provider in live_sources:
+                    legacy_provider = assignment.provider
     binding_state = ("serving" if agent else "no_serving_binding" if not bindings
                      else "ambiguous_serving_binding")
     accepted = {} if assignment is None else {
@@ -167,6 +163,7 @@ def _collect(base, owner, uid):
         Interaction(True, frozenset({"text"}), frozenset()), captured[1],
     ))
     models = list(prepared.catalog.connections) if prepared else []
+    planned_sources = {item.connection_id for item in models}
     rejected = list(prepared.ineligible) if prepared else []
     snapshots = {item.provider: item for item in prepared.snapshots} if prepared else {}
     sources = {}
@@ -177,8 +174,8 @@ def _collect(base, owner, uid):
         provider = "api_key_http:" + item.id
         sources[provider] = {"provider_ref": provider, "bind_key": item.id,
                              "access_method": "api_key_http",
-                             "accepted": provider in accepted, "reasons": []}
-        if prepared is not None and provider in accepted:
+                             "accepted": provider in live_sources, "reasons": []}
+        if provider in planned_sources:
             continue
         try:
             snapshot = refresh_model_discovery(
@@ -201,8 +198,8 @@ def _collect(base, owner, uid):
         sources[provider] = {"provider_ref": provider, "bind_key": provider,
                              "access_method": "subscription_cli",
                              "enumeration": _native_enumeration(provider),
-                             "accepted": provider in accepted, "reasons": []}
-        if prepared is not None and provider in accepted:
+                             "accepted": provider in live_sources, "reasons": []}
+        if provider in planned_sources:
             continue
         try:
             model = _native_models(base, universe, owner, SimpleNamespace(
@@ -217,7 +214,7 @@ def _collect(base, owner, uid):
                                           else "source_revoked", scope="source"))
                 continue
             models.append(model)
-            if legacy is not None and legacy[0].provider == provider and (
+            if legacy_provider == provider and (
                 preferences.policy is None or preferences.policy.mode == "automatic"
             ):
                 # The LEGACY plan gets only what the owner actually granted. A
@@ -250,7 +247,7 @@ def _collect(base, owner, uid):
         sources.setdefault(provider, {"provider_ref": provider,
                                       "access_method": None,
                                       "bind_key": provider.removeprefix("api_key_http:"),
-                                      "accepted": True, "reasons": []})
+                                      "accepted": provider in live_sources, "reasons": []})
     failed = {}
     with provider_assignment_admission().shared(universe):
         current_bindings = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
@@ -271,15 +268,9 @@ def _collect(base, owner, uid):
                 for item in prepared.catalog.connections:
                     if item.connection_id not in retained:
                         failed[item.connection_id] = "source_revoked"
-            if legacy is not None:
-                try:
-                    if _current_serving_authority(
-                        conn, store=store, universe_dir=universe, base_path=base,
-                        owner_user_id=owner, universe_id=uid, agent=agent,
-                    ) != legacy:
-                        failed[legacy[0].provider] = "source_revoked"
-                except PermissionError:
-                    failed[legacy[0].provider] = "source_revoked"
+            if (legacy_provider is not None and legacy_provider not in
+                    connected_sources(base, universe, owner, conn=conn)):
+                failed[legacy_provider] = "source_revoked"
             current_native = _native_inventory(conn, universe, owner)
             for provider, custody in native.items():
                 if provider not in current_native or current_native[provider] != custody:
@@ -320,8 +311,8 @@ def _collect(base, owner, uid):
                              else list(snapshot.warnings)),
             })
     legacy_source = None
-    if legacy is not None and legacy[0].provider not in failed:
-        provider = legacy[0].provider
+    if legacy_provider is not None and legacy_provider not in failed:
+        provider = legacy_provider
         source = sources.get(provider)
         configured_model = ""
         if provider.startswith("api_key_http:"):
@@ -344,7 +335,7 @@ def _collect(base, owner, uid):
         },
         "choice_authority": ("accepted_manifest" if assignment and assignment.manifest_digest
                              else "legacy_single_provider"
-                             if legacy and legacy[0].provider not in failed else "none"),
+                             if legacy_provider and legacy_provider not in failed else "none"),
         "accepted_model_access": {provider.removeprefix("api_key_http:"): access.document()
                                   for provider, access in accepted.items()},
         "sources": list(sources.values()),

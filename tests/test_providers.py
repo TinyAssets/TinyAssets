@@ -205,7 +205,10 @@ class TestProviderRouterCall:
         max_cost_microunits: int = 1,
     ):
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner", universe_id=_UDIR.name)
+        carrier._receipt = MagicMock(
+            principal_id="owner", universe_id=_UDIR.name,
+            admitted_sources=frozenset({provider}),
+        )
         carrier.provider = provider
         carrier.role = role
         carrier.operation = operation
@@ -764,7 +767,10 @@ class TestCarrierSettlementWithUnknownUsage:
     @staticmethod
     def _settling_carrier():
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner", universe_id=_UDIR.name)
+        carrier._receipt = MagicMock(
+            principal_id="owner", universe_id=_UDIR.name,
+            admitted_sources=frozenset({"codex"}),
+        )
         carrier.provider = "codex"
         carrier.role = "writer"
         carrier.operation = "run_graph"

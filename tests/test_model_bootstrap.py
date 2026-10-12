@@ -90,7 +90,9 @@ def test_disconnect_then_guided_reconnect_requires_fresh_approval(rig):
     assert fresh["status"] == "confirmation_required"
     assert fresh["request_id"] != first["request_id"]
     assert fresh["request"]["action"]["expected_revision"] == previous["revision"]
-    assert fresh["request"]["action"]["previous_membership"] == {}
+    assert list(fresh["request"]["action"]["previous_membership"].values()) == [
+        {"model_scope": "discovered", "model_ids": [], "cost_caps": None},
+    ]
     assert get_binding(rig, universe_id="u-owner",
                        binding_id=previous["agent_binding_id"]) == previous
     with pytest.raises(PermissionError, match="model connection changed"):

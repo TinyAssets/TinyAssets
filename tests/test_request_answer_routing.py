@@ -797,7 +797,7 @@ def test_answer_wakes_the_asking_agent_with_the_owners_provider_authority(world,
     from tinyassets.providers.owner_binding import require_owner_bound_context
 
     home, agent = world
-    connect_owner_provider(home, OWNER)
+    connect_owner_provider(home, OWNER, monkeypatch)
     row = ask(home, agent)
     turns = []
 
@@ -825,7 +825,7 @@ def test_a_failed_delivery_turn_keeps_the_answer_for_redelivery(world, monkeypat
     from tinyassets.exceptions import PlatformLLMCallRefusedError
 
     home, agent = world
-    connect_owner_provider(home, OWNER)
+    connect_owner_provider(home, OWNER, monkeypatch)
     row = ask(home, agent)
     answer_request(universe_id=home.name, payload={
         "request_id": row["request_id"], "values": {"reply": "Decline"}})

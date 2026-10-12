@@ -297,10 +297,15 @@ def test_served_http_cancellation_holds_slot_and_budget_until_request_finishes(
     from tests.test_run_provider_session import _seed_open_serving_assignment
     from tinyassets.auth import middleware as auth
     from tinyassets.custom_agents import list_bindings
+    from tinyassets.daemon_server import set_founder_home
     from tinyassets.providers import router as routing
     from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
+    set_founder_home(
+        tmp_path, founder_sub="owner-1", universe_id="u-owner",
+        platform_generated=True,
+    )
     _seed_open_serving_assignment(
         tmp_path,
         monkeypatch,

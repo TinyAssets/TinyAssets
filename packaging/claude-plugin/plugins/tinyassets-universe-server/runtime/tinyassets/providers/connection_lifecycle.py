@@ -131,7 +131,6 @@ def unfinished_disconnections(base, *, owner, uid):
 
 def intentionally_disconnected(base, *, owner, uid):
     """No credential IO. A deliberate completed model removal is not failed auth."""
-    from tinyassets.provider_assignment import load_provider_assignment_in_transaction
     from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
@@ -141,9 +140,6 @@ def intentionally_disconnected(base, *, owner, uid):
         ).fetchone():
             return False
         conn.execute("BEGIN")
-        assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
-        if assignment and (assignment.owner_user_id != owner or assignment.state != "unassigned"):
-            return False
         rows = conn.execute(
             "SELECT connection_id,destination FROM connection_disconnections WHERE "
             "universe_id=? AND owner_user_id=? AND model_source=1 AND completed=1",

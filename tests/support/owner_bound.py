@@ -24,7 +24,10 @@ from tinyassets.providers.model_policy import ModelRef
 
 def owner_carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-owner-bound")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-owner-bound",
+        admitted_sources=frozenset({provider}),
+    )
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation

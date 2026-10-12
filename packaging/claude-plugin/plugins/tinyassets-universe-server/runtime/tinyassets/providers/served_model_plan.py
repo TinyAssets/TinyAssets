@@ -490,10 +490,6 @@ def prepare_owned_model_plan(
     all_models, admitted, snapshots, source_policies = [], [], [], []
     interaction = Interaction(needs_tools, frozenset({"text"}), frozenset())
     ranking_sources = set()
-    from tinyassets.provider_authority import current as current_authority
-
-    config = current_authority(universe, config)
-    allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
         member = chain[0]
         try:
@@ -614,15 +610,11 @@ def prepare_owned_model_plan(
             continue
         if provider in _PROVIDER_SERVICE:
             all_models.append(catalog)
-        if allowed is not None and provider not in allowed:
-            rejected.extend(Ineligible(ModelRef(provider, m.model_id), "provider_not_allowed")
-                            for m in catalog.models)
-        else:
-            admitted.append(filtered)
-            source_policies.append(SourceModelPolicy(
-                provider, required,
-                None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
-            ))
+        admitted.append(filtered)
+        source_policies.append(SourceModelPolicy(
+            provider, required,
+            None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
+        ))
     from tinyassets.providers.default_model_evidence import cooling_sources, with_request_capacity
 
     admitted = [with_request_capacity(base, owner, universe, c) for c in admitted]

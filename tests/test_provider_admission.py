@@ -433,7 +433,10 @@ class TestTheBoundBindsBehaviourally:
 
         # Hard Rule 15: a real dispatch needs an owner's authority.
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner", universe_id="u-admission")
+        carrier._receipt = MagicMock(
+            principal_id="owner", universe_id="u-admission",
+            admitted_sources=frozenset({"codex"}),
+        )
         carrier.provider = "codex"
         carrier.role = "judge"
         carrier.operation = "run_graph"

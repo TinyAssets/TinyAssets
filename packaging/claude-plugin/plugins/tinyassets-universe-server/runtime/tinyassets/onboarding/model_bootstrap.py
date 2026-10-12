@@ -91,10 +91,12 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
             if pending is not None:
                 return pending
         assignment = load_provider_assignment(base, universe_id=uid)
-        reconnecting = (assignment is not None and assignment.state == "unassigned"
-                        and assignment.owner_user_id == owner)
+        reconnecting = (assignment is not None and assignment.owner_user_id == owner
+                        and state == "disconnected")
         if assignment is not None and not reconnecting:
             raise HostedAuthError("model_connection_requires_recovery", 409)
+        reconnect_binding = (reconnect_owned_binding(base, uid=uid, owner=owner)
+                             if reconnecting else None)
         if key is None:
             key = _resume_key(base, universe=universe, uid=uid, owner=owner,
                               destination=destination)
@@ -108,7 +110,7 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
     # stores. Do not hold the gesture lock while calling its first-binding helper.
     did = prepare_candidate(base=base, uid=uid, owner=owner,
                             grant_id=provisioned["grant_id"], preset=preset)
-    binding = (reconnect_owned_binding(base, uid=uid, owner=owner) if reconnecting
+    binding = (reconnect_binding if reconnect_binding is not None
                else ensure_bootstrap_binding(base, uid=uid, owner=owner))
     require_founder_home(base, uid, owner)
     # The existing public binding action accepts the registered definition id;

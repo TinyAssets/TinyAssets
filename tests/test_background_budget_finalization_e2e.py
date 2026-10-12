@@ -73,6 +73,7 @@ def _seed_branch_version(tmp_path: Path, *, policy=None, agent=False):
 def _seed_serving_assignment(tmp_path: Path, *, model_access=None, services=("codex",)) -> None:
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import set_founder_home
     from tinyassets.provider_serving_binding import (
         bind_serving_provider,
         list_serving_universes,
@@ -81,6 +82,8 @@ def _seed_serving_assignment(tmp_path: Path, *, model_access=None, services=("co
 
     universe_dir = tmp_path / "universe_alice"
     universe_dir.mkdir(exist_ok=True)
+    set_founder_home(tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
+                     platform_generated=True)
     write_credential_vault(
         universe_dir,
         [

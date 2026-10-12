@@ -116,7 +116,7 @@ def test_mixed_native_catalogue_keeps_independent_http_choices(
     assert catalogue.native.calls == 0
 
 
-def test_registered_but_unaccepted_models_are_visible_and_not_authorized(catalogue):
+def test_newly_connected_source_is_selectable_without_assignment_rewrite(catalogue):
     catalogue.binding = integration.enable(catalogue)
     extra = definition.register_definition(
         universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
@@ -124,10 +124,10 @@ def test_registered_but_unaccepted_models_are_visible_and_not_authorized(catalog
     )
     result = read()
     source = next(row for row in result["sources"] if row["bind_key"] == extra.id)
-    assert source["accepted"] is False and "source_not_accepted" in source["reasons"]
+    assert source["accepted"] is True and "source_not_accepted" not in source["reasons"]
     row = next(row for row in result["options"]
                if row["reference"]["provider_ref"] == "api_key_http:" + extra.id)
-    assert not row["in_candidate_catalog"] and row["order_index"] is None
+    assert row["in_candidate_catalog"]
     assert extra.id not in result["accepted_model_access"]
 
 

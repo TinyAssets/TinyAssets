@@ -26,11 +26,14 @@ def _grant_admin(tmp_path, owner="owner-1", uid="u-owner"):
 
 def _seed(tmp_path, service="codex", owner="owner-1", uid="u-owner", admin=True):
     from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import set_founder_home
 
     udir = tmp_path / uid
     udir.mkdir(exist_ok=True)
     if admin:
         _grant_admin(tmp_path, owner, uid)
+    set_founder_home(tmp_path, founder_sub=owner, universe_id=uid,
+                     platform_generated=True)
     cred = (
         {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="}
         if service == "codex"
@@ -455,6 +458,12 @@ def test_a_name_that_is_no_provider_here_reads_as_unknown(tmp_path, monkeypatch)
 
 
 def test_claude_serving_uses_the_owned_deposit(tmp_path, monkeypatch):
+    from tinyassets.providers.router import ProviderRouter
+
+    monkeypatch.setattr(
+        "tinyassets.providers.call.get_provider_router",
+        lambda: ProviderRouter({"claude-code": SimpleNamespace(is_available=lambda: True)}),
+    )
     udir = _seed(tmp_path, service="claude")
     out = sv.ensure_founder_serving(
         base_path=tmp_path,
