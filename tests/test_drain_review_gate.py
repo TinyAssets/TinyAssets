@@ -1261,6 +1261,124 @@ def test_cli_accepts_a_diff_receipt_with_the_workflow_key(tmp_path: Path) -> Non
     assert denied.returncode == 2 and denied.stdout.strip() == "deny", denied
 
 
+def _rebase_without_changing_the_diff(pr_repo: _Repo) -> tuple[str, str, str]:
+    reviewed = pr_repo.git("rev-parse", "pr")
+    pr_repo.git("checkout", "-q", "main")
+    pr_repo.commit({"c.txt": b"new on main\n"}, "main moves")
+    pr_repo.git("checkout", "-q", "pr")
+    pr_repo.git("rebase", "-q", "main")
+    return reviewed, pr_repo.git("rev-parse", "HEAD"), pr_repo.key()
+
+
+def _blocking_on_repo(
+    pr_repo: _Repo,
+    tmp_path: Path,
+    *,
+    reviewed: str,
+    head: str,
+    key: str,
+    base: str = "main",
+) -> subprocess.CompletedProcess[str]:
+    body_path = tmp_path / "body.md"
+    comments_path = tmp_path / "comments.ndjson"
+    body_path.write_text(_receipt_body(head=reviewed), encoding="utf-8")
+    comments_path.write_text(
+        json.dumps(
+            {"url": ARTIFACT_URL, "association": "OWNER", "body": _attestation(reviewed)}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            sys.executable, str(SCRIPT), "--blocking-review",
+            "--head", head, "--base", base, "--diff-key", key,
+            "--body-file", str(body_path),
+            "--review-repo", REPO, "--review-pr", str(PR),
+            "--review-comments-file", str(comments_path),
+        ],
+        cwd=pr_repo.root, capture_output=True, text=True,
+    )
+
+
+def test_a_head_receipt_carries_across_an_unchanged_rebase(pr_repo: _Repo, tmp_path: Path) -> None:
+    """A conflict-free rebase keeps the receipt. A real edit needs a new one."""
+    reviewed, new_head, key = _rebase_without_changing_the_diff(pr_repo)
+    assert reviewed != new_head
+    body_path = tmp_path / "body.md"
+    comments_path = tmp_path / "comments.ndjson"
+    body_path.write_text(_receipt_body(head=reviewed), encoding="utf-8")
+    comments_path.write_text(
+        json.dumps(
+            {"url": ARTIFACT_URL, "association": "OWNER", "body": _attestation(reviewed)}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    listed = subprocess.run(
+        [
+            sys.executable, str(SCRIPT), "--list-carry-heads",
+            "--head", new_head, "--body-file", str(body_path),
+            "--review-comments-file", str(comments_path),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert listed.stdout.strip() == reviewed
+    carried = _blocking_on_repo(
+        pr_repo, tmp_path, reviewed=reviewed, head=new_head, key=key
+    )
+    assert carried.returncode == 0, carried.stderr
+    assert carried.stdout.strip() == "allow"
+
+    pr_repo.commit({"a.txt": b"a changed for real\n"}, "real edit")
+    edited = pr_repo.git("rev-parse", "HEAD")
+    edited_key = pr_repo.key()
+    assert edited_key != key
+    changed = _blocking_on_repo(
+        pr_repo, tmp_path, reviewed=reviewed, head=edited, key=edited_key
+    )
+    assert changed.returncode == 2
+    assert changed.stdout.strip() == "deny"
+
+    # No base: an old head is a different head, even when the diff would match.
+    bare = subprocess.run(
+        [
+            sys.executable, str(SCRIPT), "--head", new_head,
+            "--diff-key", key, "--body-file", str(body_path),
+        ],
+        cwd=pr_repo.root, capture_output=True, text=True, check=False,
+    )
+    assert bare.returncode == 2
+    assert bare.stdout.strip() == "deny"
+
+
+def test_a_missing_reviewed_commit_does_not_carry(pr_repo: _Repo, tmp_path: Path) -> None:
+    head = pr_repo.git("rev-parse", "pr")
+    ghost = "f" * 40
+    denied = _blocking_on_repo(
+        pr_repo, tmp_path, reviewed=ghost, head=head, key=pr_repo.key()
+    )
+    assert denied.returncode == 2
+    assert denied.stdout.strip() == "deny"
+
+
+def test_a_catchup_that_changes_the_merged_bytes_needs_a_new_receipt(
+    pr_repo: _Repo, tmp_path: Path
+) -> None:
+    reviewed = pr_repo.git("rev-parse", "pr")
+    pr_repo.git("checkout", "-q", "main")
+    pr_repo.commit({"a.txt": b"a\ntail added on main\n"}, "main edits the same file")
+    pr_repo.git("checkout", "-q", "pr")
+    subprocess.run(["git", "merge", "-q", "--no-edit", "main"], cwd=pr_repo.root, check=False)
+    pr_repo.commit({"a.txt": b"a changed by the PR\ntail added on main\n"}, "resolve")
+    denied = _blocking_on_repo(
+        pr_repo, tmp_path, reviewed=reviewed,
+        head=pr_repo.git("rev-parse", "HEAD"), key=pr_repo.key(),
+    )
+    assert denied.returncode == 2
+    assert denied.stdout.strip() == "deny"
+
+
 def test_cli_prints_the_key_a_reviewer_stamps(pr_repo: _Repo) -> None:
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "--print-diff-key", "main", "pr"],
@@ -1286,9 +1404,13 @@ def test_workflows_pass_the_diff_key_and_still_never_check_out_the_head(workflow
     # One invocation = the line plus its `\`-continued lines.
     calls = re.findall(r"python scripts/drain_review_gate\.py(?:[^\n]*\\\n)*[^\n]*", text)
     receipt_calls = [c for c in calls if "--body-file" in c and "--ledger-head-file" not in c]
-    assert receipt_calls, "no receipt check found"
-    for call in receipt_calls:
+    decision_calls = [c for c in receipt_calls if "--list-carry-heads" not in c]
+    list_calls = [c for c in receipt_calls if "--list-carry-heads" in c]
+    assert decision_calls, "no receipt check found"
+    assert list_calls, "the workflow must fetch the commit a head receipt names"
+    for call in decision_calls:
         assert "--diff-key" in call, call
+        assert "--base" in call, call
     assert "--print-diff-key" in text
 
 

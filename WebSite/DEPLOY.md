@@ -1,8 +1,12 @@
 # Deploy `tinyassets.io`
 
-**Production source:** `WebSite/site-react/` (Next.js static export), published
-manually by `.github/workflows/deploy-site-react.yml`. A merge to `main` does
-not deploy the site.
+**Production source:** `WebSite/site-react/` (Next.js static export). A push
+to `main` that changes site source runs `.github/workflows/deploy-site-react.yml`.
+The paths are `WebSite/site-react/**`, `WebSite/design-system/**`,
+`WebSite/shared/**`, and `.github/workflows/deploy-site-react.yml`, so a
+change to the publisher itself publishes the current site. A manual run of
+the same workflow, with `confirm` set to `deploy`, remains for a rollback or
+a republish.
 
 The Svelte rollback tree and its `deploy-site.yml` were retired on 2026-09-02.
 Rolling back now means dispatching `deploy-site-react` on an earlier revision
@@ -35,13 +39,17 @@ of `main`.
 
 ## Publish
 
+A merge that touches the paths above starts the workflow. For a rollback, or
+to publish a revision those paths did not change:
+
 1. Open GitHub Actions and select `deploy-site-react`.
-2. Choose the merged revision.
+2. Choose the revision.
 3. Run the workflow with `confirm` set to `deploy`.
-4. Confirm the build job produces `WebSite/site-react/out` and the deploy job
-   succeeds in the `github-pages` environment.
-5. Record the deployed revision. A green merge or a local build alone is not a
-   shipped result.
+
+Confirm the build job produces `WebSite/site-react/out` and the deploy job
+succeeds in the `github-pages` environment. Record the deployed revision. A
+green merge that does not touch those paths, or a local build alone, is not
+a shipped site.
 
 ## Verify production
 
