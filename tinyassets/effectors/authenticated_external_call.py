@@ -699,25 +699,26 @@ def _initiating_agent(universe_dir: Path) -> str | None:
 
 def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
                   path: str = "/", *, evidence: str = "",
-                  agent: str | None = None, preapproved: bool = False) -> dict[str, Any] | None:
+                  agent: str | None = None, preapproved: bool = False,
+                  destination: str = "") -> dict[str, Any] | None:
     """``None`` when the owner's rules let this call proceed, else a refusal.
 
     What the call MEANS comes from the owner's declarations for this connection
     (harness D1b); an undeclared operation is decided as a write.
     """
-    from tinyassets import agent_review, agent_rules
+    from tinyassets import agent_review, policy_rules
 
     try:
-        action_class, operation = agent_rules.classify(
+        action_class, operation = policy_rules.classify(
             universe_dir, connection_id, verb, path)
         agents = [agent] if agent else sorted(
-            {"main"} | agent_rules.configured_agents(universe_dir)
+            {"main"} | policy_rules.configured_agents(universe_dir)
             | agent_review.configured_agents(universe_dir))
-        decisions = [agent_rules.decide(
+        decisions = [policy_rules.decide(
             universe_dir, action_class, connection=connection_id, operation=operation,
-            agent=candidate,
+            agent=candidate, destination=destination,
         ) for candidate in agents]
-        decision = max(decisions, key=lambda d: agent_rules.BEHAVIOURS.index(d.behaviour))
+        decision = max(decisions, key=lambda d: policy_rules.BEHAVIOURS.index(d.behaviour))
     except Exception:
         logger.exception("authenticated_external_call rule lookup crashed")
         return {
@@ -726,8 +727,8 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             "error_kind": "rules_unreadable",
             "hint": "Your rules could not be read, so nothing was sent.",
         }
-    if decision.proceeds or (preapproved and decision.behaviour in (
-            agent_rules.ASK_FIRST, agent_rules.DO_IF_PREAPPROVED)):
+    if decision.behaviour == policy_rules.DO or (preapproved and decision.behaviour in (
+            policy_rules.ASK_FIRST, policy_rules.DO_IF_PREAPPROVED)):
         # Only an explicit owner-configured review adds a model check. Grants,
         # consent and cross-user isolation remain independent mandatory checks.
         from tinyassets.agent_review import review_refusal
@@ -742,7 +743,7 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             if refusal is not None:
                 return refusal
         return None
-    if decision.behaviour == agent_rules.HAND_OFF:
+    if decision.behaviour == policy_rules.HAND_OFF:
         return {
             "dry_run": True,
             "reason": "rule_hand_off",
@@ -1158,17 +1159,18 @@ def _run(
     if approved_agent and execution_context is not None and approved_agent != context_agent:
         return {"error_kind": "execution_context_mismatch", "dry_run": True}
     rule_agent = approved_agent or context_agent
+    policy_host, _ = _resolve_host(request, view)
     rule_refusal = _rule_refusal(
         universe_dir, connection_id, verb, _request_path(request),
         evidence=_review_evidence(request), agent=rule_agent,
-        preapproved=approved_agent is not None,
+        preapproved=approved_agent is not None, destination=policy_host,
     )
     scoped = False
     if (rule_refusal is not None and rule_refusal.get('error_kind') == 'rule_ask_first'
             and rule_agent):
-        from tinyassets.approval_scopes import matches
         from tinyassets.bound_requests import RequestRefused
         from tinyassets.owner_control import ControlUnavailable
+        from tinyassets.policy_grants import matches
 
         try:
             scoped = matches(universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
@@ -1180,7 +1182,8 @@ def _run(
         if scoped:
             rule_refusal = _rule_refusal(
                 universe_dir, connection_id, verb, _request_path(request),
-                evidence=_review_evidence(request), agent=rule_agent, preapproved=True)
+                evidence=_review_evidence(request), agent=rule_agent, preapproved=True,
+                destination=policy_host)
     if rule_refusal is not None:
         if rule_refusal.get("error_kind") == "rule_ask_first" and not allow_deferred:
             return {**rule_refusal, "dry_run": True,
@@ -1298,6 +1301,9 @@ def _run(
         wire_request["header_name"] = header_name
 
     proxy = None
+    from tinyassets.bound_requests import take_policy_approval
+
+    policy_approval = take_policy_approval() if approved_agent else None
     try:
         proxy = _open_connection_proxy(
             data_root=data_root,
@@ -1306,22 +1312,14 @@ def _run(
             connection_id=connection_id,
             owner_user_id=getattr(grant, "owner_user_id", ""),
         )
-        if scoped:
-            from tinyassets.approval_scopes import dispatch
-            from tinyassets.outside_authority import effect_admission
+        from tinyassets.outside_authority import effect_admission
 
-            with effect_admission(), dispatch(
-                universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
-                grant.owner_user_id, rule_agent, run_id=run_id, node_id=node_id,
-            ) as receipt:
-                response = proxy.request(verb, wire_request)
-                if isinstance(response.get('status'), int):
-                    receipt['status'] = response['status']
-        else:
-            from tinyassets.outside_authority import effect_admission
-
-            with effect_admission():
-                response = proxy.request(verb, wire_request)
+        with effect_admission():
+            response = proxy.request(
+                verb, wire_request, policy_approval=policy_approval,
+                policy_grant_ref=scoped.get("decision_id") if scoped else None,
+                policy_agent=rule_agent if scoped else None,
+                policy_task_id=scoped.get("task_id") if scoped else None)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

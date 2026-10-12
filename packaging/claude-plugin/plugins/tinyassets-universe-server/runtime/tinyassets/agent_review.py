@@ -38,16 +38,11 @@ import contextvars
 import hashlib
 import json
 import logging
-import sqlite3
 import threading
-import time
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-from tinyassets import agent_sessions
-from tinyassets.owner_control import serialized
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +51,23 @@ logger = logging.getLogger(__name__)
 NOT_CONSEQUENTIAL = frozenset({
     "workspace.files", "workspace.shell", "workspace.workflows", "app.read",
 })
-#: Compatibility for the owner-door response; no class mandates a model review.
-ALWAYS_REVIEWED: frozenset[str] = frozenset()
-
-OFF_CONSEQUENCE = ("Actions of this kind will then proceed on your rule alone, "
-                   "without a check against your instructions first.")
-
 _MAX_EVIDENCE = 2_000
 #: The review's own deadline (seconds), separate from the node's.
 REVIEW_TIMEOUT_S = 120.0
 REVIEW_MAX_ATTEMPTS = 2
 _MAX_ANSWER = 2_000
+
+
+def propose_policy(universe_dir: Path, expected_generation: int, policy: dict) -> dict:
+    """Give the owner a literal policy proposal; review code never applies it."""
+    from tinyassets.api.pending_requests import request_from_user
+
+    return request_from_user(universe_id=Path(universe_dir).name, payload={
+        "kind": "Policy", "title": "Agent proposes a policy change",
+        "body": ("Review the complete proposed policy below. "
+                 "Applying it changes your account policy."),
+        "action": {"type": "policy_proposal", "expected_generation": expected_generation,
+                   "policy": policy}})
 
 SAFETY_REQUIREMENTS = (
     "You review ONE planned action an AI agent is about to take for its owner. "
@@ -123,97 +124,25 @@ _PURPOSE: contextvars.ContextVar[_ReviewPurpose | None] = contextvars.ContextVar
     "tinyassets_effect_review_purpose", default=None)
 
 
-# -- the owner's off switch ------------------------------------------------------
-
-_FILE = "rules.db"
-#: Per agent from the store up (harness §4.18): ``main`` is only the seed.
-_SCHEMA = """CREATE TABLE IF NOT EXISTS review_off (
-    agent TEXT NOT NULL DEFAULT 'main', action_class TEXT NOT NULL,
-    updated_at REAL NOT NULL, PRIMARY KEY (agent, action_class))"""
-_ON_SCHEMA = """CREATE TABLE IF NOT EXISTS review_on (
-    agent TEXT NOT NULL, action_class TEXT NOT NULL,
-    updated_at REAL NOT NULL, PRIMARY KEY (agent, action_class))"""
+# -- read-only review preferences ---------------------------------------------
 
 
-class ReviewSwitchRefused(ValueError):
-    """The review cannot be switched off for this class, or needs confirming."""
+def _review_entries(universe_dir: Path, table: str) -> list[dict]:
+    from tinyassets.policy_rules import projection
 
-
-def _connect(universe_dir: Path) -> sqlite3.Connection:
-    path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
-    conn = sqlite3.connect(path, timeout=10.0, isolation_level=None)
-    conn.execute("PRAGMA busy_timeout = 10000")
-    _migrate(conn)
-    conn.execute(_SCHEMA)
-    # Old versions only stored off rows: absence cannot prove an owner opt-in.
-    conn.execute(_ON_SCHEMA)
-    return conn
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    """A switch table from before agents were keyed: its rows become main's."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(review_off)")}
-    if not columns or "agent" in columns:
-        return
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        # Re-read under the write lock: another process may have just migrated.
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(review_off)")}
-        if "agent" in columns:
-            conn.execute("COMMIT")
-            return
-        conn.execute("ALTER TABLE review_off RENAME TO review_off_unkeyed")
-        conn.execute(_SCHEMA)
-        conn.execute("INSERT OR IGNORE INTO review_off (agent, action_class, updated_at) "
-                     "SELECT 'main', action_class, updated_at FROM review_off_unkeyed")
-        conn.execute("DROP TABLE review_off_unkeyed")
-        conn.execute("COMMIT")
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-
-
-def switched_off(universe_dir: Path, agent: str = "main") -> set[str]:
-    with closing(_connect(universe_dir)) as conn:
-        return {row[0] for row in conn.execute(
-            "SELECT action_class FROM review_off WHERE agent = ?", (agent,))}
+    policy = projection(universe_dir)["policy"]
+    return [entry["values"] for entry in policy["entries"]
+            if entry["table"] == table
+            and entry["scope"] in ("account", Path(universe_dir).name)]
 
 
 def switched_on(universe_dir: Path, agent: str = "main") -> set[str]:
-    """Explicit owner opt-ins, outside the agent-writable universe files."""
-    with closing(_connect(universe_dir)) as conn:
-        return {row[0] for row in conn.execute(
-            "SELECT action_class FROM review_on WHERE agent = ?", (agent,))}
+    return {row["action_class"] for row in _review_entries(universe_dir, "review_on")
+            if row.get("agent", "main") == agent}
 
 
 def configured_agents(universe_dir: Path) -> set[str]:
-    """Agents with explicit opt-ins, including ones without stored custom rules."""
-    with closing(_connect(universe_dir)) as conn:
-        return {row[0] for row in conn.execute("SELECT DISTINCT agent FROM review_on")}
-
-
-@serialized
-def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
-               confirm: bool = False, agent: str = "main") -> None:
-    """The owner turns the review on or off for one class (the owner door only)."""
-    from tinyassets.agent_rules import ACTION_CLASSES
-
-    if action_class not in ACTION_CLASSES or action_class in NOT_CONSEQUENTIAL:
-        raise ReviewSwitchRefused(f"{action_class!r} is not a reviewed kind of action")
-    if not enabled and not confirm:
-        raise ReviewSwitchRefused(OFF_CONSEQUENCE + " Confirm to switch it off.")
-    with closing(_connect(universe_dir)) as conn, conn:
-        conn.execute("BEGIN IMMEDIATE")
-        if enabled:
-            conn.execute("DELETE FROM review_off WHERE agent = ? AND action_class = ?",
-                         (agent, action_class))
-            conn.execute("INSERT OR REPLACE INTO review_on (agent, action_class, updated_at) "
-                         "VALUES (?, ?, ?)", (agent, action_class, time.time()))
-        else:
-            conn.execute("DELETE FROM review_on WHERE agent = ? AND action_class = ?",
-                         (agent, action_class))
-            conn.execute("INSERT OR REPLACE INTO review_off (agent, action_class, updated_at) "
-                         "VALUES (?, ?, ?)", (agent, action_class, time.time()))
+    return {row.get("agent", "main") for row in _review_entries(universe_dir, "review_on")}
 
 
 # -- the review --------------------------------------------------------------------
@@ -316,7 +245,7 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
     try:
         if action_class not in switched_on(universe_dir, agent):
             return None
-    except (OSError, sqlite3.Error):
+    except Exception:  # noqa: BLE001 - policy unavailability holds the action
         return _refusal("your review settings could not be read, so nothing was sent.",
                         kind="auto_review_unavailable", digest=action_digest(action))
     digest = action_digest(action)

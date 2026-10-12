@@ -5,21 +5,25 @@ admitted like any agent call, tighten-only and fail closed. Review is opt-in.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from tinyassets import agent_review, agent_rules
+from tinyassets import agent_review
+from tinyassets import policy_rules as agent_rules
 
 
 def _universe(tmp_path: Path) -> Path:
     path = tmp_path / "data" / "u-alpha"
     path.mkdir(parents=True)
-    agent_review.set_review(path, "app.write", True)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _owner_policy_projection(monkeypatch):
+    monkeypatch.setattr(agent_review, "switched_on", lambda *_args: {"app.write"})
 
 
 ACTION = {"action_class": "app.write", "connection": "gh", "operation": "POST",
@@ -46,7 +50,7 @@ def _review(universe, model, *, action=ACTION, evidence=""):
                                            evidence=evidence)
 
 
-def test_outside_a_runner_a_consequential_action_is_held(tmp_path):
+def test_outside_a_runner_a_consequential_action_is_held(tmp_path, monkeypatch):
     universe = _universe(tmp_path)
     refusal = agent_review.review_refusal(universe, action=ACTION, rule="r")
     assert refusal["error_kind"] == "auto_review_unavailable"
@@ -55,7 +59,7 @@ def test_outside_a_runner_a_consequential_action_is_held(tmp_path):
     # Not consequential, or switched off by the owner: nothing to check.
     assert agent_review.review_refusal(
         universe, action={**ACTION, "action_class": "app.read"}, rule="r") is None
-    agent_review.set_review(universe, "app.write", False, confirm=True)
+    monkeypatch.setattr(agent_review, "switched_on", lambda *_args: set())
     assert agent_review.review_refusal(universe, action=ACTION, rule="r") is None
 
 
@@ -141,45 +145,22 @@ def test_untrusted_content_is_enveloped_and_the_requirements_are_fixed(tmp_path)
     assert json.dumps(ACTION, sort_keys=True) in prompt
 
 
-# -- the owner's off switch ---------------------------------------------------------
-
-
-def test_switching_the_check_off_needs_confirmation(tmp_path):
-    universe = _universe(tmp_path)
-    with pytest.raises(agent_review.ReviewSwitchRefused) as refused:
-        agent_review.set_review(universe, "app.write", False)
-    assert "proceed on your rule alone" in str(refused.value)
-    agent_review.set_review(universe, "app.write", False, confirm=True)
-    model = _Model()
-    assert _review(universe, model) is None and model.prompts == []
-    agent_review.set_review(universe, "app.write", True)
-    assert agent_review.switched_off(universe) == set()
-
-
-@pytest.mark.parametrize("action_class", ["money.move", "security.change", "access.grant"])
-def test_the_handback_classes_keep_the_check(tmp_path, action_class):
-    universe = _universe(tmp_path)
-    agent_review.set_review(universe, action_class, True)
-    assert action_class in agent_review.switched_on(universe)
-    agent_review.set_review(universe, action_class, False, confirm=True)
-    assert agent_review.review_refusal(
-        universe, action={**ACTION, "action_class": action_class}, rule="owner allows") is None
-
-
 # -- wiring -----------------------------------------------------------------------------
 
 
-def test_the_effector_reviews_a_write_its_rules_allow(tmp_path):
+def test_the_effector_reviews_a_write_its_rules_allow(tmp_path, monkeypatch):
+    from tests.test_ta_capabilities import _policy_stub
     from tinyassets.effectors.authenticated_external_call import _rule_refusal
 
     universe = _universe(tmp_path)
+    _policy_stub(monkeypatch, review=True)
     model = _Model('{"verdict": "needs_approval", "reason": "unexpected destination"}')
     with agent_review.bound(model, active=True):
         refusal = _rule_refusal(universe, "gh", "POST", "/repos/o/r/issues",
                                 evidence='{"title": "x"}')
     assert refusal["error_kind"] == "auto_review_needs_approval"
     # A rule that already holds the action never spends a review.
-    agent_rules.set_rule(universe, "app.write", agent_rules.ASK_FIRST, connection="gh")
+    _policy_stub(monkeypatch, agent_rules.ASK_FIRST, review=True)
     model2 = _Model()
     with agent_review.bound(model2, active=True):
         assert _rule_refusal(universe, "gh", "POST", "/x")["error_kind"] == "rule_ask_first"
@@ -223,80 +204,6 @@ def test_review_refusals_get_their_own_advice():
         line = f"external write failed - authenticated_external_call [{kind}]"
         assert runs._classify_external_write(line.lower()) == failure_class
         assert runs.external_write_suggested_action(failure_class)
-
-
-def test_the_owner_door_switches_the_check(monkeypatch, tmp_path):
-    from tests.test_agent_rules import _Request
-    from tinyassets import onboarding
-    from tinyassets.api import helpers
-    from tinyassets.auth import middleware
-
-    universe = _universe(tmp_path)
-    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path / "data")
-    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
-    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
-    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io"})
-    monkeypatch.setattr(middleware, "current_identity",
-                        lambda: SimpleNamespace(user_id="owner-1"))
-    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **_kw: "u-alpha")
-
-    def post(body):
-        response = asyncio.run(onboarding._handle_rules(_Request("POST", body)))
-        return response.status_code, json.loads(response.body)
-
-    status, refused = post({"review": {"action_class": "app.write", "enabled": False}})
-    assert status == 409 and "Confirm" in refused["detail"]
-    status, doc = post({"review": {"action_class": "app.write", "enabled": False},
-                        "confirm": True})
-    assert status == 200 and doc["review_off"] == ["app.write"]
-    assert agent_review.switched_off(universe) == {"app.write"}
-    assert doc["review_on"] == []
-    status, doc = post({"review": {"action_class": "app.write", "enabled": True}})
-    assert status == 200 and doc["review_on"] == ["app.write"]
-    assert post({"review": {"action_class": "money.move", "enabled": False},
-                 "confirm": True})[0] == 200
-
-
-def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
-    """Harness §4.18: every per-agent record is keyed by agent; main is a seed."""
-    import sqlite3
-
-    from tinyassets import agent_sessions
-
-    universe = tmp_path / "data" / "u-alpha"
-    universe.mkdir(parents=True)
-    db = agent_sessions._records_dir(universe) / "rules.db"
-    with sqlite3.connect(db) as conn:  # the shape #4200 shipped
-        conn.execute("CREATE TABLE review_off (action_class TEXT PRIMARY KEY, "
-                     "updated_at REAL NOT NULL)")
-        conn.execute("INSERT INTO review_off VALUES ('app.write', 1.0)")
-    assert agent_review.switched_off(universe) == {"app.write"}
-    assert agent_review.switched_off(universe, "researcher") == set()
-    assert agent_review.switched_on(universe) == set(), "legacy absence is not opt-in"
-    agent_review.set_review(universe, "people.message", False, confirm=True,
-                            agent="researcher")
-    assert agent_review.switched_off(universe, "researcher") == {"people.message"}
-    assert agent_review.switched_off(universe) == {"app.write"}
-    model = _Model('{"verdict": "proceed", "reason": "ok"}')
-    with agent_review.bound(model, active=True):
-        assert agent_review.review_refusal(
-            universe, action={**ACTION, "action_class": "people.message"}, rule="r",
-            agent="researcher") is None
-    assert model.prompts == [], "switched off for that agent only"
-
-
-def test_review_opt_in_is_persisted_and_scoped_to_the_owner_agent(tmp_path):
-    universe = tmp_path / "data" / "owner"
-    action = {**ACTION, "action_class": "people.message"}
-    assert agent_review.review_refusal(universe, action=action, rule="r") is None
-    agent_review.set_review(universe, "people.message", True, agent="researcher")
-    assert agent_review.review_refusal(universe, action=action, rule="r") is None
-    refusal = agent_review.review_refusal(universe, action=action, rule="r", agent="researcher")
-    assert refusal["error_kind"] == "auto_review_unavailable"
-    assert agent_review.review_refusal(
-        tmp_path / "data" / "other", action=action, rule="r", agent="researcher") is None
-    agent_review.set_review(universe, "people.message", False, confirm=True, agent="researcher")
-    assert agent_review.switched_on(universe, "researcher") == set()
 
 
 def test_unreadable_review_settings_hold_with_the_cause(tmp_path, monkeypatch):

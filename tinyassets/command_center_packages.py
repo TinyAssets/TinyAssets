@@ -1104,7 +1104,7 @@ def validate_options(raw: Any) -> dict[str, Any]:
 def agent_id(raw: Any) -> str:
     """The acting agent (multi-agent invariant, §4.18). ``main`` is a default,
     not a special case."""
-    from tinyassets.agent_rules import MAIN_AGENT
+    from tinyassets.policy_rules import MAIN_AGENT
 
     text = MAIN_AGENT if raw in (None, "") else raw
     if not isinstance(text, str) or not _AGENT_ID.fullmatch(text):

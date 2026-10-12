@@ -199,6 +199,14 @@ change.
 
 ## 7. The owner-only policy layer (registry N10)
 
+### P1 decisions (2026-10-11)
+
+- The broker checks the opaque owner-session cookie against the existing owner-session table through read-only access. It binds the row's interactive identity to the policy owner, checks expiry, and uses the row's session hash as the receipt identifier. The daemon forwards the cookie without asserting identity. No new signing scheme is introduced.
+- `agent_review.py` proposes rule suggestions through the pending owner-request path. It has no direct `rules.db` write path. The agent and every box process receive only the effective read-only policy projection.
+- There is one policy per account. Each migrated entry retains its original command-center scope (or explicitly has account scope); migration never merges center rows. Evaluation selects the strictest applicable entry, and the migration report lists conflicts.
+- A once approval creates a broker receipt bound to the exact outbound request digest and current policy generation, under the same interactive owner cookie. Dispatch consumes that receipt once and rechecks the generation. The daemon's pending-request row is a preview and conversation record, never broker authority by itself.
+- A priced spend reserves against caps in the broker by request id. Today's model connector has no trusted pre-dispatch price, so a configured model cap holds that unpriced call and records the refusal until C3 supplies a priced reservation; an unknown amount never bypasses a cap.
+
 **What it holds.** One `OwnerPolicy` per account, versioned by a monotonic
 `generation`:
 
@@ -206,8 +214,9 @@ change.
   `people.message`, `money.move`, `security.change`, `access.grant`), with
   optional connection, operation and agent, one of the four behaviours (do,
   do if pre-approved, ask, hand off). These are today's Custom Rules.
-- **Pre-approval grants:** today's `approval_scopes`, bound to the policy
-  generation.
+- **Pre-approval grants:** today's `approval_scopes`, stored as scoped policy
+  entries. They survive unrelated writes; removal, expiry, or a stricter
+  matching rule revokes their effect. Once approvals bind to a generation.
 - **Egress:** a mode plus an allowlist of hosts.
 - **Spend:** caps per day, per month and per transaction, a threshold above
   which a spend asks, and per-source model-spend ceilings.
@@ -237,9 +246,10 @@ owner cannot loosen it:
   the owner door. It carries the interactive owner-session token that
   inline-connect-and-approve already defines: issued only to an interactive
   owner session, and never to bearer, MCP or `/api` clients.
-- **The broker verifies the token itself.** It checks the token's
-  signature, account, expiry and nonce, so a compromised daemon path cannot
-  forge a write.
+- **The broker verifies the token itself.** It looks up the opaque cookie's
+  hash in the existing owner-session table through read-only access and checks
+  its interactive identity, account binding and expiry. The daemon only
+  forwards the cookie; it cannot attest the owner or forge a write.
 - **Tightening is the same act as loosening.** Both need the token.
 - **No write from anywhere else.** The model door, `/mcp`, `/api`, the
   box channel and every `ta` command have no policy-write operation. The

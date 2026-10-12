@@ -13,7 +13,8 @@ from tests.test_run_provider_session import (
     _seed_open_serving_assignment,
     _seed_serving_assignment,
 )
-from tinyassets import agent_review, agent_rules, effectors
+from tinyassets import agent_review, effectors
+from tinyassets import policy_rules as agent_rules
 from tinyassets.daemon_server import set_founder_home
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
@@ -105,8 +106,9 @@ def rig(tmp_path, monkeypatch, request, _signed_in_operator):
         _seed_serving_assignment(
             tmp_path, model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None)
     universe = tmp_path / "universe_alice"
-    if getattr(request, "param", "legacy") != "owner":
-        agent_review.set_review(universe, "app.write", True)
+    from tests.test_ta_capabilities import _policy_stub
+
+    _policy_stub(monkeypatch, review=getattr(request, "param", "legacy") != "owner")
     branch = _branch(node_count=1)
     node = branch.node_defs[0]
     node.prompt_template = ""
@@ -149,7 +151,7 @@ def rig(tmp_path, monkeypatch, request, _signed_in_operator):
     sends = []
 
     class Proxy:
-        def request(self, verb, wire):
+        def request(self, verb, wire, **_policy):
             sends.append((verb, wire))
             return {"status": 200, "body": '{"ok":true}'}
 
@@ -184,8 +186,6 @@ def test_owner_connection_write_needs_no_subscription_review(rig, family):
     terminal = rig["terminal"]
     terminal.family = family
     terminal.supports_text_only = False
-    agent_rules.set_rule(rig["universe"], "app.write", agent_rules.DO,
-                         connection="synthetic-http", operation="POST")
     rig["packet"]["request"] = {
         "path": "/repos/owner/project/issues", "body": {"title": "An issue"}}
     result = rig["fire"]()
@@ -196,10 +196,9 @@ def test_owner_connection_write_needs_no_subscription_review(rig, family):
 
 @pytest.mark.parametrize("rig", ["owner"], indirect=True)
 def test_owner_configured_subscription_review_holds_with_cause(rig):
-    from tinyassets import agent_review
 
     rig["terminal"].supports_text_only = False
-    agent_review.set_review(rig["universe"], "app.write", True)
+    rig["monkeypatch"].setattr(agent_review, "switched_on", lambda *_args: {"app.write"})
     result = rig["fire"]()
     assert result["error_kind"] == "auto_review_unavailable"
     assert "text-only" in result["review"]["reason"]
@@ -214,8 +213,10 @@ def test_owner_configured_subscription_review_holds_with_cause(rig):
 ])
 def test_owner_write_without_review_still_enforces_authority(rig, guard, kind):
     if guard in {"rule", "hand_off"}:
-        agent_rules.set_rule(rig["universe"], "app.write",
-                             agent_rules.ASK_FIRST if guard == "rule" else agent_rules.HAND_OFF)
+        from tests.test_ta_capabilities import _policy_stub
+
+        _policy_stub(rig["monkeypatch"],
+                     agent_rules.ASK_FIRST if guard == "rule" else agent_rules.HAND_OFF)
     elif guard == "consent":
         from tinyassets.storage.effector_consents import revoke_consent
 
@@ -235,7 +236,7 @@ def test_owner_write_without_review_still_enforces_authority(rig, guard, kind):
 @pytest.mark.parametrize("rig", ["legacy", "manifest", "http"], indirect=True)
 def test_code_only_effect_reaches_review_and_fake_send(rig):
     result = rig["fire"]()
-    assert result.get("delivered"), result
+    assert result.get("delivered"), result.get("review", {}).get("reason", result)
     assert len(rig["terminal"].calls) == len(rig["sends"]) == 1
     session = rig["session"]
     assert session._receipt.max_invocations == 2
@@ -311,7 +312,9 @@ def test_review_verdict_retry_and_budget(rig, answers, calls, kind):
 
 
 def test_rule_denial_does_not_spend_review_or_send(rig):
-    agent_rules.set_rule(rig["universe"], "app.write", agent_rules.ASK_FIRST)
+    from tests.test_ta_capabilities import _policy_stub
+
+    _policy_stub(rig["monkeypatch"], agent_rules.ASK_FIRST, review=True)
     assert rig["fire"]()["error_kind"] == "rule_ask_first"
     assert not rig["terminal"].calls and not rig["sends"]
 
@@ -364,7 +367,6 @@ def test_review_diagnostics_keep_sanitized_admission_cause(rig):
 
 
 def test_review_purpose_rejects_text_substitution_and_expired_context(rig):
-    from tinyassets import agent_review
 
     purpose = agent_review._ReviewPurpose(
         rig["wrapper"], rig["universe"], rig["run_id"], "a" * 64, "expected text")

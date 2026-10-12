@@ -338,10 +338,10 @@ def test_retirement_between_continuation_create_and_bind_never_revives_task(
 
     from tinyassets import agent_activities as activities
     from tinyassets import (
-        agent_rules,
         bound_requests,
         connection_continuations,
         engine_steering,
+        policy_rules,
         request_continuations,
     )
     from tinyassets.effectors import authenticated_external_call as effector
@@ -368,7 +368,8 @@ def test_retirement_between_continuation_create_and_bind_never_revives_task(
         def invoke():
             return connection_continuations.bind(home, row["request_id"])
     else:
-        agent_rules.set_rule(home, "app.write", "ask_first", agent=world["weaver"])
+        monkeypatch.setattr(policy_rules, "decide", lambda *_a, **_kw:
+                            policy_rules.Decision(policy_rules.ASK_FIRST, None, "test_policy"))
         monkeypatch.setattr(bound_requests, "_authority", lambda *args: {
             "action_class": "app.write", "operation": "POST",
             "destination": "https://example.test/message", "policy_digest": "test-policy",
@@ -480,7 +481,8 @@ def test_continuation_generation_fences_live_boundaries_and_task_inheritance(wor
     from contextlib import closing
 
     from tinyassets import agent_activities as activities
-    from tinyassets import approval_scopes, bound_requests, turn_interrupt
+    from tinyassets import bound_requests, turn_interrupt
+    from tinyassets import policy_grants as approval_scopes
 
     home = world["udir"]
     task = activities.create(

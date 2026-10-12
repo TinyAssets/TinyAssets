@@ -626,6 +626,9 @@ ROOT_ENTRIES: dict[str, str] = {
     ".owner_tree": "platform: execution-owner tree member locks (owner_lease)",
     ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
+    ".platform": "platform: broker-private account policy and receipts",
+    "policy.db": "platform: broker-owned account policy under .platform/accounts",
+    ".deleted": "platform: broker-owned account deletion marker under .platform/accounts",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
@@ -638,10 +641,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ),
     "history.db": "platform: harness history inside .agent-sessions/<universe>/ (D7a)",
     "owner-sessions.db": "platform: interactive owner sign-in and approval sessions in .runtime",
-    "rules.db": (
-        "platform: the owner's Custom Rules for their agents, inside "
-        ".agent-sessions/<universe>/ (harness D1a)"
-    ),
+    "rules.db": "platform: read-only legacy rule source until the owner-box cutover",
     "agent-activities.db": (
         "agent_activities (inside .agent-sessions/<universe>/, harness D2)"
     ),

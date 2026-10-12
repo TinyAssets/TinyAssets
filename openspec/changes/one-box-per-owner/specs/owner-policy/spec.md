@@ -17,8 +17,10 @@ to loosen that floor.
 ### Requirement: Only the owner writes policy, through the protected owner session
 Policy SHALL be written only through the owner-door policy route, carrying
 an interactive owner-session token bound to the account. Bearer, MCP and
-`/api` clients SHALL NOT acquire that token. The broker SHALL verify the
-token's signature, account, expiry and nonce itself before it writes. The
+`/api` clients SHALL NOT acquire that token. The broker SHALL look up the
+opaque cookie's hash read-only in the existing owner-session store and verify
+its interactive identity, account binding and expiry before it writes. The
+daemon SHALL only forward the cookie; no new signing scheme is introduced. The
 model door, `/mcp`, `/api`, the box channel and every `ta` command SHALL
 offer no policy-write operation. Tightening and loosening SHALL require the
 same token.
@@ -38,6 +40,20 @@ generation and digest. `ta policy show` SHALL return the same projection.
 `ta policy propose` SHALL create an owner request showing the literal change.
 The change SHALL take effect only when the owner approves it in the
 protected owner session, and the owner door then performs the write.
+`agent_review.py` SHALL propose rule suggestions through the existing pending
+owner-request path and SHALL NOT write `rules.db`. Every box process SHALL
+have only read-only access to the effective projection.
+
+#### Scenario: Rule suggestion awaits the owner
+- **WHEN** the agent proposes a different approval rule through `ta policy propose`
+- **THEN** a pending owner request shows the literal proposed policy and the effective generation stays unchanged
+- **AND** only the protected owner session can apply that request
+
+### Requirement: Scoped entries retain every command center rule
+The account SHALL have exactly one policy. Entries SHALL carry either account
+scope or a command-center id. Migration SHALL copy existing per-center rules
+without merging them, verify counts and digests, and report conflicts.
+Evaluation SHALL apply the strictest matching entry.
 
 #### Scenario: The agent proposes a looser egress policy
 - **WHEN** the agent proposes adding a host to the allowlist
@@ -66,9 +82,18 @@ policy-gated; snapshot restore SHALL undo them.
 - **WHEN** a purchase would exceed the owner's monthly cap
 - **THEN** the gate denies it, even if an approval is supplied
 
+#### Scenario: Unpriced model request under a cap
+- **WHEN** a model request has a configured spend cap but no trusted pre-dispatch amount
+- **THEN** the broker holds the request and receipts the missing amount
+
 #### Scenario: Policy changed after approval
 - **WHEN** the owner tightens a rule after a once approval was issued but before dispatch
 - **THEN** the stale approval cannot execute the action
+
+#### Scenario: An unrelated edit preserves a standing grant
+- **WHEN** the owner adds another scoped policy entry while a site grant remains in the policy
+- **THEN** the site grant can still authorize its exact operation under the current rules
+- **AND** removing that entry or tightening its matching rule stops it
 
 ### Requirement: Policy writes and decisions leave receipts
 Every policy write SHALL leave a receipt in the broker's receipts ledger,
@@ -76,6 +101,8 @@ carrying the old and new digest, the owner and the session-token id. Every
 proposal and every enforcement decision SHALL also leave a receipt, carrying
 the request digest, policy generation, rule, decision and outcome. The
 owner's activity view SHALL list these receipts.
+Account deletion SHALL erase the broker-private policy and its receipts and
+prevent a stale owner session from recreating that store.
 
 #### Scenario: Audit after a blocked exfiltration
 - **WHEN** a prompt-injected request to an unlisted host is denied

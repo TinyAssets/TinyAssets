@@ -1420,22 +1420,15 @@ async def _handle_profile(request: Any) -> Any:
         return JSONResponse({"error": "profile_unavailable"}, status_code=503, headers=_NO_STORE)
     return JSONResponse(profile, headers=_NO_STORE)
 
-async def _handle_rules(request: Any) -> Any:
-    """The signed-in owner's Custom Rules for their own agent (harness D1a).
-
-    GET lists them (seeding a new universe's defaults). POST saves one rule
-    (``action_class``, ``behaviour``, optional ``connection`` / ``operation`` /
-    ``note``) or removes a narrowed one (``delete: <id>``). Only the caller's
-    OWN home universe is ever addressed -- nothing in the request names a
-    universe -- so an owner edits their agent's rules and nobody else's.
-    Loosening a hand-back needs ``confirm_handback: true``; without it the
-    answer carries the plain consequence to show before asking again.
-    """
+async def _handle_policy(request: Any) -> Any:
+    """Forward an owner policy edit without attesting identity to the broker."""
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets import agent_review, agent_rules
+    from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import current_identity
+    from tinyassets.broker.client import BrokerRefused, owner_policy_operation
+    from tinyassets.onboarding.owner_sessions import COOKIE
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1443,154 +1436,83 @@ async def _handle_rules(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
-    if request.method == "POST":
-        from tinyassets.onboarding.owner_sessions import require
-        try:
-            require(request, owner=identity.user_id)
-        except PermissionError:
-            return JSONResponse({"error": "interactive_approval_required"},
-                                status_code=403, headers=_NO_STORE)
-
-    home = await run_in_threadpool(_read_home, identity)
-    if not home:
+    owner = identity.user_id
+    center = await run_in_threadpool(_read_home, identity)
+    if not center:
         return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
-
-    def _universe_dir():
-        from tinyassets.api.helpers import _universe_dir as resolve
-
-        return resolve(home)
-
-    def _addressed_agent(raw: object) -> str:
-        """The agent whose rules this request is about (harness §4.18).
-
-        Resolved the same way a steer is, and for the same reason: the panel
-        edits the rules of the agent the owner is talking to. Every per-agent
-        store already keys on the agent and defaults to ``main``; this caller
-        passed nothing, so the panel read and wrote MAIN's rules whoever the
-        conversation was with -- an owner could turn a custom agent's review
-        off in the UI and change main instead.
-
-        Resolved inside the caller's OWN home, so an id that is not one of
-        their agents is refused by name rather than silently becoming main.
-        """
-        from tinyassets import addressed_agents
-        from tinyassets.api.helpers import _base_path
-
-        addressed = addressed_agents.resolve(
-            _base_path(), universe_id=home, owner=identity.user_id, agent_id=raw,
-        )
-        return (addressed.agent_id if addressed is not None
-                else addressed_agents.MAIN_AGENT)
-
-    def _listing(agent: str):
-        rules = agent_rules.list_rules(_universe_dir(), agent)
-        return {
-            "universe_id": home,
-            "agent_id": agent,
-            "rules": [rule.as_dict() for rule in rules],
-            "behaviours": agent_rules.BEHAVIOUR_LABELS,
-            "classes": agent_rules.ACTION_CLASSES,
-            "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
-            # Operation kinds are declared per CONNECTION for the whole command
-            # center, not per agent, so they are not narrowed here.
-            "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
-            "kinds": agent_rules.OPERATION_KINDS,
-            "review_off": sorted(agent_review.switched_off(_universe_dir(), agent)),
-            "review_on": sorted(agent_review.switched_on(_universe_dir(), agent)),
-            "review_never": sorted(agent_review.NOT_CONSEQUENTIAL),
-            "review_always": sorted(agent_review.ALWAYS_REVIEWED),
-        }
-
-    from tinyassets.addressed_agents import AgentNotAddressable
-
     if request.method == "GET":
-        # GET carries no body, so the agent rides the query, like /app/memory's
-        # home check does. Absent means main, which is what every caller that
-        # predates per-agent rules sends.
-        wanted = request.query_params.get("agent_id")
-        try:
-            listing = await run_in_threadpool(lambda: _listing(_addressed_agent(wanted)))
-        except AgentNotAddressable as exc:
-            return JSONResponse(
-                {"error": "agent_not_found", "detail": str(exc)},
-                status_code=404, headers=_NO_STORE,
-            )
-        return JSONResponse(listing, headers=_NO_STORE)
-    cfg = app_config()
-    if not _same_origin_json(request, str(cfg.get("resource") or "")):
-        return JSONResponse(
-            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
-        )
+        result = await run_in_threadpool(owner_policy_operation, _base_path(), owner, "read")
+        receipts = await run_in_threadpool(
+            owner_policy_operation, _base_path(), owner, "receipts")
+        return JSONResponse({**result, **receipts, "center": center}, headers=_NO_STORE)
+    if not _same_origin_json(request, str(app_config().get("resource") or "")):
+        return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
+                            headers=_NO_STORE)
     data = await _read_small_json(request)
-    if data is None:
-        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "invalid_policy"}, status_code=400,
+                            headers=_NO_STORE)
+    if set(data) == {"expected_generation", "policy"}:
+        action, fields = "write", dict(expected_generation=data["expected_generation"],
+                                       policy=data["policy"])
+    elif data.get("action") == "apply_proposal" and set(data) == {
+            "action", "center", "request_id"}:
+        from tinyassets.api.pending_requests import displayed_row_matches
+        from tinyassets.broker.owner_identities import admitted_owner
+        from tinyassets.storage.pending_requests import get_request, resolve_request
 
-    def _save():
-        agent = _addressed_agent(data.get("agent_id"))
-        if "review" in data:
-            spec = data["review"]
-            if not isinstance(spec, dict) or type(spec.get("enabled")) is not bool:
-                raise ValueError("review needs action_class and enabled")
-            agent_review.set_review(_universe_dir(), str(spec.get("action_class") or ""),
-                                    spec["enabled"], confirm=data.get("confirm") is True,
-                                    agent=agent)
-            return {"reviewed": spec, **_listing(agent)}
-        if "declare" in data:
-            spec = data["declare"]
-            if not isinstance(spec, dict):
-                raise ValueError("declare must be an object")
-            declared = agent_rules.declare_kind(
-                _universe_dir(), str(spec.get("connection") or ""),
-                str(spec.get("kind") or ""), method=str(spec.get("method") or ""),
-                path_prefix=str(spec.get("path_prefix") or "/"),
-                confirm=data.get("confirm") is True,
-            )
-            return {"declared": declared.as_dict(), **_listing(agent)}
-        if "undeclare" in data:
-            kind_id = data["undeclare"]
-            if type(kind_id) is not int or kind_id <= 0 or kind_id > 9_223_372_036_854_775_807:
-                raise ValueError("undeclare must be a declaration id")
-            return {"undeclared": agent_rules.delete_kind(
-                        _universe_dir(), kind_id, confirm=data.get("confirm") is True),
-                    **_listing(agent)}
-        if "delete" in data:
-            rule_id = data["delete"]
-            # A positive JSON integer only: no float truncation, no bool, no
-            # value outside SQLite's integer range (gpt-6-astra on #4193).
-            if (type(rule_id) is not int or rule_id <= 0
-                    or rule_id > 9_223_372_036_854_775_807):
-                raise ValueError("delete must be a rule id")
-            removed = agent_rules.delete_rule(
-                _universe_dir(), rule_id, agent=agent,
-                confirm_handback=data.get("confirm_handback") is True,
-            )
-            return {"deleted": removed, **_listing(agent)}
-        rule = agent_rules.set_rule(
-            _universe_dir(), str(data.get("action_class") or ""),
-            str(data.get("behaviour") or ""),
-            connection=str(data.get("connection") or ""),
-            operation=str(data.get("operation") or ""),
-            note=str(data.get("note") or ""), agent=agent,
-            confirm_handback=data.get("confirm_handback") is True,
-        )
-        return {"saved": rule.as_dict(), **_listing(agent)}
-
+        proposed_center = data["center"]
+        if (not isinstance(proposed_center, str)
+                or not isinstance(data["request_id"], str)
+                or await run_in_threadpool(admitted_owner, _base_path(), center=proposed_center)
+                != owner):
+            return JSONResponse({"error": "proposal_not_found"}, status_code=404,
+                                headers=_NO_STORE)
+        pending_home = _base_path() / proposed_center
+        row = await run_in_threadpool(get_request, pending_home, data["request_id"])
+        if (row is None or row["status"] != "pending" or not displayed_row_matches(row)
+                or row["action"].get("type") != "policy_proposal"):
+            return JSONResponse({"error": "proposal_not_found"}, status_code=404,
+                                headers=_NO_STORE)
+        proposal = row["action"]
+        try:
+            result = await run_in_threadpool(
+                owner_policy_operation, _base_path(), owner, "write",
+                cookie=request.cookies.get(COOKIE, ""),
+                expected_generation=proposal["expected_generation"],
+                policy=proposal["policy"])
+        except BrokerRefused:
+            return JSONResponse({"error": "policy_changed_or_session_required"},
+                                status_code=409, headers=_NO_STORE)
+        resolved = await run_in_threadpool(
+            resolve_request, pending_home, data["request_id"], status="answered",
+            answer={"policy_digest": result["digest"]}, decision="accepted")
+        if not resolved:
+            return JSONResponse({"error": "policy_applied_request_unresolved",
+                                 "generation": result["generation"]}, status_code=503,
+                                headers=_NO_STORE)
+        return JSONResponse({**result, "center": proposed_center,
+                             "request_id": data["request_id"]}, headers=_NO_STORE)
+    elif data.get("action") == "issue_once" and set(data) == {
+            "action", "expected_generation", "center", "grant_id", "connection_id",
+            "verb", "request", "destination"}:
+        action = "issue_once"
+        fields = {key: value for key, value in data.items() if key != "action"}
+    else:
+        return JSONResponse({"error": "invalid_policy"}, status_code=400,
+                            headers=_NO_STORE)
     try:
-        return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
-    except AgentNotAddressable as exc:
-        # A LookupError, so the TypeError/ValueError arm below would NOT catch
-        # it and an unknown agent id would have left here as a 500. Refused by
-        # name, exactly as a steer to the same id is.
-        return JSONResponse(
-            {"error": "agent_not_found", "detail": str(exc)},
-            status_code=404, headers=_NO_STORE,
-        )
-    except (agent_rules.RuleRefused, agent_review.ReviewSwitchRefused) as exc:
-        return JSONResponse(
-            {"error": "rule_refused", "detail": str(exc)}, status_code=409, headers=_NO_STORE,
-        )
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "invalid_rule"}, status_code=400, headers=_NO_STORE)
+        result = await run_in_threadpool(
+            owner_policy_operation, _base_path(), owner, action,
+            cookie=request.cookies.get(COOKIE, ""), **fields)
+    except BrokerRefused:
+        return JSONResponse({"error": "interactive_owner_session_required"},
+                            status_code=403, headers=_NO_STORE)
+    if action == "write":
+        receipts = await run_in_threadpool(
+            owner_policy_operation, _base_path(), owner, "receipts")
+        result = {**result, **receipts}
+    return JSONResponse({**result, "center": center}, headers=_NO_STORE)
 
 
 async def _handle_account_timezone(request: Any) -> Any:
@@ -2663,7 +2585,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
-        Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
+        Route("/app/api/policy", _handle_policy, methods=["GET", "POST"]),
         Route("/app/wakes", handle_wakes, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/soul", handle_soul, methods=["GET", "POST"]),

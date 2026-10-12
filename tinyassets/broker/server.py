@@ -45,6 +45,7 @@ import hashlib
 import json
 import logging
 import socket
+import sqlite3
 import struct
 import threading
 import time
@@ -52,6 +53,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.fence import Fence, Fenced
@@ -150,7 +152,7 @@ class BrokerServer:
                  dispatch_for: Callable[..., Callable[..., Any]],
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
                  uid_of: Callable[[socket.socket], int] = peer_uid,
-                 owner_identities: Any = None) -> None:
+                 owner_identities: Any = None, policy_store: Any = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
@@ -158,6 +160,7 @@ class BrokerServer:
         self._roles = dict(roles)
         self._uid_of = uid_of
         self._owner_identities = owner_identities
+        self._policy_store = policy_store
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
@@ -338,8 +341,8 @@ class _Connection:
         elif op == "HTTP_CONNECT":
             answer = await asyncio.to_thread(self._http_connect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
-        elif op == "HTTP_POLICY":
-            answer = await asyncio.to_thread(self._http_policy, doc)
+        elif op == "OWNER_POLICY":
+            answer = await asyncio.to_thread(self._owner_policy, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "DISCONNECT":
             answer = await asyncio.to_thread(self._disconnect, doc)
@@ -439,6 +442,10 @@ class _Connection:
                 counts = local_erase(self._server._ledger_for(doc["principal"]),
                                      principal=doc["principal"],
                                      command_center=doc["command_center"])
+                if self._server._policy_store is not None:
+                    erased = self._server._policy_store.erase(doc["principal"])
+                    if erased:
+                        counts["owner_policy"] = erased
                 return {"op": "ACCOUNT_ERASED", "counts": counts}
         except Exception:  # noqa: BLE001 - no persisted values on the wire
             return {"op": "ACCOUNT_ERASURE_REFUSED"}
@@ -535,29 +542,80 @@ class _Connection:
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
 
-    def _http_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.broker.http_policy import local_operation, validate
+    def _owner_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """An owner-channel message is not owner authority; verify the cookie here."""
+        from tinyassets.broker.owner_identities import validate_principal
+        from tinyassets.broker.policy import PolicyRefused
 
+        action = doc.get("action") if isinstance(doc, dict) else None
+        owner = doc.get("principal") if isinstance(doc, dict) else None
         try:
-            if set(doc) != {"op", "principal", "command_center", "generation", "token",
-                            "document"}:
-                raise ValueError("unsupported policy fields")
-            _namespace(doc["principal"], doc["command_center"])
-            validate(doc["document"])
-            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
-                raise Fenced("invalid fence")
-            with self._server._fence.send(doc["generation"], doc["token"]):
-                result = local_operation(self._server._ledger_for(doc["principal"]),
-                                    principal=doc["principal"],
-                                    command_center=doc["command_center"],
-                                    document=doc["document"])
-                answer = {"op": "HTTP_POLICY_RESULT", "result": result}
-                rf.control(rf.CONNECTION, answer)
-                return answer
-        except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
-            return {"op": "HTTP_POLICY_REFUSED", "error_class":
-                    "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
-                    else "refused"}
+            if self._server._policy_store is None:
+                raise PolicyRefused("policy store unavailable")
+            if not isinstance(doc, dict) or doc.get("op") != "OWNER_POLICY":
+                raise PolicyRefused("invalid policy request")
+            validate_principal(owner)
+            store = self._server._policy_store
+            if action == "read" and set(doc) == {"op", "action", "principal"}:
+                result = store.read(owner).projection()
+            elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
+                result = {"receipts": store.receipts(owner)}
+            elif action == "migration_report" and set(doc) == {
+                    "op", "action", "principal"}:
+                result = store.migration_report(owner)
+            elif action == "proposal" and set(doc) == {
+                    "op", "action", "principal", "center", "change"}:
+                result = store.receipt_proposal(owner, doc["center"], doc["change"])
+            elif action == "write" and set(doc) == {
+                    "op", "action", "principal", "cookie", "expected_generation", "policy"}:
+                result = store.write(owner, doc["cookie"], doc["expected_generation"],
+                                     doc["policy"]).projection()
+            elif action == "classify" and set(doc) == {
+                    "op", "action", "principal", "center", "connection", "method", "path"}:
+                action_class, operation = store.classify(
+                    owner, doc["center"], doc["connection"], doc["method"], doc["path"])
+                result = {"action_class": action_class, "operation": operation}
+            elif action == "issue_once" and set(doc) == {
+                    "op", "action", "principal", "cookie", "expected_generation",
+                    "center", "grant_id", "connection_id", "verb", "request",
+                    "destination"}:
+                self._server._ledger_for(owner).authorize_exact(
+                    universe_id=doc["center"], grant_id=doc["grant_id"],
+                    connection_id=doc["connection_id"])
+                if self._server._owner_identities.admitted_owner(doc["center"]) != owner:
+                    raise PolicyRefused("center is not this owner's")
+                raw = doc["request"]
+                if not isinstance(raw, dict) or not isinstance(doc["destination"], str):
+                    raise PolicyRefused("invalid approved request")
+                wire = {"url": doc["destination"]}
+                for name in ("headers", "body", "header_name"):
+                    if name in raw:
+                        wire[name] = raw[name]
+                digest = request_digest(grant_id=doc["grant_id"],
+                                        connection_id=doc["connection_id"],
+                                        verb=doc["verb"], request=wire)
+                result = store.issue_once(owner, doc["cookie"], doc["expected_generation"],
+                                          digest)
+            elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
+                request = doc["request"]
+                if not isinstance(request, dict) or set(request) != {
+                        "center", "action_class", "connection", "operation", "destination",
+                        "amount", "source", "agent", "request_id"}:
+                    raise PolicyRefused("invalid policy decision request")
+                result = store.decide(owner, **request)
+            else:
+                raise PolicyRefused("unsupported policy operation")
+            answer = {"op": "OWNER_POLICY_RESULT", "result": result}
+            rf.control(rf.CONNECTION, answer)
+            return answer
+        except (PolicyRefused, ValueError, TypeError, sqlite3.Error):
+            if action in {"write", "issue_once"}:
+                try:
+                    self._server._policy_store.receipt_refusal(
+                        owner, action, {k: v for k, v in doc.items() if k != "cookie"})
+                except Exception:  # noqa: BLE001 - refuse regardless of receipt failure
+                    _LOG.exception("policy refusal receipt unavailable")
+            return {"op": "OWNER_POLICY_REFUSED"}
 
     def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import local_operation, validate
@@ -725,6 +783,49 @@ class _Connection:
             if self._closed.is_set():
                 self._server._ops.finish(namespace, op_id, "refused")
                 return "refused"
+            if self._server._policy_store is not None:
+                try:
+                    store = self._server._policy_store
+                    spend = store.read(principal).document["spend"]
+                    if (doc.get("inference_usage") is not None
+                            and (spend["source_ceilings"] or any(
+                                spend[key] is not None for key in
+                                ("daily", "monthly", "transaction", "ask_above")))):
+                        store.decide(principal, center=command_center, action_class="spend",
+                                     connection=connection_id, source=connection_id)
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return "refused"
+                    raw_path = request.get("url") or request.get("path") or "/"
+                    parsed = urlsplit(raw_path)
+                    path = parsed.path or "/"
+                    action_class, operation = store.classify(
+                        principal, command_center, connection_id, verb, path)
+                    host = parsed.hostname or getattr(resource, "destination", "")
+                    policy = store.decide(
+                        principal, center=command_center, action_class=action_class,
+                        connection=connection_id, operation=operation, destination=host)
+                    if policy["decision"] != "allow":
+                        origin = (parsed.scheme or "https") + "://" + host.lower()
+                        if parsed.port and parsed.port != 443:
+                            origin += f":{parsed.port}"
+                        standing = (policy["decision"] in ("ask", "hold")
+                                    and store.allows_grant(
+                                        principal, center=command_center,
+                                        generation=policy["generation"],
+                                        decision_id=doc.get("policy_grant_ref"),
+                                        action_class=action_class, connection=connection_id,
+                                        operation=operation, origin=origin,
+                                        agent=doc.get("policy_agent"),
+                                        task_id=doc.get("policy_task_id") or ""))
+                        once = (policy["decision"] in ("ask", "hold") and not standing
+                                and store.consume_once(principal, doc.get("policy_approval"),
+                                                       digest, policy["generation"]))
+                        if not (standing or once):
+                            self._server._ops.finish(namespace, op_id, "refused")
+                            return "refused"
+                except Exception:  # noqa: BLE001 - policy unavailability never permits a send
+                    self._server._ops.finish(namespace, op_id, "refused")
+                    return "refused"
             stream = _Stream(stream_id, generation, token, namespace, op_id,
                              deadline=time.monotonic() + _stream_budget(request),
                              credit=credit)

@@ -15,6 +15,7 @@ import runpy
 import select
 import signal
 import socket
+import sqlite3
 import stat
 import struct
 import time
@@ -104,6 +105,66 @@ def bootstrap_services(data_root, run_root, bindings, launch, *, generation):
         _bootstrap_failure(exc, 'bootstrap')
 
 
+def _prepare_policy_paths(data_root):
+    """Give the broker its private policy parent and read-only legacy inputs.
+
+    PID1 runs this after the old daemon is stopped, before dropping root. No
+    policy content is changed here. Existing rule files stay as the immutable
+    migration source until the box cutover retires them.
+    """
+    data_root = Path(data_root)
+    platform = data_root / '.platform'
+    if not platform.exists():
+        platform.mkdir(mode=0o710)
+    info = platform.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, 1001):
+        raise BootstrapRefused('unsafe platform policy parent')
+    os.chown(platform, 1001, 1102)
+    os.chmod(platform, 0o710)
+    accounts = platform / 'accounts'
+    if not accounts.exists():
+        accounts.mkdir(mode=0o700)
+    info = accounts.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, 1002):
+        raise BootstrapRefused('unsafe broker account policy parent')
+    os.chown(accounts, 1002, 1002)
+    os.chmod(accounts, 0o700)
+    legacy = data_root / '.agent-sessions'
+    if not legacy.exists():
+        return
+    info = legacy.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001:
+        raise BootstrapRefused('unsafe legacy rule parent')
+    os.chown(legacy, 1001, 1102)
+    os.chmod(legacy, 0o710)
+    for center in legacy.iterdir():
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', center.name):
+            continue  # Other record entries are unrelated to policy.
+        info = center.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001:
+            raise BootstrapRefused('unsafe legacy rule center')
+        os.chown(center, 1001, 1102)
+        os.chmod(center, 0o710)
+        rules = center / 'rules.db'
+        if not rules.exists():
+            continue
+        info = rules.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, 1001)
+                or info.st_nlink != 1):
+            raise BootstrapRefused('unsafe legacy rule database')
+        # The retired daemon may have left committed rows in a WAL. Freeze a
+        # complete SQLite snapshot before taking away its write permission.
+        with sqlite3.connect(rules.as_uri() + '?mode=rw', uri=True) as db:
+            if db.execute('PRAGMA journal_mode').fetchone()[0] == 'wal':
+                checkpoint = db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                if checkpoint[0]:
+                    raise BootstrapRefused('legacy policy WAL could not be checkpointed')
+                if db.execute('PRAGMA journal_mode=DELETE').fetchone()[0] != 'delete':
+                    raise BootstrapRefused('legacy policy journal could not be frozen')
+        os.chown(rules, 0, 1102)
+        os.chmod(rules, 0o440)
+
+
 def _bootstrap_services(data_root, run_root, bindings, launch, generation):
     if type(generation) is not int or generation < 0:
         raise RuntimeError('invalid bootstrap admission generation')
@@ -123,6 +184,7 @@ def _bootstrap_services(data_root, run_root, bindings, launch, generation):
         if info.st_uid != 0 or info.st_mode & 0o022:
             raise BootstrapRefused(
                 f'bootstrap IPC parent is writable or not root-owned: {ancestor}')
+    _prepare_policy_paths(data_root)
     broker_dir = run_root / 'broker'
     info = broker_dir.lstat()
     if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid,

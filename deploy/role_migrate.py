@@ -413,6 +413,25 @@ def target(path, info, bindings, modes):
             return (BROKER, BROKER_GROUP, 0o2700 if path in SETGID_PLATFORM_DIRS else 0o700,
                     None, None)
         return (BROKER, BROKER_GROUP, 0o600, None, None)
+    if top == '.platform':
+        _require_plain(path, kind)
+        if len(parts) == 1:
+            return (DAEMON, 1102, 0o710, None, None)
+        if parts[1] == 'accounts':
+            return (BROKER, BROKER, 0o700 if directory else 0o600, None, None)
+        return platform
+    if top == '.runtime' and (len(parts) == 1 or parts[1].startswith('owner-sessions.db')):
+        _require_plain(path, kind)
+        return (DAEMON, 1102, 0o710 if directory else 0o640, None, None)
+    if top == '.agent-sessions':
+        _require_plain(path, kind)
+        if len(parts) == 1:
+            return (DAEMON, 1102, 0o710, None, None)
+        if len(parts) == 2 and directory:
+            return (DAEMON, 1102, 0o710, None, None)
+        if len(parts) == 3 and parts[2] == 'rules.db':
+            return (0, 1102, 0o440, None, None)
+        return platform
     if top == ".consumer_liveness":
         _require_plain(path, kind)
         return (DAEMON, modes["BROKER_READ_GID"], modes["LIVENESS_DIRECTORY_MODE"] if directory

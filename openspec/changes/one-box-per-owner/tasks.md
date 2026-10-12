@@ -18,7 +18,7 @@ and the spec is synced.
 - [x] 0.1 ADR-019, plus the status line in ADR-012, the proposal, the
       design and the spec deltas. Verify:
       `npx openspec validate one-box-per-owner --strict`.
-- [ ] 0.2 Registry row N10, "Owner-only policy layer", is added by the
+- [x] 0.2 Registry row N10, "Owner-only policy layer", is added by the
       lead in a separate PR. This change is its build path (P1, guard
       `policy-writers`). P9 marks N10 converged together with S8, S10 and
       S27. The registry's figure of 34 `role_*` cells is 33 on main; P9
