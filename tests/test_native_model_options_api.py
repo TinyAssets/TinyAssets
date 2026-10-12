@@ -141,6 +141,21 @@ def test_native_public_picker_lists_default_and_discovered_model(picker, native)
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_package_catalogue_status_tracks_the_enumeration_in_model_options(
+    picker, native, monkeypatch,
+):
+    from tinyassets.external_agents import registry
+
+    picker()  # Warm the owner-scoped catalogue through the synthetic executor.
+    monkeypatch.setattr(registry, "PACKAGES", {"codex": object()})
+    result = model_options._collect(native.base, "owner-1", native.universe.name)
+    assert any(row["availability_basis"] == "executor_enumerated"
+               for row in result["options"])
+    source = next(row for row in result["sources"] if row["provider_ref"] == "codex")
+    assert source["catalogue_status"] == "fresh"
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_public_picker_refresh_discovers_new_account_model(picker, native, monkeypatch):
     ids = ["initial-model"]
 

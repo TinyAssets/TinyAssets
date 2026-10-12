@@ -3229,6 +3229,7 @@ def converse(
     # is stored, because "settled through turn N" cannot name a turn the store does
     # not have yet (change `deferred-learning-never-blocks-the-reply`).
     lesson_settled: list[bool] = []
+    learning_failures: list[str] = []
     # Where the cursor should already stand. A turn whose learning FAILED left it
     # behind, and a watermark cannot say "N settled, N-1 not" -- so this turn's
     # settle is refused rather than jumping past the owed one (PR #4001 review).
@@ -3316,6 +3317,7 @@ def converse(
                 input_method=input_method,
                 response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,
+                learning_failure_observer=learning_failures.append,
                 session_key=f"thread:{memory_session}",
                 addressed_agent=addressed,
                 **({} if model_choice is None else {"model_choice": model_choice}),
@@ -3375,6 +3377,8 @@ def converse(
             **_unsettled_steering(memory_universe_dir, memory_session, live_id),
         })
     execution = execution_receipts[0] if execution_receipts else None
+    if execution is not None and learning_failures:
+        execution = {**execution, "learning_failure": learning_failures[0]}
     delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
         from tinyassets.conversation_store import record_exchange_turns

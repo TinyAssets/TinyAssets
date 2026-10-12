@@ -21,7 +21,7 @@ _REQUIRED_FIELDS = {"provider", "model", "model_status"}
 _OPTIONAL_FIELDS = (
     "provider_display", "requested_model", "configured_model", "resolved_model",
     "reported_model", "family", "source_kind", "execution", "outcome",
-    "usage_provenance", "usage_id", "parent_usage_id",
+    "usage_provenance", "usage_id", "parent_usage_id", "learning_failure",
 )
 
 
@@ -113,6 +113,7 @@ class ExecutionReceipt:
     usage_provenance: str = ""
     usage_id: str = ""
     parent_usage_id: str = ""
+    learning_failure: str = ""
     fallback_used: int | None = None
     attempt: int | None = None
     input_tokens: int | None = None
@@ -197,7 +198,7 @@ def receipt_from_response(
         resolved_model=_label(response.model, 200),
         reported_model=reported,
         family=_label(response.family, 200),
-        execution=("native_agent" if purpose == "reply" and response.tool_uses is not None
+        execution=("native_agent" if response.native_evidence is not None
                    else "model_response"),
         outcome="failed" if response.failure_class or response.degraded else "succeeded",
         usage_provenance=("provider_reported" if response.input_tokens is not None

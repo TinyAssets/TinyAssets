@@ -187,6 +187,8 @@ def _job_failure_reason(error, turn, outcome) -> str:
         return "job_failed:timeout"
     if isinstance(error, PermissionError):
         return "job_failed:custody"
+    if isinstance(error, ProviderAuthenticationError):
+        return "auth_invalid"
     if isinstance(error, ProviderError):
         if "did not complete with text and usage" in str(error):
             return "job_failed:incomplete"
@@ -296,6 +298,9 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                     input_text=input_text, effort=config.reasoning_effort or None,
                     workdir=workdir, resume=resume,
                 )
+                if outcome.auth_rejected:
+                    raise ProviderAuthenticationError(
+                        "external agent needs a fresh sign-in")
                 if (outcome.status != job["events"]["done"]["success"]
                         or not outcome.messages or not outcome.usage_seen):
                     raise ProviderError("external-agent turn did not complete with text and usage")
@@ -356,6 +361,6 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
         reported_model=outcome.reported_model, family=package.row["family"],
         latency_ms=(time.monotonic() - started) * 1000,
         input_tokens=outcome.input_tokens, output_tokens=outcome.output_tokens,
-        cost_microunits=(outcome.input_tokens + outcome.output_tokens) * 100,
+        cost_microunits=0,
         native_evidence=NativeCompletionEvidence(agent, False, True, "unknown"),
     )

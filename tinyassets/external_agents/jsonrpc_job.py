@@ -78,6 +78,7 @@ class TurnOutcome:
     output_tokens: int = 0
     usage_seen: bool = False
     status: str = ""
+    auth_rejected: bool = False
     tool_calls: int = 0
 
 
@@ -220,6 +221,13 @@ class JsonRpcJob:
         elif method == events["done"]["method"]:
             event = events["done"]
             self.outcome.status = str(pointer(params, event["status"]) or "")
+            failure = pointer(params, "/turn/error")
+            if isinstance(failure, dict):
+                code = str(failure.get("code") or "").lower()
+                message = str(failure.get("message") or "").lower()
+                self.outcome.auth_rejected = any(marker in code or marker in message
+                    for marker in ("invalid_grant", "unauthorized", "not logged in",
+                                   "authentication required", "refresh token rejected"))
             if not self.outcome.messages and "items" in event:
                 items = pointer(params, event["items"])
                 if isinstance(items, list):

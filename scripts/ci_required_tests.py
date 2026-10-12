@@ -1050,17 +1050,6 @@ def main() -> int:
     ap.add_argument("--changed", nargs="*", help="changed paths for --ci-select")
     ap.add_argument("--out", help="selection file for --ci-select")
     ap.add_argument(
-        "--prune-to-collectible",
-        metavar="FILE",
-        help=(
-            "Rewrite an affected_tests.py selection in place, dropping files "
-            "that collect NOTHING under this gate's `-m \"not slow\"`. Run once "
-            "by the `select` job, before the digest: a slow-only file would "
-            "otherwise fail the coverage check and make its shard exit 5, "
-            "neither of which is a regression (`slow-tests` runs those)."
-        ),
-    )
-    ap.add_argument(
         "--plan-shard",
         action="store_true",
         help=(
@@ -1079,30 +1068,6 @@ def main() -> int:
         return 0
     if args.print_selection_digest:
         print(selection_digest(selection_entries(Path(args.print_selection_digest))))
-        return 0
-    if args.prune_to_collectible:
-        path = Path(args.prune_to_collectible)
-        entries = selection_entries(path)
-        if entries is None:
-            print("ALL: nothing to prune")
-            return 0
-        runnable, dropped = collectible_under_gate(gating_selection(entries, args.exclude_from))
-        path.write_text("".join(f"{rel}\n" for rel in runnable), encoding="utf-8")
-        summarise(
-            [
-                "### Selection pruned to what this gate runs",
-                "",
-                f"- kept **{len(runnable)}** of {len(entries)} selected file(s)",
-                f"- dropped **{len(dropped)}** that collect nothing under "
-                f'`-m \"not slow\"` (they run in `slow-tests`): '
-                + (", ".join(f"`{rel}`" for rel in dropped[:10]) or "none"),
-            ]
-        )
-        if not runnable:
-            # Nothing left to run and nothing to cover. The gate must not judge
-            # this as a selective pass with an empty union, so fall back to ALL.
-            path.write_text("ALL\n", encoding="utf-8")
-            print("no collectible file left: falling back to ALL")
         return 0
     if args.plan_shard and not (args.affected and args.shard):
         raise SystemExit("--plan-shard needs --affected FILE and --shard I/N.")

@@ -113,6 +113,27 @@ def test_unavailable_codex_binding_is_loud(tmp_path):
     assert failure.value.reason == "signed_out"
 
 
+def test_codex_terminal_auth_error_is_classified_without_leaking_its_message():
+    import time
+
+    from tinyassets.exceptions import ProviderAuthenticationError
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
+    from tinyassets.external_agents.runner import _job_failure_reason
+    from tinyassets.providers.base import ModelConfig
+
+    turn = JsonRpcJob(
+        SimpleNamespace(returncode=None), job=resolve("codex").row["job"],
+        agent="codex", tools=None, profile=ModelConfig().stream_timeout_profile(),
+        start=time.monotonic(), turn_wait=5, tool_wait=5,
+    )
+    turn._dispatch({"method": "turn/completed", "params": {"turn": {
+        "status": "failed", "error": {"code": "invalid_grant", "message": "secret-value"},
+    }}})
+    assert turn.outcome.auth_rejected
+    assert _job_failure_reason(ProviderAuthenticationError("fresh sign-in"), turn,
+                               turn.outcome) == "auth_invalid"
+
+
 def test_job_declaration_uses_the_one_agent_definition():
     from mcp.types import Tool
 
