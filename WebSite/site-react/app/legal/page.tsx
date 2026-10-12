@@ -129,7 +129,7 @@ export default function LegalPage() {
               <strong>AI output.</strong> AI-generated output can be wrong, incomplete, or unsuitable. Review it before relying on it, especially for legal, medical, financial, or safety decisions. Third-party AI providers you connect are governed by their own terms.
             </li>
             <li>
-              <strong>Paid plans.</strong> Paid plans are billed through Stripe. A plan renews automatically until you cancel. Checkout tells you this before you pay: the plan renews, you can cancel online at any time, and we send a reminder before any annual renewal. After you cancel, you keep access until the end of the period you already paid for. Payments are non-refundable except where the law requires a refund. If the price changes, we tell you before the new price applies to you.
+              <strong>Paid plans.</strong> Paid plans are billed through Stripe. A plan renews automatically until you cancel. You can cancel online at any time. After you cancel, you keep access until the end of the period you already paid for. Payments are non-refundable except where the law requires a refund. If the price changes, we tell you before the new price applies to you.
             </li>
             <li>
               <strong>Open source.</strong> The TinyAssets software is MIT-licensed. That license governs the code, and these terms govern the hosted service.
