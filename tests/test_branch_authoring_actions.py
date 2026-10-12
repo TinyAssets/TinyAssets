@@ -227,13 +227,11 @@ def test_list_branches_node_count_matches_node_defs_length(branch_env):
 def test_read_actions_do_not_hit_ledger(branch_env):
     us, base = branch_env
     bid = _draft(us, "X")["branch_def_id"]
+    # A private draft is not public attribution, so the build writes no ledger.
+    assert not (base / "ledger.json").exists()
     _call(us, "get_branch", branch_def_id=bid)
     _call(us, "list_branches", scope="all")
-
-    ledger = json.loads((base / "ledger.json").read_text(encoding="utf-8"))
-    # Only the build_branch should be logged
-    assert len(ledger) == 1
-    assert ledger[0]["action"] == "build_branch"
+    assert not (base / "ledger.json").exists()
 
 
 def test_read_graph_branches_lists_own_workflows_by_name_and_id(branch_env):

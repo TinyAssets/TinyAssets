@@ -70,6 +70,28 @@ def test_republish_supersedes_with_history_and_installed_copy_unchanged(home):
     assert manifest["bundle_id"] == second["bundle_id"]
 
 
+def test_publish_ask_creates_no_bundle_row_before_approval(home):
+    """The catalogue row is created when the owner approves, not when asked."""
+    import sqlite3
+
+    from tinyassets.storage import db_path
+
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    assert "request_id" in ask, ask
+    with sqlite3.connect(db_path(home)) as conn:
+        bundles = conn.execute("SELECT COUNT(*) FROM commons_bundles").fetchone()[0]
+        sources = conn.execute(
+            "SELECT COUNT(*) FROM commons_bundle_sources"
+        ).fetchone()[0]
+    assert bundles == 0
+    assert sources == 0
+    done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    assert done.get("published"), done
+    with sqlite3.connect(db_path(home)) as conn:
+        bundles = conn.execute("SELECT COUNT(*) FROM commons_bundles").fetchone()[0]
+    assert bundles == 1
+
+
 def test_author_fence_and_remix_identity(home):
     first = _publish(home)
     payload = first["portable_definition"]
