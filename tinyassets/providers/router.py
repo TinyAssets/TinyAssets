@@ -1463,16 +1463,8 @@ class ProviderRouter:
                     )
                 # A SUCCEEDED settlement must carry KNOWN usage: settle_invocation
                 # rejects anything that is not an int. But usage is optional on
-                # ProviderResponse by design -- "every existing construction site
-                # and non-streaming provider stays a valid terminal
-                # ProviderResponse" (providers/base.py) -- and codex_provider only
-                # populates it on a served agent turn (`config.sandbox_workspace`,
-                # the app-server path). A plain prompt-template node has no
-                # sandbox workspace, so a perfectly successful call arrived here
-                # with all three fields None and the settlement destroyed it:
-                # every prompt-template run in the founder's universe failed with
-                # "provider invocation usage could not be settled" on 2026-08-27
-                # while effect-only branches, which take no carrier, kept working.
+                # ProviderResponse by design. A successful prompt-template call
+                # can have unknown usage; it cannot settle a succeeded carrier.
                 #
                 # INDETERMINATE is the state that already means exactly this, and
                 # its budget treatment is the conservative one (consume the

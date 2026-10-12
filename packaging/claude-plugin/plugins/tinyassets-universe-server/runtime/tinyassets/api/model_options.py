@@ -2,7 +2,7 @@
 
 import sqlite3
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from tinyassets.api import permissions
@@ -310,6 +310,20 @@ def _collect(base, owner, uid):
                 "warnings": ([] if type(snapshot) is NativeDiscoverySnapshot
                              else list(snapshot.warnings)),
             })
+    from tinyassets.external_agents import receipts as agent_receipts
+    from tinyassets.external_agents.registry import PACKAGES
+
+    for provider in native:
+        if provider in PACKAGES and provider in sources:
+            source = sources[provider]
+            if provider in snapshots and provider not in failed:
+                age = (datetime.now(timezone.utc)
+                       - snapshots[provider].completed_at).total_seconds()
+                source["catalogue_status"] = (
+                    "fresh" if 0 <= age <= agent_receipts.FRESH_SECONDS else "stale")
+            else:
+                source["catalogue_status"] = agent_receipts.status(
+                    base, owner=owner, universe_id=uid, agent=provider)
     legacy_source = None
     if legacy_provider is not None and legacy_provider not in failed:
         provider = legacy_provider

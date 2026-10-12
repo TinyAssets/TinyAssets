@@ -162,6 +162,37 @@ def test_unavailable_codex_never_calls_claude(tmp_path):
         revoke_provider_request(capability)
 
 
+def test_codex_auth_failure_with_claude_registered_ends_in_reconnect(tmp_path):
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthenticationError
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.universe_server import _served_failure_notice
+
+    _, _, capability, context = _served_context(tmp_path)
+
+    class SignedOut(_RecordingProvider):
+        async def complete(self, *args, **kwargs):
+            self.calls += 1
+            raise ProviderAuthenticationError("external agent needs a fresh sign-in")
+
+    codex = SignedOut("codex")
+    claude = _RecordingProvider("claude-code")
+    router = ProviderRouter(providers={"codex": codex, "claude-code": claude})
+    try:
+        with pytest.raises(AllProvidersExhaustedError) as failure:
+            asyncio.run(router.call(
+                "writer", "hello", "system", universe_context=context,
+                operation="converse",
+            ))
+        assert codex.calls == 1 and claude.calls == 0
+        assert failure.value.attempts[0].skip_class == "auth_invalid"
+        notice = _served_failure_notice(failure.value).lower()
+        assert "reconnect" in notice
+        assert "claude" not in notice
+    finally:
+        revoke_provider_request(capability)
+
+
 def _binding() -> dict[str, object]:
     return {"schema_version": 1, "name": "Served", "role": "writer"}
 

@@ -483,23 +483,22 @@ The typed-chat interface SHALL show a clickable active provider/model control, d
 - **AND** an unavailable optional receipt migration permits otherwise-valid text-only storage
 
 ### Requirement: Native metadata subprocesses are confined to their launch snapshot
-Native metadata transport SHALL use the shared confined owned-process launcher with the explicit owning command center, only its exact ephemeral credential snapshot and private temporary runtime storage. It SHALL NOT inherit an ambient engine route, expose sibling command centers or snapshots, or fall back to an unconfined process. Existing custody revalidation, fixed registered protocol, output bounds and cancellation semantics SHALL remain enforced.
+Native model discovery SHALL be the external-agent package's `catalogue` operation, run by the generic runner in the owner's external-agent cell (later the owner's box) with the explicit owning command center, the owner-private agent home, and only the auth files materialized from the owner's revalidated custody snapshot for that job. It SHALL NOT inherit an ambient engine route, expose sibling command centers, other owners' homes or snapshots, place the CLI home under the temporary directory, or fall back to an unconfined process. Custody revalidation, the package's declared protocol, output bounds and cancellation semantics SHALL remain enforced, and every refresh SHALL leave a catalogue receipt.
 
 #### Scenario: A metadata executable attempts a foreign read
-- **WHEN** an owned metadata launch attempts to read another command center, another snapshot, platform source or a host process environment
-- **THEN** the OS jail denies those reads while allowing its own synthetic credential and bounded metadata response
+- **WHEN** a catalogue launch attempts to read another command center, another owner's agent home, platform source or a host process environment
+- **THEN** the cell denies those reads while allowing its own home and bounded metadata response
 - **AND** the result grants no inference or effect authority
 
 #### Scenario: Confinement cannot be established
-- **WHEN** the owning directory or snapshot is absent, foreign or redirected, or the existing OS jail is unavailable
-- **THEN** discovery fails before the provider is started with sanitized unavailable prose
+- **WHEN** the owning directory, agent home or custody snapshot is absent, foreign or redirected, or the cell is unavailable
+- **THEN** discovery fails before the CLI is started, and its receipt records `failed` with a sanitized reason
 - **AND** no host launch, new permission or persistent grant is substituted
 
 #### Scenario: A metadata launcher leaves inherited-pipe children
 - **WHEN** discovery succeeds, refuses, times out or is cancelled after starting an owned process family
-- **THEN** the existing owned-family teardown terminates descendants even after launcher exit
-- **AND** pipe cleanup is bounded and cancellation propagates
-
+- **THEN** the owned-family teardown terminates descendants even after launcher exit
+- **AND** pipe cleanup is bounded, cancellation propagates, and no auth file remains in the home
 ### Requirement: Workflow pins and refreshed native choices remain exact
 
 A workflow step's explicit model policy SHALL reach the owner-bound policy caller.

@@ -78,6 +78,7 @@ class TurnOutcome:
     output_tokens: int = 0
     usage_seen: bool = False
     status: str = ""
+    auth_rejected: bool = False
     tool_calls: int = 0
 
 
@@ -220,6 +221,10 @@ class JsonRpcJob:
         elif method == events["done"]["method"]:
             event = events["done"]
             self.outcome.status = str(pointer(params, event["status"]) or "")
+            self.outcome.auth_rejected = (
+                "auth_error" in event
+                and pointer(params, event["auth_error"]) == event["auth_code"]
+            )
             if not self.outcome.messages and "items" in event:
                 items = pointer(params, event["items"])
                 if isinstance(items, list):

@@ -299,15 +299,8 @@ class AgentTurnCoordinator:
         -- its own ``model_selection.model_id`` -- and never a string the source
         chose.
 
-        The first version preferred ``response.reported_model``, and Codex refuted
-        it on #4028: that field is source-controlled, so a source could publish
-        anything to every other user of its kind (it reproduced
-        ``owner-alice@example.com-private-9``), and ``codex_provider`` deliberately
-        reports the literal ``provider-default`` when it cannot resolve a model,
-        which would then have been published as a verified model id. What this
-        universe REQUESTED is the only id worth sharing: it is a name its owner
-        already held, it is exactly what another owner would need to grant, and a
-        source cannot inject it.
+        ``response.reported_model`` is source-controlled; the owner's requested
+        id is the only one this owner has actually validated.
 
         An empty requested id is the provider default -- a position, not a model --
         so there is nothing to teach anyone and it is skipped.
@@ -317,13 +310,12 @@ class AgentTurnCoordinator:
         account-bearing selector on its own owner's list and nowhere else. Ids reach
         everyone by a different route entirely -- a reviewed file in the repo.
         """
-        from tinyassets.storage.learned_models import (
-            LEARNED_SOURCE_KIND,
-            record_verified_model,
-        )
+        from tinyassets.external_agents.registry import PACKAGES
+        from tinyassets.storage.learned_models import LEARNED_SOURCE_KIND, record_verified_model
 
         selection = getattr(self.context, "model_selection", None)
         model_id = (getattr(selection, "model_id", "") or "").strip()
+        provider = getattr(selection, "connection_id", "")
         if not model_id:
             return
         # The OWNER, not the universe: the founder's threshold counts distinct
@@ -332,7 +324,10 @@ class AgentTurnCoordinator:
         # is the same identity the journal scopes its rows by.
         record_verified_model(
             self.context.universe_dir.parent,
-            source_kind=LEARNED_SOURCE_KIND,
+            source_kind=("agent_" + provider.replace("-", "_")
+                         if provider in PACKAGES
+                         and getattr(response, "native_evidence", None) is not None
+                         else LEARNED_SOURCE_KIND),
             model_id=model_id,
             owner_user_id=self.owner,
         )
