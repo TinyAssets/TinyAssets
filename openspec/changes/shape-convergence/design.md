@@ -136,8 +136,8 @@ platform-LLM tests, so both lines are deleted and their numbers left as gaps
 
 **(2) Reconciler (C2).**
 
-- `.github/workflows/shape-reconcile.yml` runs on `schedule` every 6 hours,
-  on `workflow_dispatch`, and on PR open or close.
+- `.github/workflows/shape-reconcile.yml` runs on `schedule` every 4 hours,
+  on `workflow_dispatch`, and on PR open, sync or close.
 - Token permissions: `issues: write`, `pull-requests: read`,
   `contents: read`. The default token is enough, because it only edits an
   issue and triggers nothing (ADR-004).

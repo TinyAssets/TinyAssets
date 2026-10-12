@@ -21,3 +21,8 @@ Checkboxes below represent whole tasks, not completed preparation substeps.
 - [ ] 3.2 Pass N>=10 paired write/recall trials in each model-family x stock/customized-AGENTS fixture cell against extraction-on baseline, plus clock, hook edit/delete/Undo/collision and failure/negative-control cases; run affected tests/heavy files and ruff.
 - [ ] 3.3 Assert deployed SHA and complete natural customized-tiny memory/access/clock and disposable onboarding proofs, replacement-main behavior and unauthorized-tier refusal.
 - [ ] 3.4 Sync only starter-agent-files, confirm D7/D10 sole ownership remains intact, and archive only after live acceptance.
+
+## Folded lanes (one owner and one cutover)
+- [ ] Complete `starter-seed-lifecycle` obligations in the folded design section (3 open source tasks); use the surviving path only.
+- [ ] Complete `starter-muse-package` obligations in the folded design section (2 open source tasks); use the surviving path only.
+- [ ] Complete `clean-agent-start` obligations in the folded design section (8 open source tasks); use the surviving path only.

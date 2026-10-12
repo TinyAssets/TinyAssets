@@ -1,0 +1,23 @@
+name: Shape reconciliation
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+  pull_request_target:
+    types: [opened, synchronize, closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconcile registry and queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m scripts.shape_reconcile

@@ -27,3 +27,5 @@ Design only; no product code. Future work touches prompt assembly in universe_in
 One intent: move resident starter policy into owner-editable files while preserving behavior and reducing cost. Parent ownership is reconciled in this revision, not deferred to sync. D7 removal is independent of renderer selection and contributes no savings claimed by this slice. D10's seed mechanism is a prerequisite reused here, not reimplemented here.
 
 Owner: Codex. Branch: spec/starter-agent-out-of-plumbing. This is the requested planning revision; no implementation or PR is opened. Future implementation lanes remain separate and merge serially.
+
+C2 folds `starter-seed-lifecycle`, `starter-muse-package`, `clean-agent-start` into this single active change.
