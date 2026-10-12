@@ -1,6 +1,6 @@
 # Tasks: cli-external-agents (C9 slice, brought forward)
 
-Each task below is one PR that ships on its own. Every PR deletes the old
+Each task below is one PR, except the combined 1.2 + 1.4 cutover. Every PR deletes the old
 path in the same PR, states its measured net
 (`git diff --numstat origin/main -- tinyassets deploy ':!**/tests/**'`), and
 does not merge if the net is positive. A task marked **Floor** gets one
@@ -25,51 +25,28 @@ through the app agent.
       deletion table with measured spans. No product code. Verify: the
       table matches `git grep` on the base commit; transcripts are fixtures
       under `tests/fixtures/external_agents/`.
-- [ ] 1.2 **Package contract, runner, catalogue, Codex home (fixes the
-      catalogue).** **Floor:** credentials.
-      - **Builds:** the `external_agents` manifest kind (D1), the pinned
-        registry and the Codex package (D2), the runner's `jsonrpc`
-        transport and `run_catalogue` (D3), the agent home and auth
-        materialize and write-back with custody compare-and-swap (D5), the
-        `CellLauncher` with `/agent-home` and one `external-agent` cell
-        kind (D4), and catalogue receipts with derived status (D8).
-      - **Deletes:** `role_provider_discovery.py`, the snapshot mount and
-        `AUTH_DIR` in `role_provider_cell.py`, `catalogue_refresh_pending`,
-        Codex's `native_discovery_protocol` and metadata wiring.
-      - **Verify:** on the production image in the Linux oracle, a Codex
-        catalogue refresh from an owner-private home succeeds and lists
-        models; a second owner's home is not visible in the cell; auth files
-        are absent after the job; a refreshed `auth.json` is written back
-        and a stale write-back is discarded; a failed refresh shows
-        `failed: <reason>` and never `pending`. Live: the founder's Codex
-        connection lists models.
+- [ ] 1.2 + 1.4 **Codex package, catalogue, and existing serving execution.**
+      **Floor:** credentials and owner authority. One PR. Keep the existing
+      Codex binding and model selection semantics. The installed package
+      supplies the catalogue and JSON-RPC job contract; the runner materializes
+      owner custody in an isolated home, drives the native turn and dynamic
+      tools, records catalogue and job receipts, and carries a CLI refresh back
+      by compare-and-swap. Delete the Codex executor, app-server codec, launch
+      contract, host auth overlay and probes, and Codex's legacy discovery cell
+      path in the same PR. Claude Code remains on its current path.
+      Verify on a migrated production copy with real owner labels: catalogue
+      models and receipt; a real turn through the existing Codex binding with
+      native-agent receipt, CLI-reported model and usage; forced refresh carried
+      to custody; no remaining auth file; unavailable Codex raises
+      `ExternalAgentUnavailable` without a Claude attempt. The net core diff is
+      negative and S3/S4 ceilings fall.
 - [ ] 1.3 **Selection and loud failure through the one call (D6).**
       **Floor:** authority. Depends on C3 2.1-2.3 (#4629), 2.4 and 2.5.
-      - **Builds:** `agent:<name>` sources in the connected set, the
-        protocol-kind dispatch in `model_call.call`, `agent:` and
-        `<agent>/<model>` references, the `execution: native_agent`
-        assertion, `ExternalAgentUnavailable` with its fixed reasons, and
-        the receipt fields.
-      - **Deletes:** the subscription-CLI branch of
-        `provider_for_definition`, `_CLI_PROVIDER_CLASSES` and
-        `_cli_provider` (callers move to the runner).
-      - **Verify:** a node pinned to `codex/<model>` for an owner whose
-        default is Claude runs on Codex; with Codex signed out, the node
-        fails with the agent, model and reason, and no Claude attempt is
-        reserved; owner B's Codex connection is refused for owner A.
-- [ ] 1.4 **Codex jobs; Codex executor deleted.** **Floor:** credentials.
-      Depends on 1.2, 1.3.
-      - **Builds:** `run_job` over `jsonrpc` with `dynamic_rpc` tools,
-        resume through `agent_sessions`, cancel with grace, usage and model
-        events, and the session directory seeding for Codex (M1 part).
-      - **Deletes:** `codex_provider.py`, `codex_app_server.py`,
-        `codex_launch_contract.py`, the Codex auth probes, refresh viability
-        and bubblewrap probe in `providers/base.py`, the Codex home helpers
-        in `credential_vault.py`, the `codex_home` status probe.
-      - **Verify:** a production-copy Codex job runs a served tool, resumes
-        on the next turn, is cancelled by a parent stop, and its receipt
-        shows `execution: native_agent`, `agent: codex`, a reported model
-        and `cli_reported` usage.
+      Add `agent:<name>` sources, protocol-kind dispatch, `agent:` and
+      `<agent>/<model>` references, and explicit cross-default pinning. The
+      existing Codex binding already executes through the runner from 1.2+1.4;
+      this task changes selection semantics and migrates their authority.
+      Verify a Codex-pinned step for a Claude-default owner and owner isolation.
 - [ ] 1.5 **Claude Code package; Claude executor deleted.** **Floor:**
       credentials. Depends on 1.4.
       - **Builds:** the `control_stream` transport, `mcp_config` tools,
@@ -87,7 +64,7 @@ through the app agent.
       - **Builds:** `agent:<package>` protocols, M1, and
         `scripts/install_external_agents.py` with the image catalogue check
         (D9).
-      - **Deletes:** `_CLI_PROTOCOLS`, `_CLI_REFS`, the vendor `RUN npm
+      - **Deletes:** the remaining Claude `_CLI_PROTOCOLS` and `_CLI_REFS`, the vendor `RUN npm
         install` stanzas and version ARGs in the `Dockerfile`, the old native
         session directories after verified copy.
       - **Guard:** the `vendor-names` ceiling falls by the deleted files;
@@ -111,7 +88,8 @@ through the app agent.
       - the founder's agent pins a review step to Codex; it runs on Codex,
         and the run's receipt shows `execution: native_agent`,
         `agent: codex`, `requested_model` as pinned, a `resolved_model` on
-        the Codex connection and a non-empty `reported_model`;
+        the Codex connection, with empty `reported_model` and
+        `model_status: unknown` unless the CLI reports an answering model;
       - with Codex signed out, the same step fails with a message naming
         Codex, the model and the reason, and nothing else runs.
 - [ ] 2.2 Mark the S3 and S4 registry rows' external-agent part done, point

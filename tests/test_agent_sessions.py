@@ -7,7 +7,6 @@ prompt and never resumes a record left by the previous launch architecture.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -15,10 +14,8 @@ import pytest
 
 import tinyassets.api.interlocutor as interlocutor
 import tinyassets.universe_intelligence as ui
-from tests.test_codex_app_server import served  # noqa: F401 - the shared fixture
 from tinyassets import agent_sessions
 from tinyassets.conversation_memory import Msg
-from tinyassets.exceptions import ProviderError
 from tinyassets.universe_bundle import seed_okf_bundle
 
 posix_only = pytest.mark.skipif(
@@ -34,13 +31,6 @@ def _ref(udir: Path, *, prompt="fresh prompt", resume="new message", key="thread
     )
 
 
-def _session_model(system="system") -> str:
-    """What the codex adapter records a thread under: its model and tool set."""
-    from tests.test_codex_app_server import _engine_tools
-    from tinyassets.agent_definition import agent_definition
-    from tinyassets.providers.codex_app_server import tools_digest
-
-    return "#tools:" + tools_digest(agent_definition(_engine_tools(), system))
 
 
 def _sent(server) -> str:
@@ -114,57 +104,12 @@ def test_unseen_keeps_only_later_messages_of_the_named_speakers():
 # --- the codex adapter (app-server threads) -----------------------------------
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stale_handle", [None, "0a1b2c3d-0000-4000-8000-000000000001"])
-async def test_owner_cells_start_ephemeral_with_full_context(served, stale_handle):  # noqa: F811
-    run, launch, _state, config, udir = served
-    ref = _ref(udir, resume="only the new message")
-    if stale_handle:
-        agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=stale_handle,
-                            system="old system")
-        store = agent_sessions.native_store(udir, "codex")
-        (store / f"rollout-x-{stale_handle}.jsonl").write_text("{}")
-    prior = agent_sessions.load(udir, ref.key)
-    _, server = await run(cfg=config(agent_session=ref), system="current system")
-    start = server.requests("thread/start")[0]["params"]
-    assert start["ephemeral"] is True
-    assert start["baseInstructions"] == "current system"
-    assert server.requests("thread/resume") == []
-    assert _sent(server) == "fresh prompt"
-    assert "only the new message" not in json.dumps(server.received)
-    assert "universe_view" not in launch.call_args.kwargs
-    assert agent_sessions.load(udir, ref.key) == prior
 
 
-@pytest.mark.asyncio
-async def test_failed_ephemeral_turn_does_not_record_a_native_session(served):  # noqa: F811
-    from tests.support.fake_codex_app_server import Turn
-
-    run, _launch, _state, config, udir = served
-    ref = _ref(udir)
-    with pytest.raises(ProviderError):
-        await run(Turn(reply=""), cfg=config(agent_session=ref))
-    assert agent_sessions.load(udir, ref.key) is None
 
 
-@posix_only
-@pytest.mark.asyncio
-async def test_a_session_held_by_another_launch_runs_unrecorded(served):  # noqa: F811
-    run, _launch, _state, config, udir = served
-    ref = _ref(udir)
-    with agent_sessions.exclusive(ref) as held:
-        assert held
-        _, server = await run(cfg=config(agent_session=ref))
-    assert server.requests("thread/start")[0]["params"]["ephemeral"] is True
-    assert agent_sessions.load(udir, ref.key) is None
 
 
-@pytest.mark.asyncio
-async def test_a_turn_without_a_session_stays_ephemeral(served):  # noqa: F811
-    run, _launch, _state, config, udir = served
-    _, server = await run(cfg=config())
-    assert server.requests("thread/start")[0]["params"]["ephemeral"] is True
-    assert not (udir / ".runtime" / "agent-sessions").exists()
 
 
 # --- converse builds the reference ----------------------------------------------

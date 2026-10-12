@@ -111,6 +111,18 @@ async def refresh_native_catalogue(
                             expected_custody.service) != expected_custody):
             raise PermissionError("native discovery custody mismatch")
         observed = datetime.now(timezone.utc)
+        from tinyassets.external_agents.registry import PACKAGES
+
+        if provider.name in PACKAGES:
+            from tinyassets.external_agents.home import Custody
+            from tinyassets.external_agents.runner import run_catalogue
+            from tinyassets.role_external_agent import CellLauncher
+
+            return await run_catalogue(
+                provider.name,
+                CellLauncher(universe_dir=universe, owner_user_id=owner_user_id),
+                Custody(universe, owner_user_id, expected_custody),
+            )
         snapshot = snapshot_llm_subscription_credential(
             universe_dir=universe, custody=expected_custody,
         )

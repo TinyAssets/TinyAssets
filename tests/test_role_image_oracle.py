@@ -85,13 +85,11 @@ def test_a_blocked_leg_names_a_live_concern_and_is_not_in_the_default_set():
         ORACLE["LEG_NAMES"])
 
 
-def test_the_oracle_reuses_the_probes_it_is_built_on():
-    """Task 2.5 reuses the PR1 fixture and builder C's probe; it never forks them."""
+def test_the_oracle_reuses_the_migration_probe():
     source = ORACLE_PATH.read_text(encoding="utf-8")
     assert "/src/scripts/role_migrate_probe.py" in source
-    assert "role_provider_cell_probe.py" in source
-    for name in ("role_migrate_probe.py", "role_provider_cell_probe.py"):
-        assert (REPO / "scripts" / name).is_file(), name
+    assert "leg_external_agent" in source
+    assert (REPO / "scripts" / "role_migrate_probe.py").is_file()
 
 
 @pytest.mark.parametrize('document,expected', [

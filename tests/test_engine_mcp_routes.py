@@ -55,8 +55,8 @@ def _codex_dials(config=None, *, child_env=None):
     from mcp.types import ListToolsResult, Tool
 
     from tinyassets import engine_tool_client
-    from tinyassets.exceptions import ProviderUnavailableError
-    from tinyassets.providers import codex_provider
+    from tinyassets.engine_tool_client import EngineToolError
+    from tinyassets.external_agents.runner import _engine_tools
     from tinyassets.served_tools import FOUR_MODEL_TOOLS
 
     dialled = []
@@ -81,13 +81,13 @@ def _codex_dials(config=None, *, child_env=None):
 
     async def go():
         async with contextlib.AsyncExitStack() as stack:
-            await codex_provider._served_engine_tools(stack, config or _config(), timeout=0.2)
+            await _engine_tools(stack, config or _config())
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(engine_tool_client, "_make_client", make)
         for name, value in (child_env or {}).items():
             patch.setenv(name, value)
-        with contextlib.suppress(ProviderUnavailableError):
+        with contextlib.suppress(EngineToolError):
             asyncio.run(go())
     return dialled
 

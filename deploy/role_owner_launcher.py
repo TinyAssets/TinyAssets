@@ -531,7 +531,7 @@ class OwnerLauncher:
             fields.update(('egress', 'ta', 'extensions'))
         if kind in ('provider-discovery', 'workspace-remote'):
             fields.add('egress')
-        if kind == 'provider-exec':
+        if kind in ('provider-exec', 'external-agent'):
             fields.update(('egress', 'engine'))
         if kind == 'package':
             fields.update(('revision', 'ta', 'egress'))
@@ -541,11 +541,12 @@ class OwnerLauncher:
                         sum(request.get(key) is True for key in ('egress', 'ta'))
                         if kind in ('tool-jail', 'package', 'workspace-remote') else
                         sum(request.get(key) is True for key in ('egress', 'engine'))
-                        if kind in ('provider-discovery', 'provider-exec') else 0)
+                        if kind in ('provider-discovery', 'provider-exec', 'external-agent') else 0)
         extension_count = int(kind == 'tool-jail' and request.get('extensions') is True)
         mounted = kind in {'workspace-git', 'workspace-remote', 'workspace-provision',
                            'preview-write', 'tool-jail',
-                           'tool-files', 'provider-discovery', 'provider-exec', 'package',
+                           'tool-files', 'provider-discovery', 'provider-exec',
+                           'external-agent', 'package',
                            'owner-delete', 'owner-delete-subtree',
                            'center-root', 'owner-content', 'owner-measure'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
@@ -554,7 +555,8 @@ class OwnerLauncher:
                 or kind not in {'image-decoder', 'workspace-git', 'workspace-remote',
                                 'workspace-provision', 'ui-preview', 'browser', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
-                                'provider-discovery', 'provider-exec', 'tool-files',
+                                'provider-discovery', 'provider-exec', 'external-agent',
+                                'tool-files',
                                 'package', 'owner-delete', 'owner-delete-subtree',
                                 'center-root', 'owner-content', 'owner-measure'}
                 or (kind in ('center-root', 'owner-content', 'owner-measure',
@@ -573,10 +575,11 @@ class OwnerLauncher:
                     or type(request['revision']) is not str
                     or not re.fullmatch('[a-f0-9]{64}', request['revision'])))
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
-                or (kind in ('provider-discovery', 'provider-exec') and (
+                or (kind in ('provider-discovery', 'provider-exec', 'external-agent') and (
                     not streaming or type(request['egress']) is not bool))
                 # K2: the engine relay rides only beside egress, on provider-exec.
-                or (kind == 'provider-exec' and (type(request['engine']) is not bool
+                or (kind in ('provider-exec', 'external-agent') and (
+                    type(request['engine']) is not bool
                     or (request['engine'] and not request['egress'])))
                 or (kind == 'tool-jail' and any(
                     type(request[key]) is not bool for key in ('egress', 'ta', 'extensions')))
@@ -588,7 +591,7 @@ class OwnerLauncher:
                 or not isinstance(request['command_center'], str)
                 or len(received) != (2 if mounted else 1)
                     + int(streaming) + socket_count + extension_count
-                    + 2 * int(kind == 'provider-exec')):
+                    + 2 * int(kind in ('provider-exec', 'external-agent'))):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
@@ -603,7 +606,7 @@ class OwnerLauncher:
                     job[1] == machine for job in self.jobs.values()) >= MAX_OWNER_CELLS):
                 raise ValueError('owner cell concurrency is exhausted')
             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)
-        if kind == 'provider-exec':
+        if kind in ('provider-exec', 'external-agent'):
             # Ordinary pipes, as a local subprocess would get: stdin's read end
             # in the data slot, stdout's and stderr's write ends before status.
             self._daemon_pipe(received[0], os.O_RDONLY)
@@ -693,6 +696,33 @@ class OwnerLauncher:
                         or not re.fullmatch(rf'engine-{self.daemon_pid}-[a-f0-9]{{12}}\.sock',
                                             source[len(prefix):])):
                     raise ValueError('provider engine relay does not match admitted center')
+        if kind == 'external-agent':
+            info = os.fstat(received[1])
+            source = os.readlink(f'/proc/self/fd/{received[1]}')
+            expected = (self.data_root + '/.platform/owners/' + str(machine)
+                        + '/agent-home')
+            if (source != expected or not stat.S_ISDIR(info.st_mode)
+                    or (info.st_uid, info.st_gid) != (inner, inner)
+                    or stat.S_IMODE(info.st_mode) not in (0o700, 0o770)):
+                raise ValueError('external-agent home is not the admitted owner home')
+            if request['egress']:
+                info = os.fstat(received[2])
+                source = os.readlink(f'/proc/self/fd/{received[2]}')
+                prefix = (self.data_root + '/.universe-sidecars/'
+                          + request['command_center'] + '/')
+                if (not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != self.overflow_uid
+                        or source != prefix + f'egress-{self.daemon_pid}.sock'):
+                    raise ValueError('external-agent egress differs from the admitted center')
+            if request.get('engine'):
+                info = os.fstat(received[3])
+                source = os.readlink(f'/proc/self/fd/{received[3]}')
+                if (not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != self.overflow_uid
+                        or not source.startswith(prefix)
+                        or not re.fullmatch(rf'engine-{self.daemon_pid}-[a-f0-9]{{12}}\.sock',
+                                            source[len(prefix):])):
+                    raise ValueError('external-agent engine relay differs from the admitted center')
         if kind == 'owner-delete-subtree':
             # Pool reclamation: one owner subtree strictly below the center root,
             # removed under the same owner-wide fence as account deletion.
@@ -720,7 +750,7 @@ class OwnerLauncher:
                     or not re.fullmatch(r'registry-[a-f0-9]{32}\.sock', source[len(prefix):])):
                 raise ValueError('registry relay is outside the admitted center')
         fd = received[0]
-        if kind != 'provider-exec':
+        if kind not in ('provider-exec', 'external-agent'):
             self._daemon_endpoint(fd, socket.SOCK_STREAM)
         status_channel = None
         if streaming:
@@ -751,10 +781,11 @@ class OwnerLauncher:
                 stderr_copy = fcntl.fcntl(error_write, fcntl.F_DUPFD_CLOEXEC, 20)
                 os.dup2(stderr_copy, 2)
                 stdout_copy = None
-                if kind == 'provider-exec':
+                if kind in ('provider-exec', 'external-agent'):
                     stdout_copy = fcntl.fcntl(received[-3], fcntl.F_DUPFD_CLOEXEC, 20)
                 retained = (3,) if mounted else ()
                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
+                             'external-agent',
                              'package', 'workspace-remote', 'workspace-provision') and (
                                  socket_count or extension_count):
                     import fcntl
@@ -770,7 +801,8 @@ class OwnerLauncher:
                     if kind == 'workspace-provision':
                         os.dup2(sources[2], 4)
                         retained.append(4)
-                    slots = ((('egress', 4), ('engine', 5)) if kind.startswith('provider-')
+                    slots = ((('egress', 4), ('engine', 5)) if (
+                        kind.startswith('provider-') or kind == 'external-agent')
                              else (('egress', 4), ('ta', 5)))
                     for name, target in slots:
                         if request.get(name):
@@ -798,8 +830,9 @@ class OwnerLauncher:
                                request['revision'] + (('e' if request['egress'] else '')
                                                       + ('t' if request['ta'] else '') or '-'),
                                self.data_root, str(inner)]
-                elif kind in ('provider-discovery', 'provider-exec'):
-                    mode = 'enter-provider-exec' if kind == 'provider-exec' else 'enter-provider'
+                elif kind in ('provider-discovery', 'provider-exec', 'external-agent'):
+                    mode = ('enter-external-agent' if kind == 'external-agent' else
+                            'enter-provider-exec' if kind == 'provider-exec' else 'enter-provider')
                     command = ['/usr/local/libexec/ta-decoder.py',
                                mode,
                                ('e' if request['egress'] else '')
@@ -860,7 +893,7 @@ class OwnerLauncher:
                 os._exit(126)
         os.close(error_write)
         error_sink = None
-        if kind == 'provider-exec':
+        if kind in ('provider-exec', 'external-agent'):
             # The daemon's stderr pipe. The cell's fd 2 is the mapper's own
             # pipe above, so a bootstrap failure is parsed here first and
             # every byte is then forwarded without ever blocking the mapper.
@@ -873,15 +906,16 @@ class OwnerLauncher:
         # A provider turn or package server runs until it finishes: lifetime is
         # the daemon's revocation (EOF), daemon death or the RSS/process guard,
         # never a clock.
-        deadline = float('inf') if kind in ('provider-exec', 'package') else time.monotonic() + (
+        deadline = (float('inf') if kind in ('provider-exec', 'external-agent', 'package')
+                    else time.monotonic() + (
             155 if kind == 'ingestion-video' else
             1810 if kind in ('node-sandbox', 'workspace-remote', 'workspace-provision') else
             660 if kind == 'tool-jail' else
             610 if kind == 'browser' else 75 if kind == 'ui-preview' else
-            65 if kind == 'workspace-git' else 35)
+            65 if kind == 'workspace-git' else 35))
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)
-            if kind in ('package', 'provider-exec', 'browser'):
+            if kind in ('package', 'provider-exec', 'external-agent', 'browser'):
                 self.package_jobs.add(pid)
             if kind == 'browser':
                 self.browser_jobs.add(pid)

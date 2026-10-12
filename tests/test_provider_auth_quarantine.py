@@ -121,3 +121,12 @@ def test_liveness_partial_writer_warns(tmp_path, monkeypatch):
     assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
 
 
+def test_owner_scoped_package_auth_does_not_claim_every_writer_is_down(tmp_path, monkeypatch):
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
+
+    out = _compute_supervisor_liveness(tmp_path)
+    assert out["provider_auth"]["writers"]["codex"]["status"] == "unknown"
+    assert out["provider_auth"]["all_writers_unauthenticated"] is False
+

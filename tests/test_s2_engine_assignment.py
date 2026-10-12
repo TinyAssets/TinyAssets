@@ -44,13 +44,14 @@ def test_llm_api_key_injects_into_claude_cli_env(tmp_path):
     assert env.get("ANTHROPIC_API_KEY") == "sk-ant-test-XYZ"
 
 
-def test_openai_key_maps_to_codex_only(tmp_path):
+def test_openai_key_is_a_direct_source_not_codex_cli_auth(tmp_path):
     write_credential_vault(tmp_path, [{
         "credential_type": "llm_api_key",
         "service": "openai",
         "secret_b64": base64.b64encode(b"sk-openai-test").decode("ascii"),
     }])
-    assert provider_auth_env_overrides(tmp_path, "codex")["OPENAI_API_KEY"] == "sk-openai-test"
+    assert resolve_llm_api_key(tmp_path, "OPENAI_API_KEY") == "sk-openai-test"
+    assert "OPENAI_API_KEY" not in provider_auth_env_overrides(tmp_path, "codex")
     # The wrong provider does not receive it (no cross-provider bleed).
     assert "OPENAI_API_KEY" not in provider_auth_env_overrides(tmp_path, "claude-code")
     assert "ANTHROPIC_API_KEY" not in provider_auth_env_overrides(tmp_path, "claude-code")

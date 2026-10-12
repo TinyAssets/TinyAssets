@@ -59,7 +59,7 @@ def test_known_model_stays_pickable_during_refresh(native, monkeypatch, history,
     row = next(row for row in document["options"] if row["reference"]["model_id"] == model_id)
     assert row["in_candidate_catalog"] is True, row
     assert row["reasons"] == [], row
-    expected = "native_catalogue_unavailable" if failed else "catalogue_refresh_pending"
+    expected = "failed: native_catalogue_unavailable" if failed else "stale"
     assert expected in {reason["reason"] for source in document["source_failures"]
                         for reason in source["reasons"]}
     # These display facts must never become launch authority.
@@ -110,7 +110,7 @@ def test_last_catalogue_cannot_cross_current_source_authority(native, monkeypatc
     stale = replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=10),
                     **{mismatch: changes[mismatch]})
     monkeypatch.setattr(SHORTLIST_CACHE, "get",
-                        lambda **kwargs: (stale, "catalogue_refresh_pending"))
+                        lambda **kwargs: (stale, "stale"))
     prepared = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
         allow_empty=True)

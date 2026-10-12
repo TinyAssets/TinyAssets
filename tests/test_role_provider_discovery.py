@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets import role_decoder, role_provider_cell, role_provider_discovery
+from tinyassets import role_decoder, role_external_agent, role_provider_cell
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers import native_jsonrpc_discovery as discovery
 from tinyassets.providers import owned_process
@@ -35,7 +35,7 @@ def _snapshot(tmp_path, center='alice', name='codex-abc'):
 
 def test_config_rewrites_snapshot_and_drops_host_data_paths(tmp_path):
     root, snapshot = _snapshot(tmp_path)
-    raw = role_provider_discovery.cell_config(
+    raw = role_external_agent.cell_config(
         ['/opt/codex-install/node_modules/.bin/codex', 'app-server'],
         {'CODEX_HOME': str(snapshot), 'TINYASSETS_DATA_DIR': str(root), 'TERM': 'dumb'},
         (('HOME', '/tmp'), ('AUTH', str(snapshot / 'auth.json'))), snapshot, root)
@@ -44,12 +44,12 @@ def test_config_rewrites_snapshot_and_drops_host_data_paths(tmp_path):
     assert config['env'] == {'CODEX_HOME': '/snapshot', 'TERM': 'dumb', 'HOME': '/tmp',
                              'AUTH': '/snapshot/auth.json'}
     assert str(root) not in raw.decode()
-    guarded = json.loads(role_provider_discovery.cell_config(
+    guarded = json.loads(role_external_agent.cell_config(
         ['immutable-cli'], {'DAEMON_TOKEN': 'foreign-token', 'LD_PRELOAD': '/snapshot/evil',
                            'CODEX_HOME': str(snapshot)}, (), snapshot, root))
     assert guarded['env'] == {'CODEX_HOME': '/snapshot'}
     with pytest.raises(ValueError, match='bound'):
-        role_provider_discovery.cell_config(['x'] * 30000, {}, (), snapshot, root)
+        role_external_agent.cell_config(['x'] * 30000, {}, (), snapshot, root)
 
 
 def test_cell_reads_exactly_one_config_line_and_leaves_cli_bytes(monkeypatch):
@@ -68,25 +68,6 @@ def test_cell_reads_exactly_one_config_line_and_leaves_cli_bytes(monkeypatch):
         os.close(write)
 
 
-def test_execution_admits_served_policy_arguments_without_relaxing_discovery(monkeypatch):
-    from tinyassets.providers.codex_launch_contract import SERVED_LAUNCH_ARGS
-    from tinyassets.universe_intelligence import (
-        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
-        _ENGINE_MCP_ALLOWED,
-    )
-
-    monkeypatch.setattr(role_provider_cell, 'shipped_executable', lambda path: bool(path))
-    commands = [
-        ['/usr/local/bin/claude', '-p', '--tools', '', '--setting-sources', '',
-         '--allowedTools', *_ENGINE_MCP_ALLOWED,
-         '--disallowedTools', *_ENGINE_DISALLOWED_TOOLS_WITH_MCP],
-        ['/usr/local/bin/codex', *SERVED_LAUNCH_ARGS],
-    ]
-    for argv in commands:
-        raw = json.dumps(dict(argv=argv, env={}))
-        assert role_provider_cell.validate(raw, '/data', execution=True)[0] == argv
-        with pytest.raises(ValueError, match='invalid provider config'):
-            role_provider_cell.validate(raw, '/data')
 
 
 @pytest.mark.parametrize('argv', [
@@ -212,9 +193,9 @@ def _proof(**override):
 ])
 def test_proof_refuses_inherited_fd_nested_userns_foreign_snapshot_and_socket(override):
     identity = SimpleNamespace(uid=300001)
-    role_provider_discovery.check_proof(_proof(), identity, [7, 9])
+    role_external_agent.check_proof(_proof(), identity, [7, 9])
     with pytest.raises(RuntimeError, match='proof'):
-        role_provider_discovery.check_proof(_proof(**override), identity, [7, 9])
+        role_external_agent.check_proof(_proof(**override), identity, [7, 9])
 
 
 def test_metadata_without_client_refuses_without_daemon_fallback(monkeypatch, tmp_path):
@@ -272,7 +253,7 @@ def test_cell_stream_shim_preserves_metadata_protocol_and_revokes(monkeypatch, t
         reader, writer = await asyncio.open_connection(sock=ours, limit=limit)
         return owned_process.OwnerCellProcess(cell, reader, writer)
 
-    monkeypatch.setattr(role_provider_discovery, 'aspawn_cell', aspawn_cell)
+    monkeypatch.setattr(role_external_agent, 'aspawn_cell', aspawn_cell)
 
     async def forbidden(*args, **kwargs):
         pytest.fail('metadata spawned a daemon subprocess')

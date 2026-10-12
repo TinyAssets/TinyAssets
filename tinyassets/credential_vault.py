@@ -112,7 +112,6 @@ _LLM_API_KEY_ENV_BY_SERVICE: dict[str, str] = {
     "claude": "ANTHROPIC_API_KEY",
     "claude-code": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
-    "codex": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "google": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
@@ -1120,6 +1119,19 @@ def _read_credential_material(path: Path) -> bytes:
     return material
 
 
+def _record_auth_home(record: dict[str, Any], universe: Path,
+                      keys: tuple[str, ...], file_key: str = "") -> Path | None:
+    for key in keys:
+        resolved = _as_path(record.get(key), universe)
+        if resolved is not None:
+            return resolved
+    if file_key:
+        path = _as_path(record.get(file_key), universe)
+        if path is not None:
+            return path.parent
+    return None
+
+
 def _subscription_material(
     universe_dir: Path,
     service: str,
@@ -1129,7 +1141,9 @@ def _subscription_material(
         encoded = record.get("auth_json_b64")
         if isinstance(encoded, str) and encoded.strip():
             return _decode_codex_auth_json(encoded)
-        home = _codex_home_from_record(record, universe_dir)
+        home = _record_auth_home(
+            record, universe_dir, ("codex_home", "home", "auth_home", "path"),
+            "auth_json_path")
         if home is None:
             home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
         auth_file = _contained_path(universe_dir, str(home / "auth.json"))
@@ -1234,7 +1248,9 @@ def _usable_subscription_record(
         if isinstance(encoded, str) and encoded.strip():
             _decode_codex_auth_json(encoded)
             return record
-        home = _codex_home_from_record(record, universe_dir)
+        home = _record_auth_home(
+            record, universe_dir, ("codex_home", "home", "auth_home", "path"),
+            "auth_json_path")
         if home is None:
             home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
         contained_home = _contained_path(universe_dir, str(home))
@@ -1978,19 +1994,7 @@ def _locate_tracked_snapshot(snapshot: LLMCredentialSnapshot) -> Path | None:
 
 
 def cleanup_llm_credential_snapshot(snapshot: LLMCredentialSnapshot | None) -> None:
-    """Best-effort identity-anchored snapshot removal; never raise.
-
-    Nothing is recovered from the copy first, and that is deliberate rather than
-    an omission. The brief for this change asked for a rotation the launch copy
-    made to be written back instead of discarded; the copy cannot HOLD one. Its
-    ``auth.json`` is sealed ``0o400`` by ``_write_exclusive_snapshot_file``, and
-    the served path binds each file into the jail read-only
-    (``codex_provider._codex_home_file_mounts``), so the CLI's write fails rather
-    than producing a rotation to save. A recovery hook here could never fire, and
-    an unreachable safety net reads as a guarantee that does not exist. The
-    reachable case is a materialized home the CLI CAN write, which
-    ``subscription_refresh.adopt_newer_on_disk_document`` handles before launch.
-    """
+    """Best-effort identity-anchored removal of a sealed launch copy."""
 
     if snapshot is None:
         return
@@ -2280,135 +2284,6 @@ def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str
     ]
 
 
-def _codex_home_from_record(record: dict[str, Any], universe_dir: Path) -> Path | None:
-    for key in ("codex_home", "home", "auth_home", "path"):
-        resolved = _as_path(record.get(key), universe_dir)
-        if resolved is not None:
-            return resolved
-    auth_path = _as_path(record.get("auth_json_path"), universe_dir)
-    if auth_path is not None:
-        return auth_path.parent
-    return None
-
-
-def resolve_codex_home(universe_dir: str | Path | None) -> Path | None:
-    """Return the configured CODEX_HOME path for this universe, if any."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "codex"):
-        home = _codex_home_from_record(record, universe)
-        if home is not None:
-            return home
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "codex"
-    if (materialized / "auth.json").is_file():
-        return materialized
-    return None
-
-
-def _document_stamp(document: Any) -> float | None:
-    """A document's own ``last_refresh`` as a timestamp, or None if unreadable.
-
-    Deliberately narrow: only an ISO-8601 ``last_refresh`` counts. A file mtime is
-    NOT used as a fallback -- materializing a document sets the mtime, so mtime
-    would make the copy look newer than the original that produced it.
-    """
-    from datetime import datetime, timezone
-
-    if isinstance(document, dict):
-        raw = document.get(SUBSCRIPTION_LAST_REFRESH) or document.get(HTTP_DEPOSITED_AT)
-    else:
-        raw = document
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
-
-
-def _on_disk_document_is_newer(
-    auth_file: Path, record: dict[str, Any], vault_document: bytes,
-) -> bool:
-    """Whether the materialized document must be kept over the vault's."""
-    try:
-        if auth_file.is_symlink() or not auth_file.is_file():
-            return False
-        document = json.loads(auth_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError):
-        # Unreadable on disk: the vault's document is the only usable one, and
-        # nothing about the broken file is logged or chained.
-        return False
-    theirs = _document_stamp(document)
-    if theirs is None:
-        return False  # unstamped never wins: an owner's re-deposit must land
-    # The vault side's stamp comes from its own stored DOCUMENT first and the
-    # record only as a fallback. A legacy record carries no stamp at all, but the
-    # document inside it always does (the sign-in writes one), so reading the
-    # record alone would make every legacy deposit lose to its own copy.
-    ours = None
-    try:
-        ours = _document_stamp(json.loads(vault_document.decode("utf-8")))
-    except (UnicodeDecodeError, ValueError):
-        ours = None
-    if ours is None:
-        ours = _document_stamp(record)
-    return ours is None or theirs > ours
-
-
-def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None:
-    """Materialize any vault-backed Codex auth bundle and return CODEX_HOME."""
-    if universe_dir is None:
-        return None
-    universe = Path(universe_dir)
-    for record in _llm_records(universe, "codex"):
-        home = _codex_home_from_record(record, universe) or _secret_artifact_dir(universe, "codex")
-        home.mkdir(parents=True, exist_ok=True)
-        _chmod_best_effort(home, 0o700)
-        auth_b64 = record.get("auth_json_b64")
-        auth_file = home / "auth.json"
-        # NEWEST WINS. This wrote the vault's document over the on-disk one
-        # whenever the bytes differed, with no notion of which was newer -- so a
-        # document the CLI had refreshed was replaced by the older vault copy and
-        # the next launch replayed a spent refresh token. It cannot simply stop
-        # writing either: an owner RE-DEPOSITING is also a rotation, and it has to
-        # reach disk (`test_codex_subscription_auth_rotation_replaces_materialized_auth`).
-        #
-        # So the comparison is made, from the stamps both sides now carry. Only a
-        # document whose own `last_refresh` is readable AND strictly newer than the
-        # record's holds its ground; an unstamped or older one is replaced, which
-        # is the previous behaviour for every case that is not the bug. The vault
-        # side of the same decision is
-        # ``subscription_refresh.adopt_newer_on_disk_document``.
-        if isinstance(auth_b64, str) and auth_b64.strip():
-            auth_bytes = _decode_codex_auth_json(auth_b64)
-            if not _on_disk_document_is_newer(auth_file, record, auth_bytes):
-                tmp = auth_file.with_name("auth.json.tmp")
-                tmp.write_bytes(auth_bytes)
-                _chmod_best_effort(tmp, 0o600)
-                tmp.replace(auth_file)
-                _chmod_best_effort(auth_file, 0o600)
-        config_file = home / "config.toml"
-        if auth_file.exists() and not config_file.exists():
-            config_file.write_text(
-                'cli_auth_credentials_store = "file"\n',
-                encoding="utf-8",
-            )
-            _chmod_best_effort(config_file, 0o600)
-        return home
-    return resolve_codex_home(universe)
-
-
-def codex_subscription_auth_available(universe_dir: str | Path | None) -> bool:
-    """Return True when the vault can provide or points at Codex auth."""
-    home = ensure_codex_home_from_vault(universe_dir)
-    return bool(home and (home / "auth.json").is_file())
-
-
 def _claude_config_dir_from_record(record: dict[str, Any], universe_dir: Path) -> Path | None:
     for key in ("claude_config_dir", "config_dir", "path"):
         resolved = _as_path(record.get(key), universe_dir)
@@ -2514,24 +2389,8 @@ def provider_auth_env_overrides(
     universe_dir: str | Path | None,
     provider_name: str,
 ) -> dict[str, str]:
-    """Return subprocess env overrides for a CLI-subprocess provider.
-
-    Composes subscription auth (CODEX_HOME / CLAUDE_CONFIG_DIR) with an optional
-    founder-deposited BYO API key (OPENAI_API_KEY / ANTHROPIC_API_KEY). The key
-    is overlaid here, AFTER ``subprocess_env_without_api_keys`` has stripped the
-    process-global keys, so a per-universe key never leaks across universes and
-    the platform default is not exposed to a BYO-key universe.
-    """
+    """Apply the remaining legacy CLI executor's owner credential overlay."""
     provider = provider_name.strip()
-    if provider == "codex":
-        overrides: dict[str, str] = {}
-        codex_home = ensure_codex_home_from_vault(universe_dir)
-        if codex_home:
-            overrides["CODEX_HOME"] = str(codex_home)
-        api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
-        if api_key:
-            overrides["OPENAI_API_KEY"] = api_key
-        return overrides
     if provider == "claude-code":
         overrides = {}
         claude_config_dir = ensure_claude_config_dir_from_vault(universe_dir)

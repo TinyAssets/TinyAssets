@@ -362,7 +362,11 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(
             "access_method": "subscription_cli",
         }
         assert native.calls == 0
-        assert result["sources"][0]["enumeration"] == ("supported" if metadata else "unknown")
+        # The legacy stand-in has no package catalogue. A real package executor
+        # advertises it in the separate test below.
+        assert result["sources"][0]["enumeration"] == (
+            "supported" if metadata else "unknown"
+        )
     finally:
         auth.revoke_provider_request(capability)
 
@@ -379,3 +383,15 @@ def test_enumeration_support_accepts_executor_override_without_invoking_it(monke
     monkeypatch.setattr(provider_calls, "_router", ProviderRouter({"future-source": native}))
     assert _native_enumeration("future-source") == "supported"
     assert _native_enumeration("absent") == "unavailable"
+
+
+def test_the_shipped_package_executor_reports_enumeration_support(monkeypatch):
+    """Catalogue support follows the package executor, not the provider name."""
+    from tinyassets.api.model_options import _native_enumeration
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+
+    monkeypatch.setattr(
+        provider_calls, "_router",
+        ProviderRouter({"codex": ExternalAgentProvider("codex")}),
+    )
+    assert _native_enumeration("codex") == "supported"

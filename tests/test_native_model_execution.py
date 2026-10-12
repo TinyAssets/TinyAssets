@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -101,7 +101,9 @@ def test_native_catalogue_exposes_declared_ids_with_honest_basis(tmp_path, monke
     # own verified ids -- both candidates to grant, with their own bases, asserted in
     # tests/test_public_model_lists.py. ModelAccess canonicalizes accepted membership;
     # this is not fallback order.
-    own = [m for m in models.models if m.availability_basis in ("executor_default", "owner_declared", "executor_enumerated")]
+    own = [m for m in models.models
+           if m.availability_basis in ("executor_default", "owner_declared",
+                                       "executor_enumerated")]
     assert [m.model_id for m in own] == ["", "future-id", "new-id"]
     assert [m.availability_basis for m in own] == [
         "executor_default", "owner_declared", "owner_declared",
@@ -109,29 +111,6 @@ def test_native_catalogue_exposes_declared_ids_with_honest_basis(tmp_path, monke
     assert models.default_model_id == ""
 
 
-@pytest.mark.parametrize("requested", ["", "future-native-model"])
-def test_codex_explicit_or_default_argument_ignores_global_model(requested, monkeypatch):
-    from tinyassets.providers.codex_provider import CodexProvider
-
-    monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "host-only-model")
-    proc = AsyncMock()
-    proc.communicate.return_value = (b"native answer", b"")
-    proc.returncode = 0
-    with (
-        patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-              return_value=(["codex"], False)),
-        fake_owned_spawn("tinyassets.providers.codex_provider", return_value=proc) as spawn,
-    ):
-        result = asyncio.run(CodexProvider().complete(
-            "hello", "", ModelConfig(native_model_id=requested),
-        ))
-    argv = spawn.call_args.args
-    if requested:
-        assert argv[argv.index("-m") + 1] == requested
-    else:
-        assert "-m" not in argv
-    assert "host-only-model" not in argv
-    assert result.reported_model == ""
 
 
 @pytest.mark.parametrize("method", ["complete", "complete_json"])

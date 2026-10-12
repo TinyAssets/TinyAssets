@@ -3719,7 +3719,11 @@
       return note;
     },
     refreshLabel(reason){
-      return {catalogue_refresh_pending:"checking… (showing last known models)",
+      if(reason&&reason.startsWith("failed: "))
+        return "couldn't refresh (showing last known models)";
+      return {refreshing:"checking… (showing last known models)",
+        never_run:"model list not checked yet",
+        stale:"checking… (showing last known models)",
         catalogue_refresh_unavailable:"couldn't refresh (showing last known models)",
         native_catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
     },

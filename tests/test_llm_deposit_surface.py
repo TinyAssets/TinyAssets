@@ -217,10 +217,13 @@ def test_browser_code_cannot_create_first_claude_connection(base):
 
 def test_owner_deposits_codex_materializes_auth_json(base: Path) -> None:
     from tinyassets.credential_vault import (
-        codex_subscription_auth_available,
-        ensure_codex_home_from_vault,
+        adopt_llm_subscription_custody,
         load_credential_vault,
     )
+    from tinyassets.external_agents.home import Custody, materialize
+    from tinyassets.external_agents.registry import resolve
+    from tinyassets.providers.native_discovery import _custody
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     udir = _make_universe(base, "u-codex", admin="founder")
     _login("founder")
@@ -243,11 +246,19 @@ def test_owner_deposits_codex_materializes_auth_json(base: Path) -> None:
     assert records[0]["auth_json_b64"] == material
     assert "auth_json" not in records[0]  # no raw-bytes field
 
-    # Materializes CODEX_HOME/auth.json with the decoded bytes.
-    assert codex_subscription_auth_available(udir) is True
-    home = ensure_codex_home_from_vault(udir)
-    assert home is not None
-    assert (home / "auth.json").read_bytes() == auth_json.encode("utf-8")
+    # The package materializes only its declared auth file for the job.
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        adopt_llm_subscription_custody(
+            conn, universe_dir=udir, owner_user_id="founder",
+            universe_id=udir.name, service="codex")
+        conn.commit()
+    reference = _custody(base, udir, "founder", "codex")
+    assert reference is not None
+    assert materialize(Custody(udir, "founder", reference),
+                       resolve("codex").row["auth"]) == {
+                           "auth.json": auth_json.encode("utf-8")}
+    assert not (udir / ".credentials" / "codex").exists()
     assert _owner_rows(base, "u-codex") == [("codex", "founder")]
 
 

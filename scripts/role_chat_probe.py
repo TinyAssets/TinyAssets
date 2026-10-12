@@ -392,7 +392,7 @@ def main():
     png_base64 = base64.b64encode(png.getvalue()).decode()
     # Replace only transport credentials/endpoint in the disposable launch snapshot.
     from tinyassets.providers import base as provider_base
-    from tinyassets.providers import claude_provider, codex_provider
+    from tinyassets.providers import claude_provider
 
     original_env = provider_base.subprocess_env_for_provider
 
@@ -411,23 +411,10 @@ def main():
         if name == 'claude-code':
             env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
             env.update(ANTHROPIC_API_KEY=key, ANTHROPIC_BASE_URL=base)
-        if name == "codex":
-            config = snapshot / "config.toml"
-            mode = config.stat().st_mode & 0o777
-            config.chmod(mode | 0o200)
-            config.write_text(
-                'cli_auth_credentials_store = "file"\nmodel_provider = "oracle"\n'
-                '[model_providers.oracle]\nname = "Oracle"\nbase_url = "'
-                + base
-                + '/v1"\nwire_api = "responses"\nenv_key = "OPENAI_API_KEY"\n'
-            )
-            config.chmod(mode)
-            env["OPENAI_API_KEY"] = key
         return env
 
     provider_base.subprocess_env_for_provider = test_env
     claude_provider.subprocess_env_for_provider = test_env
-    codex_provider.subprocess_env_for_provider = test_env
     from tinyassets import universe_server
 
     # Run the real server startup, engine routes, background services and HTTP surface.
@@ -462,7 +449,7 @@ def main():
             binding = create_binding(Path('/data'), universe_id=center,
                 definition_id=definition['agent_definition_id'], created_by=owner,
                 payload={'schema_version': 1, 'name': 'Oracle sub-agent'})
-            turns = (("claude-code", 'main'), ("codex", 'main'),
+            turns = (("claude-code", 'main'),
                      ('claude-code', binding['agent_binding_id']))
             if os.environ.get('ORACLE_RUNS_ONLY') == '1':
                 turns = ()
@@ -477,14 +464,6 @@ def main():
                 before = len(requests)
                 arguments = {"message": "Use all four tools, read an image, and call the service.",
                              "graph_id": center}
-                if provider == "codex":
-                    arguments["model_choice"] = {
-                        "version": 2,
-                        "mode": "explicit",
-                        "saved_default": {"provider_ref": provider, "model_id": ""},
-                        "fallbacks": [],
-                        "efforts": [],
-                    }
                 arguments['agent_id'] = agent
                 print("ORACLE TURN START " + provider, flush=True)
                 result = await client.call_tool("converse", arguments)

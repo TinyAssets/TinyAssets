@@ -133,10 +133,12 @@ RUN set -e; \
 # the builder stage would just be dead weight, so we run the binary
 # directly here.
 COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
-COPY tinyassets/providers/codex_launch_contract.py /tmp/codex_launch_contract.py
+COPY tinyassets/external_agents/packages/codex/extension.json /tmp/codex-extension.json
+COPY tinyassets/external_agents/catalogue_rewrite.py /tmp/catalogue_rewrite.py
 RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
     /opt/codex-install/node_modules/.bin/codex --version && \
+    /opt/codex-install/node_modules/.bin/codex debug models --bundled > /opt/codex-install/bundled-models.json && \
     python /tmp/codex_cli_smoke.py /opt/codex-install/node_modules/.bin/codex
 
 # Install Claude Code CLI next to Codex. It runs only as a universe's provider

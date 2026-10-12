@@ -7,8 +7,6 @@ fields that carry the policy.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from tinyassets.providers.base import ModelConfig
 from tinyassets.providers.claude_provider import _sandbox_cli_args
 
@@ -19,23 +17,22 @@ def test_non_granted_served_provider_launches_have_no_tools(tmp_path):
     from types import SimpleNamespace
 
     from tinyassets.agent_definition import agent_definition
-    from tinyassets.providers.codex_app_server import thread_start_params
-    from tinyassets.providers.codex_provider import _served_engine_tools
+    from tinyassets.external_agents.jsonrpc_job import dynamic_tools
+    from tinyassets.external_agents.runner import _engine_tools
     from tinyassets.universe_intelligence import _sandboxed_config
 
     config = _sandboxed_config(SimpleNamespace(config=SimpleNamespace(timeout=300)),
                                granted=False)
 
-    async def codex_tools():
+    async def package_tools():
         async with AsyncExitStack() as stack:
-            return await _served_engine_tools(stack, config, timeout=300)
+            return await _engine_tools(stack, config)
 
-    codex = asyncio.run(codex_tools())
-    launch = thread_start_params(agent_definition(codex.tools if codex else (), ""),
-                                 model=None, cwd=str(tmp_path), ephemeral=True)
+    session = asyncio.run(package_tools())
+    launch_tools = dynamic_tools(agent_definition(session.tools if session else (), ""))
     flags = _sandbox_cli_args(config, tmp_path)
-    assert codex is None
-    assert launch["dynamicTools"] == []
+    assert session is None
+    assert launch_tools == []
     assert "--tools" in flags and flags[flags.index("--tools") + 1] == ""
     assert config.allowed_tools == () and "--allowedTools" not in flags
     assert "WebFetch" in config.disallowed_tools
@@ -77,21 +74,6 @@ def test_sandbox_without_universe_dir_fails_closed():
         _sandbox_cli_args(ModelConfig(sandbox_workspace=True), None)
 
 
-def test_codex_refuses_a_sandboxed_founder_turn():
-    # Codex cannot enforce the universe sandbox, so a founder-facing (sandboxed)
-    # turn routed to Codex must fail closed rather than run unconfined.
-    import asyncio
-
-    import pytest
-
-    from tinyassets.exceptions import ProviderError
-    from tinyassets.providers.codex_provider import CodexProvider
-
-    cfg = ModelConfig(sandbox_workspace=True)
-    with pytest.raises(ProviderError):
-        asyncio.run(
-            CodexProvider().complete("hi", "", cfg, universe_dir=Path("C:/u"))
-        )
 
 
 def test_disallow_only_still_emits_deny_floor(tmp_path):
@@ -103,39 +85,8 @@ def test_disallow_only_still_emits_deny_floor(tmp_path):
     assert "--allowedTools" not in flags
 
 
-def test_codex_fast_exit_excerpt_is_redacted_and_capped():
-    from tinyassets.providers.codex_provider import _redacted_stderr_excerpt
-
-    raw = "warning: x\nerror: auth failed token=sk-abcdefghijklmnop Bearer eyJhbGciOi.abcdefghijk\n"
-    out = _redacted_stderr_excerpt(raw)
-    assert "sk-abc" not in out and "eyJ" not in out and "[redacted]" in out
-    # No generic long-token rule: hashes / paths / model ids stay readable.
-    keep = "stream error for model gpt-5.5 at /opt/codex-install/node_modules/.bin/codex sha256:"
-    keep += "a" * 64
-    assert _redacted_stderr_excerpt(keep) == keep
-    # Long lines keep head AND tail (codex appends its auth error code last).
-    long = "x" * 400 + " auth error code: E_FOO"
-    ex = _redacted_stderr_excerpt(long)
-    assert len(ex) <= 240 and ex.endswith("E_FOO") and " ... " in ex
-    assert _redacted_stderr_excerpt("") == "(no stderr)"
 
 
-def test_bwrap_proc_mount_and_lock_signatures_are_sandbox_failures(monkeypatch):
-    import sys
-
-    import pytest
-
-    from tinyassets.providers.base import SandboxUnavailableError, check_bwrap_failure
-
-    monkeypatch.setattr(sys, "platform", "linux")
-    for text in (
-        "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
-        "flock: cannot open lock file /codex-home/.lock: Read-only file system",
-    ):
-        with pytest.raises(SandboxUnavailableError):
-            check_bwrap_failure(text)
-    # an unrelated lock error is NOT a sandbox failure
-    check_bwrap_failure("flock: cannot open lock file /data/.codex/.lock: Permission denied")
 
 
 def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp_path):

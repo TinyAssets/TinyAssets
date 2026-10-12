@@ -234,7 +234,6 @@ def list_bound_to_branch(base_path: str | Path, *, branch_def_id: str) -> dict[s
     with _connect(db) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not {"branch_schedules", "branch_subscriptions"} <= tables:
-            # No scheduler tables yet means nothing was ever registered here.
             return {"schedules": [], "subscriptions": []}
         migrate_scheduler_schema(conn)
         schedules = [
@@ -245,7 +244,8 @@ def list_bound_to_branch(base_path: str | Path, *, branch_def_id: str) -> dict[s
         ]
         subscriptions = [
             str(r[0]) for r in conn.execute(
-                "SELECT subscription_id FROM branch_subscriptions WHERE branch_def_id = ? AND active = 1",
+                "SELECT subscription_id FROM branch_subscriptions "
+                "WHERE branch_def_id = ? AND active = 1",
                 (branch_def_id,),
             )
         ]

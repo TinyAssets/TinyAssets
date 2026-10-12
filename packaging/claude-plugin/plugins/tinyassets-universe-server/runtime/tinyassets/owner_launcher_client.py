@@ -330,7 +330,8 @@ class OwnerLauncherClient:
                             'extensions', 'revision', 'delete_token'}:
             raise ValueError('unsupported cell parameters')
         if socket_fds and (kind not in ('tool-jail', 'package', 'provider-discovery',
-                                        'provider-exec', 'workspace-remote', 'workspace-provision')
+                                        'provider-exec', 'external-agent',
+                                        'workspace-remote', 'workspace-provision')
                            or len(socket_fds) > 2):
             raise ValueError('unsupported cell sockets')
         if (extension_fd is not None) is not bool(document.get('extensions')):
@@ -341,7 +342,7 @@ class OwnerLauncherClient:
         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         stdin = stderr = child_stdout = child_stderr = None
-        if kind == 'provider-exec':
+        if kind in ('provider-exec', 'external-agent'):
             child, stdin = _pipe()
             data, child_stdout = _pipe()
             stderr, child_stderr = _pipe()
