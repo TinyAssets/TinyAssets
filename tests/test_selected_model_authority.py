@@ -884,3 +884,96 @@ def test_cancelled_http_inference_keeps_slot_and_reservation_until_worker_finish
             await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
+def test_revoked_primary_does_not_prevent_independent_accepted_member(served, monkeypatch):
+    from tests.test_model_discovery_capability import DESCRIPTOR
+    from tinyassets.providers.definition import register_definition
+
+    rig = served.rig
+    endpoint_json, _ = rig.ledger.policy_json("conn-models")
+    rig.ledger.create_connection(
+        connection_id="independent",
+        owner_user_id="owner",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("GET", "POST"),
+        provider="http",
+        destination="compute:independent",
+        credential_ref="vault://http/other",
+        allowed_endpoints=json.loads(endpoint_json),
+    )
+    grant = rig.ledger.grant_connection(
+        grant_id="independent-grant",
+        connection_id="independent",
+        owner_user_id="owner",
+        universe_id="u-models",
+    )
+    other = register_definition(
+        universe_id="u-models",
+        owner_user_id="owner",
+        access_method="api_key_http",
+        protocol="openai_chat",
+        model="unchanged-other-pin",
+        ref=grant.grant_id,
+    )
+    rig.ledger.configure_capability(
+        connection_id="independent",
+        capability_kind="model_discovery",
+        descriptor=DESCRIPTOR,
+        enabled=True,
+        expected_grant=grant,
+    )
+    connected = bind_serving_provider(
+        base_path=rig.base,
+        universe_dir=served.context.universe_dir,
+        owner_user_id="owner",
+        universe_id="u-models",
+        agent_binding_id=served.agent["agent_binding_id"],
+        expected_revision=served.agent["revision"],
+        provider=rig.definition.id,
+        model_access={
+            rig.definition.id: ModelAccess("discovered"),
+            other.id: ModelAccess("discovered"),
+        },
+    )
+    with SQLiteProviderWorkAuthorityStore(rig.base).connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        agent = set_binding_serving_in_transaction(
+            conn,
+            universe_id="u-models",
+            binding_id=served.agent["agent_binding_id"],
+            expected_revision=connected["agent_binding"]["revision"],
+            owner_user_id="owner",
+            enabled=True,
+        )
+        conn.commit()
+    carrier = auth.mint_provider_request_carrier(
+        universe_id="u-models",
+        agent_binding_id=agent["agent_binding_id"],
+        binding_revision=agent["revision"],
+        operation="converse",
+    )
+    rig.ledger.revoke_grant("grant-models")
+    reads = []
+
+    def read(**kwargs):
+        reads.append(kwargs["definition"].ref)
+        assert kwargs["definition"].ref == "independent-grant"
+        return {"data": [snapshot_tests._model()]}
+
+    monkeypatch.setattr(snapshots, "read_http_discovery_document", read)
+    context = replace(
+        served.context,
+        provider_request=carrier,
+        config=load_universe_config(served.context.universe_dir),
+        model_selection=ModelRef(f"api_key_http:{other.id}", MODEL),
+    )
+    response = _call(served, context=context)
+    assert response.provider == f"api_key_http:{other.id}" and reads
+    assert len(served.wire) == 1
+    with SQLiteProviderWorkAuthorityStore(rig.base).connection() as conn:
+        row = conn.execute(
+            "SELECT binding_id, state FROM served_provider_budget_reservations"
+        ).fetchone()
+    assert row[0].startswith("connected_")
+    assert row[1] == "succeeded"

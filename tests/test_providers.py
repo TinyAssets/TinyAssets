@@ -476,9 +476,12 @@ class TestProviderRouterCall:
         carrier = self._carrier(provider="claude-code", max_tokens=10)
         start = threading.Barrier(3)
 
+        async def _dispatch(role, prompt, system, config, **_kwargs):
+            return await provider.complete(prompt, system, config)
+
         def _call() -> ProviderResponse:
             start.wait(timeout=2)
-            return _model_call_sync(router,
+            return router.call_sync(
                 "writer", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=UniverseContext(
@@ -486,10 +489,7 @@ class TestProviderRouterCall:
                 ),
             )
 
-        with patch(
-            "tinyassets.providers.router._provider_invocation_carrier",
-            side_effect=self._carrier_resolver(carrier),
-        ):
+        with patch.object(router, "call", side_effect=_dispatch):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 futures = [pool.submit(_call), pool.submit(_call)]
                 start.wait(timeout=2)

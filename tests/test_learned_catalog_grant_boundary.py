@@ -336,3 +336,28 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
     from tinyassets.providers.public_model_lists import read_list
 
     assert SOLO_ID not in read_list("subscription")
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_granting_access_makes_a_listed_id_selectable_and_runnable(
+        configured, monkeypatch):
+    """A legacy binding grant alone does not admit an unverified learned ID."""
+    _learn(monkeypatch, configured)
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    # A legacy binding manifest claims this ID, but is only preference data.
+    granted = custom_agents(
+        action="bind_serving_provider", universe_id="u-models",
+        binding_id=configured.binding["agent_binding_id"],
+        expected_revision=configured.binding["revision"],
+        payload={"provider": configured.rig.definition.id,
+                 "model_access": {
+                     configured.rig.definition.id: ModelAccess("discovered").document(),
+                     "codex": ModelAccess("explicit", ("", LEARNED_ID)).document(),
+                 }},
+    )
+    assert granted["status"] == "ready"
+    document = _document(configured, granted["agent_binding"])
+    row = _row(document, LEARNED_ID)
+    assert row is not None and row["in_candidate_catalog"] is False
+    assert {reason["reason"] for reason in row["reasons"]} == {"never_run"}
