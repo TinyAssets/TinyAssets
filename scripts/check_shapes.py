@@ -206,6 +206,7 @@ SHAPES: dict[str, Shape] = {
     "N8": Shape(("tinyassets/boxes/**",)),  # host-paths
     "N9": Shape(("tinyassets/model_call.py",)),  # call-sites, media-receipt
     "N10": Shape(("tinyassets/boxes/**", "tinyassets/broker/**")),  # owner-policy-write
+    "N11": Shape(("tinyassets/app_object.py",)),  # one user-built app; the command center
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {
@@ -228,6 +229,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
     "S9": r"\bclass\s+(?:Scheduler|CloudContinuation\w*|BranchTask)\b",
     "S15": r"\bclass\s+(?:HostPool\w*|HeartbeatLoop|BidPoller)\b",
     "S22": r"\b(?:class|def)\s+\w*Universe\w*\b",
+    "N11": r"\bdef\s+app_manifest\b",
 }
 # Genuinely old file probes also have a line ratchet: growing an existing file
 # cannot hide behind an unchanged file count.
@@ -481,20 +483,142 @@ def registered_path(rel: str, glob: str) -> bool:
     return PurePosixPath(rel).match(glob)
 
 
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+# The linux oracle bind-mounts the workflow checkout here and then `git init`s
+# a one-commit snapshot at /work. History stays on the mount.
+_CHECKOUT_GIT = Path("/src/.git")
+
+
+def _on_actions() -> bool:
+    return bool(os.environ.get("GITHUB_ACTIONS"))
+
+
+def _checkout_git_dir() -> Path | None:
+    return _CHECKOUT_GIT if _CHECKOUT_GIT.is_dir() else None
+
+
+def _git(cwd: Path, *args: str, git_dir: Path | None = None) -> subprocess.CompletedProcess[str]:
+    command = ["git", "-c", "safe.directory=*"]
+    if git_dir is not None:
+        command.extend(["--git-dir", str(git_dir)])
+    command.extend(args)
+    return subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+
+
+def _commit_sha(cwd: Path, rev: str, *, git_dir: Path | None = None) -> str | None:
+    result = _git(cwd, "rev-parse", "--verify", f"{rev}^{{commit}}", git_dir=git_dir)
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha if _COMMIT_RE.fullmatch(sha) else None
+
+
+def _borrow_checkout_objects(root: Path) -> bool:
+    """Let the oracle snapshot read the checkout's objects without copying them."""
+    source = _checkout_git_dir()
+    local = root / ".git"
+    if source is None or not local.is_dir():
+        return False
+    info = local / "objects" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    alternates = info / "alternates"
+    entry = f"{(source / 'objects').resolve()}\n"
+    current = alternates.read_text(encoding="utf-8") if alternates.exists() else ""
+    if entry not in current:
+        alternates.write_text(current + entry, encoding="utf-8")
+        # Local config only: a global safe.directory would outlive this repo.
+        subprocess.run(
+            ["git", "config", "--add", "safe.directory", str(source.parent.resolve())],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+    return True
+
+
+def _borrow_commit(root: Path, rev: str) -> str | None:
+    """Resolve `rev` from the checkout mount. Actions only; a local oracle stays history-free."""
+    if not _on_actions():
+        return None
+    source = _checkout_git_dir()
+    if source is None:
+        return None
+    sha = _commit_sha(root, rev, git_dir=source)
+    if sha is None or not _borrow_checkout_objects(root):
+        return None
+    return _commit_sha(root, sha)
+
+
+def _oracle_snapshot_main(root: Path) -> bool:
+    """True when local `main` is the oracle's one-commit snapshot, not upstream.
+
+    `git init` names that commit `main` when the image's default branch is main.
+    Diffing against it is empty, so the guard would pass without seeing the
+    change. The checkout mount still has the real base. The oracle image today
+    inits `master` (run 38208790984 raised instead of passing), and this keeps
+    the other default from becoming a silent pass.
+    """
+    if not _on_actions() or _checkout_git_dir() is None:
+        return False
+    return _commit_sha(root, "HEAD~1") is None
+
+
+def _related_merge_base(root: Path, rev: str) -> str:
+    """The fork point of HEAD and `rev`. Raises when they do not share history."""
+    return subprocess.check_output(
+        ["git", "-c", "safe.directory=*", "merge-base", "HEAD", rev],
+        cwd=root,
+        text=True,
+    ).strip()
+
+
+def _merge_group_base_sha() -> str | None:
+    """The queue base is the event's base_sha, not whatever origin/main resolves to.
+
+    A merge group can contain several entries. HEAD~1 is then the previous
+    entry, and a stale origin/main is an older main. The diff has to start at
+    `github.event.merge_group.base_sha`. The oracle does not receive
+    GITHUB_EVENT_PATH, so the shard also passes the sha in the environment.
+    """
+    raw = os.environ.get("MERGE_GROUP_BASE_SHA", "").strip()
+    if _COMMIT_RE.fullmatch(raw):
+        return raw
+    if os.environ.get("GITHUB_EVENT_NAME") != "merge_group":
+        return None
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return None
+    try:
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+        sha = event["merge_group"]["base_sha"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return sha if isinstance(sha, str) and _COMMIT_RE.fullmatch(sha) else None
+
+
 def _merge_base(root: Path) -> str | None:
     if not (root / ".git").exists():
         return None
+    queue_base = _merge_group_base_sha()
+    if queue_base:
+        resolved = _commit_sha(root, queue_base) or _borrow_commit(root, queue_base)
+        if resolved:
+            return resolved
+        if _on_actions():
+            raise RuntimeError("shape guard needs the merge queue base; fetch-depth must be 0")
     for ref in ("origin/main", "main", "HEAD~1"):
-        if (
-            subprocess.run(
-                ["git", "rev-parse", "--verify", ref], cwd=root, capture_output=True
-            ).returncode
-            == 0
-        ):
-            return subprocess.check_output(
-                ["git", "merge-base", "HEAD", ref], cwd=root, text=True
-            ).strip()
-    if os.environ.get("GITHUB_ACTIONS"):
+        local = _commit_sha(root, ref)
+        if local and not (ref == "main" and _oracle_snapshot_main(root)):
+            return _related_merge_base(root, local)
+        borrowed = _borrow_commit(root, ref)
+        if borrowed:
+            # The snapshot commit does not descend from main. Its working tree
+            # is the checkout, so the borrowed commit is the tree to diff.
+            try:
+                return _related_merge_base(root, borrowed)
+            except subprocess.CalledProcessError:
+                return borrowed
+    if _on_actions():
         raise RuntimeError("shape guard needs main history; fetch-depth must be 0")
     return None  # linux_oracle constructs a single-commit snapshot repository
 

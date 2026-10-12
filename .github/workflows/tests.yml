@@ -333,6 +333,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # test_shape_registry diffs against main. The shard runs in the linux
+          # oracle, which bind-mounts this checkout at /src and re-inits a
+          # one-commit repo at /work. Depth 1 leaves /src with no parent and no
+          # origin/main (merge_group run 38208790984, shard 2/6). 0 fetches
+          # main. The guard prefers github.event.merge_group.base_sha, passed
+          # into the oracle below, because HEAD~1 is the previous queue entry
+          # when a group holds more than one PR.
+          fetch-depth: 0
 
       # This host only plans the shard; dependencies live in the oracle image.
       # Enabling pip caching here fails cleanup on a cold host with no pip cache.
@@ -422,6 +431,7 @@ jobs:
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \
+            --env MERGE_GROUP_BASE_SHA=${{ github.event.merge_group.base_sha }} \
             --env "GITHUB_STEP_SUMMARY=/out/summary-shard-${{ matrix.shard }}.md" \
             -- \
             --junit "/out/junit-shard-${{ matrix.shard }}.xml" \
@@ -443,6 +453,7 @@ jobs:
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \
+            --env MERGE_GROUP_BASE_SHA=${{ github.event.merge_group.base_sha }} \
             --env "GITHUB_STEP_SUMMARY=/out/summary-shard-${{ matrix.shard }}.md" \
             -- \
             --junit "/out/junit-shard-${{ matrix.shard }}.xml" \

@@ -221,17 +221,16 @@ def test_create_and_build_bind_author_receipt_nodes_and_ledger_to_subject(
         base,
         branch_def_id=built["branch_def_id"],
     )
-    ledger = json.loads((base / "ledger.json").read_text(encoding="utf-8"))
-
     assert created_row["author"] == "credential-alice"
     assert built_row["author"] == "credential-alice"
     assert built_row["node_defs"][0]["author"] == "credential-alice"
     assert built["batch_receipt"]["actor"] == "credential-alice"
-    assert [entry["actor"] for entry in ledger] == [
-        "credential-alice",
-        "credential-alice",
-    ]
-    encoded = json.dumps(ledger, sort_keys=True)
+    # Private creates are not public attribution, so they stay out of the ledger.
+    assert not (base / "ledger.json").exists()
+    encoded = json.dumps(
+        {"created": created_row, "built": built_row, "receipt": built["batch_receipt"]},
+        sort_keys=True,
+    )
     assert "environment-owner" not in encoded
     assert "caller-mallory" not in encoded
 

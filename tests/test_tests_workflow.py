@@ -171,6 +171,7 @@ def test_both_shard_paths_hand_the_runner_its_unchanged_command_in_one_venue():
         "--out", "shard-out", "--apparmor", "ta-jail-userns",
         "--env", "TINYASSETS_DATA_DIR=/tmp/ta-data",
         "--env", "CI=true", "--env", "GITHUB_ACTIONS=true",
+        "--env", "MERGE_GROUP_BASE_SHA=<github.event.merge_group.base_sha>",
         "--env", "GITHUB_STEP_SUMMARY=/out/summary-shard-<matrix.shard>.md",
     ]
     # The runner's own command lines: what ran on the bare runner, with the
@@ -733,6 +734,49 @@ def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:
     assert "ci_required_tests.py" in run
     assert "--profile shard" in run
     assert "--min-ran" not in run, "the per-shard floor comes from --profile shard"
+
+
+def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
+    """The shape guard needs main, and the shard sees it through the oracle mount.
+
+    structural-guards runs the guard on the host. required-tests-shard runs it
+    inside the linux oracle, which reads this checkout at /src. A depth-1
+    merge_group checkout has neither origin/main nor HEAD~1, so the guard
+    raises. pull_request jobs are not this checkout: affected-tests keeps
+    depth 2 so HEAD^1 is the PR base.
+    """
+    wf = _load()
+    assert "merge_group" in _triggers(wf)
+
+    def runs_shape_guard(job: dict) -> bool:
+        text = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+        return any(
+            needle in text
+            for needle in (
+                "ci_structural_guards",
+                "test_shape_registry",
+                "linux_oracle.py --required-runner",
+            )
+        )
+
+    guarded = []
+    for name, job in wf["jobs"].items():
+        if not runs_shape_guard(job):
+            continue
+        if _expr(job.get("if", "")) == "github.event_name == 'pull_request'":
+            continue
+        checkout = next(
+            step for step in job["steps"] if "actions/checkout" in str(step.get("uses", ""))
+        )
+        assert checkout.get("with", {}).get("fetch-depth") == 0, name
+        guarded.append(name)
+    assert guarded == ["structural-guards", "required-tests-shard"]
+    # slow-tests is queue-eligible and runs pytest on the host, but only the
+    # slow marker. The shape test is unmarked, so a shallow checkout there is
+    # not the failure in run 38208790984.
+    slow = "\n".join(step.get("run", "") for step in wf["jobs"]["slow-tests"]["steps"])
+    assert "pytest -m slow" in slow
+    assert "test_shape_registry" not in slow
 
 
 # ---- PR-time affected tests ----------------------------------------------------
