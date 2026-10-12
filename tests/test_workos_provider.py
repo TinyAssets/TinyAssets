@@ -335,6 +335,162 @@ def test_audience_enforced_when_configured(keypair) -> None:
     assert p.resolve_token(_sign(keypair)) is None  # no aud at all
 
 
+def test_canonical_resource_audience_is_accepted(keypair) -> None:
+    # AuthKit sets aud to the resource the client requested. Clients and
+    # dashboards differ by a trailing slash, a capitalised host, or an
+    # explicit default port. Those are the same connector. The environment
+    # client id WorkOS uses when `resource` is omitted is not.
+    p = _provider(keypair, audience=RESOURCE)
+    for aud in (
+        "https://tinyassets.io/mcp/",
+        "https://TinyAssets.io/mcp",
+        "https://tinyassets.io:443/mcp",
+        ["client_01M15YZXW7G7X6X1YQ4TG87Q00", RESOURCE],
+    ):
+        assert p.resolve_token(_sign(keypair, aud=aud)) is not None, aud
+    assert p.resolve_token(_sign(
+        keypair, aud="client_01M15YZXW7G7X6X1YQ4TG87Q00",
+    )) is None
+    assert p.resolve_token(_sign(
+        keypair, aud="https://tinyassets.io/mcp?extra=1",
+    )) is None
+    assert p.resolve_token(_sign(
+        keypair, aud="https://user@tinyassets.io/mcp",
+    )) is None
+    # Password-only userinfo still has to stay distinct. urlsplit reports an
+    # empty username for ``https://:secret@host``, and an out-of-range port
+    # raises; neither may authenticate or raise out of resolve_token.
+    assert p.resolve_token(_sign(
+        keypair, aud="https://:secret@tinyassets.io/mcp",
+    )) is None
+    assert p.resolve_token(_sign(
+        keypair, aud="https://tinyassets.io:99999/mcp",
+    )) is None
+
+
+def test_client_id_audience_is_a_named_401(
+    keypair, caplog, isolated_rejection_log,
+) -> None:
+    """WorkOS shape when the client omits `resource` and no default indicator
+    is set: aud is the environment client id, scope is a string, email may be
+    absent. Login at AuthKit can still succeed. The connector must say the
+    audience does not match, not a generic invalid token.
+    """
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from tinyassets.auth.middleware import AuthContextMiddleware, set_provider
+
+    token = _sign(
+        keypair,
+        aud="client_01M15YZXW7G7X6X1YQ4TG87Q00",
+        scope="openid profile email offline_access",
+        email="",
+    )
+    provider = _provider(keypair, audience=RESOURCE)
+    set_provider(provider)
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+
+    async def ok(request):  # noqa: ANN001, ANN202
+        return PlainTextResponse("ok")
+
+    app = AuthContextMiddleware(Starlette(routes=[Route("/mcp", ok, methods=["POST"])]))
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/mcp",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "probe", "version": "0"},
+                },
+            },
+        )
+    finally:
+        set_provider(None)
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "invalid_token"
+    assert response.json()["error_description"] == (
+        "The access token was not issued for this connector."
+    )
+    challenge = response.headers["www-authenticate"]
+    assert 'error="invalid_token"' in challenge
+    assert 'error_description="The access token was not issued for this connector."' in challenge
+    assert "client_01" not in response.text
+    assert token not in response.text
+    assert "category=audience" in caplog.text
+    assert token not in caplog.text
+
+
+def test_outside_store_failure_is_logged_not_swallowed(
+    keypair, monkeypatch, caplog, isolated_rejection_log,
+) -> None:
+    import sqlite3
+
+    monkeypatch.setenv("TINYASSETS_OUTSIDE_CLIENT_CLAIM", "client_id")
+    monkeypatch.setenv("TINYASSETS_FIRST_PARTY_CLIENTS", "[]")
+
+    class _Boom:
+        def observe(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(
+        "tinyassets.outside_authority.current_store",
+        lambda: _Boom(),
+    )
+    token = _sign(
+        keypair,
+        aud=RESOURCE,
+        client_id="external-client",
+        sid="session-1",
+        auth_time=100,
+    )
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+
+    assert _provider(keypair, audience=RESOURCE).resolve_token(token) is None
+    assert "category=outside_store" in caplog.text
+    assert "unable to open database file" not in caplog.text
+    assert token not in caplog.text
+
+
+def test_first_party_sign_in_does_not_consult_the_outside_store(
+    keypair, monkeypatch,
+) -> None:
+    import json
+    import sqlite3
+
+    monkeypatch.setenv("TINYASSETS_OUTSIDE_CLIENT_CLAIM", "client_id")
+    monkeypatch.setenv(
+        "TINYASSETS_FIRST_PARTY_CLIENTS",
+        json.dumps([f"{ISSUER}|claude"]),
+    )
+
+    class _Boom:
+        def observe(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(
+        "tinyassets.outside_authority.current_store",
+        lambda: _Boom(),
+    )
+    token = _sign(keypair, aud=RESOURCE, client_id="claude", sid="session-1", auth_time=100)
+    ident = _provider(keypair, audience=RESOURCE).resolve_token(token)
+    assert ident is not None
+    assert ident.user_id == "user_workos_123"
+    assert "outside_origin" not in ident.metadata
+
+
 def test_audience_skipped_when_constructed_without_audience(keypair) -> None:
     # Direct construction with audience=None (dev/test) -> tokens without aud
     # still validate. The PRODUCTION entry point (from_env) fails closed instead;
