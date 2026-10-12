@@ -41,6 +41,7 @@ export function Footer() {
           <span className="eyebrow">Legal</span>
           <ul>
             <li><Link href="/legal/">Terms and privacy</Link></li>
+            <li><Link href="/token/">Token</Link></li>
             <li><Link href="/account/">Your account</Link></li>
             <li><a href={`mailto:${SITE.contact}`}>{SITE.contact}</a></li>
           </ul>
