@@ -240,10 +240,16 @@ def text_sync(
     model = universe_context.model_selection or preferred
     authority = universe_context.served_provider
     carrier = universe_context.provider_invocation
+    budget = getattr(config, "request_budget", None)
+    if budget is None:
+        from tinyassets.request_budget import current_request_budget
+
+        budget = current_request_budget()
     parent = Parent(
         owner=(authority.owner_user_id if authority is not None else
                carrier._receipt.principal_id if carrier is not None else ""),
         command_center=universe_context.universe_dir.name,
+        usage_id=budget.usage_id if budget is not None else None,
     )
     result = call_sync(ModelCall(
         model=model, fallbacks=fallbacks,
