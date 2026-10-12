@@ -281,6 +281,38 @@ def test_mixed_explicit_http_overrides_native_preference(agent, monkeypatch):
     assert agent.served.native.calls == 0 and not agent.tools and len(agent.wires) == 1
 
 
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_agent_settings_model_runs_connected_nondefault_source(agent, monkeypatch):
+    source = f"api_key_http:{agent.served.rig.definition.id}"
+    settings = agent.served.rig.base / "u-models" / "settings.yaml"
+    settings.write_text(
+        f"schema_version: 1\nmodel: {{connection: '{source}', id: '{authority.MODEL}'}}\n"
+    )
+    assert _converse(agent, monkeypatch) == "finished exact answer"
+    assert agent.served.native.calls == 0 and len(agent.wires) == 1
+    assert agent.latest().policy_source == "current"
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_explicit_choice_outweighs_agent_settings_model(agent, monkeypatch):
+    settings = agent.served.rig.base / "u-models" / "settings.yaml"
+    settings.write_text(
+        f"schema_version: 1\nmodel: {{connection: 'api_key_http:{agent.served.rig.definition.id}', "
+        f"id: '{authority.MODEL}'}}\n"
+    )
+    chosen = ModelPreferences("explicit", ModelRef("codex", ""), ()).document()
+    assert _converse(agent, monkeypatch, chosen) == "codex:hello"
+    assert agent.served.native.calls == 1 and agent.wires == []
+
+
+def test_unavailable_settings_pin_refuses_without_substituting(agent, monkeypatch):
+    settings = agent.served.rig.base / "u-models" / "settings.yaml"
+    settings.write_text("schema_version: 1\nmodel: {connection: missing, id: unavailable}\n")
+    with pytest.raises(ProviderAuthorityHeldError, match="unavailable"):
+        _converse(agent, monkeypatch)
+    assert agent.wires == [] and agent.tools == []
+
+
 def test_revocation_after_capture_still_prevents_inference(agent, monkeypatch):
     def revoke():
         agent.served.rig.ledger.revoke_grant("grant-models")

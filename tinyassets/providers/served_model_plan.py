@@ -637,6 +637,12 @@ def prepare_owned_model_plan(
         cooling_sources(owner, admitted),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
+        pinned = policy.current_selection or policy.saved_default
+        if pinned is not None:
+            rejected_pin = next((item.reason for item in plan.order(owner, universe.name).ineligible
+                                 if item.ref == pinned), "not connected")
+            raise PermissionError(f"model {pinned.connection_id}/{pinned.model_id} unavailable: "
+                                  f"{rejected_pin.replace('_', ' ')}")
         # Name what is held and why: "no model connected" was wrong for an owner
         # whose accepted sources exist but cannot run (live 2026-09-28).
         held = [
@@ -672,13 +678,14 @@ def prepare_owned_model_plan(
 
 def apply_served_model_preferences(context, *, model_choice=None, needs_tools=True):
     """Capture preferences only from a genuine current owned conversation."""
+    from tinyassets.addressed_agents import MAIN_AGENT, resolve
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.harness_settings import read_settings
 
     try:
-        current = None if model_choice is None else ModelPreferences.from_document(model_choice)
         if context.provider_request is None:
-            if current is not None:
+            if model_choice is not None:
                 raise PermissionError("model choice requires an authenticated conversation")
             return context
         universe = context.universe_dir
@@ -686,9 +693,17 @@ def apply_served_model_preferences(context, *, model_choice=None, needs_tools=Tr
             universe.parent, universe, context.provider_request, "writer", "converse",
         )
         if get_founder_home(universe.parent, capability.principal_id) != universe.name:
-            if current is not None:
+            if model_choice is not None:
                 raise PermissionError("model choice is not supported outside the current home")
             return context
+        slug = None
+        if context.agent_id != MAIN_AGENT:
+            addressed = resolve(universe.parent, universe_id=universe.name,
+                                owner=capability.principal_id, agent_id=context.agent_id)
+            slug = addressed.agent_slug if addressed is not None else None
+        if context.agent_id == MAIN_AGENT or slug is not None:
+            model_choice = read_settings(universe, agent_slug=slug).model_choice(model_choice)
+        current = None if model_choice is None else ModelPreferences.from_document(model_choice)
         prepared = prepare_owned_model_plan(
             base=universe.parent, universe=universe, owner=capability.principal_id,
             agent=agent, current=current, config=context.config, needs_tools=needs_tools,
