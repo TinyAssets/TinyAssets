@@ -126,7 +126,7 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
     pa.reset_for_tests()
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id=tmp_path.name)
     for name, value in dict(provider="codex", role="judge", operation="run_graph",
                             max_tokens=10, max_cost_microunits=5, selected_model=None,
                             native_selection=None, settlement_owner=None).items():
@@ -279,3 +279,14 @@ def test_parent_does_not_resume_before_a_timed_out_borrower_settles(monkeypatch)
         assert returned.is_set() and not errors
         assert not parent.lent
     assert pa.admission_snapshot()["live"] == 0
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

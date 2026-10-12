@@ -66,7 +66,7 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
     serving preference or another owner's definition never grants membership.
     """
     from tinyassets.broker.client import BrokerRefused
-    from tinyassets.broker.ledger_queries import HAS_MODEL_USE, query_ledger
+    from tinyassets.broker.ledger_queries import HAS_MODEL_SOURCE, query_ledger
     from tinyassets.credential_vault import current_llm_subscription_custody
     from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
@@ -90,14 +90,14 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
             continue
         try:
             facts = query_ledger(
-                base, query=HAS_MODEL_USE, principal=owner,
+                base, query=HAS_MODEL_SOURCE, principal=owner,
                 command_center=universe.name, grant_id=definition.ref,
             )
         except (GrantResolutionError, BrokerRefused, ProxyRequestError, ValueError, OSError):
             # One unavailable HTTP grant cannot withhold an independent
             # subscription source. An HTTP call still fails membership below.
             continue
-        if facts.get("model_use") is True:
+        if facts.get("model_source") is True:
             sources.add("api_key_http:" + definition.id)
     return frozenset(sources)
 

@@ -87,7 +87,7 @@ def _router_with_all_providers() -> tuple[
 
 def _bound_call(router, *, provider: str, allowed_providers):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-allowlist")
     carrier.provider = provider
     carrier.role = "writer"
     carrier.operation = "run_graph"
@@ -143,3 +143,14 @@ def test_allowlist_excluding_the_owner_provider_hard_fails(isolated_universe_con
     assert "allowed_providers" in msg
     assert "does-not-exist" in msg
     assert all(p.call_count == 0 for p in providers.values())
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

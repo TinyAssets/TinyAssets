@@ -523,7 +523,7 @@ class TestTheBoundBindsBehaviourally:
 
         # Hard Rule 15: a real dispatch needs an owner's authority.
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner")
+        carrier._receipt = MagicMock(principal_id="owner", universe_id="u-admission")
         carrier.provider = "codex"
         carrier.role = "judge"
         carrier.operation = "run_graph"
@@ -609,3 +609,14 @@ def test_the_snapshot_works_on_a_fresh_import_with_no_test_reset():
     for key in ("limit", "admitted", "refused", "live", "waiting", "peak_concurrent"):
         assert key in snap, key
     assert snap["waiting"] == 0
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

@@ -283,7 +283,7 @@ async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
 
     # Hard Rule 15: a real router call carries one universe owner's authority.
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-tool-wait")
     carrier.provider = "codex"
     carrier.role = "writer"
     carrier.operation = "run_graph"
@@ -333,3 +333,14 @@ def test_shared_serialization_revalidates_directly_constructed_evidence():
     )
     assert "tool_phase" not in attempt.to_dict()
     assert "last_progress_age_ms" not in attempt.to_dict()
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

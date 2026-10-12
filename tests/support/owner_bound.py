@@ -22,7 +22,7 @@ from tinyassets.providers.model_policy import ModelRef
 
 def owner_carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-owner-bound")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation
@@ -58,6 +58,9 @@ async def owner_bound_call(
     with patch(
         "tinyassets.providers.router._provider_invocation_carrier",
         return_value=carrier,
+    ), patch(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        return_value=frozenset({provider}),
     ):
         return await router.call(
             role, prompt, system, config or ModelConfig(max_tokens=10),

@@ -192,7 +192,7 @@ class TestProviderRouterDiagnostics:
         from tinyassets.providers.base import UniverseContext
 
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner")
+        carrier._receipt = MagicMock(principal_id="owner", universe_id="u-diag")
         carrier.provider = provider
         carrier.role = role
         carrier.operation = "run_graph"
@@ -248,3 +248,14 @@ class TestProviderRouterDiagnostics:
 
         attempts = {attempt.provider: attempt for attempt in exc_info.value.attempts}
         assert attempts["codex"].skip_class == "timed_out"
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

@@ -206,10 +206,14 @@ def test_router_binds_the_owning_universe_around_the_provider_call(tmp_path):
     # universe must be the real one on disk for the scope assertion below, so
     # the carrier is bound by hand rather than through ``owner_bound_call``.
     carrier = owner_carrier("codex")
+    carrier._receipt.universe_id = universe.name
     context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
 
     with patch("tinyassets.providers.router._provider_invocation_carrier",
-               return_value=carrier):
+               return_value=carrier), patch(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        return_value=frozenset({"codex"}),
+    ):
         asyncio.run(router.call(
             "writer", "p", "", ModelConfig(max_tokens=10),
             operation="run_graph", universe_context=context,
