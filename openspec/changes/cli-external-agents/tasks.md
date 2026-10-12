@@ -88,7 +88,8 @@ through the app agent.
       - the founder's agent pins a review step to Codex; it runs on Codex,
         and the run's receipt shows `execution: native_agent`,
         `agent: codex`, `requested_model` as pinned, a `resolved_model` on
-        the Codex connection and a non-empty `reported_model`;
+        the Codex connection, with empty `reported_model` and
+        `model_status: unknown` unless the CLI reports an answering model;
       - with Codex signed out, the same step fails with a message naming
         Codex, the model and the reason, and nothing else runs.
 - [ ] 2.2 Mark the S3 and S4 registry rows' external-agent part done, point

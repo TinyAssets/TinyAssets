@@ -25,12 +25,12 @@ class ExternalAgentProvider(BaseProvider):
         model = config.native_model_id or ""
         owner = config.invocation_owner_user_id
         if universe_dir is None or not owner:
-            raise ExternalAgentUnavailable(self.name, model, "owner_scope_absent")
+            raise ExternalAgentUnavailable(self.name, model, "job_failed:custody")
         universe = Path(universe_dir).resolve(strict=True)
         reference = _custody(universe.parent, universe, owner,
                              self.native_credential_service)
         if reference is None:
-            raise ExternalAgentUnavailable(self.name, model, "not_signed_in")
+            raise ExternalAgentUnavailable(self.name, model, "signed_out")
         from tinyassets.external_agents.runner import run_job
         from tinyassets.role_external_agent import CellLauncher
 

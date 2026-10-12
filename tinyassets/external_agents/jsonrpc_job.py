@@ -66,25 +66,6 @@ def _failure_items(text: str) -> dict:
     return {"success": False, "contentItems": [{"type": "inputText", "text": text}]}
 
 
-def _vendor_error_class(error: dict) -> str:
-    """Reduce untrusted vendor details to a fixed, non-secret receipt category."""
-    if not error:
-        return "missing"
-    detail = " ".join(str(error.get(key) or "")[:500].lower()
-                      for key in ("code", "type", "message"))
-    classes = {
-        "auth": ("401", "403", "unauthorized", "authentication", "refresh token", "invalid_grant"),
-        "rate_limit": ("429", "rate limit", "quota"),
-        "timeout": ("timeout", "timed out", "deadline"),
-        "network": ("connection", "network", "dns", "transport"),
-        "server": ("500", "502", "503", "504", "server error"),
-    }
-    for kind, tokens in classes.items():
-        if any(token in detail for token in tokens):
-            return kind
-    return "other"
-
-
 @dataclass
 class TurnOutcome:
     """What one served app-server turn produced."""
@@ -97,7 +78,6 @@ class TurnOutcome:
     output_tokens: int = 0
     usage_seen: bool = False
     status: str = ""
-    error_class: str = "missing"
     tool_calls: int = 0
 
 
@@ -131,7 +111,6 @@ class JsonRpcJob:
         self._done = asyncio.Event()
         self._failed = asyncio.Event()
         self._failure: BaseException | None = None
-        self.refused_method = ""
         self.phase = "initialize"
 
     async def _write(self, message: dict) -> None:
@@ -221,12 +200,6 @@ class JsonRpcJob:
             reported = pointer(params, events["model"]["value"])
             if isinstance(reported, str):
                 self.outcome.reported_model = _label(reported)
-        elif method == "error":
-            # Reported, never terminal: Codex may be retrying. Kept only as the
-            # reason for a failed turn that names none of its own.
-            error = params.get("error") or {}
-            if isinstance(error, dict) and error:
-                self.outcome.error_class = _vendor_error_class(error)
         elif method == events.get("item_done", {}).get("method"):
             event = events["item_done"]
             if pointer(params, event["type"]) == event["agent_type"]:
@@ -245,7 +218,6 @@ class JsonRpcJob:
             except (TypeError, ValueError):
                 pass
         elif method == events["done"]["method"]:
-            turn = params.get("turn") or {}
             event = events["done"]
             self.outcome.status = str(pointer(params, event["status"]) or "")
             if not self.outcome.messages and "items" in event:
@@ -257,10 +229,6 @@ class JsonRpcJob:
                             message = pointer(item, event["item_text"])
                             if isinstance(message, str):
                                 self.outcome.messages.append(message)
-            error = turn.get("error") or {}
-            if isinstance(error, dict):
-                if error:
-                    self.outcome.error_class = _vendor_error_class(error)
             # The turn is over: nothing it started is still owed an answer.
             for task in list(self._tool_tasks):
                 task.cancel()
@@ -378,7 +346,6 @@ class JsonRpcJob:
                         waiter.cancel()
                         await asyncio.wait({waiter}, timeout=1)
                 if "error" in reply:
-                    self.refused_method = method
                     raise ProviderError(f"external agent refused {method}")
                 return reply.get("result") or {}
 
@@ -414,11 +381,6 @@ class JsonRpcJob:
             self._in_turn = True
             self.phase = "stream"
             await reader
-            if not self.outcome.reported_model:
-                # This protocol reports the model on thread/start, while
-                # turn/started carries no model in Codex 0.160.0. Both values
-                # come from the CLI; never substitute the requested model.
-                self.outcome.reported_model = self.outcome.configured_model
             return self.outcome
         finally:
             if not reader.done():

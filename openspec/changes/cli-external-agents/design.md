@@ -305,7 +305,9 @@ adopted custody, has no usable catalogue, lacks the requested model, is not
 installed, or its job fails, the call raises `ExternalAgentUnavailable` with
 the agent name, the model and one reason from a fixed set (`not_connected`,
 `signed_out`, `catalogue_failed: <reason>`, `model_not_listed`,
-`not_installed`, `job_failed: <class>`). The step fails with that message,
+`not_installed`, `job_failed: <class>` where class is one of `cancelled`,
+`timeout`, `custody`, `incomplete`, `refused`, `exited`, `protocol`, `failed`,
+or `refresh_busy`). The step fails with that message,
 for example: "This step asked for Codex (gpt-5.5-codex), but Codex is
 unavailable: catalogue_failed: the CLI refused its home directory. Reconnect
 Codex or remove the pin." No other agent or model runs unless the caller
@@ -337,7 +339,7 @@ admissible. That widening is a P3 decision, recorded here and not built.
 - Status a client sees is derived from receipts, never guessed:
   - `fresh`, `stale`: the last succeeded receipt's age;
   - `refreshing`: a receipt with `started_at` and no `completed_at`, younger
-    than the catalogue deadline (30 s);
+    than the catalogue status deadline (65 s, above the 55 s refresh budget);
   - `failed: <reason>`: the last receipt failed and nothing is in flight;
   - `never_run`: no receipt.
   `catalogue_refresh_pending` is deleted. A refresh that the scheduler

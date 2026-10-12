@@ -132,8 +132,9 @@ reported model SHALL come only from the package's declared model event.
 
 #### Scenario: the receipt proves what ran
 - **WHEN** a Codex job completes
-- **THEN** its receipt shows `agent: codex`, the requested and resolved
-  models, and the model the CLI reported
+- **THEN** its receipt shows `agent: codex` and the requested and resolved
+  models; `reported_model` is empty with `model_status: unknown` unless the
+  package's declared model event supplied an answering model
 
 ### Requirement: Catalogue status is derived from refresh receipts
 Each catalogue refresh SHALL write a receipt with the agent, package digest,

@@ -59,6 +59,21 @@ def test_final_turn_summary_supplies_text_when_item_event_is_missing():
     assert turn.outcome.usage_seen
 
 
+def test_reported_model_comes_from_declared_turn_event():
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
+    from tinyassets.providers.base import ModelConfig
+
+    turn = JsonRpcJob(
+        SimpleNamespace(), job=resolve("codex").row["job"], agent="codex",
+        tools=None, profile=ModelConfig().stream_timeout_profile(),
+        start=time.monotonic(), turn_wait=5, tool_wait=5,
+    )
+    turn.outcome.configured_model = "configured"
+    turn._dispatch({"method": "turn/started", "params": {
+        "turn": {"model": "answering"}}})
+    assert turn.outcome.reported_model == "answering"
+
+
 def test_failed_native_turn_receipts_a_bounded_vendor_class():
     from tinyassets.exceptions import ProviderError
     from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
@@ -77,7 +92,7 @@ def test_failed_native_turn_receipts_a_bounded_vendor_class():
     reason = _job_failure_reason(ProviderError(
         "external-agent turn did not complete with text and usage"),
         turn, turn.outcome)
-    assert "vendor_auth" in reason
+    assert reason == "job_failed:incomplete"
     assert "secret-value" not in reason
 
 
@@ -95,7 +110,7 @@ def test_unavailable_codex_binding_is_loud(tmp_path):
             "hello", "system", ModelConfig(invocation_owner_user_id="owner"),
             universe_dir=center))
     assert failure.value.agent == "codex"
-    assert failure.value.reason == "not_signed_in"
+    assert failure.value.reason == "signed_out"
 
 
 def test_job_declaration_uses_the_one_agent_definition():

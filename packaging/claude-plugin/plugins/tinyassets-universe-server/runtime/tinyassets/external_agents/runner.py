@@ -70,6 +70,8 @@ async def _run_catalogue_locked(agent, launch, custody):
     package = registry.resolve(agent)
     if package.row["auth"]["service"] != custody.reference.service:
         raise PermissionError("external-agent package service differs from custody")
+    if not package.executable.is_file():
+        raise ProviderError("external-agent unavailable: not_installed")
     universe = custody.universe_dir.resolve(strict=True)
     receipt_id = receipts.admit(
         universe.parent, owner=custody.owner_user_id, universe_id=universe.name,
@@ -91,7 +93,8 @@ async def _run_catalogue_locked(agent, launch, custody):
                                   auth=package.row["auth"])
         catalogue = await read_native_catalogue(
             argv, protocol=_protocol(operation), env=env, cwd=None,
-            universe_dir=universe, timeout=receipts.DEADLINE_SECONDS, process=proc,
+            universe_dir=universe, timeout=receipts.REFRESH_TIMEOUT_SECONDS,
+            process=proc,
         )
         completed = datetime.now(timezone.utc)
         if not custody.current():
@@ -123,13 +126,17 @@ async def _run_catalogue_locked(agent, launch, custody):
         outcome = "succeeded" if error is None else (
             "cancelled" if isinstance(error, asyncio.CancelledError) else
             "timed_out" if isinstance(error, TimeoutError) else "failed")
+        reason = ("timeout" if isinstance(error, TimeoutError) else
+                  "cancelled" if isinstance(error, asyncio.CancelledError) else
+                  "custody" if isinstance(error, PermissionError) else
+                  "failed" if error else "")
         receipts.finish(universe.parent, receipt_id, outcome=outcome,
                         model_count=len(result.catalogue.models) if result else 0,
-                        reason=type(error).__name__ if error else "")
+                        reason=reason)
     if error is not None:
         if not isinstance(error, Exception):
             raise error
-        raise ProviderError("external-agent catalogue failed: " + type(error).__name__) from None
+        raise ProviderError("external-agent catalogue failed: " + reason) from None
     return result
 
 
@@ -155,27 +162,24 @@ async def _engine_tools(stack, config):
 
 
 def _job_failure_reason(error, turn, outcome) -> str:
-    """A bounded diagnostic containing no model output or credential bytes."""
+    """Return only a declared, bounded failure category."""
     if error is None:
         return ""
-    result = outcome or (turn.outcome if turn is not None else None)
-    if isinstance(error, ProviderError) and result is not None:
-        if isinstance(error, ProviderTimeoutError):
-            kind = getattr(error, "failure_class", None) or "timeout"
-        elif "did not complete with text and usage" in str(error):
-            kind = "incomplete"
-        elif "refused" in str(error):
-            kind = "refused_" + (turn.refused_method.replace("/", "_") or "unknown")
-        elif "exited" in str(error):
-            kind = "exited"
-        else:
-            kind = "protocol"
-        status = (result.status if result.status in {"completed", "failed", "interrupted"}
-                  else "unknown")
-        phase = turn.phase.replace("/", "_") if turn is not None else "unknown"
-        return (f"{kind}:{phase}:{status}:text{int(bool(result.messages))}:"
-                f"usage{int(result.usage_seen)}:vendor_{result.error_class}")
-    return type(error).__name__
+    if isinstance(error, asyncio.CancelledError):
+        return "job_failed:cancelled"
+    if isinstance(error, (TimeoutError, ProviderTimeoutError)):
+        return "job_failed:timeout"
+    if isinstance(error, PermissionError):
+        return "job_failed:custody"
+    if isinstance(error, ProviderError):
+        if "did not complete with text and usage" in str(error):
+            return "job_failed:incomplete"
+        if "refused" in str(error):
+            return "job_failed:refused"
+        if "exited" in str(error):
+            return "job_failed:exited"
+        return "job_failed:protocol"
+    return "job_failed:failed"
 
 
 async def run_job(agent: str, launch, custody: Custody, *, prompt: str,
@@ -187,22 +191,24 @@ async def run_job(agent: str, launch, custody: Custody, *, prompt: str,
                                          system=system, config=config)
     except RefreshBusyError:
         raise ExternalAgentUnavailable(agent, config.native_model_id or '',
-                                       'credential_refresh_busy') from None
+                                       'job_failed:refresh_busy') from None
 
 
 async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
     from tinyassets import agent_sessions
     from tinyassets.agent_definition import agent_definition
-    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob, tools_digest
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob, method_params, tools_digest
     from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
 
     package = registry.resolve(agent)
     model = config.native_model_id or ""
+    if not package.executable.is_file():
+        raise ExternalAgentUnavailable(agent, model, "not_installed")
     universe = custody.universe_dir.resolve(strict=True)
     if (custody.reference.service != package.row["auth"]["service"]
             or not config.invocation_owner_user_id
             or config.invocation_owner_user_id != custody.owner_user_id):
-        raise ExternalAgentUnavailable(agent, model, "owner_custody_mismatch")
+        raise ExternalAgentUnavailable(agent, model, "job_failed:custody")
     receipt_id = receipts.admit_job(
         universe.parent, owner=custody.owner_user_id, universe_id=universe.name,
         agent=agent, package_digest=package.digest,
@@ -264,8 +270,10 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                 and turn is not None and turn.outcome.thread_id):
             cancel = package.row["job"]["cancel"]
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(asyncio.shield(turn.notify(cancel["method"], {
-                    "threadId": turn.outcome.thread_id})), timeout=2)
+                await asyncio.wait_for(asyncio.shield(turn.notify(
+                    cancel["method"], method_params(cancel, {
+                        "session": turn.outcome.thread_id,
+                    }))), timeout=cancel["grace_s"])
     finally:
         if proc is not None:
             try:
@@ -280,6 +288,7 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                 if error is None:
                     error = exc
         reason = _job_failure_reason(error, turn, outcome)
+        evidence = outcome or (turn.outcome if turn is not None else None)
         receipts.finish_job(
             universe.parent, receipt_id,
             outcome="succeeded" if error is None else (
@@ -287,10 +296,11 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                 "timed_out" if isinstance(error, (TimeoutError, ProviderTimeoutError))
                 else "failed"),
             reason=reason,
-            reported_model=outcome.reported_model if outcome else "",
-            native_session=outcome.thread_id if outcome else "",
-            input_tokens=outcome.input_tokens if outcome and outcome.usage_seen else None,
-            output_tokens=outcome.output_tokens if outcome and outcome.usage_seen else None,
+            resolved_model=(evidence.configured_model or model) if evidence else model,
+            reported_model=evidence.reported_model if evidence else "",
+            native_session=evidence.thread_id if evidence else "",
+            input_tokens=evidence.input_tokens if evidence and evidence.usage_seen else None,
+            output_tokens=evidence.output_tokens if evidence and evidence.usage_seen else None,
         )
     if error is not None:
         if not isinstance(error, Exception):

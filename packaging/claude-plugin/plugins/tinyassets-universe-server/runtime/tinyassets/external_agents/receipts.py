@@ -8,7 +8,8 @@ from pathlib import Path
 
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore, db_path
 
-DEADLINE_SECONDS = 30
+DEADLINE_SECONDS = 65
+REFRESH_TIMEOUT_SECONDS = 55
 FRESH_SECONDS = 150
 
 
@@ -109,12 +110,23 @@ def admit_job(base: Path, *, owner: str, universe_id: str, agent: str,
             owner_user_id TEXT NOT NULL, universe_id TEXT NOT NULL,
             execution TEXT NOT NULL, native_agent TEXT NOT NULL,
             package_digest TEXT NOT NULL, custody_digest TEXT NOT NULL,
-            requested_model TEXT NOT NULL, reported_model TEXT NOT NULL DEFAULT '',
+            requested_model TEXT NOT NULL, resolved_model TEXT NOT NULL DEFAULT '',
+            reported_model TEXT NOT NULL DEFAULT '',
+            model_status TEXT NOT NULL DEFAULT 'unknown',
             native_session TEXT NOT NULL DEFAULT '',
             input_tokens INTEGER, output_tokens INTEGER,
             usage_provenance TEXT NOT NULL DEFAULT 'unknown',
             admitted_at TEXT NOT NULL, completed_at TEXT, outcome TEXT,
             reason TEXT NOT NULL DEFAULT '')""")
+        columns = {row[1] for row in conn.execute(
+            "PRAGMA table_info(external_agent_job_receipts)")}
+        for name, declaration in (
+            ("resolved_model", "TEXT NOT NULL DEFAULT ''"),
+            ("model_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ):
+            if name not in columns:
+                conn.execute(
+                    f"ALTER TABLE external_agent_job_receipts ADD COLUMN {name} {declaration}")
         row = conn.execute("""INSERT INTO external_agent_job_receipts
             (owner_user_id, universe_id, execution, native_agent, package_digest,
              custody_digest, requested_model, admitted_at)
@@ -126,16 +138,18 @@ def admit_job(base: Path, *, owner: str, universe_id: str, agent: str,
 
 
 def finish_job(base: Path, receipt_id: int, *, outcome: str, reason: str = "",
-               reported_model: str = "", native_session: str = "",
+               resolved_model: str = "", reported_model: str = "", native_session: str = "",
                input_tokens: int | None = None, output_tokens: int | None = None):
     if outcome not in {"succeeded", "failed", "timed_out", "cancelled"}:
         raise ValueError("invalid external-agent job outcome")
     with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
         changed = conn.execute("""UPDATE external_agent_job_receipts SET
-            completed_at=?, outcome=?, reason=?, reported_model=?, native_session=?,
+            completed_at=?, outcome=?, reason=?, resolved_model=?, reported_model=?,
+            model_status=?, native_session=?,
             input_tokens=?, output_tokens=?, usage_provenance=?
             WHERE id=? AND completed_at IS NULL""",
-            (_now(), outcome, reason[:80], reported_model[:200], native_session[:200],
+            (_now(), outcome, reason[:80], resolved_model[:200], reported_model[:200],
+             "reported" if reported_model else "unknown", native_session[:200],
              input_tokens, output_tokens,
              "cli_reported" if input_tokens is not None and output_tokens is not None
              else "unknown", receipt_id))
