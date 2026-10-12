@@ -209,6 +209,7 @@ SHAPES: dict[str, Shape] = {
     "N8": Shape(("tinyassets/boxes/**",)),  # host-paths
     "N9": Shape(("tinyassets/model_call.py",)),  # call-sites, media-receipt
     "N10": Shape(("tinyassets/boxes/**", "tinyassets/broker/**")),  # owner-policy-write
+    "N11": Shape(("tinyassets/app_object.py",)),  # one user-built app; the command center
 }
 
 ENTRY_SYMBOLS: dict[str, str] = {
@@ -231,6 +232,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
     "S9": r"\bclass\s+(?:Scheduler|CloudContinuation\w*|BranchTask)\b",
     "S15": r"\bclass\s+(?:HostPool\w*|HeartbeatLoop|BidPoller)\b",
     "S22": r"\b(?:class|def)\s+\w*Universe\w*\b",
+    "N11": r"\bdef\s+app_manifest\b",
 }
 # Genuinely old file probes also have a line ratchet: growing an existing file
 # cannot hide behind an unchanged file count.
