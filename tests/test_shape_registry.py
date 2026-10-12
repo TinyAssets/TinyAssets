@@ -9,7 +9,19 @@ from unittest.mock import patch
 
 import pytest
 
+import pytest
+
 from scripts import check_shapes
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_ci_event(monkeypatch, request):
+    """A real CI run sets these for its own event; each test sets what it needs."""
+    if request.node.name == "test_shape_registry":
+        return  # the live registry check runs against the real event
+    for name in ("GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH",
+                 "GITHUB_SHA", "MERGE_GROUP_BASE_SHA"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_shape_registry():
