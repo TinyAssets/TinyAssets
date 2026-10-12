@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import posixpath
 import shlex
@@ -294,19 +295,20 @@ def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
                                   text=True).stdout.splitlines())
     with tempfile.TemporaryDirectory(prefix="ta-oracle-ci-") as directory:
         output = Path(directory)
-        selections = _ci_selections(sorted(changed), output)
+        selections = _ci_selections(sorted(changed), output, root=root, tag=tag)
         guards = argparse.Namespace(**vars(args))
         guards.ci = False
         guards.ci_structural = True
         if subprocess.run(docker_command(guards, root, tag)).returncode:
-            print("[oracle] ci structural guards failed")
+            _ci_summary("FAIL structural guards", selections)
             return 1
         for tier, count, name, scope, digest in selections:
+            tier_output = output / tier
             for shard in range(1, count + 1):
                 runner = argparse.Namespace(**vars(args))
                 runner.ci = False
                 runner.required_runner = True
-                runner.out = str(output)
+                runner.out = str(tier_output)
                 runner.env = ["TINYASSETS_DATA_DIR=/tmp/ta-data", "CI=true",
                               "GITHUB_ACTIONS=true"]
                 runner.pytest_args = [
@@ -324,21 +326,63 @@ def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
                         runner.pytest_args += ["--selection", digest]
                 result = subprocess.run(docker_command(runner, root, tag))
                 if result.returncode:
-                    print(f"[oracle] ci {tier} shard {shard}/{count} failed ({result.returncode})")
+                    _ci_summary(f"FAIL {tier} shard {shard}/{count} ({result.returncode})",
+                                selections)
                     return result.returncode
-        print("[oracle] ci PASS | " + " | ".join(
-            f"{tier} {scope} digest {digest}" for tier, _, _, scope, digest in selections))
+            if tier == "gate":
+                aggregate = [sys.executable, "scripts/ci_required_tests.py",
+                             "--aggregate", str(tier_output), "--expect-shards", "6",
+                             "--shard-job-result", "success", "--junit",
+                             str(output / "aggregate.xml")]
+                if scope == "ALL":
+                    aggregate += ["--min-ran", "10700"]
+                else:
+                    aggregate += ["--exclude-from", ".github/heavy-test-files.txt",
+                                  "--affected", str(tier_output / name),
+                                  "--profile", "affected", "--selection", digest]
+                if subprocess.run(aggregate, cwd=root).returncode:
+                    _ci_summary("FAIL queue aggregate", selections)
+                    return 1
+                browser = argparse.Namespace(**vars(args))
+                browser.ci = False
+                browser.ci_browser = (scope, name)
+                browser.as_root = True
+                browser.out = str(output)
+                if subprocess.run(docker_command(browser, root, tag)).returncode:
+                    _ci_summary("FAIL queue browser proofs", selections)
+                    return 1
+        _ci_summary("PASS", selections)
     return 0
 
 
-def _ci_selections(changed: list[str], output: Path) -> list[tuple[str, int, str, str, str]]:
+def _ci_summary(status: str, selections: list[tuple[str, int, str, str, str]]) -> None:
+    print(f"[oracle] ci {status} | " + " | ".join(
+        f"{tier} {scope} digest {digest}" for tier, _, _, scope, digest in selections))
+
+
+def _ci_selections(changed: list[str], output: Path, *, root: Path | None = None,
+                   tag: str | None = None) -> list[tuple[str, int, str, str, str]]:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from scripts.ci_required_tests import ci_select
 
     selections = []
     for tier, count in (("pr", 4), ("gate", 6)):
+        tier_output = output / tier
+        tier_output.mkdir()
         name = f"{tier}-selection.txt"
-        scope, digest = ci_select(tier, output / name, changed=changed)
+        if root is None or tag is None:
+            scope, digest = ci_select(tier, tier_output / name, changed=changed)
+        else:
+            (tier_output / "changed.json").write_text(json.dumps(changed), encoding="utf-8")
+            selector = build_parser().parse_args(["--out", str(tier_output)])
+            selector.ci_select = (tier, name)
+            selector.as_root = True
+            subprocess.run(docker_command(selector, root, tag), check=True)
+            from scripts.ci_required_tests import selection_digest, selection_entries
+
+            entries = selection_entries(tier_output / name)
+            scope = "ALL" if entries is None else "affected"
+            digest = selection_digest(entries)
         selections.append((tier, count, name, scope, digest))
     return selections
 
@@ -370,7 +414,22 @@ def _required_runner_command(args: argparse.Namespace) -> str:
 
 def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     """The ``docker run`` argv for parsed ``args``."""
-    if getattr(args, "ci_structural", False):
+    if getattr(args, "ci_select", None):
+        tier, name = args.ci_select
+        code = ("import json; from pathlib import Path; "
+                "from scripts.ci_required_tests import ci_select; "
+                f"ci_select({tier!r}, Path('/out/{name}'), "
+                "changed=json.loads(Path('/out/changed.json').read_text()))")
+        command = shlex.join(["python", "-c", code])
+    elif getattr(args, "ci_browser", None):
+        scope, name = args.ci_browser
+        browser_args = ["python", "scripts/ci_assert_junit_case.py", "--junit",
+                        "/out/aggregate.xml", "--marker", "real_browser"]
+        if scope != "ALL":
+            browser_args += ["--only-files", f"/out/gate/{name}"]
+        browser_args += ["--label", "required-browser-proof"]
+        command = shlex.join(browser_args)
+    elif getattr(args, "ci_structural", False):
         command = "python -m scripts.ci_structural_guards"
     elif getattr(args, "required_runner", False):
         command = _required_runner_command(args)
