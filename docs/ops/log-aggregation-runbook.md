@@ -143,12 +143,15 @@ the question spans a deploy.
 `/etc/systemd/journald.conf.d/tinyassets.conf` by
 `deploy/install-host-uptime-services.sh`, which runs after every successful
 production deploy and restarts `systemd-journald` only when the bytes changed.
-`Storage=persistent`, `SystemMaxUse=2G`, `MaxRetentionSec=30day`,
+`Storage=persistent`, `SystemMaxUse=12G`, `MaxRetentionSec=30day`,
 `SystemKeepFree=2G`. Rate limiting stays on at a high ceiling
 (`RateLimitBurst=100000` per 30s). A dropped message during an incident is
 the evidence this exists to keep, and journald records the loss with its own
-suppressed-message line. The age cap is a maximum, not a promise: 2 GiB at a
-sustained 100 KiB/s is about six hours, and whichever bound runs out first wins.
+suppressed-message line. The age cap is a maximum, not a promise: 12 GiB at a
+sustained 100 KiB/s is about 35 hours, and whichever bound runs out first wins.
+Three days at that rate is about 25 GiB. On the 49 GiB production disk (40%
+used on 2026-10-01) that would pass the 80% `disk_watch` alarm, so the cap
+stays at 12G.
 
 Change it there, not on the box, or the next install reverts it.
 
@@ -242,7 +245,7 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 | Storage | Retention | Where |
 |---------|-----------|-------|
 | Docker fluentd driver buffer | In-memory; **drops** while Vector is down (`docs/concerns/2026-09-26-fluentd-driver-drops-while-vector-is-down.md`) | Not durable, never evidence |
-| **host journal** | **1 G / 14 days, persistent** (`deploy/journald-tinyassets.conf`) | Droplet local disk, survives container recreates |
+| **host journal** | **12 GiB maximum, 30 days maximum, whichever runs out first** (`deploy/journald-tinyassets.conf`). About 35 hours at a sustained 100 KiB/s | Droplet local disk, survives container recreates |
 | Better Stack | 3 GB/month (free tier) | Better Stack cloud |
 | Offsite archive | 30 days | `LOG_DEST` (Hetzner/DO Spaces) |
 

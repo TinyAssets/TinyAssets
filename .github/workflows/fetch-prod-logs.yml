@@ -37,6 +37,8 @@ on:
 permissions:
   contents: read
 
+# Journal read only. It does not restart a service or edit host config, so it
+# keeps its own lock and leaves the host-mutation lock to installs and deploys.
 concurrency:
   group: production-host-observation
   cancel-in-progress: false
@@ -50,6 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
       - name: Resolve the log query
         env:
           EVENT_JSON: ${{ toJson(github.event) }}
@@ -113,31 +119,53 @@ jobs:
                   handle.write(f"{name}<<EOF\n{value}\nEOF\n")
           PY
 
-      - name: Install the read-only SSH key
+      - name: Install the deploy SSH key
         env:
-          SSH_KEY: ${{ secrets.DO_LOG_READ_SSH_KEY }}
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${SSH_KEY}" ]; then
-            echo "DO_LOG_READ_SSH_KEY is not set."
-            echo "1. ssh-keygen -t ed25519 -f tinyassets-log-read -N \"\""
-            echo "2. Save the private key as secret DO_LOG_READ_SSH_KEY."
-            echo "3. Save the public key line as variable DO_LOG_READ_SSH_PUBKEY."
-            echo "4. Re-run Install host services so the forced command is installed."
-            echo "5. Re-run Fetch production logs."
+            echo "DO_SSH_KEY is not set."
             exit 1
           fi
           [ -n "${DO_DROPLET_HOST}" ]
           [ -n "${DO_SSH_USER}" ]
           mkdir -p ~/.ssh
-          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_log_read
-          chmod 600 ~/.ssh/do_log_read
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Fetch the timeline
         run: |
           set -euo pipefail
-          cmd=(read-logs --since "${LOG_SINCE}" --until "${LOG_UNTIL}")
+          [[ "${DO_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                mktemp -d /tmp/tinyassets-read-logs.XXXXXX
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-read-logs[.][A-Za-z0-9]+$ ]]
+          cleanup() {
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "rm -rf -- $(printf '%q' "${remote_stage}")" || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/read-prod-logs.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/read-prod-logs.py"
+          # The remote executable is python3 on this checked-in file. Query
+          # fields were pattern-checked above. printf %q quotes every argv
+          # token, so none of them is parsed as shell syntax.
+          cmd=(
+            python3
+            "${remote_stage}/read-prod-logs.py"
+            read-logs
+            --since "${LOG_SINCE}"
+            --until "${LOG_UNTIL}"
+          )
           if [ -n "${LOG_SESSION_ID}" ]; then
             cmd+=(--session "${LOG_SESSION_ID}")
           fi
@@ -151,8 +179,12 @@ jobs:
             cmd+=(--grep "${LOG_GREP}")
           fi
           remote="$(printf '%q ' "${cmd[@]}")"
+          case "${remote}" in
+            python3\ *) ;;
+            *) echo "refusing a remote command that does not start with python3"; exit 1 ;;
+          esac
           set +e
-          ssh -i ~/.ssh/do_log_read \
+          ssh -i ~/.ssh/do_deploy \
               -o BatchMode=yes \
               -o ConnectTimeout=10 \
               -o ServerAliveInterval=5 \

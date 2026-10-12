@@ -106,8 +106,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     install_script(source, Path(args.dest))
     if not args.pubkey_file:
-        print("reader script installed; no public key provided")
-        print("Set DO_LOG_READ_SSH_PUBKEY and re-run Install host services.")
+        print("reader script installed; dedicated read key not configured")
+        print(
+            "Optional later hardening: DO_LOG_READ_SSH_PUBKEY installs a forced "
+            "command on a later Install host services run. Fetch production logs "
+            "uses the deploy key and does not need it."
+        )
         return 0
     pubkey_path = Path(args.pubkey_file)
     pubkey = pubkey_path.read_text(encoding="utf-8").strip()

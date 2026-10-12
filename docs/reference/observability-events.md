@@ -94,8 +94,11 @@ segment with `{id}`.
 ## Retention
 
 `deploy/journald-tinyassets.conf` sets `MaxRetentionSec=30day` and
-`SystemMaxUse=2G`. The age is a maximum, not a promise. Whichever bound runs
-out first wins. At 100 KiB/s, 2 GiB is about six hours.
+`SystemMaxUse=12G`. The age is a maximum, not a promise. Whichever bound runs
+out first wins. At 100 KiB/s, 12 GiB is about 35 hours. Three days at that
+rate is about 25 GiB. The production disk is 49 GiB and was 40% full on
+2026-10-01, and `disk_watch` alarms at 80%, so 25 GiB does not fit. 12G keeps
+a full journal near 65% in that reading.
 
 ## Reading
 
@@ -106,24 +109,23 @@ Workflow **Fetch production logs** (`workflow_dispatch` or
 joined. The run uploads `production-log-timeline` and prints
 `TINYASSETS_SUMMARY` with error types counted by commit.
 
-The SSH key is not the deploy key. Its `authorized_keys` line is
+The workflow uses the existing deploy secret `DO_SSH_KEY`. It copies the
+checked-in `deploy/read-prod-logs.py` into a fresh directory on the host and
+runs `python3` on that file. The only remote executable is `python3`. Query
+fields are checked against fixed patterns before they are sent, and each
+argument is shell-quoted, so a field cannot change the command. The script
+then runs `journalctl` against `CONTAINER_NAME=tinyassets-logs`. The fetch
+does not write host config and does not restart anything. Its concurrency
+group is `production-host-observation`.
+
+Optional later hardening, not required to fetch: Install host services can
+add a dedicated key whose `authorized_keys` line is
 `command="/usr/local/libexec/tinyassets-read-logs"` with port forwarding, agent
-forwarding, X11, pty, and user rc disabled. The command parses
-`SSH_ORIGINAL_COMMAND` and runs only `journalctl` against
-`CONTAINER_NAME=tinyassets-logs`.
-
-One setup step is manual, because generating the key inside a deploy would
-print the private key into a log:
-
-1. `ssh-keygen -t ed25519 -f tinyassets-log-read -N ""`
-2. Secret `DO_LOG_READ_SSH_KEY` = the private key.
-3. Variable `DO_LOG_READ_SSH_PUBKEY` = the public key line.
-4. Re-run **Install host services**.
-5. **Fetch production logs** then works.
-
-Until the variable is set, the installer still copies the script and leaves
-`authorized_keys` alone. A token that can send `repository_dispatch` can fetch
-logs once the key exists. The fetch cannot write or restart anything.
+forwarding, X11, pty, and user rc disabled. That line is written only when
+variable `DO_LOG_READ_SSH_PUBKEY` is already set. With the variable unset the
+installer copies the script and leaves `authorized_keys` alone. Under that
+forced command the script reads `SSH_ORIGINAL_COMMAND` and does not execute
+it. Fetch production logs does not use that key.
 
 ## Later counts and alerts
 
@@ -164,6 +166,10 @@ The app does not add CORS headers. An edge 403 never reaches the origin, so
 it will not appear in this trail. A preflight that does reach the origin can
 still lack `Access-Control-Allow-Origin`. Either one fails a browser connector
 immediately after sign-in while the token is valid.
+
+Routing those discovery paths through the worker, mounting the path-inserted
+document, and adding CORS on `/mcp` and the well-known routes are a separate
+change. This trail does not do that work.
 
 If the `tools/list` request reaches the app, this trail records the step, the
 HTTP status, the token age, and the issuer. It does not change discovery.

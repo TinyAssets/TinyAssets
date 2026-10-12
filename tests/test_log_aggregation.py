@@ -500,7 +500,7 @@ def test_journald_dropin_bounds_retention_in_bytes_and_time():
         for line in text.splitlines()
         if "=" in line and not line.lstrip().startswith("#")
     )
-    assert settings["SystemMaxUse"] == "2G"
+    assert settings["SystemMaxUse"] == "12G"
     assert settings["MaxRetentionSec"] == "30day"
     assert settings["SystemKeepFree"] == "2G"
     # Rate limiting drops messages to protect the journal, and a dropped line
@@ -530,6 +530,9 @@ def test_the_dropin_does_not_promise_retention_it_cannot_deliver():
     assert "whichever runs out first" in text.lower()
     # And it must name the knob, since editing the box is reverted by the installer.
     assert "SystemMaxUse is the knob" in text
+    assert "12 GiB" in text
+    assert "about 35 hours" in text
+    assert "49 GiB" in text
 
 
 def test_installer_owns_the_journald_dropin():

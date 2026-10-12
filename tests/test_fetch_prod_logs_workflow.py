@@ -1,4 +1,4 @@
-"""Fetch production logs is a read, with its own key, of one person's trail."""
+"""Fetch production logs is a read, on the deploy key, of one person's trail."""
 
 from __future__ import annotations
 
@@ -15,14 +15,17 @@ def test_fetch_workflow_is_read_only_and_queries_a_trail():
     text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)
     assert workflow["name"] == "Fetch production logs"
-    assert "DO_SSH_KEY" not in text
-    assert "DO_LOG_READ_SSH_KEY" in text
+    assert "DO_SSH_KEY" in text
+    assert "DO_LOG_READ_SSH_KEY" not in text
+    assert "ssh-keygen" not in text
     assert "production-host-observation" in text
     assert "production-host-mutation" not in text
     assert "systemctl" not in text
     assert "docker restart" not in text
     assert "bash -s" not in text
+    assert "sh -c" not in text
     assert "upload-artifact" in text
+    assert "actions/checkout" in text
     triggers = workflow.get(True) or workflow.get("on") or {}
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert {"since", "until", "session_id", "account_id", "trace_id", "grep"} <= set(inputs)
@@ -31,10 +34,19 @@ def test_fetch_workflow_is_read_only_and_queries_a_trail():
     joined = "\n".join(
         step.get("run", "") for step in workflow["jobs"]["fetch"]["steps"]
     )
+    assert "read-prod-logs.py" in joined
+    assert "python3" in joined
     assert "read-logs" in joined
+    assert "printf '%q '" in joined
     assert "--session" in joined
     assert "--account" in joined
     assert "toJson(github.event)" in text
+    fetch = next(
+        item for item in workflow["jobs"]["fetch"]["steps"]
+        if item.get("name") == "Fetch the timeline"
+    )
+    assert "deploy/read-prod-logs.py" in fetch["run"]
+    assert 'case "${remote}" in' in fetch["run"]
 
 
 def test_install_step_is_the_forced_command_inside_the_host_lock():
