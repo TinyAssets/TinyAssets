@@ -165,6 +165,41 @@ def test_model_call_with_no_universe_is_refused_before_dispatch():
         bridge.set_provider_router(previous)
 
 
+@pytest.mark.parametrize("requested", [
+    ("codex", "gpt-6"),
+    ("claude-code", "different-model"),
+])
+def test_workflow_model_request_cannot_silently_use_armed_default(
+    tmp_path, requested,
+):
+    from tinyassets.provider_work_authority import (
+        ProviderInvocationReservationState,
+        ProviderInvocationSettlementOwner,
+    )
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call_sync
+    from tinyassets.providers.model_policy import ModelRef
+
+    router, spies = _spy_router()
+    carrier = _carrier("claude-code")
+    carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
+    context = UniverseContext(
+        universe_dir=tmp_path / "u1", provider_invocation=carrier,
+    )
+    with patch("tinyassets.providers.router._provider_invocation_carrier",
+               side_effect=_resolver(carrier)):
+        with pytest.raises(ProviderAuthorityHeldError, match="Requested model"):
+            call_sync(ModelCall(
+                model=ModelRef(*requested), fallbacks=(),
+                context=ModelContext(prompt="review", universe_context=context,
+                                     operation="run_graph", router=router),
+            ), Parent(owner="owner", command_center="u1"))
+    assert _calls(spies) == {}
+    carrier.settle.assert_called_once_with(
+        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+        input_tokens=0, output_tokens=0, cost_microunits=0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Host and environment credentials never serve a call
 # ---------------------------------------------------------------------------

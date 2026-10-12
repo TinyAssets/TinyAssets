@@ -299,6 +299,13 @@ def _seed_open_serving_assignment(
         model=model,
         ref=grant_id,
     )
+    ledger.configure_capability(
+        connection_id=connection_id, capability_kind="model_use", enabled=True,
+        descriptor={
+            "wire": "openai_chat", "billing": "free",
+            "models": [{"id": model, "tools": True, "context": 8192}],
+        },
+    )
     if model_access is not None:
         ledger.configure_capability(
             connection_id=connection_id, capability_kind="model_discovery", enabled=True,
@@ -306,14 +313,6 @@ def _seed_open_serving_assignment(
                         "catalogue_url": "https://api.example.com/api/v1/models/user?output_modalities=all",
                         "benchmark_url": ""},
             expected_grant=ledger.get_grant(grant_id),
-        )
-    else:
-        ledger.configure_capability(
-            connection_id=connection_id, capability_kind="model_use", enabled=True,
-            descriptor={
-                "wire": "openai_chat", "billing": "free",
-                "models": [{"id": model, "tools": True, "context": 8192}],
-            },
         )
     published = publish_definition(
         base_path,
