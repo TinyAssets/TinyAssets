@@ -13,6 +13,7 @@ from tinyassets.agent_interchange import (
     stage_import,
 )
 from tinyassets.api.helpers import _base_path, _request_universe
+from tinyassets.commons_bundles import publish_portable_copy, stage_portable_copy
 from tinyassets.custom_agents import (
     AgentConflictError,
     AgentNotFoundError,
@@ -23,8 +24,6 @@ from tinyassets.custom_agents import (
     list_bindings,
     list_definitions,
     publish_definition,
-    publish_portable_copy,
-    stage_portable_copy,
     update_binding,
 )
 
