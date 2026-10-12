@@ -41,14 +41,30 @@ def _mint(conn, author):
     return bundle_id
 
 
-def _source_bundle(conn, author, universe_id, action):
-    source = _source_key(universe_id, action)
+def _deterministic_bundle_id(author, source):
+    """Stable id for a source that has not been published yet.
+
+    Asking to publish names this id in the consent digest. The commons row is
+    inserted only when that publish is approved.
+    """
+    digest = hashlib.sha256(f"{author}\0{source}".encode()).hexdigest()
+    return "bundle_" + digest[:32]
+
+
+def _lookup_bundle_id(conn, author, source):
     row = conn.execute(
         "SELECT bundle_id FROM commons_bundle_sources WHERE owner_id=? AND source_key=?",
         (author, source),
     ).fetchone()
-    if row:
-        return row[0]
+    return row[0] if row else None
+
+
+def _source_bundle(conn, author, universe_id, action):
+    """Mint a new catalogue identity. Callers are approved publishes."""
+    source = _source_key(universe_id, action)
+    found = _lookup_bundle_id(conn, author, source)
+    if found:
+        return found
     bundle_id = _mint(conn, author)
     conn.execute("INSERT INTO commons_bundle_sources VALUES (?, ?, ?)",
                  (author, source, bundle_id))
@@ -56,11 +72,57 @@ def _source_bundle(conn, author, universe_id, action):
 
 
 def publication_bundle(base_path, *, author, universe_id, action):
+    """The bundle id an ask would publish. Does not write a commons row."""
     from tinyassets.custom_agents import _agent_connect
 
+    source = _source_key(universe_id, action)
     with _agent_connect(base_path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        return _source_bundle(conn, author, universe_id, action)
+        found = _lookup_bundle_id(conn, author, source)
+    if found:
+        return found
+    return _deterministic_bundle_id(author, source)
+
+
+def commit_bundle_row(conn, *, author, bundle_id):
+    """Insert the catalogue row at approved publish, or refuse a foreign id."""
+    from tinyassets.custom_agents import AgentValidationError
+
+    row = conn.execute(
+        "SELECT author_id FROM commons_bundles WHERE bundle_id=?",
+        (bundle_id,),
+    ).fetchone()
+    if row is None:
+        conn.execute("INSERT INTO commons_bundles VALUES (?, ?)", (bundle_id, author))
+        return
+    if row[0] != author:
+        raise AgentValidationError(
+            "only the original author can publish under this bundle_id"
+        )
+
+
+def remember_source(base_path, *, author, universe_id, action, bundle_id):
+    """Record which private source an approved publish used. Never mints a row."""
+    if not bundle_id:
+        return
+    from tinyassets.custom_agents import _agent_connect
+
+    source = _source_key(universe_id, action)
+    with _agent_connect(base_path) as conn:
+        if _lookup_bundle_id(conn, author, source):
+            return
+        owner = conn.execute(
+            "SELECT author_id FROM commons_bundles WHERE bundle_id=?",
+            (bundle_id,),
+        ).fetchone()
+        if owner is None or owner[0] != author:
+            return
+        try:
+            conn.execute(
+                "INSERT INTO commons_bundle_sources VALUES (?, ?, ?)",
+                (author, source, bundle_id),
+            )
+        except sqlite3.IntegrityError:
+            return
 
 
 def authorize(conn, *, author, bundle_id):
