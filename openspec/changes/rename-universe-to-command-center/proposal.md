@@ -106,3 +106,5 @@ proposal. It is part of this program so the vocabulary is decided once.
   migrated to the new bridge keys by the cutover (clean cutover; no permanent
   old keys).
 - A storage and id migration (the cutover), in its own change, with external records (Stripe metadata) migrated too.
+
+C2 folds `command-center-cutover` into this single active change.
