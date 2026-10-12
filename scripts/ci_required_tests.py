@@ -260,21 +260,6 @@ def parse_shard(raw: str) -> tuple[int, int]:
     return index, total
 
 
-def _structural_guard_files() -> frozenset[str]:
-    """Whole files the structural-guards job runs in full; partial ones stay here."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "_ci_structural_guards", Path(__file__).with_name("ci_structural_guards.py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return frozenset(target for target in module.targets() if "::" not in target)
-
-
-STRUCTURAL_GUARD_FILES = _structural_guard_files()
-
-
 def pytest_addoption(parser) -> None:  # pragma: no cover - exercised via pytest -p
     parser.addoption("--ci-shard", default=None, help="I/N: run only files hashed to shard I")
     parser.addoption("--ci-venue", choices=("user", "root"), default=None)
@@ -297,8 +282,6 @@ def pytest_ignore_collect(collection_path, config):
         return None
     if venue and (rel in ROOT_TEST_FILES) != (venue == "root"):
         return True
-    if rel in STRUCTURAL_GUARD_FILES:
-        return True  # owned by the full-history structural-guards job
     if raw:
         index, total = parse_shard(raw)
         return True if shard_of(rel, total) != index else None
@@ -728,7 +711,6 @@ def gating_selection(entries: list[str], exclude_from: str | None) -> list[str]:
         rel
         for rel in dict.fromkeys(entries)
         if not any(rel == e or rel.startswith(e + "/") for e in excluded)
-        and rel not in STRUCTURAL_GUARD_FILES
         and (REPO_ROOT / rel).is_file()
     ]
 
