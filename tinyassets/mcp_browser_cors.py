@@ -16,21 +16,17 @@ present and is not one of ours, the request is 403. A missing
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-_EXACT_ORIGINS = frozenset({
-    "https://tinyassets.io",
-    "https://www.tinyassets.io",
-    "https://claude.ai",
-    "https://www.claude.ai",
-    "https://claude.com",
-    "https://www.claude.com",
-    "https://chatgpt.com",
-    "https://www.chatgpt.com",
-    "https://chat.openai.com",
-})
+_EXACT_ORIGINS = frozenset(
+    json.loads(
+        (Path(__file__).with_name("mcp_browser_origins.json")).read_text(encoding="utf-8")
+    )["origins"]
+)
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
 
