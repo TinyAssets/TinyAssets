@@ -168,12 +168,16 @@ def test_disconnect_preserves_other_accepted_source(rig, removed_index):
     first, a = source(rig)
     second, b = source(rig, "model:other")
     bind(rig, [a, b])
+    assert connected_sources(rig[0], rig[1], "owner") == frozenset({
+        "api_key_http:" + a.id, "api_key_http:" + b.id,
+    })
     assert remove(["model:mine", "model:other"][removed_index])["status"] == "removed"
     expected = [b, a][removed_index]
     assert connected_sources(rig[0], rig[1], "owner") == frozenset({
         "api_key_http:" + expected.id,
     })
     ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
+    assert ledger.get_connection([first, second][removed_index]["connection_id"]) is None
     assert ledger.get_connection([second, first][removed_index]["connection_id"]) is not None
     from tinyassets.provider_serving_binding import serving_connection_is_current
 
