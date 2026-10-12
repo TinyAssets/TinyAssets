@@ -48,6 +48,7 @@ export const SITE = {
 
 export const NAV = [
   { href: "/start/", label: "Join" },
+  { href: "/connect/", label: "Connect" },
   { href: "/build/", label: "How it works" },
   { href: "/commons/", label: "Creators" },
   { href: "/developers/", label: "Source" },

@@ -2,6 +2,7 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://tinyassets.io/</loc><priority>1.0</priority><changefreq>weekly</changefreq></url>
   <url><loc>https://tinyassets.io/start/</loc><priority>0.9</priority><changefreq>monthly</changefreq></url>
+  <url><loc>https://tinyassets.io/connect/</loc><priority>0.8</priority><changefreq>monthly</changefreq></url>
   <url><loc>https://tinyassets.io/build/</loc><priority>0.8</priority><changefreq>monthly</changefreq></url>
   <url><loc>https://tinyassets.io/commons/</loc><priority>0.7</priority><changefreq>weekly</changefreq></url>
   <url><loc>https://tinyassets.io/developers/</loc><priority>0.7</priority><changefreq>monthly</changefreq></url>

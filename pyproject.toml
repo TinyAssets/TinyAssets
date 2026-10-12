@@ -123,6 +123,9 @@ dev = [
     "pytest-cov>=5.0",
     "httpx>=0.24",
     "fastapi>=0.115",
+    # packaging/registry/generate_server_json.py --validate and
+    # tests/test_connector_catalog.py check server.json against the official schema.
+    "jsonschema>=4.0",
 ]
 api = [
     "fastapi>=0.115",

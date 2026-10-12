@@ -25,8 +25,12 @@ def _load_generate_server_json() -> ModuleType:
 
 
 def test_registry_advertises_only_canonical_mcp() -> None:
-    document = _load_generate_server_json()._build_document()
+    generator = _load_generate_server_json()
+    document = generator._build_document()
 
+    assert document["name"] == "io.github.TinyAssets/tinyassets"
+    assert document["name"].startswith("io.github.TinyAssets/")
+    assert document["$schema"] == generator.SCHEMA_URL
     assert document["title"] == "TinyAssets"
     assert document["remotes"] == [
         {
@@ -34,7 +38,9 @@ def test_registry_advertises_only_canonical_mcp() -> None:
             "url": CANONICAL_REMOTE_URL,
         }
     ]
-    assert "mcp-directory" not in json.dumps(document)
+    rendered = json.dumps(document)
+    assert "mcp-directory" not in rendered
+    assert "Jonnyton" not in rendered
 
 
 def test_remote_registry_version_is_independent_from_local_mcpb_version() -> None:
@@ -51,6 +57,11 @@ def test_committed_registry_manifest_matches_generated_document() -> None:
     generated_document = _load_generate_server_json()._build_document()
 
     assert committed_document == generated_document
+
+
+def test_registry_document_matches_official_server_schema() -> None:
+    generator = _load_generate_server_json()
+    generator._validate(generator._build_document())
 
 
 def test_registry_generator_check_runs_directly_from_repository_root() -> None:

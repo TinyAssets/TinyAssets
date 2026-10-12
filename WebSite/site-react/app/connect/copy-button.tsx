@@ -1,0 +1,25 @@
+"use client";
+
+import { useState } from "react";
+
+export function CopyButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const caption = state === "copied" ? "Copied" : state === "failed" ? "Select the text" : label;
+
+  return (
+    <button
+      type="button"
+      className="btn btn--ghost btn--md"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setState("copied");
+        } catch {
+          setState("failed");
+        }
+      }}
+    >
+      {caption}
+    </button>
+  );
+}

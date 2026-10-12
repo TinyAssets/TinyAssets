@@ -30,11 +30,11 @@ OUT = HERE.parent / "out"
 PORT = 4323
 
 ROUTES = [
-    "/", "/start/", "/build/", "/commons/",
+    "/", "/start/", "/connect/", "/build/", "/commons/",
     "/developers/", "/fine-print/", "/legal/", "/account/",
 ]
 ALIASES = {
-    "/host/": "/start/", "/connect/": "/start/",
+    "/host/": "/start/",
     "/soul/": "/build/", "/graph/": "/build/", "/notebook/": "/build/",
     "/goals/": "/commons/", "/goal/": "/commons/", "/catalog/": "/commons/",
     "/patterns/": "/commons/", "/wiki/": "/commons/",

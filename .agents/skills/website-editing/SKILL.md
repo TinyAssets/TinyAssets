@@ -61,7 +61,9 @@ the diff.
   summarise that and must not name a price.
 - **Do not advertise** the paid market, crypto or tokens, hardware, host-run
   fleets, per-channel integration lists, the retired `Workflow` name, or
-  "powered by <model>". No engagement metrics anywhere.
+  "powered by <model>". No engagement metrics anywhere. `/connect` is the one
+  page that names Claude, Cursor, Codex, and a generic MCP client, and only as
+  ways to add the hosted address.
 - **Hero** = ritual label + H1 + one lead paragraph + one primary action.
   Secondary links are quiet text.
 - **Forms are never fake.** If there is no backend, use `mailto:` with real
@@ -83,12 +85,14 @@ authenticated live surface.
 
 ## Routes
 
-Six public routes plus legal: `/`, `/start`, `/build`, `/commons`,
+Public routes: `/`, `/start`, `/connect`, `/build`, `/commons`,
 `/developers`, `/fine-print`, `/legal`, and `/account` (robots-disallowed).
-Every retired route is a soft-landing alias through `app/_components/Moved.tsx`
-(two-second redirect with a visible link). Nav items live in `lib/site.ts`
-(`NAV`); canonical URLs in `SITE`. Adding a nav item updates desktop and the
-phone drawer together.
+`/connect` tells a power user how to add `https://tinyassets.io/mcp` to Claude,
+Cursor, Codex, or a generic MCP client. It states no price. The only mailbox
+it prints is `info@tinyassets.io`. Every other retired route is a soft-landing
+alias through `app/_components/Moved.tsx` (two-second redirect with a visible
+link). Nav items live in `lib/site.ts` (`NAV`); canonical URLs in `SITE`.
+Adding a nav item updates desktop and the phone drawer together.
 
 ## Build, test, sweep, ship
 
