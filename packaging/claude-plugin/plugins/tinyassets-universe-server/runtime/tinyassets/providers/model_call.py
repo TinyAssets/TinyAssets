@@ -167,7 +167,13 @@ def _allocation(context: ModelContext, parent: Parent):
     owns = budget is None
     if budget is None:
         if parent.usage_id is None:
-            budget = open_allocation(owner, universe.universe_dir)
+            from tinyassets.request_budget import FREE_TURN_ATTEMPTS, TEXT_TURN_ATTEMPTS
+
+            limit = FREE_TURN_ATTEMPTS if cfg.engine_mcp_enabled else TEXT_TURN_ATTEMPTS
+            budget = open_allocation(
+                owner, universe.universe_dir,
+                free_limit=limit, free_pool_limit=limit,
+            )
         else:
             budget = TurnRequestBudget.join(
                 universe.universe_dir.parent, owner, parent.command_center,

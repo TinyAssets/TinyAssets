@@ -75,15 +75,17 @@ def _session(monkeypatch, *, refs, calls):
     monkeypatch.setattr(provider_call, "get_provider_router", lambda: _Router())
     session = object.__new__(frp._ForegroundRunProviderSession)
     from pathlib import Path
+    from tempfile import TemporaryDirectory
     from types import SimpleNamespace
 
-    from tinyassets.request_budget import TurnRequestBudget
+    from tinyassets.providers.model_call import open_allocation
 
     session._work_candidates = _Candidates(refs)
     session._work_candidates.catalog = SimpleNamespace(owner_id="owner", connections=())
-    session._universe_dir = Path("/tmp/diagnostic-fixture-universe")
+    session._temporary_root = TemporaryDirectory()
+    session._universe_dir = Path(session._temporary_root.name) / "diagnostic-fixture-universe"
     session._principal_id = "owner"
-    session._request_budget = TurnRequestBudget("owner", session._universe_dir.name)
+    session._request_budget = open_allocation("owner", session._universe_dir)
     calls_left = list(calls)
 
     def _call_once(role, prompt, system, config, policy, kwargs):
@@ -99,9 +101,13 @@ def _session(monkeypatch, *, refs, calls):
 def _run(session):
     from tinyassets.providers.base import ModelConfig
 
-    return session._call_captured_prompt(
-        "writer", "p", "s", ModelConfig(), {}, {}, None,
-    )
+    try:
+        return session._call_captured_prompt(
+            "writer", "p", "s", ModelConfig(), {}, {}, None,
+        )
+    finally:
+        session._request_budget.close()
+        session._temporary_root.cleanup()
 
 
 def _stored_error(exc):

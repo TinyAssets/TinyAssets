@@ -439,7 +439,7 @@ async def _routable_authorization(inner, selection):
     """Turn a sign-in refusal raised while AUTHORIZING into a routable outcome.
 
     The pre-launch credential refresh runs inside this context manager, so a stored
-    sign-in the source has finished with is discovered BEFORE ``_call_routed`` is
+    sign-in the source has finished with is discovered BEFORE ``_call_routed_attempts`` is
     entered -- which means the provider loop's ``except ProviderAuthenticationError``
     never sees it and the exception escapes the turn entirely. Measured: the founder's
     spent-refresh-token path ended with the turn ``abandoned``, no fallback and no
