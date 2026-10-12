@@ -198,8 +198,9 @@ def comment_attests_approval(
     receipt citing an OWNER comment that said `VERDICT: BLOCK` for this exact
     head passed. Checking the comment's own attestation is what makes the
     artifact evidence rather than a bookmark — and it closes the stale-comment
-    gap too (finding 7), because the comment must name the CURRENT head, which
-    needs no clock.
+    gap too (finding 7), because the comment must approve this same change
+    (this head, or an earlier commit with the same tree-diff), which needs no
+    clock.
     """
     return _attests_approval(
         leading_lines(comment_body, 2), head, diff_key, same_change=same_change
@@ -256,7 +257,8 @@ def published_approval_urls(
 
     * `author_association` must be trusted — GitHub computes it at read time, so
       it is not something a comment body can claim about itself;
-    * the comment must itself attest `APPROVE` at this exact head. A trusted
+    * the comment must itself attest `APPROVE` of this change: this head, an
+      earlier commit with the same tree-diff, or the diff key. A trusted
       author's comment saying `VERDICT: BLOCK` is not an approval, and before
       this filter existed the gate accepted one as the artifact.
 

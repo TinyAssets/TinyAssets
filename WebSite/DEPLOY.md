@@ -2,9 +2,11 @@
 
 **Production source:** `WebSite/site-react/` (Next.js static export). A push
 to `main` that changes site source runs `.github/workflows/deploy-site-react.yml`.
-The paths are `WebSite/site-react/**`, `WebSite/design-system/**`, and
-`WebSite/shared/**`. A manual run of the same workflow, with `confirm` set to
-`deploy`, remains for a rollback or a republish.
+The paths are `WebSite/site-react/**`, `WebSite/design-system/**`,
+`WebSite/shared/**`, and `.github/workflows/deploy-site-react.yml`, so a
+change to the publisher itself publishes the current site. A manual run of
+the same workflow, with `confirm` set to `deploy`, remains for a rollback or
+a republish.
 
 The Svelte rollback tree and its `deploy-site.yml` were retired on 2026-09-02.
 Rolling back now means dispatching `deploy-site-react` on an earlier revision
@@ -46,7 +48,8 @@ to publish a revision those paths did not change:
 
 Confirm the build job produces `WebSite/site-react/out` and the deploy job
 succeeds in the `github-pages` environment. Record the deployed revision. A
-green merge of non-site files, or a local build alone, is not a shipped site.
+green merge that does not touch those paths, or a local build alone, is not
+a shipped site.
 
 ## Verify production
 

@@ -1,10 +1,13 @@
 # Deploy WebSite/site-react (Next.js static export) to GitHub Pages.
 #
-# A push to main publishes when site source changes. The path filter is the
-# site's source folders (the same set preview-worker.yml builds):
+# A push to main publishes when one of the paths below changes. The first
+# three are the site's source folders (the same set preview-worker.yml builds).
+# The workflow file is included so a change to the publisher itself, including
+# the merge that turns this trigger on, publishes the current site:
 #   WebSite/site-react/**
 #   WebSite/design-system/**
 #   WebSite/shared/**
+#   .github/workflows/deploy-site-react.yml
 # workflow_dispatch stays for a rollback or a republish of an earlier revision;
 # that path still requires confirm=deploy. Two deploys share one group and the
 # second waits, so they cannot overlap. The Svelte rollback tree and
@@ -19,6 +22,7 @@ on:
       - 'WebSite/site-react/**'
       - 'WebSite/design-system/**'
       - 'WebSite/shared/**'
+      - '.github/workflows/deploy-site-react.yml'
   workflow_dispatch:
     inputs:
       confirm:

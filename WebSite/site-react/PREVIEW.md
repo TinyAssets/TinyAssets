@@ -3,8 +3,8 @@
 This is the production source for `tinyassets.io`. These preview paths do not
 change the live site. A push to `main` that changes site source
 (`WebSite/site-react/**`, `WebSite/design-system/**`, `WebSite/shared/**`)
-runs `deploy-site-react.yml`. A manual run with `confirm: deploy` is the
-rollback. See `../DEPLOY.md`.
+or `deploy-site-react.yml` runs that workflow. A manual run with
+`confirm: deploy` is the rollback. See `../DEPLOY.md`.
 
 ## 1. Local hot-reload
 
@@ -146,8 +146,8 @@ Preview URLs or delete the dedicated Worker/account.
 1. A change lands on a branch / PR (made by you or by an agent).
 2. Reviewers use the local preview, the sweep screenshots, and (once activated)
    the isolated hosted preview URL, treated as untrusted input.
-3. On approval, merge to `main`. A merge that changes site source publishes
-   through `deploy-site-react.yml`.
+3. On approval, merge to `main`. A merge that changes site source, or the
+   deploy workflow, publishes through `deploy-site-react.yml`.
 4. Complete the public canary and rendered-browser checks in `../DEPLOY.md`.
    Roll back by running that workflow with `confirm: deploy` on the last good
    revision.

@@ -283,7 +283,8 @@ jobs:
 
           # The receipt's artifact must be a comment ON THIS PR that a trusted
           # author published, AND that comment must itself attest
-          # `Drain-Review-Verdict: APPROVE` / `Drain-Review-Head: <this head>`.
+          # `Drain-Review-Verdict: APPROVE` of this change: this head, or an
+          # earlier commit whose tree-diff against the base is the same.
           # Without the URL check the artifact was any string matching a URL
           # shape; without the BODY check, cross-family review 2026-09-26
           # (finding 6) got a receipt past the gate by citing an OWNER comment
