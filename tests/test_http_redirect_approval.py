@@ -216,7 +216,7 @@ def test_approval_rechecks_policy_and_revocation_at_broker_admission(
     original = BrokerClient.http_connect
 
     def change_then_write(self, document):
-        if document["action"] != "commit":
+        if document["action"] not in {"full", "extend"}:
             return original(self, document)
         with ledger._connect() as conn:
             if changed == "mode":

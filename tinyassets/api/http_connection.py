@@ -1607,7 +1607,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         return preview
 
     from tinyassets.broker.connection_authority import read_policy
-    from tinyassets.broker.http_connect import connect_operation
+    from tinyassets.broker.http_connect import update_operation
 
     full = preview.get("access") == ACCESS_FULL and not redirect_extension
     if full and "policy_snapshot" in document:
@@ -1622,27 +1622,18 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     try:
-        resource, _grant, current = read_policy(
-            base, principal=actor, command_center=uid, destination=destination)
+        updated = update_operation(
+            base, principal=actor, command_center=uid, destination=destination,
+            expected=expected, action="full" if full else "extend",
+            endpoints=() if full else preview["merged"],
+            scopes=() if full else preview["scopes"],
+            git_host=preview.get("declared_git_host") or "")
     except GrantResolutionError:
         return {"error": "connection_conflict", "resource": "connection"}
-    if current != expected:
+    if not updated:
+        # The connection changed while the request was open, so the yes was
+        # not applied to a reach the owner did not see.
         return {"error": "connection_conflict", "resource": "connection"}
-    policy = {"auth_scheme": resource.auth_scheme,
-              "scopes": list(resource.scopes) if full else list(preview["scopes"]),
-              "endpoints": [e.as_dict() for e in resource.allowed_endpoints] if full
-                           else preview["merged"],
-              "access_mode": "full" if full else resource.access_mode,
-              "git_host": resource.git_host}
-    prepared = connect_operation(base, principal=actor, command_center=uid,
-                                 destination=destination, policy=policy, action="prepare")
-    if "error" in prepared:
-        return prepared
-    committed = connect_operation(base, principal=actor, command_center=uid,
-                                  destination=destination, policy=policy, action="commit",
-                                  expected=prepared["revision"])
-    if "error" in committed:
-        return committed
     resource, _grant, _snapshot = read_policy(
         base, principal=actor, command_center=uid, destination=destination)
     return {"status": "extended", "destination": destination,
