@@ -638,11 +638,6 @@ def prepare_owned_model_plan(
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         pinned = policy.current_selection or policy.saved_default
-        if pinned is not None:
-            rejected_pin = next((item.reason for item in plan.order(owner, universe.name).ineligible
-                                 if item.ref == pinned), "not connected")
-            raise PermissionError(f"model {pinned.connection_id}/{pinned.model_id} unavailable: "
-                                  f"{rejected_pin.replace('_', ' ')}")
         # Name what is held and why: "no model connected" was wrong for an owner
         # whose accepted sources exist but cannot run (live 2026-09-28).
         held = [
@@ -650,8 +645,15 @@ def prepare_owned_model_plan(
             f"({item.reason.replace('_', ' ')})"
             for item in rejected if item.scope == "source"
         ]
+        pin_detail = ""
+        if pinned is not None:
+            reason = next((item.reason for item in plan.order(owner, universe.name).ineligible
+                           if item.ref == pinned), "not_connected")
+            pin_detail = (f"; model {pinned.connection_id}/{pinned.model_id} unavailable: "
+                          f"{reason.replace('_', ' ')}")
         raise PermissionError(
             NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
+            + pin_detail
         )
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
