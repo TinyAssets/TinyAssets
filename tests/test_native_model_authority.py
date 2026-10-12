@@ -138,7 +138,14 @@ def test_native_default_still_requires_current_owned_credential(native):
     assert native.provider.calls == 0 and native.other.calls == 0
 
 
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_accepted_native_model_reaches_request_local_config(native, monkeypatch):
+    from tests.test_native_discovery_integration import catalogue, install_discovery
+
+    async def discover():
+        return catalogue(["future-native-model"])
+
+    install_discovery(native, monkeypatch, discover)
     captured = []
     original = native.provider.complete
 
