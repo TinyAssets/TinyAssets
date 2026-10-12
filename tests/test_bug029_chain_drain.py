@@ -120,7 +120,7 @@ class TestGetStatusCooldownField:
         from tinyassets.providers.router import ProviderRouter
         from tinyassets.universe_server import get_status
 
-        router = ProviderRouter()
+        router = ProviderRouter({"claude-code": object(), "codex": object()})
         owner = permissions.current_actor_id()
         router.cool_source("claude-code", owner="another-owner", retry_after_s=600)
         if own_cooldown:

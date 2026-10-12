@@ -188,22 +188,21 @@ def test_account_erasure_removes_common_envelope_after_home_rebind(store):
 def test_real_compiler_observation_reaches_only_declared_reply_history(
     store, monkeypatch, reported,
 ):
-    from types import SimpleNamespace
-
     from tinyassets.branches import NodeDefinition
     from tinyassets.conversation_store import load_recent
     from tinyassets.graph_compiler import _build_prompt_template_node
-    from tinyassets.providers import call as calls
     from tinyassets.providers.base import ProviderResponse
     from tinyassets.providers.execution_receipt import normalize_execution_receipt
     from tinyassets.runs import RunStepEvent, record_event
 
     row = reserve(store, str(uuid.uuid4()), setup(store, reply_key="reply_output"))
-    monkeypatch.setattr(calls, "_force_mock", False)
-    monkeypatch.setattr(calls, "_register_open_providers_for", lambda _: None)
-    monkeypatch.setattr(calls, "_real_router", SimpleNamespace(call_sync=lambda *a, **k:
-        ProviderResponse("answer", "owned", "configured-alias", "test", 0,
-                         reported_model=reported)))
+    def recorded_call(_prompt, _system, *, response_observer=None, **_kwargs):
+        response = ProviderResponse(
+            "answer", "owned", "configured-alias", "test", 0,
+            reported_model=reported,
+        )
+        response_observer(response)
+        return response.text
 
     def event_sink(node_id, phase, **detail):
         if phase == "ran":
@@ -211,7 +210,7 @@ def test_real_compiler_observation_reaches_only_declared_reply_history(
 
     node = _build_prompt_template_node(
         NodeDefinition(node_id="reply", display_name="Reply", prompt_template="hello"),
-        provider_call=calls.call_provider, event_sink=event_sink,
+        provider_call=recorded_call, event_sink=event_sink,
     )
     output = node({})
     with sqlite3.connect(runs_db_path(store)) as conn:
@@ -219,8 +218,14 @@ def test_real_compiler_observation_reaches_only_declared_reply_history(
                      (json.dumps(output), row["run_id"]))
     with cr.authorized_scope(store, owner=OWNER, universe=HOME) as scope:
         projected = cr.project_terminal(scope, row["admission_id"])
-    receipt = {"provider": "owned", "model": reported,
-               "model_status": "reported" if reported else "unknown"}
+    receipt = {
+        "provider": "owned", "model": reported,
+        "model_status": "reported" if reported else "unknown",
+        "resolved_model": "configured-alias", "family": "test",
+        "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
+        **({"reported_model": reported} if reported else {}),
+    }
     assert json.loads(projected["terminal_json"])["execution"] == receipt
     history = load_recent(store / HOME, f"principal:{OWNER}")
     assert history[0].execution is None

@@ -22,6 +22,7 @@ from tinyassets.providers.base import (
     UniverseContext,
     subprocess_env_for_provider,
 )
+from tinyassets.providers.model_call import text_sync
 from tinyassets.providers.router import ProviderRouter
 
 
@@ -166,7 +167,7 @@ def test_call_sync_rejects_interleaved_config_only_universe_contexts(
     assert results.count("b") == 12
 
 
-def test_call_provider_does_not_treat_forwarded_universe_config_as_authority(
+def test_text_sync_does_not_treat_forwarded_universe_config_as_authority(
     _pinned_to_universe_a,
     monkeypatch,
 ):
@@ -182,15 +183,11 @@ def test_call_provider_does_not_treat_forwarded_universe_config_as_authority(
     router.register(_RecordingProvider("codex", "openai", "CODEX_HOME"))
     router.register(_RecordingProvider("claude-code", "anthropic", "CLAUDE_CONFIG_DIR"))
 
-    # conftest force-mocks call_provider globally; disable it so the real
-    # router path (which threads universe_context) runs for this test.
-    saved_mock = call_module.is_force_mock()
     saved = call_module.get_provider_router()
-    call_module.set_force_mock(False)
     call_module.set_provider_router(router)
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
-            call_module.call_provider(
+            text_sync(
                 "prompt-b",
                 "system",
                 role="writer",
@@ -198,4 +195,3 @@ def test_call_provider_does_not_treat_forwarded_universe_config_as_authority(
             )
     finally:
         call_module.set_provider_router(saved)
-        call_module.set_force_mock(saved_mock)

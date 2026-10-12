@@ -136,6 +136,9 @@ def test_converse_pairs_reported_model_with_this_reply_only(monkeypatch, tmp_pat
     assert result["reply"] == "answer one"
     assert result["execution"] == {
         "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
+        "resolved_model": "requested-alias", "reported_model": "actual-model",
+        "family": "family", "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
     }
     from tinyassets.conversation_store import load_recent_readonly
     from tinyassets.providers.execution_receipt import normalize_execution_receipt
@@ -180,7 +183,12 @@ def test_converse_legacy_model_is_explicitly_unknown(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ui, "converse", answer)
     result = json.loads(us.converse(message="hello", graph_id="u-x"))
-    assert result["execution"] == {"provider": "codex", "model": "", "model_status": "unknown"}
+    assert result["execution"] == {
+        "provider": "codex", "model": "", "model_status": "unknown",
+        "resolved_model": "provider-default", "family": "openai",
+        "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
+    }
 
 
 def test_converse_error_never_publishes_completed_or_previous_receipt(monkeypatch, tmp_path):
@@ -338,8 +346,12 @@ def test_converse_memory_failure_never_costs_the_turn(monkeypatch, tmp_path):
     )
     result = json.loads(us.converse(message="hi", graph_id="u-x"))
     assert result["reply"] == "ok"
-    assert result["execution"] == {"provider": "owned-provider", "model": "actual-model",
-                                   "model_status": "reported"}
+    assert result["execution"] == {
+        "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
+        "resolved_model": "alias", "reported_model": "actual-model",
+        "family": "family", "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
+    }
     assert calls == ["hi"]
 
 

@@ -84,7 +84,7 @@ def app(tmp_path, monkeypatch):
     def no_inference(*args, **kwargs):
         raise AssertionError("settings must not need inference or bind a provider")
 
-    monkeypatch.setattr("tinyassets.providers.call.call_provider", no_inference)
+    monkeypatch.setattr("tinyassets.providers.model_call.text_sync", no_inference)
     monkeypatch.setattr("tinyassets.onboarding.serving.ensure_founder_serving", no_inference)
     with TestClient(
         mw.AuthContextMiddleware(Starlette(routes=onboarding.onboarding_routes())),

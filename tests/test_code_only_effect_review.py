@@ -23,7 +23,7 @@ from tinyassets.platform_runtime_provenance import (
     RuntimeProvenance,
 )
 from tinyassets.providers.base import BaseProvider, ProviderResponse, UniverseContext
-from tinyassets.providers.call import UniverseBoundProviderCall
+from tinyassets.providers.model_call import BoundModelCall
 from tinyassets.providers.router import ProviderRouter
 from tinyassets.runs import create_run, update_run_status
 from tinyassets.storage.outbound_connections import ConnectionLedger
@@ -131,7 +131,7 @@ def rig(tmp_path, monkeypatch, request, _signed_in_operator):
             tmp_path, universe_id=universe.name, principal_id="acct_alice") if manifest else None)
     session.prepare(run_id=run_id, branch=branch, branch_version_id=None,
                     allowed_statuses={"running"})
-    wrapper = UniverseBoundProviderCall(session, UniverseContext(universe_dir=universe),
+    wrapper = BoundModelCall(session, UniverseContext(universe_dir=universe),
                                        "run_graph")
     ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
                               verify_authenticated_principal=lambda: "acct_alice")

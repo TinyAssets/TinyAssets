@@ -135,3 +135,11 @@ affected heavy/remote tests passed, zero skips; initial slices 56 and 42 passed.
 Ruff (45 changed canonical Python files), plugin mirror/import probe and hygiene
 (74 added / 0 removed / 0 tampering) pass. Origin/main a97c17c26e is included.
 PR #4519 is ready for review; deployment/live acceptance/spec sync are pending.
+
+## Folded lanes (one owner and one cutover)
+- [ ] Complete `command-center-harness-control` obligations in the folded design section (11 open source tasks); use the surviving path only.
+- [ ] Complete `saved-agent-connectors` obligations in the folded design section (8 open source tasks); use the surviving path only.
+- [ ] Complete `connect-anything-ladder` obligations in the folded design section (8 open source tasks); use the surviving path only.
+- [ ] Complete `command-center-agent-templates` obligations in the folded design section (1 open source tasks); use the surviving path only.
+- [ ] Complete `agent-box-git-credentials` obligations in the folded design section (4 open source tasks); use the surviving path only.
+- [ ] Complete `outside-agent-grants` obligations in the folded design section (18 open source tasks); use the surviving path only.

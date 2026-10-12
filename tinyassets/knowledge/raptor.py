@@ -341,8 +341,8 @@ def rebuild_raptor_from_canon(
     # empty string would become an empty summary node, i.e. a tree that looks
     # built but says nothing. A failed call fails the build instead.
     async def _summarize(prompt: str, system: str, role: str) -> str:
-        from tinyassets.providers.call import call_provider
-        return call_provider(prompt, system, role=role)
+        from tinyassets.providers.model_call import text_sync
+        return text_sync(prompt, system, role=role)
 
     # Build tree
     try:

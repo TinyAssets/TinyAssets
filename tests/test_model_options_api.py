@@ -351,7 +351,7 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(
         native = _RecordingProvider("codex")
         if metadata:
             monkeypatch.setattr(native, "native_discovery_protocol", object())
-        monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"codex": native}))
+        monkeypatch.setattr(provider_calls, "_router", ProviderRouter({"codex": native}))
         result = read()
         assert result["choice_authority"] == "legacy_single_provider"
         assert result["options"][0]["reference"] == {"provider_ref": "codex", "model_id": ""}
@@ -380,7 +380,7 @@ def test_enumeration_support_accepts_executor_override_without_invoking_it(monke
         raise AssertionError("Capability display must not invoke discovery")
 
     monkeypatch.setattr(native, "enumerate_models", metadata)
-    monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"future-source": native}))
+    monkeypatch.setattr(provider_calls, "_router", ProviderRouter({"future-source": native}))
     assert _native_enumeration("future-source") == "supported"
     assert _native_enumeration("absent") == "unavailable"
 

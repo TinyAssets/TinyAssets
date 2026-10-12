@@ -1433,7 +1433,7 @@ def _try_execute_claimed_branch_task(
         provider_call: Any = None
         try:
             from domains.fantasy_daemon.phases._provider_stub import (
-                call_provider as provider_call,
+                text_sync as provider_call,
             )
         except ImportError:
             provider_call = None
@@ -2057,7 +2057,7 @@ class DaemonController:
             provider_call: Any = None
             try:
                 from domains.fantasy_daemon.phases._provider_stub import (
-                    call_provider as provider_call,
+                    text_sync as provider_call,
                 )
             except ImportError:
                 provider_call = None
@@ -2862,7 +2862,8 @@ class DaemonController:
         active characters, open plot threads, and recent creative
         decisions.  Falls back to the chapter summary alone on failure.
         """
-        from tinyassets.providers.call import call_provider
+        from tinyassets.providers.base import UniverseContext
+        from tinyassets.providers.model_call import text_sync
 
         chapter_summary = output.get("chapter_summary", "")
         if not chapter_summary:
@@ -2897,11 +2898,12 @@ class DaemonController:
         fallback = f"## Story So Far\n{chapter_summary}"
 
         try:
-            briefing = call_provider(
+            briefing = text_sync(
                 prompt,
                 system,
                 role="extract",
-                fallback_response=fallback,
+                universe_context=UniverseContext(universe_dir=Path(self._universe_path)),
+                operation="creative_briefing",
             )
             if briefing and briefing.strip():
                 self._cached_creative_briefing = briefing.strip()
@@ -3489,13 +3491,13 @@ def _main_unfenced() -> None:
         _refuse_local_tunnel_request("--tunnel-name")
 
     # Apply --provider pin via TINYASSETS_PIN_WRITER env var so the router
-    # consults it per-call instead of mutating FALLBACK_CHAINS at import.
+    # consults it per-call.
     # Env-var routing survives subprocess boundaries for future multi-
     # daemon tray work and keeps the module shape stable.
     if args.provider:
-        from fantasy_daemon.providers import router as _router_mod
+        from tinyassets import preferences
 
-        known = set().union(*_router_mod.FALLBACK_CHAINS.values())
+        known = set(preferences.ALL_PROVIDERS)
         if args.provider not in known:
             parser.error(
                 f"--provider {args.provider!r} is not a known provider. Known: {sorted(known)}"

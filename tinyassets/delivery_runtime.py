@@ -168,10 +168,10 @@ def _execution_subject(base, delivery, conn=None, run_id=None):
 def _receiver_provider(base, delivery, branch, run_id):
     from tinyassets.api.runs import _bind_run_provider_call
     from tinyassets.foreground_run_provider import prepare_foreground_run_provider
-    from tinyassets.providers.call import call_provider
+    from tinyassets.providers.model_call import text_sync
 
     provider = _bind_run_provider_call(
-        call_provider, delivery["receiver_universe_id"],
+        text_sync, delivery["receiver_universe_id"],
         principal_id=delivery["receiver_owner_id"],
     )
     return prepare_foreground_run_provider(

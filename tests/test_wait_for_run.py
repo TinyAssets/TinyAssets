@@ -84,7 +84,7 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
     importlib.reload(us)
     monkeypatch.setattr(
         provider_calls,
-        "call_provider",
+        "text_sync",
         lambda prompt, _system="", **_kwargs: f"fixture:{prompt}",
     )
     yield us, base

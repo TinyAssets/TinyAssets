@@ -5,7 +5,7 @@ and the container has no memory limit, so an overshoot OOMs the HOST and takes t
 Cloudflare tunnel with it — a total outage rather than a slow service.
 
 The pre-existing ceiling was **8**, not the 40 I first claimed: `converse` reaches
-providers through `call_provider` -> `ProviderRouter.call_sync`, which runs on a thread
+providers through `text_sync` -> `ProviderRouter.call_sync`, which runs on a thread
 pool of `_SYNC_CALL_MAX_WORKERS = 8`. That 8 is incidental — its own comment gives a
 latency rationale — so raising it for throughput, exactly what chasing capacity does,
 would multiply memory risk with nothing to warn you.
@@ -393,7 +393,7 @@ class TestTheBoundBindsBehaviourally:
     asserts the ADMISSION LEDGER moved — which no substitution can fake.
     """
 
-    def test_a_real_router_call_holds_a_slot_during_the_provider_call(self, monkeypatch):
+    def test_a_router_call_holds_a_slot_during_the_provider_call(self, monkeypatch):
         """Constructs a real ProviderRouter and awaits a real dispatch.
 
         Three weaker versions lost to Codex first: a `nullcontext` plugin, a runtime

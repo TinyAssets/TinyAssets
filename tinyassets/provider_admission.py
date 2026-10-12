@@ -11,7 +11,7 @@ Measured on the live box 2026-08-28, and this is the gap it closes:
   Cloudflare tunnel with it — a total public outage rather than a degraded service.
 
 **The honest ceiling was 8, not 40**, and I said 40 first. `converse` reaches providers
-through `call_provider` -> `ProviderRouter.call_sync`, which runs the async chain on a
+through `text_sync` -> `ProviderRouter.call_sync`, which runs the async chain on a
 thread pool of `_SYNC_CALL_MAX_WORKERS = 8`. So 8 x 77 MB is ~620 MB beside a ~390 MB
 daemon: tight on a 2 GB box, not the 3.1 GB catastrophe.
 

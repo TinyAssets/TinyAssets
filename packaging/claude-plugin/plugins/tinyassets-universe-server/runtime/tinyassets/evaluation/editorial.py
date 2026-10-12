@@ -104,7 +104,7 @@ def read_editorial(
         The universe premise (PROGRAM.md). The editorial reader should flag
         scenes that depart entirely from this premise.
     provider_call : callable
-        The provider call function (defaults to call_provider from _provider_stub).
+        The provider call function (defaults to text_sync from _provider_stub).
 
     Returns
     -------
@@ -116,8 +116,8 @@ def read_editorial(
         return None
 
     if provider_call is None:
-        from tinyassets.providers.call import call_provider
-        provider_call = call_provider
+        from tinyassets.providers.model_call import text_sync
+        provider_call = text_sync
 
     # Build prompt with context sections
     parts: list[str] = []

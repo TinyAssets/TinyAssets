@@ -95,24 +95,6 @@ def test_subsecond_node_timeout_floors_provider_timeout_to_one():
     assert captured["config"].timeout >= 1
 
 
-def test_policy_path_skips_config_for_legacy_4arg_router():
-    """Codex review fix: a router whose call_with_policy_sync takes only
-    (role, prompt, system, policy) must NOT receive a 5th config arg."""
-    from tinyassets.graph_compiler import _call_policy_router_with_retry
-
-    class _LegacyRouter:
-        def call_with_policy_sync(self, role, prompt, system, policy):
-            return ("text", "legacy", {})
-
-    from tinyassets.providers.base import ModelConfig
-    # Should not raise TypeError despite a non-None config.
-    out = _call_policy_router_with_retry(
-        _LegacyRouter(), role="writer", prompt="p", system="",
-        policy={"preferred": {}}, config=ModelConfig(reasoning_effort="low"),
-    )
-    assert out == ("text", "legacy", {})
-
-
 @pytest.fixture
 def server_env(tmp_path, monkeypatch, authenticate_request):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))

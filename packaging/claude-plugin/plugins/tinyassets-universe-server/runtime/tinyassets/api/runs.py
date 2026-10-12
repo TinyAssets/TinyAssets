@@ -79,13 +79,13 @@ def _bind_run_provider_call(
     uid = (universe_id or "").strip()
     from tinyassets.config import load_universe_config
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import bind_universe_provider_call
+    from tinyassets.providers.model_call import bind_model_call
 
     if not uid:
         # A legacy/unowned run has no requester authority. Keep it explicit so
         # the router raises ProviderAuthorityHeldError instead of consulting
         # the process-global provider selection.
-        return bind_universe_provider_call(
+        return bind_model_call(
             provider_call,
             UniverseContext(),
             operation="run_graph",
@@ -101,7 +101,7 @@ def _bind_run_provider_call(
         principal_id=principal,
         provider_call=provider_call,
     )
-    return bind_universe_provider_call(
+    return bind_model_call(
         session,
         UniverseContext(
             universe_dir=universe_dir,
@@ -1372,10 +1372,10 @@ def enqueue_universe_branch_run(
 
     provider_call: Any = None
     try:
-        from tinyassets.providers.call import call_provider
+        from tinyassets.providers.model_call import text_sync
 
         provider_call = _bind_run_provider_call(
-            call_provider, uid, principal_id=principal_id
+            text_sync, uid, principal_id=principal_id
         )
     except ImportError:
         provider_call = None
@@ -2093,8 +2093,8 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
 
     provider_call: Any = None
     try:
-        from tinyassets.providers.call import (
-            call_provider as provider_call,
+        from tinyassets.providers.model_call import (
+            text_sync as provider_call,
         )
         provider_call = _bind_run_provider_call(
             provider_call,
@@ -2536,10 +2536,10 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
 def _legacy_request_provider(kwargs):
     """Existing scalar path only; admitted origins bind after their start CAS."""
     try:
-        from tinyassets.providers.call import call_provider
+        from tinyassets.providers.model_call import text_sync
 
         return _bind_run_provider_call(
-            call_provider, _request_universe(kwargs.get("universe_id") or ""),
+            text_sync, _request_universe(kwargs.get("universe_id") or ""),
         )
     except ImportError:
         return None

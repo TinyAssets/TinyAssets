@@ -17,6 +17,21 @@ if TYPE_CHECKING:
 _CLI_PROVIDER_CLASSES: dict[str, str] = {"claude-code": "ClaudeProvider"}
 
 
+def register_subscription_adapters(router: "ProviderRouter") -> None:
+    """Make installed CLI transports addressable; owner authority is checked per call."""
+    for ref in _CLI_PROVIDER_CLASSES:
+        try:
+            provider = _cli_provider(ref)
+        except ImportError:
+            continue
+        if provider.is_available():
+            router.register(provider)
+    from tinyassets.external_agents.registry import PACKAGES
+
+    for ref in PACKAGES:
+        router.register(_cli_provider(ref))
+
+
 def _cli_provider(ref: str) -> BaseProvider:
     from tinyassets.external_agents.registry import PACKAGES
 

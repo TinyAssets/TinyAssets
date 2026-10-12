@@ -359,7 +359,6 @@ def _run_branch(
     branch: BranchDefinition,
     *,
     authority_case: str = "active",
-    mock_provider: bool = False,
     open_provider: bool = False,
     open_model: str = "synthetic-model",
     open_host: str = "api.example.com",
@@ -513,12 +512,8 @@ def _run_branch(
             operation=operation,
         ).text
 
-    injected_provider_call = (
-        (lambda prompt, _system="", **_kwargs: f"fixture:{prompt}")
-        if mock_provider
-        else governed_provider_call
-    )
-    monkeypatch.setattr(call_module, "call_provider", injected_provider_call)
+    injected_provider_call = governed_provider_call
+    monkeypatch.setattr("tinyassets.providers.model_call.text_sync", injected_provider_call)
     bind_run_provider = api_runs._bind_run_provider_call
     monkeypatch.setattr(
         api_runs,
@@ -543,35 +538,6 @@ def _run_branch(
     response["terminal_status"] = record["status"]
     response["terminal_error"] = record["error"]
     return response, provider, captured
-
-
-def test_mock_foreground_run_needs_no_serving_binding_or_run_receipt(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-        authority_case="missing",
-        mock_provider=True,
-    )
-
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert provider.calls == []
-    assert len(captured["effects"]) == 1
-    db = authority_db_path(tmp_path)
-    if db.exists():
-        with sqlite3.connect(db) as conn:
-            receipt_table = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'provider_work_receipts'"
-            ).fetchone()[0]
-            assert receipt_table == 0 or conn.execute(
-                "SELECT COUNT(*) FROM provider_work_receipts"
-            ).fetchone()[0] == 0
 
 
 def test_foreground_run_launches_active_serving_provider_and_settles_once(
@@ -1375,7 +1341,7 @@ def test_an_ordinary_provider_call_is_still_left_alone() -> None:
 def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
     """`_rebind` asserted a wrapper shape it never checked.
 
-    The docstring said "the wrapper is a `UniverseBoundProviderCall`, which
+    The docstring said "the wrapper is a `BoundModelCall`, which
     enforces one exact universe context and operation" -- but `replace()` was
     called on whatever arrived. Any dataclass exposing a real session as
     `.provider_call` passed depth 1 and was rebound, carrying whatever
@@ -1411,18 +1377,18 @@ def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
 def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
     """Fail-closed must not break the one shape that is supposed to work."""
     from tinyassets import foreground_run_provider as frp
-    from tinyassets.providers.call import UniverseBoundProviderCall
+    from tinyassets.providers.model_call import BoundModelCall
 
     parent = object.__new__(frp._ForegroundRunProviderSession)
     child = object.__new__(frp._ForegroundRunProviderSession)
     sentinel = object()
-    wrapper = UniverseBoundProviderCall(
-        provider_call=parent, universe_context=sentinel, operation="run_graph"
+    wrapper = BoundModelCall(
+        runner=parent, universe_context=sentinel, operation="run_graph"
     )
 
     rebound = frp._rebind(wrapper, child)
-    assert type(rebound) is UniverseBoundProviderCall
-    assert rebound.provider_call is child
+    assert type(rebound) is BoundModelCall
+    assert rebound.runner is child
     # The whole point: swapping the session must not swap the binding.
     assert rebound.universe_context is sentinel
     assert rebound.operation == "run_graph"

@@ -89,16 +89,13 @@ def test_actual_foreground_receipt_uses_existing_binding_ceiling(
         binding = bindings[0]
     else:
         binding = next(b for b in bindings if b["binding_id"] == receipt["binding_id"])
-    # Open-provider fixture supplies a policy, so every candidate it may reach
-    # carries the compiler's retry slots. The node pins a PROVIDER and no model,
+    # Open-provider fixture supplies a policy. The node pins a provider and no model,
     # so the run's captured automatic order is that source's whole eligible
     # catalogue (two models in this fixture), fitted under the accepted binding
     # ceiling. It used to be one slot's worth, because a run with no saved
     # preference built no order and could only ever attempt the source's
     # declared default (tests/test_free_account_run_provider_parity.py).
-    from tinyassets.graph_compiler import _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS
-
-    retry_slots = 1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)
+    retry_slots = 1
     assert receipt["max_invocations"] == (
         binding["max_invocations"] if agent
         else 2 * retry_slots if open_provider

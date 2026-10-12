@@ -26,6 +26,7 @@ from tinyassets.providers.base import (
     ProviderResponse,
     UniverseContext,
 )
+from tinyassets.providers.model_call import bind_model_call, text_sync
 from tinyassets.providers.router import ProviderRouter
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
@@ -107,11 +108,8 @@ async def test_user_universe_config_cannot_mint_served_authority(
         ProviderAuthorityHeldError,
         match=r"(?i)connect your provider",
     ):
-        await router.call_with_policy(
-            "writer",
-            "prompt",
-            "system",
-            {"preferred": {"provider": "claude-code"}},
+        await router.call(
+            "writer", "prompt", "system",
             operation="run_graph",
             universe_context=context,
         )
@@ -127,17 +125,14 @@ def test_missing_user_provider_cannot_degrade_to_fallback(tmp_path):
     platform = _SpyProvider("claude-code", text="must-not-run")
     router = ProviderRouter(providers={platform.name: platform})
     saved_router = call_module.get_provider_router()
-    saved_mock = call_module.is_force_mock()
     call_module.set_provider_router(router)
-    call_module.set_force_mock(False)
     try:
         with pytest.raises(
             ProviderAuthorityHeldError,
             match=r"(?i)connect your provider",
         ):
-            call_module.call_provider(
+            text_sync(
                 "prompt",
-                fallback_response="must-not-degrade",
                 universe_context=UniverseContext(
                     universe_dir=tmp_path,
                     config=UniverseConfig(),
@@ -145,7 +140,6 @@ def test_missing_user_provider_cannot_degrade_to_fallback(tmp_path):
             )
     finally:
         call_module.set_provider_router(saved_router)
-        call_module.set_force_mock(saved_mock)
 
     assert platform.calls == []
 
@@ -206,18 +200,16 @@ def test_unresolved_run_binding_holds_instead_of_returning_raw_call(monkeypatch)
 
     platform = _SpyProvider("claude-code", text="must-not-run")
     saved_router = call_module.get_provider_router()
-    saved_mock = call_module.is_force_mock()
     call_module.set_provider_router(ProviderRouter(providers={
         platform.name: platform,
     }))
-    call_module.set_force_mock(False)
     monkeypatch.setattr(
         runtime,
         "universe_config",
         UniverseConfig(preferred_writer="claude-code"),
     )
     try:
-        bound = api_runs._bind_run_provider_call(call_module.call_provider, "")
+        bound = api_runs._bind_run_provider_call(text_sync, "")
         with pytest.raises(
             ProviderAuthorityHeldError,
             match=r"(?i)connect your provider",
@@ -225,7 +217,6 @@ def test_unresolved_run_binding_holds_instead_of_returning_raw_call(monkeypatch)
             bound("prompt")
     finally:
         call_module.set_provider_router(saved_router)
-        call_module.set_force_mock(saved_mock)
 
     assert platform.calls == []
 
@@ -248,9 +239,7 @@ def test_policy_graph_preserves_context_and_holds_without_served_authority(
         platform.name: platform,
     })
     saved_router = call_module.get_provider_router()
-    saved_mock = call_module.is_force_mock()
     saved_global = runtime.universe_config
-    call_module.set_force_mock(False)
     call_module.set_provider_router(router)
     runtime.universe_config = UniverseConfig(preferred_writer="claude-code")
     context = UniverseContext(
@@ -260,8 +249,8 @@ def test_policy_graph_preserves_context_and_holds_without_served_authority(
     try:
         # A policy graph needs the same universe-bound policy bridge as a real
         # run. The raw text callable is now refused before authority checking.
-        bound = call_module.bind_universe_provider_call(
-            call_module.call_provider, context, operation="run_graph",
+        bound = bind_model_call(
+            text_sync, context, operation="run_graph",
         )
         compiled = compile_branch(
             _policy_branch(),
@@ -276,7 +265,6 @@ def test_policy_graph_preserves_context_and_holds_without_served_authority(
     finally:
         runtime.universe_config = saved_global
         call_module.set_provider_router(saved_router)
-        call_module.set_force_mock(saved_mock)
 
     assert requester.calls == []
     assert platform.calls == []
@@ -434,7 +422,7 @@ def test_run_branch_hands_execution_a_server_owned_provider_session(
 
     assert payload["status"] == "queued"
     bound = captured["provider_call"]
-    assert type(bound.provider_call).__name__ == "_ForegroundRunProviderSession"
+    assert type(bound.runner).__name__ == "_ForegroundRunProviderSession"
     assert bound.universe_context.universe_dir == universe
     assert bound.universe_context.config.preferred_writer == "codex"
     assert bound.universe_context.provider_request is None
@@ -500,7 +488,7 @@ def test_branch_version_and_resume_use_the_same_server_owned_run_session(
 
     assert payload["status"] == "queued"
     bound = captured["provider_call"]
-    assert type(bound.provider_call).__name__ == "_ForegroundRunProviderSession"
+    assert type(bound.runner).__name__ == "_ForegroundRunProviderSession"
     assert bound.universe_context.universe_dir == universe
     assert bound.universe_context.config.preferred_writer == "codex"
     assert bound.universe_context.provider_request is None

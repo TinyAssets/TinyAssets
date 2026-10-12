@@ -9,8 +9,7 @@ wait from the provider cap it hands over (``graph_compiler.py:1464-1494``).
 There is a SECOND queue on the same call path: ``ProviderRouter._thread_pool``.
 Both sync wrappers now refuse expired work at worker entry and deduct queue wait
 from an explicit caller cap. These tests drive the REAL wrapper pair through
-``_run_with_timeout`` and stub final provider I/O; ``call``, ``call_with_policy``,
-``call_sync`` and ``call_with_policy_sync`` all run unmodified.
+``_run_with_timeout`` and stub final provider I/O; ``call`` and ``call_sync`` run unmodified.
 
 The test callable supplies a fresh cap when pool 1 picks it up. It does not run
 the compiled node's ``_deadline_cfg`` closure, which deducts first-pool waits of
@@ -442,61 +441,6 @@ def test_call_already_past_the_pool_worker_entry_settles_untouched(sync_pool):
         "completions (a replay would double a provider side effect)"
     )
     assert len(provider.launches) == 1, "the settled call was replayed"
-
-
-def test_expired_work_does_not_launch_from_call_with_policy_sync_either(
-    sync_pool, first_pool_delay,
-):
-    """The SECOND wrapper on the same pool, covered by its own evidence.
-
-    ``call_with_policy_sync`` (``router.py:1852``) is the wrapper the compiler's
-    policy path actually uses (``graph_compiler.py:1534`` via
-    ``_call_policy_router_with_retry``), and it queues on the SAME
-    ``_thread_pool`` with the same pre-submit timeout computation. The earlier
-    tests drive ``call_sync`` only, so on their evidence alone this wrapper was
-    asserted by inspection and not proven. It is proven here.
-
-    ``policy=None`` falls through to the standard role chain by design
-    (``router.py:1666``), which keeps the policy DSL out of a test about queue
-    time while leaving the wrapper itself entirely real.
-    """
-    provider = _RecordingProvider()
-    router = ProviderRouter(providers={provider.name: provider})
-    release = _occupy_sole_worker(sync_pool)
-
-    outcome: dict = {}
-
-    def _node_work():
-        try:
-            result = router.call_with_policy_sync(
-                "writer", "p", "s", None, config=_node_cfg(NODE_BUDGET_S), **_BOUND,
-            )
-        except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised
-            outcome["error"] = exc
-            raise
-        outcome["result"] = result
-        return result
-
-    expired_at = time.monotonic() + NODE_BUDGET_S
-    with pytest.raises(NodeTimeoutError):
-        _run_with_timeout(
-            _node_work, timeout_s=NODE_BUDGET_S, node_id="policy-past-deadline",
-        )
-
-    assert sync_pool.wait_for_submits(2, timeout=1.0), (
-        "the policy wrapper never submitted to the provider-sync pool"
-    )
-    assert not provider.launched.is_set()
-    assert time.monotonic() >= expired_at
-    _await_handed_in_deadline(sync_pool, NODE_BUDGET_S)
-
-    release.set()
-    assert _await_settled(outcome, SETTLE_S), (
-        "the queued policy item never settled after the pool freed up"
-    )
-    assert provider.launches == [], (
-        "call_with_policy_sync launched a provider AFTER its handed-in deadline passed"
-    )
 
 
 def test_an_unqueued_call_keeps_the_callers_own_config(sync_pool):

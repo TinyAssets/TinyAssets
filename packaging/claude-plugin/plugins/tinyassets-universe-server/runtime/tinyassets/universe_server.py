@@ -3197,9 +3197,16 @@ def converse(
             conversation_history, memory_universe_dir, uid, current_actor_id(),
         )
 
-    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+    from tinyassets.providers.execution_receipt import (
+        normalize_execution_receipt,
+        receipt_from_response,
+    )
 
-    execution_receipt = WriterExecutionReceipt()
+    execution_receipts = []
+
+    def _observe_execution(response):
+        if not execution_receipts:
+            execution_receipts.append(normalize_execution_receipt(receipt_from_response(response)))
     # Whether this turn's lesson ended settled -- recorded in-turn with write_brain,
     # or extracted without failing. The cursor is advanced HERE, after the exchange
     # is stored, because "settled through turn N" cannot name a turn the store does
@@ -3290,7 +3297,7 @@ def converse(
                 tier=turn.interlocutor.tier,
                 conversation_history=conversation_history,
                 input_method=input_method,
-                response_observer=execution_receipt.observe,
+                response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,
                 session_key=f"thread:{memory_session}",
                 addressed_agent=addressed,
@@ -3350,7 +3357,7 @@ def converse(
             **history,
             **_unsettled_steering(memory_universe_dir, memory_session, live_id),
         })
-    execution = execution_receipt.projection()
+    execution = execution_receipts[0] if execution_receipts else None
     delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
         from tinyassets.conversation_store import record_exchange_turns

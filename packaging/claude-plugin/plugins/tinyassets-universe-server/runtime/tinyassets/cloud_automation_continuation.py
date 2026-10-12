@@ -2329,32 +2329,6 @@ class _ClaimedCloudProviderSession:
                     providers.add(str(use["provider"]))
         return providers
 
-    def call_with_policy_sync(
-        self,
-        role: str,
-        prompt: str,
-        system: str,
-        policy: dict[str, Any] | None,
-        config: Any = None,
-        difficulty: str = "",
-    ) -> tuple[str, str, dict[str, Any]]:
-        """Honor a Branch policy without escaping the requester-owned carrier."""
-        del difficulty
-        declared = self._declared_policy_providers(policy)
-        if declared - {self._receipt.provider}:
-            raise PermissionError("cloud policy provider is outside prepared authority")
-        response = self(
-            prompt,
-            system,
-            role=role,
-            config=config,
-        )
-        return (
-            response,
-            self._receipt.provider,
-            {"authority": "requester_owned", "attempts": 1},
-        )
-
     def __call__(
         self,
         prompt: str,
@@ -2366,6 +2340,9 @@ class _ClaimedCloudProviderSession:
         from tinyassets.config import load_universe_config
         from tinyassets.providers.base import UniverseContext
 
+        policy = kwargs.pop("policy", None)
+        if self._declared_policy_providers(policy) - {self._receipt.provider}:
+            raise PermissionError("cloud policy provider is outside prepared authority")
         if role not in self._receipt.allowed_roles:
             raise PermissionError("cloud provider role is outside prepared authority")
         with self._lock:

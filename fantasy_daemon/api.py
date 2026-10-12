@@ -602,63 +602,26 @@ def health() -> dict[str, Any]:
 
 
 def _get_provider_health() -> tuple[dict[str, Any], list[str]]:
-    """Build provider status info and identify unhealthy roles."""
-    from fantasy_daemon.providers.router import FALLBACK_CHAINS
-
-    # Known providers with setup hints
-    _SETUP_HINTS: dict[str, str] = {
-        "ollama-local": "Needs Ollama running locally",
-        "claude-code": "Needs claude CLI subscription",
-        "codex": "Needs codex CLI subscription",
-    }
-    _FAMILIES: dict[str, str] = {
-        "claude-code": "anthropic",
-        "codex": "openai",
-        "ollama-local": "local",
-    }
+    """Report the daemon's installed sources, without a platform fallback chain."""
 
     router = _daemon._router if _daemon and hasattr(_daemon, "_router") else None
     registered = set(router.available_providers) if router else set()
-
-    # Build per-provider status
     providers_info: dict[str, Any] = {}
-    all_known = set(FALLBACK_CHAINS.get("writer", [])) | set(FALLBACK_CHAINS.get("judge", []))
-    for name in sorted(all_known):
-        roles = [
-            role for role, chain in FALLBACK_CHAINS.items()
-            if name in chain
-        ]
+    for name in sorted(registered):
+        source = router._providers.get(name) if router is not None else None
         info: dict[str, Any] = {
-            "family": _FAMILIES.get(name, "unknown"),
-            "roles": roles,
+            "family": getattr(source, "family", "unknown"),
+            "roles": [],
         }
-
-        if name not in registered:
-            info["status"] = "not_registered"
-            info["setup"] = _SETUP_HINTS.get(name, "")
-        elif router is not None:
-            cd = router._quota.cooldown_remaining(name)
-            if cd > 0:
-                info["status"] = "cooldown"
-                info["cooldown_remaining"] = cd
-            else:
-                info["status"] = "healthy"
+        cd = router._quota.cooldown_remaining(name)
+        if cd > 0:
+            info["status"] = "cooldown"
+            info["cooldown_remaining"] = cd
         else:
-            info["status"] = "unknown"
-
+            info["status"] = "healthy"
         providers_info[name] = info
-
-    # Identify roles with no working provider
-    unhealthy: list[str] = []
-    for role, chain in FALLBACK_CHAINS.items():
-        has_working = any(
-            name in registered
-            and (router is None or router._quota.cooldown_remaining(name) == 0)
-            for name in chain
-        )
-        if not has_working:
-            unhealthy.append(role)
-
+    healthy = any(info["status"] == "healthy" for info in providers_info.values())
+    unhealthy = [] if healthy else ["writer"]
     return providers_info, unhealthy
 
 

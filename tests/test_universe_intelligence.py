@@ -190,7 +190,7 @@ def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
 
     captured: dict = {}
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:  # the separate learning-extraction call
             return "{}"
@@ -200,7 +200,7 @@ def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     reply = ui.converse("u-test", "Hi, who are you?")
 
@@ -216,7 +216,10 @@ def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
 
 def test_converse_receipt_observer_is_not_passed_to_later_learning(tmp_path, monkeypatch):
     from tinyassets.providers.base import ProviderResponse
-    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+    from tinyassets.providers.execution_receipt import (
+        normalize_execution_receipt,
+        receipt_from_response,
+    )
 
     udir = _seed(tmp_path)
     _become_founder(tmp_path)
@@ -233,12 +236,13 @@ def test_converse_receipt_observer_is_not_passed_to_later_learning(tmp_path, mon
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_provider)
-    receipt = WriterExecutionReceipt()
+    monkeypatch.setattr(ui, "text_sync", fake_provider)
+    receipts = []
     assert ui.converse("u-test", "Remember my preference", tier=interlocutor.FOUNDER,
-                       response_observer=receipt.observe) == "writer reply"
+                       response_observer=receipts.append) == "writer reply"
     assert len(seen) == 2 and seen[0] is not None and seen[1] is None
-    assert receipt.projection()["model"] == "actual-writer"
+    execution = normalize_execution_receipt(receipt_from_response(receipts[0]))
+    assert execution["model"] == "actual-writer"
 
 
 def test_converse_missing_universe_raises(tmp_path, monkeypatch):
@@ -321,7 +325,7 @@ def test_converse_persists_founder_identity_to_soul(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     _become_founder(tmp_path)
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:  # the extraction call
             return json.dumps({
@@ -335,7 +339,7 @@ def test_converse_persists_founder_identity_to_soul(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     # Explicit founder tier: only a FOUNDER teaches the universe. Persistence
     # used to run at ANY tier — a cross-family review found a T1 Slack sender
@@ -360,7 +364,7 @@ def test_converse_persistence_failure_does_not_break_reply(tmp_path, monkeypatch
     # their reply (the conversation never breaks).
     udir = _seed(tmp_path)
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         return "Here is my reply."
 
@@ -369,7 +373,7 @@ def test_converse_persistence_failure_does_not_break_reply(tmp_path, monkeypatch
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
     monkeypatch.setattr(ui, "extract_learning", boom)
 
     reply = ui.converse("u-test", "hello")
@@ -410,7 +414,7 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     _become_founder(tmp_path)
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:
             return json.dumps({
@@ -424,7 +428,7 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     reply = ui.converse(
         "u-test",
@@ -456,7 +460,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
     _become_founder(tmp_path)
     configs: list = []
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, config=None, **_kw):
         configs.append(config)
         if "strict JSON" in system:  # learning-extraction turn
@@ -465,7 +469,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     # Founder tier, because this asserts BOTH turns happen — and the second
     # (learning-extraction) turn only runs for a founder now that the write
@@ -532,7 +536,7 @@ def test_non_founder_turn_never_persists_learning(tmp_path, monkeypatch):
     """
     udir = _seed(tmp_path)
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:
             return json.dumps({
@@ -543,7 +547,7 @@ def test_non_founder_turn_never_persists_learning(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     for tier in (interlocutor.T0, interlocutor.T1):
         reply = ui.converse(
@@ -561,7 +565,7 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     _become_founder(tmp_path)
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:
             return json.dumps({
@@ -572,7 +576,7 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     ui.converse("u-test", "I'm Alex.", tier=interlocutor.FOUNDER)
 
@@ -589,7 +593,7 @@ def _capture_writer_call(monkeypatch, udir):
     """Wire converse so the WRITER call's (prompt, system) are captured."""
     captured: dict = {}
 
-    def fake_call_provider(prompt, system="", *, role="writer",
+    def fake_text_sync(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:  # the learning-extraction call, not the writer
             return "{}"
@@ -598,7 +602,7 @@ def _capture_writer_call(monkeypatch, udir):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
     return captured
 
 
@@ -727,7 +731,7 @@ def test_writer_retries_once_when_all_providers_were_skipped(monkeypatch):
             raise _exhausted("skipped", "skipped")
         return "recovered"
 
-    monkeypatch.setattr(ui, "call_provider", flaky)
+    monkeypatch.setattr(ui, "text_sync", flaky)
     out = ui._call_writer("hi", system="s", universe_context=None, config=None)
     assert out == "recovered"
     assert calls["n"] == 2
@@ -753,7 +757,7 @@ def test_writer_does_NOT_retry_if_a_provider_actually_ran(monkeypatch):
         calls["n"] += 1
         raise _exhausted("failed", "skipped")  # one provider executed
 
-    monkeypatch.setattr(ui, "call_provider", ran_then_failed)
+    monkeypatch.setattr(ui, "text_sync", ran_then_failed)
     with pytest.raises(AllProvidersExhaustedError):
         ui._call_writer("hi", system="s", universe_context=None, config=None)
     assert calls["n"] == 1  # no retry — exactly one attempt
@@ -778,65 +782,8 @@ def test_writer_gives_up_after_one_retry_on_sustained_cooldown(monkeypatch):
         calls["n"] += 1
         raise _exhausted("skipped", "skipped")
 
-    monkeypatch.setattr(ui, "call_provider", always)
+    monkeypatch.setattr(ui, "text_sync", always)
     with pytest.raises(AllProvidersExhaustedError):
         ui._call_writer("hi", system="s", universe_context=None, config=None)
     assert calls["n"] == 2  # one immediate retry, then give up
     assert slept == []
-
-
-def test_full_converse_extract_learning_never_sleeps_on_the_reply_path(
-    tmp_path, monkeypatch
-):
-    """Blocker G, end-to-end through the REAL call.py bridge.
-
-    The writer turn succeeds and produces the reply; the SEPARATE
-    learning-extraction call then hits provider exhaustion. Because
-    ``extract_learning`` passes ``retry_on_exhaustion=False``, call.py must NOT
-    engage its tenacity backoff — so the founder's already-produced reply is
-    returned WITHOUT any synchronous sleep on the reply critical path. (The
-    learning failure is swallowed; the turn still answers.)
-    """
-    # Blocker G, at the REAL call.py bridge, deterministically (the earlier
-    # full-`converse` form was order-dependent: a prior test's global force-mock
-    # state leaked into converse's governed path on CI — test-suite-is-order-
-    # dependent). This drives call_provider directly with the SAME flag
-    # extract_learning passes, proving the load-bearing behavior: with
-    # retry_on_exhaustion=False, an AllProvidersExhaustedError does NOT engage
-    # call.py's tenacity backoff (no synchronous sleep on the reply path), while
-    # the default (True) DOES retry — so the flag is what removes the sleep.
-    import tinyassets.providers.call as call_mod
-    from tinyassets.exceptions import AllProvidersExhaustedError
-
-    slept: list[float] = []
-    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
-
-    class _ExhaustedRouter:
-        def __init__(self):
-            self.calls = 0
-
-        def call_sync(self, role, prompt, system, config=None, *,
-                      universe_context=None, operation=None):
-            self.calls += 1
-            raise AllProvidersExhaustedError("exhausted for role=writer")
-
-    # No force-mock, real bridge, an ungoverned call (no universe_context/operation)
-    # so the deterministic behavior is exactly call.py's retry decision.
-    monkeypatch.setattr(call_mod, "_force_mock", False)
-
-    r_nosleep = _ExhaustedRouter()
-    monkeypatch.setattr(call_mod, "_real_router", r_nosleep)
-    with pytest.raises(AllProvidersExhaustedError):
-        call_mod.call_provider(
-            "prompt", "system", role="writer", retry_on_exhaustion=False,
-        )
-    assert slept == []            # reply path never sleeps
-    assert r_nosleep.calls == 1   # exactly one attempt, no retry loop
-
-    # Control: the DEFAULT path DOES back off (proving the flag is load-bearing).
-    r_retry = _ExhaustedRouter()
-    monkeypatch.setattr(call_mod, "_real_router", r_retry)
-    with pytest.raises(AllProvidersExhaustedError):
-        call_mod.call_provider("prompt", "system", role="writer")
-    assert slept, "default retry_on_exhaustion=True must back off (sleep)"
-    assert r_retry.calls > 1

@@ -155,10 +155,10 @@ def test_a_different_source_still_answers_after_the_openrouter_daily_cap(
     # Exactly one request to the exhausted source; its sibling never called.
     assert pool.first_wire.sent_models == [parity.LIVE_MODELS[0]]
     assert pool.second_wire.sent_models == [pool.second_wire.models[0]]
-    from tinyassets.providers.call import _real_router
+    from tinyassets.providers.call import _router
 
-    assert _real_router._quota.available(pool.second, owner=parity.A_OWNER)
-    assert not _real_router._quota.available(pool.first, owner=parity.A_OWNER)
+    assert _router._quota.available(pool.second, owner=parity.A_OWNER)
+    assert not _router._quota.available(pool.first, owner=parity.A_OWNER)
 
 
 def _converse(base, monkeypatch, message):

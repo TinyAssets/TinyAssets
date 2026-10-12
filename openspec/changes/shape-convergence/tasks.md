@@ -39,13 +39,13 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Repoint the about 40 code comments that cite deleted paths.
       Gate-file change: one cross-family round.
       Guard: itself. Net about −100k. Depends on #4619.
-- [ ] 2.2 **C2 Reconciler and queue fold.** Add
+- [x] 2.2 **C2 Reconciler and queue fold.** Add
       `.github/workflows/shape-reconcile.yml` and
       `scripts/shape_reconcile.py` (design §3.2), which maintain the one
       "Shape reconciliation" issue. Replace AGENTS.md's `openspec_flow.py
       audit` orient pointer with the issue, byte-neutral.
       **Deletes and folds:**
-      - Archive the 16 fully checked changes.
+      - Archive all fully checked changes (17 at C2).
       - Delete `command-center-publish-repair`.
       - Delete the six changes `one-extension-unit` supersedes, after moving
         any open task into it.

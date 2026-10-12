@@ -201,7 +201,7 @@ def test_empty_domain_id_raises_on_bodyless_node():
         compile_branch(branch)
 
 
-def test_template_path_unchanged_by_domain_id_thread(clean_registry):
+def test_template_path_unchanged_by_domain_id_thread(clean_registry, connected_fantasy_model):
     """Passing domain_id doesn't affect prompt_template dispatch —
     template nodes still compile normally regardless.
     """
@@ -211,12 +211,12 @@ def test_template_path_unchanged_by_domain_id_thread(clean_registry):
         domain_id="testdom",
         node_body={"prompt_template": "Hello {name}"},
     )
-    compiled = compile_branch(branch)
+    compiled = compile_branch(branch, provider_call=connected_fantasy_model)
     runner = compiled.graph.compile()
-    # provider_call is None → mock-string fallback per compile_branch
-    # docstring. Just confirm compile succeeded + invoke works.
     result = runner.invoke({"name": "World"})
     assert isinstance(result, dict)
+    assert connected_fantasy_model.receipts[-1].reported_model == "deterministic-v1"
+    assert connected_fantasy_model.receipts[-1].outcome == "succeeded"
 
 
 # ───────────────────────────────────────────────────────────────────────

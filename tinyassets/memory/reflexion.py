@@ -6,7 +6,7 @@ When the commit node issues a ``revert`` verdict the reflexion engine:
 3. Stores the reflection in episodic memory.
 4. Updates memory weights (future orient context includes the lesson).
 
-Uses the LLM via ``call_provider`` when available, falling back to
+Uses the LLM via ``text_sync`` when available, falling back to
 template-based critique when no provider is configured.
 """
 
@@ -211,10 +211,7 @@ class ReflexionEngine:
 
         Returns the LLM response or empty string if unavailable.
         """
-        from tinyassets.providers.call import call_provider, is_force_mock
-
-        if is_force_mock():
-            return ""
+        from tinyassets.providers.model_call import text_sync
 
         scene_id = (
             f"book {state.get('book_number', '?')}, "
@@ -252,8 +249,8 @@ class ReflexionEngine:
         )
 
         # Use empty string as fallback sentinel -- caller checks for it
-        result = call_provider(
-            prompt, system, role="judge", fallback_response=""
+        result = text_sync(
+            prompt, system, role="judge"
         )
         return result
 
@@ -263,10 +260,7 @@ class ReflexionEngine:
 
         Returns the LLM response or empty string if unavailable.
         """
-        from tinyassets.providers.call import call_provider, is_force_mock
-
-        if is_force_mock():
-            return ""
+        from tinyassets.providers.model_call import text_sync
 
         scene_id = (
             f"book {state.get('book_number', '?')}, "
@@ -291,8 +285,8 @@ class ReflexionEngine:
             f"thing to change next time?"
         )
 
-        result = call_provider(
-            prompt, system, role="judge", fallback_response=""
+        result = text_sync(
+            prompt, system, role="judge"
         )
         return result
 

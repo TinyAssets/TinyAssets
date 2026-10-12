@@ -36,3 +36,5 @@ Owner: Codex, lane K1, branch `feat/one-extension-unit`, worktree `wf-K1`,
 one draft PR to main. Affects extension validation/state, ta, package export,
 on-demand handbook and focused tests. No resident prompt expansion, new model
 tool handles, platform LLM or privileged launcher changes.
+
+C2 folds `command-center-harness-control`, `saved-agent-connectors`, `connect-anything-ladder`, `command-center-agent-templates`, `agent-box-git-credentials`, `outside-agent-grants` into this single active change.

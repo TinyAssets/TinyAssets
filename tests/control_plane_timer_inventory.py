@@ -244,9 +244,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/conversation_store.py::backfill_once": (CALL_SCOPED, "bounded retry"),
     "tinyassets/conversation_store.py::record_turn": (CALL_SCOPED, "bounded retry"),
     "tinyassets/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/graph_compiler.py::_call_policy_router_with_retry": (
-        CALL_SCOPED, "bounded retry",
-    ),
     "tinyassets/memory/versioning.py::OutputVersionStore.save_draft": (
         CALL_SCOPED, "bounded retry",
     ),

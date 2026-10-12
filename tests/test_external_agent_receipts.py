@@ -101,6 +101,22 @@ def test_job_stream_does_not_report_thread_configuration_as_answering_model():
     outcome = asyncio.run(run())
     assert outcome.configured_model == "gpt-6.1-sol"
     assert outcome.reported_model == ""
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.execution_receipt import (
+        normalize_execution_receipt,
+        receipt_from_response,
+    )
+
+    receipt = normalize_execution_receipt(receipt_from_response(ProviderResponse(
+        text=outcome.messages[-1], provider="codex", model="gpt-6.1-sol",
+        family="codex", latency_ms=0,
+        requested_model="gpt-6.1-sol",
+        configured_model=outcome.configured_model,
+        reported_model=outcome.reported_model,
+    )))
+    assert receipt["requested_model"] == "gpt-6.1-sol"
+    assert receipt["configured_model"] == "gpt-6.1-sol"
+    assert receipt["model_status"] == "unknown"
     assert outcome.messages == ["done"]
 
 

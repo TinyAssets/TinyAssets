@@ -12,6 +12,7 @@ Verifies that all modules are properly wired together:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import tempfile
@@ -23,22 +24,27 @@ import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 import domains.fantasy_daemon.phases._provider_stub as _provider_stub  # noqa: E402
-from tinyassets.providers import call as _provider_call  # noqa: E402
-
-# Force mock provider responses
-_provider_call.set_force_mock(True)
-
 from domains.fantasy_daemon.graphs.scene import build_scene_graph  # noqa: E402
 from domains.fantasy_daemon.phases.commit import commit  # noqa: E402
 from domains.fantasy_daemon.phases.draft import draft  # noqa: E402
 from domains.fantasy_daemon.phases.orient import orient  # noqa: E402
 from domains.fantasy_daemon.phases.plan import plan  # noqa: E402
+from tests.support.fantasy_model import answer as fantasy_answer
 from tinyassets.desktop.dashboard import DashboardHandler  # noqa: E402
 from tinyassets.evaluation.structural import StructuralEvaluator, StructuralResult  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def fantasy_model_transport(monkeypatch):
+    monkeypatch.setattr(_provider_stub, "text_sync", fantasy_answer)
+    monkeypatch.setattr(importlib.import_module("domains.fantasy_daemon.phases.commit"),
+                        "text_sync", fantasy_answer)
+    monkeypatch.setattr(importlib.import_module("domains.fantasy_daemon.phases.consolidate"),
+                        "text_sync", fantasy_answer)
 
 
 @pytest.fixture
@@ -144,8 +150,6 @@ class TestOrientRetrievalIntegration:
         """RetrievalRouter wiring should match the current search policy."""
         from unittest.mock import MagicMock, patch
 
-        import domains.fantasy_daemon.phases._provider_stub as provider_stub
-
         # Patch the router class at its import source
         mock_router_cls = MagicMock()
         mock_instance = mock_router_cls.return_value
@@ -166,14 +170,11 @@ class TestOrientRetrievalIntegration:
             from domains.fantasy_daemon.phases.orient import _run_retrieval
             _run_retrieval(base_state, "test-scene")
 
-        if mock_router_cls.called:
-            kwargs = mock_router_cls.call_args[1]
-            provider_call = kwargs.get("provider_call")
-            if provider_stub.is_force_mock():
-                assert provider_call is None
-            else:
-                assert provider_call is not None
-                assert callable(provider_call)
+        assert mock_router_cls.called
+        kwargs = mock_router_cls.call_args[1]
+        provider_call = kwargs.get("provider_call")
+        assert provider_call is not None
+        assert callable(provider_call)
 
     def test_orient_passes_enriched_state_to_memory_manager(self, base_state):
         """MemoryManager should see the freshly assembled orient_result contract."""
@@ -415,25 +416,28 @@ class TestMemoryManagerIntegration:
 class TestProviderIntegration:
     """Provider stub routes through real ProviderRouter.call_sync."""
 
-    def test_force_mock_returns_deterministic(self):
-        """When _FORCE_MOCK is True, providers return mock responses."""
-        assert _provider_stub.is_force_mock() is True
-        result = _provider_stub.call_provider("test prompt", role="writer")
-        assert isinstance(result, str)
-        assert len(result) > 0
+    def test_unbound_model_call_fails_loudly(self):
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+        from tinyassets.providers.model_call import text_sync
 
-    def test_call_for_plan_returns_json(self):
+        with pytest.raises(ProviderAuthorityHeldError, match="owner-bound"):
+            text_sync("test prompt", role="writer")
+
+    def test_call_for_plan_returns_json(self, monkeypatch):
         """call_for_plan should return parseable JSON with alternatives."""
         import json
 
+        monkeypatch.setattr(_provider_stub, "text_sync", lambda *_a, **_k:
+                            '{"alternatives":[{"beats":[{"description":"Test"}]}]}')
         result = _provider_stub.call_for_plan({"scene_id": "test"})
         data = json.loads(result)
         assert "alternatives" in data
         assert len(data["alternatives"]) > 0
         assert "beats" in data["alternatives"][0]
 
-    def test_call_for_draft_returns_prose(self):
+    def test_call_for_draft_returns_prose(self, monkeypatch):
         """call_for_draft should return non-empty prose."""
+        monkeypatch.setattr(_provider_stub, "text_sync", lambda *_a, **_k: "prose " * 20)
         result = _provider_stub.call_for_draft(
             {"beats": [{"beat_number": 1, "description": "Test", "tension": 0.5}]},
             {"scene_id": "test"},
@@ -441,15 +445,16 @@ class TestProviderIntegration:
         assert isinstance(result, str)
         assert len(result) > 50
 
-    def test_call_for_extraction_returns_json(self):
+    def test_call_for_extraction_returns_json(self, monkeypatch):
         """call_for_extraction should return parseable JSON facts."""
         import json
 
+        monkeypatch.setattr(_provider_stub, "text_sync", lambda *_a, **_k: "[]")
         result = _provider_stub.call_for_extraction("Ryn walked to the Gate.")
         data = json.loads(result)
         assert isinstance(data, list)
 
-    def test_real_router_has_call_sync(self):
+    def test_router_has_call_sync(self):
         """ProviderRouter should expose call_sync for sync nodes."""
         from tinyassets.providers.router import ProviderRouter
 
@@ -1499,7 +1504,7 @@ class TestConsolidateNode:
 
         result = consolidate(state)
         assert "chapter_summary" in result
-        # With _FORCE_MOCK=True, call_provider returns fallback_response
+        # With _FORCE_MOCK=True, text_sync returns fallback_response
         # which is the format-string fallback
         assert result["chapter_summary"]
         assert isinstance(result["chapter_summary"], str)
@@ -1601,7 +1606,7 @@ class TestCreativeBriefing:
         }
         c._generate_creative_briefing(output)
 
-        # With _FORCE_MOCK, call_provider returns fallback_response
+        # With _FORCE_MOCK, text_sync returns fallback_response
         assert c._cached_creative_briefing
         assert "Kael escaped" in c._cached_creative_briefing
 
@@ -2055,7 +2060,7 @@ class TestEditorialReader:
         from tinyassets.evaluation.editorial import read_editorial
 
         result = read_editorial("Some prose")
-        # With _FORCE_MOCK=True, call_provider returns mock -> None
+        # With _FORCE_MOCK=True, text_sync returns mock -> None
         assert result is None
 
     def test_commit_includes_editorial_notes(self):
@@ -2652,5 +2657,4 @@ class TestTrayMode:
         pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
         text = pyw.read_text(encoding="utf-8")
         assert '"--tunnel"' not in text
-
 

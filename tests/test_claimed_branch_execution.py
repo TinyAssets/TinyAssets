@@ -181,7 +181,7 @@ def test_fantasy_daemon_epoch2_path_delegates_to_shared_executor(
 def test_shared_executor_matches_fantasy_epoch2_results_and_execution_inputs(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from domains.fantasy_daemon.phases._provider_stub import call_provider
+    from domains.fantasy_daemon.phases._provider_stub import text_sync
     from fantasy_daemon.__main__ import _try_execute_claimed_branch_task
 
     universe_path = tmp_path / "universe-a"
@@ -199,7 +199,7 @@ def test_shared_executor_matches_fantasy_epoch2_results_and_execution_inputs(
     monkeypatch.setattr("tinyassets.runs.execute_branch_version", execute)
     identity = ClaimedBranchExecutorIdentity(daemon_id="daemon-a")
 
-    shared = execute_claimed_branch_task(tmp_path, task, identity, call_provider)
+    shared = execute_claimed_branch_task(tmp_path, task, identity, text_sync)
     wrapped = _try_execute_claimed_branch_task(universe_path, task, "daemon-a")
 
     assert wrapped == shared

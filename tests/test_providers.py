@@ -34,7 +34,7 @@ from tinyassets.providers.base import (
     UniverseContext,
 )
 from tinyassets.providers.quota import QuotaTracker
-from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
+from tinyassets.providers.router import ProviderRouter
 
 # Hard Rule 15: every routed call names the universe whose owner authorised it.
 _UDIR = Path("universe-under-test")
@@ -337,7 +337,7 @@ class TestProviderRouterCall:
         assert all(provider.call_count == 0 for provider in providers.values())
 
     @pytest.mark.asyncio
-    async def test_armed_carrier_bypasses_policy_fallback_and_ensemble_fanout(self):
+    async def test_armed_carrier_bypasses_ensemble_fanout(self):
         providers = _make_providers()
         router = ProviderRouter(providers=providers)
         policy_carrier = self._carrier(role="judge")
@@ -345,10 +345,8 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(policy_carrier),
         ):
-            text, provider, _meta = await router.call_with_policy(
-                "judge", "prompt", "system",
-                {"preferred": {"provider": "claude-code"}},
-                ModelConfig(max_tokens=10),
+            response = await router.call(
+                "judge", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=_ctx(policy_carrier),
             )
@@ -363,8 +361,8 @@ class TestProviderRouterCall:
                 universe_context=_ctx(ensemble_carrier),
             )
 
-        assert text == "codex-resp"
-        assert provider == "codex"
+        assert response.text == "codex-resp"
+        assert response.provider == "codex"
         assert [response.provider for response in ensemble] == ["codex"]
         assert providers["codex"].call_count == 2
         assert providers["claude-code"].call_count == 0
@@ -503,22 +501,6 @@ class TestProviderRegistration:
 
         with patch("shutil.which", return_value="/usr/local/bin/claude"):
             assert ClaudeProvider.is_available()
-
-
-    def test_effective_chain_excludes_unregistered_providers(self):
-        """Runtime chain skips absent CLI providers instead of advertising them first."""
-        router = ProviderRouter(
-            providers={
-                "codex": FakeProvider("codex", "openai"),
-                "ollama-local": FakeProvider("ollama-local", "local"),
-            },
-        )
-
-        chain, excluded = router.effective_chain(FALLBACK_CHAINS["writer"])
-
-        assert chain == ["codex", "ollama-local"]
-        assert [attempt.provider for attempt in excluded] == ["claude-code"]
-        assert {attempt.skip_class for attempt in excluded} == {"not_in_registry"}
 
 
 # =====================================================================
@@ -711,34 +693,8 @@ class TestOllamaProvider:
 
 
 # =====================================================================
-# Fallback chain definitions
+# Explicit model choice
 # =====================================================================
-
-
-class TestFallbackChainDefinitions:
-    def test_writer_preference_chain_starts_with_claude(self):
-        """Static preference may name Claude; runtime effective_chain probes it."""
-        assert FALLBACK_CHAINS["writer"][0] == "claude-code"
-        assert FALLBACK_CHAINS["writer"][-1] == "ollama-local"
-
-    def test_judge_chain_starts_with_codex(self):
-        assert FALLBACK_CHAINS["judge"][0] == "codex"
-
-    def test_extract_chain_starts_with_codex(self):
-        assert FALLBACK_CHAINS["extract"][0] == "codex"
-        assert FALLBACK_CHAINS["extract"][-1] == "ollama-local"
-
-    def test_embed_is_local_only(self):
-        assert FALLBACK_CHAINS["embed"] == ["ollama-local"]
-
-    def test_all_chains_include_ollama(self):
-        """Ollama is in every chain as last-resort fallback."""
-        for role, chain in FALLBACK_CHAINS.items():
-            assert "ollama-local" in chain, f"{role} chain missing ollama-local"
-
-    def test_ollama_is_last_in_judge_chain(self):
-        """Ollama is last in judge chains (text-parsed, not JSON)."""
-        assert FALLBACK_CHAINS["judge"][-1] == "ollama-local"
 
 
 class TestCarrierSettlementWithUnknownUsage:

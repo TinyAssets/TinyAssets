@@ -186,12 +186,25 @@ class WorkAgentAdapter:
         if provider != self.selection.connection_id:
             raise ProviderAuthorityHeldError("workflow agent source changed")
         self.check(context, config)
-        call = router.call(
-            "writer", prompt, system, replace(config, credential_snapshot_dir=snapshot_dir),
-            operation=self.carrier.operation,
-            universe_context=replace(context, provider_invocation=self.carrier),
-            _agent_observer=observer, _agent_execution_kind=kind,
-        )
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent
+        from tinyassets.providers.model_call import call as model_call
+
+        async def _infer():
+            result = await model_call(ModelCall(
+                model=self.selection, fallbacks=(),
+                context=ModelContext(
+                    prompt=prompt, system=system,
+                    config=replace(config, credential_snapshot_dir=snapshot_dir),
+                    operation=self.carrier.operation,
+                    universe_context=replace(context, provider_invocation=self.carrier),
+                    agent_observer=observer, agent_execution_kind=kind,
+                    router=router,
+                ), origin="workflow",
+            ), Parent(owner=self.receipt.principal_id,
+                      command_center=context.universe_dir.name))
+            return result.response
+
+        call = _infer()
         if kind != "native_agent" or self.activity_binding is None:
             return await call
         return await self._until_activity_stops(call)
@@ -347,7 +360,7 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
     from tinyassets.providers.provider_resolver import register_universe_open_providers
 
     router = bridge.get_provider_router()
-    if bridge.is_force_mock() or router is None:
+    if router is None:
         raise ProviderAuthorityHeldError("workflow agent requires its real provider router")
     if not engine_tools_authorized(
         actor_id=principal_id, graph_id=universe_id, root=session._base_path,

@@ -30,7 +30,6 @@ def env(tmp_path, monkeypatch, authenticate_request):
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    monkeypatch.setenv("_FORCE_MOCK", "true")
     # Branch mutation requires a credential-derived subject, and the scope
     # check is per-family: this file drives `goals` as well as `extensions`.
     # Nothing here asserts a *scope* refusal, so granting the writes these
@@ -52,10 +51,14 @@ def env(tmp_path, monkeypatch, authenticate_request):
     # returns `branch_run_requires_universe`, and with an unregistered id it
     # returns `universe_access_denied` — the ACL grant is the half that is
     # easy to miss.
+    from tests.test_run_provider_session import _CountingProvider, _seed_serving_assignment
     from tinyassets.daemon_server import (
         ensure_universe_registered,
         grant_universe_access,
+        set_founder_home,
     )
+    from tinyassets.providers import call as provider_registry
+    from tinyassets.providers.router import ProviderRouter
 
     udir = base / REDACTION_UNIVERSE
     udir.mkdir(parents=True, exist_ok=True)
@@ -69,13 +72,18 @@ def env(tmp_path, monkeypatch, authenticate_request):
         permission="write",
         granted_by="env",
     )
+    set_founder_home(base, founder_sub="tester", universe_id=REDACTION_UNIVERSE,
+                     platform_generated=True)
+    _seed_serving_assignment(base, owner_user_id="tester", universe_id=REDACTION_UNIVERSE)
+    provider = _CountingProvider()
+    monkeypatch.setattr(provider_registry, "_router", ProviderRouter({provider.name: provider}))
     from tinyassets import universe_server as us
-    provider_calls = importlib.import_module("tinyassets.providers.call")
+    provider_calls = importlib.import_module("tinyassets.providers.model_call")
 
     importlib.reload(us)
     monkeypatch.setattr(
         provider_calls,
-        "call_provider",
+        "text_sync",
         lambda prompt, _system="", **_kwargs: f"fixture:{prompt}",
     )
     yield us, base

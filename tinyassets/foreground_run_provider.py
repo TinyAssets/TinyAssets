@@ -720,7 +720,6 @@ class _ForegroundRunProviderSession:
 
     def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
         """One aggregate receipt for all nodes, not one full allowance per source."""
-        from tinyassets.graph_compiler import _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS
         from tinyassets.provider_serving_binding import _current_selected_member_authority
 
         bindings = []
@@ -742,19 +741,16 @@ class _ForegroundRunProviderSession:
             node.get("llm_policy") or self._branch_snapshot.get("default_llm_policy")
             for node in nodes
         ]
-        # Share the actual compiler's bounded policy-retry count. Include the
-        # requested fallback tail, not a fresh member allowance for each retry.
+        # Reserve only for explicitly declared model attempts.
         max_invocations = sum(
-            (1 + len(policy.get("fallback_chain", []))
-             + int(bool(policy.get("difficulty_override"))))
-            * (1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)) if policy else 1
+            1 + len(policy.get("fallback_chain", [])) if policy else 1
             for policy in policies
         ) + _review_allowance(self._branch_snapshot)
         if getattr(self, "_work_candidates", None) is not None:
             max_invocations = self._work_candidates.fit(
                 self._branch_snapshot,
                 ceiling=min(binding.max_invocations for binding in bindings),
-                retry_multiplier=1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS),
+                retry_multiplier=1,
                 review_attempts=_review_allowance(self._branch_snapshot),
             )
         max_invocations = _work_invocation_allowance(
@@ -1251,8 +1247,7 @@ class _ForegroundRunProviderSession:
         #    an earlier admission, never a standing permission — the same rule
         #    `runtime_matches_worker_provider` applies to a registration row.
         #
-        # Covers both public doors: `__call__` (raw) and `call_with_policy_sync`
-        # (structured) both funnel through `_call`. Outside every transaction —
+        # Every prompt step funnels through `_call`. Outside every transaction —
         # `_admit()` opens its own below — so this may resolve; the two
         # in-transaction stamp sites stay cached-only.
         call_provenance = resolve_process_cloud_admission()
@@ -1262,33 +1257,6 @@ class _ForegroundRunProviderSession:
                     call_provenance, surface="foreground run provider call"
                 )
             )
-
-        # Server-owned in-process callers may inject a provider stub instead of
-        # the production call primitive. Give that stub one fail-closed,
-        # unarmed invocation: a real ProviderRouter refuses before launch, while a
-        # mock returns without creating provider authority or a run receipt.
-        if (review is None
-                and getattr(self._provider_call, "__module__", "") != "tinyassets.providers.call"):
-            from tinyassets.exceptions import ProviderAuthorityHeldError
-            from tinyassets.providers.base import UniverseContext
-
-            try:
-                response = self._provider_call(
-                    prompt,
-                    system,
-                    role=role,
-                    config=config,
-                    operation=RUN_GRAPH_OPERATION,
-                    universe_context=UniverseContext(
-                        universe_dir=self._universe_dir,
-                        config=None,
-                    ),
-                    **kwargs,
-                )
-            except ProviderAuthorityHeldError:
-                pass
-            else:
-                return response, "mock"
 
         self._ensure_admitted()
         from tinyassets.shared_self import agent_node, prepare_shared_self_turn
@@ -1648,25 +1616,6 @@ class _ForegroundRunProviderSession:
         response, _provider = self._call(role, prompt, system, config, policy, kwargs)
         return response
 
-    def call_with_policy_sync(
-        self,
-        role: str,
-        prompt: str,
-        system: str,
-        policy: dict[str, Any] | None,
-        config: Any = None,
-        difficulty: str = "",
-        **kwargs: Any,
-    ) -> tuple[str, str, dict[str, Any]]:
-        del difficulty
-        metadata = {"authority": RUN_GRAPH_OPERATION, "attempts": 1}
-        # The captured DOCUMENT, not the order: the order is built during
-        # admission, which `_call` below triggers.
-        if self._model_preference_data is not None:
-            kwargs["_metadata_observer"] = metadata.update
-        response, provider = self._call(role, prompt, system, config, policy, kwargs)
-        return response, provider, metadata
-
     def close(self) -> None:
         if self._closed:
             return
@@ -1763,25 +1712,16 @@ def new_foreground_run_provider_session(
     )
 
 
-# How far down a `.provider_call` chain to look for a session before giving up.
-# Today's only shape is depth 1 (api/runs.py builds the wrapper directly), so
-# anything deeper is an unrecognised chain, not a supported one.
-_MAX_WRAPPER_DEPTH = 8
-
-
 def _locate_session(
     provider_call: Any,
 ) -> tuple[_ForegroundRunProviderSession | None, int]:
-    """The nearest nested session and the depth it was found at.
+    """Detect a session even behind an unsupported wrapper, so it is refused."""
+    from tinyassets.providers.model_call import BoundModelCall
 
-    `(None, 0)` means no session anywhere in the chain -- an ordinary provider
-    call, which must pass through untouched. A depth greater than 1 means a
-    session is present but WRAPPED by something this module does not know how
-    to rebind; the caller refuses rather than guesses.
-    """
     node = provider_call
-    for depth in range(1, _MAX_WRAPPER_DEPTH + 1):
-        candidate = getattr(node, "provider_call", None)
+    for depth in range(1, 9):
+        candidate = (node.runner if type(node) is BoundModelCall
+                     else getattr(node, "provider_call", None))
         if candidate is None:
             return None, 0
         if type(candidate) is _ForegroundRunProviderSession:
@@ -1798,7 +1738,7 @@ def _session_from_provider_call(provider_call: Any) -> _ForegroundRunProviderSes
 def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
     """The same wrapper shape around a different session.
 
-    The wrapper is a `UniverseBoundProviderCall`, which enforces one exact
+    The wrapper is a `BoundModelCall`, which enforces one exact
     universe context and operation. The child MUST keep both -- swapping the
     session must not become a way to swap the universe binding.
 
@@ -1813,17 +1753,17 @@ def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
     """
     from dataclasses import replace
 
-    from tinyassets.providers.call import UniverseBoundProviderCall
+    from tinyassets.providers.model_call import BoundModelCall
 
-    if type(provider_call) is not UniverseBoundProviderCall:
+    if type(provider_call) is not BoundModelCall:
         raise PermissionError(
             "cannot rebind a foreground provider call of type "
             f"{type(provider_call).__name__}: only an exact "
-            "UniverseBoundProviderCall carries the command center binding this "
+            "BoundModelCall carries the command center binding this "
             "rebind is required to preserve"
         )
     try:
-        return replace(provider_call, provider_call=session)
+        return replace(provider_call, runner=session)
     except TypeError:
         # Belt and braces: the exact-type check above should make this
         # unreachable, but a non-dataclass must never fall through to a

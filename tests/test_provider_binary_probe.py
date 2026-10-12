@@ -2,11 +2,9 @@
 
 Guards:
 - ClaudeProvider.is_available() returns False when 'claude' binary is absent.
-- CodexProvider.is_available() returns False when 'codex' binary is absent.
 - ClaudeProvider.is_available() returns True when binary is present.
-- CodexProvider.is_available() returns True when binary is present.
 - _provider_stub skips ClaudeProvider registration when binary absent.
-- _provider_stub skips CodexProvider registration when binary absent.
+- Shipped external agents register by package, independent of host binaries.
 - BaseProvider.is_available() defaults to True (non-binary providers unaffected).
 """
 from __future__ import annotations
@@ -69,9 +67,26 @@ class TestStubSkipsWhenBinaryAbsent:
 
         stub = _reload_stub()
 
-        assert stub._real_router is not None
-        assert "claude-code" not in stub._real_router.available_providers
+        assert stub._router is not None
+        assert "claude-code" not in stub._router.available_providers
 
+    def test_shipped_external_agent_registered_without_host_binary(
+        self, monkeypatch, reset_stub
+    ):
+        import tinyassets.external_agents.provider as package_provider
+
+        monkeypatch.setattr(
+            package_provider.ExternalAgentProvider,
+            "is_available",
+            classmethod(lambda cls: False),
+        )
+        stub = _reload_stub()
+
+        assert stub._router is not None
+        assert "codex" in stub._router.available_providers
+        assert isinstance(
+            stub._router._providers["codex"], package_provider.ExternalAgentProvider
+        )
 
     def test_claude_registered_when_binary_present(
         self, monkeypatch, reset_stub
@@ -81,5 +96,5 @@ class TestStubSkipsWhenBinaryAbsent:
 
         stub = _reload_stub()
 
-        assert stub._real_router is not None
-        assert "claude-code" in stub._real_router.available_providers
+        assert stub._router is not None
+        assert "claude-code" in stub._router.available_providers

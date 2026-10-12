@@ -166,7 +166,7 @@ def test_the_next_real_turn_carries_the_notice_once(world, monkeypatch):
         systems.append(system)
         return "ok"
 
-    monkeypatch.setattr(ui, "call_provider", provider)
+    monkeypatch.setattr(ui, "text_sync", provider)
     us.converse(graph_id="u-sender", message="Can you connect the DeepWiki MCP server?")
     us.converse(graph_id="u-sender", message="And again?")
     assert len(prompts) == 2

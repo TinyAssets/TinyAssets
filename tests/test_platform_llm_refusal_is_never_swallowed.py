@@ -6,7 +6,7 @@ not bound to one universe's owner authority with
 review found three legacy callers catching ``Exception`` around the provider
 call and turning that refusal into a template critique, an empty
 reflection, a skipped RAPTOR build or an empty connection proposal. Each case
-below drives the REAL caller with ``call_provider`` replaced by one that
+below drives the REAL caller with ``text_sync`` replaced by one that
 refuses, and requires the refusal to come out the other side.
 """
 
@@ -30,10 +30,9 @@ def _refuse(*_args, **_kwargs):
 
 @pytest.fixture
 def refusing_provider(monkeypatch):
-    import tinyassets.providers.call as call_mod
+    import tinyassets.providers.model_call as call_mod
 
-    monkeypatch.setattr(call_mod, "call_provider", _refuse)
-    monkeypatch.setattr(call_mod, "is_force_mock", lambda: False)
+    monkeypatch.setattr(call_mod, "text_sync", _refuse)
     return call_mod
 
 
@@ -104,11 +103,11 @@ def test_raptor_rebuild_propagates_a_refusal(tmp_path, refusing_provider):
 def test_raptor_never_builds_a_tree_of_empty_summaries(tmp_path, monkeypatch):
     """An exhausted provider fails the build; it never yields "" summary nodes.
 
-    The stub honours ``fallback_response`` exactly as ``call_provider`` does, so
+    The stub honours ``fallback_response`` exactly as ``text_sync`` does, so
     a caller that still passes ``fallback_response=""`` gets an empty summary
     back -- which is the empty-output shape this test forbids.
     """
-    import tinyassets.providers.call as call_mod
+    import tinyassets.providers.model_call as call_mod
     from tinyassets.knowledge.raptor import rebuild_raptor_from_canon
 
     def exhausted(prompt, system="", *, role="writer", fallback_response=None, **_kw):
@@ -116,7 +115,7 @@ def test_raptor_never_builds_a_tree_of_empty_summaries(tmp_path, monkeypatch):
             return fallback_response
         raise AllProvidersExhaustedError("no provider for the test")
 
-    monkeypatch.setattr(call_mod, "call_provider", exhausted)
+    monkeypatch.setattr(call_mod, "text_sync", exhausted)
 
     tree = rebuild_raptor_from_canon(_canon(tmp_path), _embed, universe_id="u-test")
 
@@ -177,12 +176,12 @@ def test_connection_inference_without_an_owner_request_does_not_call_a_model(
     """No carrier means no owner-bound call is possible: degrade to the manual
     fields WITHOUT asking (and so without a refusal to swallow)."""
     import tinyassets.auth.middleware as middleware
-    import tinyassets.providers.call as call_mod
+    import tinyassets.providers.model_call as call_mod
     from tinyassets.api.connection_inference import _run_model
 
     calls: list[str] = []
     monkeypatch.setattr(middleware, "provider_request_capability", lambda: None)
-    monkeypatch.setattr(call_mod, "call_provider", lambda *a, **k: calls.append("x") or "")
+    monkeypatch.setattr(call_mod, "text_sync", lambda *a, **k: calls.append("x") or "")
     udir = tmp_path / "u-test"
     udir.mkdir()
 

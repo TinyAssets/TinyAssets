@@ -9,7 +9,7 @@ The supervisor-heartbeat WRITER and healthcheck cases were deleted on
 outside a user's universe (ADR-009). The beat READER cases stay: the served
 `AssignedQueueConsumer` writes the same files.
   - last_activity_canary worker_liveness preference
-  - ProviderRouter._call_meta shape + call_with_policy 3-tuple
+  - ProviderRouter._call_meta shape and one-call response
 """
 
 from __future__ import annotations
@@ -282,15 +282,10 @@ def test_call_meta_shape():
         family="openai", latency_ms=812,
     )
     meta = ProviderRouter._call_meta(resp, attempts=2)
-    assert meta == {
-        "model": "gpt-5.1-codex",
-        # The configured label is not evidence of the model that answered.
-        "execution": {"provider": "codex", "model": "", "model_status": "unknown"},
-        "family": "openai",
-        "latency_ms": 812,
-        "degraded": False,
-        "attempts": 2,
-    }
+    assert meta["model"] == "gpt-5.1-codex"
+    assert meta["execution"]["model_status"] == "unknown"
+    assert meta["execution"]["resolved_model"] == "gpt-5.1-codex"
+    assert meta["family"] == "openai" and meta["attempts"] == 2
 
 
 def test_call_meta_preserves_reported_answer_identity_separately():
@@ -303,14 +298,13 @@ def test_call_meta_preserves_reported_answer_identity_separately():
     )
     meta = ProviderRouter._call_meta(resp, attempts=2)
     assert meta["model"] == "configured-alias"
-    assert meta["execution"] == {
-        "provider": "claude", "model": "provider-reported-model", "model_status": "reported",
-    }
+    assert meta["execution"]["provider"] == "claude"
+    assert meta["execution"]["reported_model"] == "provider-reported-model"
     assert meta["attempts"] == 2
 
 
 @pytest.mark.asyncio
-async def test_call_with_policy_returns_meta_triple():
+async def test_bound_call_returns_response_with_receipt():
     from tinyassets.providers.base import ProviderResponse
     from tinyassets.providers.router import ProviderRouter
 
@@ -330,10 +324,9 @@ async def test_call_with_policy_returns_meta_triple():
     from tests.support.owner_bound import owner_bound_call
 
     # Hard Rule 15: served only under the owner's authority for "fake".
-    text, name, meta = await owner_bound_call(
+    response = await owner_bound_call(
         router, "fake", prompt="p", system="s", policy={"preferred": {"provider": "fake"}},
     )
-    assert text == "out"
-    assert name == "fake"
-    assert meta["model"] == "fake-1"
-    assert meta["attempts"] == 1
+    assert response.text == "out"
+    assert response.provider == "fake"
+    assert response.execution_receipt.resolved_model == "fake-1"
