@@ -16,7 +16,7 @@ TABLES = frozenset({
     "outbound_connections", "outbound_connection_grants", "connection_capabilities",
     "outbound_connector_artifacts", "outbound_connector_artifact_edges",
     "agent_request_usage", "agent_request_attempts", "agent_request_usage_links",
-    "agent_request_dispatches", "browser_vault",
+    "agent_request_dispatches", "browser_vault", "owner_policy",
 })
 
 

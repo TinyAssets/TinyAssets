@@ -213,9 +213,11 @@ def test_approval_rechecks_policy_and_revocation_at_broker_admission(
     asked = _ask()
     from tinyassets.broker.client import BrokerClient
 
-    original = BrokerClient.http_policy
+    original = BrokerClient.http_connect
 
     def change_then_write(self, document):
+        if document["action"] not in {"full", "extend"}:
+            return original(self, document)
         with ledger._connect() as conn:
             if changed == "mode":
                 conn.execute(
@@ -239,7 +241,7 @@ def test_approval_rechecks_policy_and_revocation_at_broker_admission(
                 conn.execute("UPDATE outbound_connection_grants SET revoked_at = 1")
         return original(self, document)
 
-    monkeypatch.setattr(BrokerClient, "http_policy", change_then_write)
+    monkeypatch.setattr(BrokerClient, "http_connect", change_then_write)
     refused = answer_request(
         universe_id="u-1",
         payload={

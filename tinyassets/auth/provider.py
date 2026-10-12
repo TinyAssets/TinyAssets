@@ -382,7 +382,6 @@ _UNIVERSE_ADMIN_ACTIONS = frozenset({
     "control_daemon",
     "set_tier_config",
     "set_engine",
-    "offer_engine",
     "daemon_banish",
     "daemon_pause",
     "daemon_resume",

@@ -253,30 +253,6 @@ def test_agent_journal_deletion_counts_cascades_and_former_home(two_users: Path)
         assert receipt["rows_deleted"][table] == 2
 
 
-def test_agent_session_records_and_rules_go_with_the_account_and_no_one_elses(
-    two_users: Path,
-):
-    """Custom Rules and review switches live in .agent-sessions/<home>/rules.db,
-    beside the universe rather than inside it, so removing the home alone left
-    them behind after deletion."""
-    from tinyassets import agent_rules
-    from tinyassets.agent_sessions import RECORDS_DIR
-
-    for home in (HOME_A, HOME_B):
-        agent_rules.set_rule(two_users / home, "app.read", agent_rules.ASK_FIRST)
-    records_a = two_users / RECORDS_DIR / HOME_A
-    records_b = two_users / RECORDS_DIR / HOME_B
-    assert (records_a / "rules.db").is_file() and (records_b / "rules.db").is_file()
-
-    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
-                             delete_identity=lambda sub: "deleted")
-
-    assert not records_a.exists()
-    assert receipt["unfinished_phases"] == []
-    assert [r.behaviour for r in agent_rules.list_rules(two_users / HOME_B)
-            if r.action_class == "app.read"] == [agent_rules.ASK_FIRST]
-
-
 def test_account_deletion_stops_the_accounts_activities_first(two_users: Path, monkeypatch):
     """Harness D2: a running activity is fenced and its run cancelled before its
     store is removed, so it cannot act for the deleted account."""

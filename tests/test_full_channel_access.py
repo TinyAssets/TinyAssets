@@ -1164,14 +1164,14 @@ def test_full_answer_with_incomplete_snapshot_refuses_before_broker(
 ):
     from tests.test_workspace_authority import _deposit, _login, _make_universe
     from tinyassets.api.http_connection import extend_http
-    from tinyassets.broker import http_policy
+    from tinyassets.broker import http_connect
 
     _make_universe(base, "u-incomplete", admin="alice")
     _login("alice")
     deposited = _deposit("u-incomplete")
     def forbidden(*args, **kwargs):
         pytest.fail("incomplete approval reached broker mutation")
-    monkeypatch.setattr(http_policy, "update_policy", forbidden)
+    monkeypatch.setattr(http_connect, "connect_operation", forbidden)
     result = extend_http(universe_id="u-incomplete", payload=json.dumps({
         "destination": "github", "endpoints": [], "scopes": [], "access": "full",
         "policy_snapshot": snapshot,

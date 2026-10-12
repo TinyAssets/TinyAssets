@@ -141,9 +141,6 @@ PINNED: dict[str, list[str]] = {
         "_action_control_daemon: .unlink()",
         "_action_create_universe: .write_text()",
         "_action_switch_universe: .write_text()",
-        "_read_founder_offers: .read_text()",
-        "_write_founder_offers: os.replace()",
-        "_write_founder_offers: os.unlink()",
     ],
     "tinyassets/api/universe_file_reads.py": [
         "_open_universe_dir: os.open()",

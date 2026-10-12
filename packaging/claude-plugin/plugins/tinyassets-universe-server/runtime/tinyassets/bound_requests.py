@@ -19,11 +19,12 @@ from pathlib import Path
 import rfc8785
 
 from tinyassets import agent_activities as activities
-from tinyassets import agent_review, agent_rules
+from tinyassets import policy_rules
 from tinyassets.owner_control import control
 from tinyassets.storage import pending_requests as requests
 
 _dispatch = ContextVar("bound_request_dispatch", default=None)
+_policy_approval = ContextVar("bound_policy_approval", default=None)
 
 
 class RequestRefused(ValueError):
@@ -175,48 +176,12 @@ def _authority(home, packet, owner, agent):
     url, error = effector._build_url(packet["request"], host)
     if error:
         raise RequestRefused("The request destination is invalid.")
-    cls, operation = agent_rules.classify(
+    cls, operation = policy_rules.classify(
         home, packet["connection_id"], packet["verb"], effector._request_path(packet["request"])
     )
-    with closing(agent_rules._connect(home)) as conn:
-        agent_rules.list_rules(home, agent)
-        matching = [
-            list(r)
-            for r in conn.execute(
-                "SELECT id,action_class,connection,operation,behaviour,updated_at FROM rules "
-                "WHERE record_kind='behavior' AND agent=? AND action_class=? "
-                "AND connection IN ('',?) AND operation IN ('',?) "
-                "ORDER BY id",
-                (agent, cls, packet["connection_id"], operation),
-            )
-        ]
-        path = agent_rules._canonical_path(effector._request_path(packet["request"]))
-        kinds = [
-            list(row)
-            for row in conn.execute(
-                "SELECT id,method,path_prefix,kind,updated_at FROM operation_kinds "
-                "WHERE connection=? AND method IN ('',?) ORDER BY id",
-                (packet["connection_id"], operation),
-            )
-            if row[2] == "/" or path == row[2] or path.startswith(row[2].rstrip("/") + "/")
-        ]
-    with closing(agent_review._connect(home)) as conn:
-        reviews = [
-            list(row)
-            for row in conn.execute(
-                "SELECT 'on',updated_at FROM review_on WHERE agent=? AND action_class=? "
-                "UNION ALL SELECT 'off',updated_at FROM review_off "
-                "WHERE agent=? AND action_class=?",
-                (agent, cls, agent, cls),
-            )
-        ]
-    policy = digest(
-        {
-            "rules": matching,
-            "classification": [cls, operation, kinds],
-            "review": reviews,
-        }
-    )
+    # One broker generation binds the preview to every rule, kind and review
+    # setting that could change its authority before the owner answers.
+    policy = policy_rules.projection(home)["digest"]
     consent = [r for r in list_consents(home) if r.get("destination") == view.destination]
     binding = (
         get_binding(home.parent, universe_id=home.name, binding_id=agent)
@@ -250,14 +215,14 @@ def capture(home, raw):
         raise RequestRefused("A bound preview needs a trusted initiating agent turn.")
     with control(home), closing(connect(home)) as conn:
         authority = _authority(home, action["arguments"], owner, agent)
-        decision = agent_rules.decide(
+        decision = policy_rules.decide(
             home,
             authority["action_class"],
             connection=action["arguments"]["connection_id"],
             operation=authority["operation"],
             agent=agent,
         )
-        if decision.behaviour != agent_rules.ASK_FIRST:
+        if decision.behaviour != policy_rules.ASK_FIRST:
             raise RequestRefused("The initiating agent's current rule does not ask first.")
         task = conn.execute(
             "SELECT activity_id,task_generation,task_expires_at FROM activities "
@@ -265,7 +230,7 @@ def capture(home, raw):
             "AND continuation_only=1",
             (turn, owner, agent),
         ).fetchone()
-        from tinyassets.approval_scopes import task_for
+        from tinyassets.policy_grants import task_for
 
         inherited = task_for(home, owner, agent)
         if inherited:
@@ -375,7 +340,7 @@ def card(conn, request_id):
         "agent": envelope["subject"]["agent"],
         "title": f"{envelope['arguments']['verb']} {envelope['destination']}",
         "draft": envelope["arguments"]["request"].get("body"),
-        "purpose": agent_rules.ACTION_CLASSES.get(envelope["action_class"], "Requested action"),
+        "purpose": policy_rules.ACTION_CLASSES.get(envelope["action_class"], "Requested action"),
         "destination": envelope["destination"],
         "expires_at": envelope["expires_at"],
         "scope": "once",
@@ -429,7 +394,7 @@ def stop(home, owner, agent):
 
 
 def preview(home, request_id, session, *, draft=None, edit=False, scope="once"):
-    from tinyassets.approval_scopes import predicate
+    from tinyassets.policy_grants import predicate
     owner = json.loads(session["identity_json"])["user_id"]
     with control(home), closing(connect(home)) as conn:
         current = _owned(home, conn, request_id, owner)
@@ -560,6 +525,10 @@ def _decide(home, data, session):
         ):
             raise RequestRefused("Preview changed. Review the current action.")
         choice = data.get("decision")
+        approval = data.get("policy_approval")
+        if choice == "approve" and (
+                not isinstance(approval, str) or len(approval) < 32 or len(approval) > 512):
+            raise RequestRefused("A fresh broker approval is required.")
         if current["status"] == "unresolved" and choice not in ("deny", "skip", "alternative"):
             raise RequestRefused("Check the uncertain outcome; this card cannot send it again.")
         if choice not in ("approve", "deny", "skip", "defer", "alternative"):
@@ -635,10 +604,6 @@ def _decide(home, data, session):
                 (key, request_id),
             )
             conn.commit()
-            if stored['scope'] != 'once':
-                from tinyassets.approval_scopes import materialize
-
-                materialize(home, conn, request_id, stored, env)
             # Current policy/Stop cannot race this check: their writers share control.
             _current(home, conn, request_id, owner)
             conn.execute(
@@ -648,6 +613,7 @@ def _decide(home, data, session):
             conn.commit()
     packet = {"sink": env["executor"], **args}
     token = _dispatch.set((str(home.resolve()), digest(packet), env["subject"]["agent"]))
+    policy_token = _policy_approval.set(approval)
     try:
         result = run_authenticated_external_call_effector(
             node_id="owner_approval",
@@ -658,6 +624,7 @@ def _decide(home, data, session):
         )
     finally:
         _dispatch.reset(token)
+        _policy_approval.reset(policy_token)
     # The effector's broker response is already sanitized. Never retain exceptions,
     # request echoes or arbitrary credential-bearing provider output here.
     if result.get("error_kind"):
@@ -687,3 +654,10 @@ def dispatch_agent(home, packet):
         _dispatch.set(None)  # One effector invocation, not permission for another packet.
         return held[2]
     return None
+
+
+def take_policy_approval():
+    """Only the protected inline dispatch carries a once approval to the broker."""
+    token = _policy_approval.get()
+    _policy_approval.set(None)
+    return token
