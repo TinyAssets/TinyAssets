@@ -513,7 +513,7 @@ def test_canary_bearer_writes_exact_reserved_draft(monkeypatch, tmp_path):
         for path in tmp_path.rglob("*.md")
         if path.read_text(encoding="utf-8") == "roundtrip"
     ]
-    assert written_files == ["wiki/drafts/notes/uptime-probe.md"]
+    assert written_files == [".wiki/drafts/notes/uptime-probe.md"]
 
 
 def test_canary_authority_is_isolated_between_concurrent_requests(monkeypatch):
