@@ -629,12 +629,32 @@ def _deposit_http(*, uid, actor, destination, secret):
     return None
 
 
+def _scope_parts(scopes: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """HTTP verbs and canonical git scopes, so a widening can add only the latter."""
+    from tinyassets.storage.workspace_authority import (
+        format_git_scope,
+        is_git_scope,
+        parse_git_scope,
+    )
+
+    git: set[str] = set()
+    rest: set[str] = set()
+    for value in scopes:
+        parsed = parse_git_scope(value) if is_git_scope(value) else None
+        if parsed:
+            git.add(format_git_scope(*parsed))
+        else:
+            rest.add(str(value))
+    return frozenset(rest), frozenset(git)
+
+
 def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destination,
                   connection_id, grant_id, scheme, credential_ref, git_host,
                   requested_endpoints, http_scopes, access_mode=ACCESS_EXACT):
     """Pure existing-policy conflict checks, shared with broker preparation/commit."""
     legacy_scope_upgrade = False
     endpoints_extend = False
+    scopes_extend = False
     if resource is not None and raw_policy is not None:
         # Scopes are otherwise a PROJECTION of the endpoint methods, so anything
         # not derivable from endpoints - a git scope - would silently vanish on
@@ -713,9 +733,22 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
             access_mode == ACCESS_FULL and not non_scope_mismatch
             and set(resource.scopes) <= set(http_scopes)
         )
+        stored_verbs, stored_git = _scope_parts(resource.scopes)
+        wanted_verbs, wanted_git = _scope_parts(http_scopes)
+        # Scope-only widening is an addition, the same one ``extend_http`` already
+        # previewed: the endpoints and the HTTP verbs stay exactly as stored, and
+        # the git scopes grow. Verb smuggling, narrowing, and endpoint replacement
+        # stay conflicts.
+        scopes_extend = (
+            not non_scope_mismatch
+            and not scopes_match
+            and not endpoints_extend
+            and stored_verbs == wanted_verbs
+            and wanted_git > stored_git
+        )
         if non_scope_mismatch or (
             not scopes_match and not legacy_scope_upgrade and not endpoints_extend
-            and not full_scope_upgrade
+            and not full_scope_upgrade and not scopes_extend
         ):
             return {"error": "connection_conflict", "resource": "connection"}
     if existing_grant is not None and (
@@ -727,7 +760,7 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
         return {"error": "connection_conflict", "resource": "grant"}
 
     return {"http_scopes": http_scopes, "legacy_scope_upgrade": legacy_scope_upgrade,
-            "endpoints_extend": endpoints_extend}
+            "endpoints_extend": endpoints_extend, "scopes_extend": scopes_extend}
 
 
 def _connect_http(

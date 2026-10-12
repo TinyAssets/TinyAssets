@@ -15,6 +15,7 @@ from tinyassets.api.http_connection import (
     _canonical_policy,
     _connect_plan,
     _git_scopes_in,
+    _scope_parts,
 )
 
 ACTOR, UID, DESTINATION = "alice", "cc-alice", "example-api"
@@ -29,6 +30,7 @@ def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destinat
     the grant read injected, returning the plan instead of assigning locals."""
     legacy_scope_upgrade = False
     endpoints_extend = False
+    scopes_extend = False
     if resource is not None and raw_policy is not None:
         http_scopes = tuple(
             sorted(set(http_scopes) | _git_scopes_in(raw_policy[1]))
@@ -71,8 +73,18 @@ def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destinat
             and not scopes_match
             and tuple(resource.scopes) == ("http",)
         )
+        stored_verbs, stored_git = _scope_parts(resource.scopes)
+        wanted_verbs, wanted_git = _scope_parts(http_scopes)
+        scopes_extend = (
+            not non_scope_mismatch
+            and not scopes_match
+            and not endpoints_extend
+            and stored_verbs == wanted_verbs
+            and wanted_git > stored_git
+        )
         if non_scope_mismatch or (
             not scopes_match and not legacy_scope_upgrade and not endpoints_extend
+            and not scopes_extend
         ):
             return {"error": "connection_conflict", "resource": "connection"}
     existing_grant = get_grant(grant_id)
@@ -84,7 +96,7 @@ def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destinat
     ):
         return {"error": "connection_conflict", "resource": "grant"}
     return {"http_scopes": http_scopes, "legacy_scope_upgrade": legacy_scope_upgrade,
-            "endpoints_extend": endpoints_extend}
+            "endpoints_extend": endpoints_extend, "scopes_extend": scopes_extend}
 
 
 def _endpoint(path, methods):
@@ -167,4 +179,5 @@ def test_connect_plan_matches_main_inline_checks_across_the_matrix():
     plans = [json.loads(o) for o in outcomes if "error" not in json.loads(o)]
     assert any(p["legacy_scope_upgrade"] for p in plans)
     assert any(p["endpoints_extend"] for p in plans)
+    assert any(p["scopes_extend"] for p in plans)
     assert any("git_read:owner/repo" in p["http_scopes"] for p in plans)

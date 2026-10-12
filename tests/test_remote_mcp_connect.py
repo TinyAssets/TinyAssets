@@ -242,6 +242,10 @@ def test_keyless_remote_mcp_connects_with_owner_yes_and_works_next_turn(
         assert listed["url"] == URL and listed["extension"] == "deepwiki"
 
         # Turn 2: a fresh launch finds it by name and uses it, keylessly.
+        # Policy decisions stay in the owner-policy suite; this proves the wire.
+        from tests.test_ta_capabilities import _policy_stub
+
+        _policy_stub(monkeypatch)
         _install_inprocess_proxy(monkeypatch, db_path=home / ".broker" / "outbound.db",
                                  universe_dir=home / UID, grant_id=row["grant_id"],
                                  provider="http", destination="deepwiki",

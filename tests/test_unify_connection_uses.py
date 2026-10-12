@@ -119,7 +119,7 @@ def _broker_proxy(base, grant_id, destination, runtime):
     class _Proxy:
         closed = False
 
-        def request(self, verb, request, *, inference_usage=None):
+        def request(self, verb, request, *, inference_usage=None, **_policy):
             return dispatch(
                 grant_id, verb, request,
                 **({"inference_usage": inference_usage.document(),
@@ -496,6 +496,9 @@ def test_never_seen_platform_connects_and_the_broker_applies_its_constant_header
     assert _serving_llm_bound(base, UID, OWNER) is False
 
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    from tests.test_ta_capabilities import _policy_stub
+
+    _policy_stub(monkeypatch)
     grant_consent(base / UID, sink=aec.EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
                   destination="tasklark", granted_by=OWNER)
     loop = _Loopback(responder=lambda *_: b'{"id": "task-9"}')

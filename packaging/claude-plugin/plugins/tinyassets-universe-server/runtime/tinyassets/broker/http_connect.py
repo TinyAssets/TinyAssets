@@ -104,7 +104,7 @@ def local_operation(ledger, *, principal, command_center, document):
         if plan["legacy_scope_upgrade"]:
             ledger._upgrade_http_connection_scopes(
                 connection_id=connection_id, scopes=scopes, _transaction=conn)
-        if plan["endpoints_extend"]:
+        if plan["endpoints_extend"] or plan["scopes_extend"]:
             current = conn.execute("SELECT * FROM outbound_connections WHERE connection_id=?",
                                    (connection_id,)).fetchone()
             if not ledger.extend_http_connection_endpoints(

@@ -87,10 +87,23 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
       window.row={request_id:'bound-1',status:'pending',revision:1,agent:'main',
         title:'POST https://api.example.com/message',action_sha256:'hash',
         destination:'https://api.example.com/message',draft:'Exactly this message',
-        expires_at:1999999999,action:{type:'approve_action',envelope:{subject:{turn:'live'}}}};
+        expires_at:1999999999,action:{type:'approve_action',envelope:{
+          subject:{turn:'live',home:'alpha'},destination:'https://api.example.com/message',
+          arguments:{grant_id:'grant-site',connection_id:'conn-site',verb:'POST',
+            request:{path:'/message'}}}}};
       const previous=fetch;
+      const policyDoc={entries:[],egress:{mode:'open',allowlist:[]},
+        spend:{daily:null,monthly:null,transaction:null,ask_above:null,source_ceilings:{}}};
       window.fetch=async(url,options)=>{
-        if(!String(url).startsWith('/app/approvals/'))return previous(url,options);
+        const target=String(url);
+        if(target.startsWith('/app/api/policy')){
+          const body=options&&options.body?JSON.parse(options.body):null;
+          if(body&&body.action==='issue_once') return Response.json({token:'once-token'});
+          if(body&&body.policy) return Response.json({generation:(body.expected_generation||0)+1,
+            policy:body.policy,receipts:[]});
+          return Response.json({generation:1,policy:policyDoc,receipts:[]});
+        }
+        if(!target.startsWith('/app/approvals/'))return previous(url,options);
         const payload=JSON.parse(options.body);calls.push({url,payload});
         if(url.endsWith('/decide')){
           rows=[];receipts=[{...row,status:'answered'}];
@@ -110,7 +123,9 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     assert box["y"] >= 0 and box["y"] + box["height"] <= 844
     page.get_by_role("combobox", name="Approval scope").select_option("site")
     page.get_by_role("button", name="Allow for this site", exact=True).click()
-    page.wait_for_function("() => rows.length===0 && !document.getElementById('request-rail').open")
+    page.wait_for_function(
+        "() => window.rows.length===0 && !document.getElementById('request-rail').open"
+    )
     payload = page.evaluate("calls.at(-1).payload")
     assert payload["scope"] == "site"
     assert payload["approval_token"] == "token-site"

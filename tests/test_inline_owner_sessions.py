@@ -95,9 +95,17 @@ def test_bearer_fetch_cannot_start_interactive_login(setup):
 
 
 def test_policy_bearer_write_cannot_bypass_owner_session(setup, monkeypatch, tmp_path):
+    import os
+
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
 
+    frozen = tmp_path / ".platform" / "accounts" / ".legacy-policy"
+    frozen.mkdir(parents=True)
+    if os.name == "posix":
+        (tmp_path / ".platform").chmod(0o710)
+        frozen.parent.chmod(0o700)
+        frozen.chmod(0o750)
     admissions = SimpleNamespace(admissions_after=lambda _generation: [
         SimpleNamespace(center="alpha", principal="alice", event="admit")])
     store = PolicyStore(tmp_path, admissions)

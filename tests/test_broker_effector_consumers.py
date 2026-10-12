@@ -156,9 +156,14 @@ def test_full_effector_binds_execution_principal_before_consent(case):
     assert case.calls[0][0] == "bob"
 
 
-def test_bound_preview_uses_same_snapshot_for_grant_view_and_incarnation(case):
+def test_bound_preview_uses_same_snapshot_for_grant_view_and_incarnation(case, monkeypatch):
+    from tinyassets import policy_rules
     from tinyassets.storage.effector_consents import grant_consent
 
+    # The preview's ledger snapshot is the assertion. Policy classification is
+    # the owner-policy suite; this socket double has no policy store.
+    monkeypatch.setattr(policy_rules, "classify", lambda *_args, **_kwargs: ("app.write", "GET"))
+    monkeypatch.setattr(policy_rules, "projection", lambda _home: {"digest": "policy"})
     home = case.root / "cc-alice"
     grant_consent(home, sink="authenticated_external_call", destination="compute:alice",
                   granted_by="alice")
