@@ -77,7 +77,6 @@ VENDORS = (
 PLATFORM_OWN = {
     "tinyassets/billing/stripe_adapter.py",      # bills its own customers
     "tinyassets/auto_ship.py",                   # ships its own releases
-    "tinyassets/mcp_browser_cors.py",           # authenticates the platform's public MCP door
 }
 
 #: Module constants that ARE documentation, exempt on the same grounds as a

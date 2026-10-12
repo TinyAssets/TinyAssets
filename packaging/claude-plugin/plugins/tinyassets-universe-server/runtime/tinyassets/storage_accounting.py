@@ -688,7 +688,6 @@ ROOT_ENTRIES: dict[str, str] = {
     "knowledge.db": "platform: legacy single-tenant domain store",
     "story.db": "platform: legacy single-tenant domain store",
     "wiki_trigger_attempts.db": "platform: trigger bookkeeping",
-    ".wiki": "platform: legacy shared wiki data under the data root",
     "ledger.json": "platform: legacy ledger",
     "outbound.db": "platform: outbound connection ledger -- credential-adjacent, "
                    "never gated (a per-universe copy is counted by universe_files)",
