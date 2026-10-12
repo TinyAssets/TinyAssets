@@ -261,15 +261,15 @@ def parse_shard(raw: str) -> tuple[int, int]:
 
 
 def _structural_guard_files() -> frozenset[str]:
-    import ast
+    """Whole files the structural-guards job runs in full; partial ones stay here."""
+    import importlib.util
 
-    source = Path(__file__).with_name("ci_structural_guards.py").read_text(encoding="utf-8")
-    for node in ast.parse(source).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "GUARDS" for target in node.targets
-        ):
-            return frozenset(f"tests/{key.value}.py" for key in node.value.keys)
-    raise RuntimeError("ci_structural_guards.GUARDS not found")
+    spec = importlib.util.spec_from_file_location(
+        "_ci_structural_guards", Path(__file__).with_name("ci_structural_guards.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(target for target in module.targets() if "::" not in target)
 
 
 STRUCTURAL_GUARD_FILES = _structural_guard_files()
