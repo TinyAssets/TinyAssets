@@ -14,8 +14,9 @@ name: Uptime canary
 #     plus manual/deploy-completion triggers. Independent of the daemon host,
 #     but GitHub may delay or drop scheduled jobs; this is not a cadence SLA.
 #   - On 2 consecutive reds, automation opens / updates a GitHub issue
-#     labeled `p0-outage`. Out-of-band alarm sink — zero new deps,
-#     reuses issue infrastructure, host gets emailed by GitHub.
+#     labeled `p0-outage` through scripts/incident_issue.js (the same
+#     module deploy-prod uses for deploy-failed). Out-of-band alarm sink —
+#     zero new deps, reuses issue infrastructure, host gets emailed by GitHub.
 #   - On GREEN after reds, comments "RECOVERED" + closes the issue.
 #
 # Consecutive-state: open P0 issue IS the state. First red = log only.
@@ -447,6 +448,10 @@ jobs:
             core.setOutput('issue_number', '');
             core.setOutput('is_first_alarm', 'false');
 
+            const incidentRoot = process.env.GITHUB_WORKSPACE;
+            if (!incidentRoot) throw new Error('incident_issue: GITHUB_WORKSPACE is unset');
+            const {recordFailure, recordRecovery} = require(`${incidentRoot}/scripts/incident_issue.js`);
+
             if (overall === 'red') {
               // Only red creates the label. Green recovery must not create a
               // missing label, and unknown results returned before any REST call.
@@ -471,49 +476,35 @@ jobs:
                 }
               }
 
-              const openIssues = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                labels: label,
-                per_page: 5,
+              // Threshold stays here. The shared module comments on the one open
+              // incident, and opens one only when allowCreate says the threshold
+              // has already been crossed. allowCreate runs only when none is open.
+              const recorded = await recordFailure(github, context, {
+                label,
+                commentBody: formatBody('RED'),
+                title: `${label === 'disk-pressure' ? 'Shared disk pressure' : 'P0 Public MCP outage'} — ${now}`,
+                createBody: [
+                  label === 'disk-pressure' ? 'Disk alert at 80%; page at 90%; no automatic restart.' : `Auto-opened by the uptime canary after ${threshold} consecutive reds.`,
+                  `This issue tracks the outage window; comments append per tick.`,
+                  ``,
+                  formatBody('RED (threshold crossed)'),
+                ].join('\n'),
+                allowCreate: async () => label === 'disk-pressure' || await previousRunWasRed(),
               });
-              const openIssue = openIssues.data[0] || null;
-
-              if (openIssue) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: openIssue.number,
-                  body: formatBody('RED'),
-                });
-                console.log(`appended RED to #${openIssue.number}`);
+              if (recorded.action === 'commented') {
+                console.log(`appended RED to #${recorded.number}`);
                 // Escalation path — not a first alarm, but the ladder may
                 // still re-page at 1h/4h/24h.
                 core.setOutput('page_eligible', process.env.PAGE_NEEDED === 'true' ? 'true' : 'false');
-                core.setOutput('issue_number', String(openIssue.number));
+                core.setOutput('issue_number', recorded.number);
                 core.setOutput('is_first_alarm', 'false');
                 return;
               }
-
-              const priorRed = label === 'disk-pressure' || await previousRunWasRed();
-              if (priorRed) {
-                const result = await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title: `${label === 'disk-pressure' ? 'Shared disk pressure' : 'P0 Public MCP outage'} — ${now}`,
-                  labels: [label],
-                  body: [
-                    label === 'disk-pressure' ? 'Disk alert at 80%; page at 90%; no automatic restart.' : `Auto-opened by the uptime canary after ${threshold} consecutive reds.`,
-                    `This issue tracks the outage window; comments append per tick.`,
-                    ``,
-                    formatBody('RED (threshold crossed)'),
-                  ].join('\n'),
-                });
-                console.log(`opened issue #${result.data.number} (threshold crossed)`);
+              if (recorded.action === 'opened') {
+                console.log(`opened issue #${recorded.number} (threshold crossed)`);
                 // First-alarm path — always pages.
                 core.setOutput('page_eligible', process.env.PAGE_NEEDED === 'true' ? 'true' : 'false');
-                core.setOutput('issue_number', String(result.data.number));
+                core.setOutput('issue_number', recorded.number);
                 core.setOutput('is_first_alarm', 'true');
               } else {
                 console.log('first-red — not yet alarming. Next red will open issue.');
@@ -524,29 +515,12 @@ jobs:
             // Literal green is the only recovery path. It can inspect an
             // existing incident but never creates a missing p0-outage label.
             if (overall === 'green') {
-              const openIssues = await github.rest.issues.listForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                labels: label,
-                per_page: 5,
+              const recorded = await recordRecovery(github, context, {
+                label,
+                body: formatBody('GREEN — RECOVERED'),
               });
-              const openIssue = openIssues.data[0] || null;
-              if (openIssue) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: openIssue.number,
-                  body: formatBody('GREEN — RECOVERED'),
-                });
-                await github.rest.issues.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: openIssue.number,
-                  state: 'closed',
-                  state_reason: 'completed',
-                });
-                console.log(`closed #${openIssue.number} as RECOVERED`);
+              if (recorded.action === 'closed') {
+                console.log(`closed #${recorded.number} as RECOVERED`);
               } else {
                 console.log('steady green — no action');
               }

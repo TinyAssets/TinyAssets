@@ -7,6 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from scripts import check_shapes
 
 
@@ -209,6 +211,130 @@ def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypat
         encoding="utf-8",
     )
     assert "S3 line ceiling: pin raised 2434 -> 2435" in base_problems()
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "shape@localhost")
+    _git(repo, "config", "user.name", "shape")
+
+
+def _commit_file(repo: Path, name: str, content: str, message: str) -> str:
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _queue_history(repo: Path) -> tuple[str, str]:
+    """A0 (stale main) -> base (queue base) -> head (this entry adds one file)."""
+    _init_repo(repo)
+    _commit_file(repo, "tinyassets/old.py", "old\n", "a0")
+    stale = _git(repo, "rev-parse", "HEAD")
+    base = _commit_file(repo, "tinyassets/from_main.py", "main\n", "base")
+    _commit_file(repo, "tinyassets/new.py", "new\n", "entry")
+    _git(repo, "update-ref", "refs/remotes/origin/main", stale)
+    return base, stale
+
+
+def test_merge_group_diff_starts_at_base_sha_not_a_stale_main(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "checkout"
+    base, stale = _queue_history(repo)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+    monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
+    assert check_shapes.git_added(repo) == {"tinyassets/from_main.py", "tinyassets/new.py"}
+
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"merge_group": {"base_sha": base, "head_sha": "queued-head"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    assert check_shapes._merge_base(repo) == base
+    assert check_shapes.git_added(repo) == {"tinyassets/new.py"}
+
+    monkeypatch.setenv("MERGE_GROUP_BASE_SHA", base)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    assert check_shapes.git_added(repo) == {"tinyassets/new.py"}
+    assert stale != base
+
+
+def test_oracle_snapshot_borrows_the_queue_base_from_the_checkout_mount(
+    tmp_path: Path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    base, _stale = _queue_history(checkout)
+    snapshot = tmp_path / "work"
+    _init_repo(snapshot)
+    for name in ("tinyassets/old.py", "tinyassets/from_main.py", "tinyassets/new.py"):
+        source = checkout / name
+        target = snapshot / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    _git(snapshot, "add", "-A")
+    _git(snapshot, "commit", "-q", "-m", "linux oracle snapshot")
+
+    monkeypatch.setattr(check_shapes, "_checkout_git_dir", lambda: checkout / ".git")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.setenv("MERGE_GROUP_BASE_SHA", base)
+    assert check_shapes._merge_base(snapshot) == base
+    assert check_shapes.git_added(snapshot) == {"tinyassets/new.py"}
+
+    monkeypatch.setenv("MERGE_GROUP_BASE_SHA", "a" * 40)
+    with pytest.raises(RuntimeError, match="merge queue base"):
+        check_shapes._merge_base(snapshot)
+
+
+def test_actions_without_main_history_still_fails(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "shallow"
+    _init_repo(repo)
+    _commit_file(repo, "tinyassets/old.py", "old\n", "only")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.setattr(check_shapes, "_checkout_git_dir", lambda: None)
+    with pytest.raises(RuntimeError, match="fetch-depth must be 0"):
+        check_shapes._merge_base(repo)
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert check_shapes._merge_base(repo) is None
+
+
+def test_oracle_snapshot_borrows_head_parent_when_there_is_no_queue_base(
+    tmp_path: Path, monkeypatch
+):
+    """A pull_request checkout of depth 2 has HEAD~1 and no merge_group.base_sha."""
+    checkout = tmp_path / "checkout"
+    _init_repo(checkout)
+    parent = _commit_file(checkout, "tinyassets/old.py", "old\n", "base")
+    _commit_file(checkout, "tinyassets/new.py", "new\n", "pr")
+    snapshot = tmp_path / "work"
+    _init_repo(snapshot)
+    for name in ("tinyassets/old.py", "tinyassets/new.py"):
+        target = snapshot / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((checkout / name).read_text(encoding="utf-8"), encoding="utf-8")
+    _git(snapshot, "add", "-A")
+    _git(snapshot, "commit", "-q", "-m", "linux oracle snapshot")
+
+    monkeypatch.setattr(check_shapes, "_checkout_git_dir", lambda: checkout / ".git")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    # An image whose `git init` defaults to main must not treat that snapshot
+    # commit as upstream main.
+    _git(snapshot, "branch", "-M", "main")
+    assert check_shapes._merge_base(snapshot) == parent
+    assert check_shapes.git_added(snapshot) == {"tinyassets/new.py"}
 
 
 def test_git_added_uses_the_pr_diff_not_untracked_files():
