@@ -91,6 +91,26 @@ def _resolver(carrier):
     return resolve
 
 
+def test_nested_helper_uses_bound_owner_model_only_for_its_run(tmp_path, monkeypatch):
+    from tests.support.fantasy_model import ConnectedFantasySource
+    from tinyassets.providers import call as provider_call
+    from tinyassets.providers.model_call import bind_model_call, owner_model_scope, text_sync
+
+    source = ConnectedFantasySource(tmp_path / "owned-center")
+    monkeypatch.setattr(provider_call, "get_provider_router", lambda: source)
+    monkeypatch.setattr(provider_call, "register_open_providers_for", lambda _context: None)
+    bound = bind_model_call(text_sync, source.context, operation="run_graph")
+
+    with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
+        text_sync("Choose only tools", role="extract")
+    with owner_model_scope(bound):
+        assert text_sync("Choose only tools", role="extract") == '{"tools": []}'
+        assert source.receipts[-1].reported_model == source.model
+        assert source.receipts[-1].outcome == "succeeded"
+    with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
+        text_sync("Choose only tools", role="extract")
+
+
 # ---------------------------------------------------------------------------
 # The router: no owner authority, no provider
 # ---------------------------------------------------------------------------

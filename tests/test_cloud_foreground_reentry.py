@@ -32,8 +32,9 @@ def test_injected_foreground_callable_cannot_bypass_process_admission(
         tmp_path, universe_id="fixture", principal_id="fixture", provider_call=callback
     )
     if admitted:
-        assert session("test") == "fixture"
-        assert calls == ["called"]
+        with pytest.raises(ProviderAuthorityHeldError, match="not bound to a run"):
+            session("test")
+        assert calls == []
     else:
         with pytest.raises(PermissionError, match="platform_not_cloud"):
             session("test")

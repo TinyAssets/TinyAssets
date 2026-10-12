@@ -346,7 +346,7 @@ class TestDesignUsedEmits:
     execution, crediting the NodeDefinition's author. Skips on missing
     artifact id, missing/anonymous author, system-prefixed node ids."""
 
-    def test_node_def_kind_emitted_for_authored_node(self, tmp_path):
+    def test_node_def_kind_emitted_for_authored_node(self, tmp_path, connected_fantasy_model):
         """A node with non-anonymous author fires one design_used per
         successful step — kind=node_def, source_artifact_id=node_def_id,
         actor_id=author."""
@@ -358,6 +358,7 @@ class TestDesignUsedEmits:
         )
         outcome = execute_branch_async(
             tmp_path, branch=branch, inputs={}, actor="runner",
+            provider_call=connected_fantasy_model,
         )
         from tinyassets.runs import wait_for
         wait_for(outcome.run_id, timeout=10.0)
@@ -392,7 +393,7 @@ class TestDesignUsedEmits:
         events = _design_used_events(tmp_path, outcome.run_id)
         assert events == []
 
-    def test_multi_node_run_emits_per_node(self, tmp_path):
+    def test_multi_node_run_emits_per_node(self, tmp_path, connected_fantasy_model):
         """Two authored nodes each fire one design_used in step order."""
         from tinyassets.runs import execute_branch_async, wait_for
 
@@ -402,6 +403,7 @@ class TestDesignUsedEmits:
         )
         outcome = execute_branch_async(
             tmp_path, branch=branch, inputs={}, actor="runner",
+            provider_call=connected_fantasy_model,
         )
         wait_for(outcome.run_id, timeout=10.0)
 
@@ -470,7 +472,7 @@ class TestDesignUsedEmits:
             assert key not in seen, f"Duplicate design_used event: {key}"
             seen.add(key)
 
-    def test_design_used_findable_by_bounty_calc_query(self, tmp_path):
+    def test_design_used_findable_by_bounty_calc_query(self, tmp_path, connected_fantasy_model):
         """The §4 recursive-CTE bounty calc finds production-emitted
         design_used events with correct actor attribution."""
         from tinyassets.runs import execute_branch_async, wait_for
@@ -481,6 +483,7 @@ class TestDesignUsedEmits:
         )
         outcome = execute_branch_async(
             tmp_path, branch=branch, inputs={}, actor="runner",
+            provider_call=connected_fantasy_model,
         )
         wait_for(outcome.run_id, timeout=10.0)
 

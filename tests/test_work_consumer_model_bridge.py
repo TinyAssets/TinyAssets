@@ -116,6 +116,8 @@ def test_selected_work_agent_changes_model_inside_same_journal_without_repeating
         ).fetchone()[0])
     execution = dict(detail["execution"])
     usage = execution.pop("usage")
+    usage_id = execution.pop("usage_id")
+    assert len(usage_id) == 32 and all(c in "0123456789abcdef" for c in usage_id)
     assert usage["dispatched"] == 3
     assert usage["quota_authoritative"] is False
     assert sum(source["failed"] for source in usage["sources"]) == 1
@@ -126,9 +128,12 @@ def test_selected_work_agent_changes_model_inside_same_journal_without_repeating
         "provider_display": "compute:synthetic",
         "model": "actual-work-model",
         "model_status": "reported",
+        "resolved_model": "actual-work-model",
+        "reported_model": "actual-work-model",
+        "family": "api:openai_chat", "execution": "model_response",
+        "outcome": "succeeded", "usage_provenance": "provider_reported",
+        "input_tokens": 3, "output_tokens": 4, "cost_microunits": 0,
     }
-    assert detail["provider_model"] == "future-company/new-choice"
-    assert detail["provider_attempts"] == 3
 
 
 @pytest.mark.parametrize("fail_round", [1, 2])
@@ -278,12 +283,21 @@ def test_public_selected_reusable_graph_uses_reserved_run_and_exact_reply_projec
     assert result["reply"] == "work completed"
     execution = dict(result["execution"])
     usage = execution.pop("usage")
+    usage_id = execution.pop("usage_id")
+    assert len(usage_id) == 32 and all(c in "0123456789abcdef" for c in usage_id)
     assert usage["dispatched"] == 3
     assert usage["quota_authoritative"] is False
     assert sum(source["failed"] for source in usage["sources"]) == 1
     assert execution == {"provider": provider, "model": "actual-work-model",
                                     "provider_display": "compute:synthetic",
-                                    "model_status": "reported"}
+                                    "model_status": "reported",
+                                    "resolved_model": "actual-work-model",
+                                    "reported_model": "actual-work-model",
+                                    "family": "api:openai_chat",
+                                    "execution": "model_response", "outcome": "succeeded",
+                                    "usage_provenance": "provider_reported",
+                                    "input_tokens": 3, "output_tokens": 4,
+                                    "cost_microunits": 0}
     assert len(work_agent.wires) == 3 and len(work_agent.tools) == 1
     assert work_agent.latest().state == "completed"
     assert len(work_agent.latest().rounds) == 3

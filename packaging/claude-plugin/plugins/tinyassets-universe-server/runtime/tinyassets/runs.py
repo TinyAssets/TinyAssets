@@ -646,6 +646,17 @@ def _bind_waiting_run_provider(
     )
 
 
+def _owner_helper_scope(provider_call):
+    """Give nested platform helpers the run's admitted model call."""
+    from contextlib import nullcontext
+
+    from tinyassets.providers.model_call import BoundModelCall, owner_model_scope
+
+    if isinstance(provider_call, BoundModelCall):
+        return owner_model_scope(provider_call)
+    return nullcontext()
+
+
 def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
     """Start a claimed waiter exactly as it was admitted. Never raises.
 
@@ -4837,13 +4848,14 @@ def _invoke_graph(
             initial_state = seed_initial_state(
                 dict(inputs), getattr(branch, "state_schema", None),
             )
-            result = app.invoke(
-                initial_state,
-                config={
-                    "configurable": {"thread_id": thread_id},
-                    "recursion_limit": recursion_limit,
-                },
-            )
+            with _owner_helper_scope(provider_call):
+                result = app.invoke(
+                    initial_state,
+                    config={
+                        "configurable": {"thread_id": thread_id},
+                        "recursion_limit": recursion_limit,
+                    },
+                )
     except RunCancelledError as exc:
         update_run_status(
             base_path, run_id,
@@ -6719,13 +6731,14 @@ def _invoke_graph_resume(
             # None inputs triggers resume from last checkpoint. The admitted
             # recursion limit rides the same config key _invoke_graph uses, so
             # the resumed segment gets the cap the run was admitted with.
-            result = app.invoke(
-                None,
-                config={
-                    "configurable": {"thread_id": thread_id},
-                    "recursion_limit": recursion_limit,
-                },
-            )
+            with _owner_helper_scope(provider_call):
+                result = app.invoke(
+                    None,
+                    config={
+                        "configurable": {"thread_id": thread_id},
+                        "recursion_limit": recursion_limit,
+                    },
+                )
     except RunCancelledError as exc:
         update_run_status(
             base_path, run_id,

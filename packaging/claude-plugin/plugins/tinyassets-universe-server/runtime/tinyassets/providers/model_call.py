@@ -7,6 +7,7 @@ caller the same request, parent, result and receipt contract.
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -21,6 +22,21 @@ from tinyassets.providers.model_policy import ModelRef
 _last_provider: contextvars.ContextVar[str] = contextvars.ContextVar(
     "last_model_source", default="",
 )
+_helper_runner: contextvars.ContextVar[BoundModelCall | None] = contextvars.ContextVar(
+    "owner_model_helper_runner", default=None,
+)
+
+
+@contextmanager
+def owner_model_scope(bound_call: BoundModelCall):
+    """Bind a run's one admitted call to its nested platform helpers."""
+    if not isinstance(bound_call, BoundModelCall):
+        raise TypeError("owner model helper scope requires a bound model call")
+    runner_token = _helper_runner.set(bound_call)
+    try:
+        yield
+    finally:
+        _helper_runner.reset(runner_token)
 
 
 def last_provider() -> str:
@@ -157,6 +173,14 @@ def text_sync(
 ) -> str:
     """Text adapter for older engine callbacks; all dispatch uses ``call_sync``."""
     del retry_on_exhaustion
+    if universe_context is None:
+        runner = _helper_runner.get()
+        if runner is not None:
+            return runner(
+                prompt, system, role=role, config=config, policy=policy,
+                response_observer=response_observer,
+                operation=operation,
+            )
     if universe_context is None or universe_context.universe_dir is None:
         raise ProviderAuthorityHeldError(
             "Connect your provider: an owner-bound command center is required"
