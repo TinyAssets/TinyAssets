@@ -90,8 +90,14 @@ jobs:
         with:
           path: WebSite/site-react/out
 
+  # A skipped guard (every push) skips later jobs in the chain, including
+  # one whose direct need succeeded, unless that job's own if uses a status
+  # function and names the result it needs. build already continues on a
+  # skipped guard. This is the same shape: not cancelled, and build succeeded.
+  # A failed or skipped build still does not publish.
   deploy:
     needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
