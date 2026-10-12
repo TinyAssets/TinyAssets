@@ -138,7 +138,9 @@ async function runEvent(event, ordinal) {
   };
   const context = {repo: {owner: 'owner', repo: 'repo'}};
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  await new AsyncFunction('github', 'context', 'core', script)(github, context, core);
+  await new AsyncFunction(
+    'github', 'context', 'core', 'require', script,
+  )(github, context, core, require);
   return {
     event: event.overall, calls, outputs, warnings, summaries,
     mutationDelta: state.mutations - mutationStart,
@@ -166,7 +168,11 @@ def _run_shared_sink(events: list[dict[str, object]]) -> dict:
         capture_output=True,
         check=False,
         encoding="utf-8",
-        env={**os.environ, "TEST_EVENTS": json.dumps(events)},
+        env={
+            **os.environ,
+            "TEST_EVENTS": json.dumps(events),
+            "GITHUB_WORKSPACE": str(_REPO),
+        },
     )
     assert result.returncode == 0, result.stderr
     marker = next(
