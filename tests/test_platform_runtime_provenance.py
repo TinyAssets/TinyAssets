@@ -318,7 +318,6 @@ def test_resolver_has_no_default_cloud_fallback(tmp_path: Path, monkeypatch) -> 
     # Nothing prepared, nothing reachable: the honest answer is not-cloud, and
     # there is no env var, hostname or label that changes it.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     monkeypatch.setenv("TINYASSETS_CLOUD", "1")
     monkeypatch.setenv("TINYASSETS_EXECUTOR_CLASS", "cloud")
     result = prov.resolve_platform_runtime_provenance(

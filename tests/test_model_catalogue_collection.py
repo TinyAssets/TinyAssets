@@ -130,15 +130,16 @@ def test_native_executor_absence_is_visible_without_blocking_http(configured, mo
     ]} in result["source_failures"]
 
 
-def test_native_host_hold_retains_fixed_reason(tmp_path, monkeypatch):
+def test_native_role_hold_retains_fixed_reason(tmp_path, monkeypatch):
     from tinyassets.provider_serving_binding import ServingProviderHeld, _resolve_serving_source
 
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
+    monkeypatch.setattr("tinyassets.provider_serving_binding._SERVING_ROLES",
+                        ("writer", "judge"))
     with pytest.raises(ServingProviderHeld) as held:
         _resolve_serving_source(
             tmp_path, "u", "owner", "claude-code", ModelAccess("explicit", ("",)),
         )
-    assert held.value.reason == "host_serving_hold"
+    assert held.value.reason == "role_not_supported"
 
 
 def test_unknown_price_components_keep_facts_but_no_candidate(configured):

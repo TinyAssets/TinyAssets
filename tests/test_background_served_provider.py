@@ -132,6 +132,10 @@ def _authority_fixture(
     missing_owner: bool = False,
     provider: str = "codex",
 ):
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda base, universe, owner: frozenset({provider}),
+    )
     binding_expires_at = binding_expires_at.replace("+00:00", "Z")
     if attempt_lease_expires_at is not None:
         attempt_lease_expires_at = attempt_lease_expires_at.replace("+00:00", "Z")

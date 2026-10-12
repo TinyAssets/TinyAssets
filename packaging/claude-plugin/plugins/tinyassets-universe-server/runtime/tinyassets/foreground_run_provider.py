@@ -125,21 +125,6 @@ def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
     return {provider for provider in providers if provider}
 
 
-def _declared_policy_pins(policy: dict[str, Any] | None) -> set[tuple[str, str]]:
-    """Every ``(provider, model_id)`` a policy names, model ``""`` when absent."""
-    pins: set[tuple[str, str]] = set()
-    for value in (policy or {}).values():
-        for entry in value if isinstance(value, list) else [value]:
-            use = entry.get("use") if isinstance(entry, dict) else None
-            candidate = use if isinstance(use, dict) else entry
-            if isinstance(candidate, dict) and str(candidate.get("provider") or "").strip():
-                pins.add((
-                    str(candidate["provider"]).strip(),
-                    str(candidate.get("model_id", candidate.get("model", "")) or "").strip(),
-                ))
-    return pins
-
-
 def _work_invocation_allowance(snapshot, *, minimum: int, ceiling: int) -> int:
     """Reuse accepted finite authority for agent rounds, never mint per-round caps."""
     from tinyassets.shared_self import shared_self_requested
@@ -557,16 +542,6 @@ class _ForegroundRunProviderSession:
                             universe_id=self._universe_id,
                             agent=agent,
                         )
-                        declared = set().union(
-                            *(
-                                _declared_policy_providers(node.get("llm_policy"))
-                                for node in nodes
-                            )
-                        )
-                        if declared - {assignment.provider}:
-                            raise PermissionError(
-                                "foreground Branch policy is outside the active provider"
-                            )
                         if (
                             len(nodes) + review_slots > parent_binding.max_invocations
                             or not set(roles).issubset(parent_binding.allowed_roles)
@@ -696,28 +671,6 @@ class _ForegroundRunProviderSession:
         except Exception as exc:
             raise _held_authority_error(exc) from exc
 
-    def _resolve_declared_pins(self, nodes, accepted):
-        """Refuse a node pin naming no single accepted source, listing the refs.
-
-        A bare access method resolves (``providers.model_pins``) against the
-        sources this run admitted, model-aware when the run captured the owner's
-        catalogue. Only the refusal's words changed for a pin that cannot
-        resolve: it used to say "unavailable accepted provider" and name nothing.
-        """
-        from tinyassets.providers.model_pins import resolve_pin_source
-
-        catalog = getattr(getattr(self, "_work_candidates", None), "catalog", None)
-        offered = {
-            connection.connection_id: tuple(model.model_id for model in connection.models)
-            for connection in (catalog.connections if catalog is not None else ())
-        }
-        sources = {ref: offered.get(ref) for ref in accepted}
-        for node in nodes:
-            for provider, model_id in _declared_policy_pins(node.get("llm_policy")):
-                if resolve_pin_source(provider, model_id, sources) not in sources:
-                    # An exact ref this run did not admit: the existing refusal.
-                    raise PermissionError("workflow requests an unavailable accepted provider")
-
     def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
         """One aggregate receipt for all nodes, not one full allowance per source."""
         from tinyassets.provider_serving_binding import _current_selected_member_authority
@@ -736,7 +689,6 @@ class _ForegroundRunProviderSession:
                 bindings.append(binding)
         if not bindings:
             raise PermissionError("workflow requests an unavailable accepted provider")
-        self._resolve_declared_pins(nodes, {binding.provider for binding in bindings})
         policies = [
             node.get("llm_policy") or self._branch_snapshot.get("default_llm_policy")
             for node in nodes

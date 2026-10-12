@@ -59,6 +59,46 @@ PUBLIC_LISTED_BASIS = "publicly_listed"
 _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
+def connected_sources(base: str | Path, universe: str | Path, owner: str) -> frozenset[str]:
+    """Return this owner's live model sources for one command center.
+
+    The set is rebuilt from custody and broker grants on each launch. A saved
+    serving preference or another owner's definition never grants membership.
+    """
+    from tinyassets.broker.ledger_queries import HAS_MODEL_USE, query_ledger
+    from tinyassets.credential_vault import current_llm_subscription_custody
+    from tinyassets.providers.definition import list_definitions
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    base, universe = Path(base), Path(universe)
+    if (universe.resolve(strict=False) != (base.resolve(strict=False) / universe.name)
+            or not owner):
+        raise PermissionError("invalid connected-source scope")
+    sources: set[str] = set()
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        conn.execute("BEGIN")
+        for provider, service in _PROVIDER_SERVICE.items():
+            if current_llm_subscription_custody(
+                conn, universe_dir=universe, owner_user_id=owner,
+                universe_id=universe.name, service=service,
+            ) is not None:
+                sources.add(provider)
+        conn.rollback()
+    for definition in list_definitions(universe.name):
+        if definition.owner_user_id != owner or definition.access_method != "api_key_http":
+            continue
+        try:
+            facts = query_ledger(
+                base, query=HAS_MODEL_USE, principal=owner,
+                command_center=universe.name, grant_id=definition.ref,
+            )
+        except GrantResolutionError:
+            continue
+        if facts.get("model_use") is True:
+            sources.add("api_key_http:" + definition.id)
+    return frozenset(sources)
+
+
 
 #: Prefix of the refusal when no accepted model can run. The served turn's
 #: notice reads the held sources after ``HELD_SOURCES`` (universe_server).

@@ -55,7 +55,6 @@ def _manifest_setup(tmp_path, monkeypatch, *, custom=False, http=False):
     from tinyassets.providers.router import ProviderRouter
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     router = ProviderRouter({name: SimpleNamespace(is_available=lambda: True)
                              for name in ("codex", "claude-code")})
     monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
@@ -171,7 +170,7 @@ def test_reconnect_preserves_accepted_models_and_root(tmp_path, monkeypatch, ser
 
 @pytest.mark.parametrize("failure", [
     "unrelated_credential_removed", "collaborator_edited", "ambiguous",
-    "home_changed", "admin_revoked", "unaccepted", "failed", "pending", "host_opt_out",
+    "home_changed", "admin_revoked", "unaccepted", "failed", "pending",
     "last_writer_changed",
 ])
 def test_manifest_reconnect_holds_without_mutation(tmp_path, monkeypatch, failure):
@@ -224,8 +223,6 @@ def test_manifest_reconnect_holds_without_mutation(tmp_path, monkeypatch, failur
             conn.execute("UPDATE provider_assignments SET state=? WHERE universe_id=?",
                          (failure, "u-owner"))
             conn.commit()
-    elif failure == "host_opt_out":
-        monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING")
     before = load_provider_assignment(tmp_path, universe_id="u-owner")
     bindings_before = list_bindings(tmp_path, universe_id="u-owner", limit=100)
     result = sv.ensure_founder_serving(
@@ -457,10 +454,7 @@ def test_a_name_that_is_no_provider_here_reads_as_unknown(tmp_path, monkeypatch)
     assert held["status"] == "held" and held["reason"] == "unknown_provider", held
 
 
-def test_claude_serving_refusal_is_reported_not_raised(tmp_path, monkeypatch):
-    """Claude serving is held by default (operator opt-in). The deposit must
-    still be reported as a success with the serving outcome alongside."""
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
+def test_claude_serving_uses_the_owned_deposit(tmp_path, monkeypatch):
     udir = _seed(tmp_path, service="claude")
     out = sv.ensure_founder_serving(
         base_path=tmp_path,
@@ -469,12 +463,8 @@ def test_claude_serving_refusal_is_reported_not_raised(tmp_path, monkeypatch):
         universe_id="u-owner",
         service="claude",
     )
-    assert out["status"] == "held" and out["reason"] in (
-        "provider_authority_denied",
-        "binding_invalid",
-    )
-    with pytest.raises(PermissionError):
-        _serving_binding(tmp_path)
+    assert out["status"] == "serving", out
+    assert _serving_binding(tmp_path)["status"] == "serving"
 
 
 def test_other_users_binding_is_not_hijacked(tmp_path):

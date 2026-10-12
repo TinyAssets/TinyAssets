@@ -18,9 +18,10 @@ CONNECTION_GRANTS = "CONNECTION_GRANTS"
 BOOTSTRAP_RECOVERY = "BOOTSTRAP_RECOVERY"
 OWNER_CONNECTION_VIEW = "OWNER_CONNECTION_VIEW"
 OWNER_CONNECTION_NAMES = "OWNER_CONNECTION_NAMES"
+HAS_MODEL_USE = "HAS_MODEL_USE"
 QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
                      AUTHORIZED_CONNECTION, CONNECTION_GRANTS, BOOTSTRAP_RECOVERY,
-                     OWNER_CONNECTION_VIEW, OWNER_CONNECTION_NAMES})
+                     OWNER_CONNECTION_VIEW, OWNER_CONNECTION_NAMES, HAS_MODEL_USE})
 
 
 def validate_query(query, principal, command_center, grant_id, connection_id):
@@ -112,6 +113,12 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         ).fetchone()
         if row is None:
             raise GrantResolutionError("outbound connection grant identity mismatch")
+        if query == HAS_MODEL_USE:
+            return {"model_use": conn.execute(
+                "SELECT 1 FROM connection_capabilities "
+                "WHERE connection_id=? AND capability_kind='model_use'",
+                (grant["connection_id"],),
+            ).fetchone() is not None}
         # HTTP discovery needs live grant/resource facts even before a model
         # profile exists, or when that unrelated profile needs repair.
         fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",

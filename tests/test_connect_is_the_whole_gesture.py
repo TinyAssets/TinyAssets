@@ -74,7 +74,6 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "data"
     root.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
     return root
 
 
@@ -218,5 +217,4 @@ def app_html() -> str:
 
     html, _csp = render_app_html()
     return html
-
 

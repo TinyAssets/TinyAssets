@@ -140,22 +140,38 @@ def require_owner_bound_dispatch(
     served_authority: Any = None,
     invocation_carrier: Any = None,
 ) -> None:
-    """Refuse a provider launch the owner's authority does not name."""
+    """Refuse a provider launch outside this owner's live connected sources."""
     if universe_dir is None:
         raise PlatformLLMCallRefusedError(_NO_UNIVERSE)
-    authority = served_authority if served_authority is not None else invocation_carrier
-    if authority is None:
+    if served_authority is None and invocation_carrier is None:
         raise PlatformLLMCallRefusedError(_NO_OWNER_AUTHORITY)
-    if provider_name != getattr(authority, "provider", None):
-        raise PlatformLLMCallRefusedError(
-            f"The platform has no LLM: provider {provider_name!r} is not the "
-            "provider the owner's binding names, so it may not serve this call."
-        )
     if is_host_credential_provider(provider):
         raise PlatformLLMCallRefusedError(
             f"The platform has no LLM: {provider_name!r} can only use the host's "
             "credentials or the host's own model server, never the owner's. "
             "Connect this source to the command center as your own provider instead."
+        )
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    authority = (served_authority if served_authority is not None
+                 else getattr(invocation_carrier, "_receipt", None))
+    owner = (getattr(authority, "owner_user_id", "") if served_authority is not None
+             else getattr(authority, "principal_id", ""))
+    carrier_receipt = getattr(invocation_carrier, "_receipt", None)
+    admitted = (
+        getattr(authority, "universe_id", None) == Path(universe_dir).name
+        and (invocation_carrier is None or (
+            getattr(carrier_receipt, "principal_id", None) == owner
+            and getattr(carrier_receipt, "universe_id", None) == Path(universe_dir).name
+        ))
+        and provider_name in connected_sources(Path(universe_dir).parent, universe_dir, owner)
+        and (invocation_carrier is None
+             or provider_name == getattr(invocation_carrier, "provider", None))
+    )
+    if not admitted:
+        raise PlatformLLMCallRefusedError(
+            f"The platform has no LLM: provider {provider_name!r} is not a "
+            "current connected source for this owner and command center."
         )
 
 
