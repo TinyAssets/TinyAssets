@@ -495,17 +495,7 @@ def _merge_base(root: Path) -> str | None:
                 ["git", "merge-base", "HEAD", ref], cwd=root, text=True
             ).strip()
     if os.environ.get("GITHUB_ACTIONS"):
-        # Shallow CI checkouts (test shards) fetch the base history themselves.
-        fetched = subprocess.run(
-            ["git", "fetch", "--no-tags", "--filter=blob:none", "--unshallow", "origin",
-             "+refs/heads/main:refs/remotes/origin/main"],
-            cwd=root, capture_output=True,
-        )
-        if fetched.returncode == 0:
-            return subprocess.check_output(
-                ["git", "merge-base", "HEAD", "origin/main"], cwd=root, text=True
-            ).strip()
-        raise RuntimeError("shape guard needs main history and could not fetch it")
+        raise RuntimeError("shape guard needs main history; fetch-depth must be 0")
     return None  # linux_oracle constructs a single-commit snapshot repository
 
 
