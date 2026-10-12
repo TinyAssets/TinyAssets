@@ -29,6 +29,8 @@ from tinyassets.vault_envelope import (
     KEY_BYTES,
     EnvelopeError,
     canonical_record,
+    gcm_open,
+    gcm_seal,
     open_envelope,
     seal,
 )
@@ -667,6 +669,11 @@ class KeyService:
                 conn.execute("COMMIT")
             self._cache.pop(account, None)
 
+    def tombstoned_accounts(self) -> set[str]:
+        """Account digests a restore must not re-import. Read-only."""
+        with self._connect() as conn:
+            return {row["account"] for row in conn.execute("SELECT account FROM tombstones")}
+
     def _rewrap_survivor(self, account: str, center: str, new_owner: str) -> None:
         new_account = account_id(new_owner)
         _kek_id, kek = self._kek(account)
@@ -822,21 +829,13 @@ def _dek_aad(*, account: str, center: str, dek_id: str, kek_id: str) -> bytes:
 
 
 def _wrap_dek(kek: bytes, dek: bytes, **binding: str) -> bytes:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
-
-    nonce = os.urandom(12)
-    return nonce + _AESGCM(kek).encrypt(nonce, dek, _dek_aad(**binding))
+    return gcm_seal(kek, dek, _dek_aad(**binding))
 
 
 def _open_dek(kek: bytes, wrapped: bytes, **binding: str) -> bytes:
-    from cryptography.exceptions import InvalidTag
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
-
-    if len(wrapped) <= 12:
-        raise EnvelopeError("command center key is incomplete")
     try:
-        dek = _AESGCM(kek).decrypt(wrapped[:12], wrapped[12:], _dek_aad(**binding))
-    except (InvalidTag, ValueError) as exc:
+        dek = gcm_open(kek, wrapped, _dek_aad(**binding))
+    except EnvelopeError as exc:
         raise EnvelopeError("command center key did not authenticate") from exc
     if len(dek) != KEY_BYTES:
         raise EnvelopeError("command center key did not authenticate")

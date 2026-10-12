@@ -61,6 +61,29 @@ def associated_data(
     ).encode("utf-8")
 
 
+def gcm_seal(
+    key: bytes, plaintext: bytes, aad: bytes, *, nonce: bytes | None = None
+) -> bytes:
+    """One AES-GCM layout: 12-byte nonce, then ciphertext. No other copy."""
+    import secrets
+
+    if len(key) != KEY_BYTES:
+        raise EnvelopeError("data key is not 32 bytes")
+    nonce = secrets.token_bytes(NONCE_BYTES) if nonce is None else nonce
+    if len(nonce) != NONCE_BYTES:
+        raise EnvelopeError("nonce is not 96 bits")
+    return nonce + AESGCM(key).encrypt(nonce, plaintext, aad)
+
+
+def gcm_open(key: bytes, blob: bytes, aad: bytes) -> bytes:
+    if len(key) != KEY_BYTES or len(blob) <= NONCE_BYTES:
+        raise EnvelopeError("credential vault authentication failed")
+    try:
+        return AESGCM(key).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], aad)
+    except (InvalidTag, ValueError):
+        raise EnvelopeError("credential vault authentication failed") from None
+
+
 def seal(
     plaintext: bytes,
     *,
@@ -75,20 +98,14 @@ def seal(
     generation: int,
     nonce: bytes | None = None,
 ) -> dict[str, Any]:
-    import secrets
-
-    if len(key) != KEY_BYTES:
-        raise EnvelopeError("data key is not 32 bytes")
     aad = associated_data(
         account=account,
         command_center=command_center,
         record_id=record_id,
         generation=generation,
     )
-    nonce = nonce if nonce is not None else secrets.token_bytes(NONCE_BYTES)
-    if len(nonce) != NONCE_BYTES:
-        raise EnvelopeError("nonce is not 96 bits")
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
+    sealed = gcm_seal(key, plaintext, aad, nonce=nonce)
+    nonce, ciphertext = sealed[:NONCE_BYTES], sealed[NONCE_BYTES:]
     return {
         "account": account,
         "ciphertext": _b64(ciphertext),
@@ -130,12 +147,7 @@ def open_envelope(payload: Mapping[str, Any], *, key: bytes) -> bytes:
         record_id=record_id,
         generation=generation,
     )
-    if len(key) != KEY_BYTES:
-        raise EnvelopeError("credential vault authentication failed")
-    try:
-        return AESGCM(key).decrypt(nonce, ciphertext, aad)
-    except (InvalidTag, ValueError):
-        raise EnvelopeError("credential vault authentication failed") from None
+    return gcm_open(key, nonce + ciphertext, aad)
 
 
 def _b64(blob: bytes) -> str:

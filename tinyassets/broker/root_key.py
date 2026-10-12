@@ -17,8 +17,9 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from tinyassets.vault_envelope import EnvelopeError, gcm_open, gcm_seal
 
 PURPOSE = "account-kek"
 
@@ -92,8 +93,7 @@ class MemoryRootKey:
         self._touch(context)
         if len(kek) != 32:
             raise RootKeyError("account key is not 32 bytes")
-        nonce = os.urandom(12)
-        return nonce + AESGCM(self._root).encrypt(nonce, kek, _context_aad(context))
+        return gcm_seal(self._root, kek, _context_aad(context))
 
     def unwrap(
         self, blob: bytes, context: Mapping[str, str], *, active_only: bool = False
@@ -102,11 +102,9 @@ class MemoryRootKey:
         roots = (self._root,) if active_only else (self._root, *reversed(self._retired))
         aad = _context_aad(context)
         for root in roots:
-            if len(blob) <= 12:
-                break
             try:
-                opened = AESGCM(root).decrypt(blob[:12], blob[12:], aad)
-            except (InvalidTag, ValueError):
+                opened = gcm_open(root, blob, aad)
+            except EnvelopeError:
                 continue
             if len(opened) == 32:
                 return opened
@@ -267,6 +265,13 @@ def _b64_field(body: Mapping[str, Any], name: str) -> bytes | None:
         return None
 
 
+def kms_http_failure(detail: str) -> KeyServiceUnavailable | ReconnectRequired:
+    """Access-denied and bad ciphertext are reconnect. Anything else is unavailable."""
+    if any(token in detail for token in ("AccessDenied", "InvalidCiphertext", "IncorrectKey")):
+        return ReconnectRequired("wrapped account key did not authenticate")
+    return KeyServiceUnavailable("kms refused the vault credential")
+
+
 def _urllib_post(url: str, headers: dict[str, str], body: bytes) -> dict[str, Any]:
     req = urlrequest.Request(url, data=body, headers=headers, method="POST")
     try:
@@ -274,9 +279,7 @@ def _urllib_post(url: str, headers: dict[str, str], body: bytes) -> dict[str, An
             payload = json.loads(response.read().decode("utf-8"))
     except urlerror.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        if "InvalidCiphertext" in detail or "IncorrectKey" in detail:
-            raise ReconnectRequired("wrapped account key did not authenticate") from None
-        raise KeyServiceUnavailable("kms refused the vault credential") from None
+        raise kms_http_failure(detail) from None
     if not isinstance(payload, dict):
         raise KeyServiceUnavailable("kms response was refused")
     return payload

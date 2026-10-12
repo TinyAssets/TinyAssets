@@ -41,25 +41,29 @@ def main(argv: list[str] | None = None) -> int:
 
     account = account_id(args.owner)
     ledger = args.data_root / ".broker" / "outbound.db"
-    if not ledger.is_file():
-        print("key service: restored browser session did not open", file=sys.stderr)
+    if not ledger.is_file() or ledger.is_symlink():
+        print("key service: restored browser session check could not run", file=sys.stderr)
         return 1
     import sqlite3
 
-    with sqlite3.connect(ledger) as conn:
-        conn.row_factory = sqlite3.Row
-        present = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='browser_vault'"
-        ).fetchone()
-        row = None
-        if present is not None:
-            row = conn.execute(
-                "SELECT id, owner, home, revision, sealed FROM browser_vault "
-                "WHERE home = ? AND owner = ? AND length(sealed) > 0 LIMIT 1",
-                (args.center, args.owner),
+    try:
+        with sqlite3.connect(ledger) as conn:
+            conn.row_factory = sqlite3.Row
+            present = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='browser_vault'"
             ).fetchone()
-    if row is None:
-        print("key service: restored browser session did not open", file=sys.stderr)
+            row = None
+            if present is not None:
+                row = conn.execute(
+                    "SELECT id, owner, home, revision, sealed FROM browser_vault "
+                    "WHERE home = ? AND owner = ? AND length(sealed) > 0 LIMIT 1",
+                    (args.center, args.owner),
+                ).fetchone()
+    except sqlite3.Error:
+        print("key service: restored browser session check could not run", file=sys.stderr)
+        return 1
+    if present is None or row is None:
+        print("key service: restored browser session check could not run", file=sys.stderr)
         return 1
     try:
         opened = open_blob(
