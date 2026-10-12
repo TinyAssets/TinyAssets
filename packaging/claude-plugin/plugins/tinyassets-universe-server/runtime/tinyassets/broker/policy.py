@@ -33,6 +33,7 @@ DEFAULT_RULES = {
 OPERATION_KINDS = {"read": "app.read", "write": "app.write", "delete": "app.write",
                    "message": "people.message", "payment": "money.move",
                    "security": "security.change", "access": "access.grant"}
+_LEGACY_UID = 0
 
 
 def _canonical(value: object) -> str:
@@ -177,10 +178,25 @@ class PolicyStore:
         return sorted(admitted - retired)
 
     def _legacy(self, center: str) -> tuple[list[dict], dict]:
-        path = self._root / ".agent-sessions" / center / "rules.db"
-        if not path.exists():
+        path = self._root / ".platform" / "accounts" / ".legacy-policy" / f"{center}.db"
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            try:
+                (self._root / ".agent-sessions" / center / "rules.db").lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise PolicyRefused("legacy rules are not frozen in broker custody") from None
             return [], {"center": center, "rows": 0, "digest": _digest([])}
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        if os.name == "posix":
+            parent = path.parent.lstat()
+            if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != _LEGACY_UID
+                    or stat.S_IMODE(parent.st_mode) & 0o022
+                    or not stat.S_ISREG(info.st_mode) or info.st_uid != _LEGACY_UID
+                    or stat.S_IMODE(info.st_mode) != 0o440 or info.st_nlink != 1):
+                raise PolicyRefused("unsafe frozen legacy rules")
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
             db.row_factory = sqlite3.Row
             rows = []
             for table in ("rules", "approval_grants", "operation_kinds", "review_on", "review_off"):
@@ -192,9 +208,13 @@ class PolicyStore:
         return rows, {"center": center, "rows": len(rows), "digest": _digest(rows)}
 
     def _legacy_snapshot(self, owner: str) -> tuple[dict, dict]:
-        entries, sources = [], []
+        entries, sources, refused = [], [], []
         for center in self._centers(owner):
-            rows, source = self._legacy(center)
+            try:
+                rows, source = self._legacy(center)
+            except (PolicyRefused, OSError, sqlite3.Error) as exc:
+                refused.append({"center": center, "reason": str(exc)})
+                continue
             entries.extend(rows)
             sources.append(source)
         document = {"entries": entries, "egress": {"mode": "open", "allowlist": []},
@@ -208,7 +228,8 @@ class PolicyStore:
             key = tuple(values.get(k) for k in ("agent", "action_class", "connection", "operation"))
             by_key.setdefault(key, set()).add(values.get("behaviour", ""))
         conflicts = [list(key) for key, behaviours in by_key.items() if len(behaviours) > 1]
-        return document, {"centers": sources, "conflicts": conflicts}
+        return document, {"centers": sources, "conflicts": conflicts,
+                          "refused": refused}
 
     def _migrate(self, db: sqlite3.Connection, owner: str) -> dict:
         document, report = self._legacy_snapshot(owner)
@@ -230,8 +251,67 @@ class PolicyStore:
         with closing(self._connect(owner)) as db:
             row = db.execute("SELECT report FROM migration_report WHERE singleton=1").fetchone()
         if row is None:
-            return self._legacy_snapshot(owner)[1]
+            raise PolicyRefused("owner policy has not been bootstrapped")
         return json.loads(row["report"])
+
+    def _migrated(self, owner: str, center: str) -> bool:
+        with closing(self._connect(owner)) as db:
+            return db.execute("SELECT 1 FROM migration WHERE center=?",
+                              (center,)).fetchone() is not None
+
+    def bootstrap(self) -> None:
+        """Import admitted centers once, before accepting broker requests."""
+        if self._admissions is None:
+            return
+        owners = {row.principal for row in self._admissions.admissions_after(0)
+                  if row.event == "admit"}
+        for owner in sorted(owners):
+            if (self._path(owner).parent / ".deleted").exists():
+                continue
+            with closing(self._connect(owner)) as db, db:
+                if db.execute("SELECT 1 FROM policy WHERE singleton=1").fetchone() is None:
+                    db.execute("BEGIN IMMEDIATE")
+                    self._migrate(db, owner)
+                    db.commit()
+            for center in self._centers(owner):
+                self.migrate_center(owner, center)
+
+    def migrate_center(self, owner: str, center: str) -> bool:
+        """Import a newly admitted center or record why it cannot be trusted."""
+        if center not in self._centers(owner):
+            raise PolicyRefused("center is not admitted to this owner")
+        with closing(self._connect(owner)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT generation,document FROM policy WHERE singleton=1").fetchone()
+            if row is None:
+                self._migrate(db, owner)
+            elif db.execute("SELECT 1 FROM migration WHERE center=?", (center,)).fetchone() is None:
+                report = json.loads(db.execute(
+                    "SELECT report FROM migration_report WHERE singleton=1").fetchone()[0])
+                report["refused"] = [item for item in report.get("refused", [])
+                                     if item["center"] != center]
+                try:
+                    entries, source = self._legacy(center)
+                except (PolicyRefused, OSError, sqlite3.Error) as exc:
+                    report["refused"].append({"center": center, "reason": str(exc)})
+                else:
+                    document = json.loads(row["document"])
+                    document["entries"].extend(entries)
+                    db.execute("INSERT INTO migration VALUES (?,?,?,?)",
+                               (center, source["rows"], source["digest"], _digest(entries)))
+                    report["centers"].append(source)
+                    db.execute("UPDATE policy SET generation=?,digest=?,document=? "
+                               "WHERE singleton=1",
+                               (row["generation"] + 1, _digest(document), _canonical(document)))
+                    db.execute("INSERT INTO receipts(at,kind,owner,new_digest,generation,outcome) "
+                               "VALUES (?,?,?,?,?,?)",
+                               (time.time(), "migration", owner, _digest(document),
+                                row["generation"] + 1, "copied"))
+                db.execute("UPDATE migration_report SET report=? WHERE singleton=1",
+                           (_canonical(report),))
+            accepted = db.execute("SELECT 1 FROM migration WHERE center=?", (center,)).fetchone()
+            db.commit()
+        return accepted is not None
 
     def receipts(self, owner: str) -> list[dict]:
         with closing(self._connect(owner)) as db:
@@ -242,11 +322,10 @@ class PolicyStore:
 
     def read(self, owner: str) -> OwnerPolicy:
         with closing(self._connect(owner)) as db:
-            select = "SELECT generation,digest,document FROM policy WHERE singleton=1"
-            row = db.execute(select).fetchone()
+            row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
+                             ).fetchone()
         if row is None:
-            document, _ = self._legacy_snapshot(owner)
-            return OwnerPolicy(owner, 1, _digest(document), document)
+            raise PolicyRefused("owner policy has not been bootstrapped")
         document = json.loads(row["document"])
         if _digest(document) != row["digest"]:
             raise RuntimeError("policy digest mismatch")
@@ -260,11 +339,9 @@ class PolicyStore:
             raise PolicyRefused("expected policy generation required")
         with closing(self._connect(owner)) as db:
             db.execute("BEGIN IMMEDIATE")
-            select = "SELECT generation,digest FROM policy WHERE singleton=1"
-            row = db.execute(select).fetchone()
+            row = db.execute("SELECT generation,digest FROM policy WHERE singleton=1").fetchone()
             if row is None:
-                self._migrate(db, owner)
-                row = db.execute(select).fetchone()
+                raise PolicyRefused("owner policy has not been bootstrapped")
             if row["generation"] != expected_generation:
                 raise PolicyRefused("policy generation changed")
             generation, digest = row["generation"] + 1, _digest(document)
@@ -343,6 +420,8 @@ class PolicyStore:
         """Declared HTTP meaning; undeclared calls conservatively count as writes."""
         if center not in self._centers(owner, active=True):
             raise PolicyRefused("center is not admitted to this owner")
+        if not self._migrated(owner, center):
+            raise PolicyRefused("center policy has not been migrated")
         policy = self.read(owner).document
         method = str(method or "").upper()
         path = str(path or "/").rstrip("/") or "/"
@@ -373,7 +452,7 @@ class PolicyStore:
         with closing(self._connect(owner)) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
-            if (row["generation"] if row else 1) != expected_generation:
+            if row is None or row["generation"] != expected_generation:
                 raise PolicyRefused("policy changed before approval")
             db.execute("INSERT INTO once_approvals VALUES (?,?,?,?,?,NULL)",
                        (hashlib.sha256(token.encode()).hexdigest(), request_digest,
@@ -392,7 +471,7 @@ class PolicyStore:
         with closing(self._connect(owner)) as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT generation FROM policy WHERE singleton=1").fetchone()
-            if (current["generation"] if current else 1) != generation:
+            if current is None or current["generation"] != generation:
                 return False
             cursor = db.execute(
                 "UPDATE once_approvals SET consumed_at=? WHERE token_hash=? "
@@ -416,13 +495,14 @@ class PolicyStore:
         """Match an owner-issued standing grant at the current generation."""
         if not isinstance(decision_id, str) or not decision_id or len(decision_id) > 512:
             return False
+        if not self._migrated(owner, center):
+            return False
         with closing(self._connect(owner)) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT generation,document FROM policy WHERE singleton=1").fetchone()
-            current_generation = row["generation"] if row else 1
-            if current_generation != generation:
+            if row is None or row["generation"] != generation:
                 return False
-            document = json.loads(row["document"]) if row else self._legacy_snapshot(owner)[0]
+            document = json.loads(row["document"])
             for entry in document["entries"]:
                 if entry["table"] != "approval_grants" or entry["scope"] not in (center, "account"):
                     continue
@@ -463,6 +543,8 @@ class PolicyStore:
         """
         if center not in self._centers(owner, active=True):
             raise PolicyRefused("center is not admitted to this owner")
+        if not self._migrated(owner, center):
+            raise PolicyRefused("center policy has not been migrated")
         if (type(amount) is not int or amount < 0
                 or (amount and (not isinstance(request_id, str) or not request_id))):
             raise PolicyRefused("invalid spend amount")
@@ -475,11 +557,9 @@ class PolicyStore:
             row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
                              ).fetchone()
             if row is None:
-                policy = self._legacy_snapshot(owner)[0]
-                generation, digest = 1, _digest(policy)
-            else:
-                policy = json.loads(row["document"])
-                generation, digest = row["generation"], row["digest"]
+                raise PolicyRefused("owner policy has not been bootstrapped")
+            policy = json.loads(row["document"])
+            generation, digest = row["generation"], row["digest"]
             if _digest(policy) != digest:
                 raise RuntimeError("policy digest mismatch")
             matches = []

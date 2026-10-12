@@ -628,6 +628,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".runtime": "platform: provider runtime",
     ".platform": "platform: broker-private account policy and receipts",
     "policy.db": "platform: broker-owned account policy under .platform/accounts",
+    ".legacy-policy": "platform: root-frozen migration snapshots under broker custody",
     ".deleted": "platform: broker-owned account deletion marker under .platform/accounts",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",

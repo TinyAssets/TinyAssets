@@ -38,8 +38,9 @@ and the spec is synced.
         - The read-only projection, and `ta policy show` and
           `ta policy propose` (the proposal becomes an owner request).
         - The guard `policy-writers`.
-      - **Migration:** copy each center's `rules.db` and grants into the
-        owner's `policy.db` on first write, verified by count and digest.
+      - **Migration:** copy each center's frozen `rules.db` and grants into the
+        owner's `policy.db` at broker bootstrap or center admission, verified
+        by count and digest; refuse and report unfrozen sources.
         Old files stay read-only until P6.
       - **Deletes:** `agent_rules.py`, `approval_scopes.py`,
         `broker/http_policy.py`, and the rule routes in

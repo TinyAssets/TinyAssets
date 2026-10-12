@@ -101,6 +101,7 @@ def test_policy_bearer_write_cannot_bypass_owner_session(setup, monkeypatch, tmp
     admissions = SimpleNamespace(admissions_after=lambda _generation: [
         SimpleNamespace(center="alpha", principal="alice", event="admit")])
     store = PolicyStore(tmp_path, admissions)
+    store.bootstrap()
     current = store.read("alice")
 
     def broker(_base, owner, action, **fields):

@@ -421,6 +421,10 @@ class _Connection:
                     raise RuntimeError("owner identities are not initialized")
                 row = self._server._owner_identities.admission(
                     doc["event"], doc["principal"], doc["center"])
+                if (doc["event"] == "admit" and self._server._policy_store is not None
+                        and not self._server._policy_store.migrate_center(
+                            doc["principal"], doc["center"])):
+                    raise PermissionError("center policy migration refused")
                 return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
                         "machine": row.machine}
         except CenterUnadmitted:

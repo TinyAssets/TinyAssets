@@ -19,6 +19,7 @@ import sqlite3
 import stat
 import struct
 import time
+from contextlib import closing
 from pathlib import Path
 
 FIRST, COUNT = 300000, 100000
@@ -129,6 +130,13 @@ def _prepare_policy_paths(data_root):
         raise BootstrapRefused('unsafe broker account policy parent')
     os.chown(accounts, 1002, 1002)
     os.chmod(accounts, 0o700)
+    frozen = accounts / '.legacy-policy'
+    frozen.mkdir(mode=0o750, exist_ok=True)
+    info = frozen.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, 1002):
+        raise BootstrapRefused('unsafe frozen policy parent')
+    os.chown(frozen, 0, 1002)
+    os.chmod(frozen, 0o750)
     legacy = data_root / '.agent-sessions'
     if not legacy.exists():
         return
@@ -145,6 +153,9 @@ def _prepare_policy_paths(data_root):
             raise BootstrapRefused('unsafe legacy rule center')
         os.chown(center, 1001, 1102)
         os.chmod(center, 0o710)
+        target = frozen / f'{center.name}.db'
+        if target.exists():
+            continue
         rules = center / 'rules.db'
         if not rules.exists():
             continue
@@ -163,6 +174,19 @@ def _prepare_policy_paths(data_root):
                     raise BootstrapRefused('legacy policy journal could not be frozen')
         os.chown(rules, 0, 1102)
         os.chmod(rules, 0o440)
+        # The center directory remains daemon-owned. Copy into a root-owned
+        # directory beneath the broker-private account parent before PID1
+        # drops privilege; the broker never imports the replaceable path.
+        temporary = frozen / f'.{center.name}.{os.getpid()}.tmp'
+        try:
+            with closing(sqlite3.connect(rules.as_uri() + '?mode=ro', uri=True)) as source:
+                with closing(sqlite3.connect(temporary)) as snapshot:
+                    source.backup(snapshot)
+            os.chown(temporary, 0, 1002)
+            os.chmod(temporary, 0o440)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _bootstrap_services(data_root, run_root, bindings, launch, generation):

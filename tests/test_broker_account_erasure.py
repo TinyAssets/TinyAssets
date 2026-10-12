@@ -98,6 +98,7 @@ def test_actual_account_deletion_calls_broker_after_tombstone(discovery, monkeyp
         SimpleNamespace(center="shared-home", principal=owner, event="admit")
         for owner in ("erase-a", "erase-b")])
     policy = PolicyStore(discovery.root, admissions)
+    policy.bootstrap()
     policy.read("erase-a")
     policy.read("erase-b")
     discovery.broker.server._policy_store = policy
@@ -120,6 +121,7 @@ def test_actual_account_deletion_calls_broker_after_tombstone(discovery, monkeyp
     with pytest.raises(PolicyRefused, match="erased"):
         policy.read("erase-a")
     assert policy.erase("erase-a") == 0
+    policy.bootstrap()
     assert policy.read("erase-b").owner == "erase-b"
     assert not (discovery.root / "outbound.db").exists()
 

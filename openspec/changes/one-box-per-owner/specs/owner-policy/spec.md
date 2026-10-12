@@ -19,8 +19,10 @@ Policy SHALL be written only through the owner-door policy route, carrying
 an interactive owner-session token bound to the account. Bearer, MCP and
 `/api` clients SHALL NOT acquire that token. The broker SHALL look up the
 opaque cookie's hash read-only in the existing owner-session store and verify
-its interactive identity, account binding and expiry before it writes. The
-daemon SHALL only forward the cookie; no new signing scheme is introduced. The
+its interactive identity, account binding and expiry before it writes. In P1,
+that store remains daemon-writable, so a compromised daemon can mint a session;
+P2/P3 SHALL move session minting and validation into broker custody. The
+daemon forwards the cookie on the intended owner route. The
 model door, `/mcp`, `/api`, the box channel and every `ta` command SHALL
 offer no policy-write operation. Tightening and loosening SHALL require the
 same token.
@@ -51,8 +53,12 @@ have only read-only access to the effective projection.
 
 ### Requirement: Scoped entries retain every command center rule
 The account SHALL have exactly one policy. Entries SHALL carry either account
-scope or a command-center id. Migration SHALL copy existing per-center rules
-without merging them, verify counts and digests, and report conflicts.
+scope or a command-center id. Migration SHALL eagerly copy existing per-center
+rules from root-owned 0440 snapshots under a non-daemon-writable parent at
+broker startup and on center admission, without merging them, verify counts
+and digests, and report conflicts and refused sources. An unfrozen source
+SHALL be refused and its center SHALL fail closed. Evaluation SHALL never
+read legacy files.
 Evaluation SHALL apply the strictest matching entry.
 
 #### Scenario: The agent proposes a looser egress policy

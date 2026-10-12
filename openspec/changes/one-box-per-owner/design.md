@@ -201,7 +201,7 @@ change.
 
 ### P1 decisions (2026-10-11)
 
-- The broker checks the opaque owner-session cookie against the existing owner-session table through read-only access. It binds the row's interactive identity to the policy owner, checks expiry, and uses the row's session hash as the receipt identifier. The daemon forwards the cookie without asserting identity. No new signing scheme is introduced.
+- The broker checks the opaque owner-session cookie against the existing owner-session table through read-only access. It binds the row's interactive identity to the policy owner, checks expiry, and uses the row's session hash as the receipt identifier. The daemon forwards the cookie on the intended route, but can mint a row in that daemon-owned store in P1; broker-owned session minting in P2/P3 closes this residual. No new signing scheme is introduced.
 - `agent_review.py` proposes rule suggestions through the pending owner-request path. It has no direct `rules.db` write path. The agent and every box process receive only the effective read-only policy projection.
 - There is one policy per account. Each migrated entry retains its original command-center scope (or explicitly has account scope); migration never merges center rows. Evaluation selects the strictest applicable entry, and the migration report lists conflicts.
 - A once approval creates a broker receipt bound to the exact outbound request digest and current policy generation, under the same interactive owner cookie. Dispatch consumes that receipt once and rechecks the generation. The daemon's pending-request row is a preview and conversation record, never broker authority by itself.
