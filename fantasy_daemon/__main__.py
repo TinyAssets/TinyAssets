@@ -148,7 +148,7 @@ def _soul_loop_dispatch_enabled() -> bool:
     so the user-built loop gets its own state schema and the trusted in-node
     enqueue context. Default OFF: a soulless / legacy universe is untouched and
     keeps running the fantasy cycle. See
-    docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
+    2026-06-03-soul-loop-dispatch-activation-plan.md (archived in git).
     """
     return os.environ.get(
         "TINYASSETS_SOUL_LOOP_DISPATCH",

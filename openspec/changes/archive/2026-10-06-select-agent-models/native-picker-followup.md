@@ -1,7 +1,7 @@
 # Native picker follow-up to deployed PR3832
 
 September14 2026: owner approved one additional focused Claude Fable5.1 review,
-completed357seconds ADAPT. Artifact: docs/reviews/2026-09-14-native-model-list-fable.md.
+completed357seconds ADAPT. Artifact: 2026-09-14-native-model-list-fable.md (archived in git).
 This consumes that approval. Production d895905e passes the app's six workflow
 smoke checks but owner-visible native choices remain provider defaults only.
 

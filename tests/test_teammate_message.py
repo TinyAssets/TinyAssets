@@ -1,6 +1,6 @@
 """Tests for teammate_message primitive.
 
-Spec: docs/vetted-specs.md §teammate_message.
+Spec: openspec/specs/universe-custom-agents/spec.md §teammate_message.
 """
 
 from __future__ import annotations

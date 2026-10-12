@@ -4,7 +4,7 @@ Tests for the spec: concurrency_budget field on BranchDefinition,
 ConcurrencyTracker semaphore + peak tracking, concurrency_budget_override
 on compile_branch, and concurrency stats in get_run.
 
-Spec: docs/vetted-specs.md §Concurrency budget
+Spec: openspec/specs/provider-routing/spec.md §Concurrency budget
 """
 from __future__ import annotations
 

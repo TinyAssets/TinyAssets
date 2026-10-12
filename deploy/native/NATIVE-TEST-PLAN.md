@@ -4,7 +4,7 @@
 root coordinator has since run rows 1–16 and 18 locally, in disposable WSL
 Docker containers on this exact source, and row 17 against a LOCAL fixture
 install only; the verbatim artifact is
-`docs/reviews/2026-09-21-drop-first-native-local-proof.md` and the row-by-row
+`docs/architecture.md` and the row-by-row
 map is in the amendment's "Native evidence" section. Those are local fixture
 results: the production image, the installed-image row 17, the live
 healthcheck and every deployed gate remain open. No static assertion

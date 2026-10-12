@@ -3,7 +3,7 @@
 Without a `concurrency:` block, every push to a PR stacks another full run of
 that workflow beside the one already going. The repo is user-owned, so
 GitHub-hosted jobs are capped at about 20 concurrent across every PR, main push
-and deploy -- see docs/design-notes/2026-09-27-lean-ci-pipeline.md.
+and deploy -- see 2026-09-27-lean-ci-pipeline.md (archived in git).
 
 The half that is easy to get wrong is the non-PR half. Grouping non-PR runs by
 ref makes each push cancel the previous run on the same ref, which is how

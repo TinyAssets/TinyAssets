@@ -5,7 +5,7 @@ A user cannot give their universe an engine. Live production, 2026-08-05:
 "model_access"]` and `setup_paths[0].how = "Engine assignment is not exposed by
 the advertised handles."` Zero runs execute on the conversational surface, so
 the approved V1 golden path stops before the user ever talks to their agent
-(evidence: `docs/audits/2026-08-05-mvp-end-to-end-walk.md`).
+(evidence: `2026-08-05-mvp-end-to-end-walk.md (archived in git)`).
 
 Host directive, 2026-08-05:
 

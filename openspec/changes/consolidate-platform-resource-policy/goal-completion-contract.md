@@ -20,13 +20,13 @@ the app explicitly confirmed the first four fixes and working cancellation, but
 still reports a cancelled run's code node as running. Keep cancellation closure
 open until that follow-up is fixed and the app says the gaps are closed. Fresh
 webhook delivery/cleanup also passed (HTTP 200/204); all nine older checklist
-checks passed. Evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
+checks passed. Evidence: 2026-09-09-workflow-control-gaps-proof.md (archived in git).
 
 September21 2026 update: the later cancelled-node fix has deployed and rendered
 proof; after PR3900's model-edit follow-up deployed5394efd, the app20:56PDT
 explicitly says All five are working / Nothing is blocked. This satisfies the
 five-gap subgoal, not the full resource-policy goal. Receipt:
-`docs/reviews/2026-09-21-served-node-policy-deployment.md`.
+`2026-09-21-served-node-policy-deployment.md (archived in git)`.
 Each checkbox requires deployed platform behavior plus the agent's rendered
 retest confirmation, not source inspection or unit tests alone. Preserve
 authorization, tenant isolation, real resource guards and cancellation lifecycle.

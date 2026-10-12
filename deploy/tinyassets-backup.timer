@@ -1,7 +1,7 @@
 # TinyAssets daemon state backup — nightly 03:00 UTC.
 #
 # Self-host migration Row J per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 
 [Unit]
 Description=Timer for TinyAssets daemon state backup

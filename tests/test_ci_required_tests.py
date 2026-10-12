@@ -634,7 +634,7 @@ def test_an_untracked_test_file_does_not_reshuffle_the_packing(tmp_path, monkeyp
 # The selective path cannot use the vacuity floor: a selection can honestly be
 # one test, so no count is meaningful. Two checks replace it -- every shard must
 # report the digest the `select` job published, and every selected file must
-# report at least one case (docs/design-notes/2026-10-02-affected-only-merge-gate.md).
+# report at least one case (2026-10-02-affected-only-merge-gate.md (archived in git)).
 
 
 def _selection_file(tmp_path: Path, *entries: str) -> Path:

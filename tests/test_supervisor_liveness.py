@@ -4,7 +4,7 @@ Pairs with PR #212 (BUG-011 Phase A lease metadata fields). This test
 file uses ``getattr`` defaults to verify the supervisor_liveness helper
 works both pre- and post-PR-#212.
 
-Spec source: PR #206 (docs/specs/daemon-liveness-watchdog.md).
+Spec source: PR #206 (daemon-liveness-watchdog.md (archived in git)).
 """
 
 from __future__ import annotations

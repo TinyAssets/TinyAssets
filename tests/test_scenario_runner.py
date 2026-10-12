@@ -1,6 +1,6 @@
 """Tests for AcceptanceScenario runtime (Slice 2 of the lane).
 
-Per docs/design-notes/2026-05-02-acceptance-scenario-packs.md (#936).
+Per 2026-05-02-acceptance-scenario-packs.md (archived in git) (#936).
 
 The runner is a thin dispatcher: validates the contract, routes to a
 registered dispatcher per target_surface, and wraps the dispatcher's
@@ -53,7 +53,6 @@ def _valid_scenario(**overrides) -> AcceptanceScenario:
 @pytest.fixture(autouse=True)
 def _clean_dispatcher_registry():
     """Each test starts with an empty dispatcher registry."""
-    initial = list(registered_dispatchers().keys())
     yield
     for target_surface in list(registered_dispatchers().keys()):
         unregister_dispatcher(target_surface)

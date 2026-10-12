@@ -28,7 +28,7 @@ Three host-decision queues now sit in front of dispatch:
 2. The **self-auditing-tools** principle as a Cross-Cutting Principle — trust-critical tools include their own caveats (structured evidence + structured caveats + chatbot composes narrative).
 3. The **engine/domain seam is named** — every action lives in exactly one of `tinyassets/api/` or `domains/<name>/api/`. No third location.
 
-These are load-bearing for refactor dispatch (hotspots #1-#3 in `docs/audits/2026-04-19-project-folder-spaghetti.md`) AND for the §11 Track Q decision in Q5 below AND for engine/domain separation (#11 design note).
+These are load-bearing for refactor dispatch (hotspots #1-#3 in `2026-04-19-project-folder-spaghetti.md (archived in git)`) AND for the §11 Track Q decision in Q5 below AND for engine/domain separation (#11 design note).
 
 **Choices:**
 - **(a) Approve as-is.** Replace PLAN.md with the draft. Refactor dispatch sequence executes immediately (hotspot #3 ship-anytime first; #1 + #2 post-blocker per the audit ranking).

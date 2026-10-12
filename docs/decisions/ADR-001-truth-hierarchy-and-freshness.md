@@ -169,7 +169,7 @@ cross-session coordination.
 - key stale verification rows were downgraded from implied current truth to
   `historical:` or `contradicted:`
 - `AGENTS.md` now includes explicit truth/freshness rules
-- `docs/reality_audit.md` records the initial reconstruction pass that led to
+- `reality_audit.md (archived in git)` records the initial reconstruction pass that led to
   this ADR
 
 ## Follow-Up

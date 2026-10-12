@@ -1,6 +1,6 @@
 """Surgical rollback engine — closure walk + atomic status flip + post-rollback re-point.
 
-Spec: docs/design-notes/2026-04-25-surgical-rollback-proposal.md.
+Spec: docs/ops/post-redeploy-validation-runbook.md.
 Audit: 1f04067 (Task #57 design).
 
 Implements the rollback primitive that lets autonomous patch loops

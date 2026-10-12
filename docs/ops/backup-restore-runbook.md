@@ -7,7 +7,7 @@ row: J — self-host migration
 # TinyAssets daemon — backup and restore runbook
 
 State backup for the DO Droplet's `/data` volume. Row J per
-`docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
+`2026-04-20-selfhost-uptime-migration.md (archived in git)`.
 
 ---
 

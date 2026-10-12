@@ -230,7 +230,7 @@ later microphone/permission diff. Before landing or enabling voice, a Claude-fam
 reviewer must independently inspect the exact candidate with no write permission and
 return `AGREE`, `DISAGREE_EVIDENCE` with file/line evidence, or
 `DISAGREE_CONCERN`. The prepared scope, commands, and retry path are recorded in
-`docs/audits/2026-09-03-android-store-release-claude-review.md`. A same-family review,
+`2026-09-03-android-store-release-claude-review.md (archived in git)`. A same-family review,
 green CI, or device test complements but does not replace that repository gate.
 
 ## Track progression and release verification

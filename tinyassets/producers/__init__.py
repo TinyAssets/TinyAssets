@@ -6,7 +6,7 @@ themselves here in C.3 — that's C.4's job (seed / user_request /
 fantasy_authorial each import `tinyassets.producers` in their domain
 init and call ``register(...)``).
 
-See docs/specs/taskproducer_phase_c.md §1 for full contract.
+See openspec/specs/background-branch-execution-authority/spec.md §1 for full contract.
 """
 
 from __future__ import annotations

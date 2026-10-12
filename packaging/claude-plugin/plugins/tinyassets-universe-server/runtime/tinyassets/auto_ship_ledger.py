@@ -19,9 +19,9 @@ race-safe via sidecar ``.lock``, no schema migration cost. We can
 graduate to sqlite later if attempt volume warrants.
 
 Spec source:
-- ``docs/milestones/auto-ship-canary-v0.md`` §8 Evidence record (field
+- ``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` §8 Evidence record (field
   list + suggested artifact paths)
-- ``docs/milestones/auto-ship-canary-v0.md`` §10 Phase 1/2/3 (which
+- ``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` §10 Phase 1/2/3 (which
   ship_status transitions are valid in which phase)
 
 Phase 1 contract: a successful ``validate_ship_request`` records an
@@ -84,7 +84,7 @@ MUTABLE_FIELDS: frozenset[str] = frozenset({
 class ShipAttempt:
     """One row in the auto-ship attempts ledger.
 
-    Field naming matches ``docs/milestones/auto-ship-canary-v0.md`` §8
+    Field naming matches ``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` §8
     exactly so committed-artifact JSON (the per-attempt evidence file)
     can be derived from this row without renames.
 
@@ -124,7 +124,8 @@ class ShipAttempt:
     observation_status: str = ""
     observation_status_at: str = ""
     # Slice C — rollback PR identity (PR #227 spec; Codex review on 2026-05-03).
-    # Populated by ``record_rollback_decision`` per docs/specs/auto-ship-rollback-v0.md.
+    # Populated by ``record_rollback_decision``; see
+    # openspec/specs/evaluation-outcomes-and-attribution/spec.md.
     # Empty string when no rollback has been issued. Forward-compat-safe: from_dict
     # ignores unknown keys, and the wider chain (status surface, validators) treats
     # empty as "no rollback PR yet."
@@ -324,7 +325,7 @@ def summarize_rubric_warnings(
     Aggregates ``rubric_warnings_json`` across recorded attempts so the host can
     see the real rubric failure rate BEFORE flipping
     ``TINYASSETS_AUTO_SHIP_RUBRIC_MODE=enforce`` (see
-    docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md S2). Returns the
+    openspec/specs/evaluation-outcomes-and-attribution/spec.md S2). Returns the
     total attempts scanned, how many carried rubric warnings, and per-``rule_id``
     counts (descending). Reads via the standard locked read path; does not mutate
     any ledger row. Robust to hand-edited/corrupt rows (non-list or unparseable
@@ -365,7 +366,7 @@ def summarize_trajectory_warnings(
 
     Aggregates ``trajectory_warnings_json`` across recorded attempts so the host
     can see the real path-quality failure rate BEFORE any decision to gate on
-    trajectory (see docs/design-notes/2026-06-24-coding-loop-eval-gate-wiring.md
+    trajectory (see openspec/specs/evaluation-outcomes-and-attribution/spec.md
     S3). Returns total attempts scanned, how many carried trajectory warnings,
     and per-``check`` counts (descending). Reads via the standard locked read
     path; does not mutate any ledger row. Robust to hand-edited/corrupt rows

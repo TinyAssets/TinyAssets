@@ -9,7 +9,7 @@ gate
 **Research review gate:** a Claude-family reviewer must independently re-check
 the local-model sources and TinyAssets composition before implementation  
 **Parent idea:** `ideas/2026-07-15-democratized-compute-stack.md`  
-**Prior candidate:** `docs/specs/2026-07-15-riscv-fpga-vertical-proof.md`
+**Prior candidate:** `2026-07-15-riscv-fpga-vertical-proof.md (archived in git)`
 
 ## Problem Statement
 

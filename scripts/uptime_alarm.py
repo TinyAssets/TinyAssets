@@ -1,6 +1,6 @@
 """Uptime Alarm — tail ``.agents/uptime.log``, emit alarms on sustained red.
 
-Per ``docs/design-notes/2026-04-19-uptime-canary-layered.md`` §3
+Per ``openspec/specs/uptime-and-alarms/spec.md`` §3
 escalation table. Design-note prescribes writing to ``STATUS.md``
 Concerns; lead overrode to ``.agents/uptime_alarms.log`` because STATUS.md
 is host-managed (memory ``feedback_status_md_host_managed``). Lead

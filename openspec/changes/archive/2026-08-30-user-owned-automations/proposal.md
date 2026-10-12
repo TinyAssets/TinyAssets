@@ -3,7 +3,7 @@
 The founder's "24/7 background self" has been dead since 2026-08-07: every pump tick refuses with
 `trusted cloud worker assignment is absent or mismatched` and the refusal table grows. Two reviews
 on 2026-08-29 (Claude Explore, then a Codex ADAPT refutation --
-`docs/reviews/2026-08-29-codex-background-loop-shape.md`) agree on the cause: the execution
+`2026-08-29-codex-background-loop-shape.md (archived in git)`) agree on the cause: the execution
 carrier already runs on the universe's own serving assignment and deposited credential, but the
 layer that decides WHETHER it may run is fleet-era -- it pins a boot-unique executor runtime and
 the provider recorded at preparation, aborts the whole pump on one principal, and issues

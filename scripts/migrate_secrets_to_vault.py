@@ -3,7 +3,7 @@
 Reads the existing plaintext file, matches each KEY against the canonical
 list in ``scripts/secrets_keys.txt``, and writes each KEY=VALUE pair into
 the chosen vault under the convention documented in
-``docs/design-notes/2026-04-22-secrets-vault-integration.md``:
+``openspec/specs/credential-vault/spec.md``:
 
   1Password:  item name = KEY; vault = $TINYASSETS_SECRETS_VAULT (default "tinyassets");
               field "password" holds the value.

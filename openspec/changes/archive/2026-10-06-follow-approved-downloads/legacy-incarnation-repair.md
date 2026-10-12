@@ -77,7 +77,7 @@ retrieval substitutes for rendered agent success.
 Claude Fable review84530 completed330s, VERDICT APPROVE with three precisions:
 use the conditional deferred UPDATE rather than an unconditional explicit write
 transaction; place it after all ALTERs; regenerate the plugin mirror. All accepted.
-Durable review: docs/reviews/2026-09-15-legacy-incarnation-shape-fable.md.
+Durable review: 2026-09-15-legacy-incarnation-shape-fable.md (archived in git).
 The reviewer independently reproduced both exact failures. Deferred observations:
 an opener unable to write a legacy DB must fail loudly; old snapshot-less full-mode
 asks retain their pre-existing weaker comparison (not redirect consent). No claim

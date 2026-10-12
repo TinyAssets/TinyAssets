@@ -4,7 +4,7 @@ The repo is user-owned, so GitHub-hosted jobs are capped at about 20 concurrent
 across every PR, main push and deploy. On 2026-09-27 two triggers spent about
 2,150 of about 4,300 runner-minutes in 4 h without gating anything, and the
 deploy job waited 22 min for a runner. See
-docs/design-notes/2026-09-27-lean-ci-pipeline.md. A quiet revert of either cut
+2026-09-27-lean-ci-pipeline.md (archived in git). A quiet revert of either cut
 brings that back, and nothing else would notice.
 """
 

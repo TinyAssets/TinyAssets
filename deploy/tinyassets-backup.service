@@ -1,7 +1,7 @@
 # TinyAssets daemon state backup — oneshot snapshot + upload.
 #
 # Self-host migration Row J per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Triggered by tinyassets-backup.timer nightly at 03:00 UTC. Invokes
 # deploy/backup.sh: brain-tier + full-tier archives of the tinyassets-data

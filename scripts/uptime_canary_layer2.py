@@ -1,6 +1,6 @@
 """Uptime Canary Layer 2 — Claude.ai connector liveness probe.
 
-Per ``docs/design-notes/2026-04-19-layer2-canary-scope.md``.
+Per ``openspec/specs/uptime-and-alarms/spec.md``.
 
 Sends a single probe message to Claude.ai via the ``uptime_canary`` persona,
 parses the chatbot response for evidence that the MCP connector was invoked,

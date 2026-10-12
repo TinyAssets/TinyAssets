@@ -1,5 +1,5 @@
 -- Track A — Seed data for daemon-economy first-draft.
--- Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §6 / §7.
+-- Spec: 2026-04-19-track-a-schema-auth-rls.md (archived in git) §6 / §7.
 --
 -- Per §7 OPEN resolution: empty capability seed. First daemon registration
 -- auto-inserts capability rows it declares. This file is intentionally a

@@ -25,7 +25,7 @@ boundary. Distributed execution must compose with it later without treating
 its receipts, queue rows, descriptors, or scheduling leases as B2 authority.
 
 The detailed end state remains the host-approved V1-V8, S0-S16, B01-B44 program
-in `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`.
+in `2026-07-18-distributed-execution-platform.md (archived in git)`.
 This design changes delivery order only. It does not shrink the destination.
 
 ## Goals / Non-Goals

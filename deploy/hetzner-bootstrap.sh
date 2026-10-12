@@ -14,7 +14,7 @@
 # form bug; Hetzner remains the documented fallback per exec plan §2.
 #
 # Self-host migration Row D per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Idempotent: safe to re-run. Skips steps whose end-state is already
 # reached. No destructive actions; existing /opt/tinyassets or

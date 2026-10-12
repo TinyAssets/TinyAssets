@@ -1,6 +1,6 @@
 """Tests for the uptime canary Layer-1 probe + alarm evaluator.
 
-Spec: docs/design-notes/2026-04-19-uptime-canary-layered.md. Exercises:
+Spec: 2026-04-19-uptime-canary-layered.md (archived in git). Exercises:
     - probe wrapper format (green + red lines)
     - log rotation boundary
     - alarm evaluator escalation table (0/1/2+ reds, recovery, dedupe)

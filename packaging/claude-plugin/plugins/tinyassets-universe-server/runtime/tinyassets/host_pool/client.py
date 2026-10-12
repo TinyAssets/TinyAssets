@@ -303,8 +303,7 @@ class HostPoolClient:
         """Insert the capability row if absent; no-op if present.
 
         Per schema: first daemon registration auto-inserts capability
-        rows it declares (``docs/exec-plans/active/2026-04-19-track-a-
-        schema-auth-rls.md`` §7 OPEN resolution).
+        rows it declares (``openspec/specs/daemon-identity-and-host-pool/spec.md``).
         """
         payload = {
             "capability_id": capability_id,

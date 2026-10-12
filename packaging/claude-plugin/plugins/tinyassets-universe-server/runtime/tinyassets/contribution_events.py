@@ -3,7 +3,7 @@
 Single-table append-only events ledger. All five contribution surfaces emit
 into ``contribution_events``; the bounty calculator (Phase 2 dispatch) reads.
 
-Spec: ``docs/design-notes/2026-04-25-contribution-ledger-proposal.md`` §1.
+Spec: ``docs/architecture.md`` §1.
 
 Schema layer landed in Task #71. Emit-wiring layer landed in Task #72+;
 ``record_contribution_event`` is the helper Phase 2 emit-sites call. Future

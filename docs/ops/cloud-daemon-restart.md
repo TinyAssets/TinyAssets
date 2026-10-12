@@ -14,7 +14,7 @@ daemon stops responding.
 Related docs:
 - Full deploy: `deploy/DEPLOY.md`
 - State restore from backup: `deploy/RESTORE.md` and `docs/ops/backup-restore-runbook.md`
-- P0 trace (2026-04-23 disk-full incident): `docs/audits/2026-04-23-p0-auto-recovery-trace.md`
+- P0 trace (2026-04-23 disk-full incident): `2026-04-23-p0-auto-recovery-trace.md (archived in git)`
 
 ---
 
@@ -239,7 +239,7 @@ python3 /opt/tinyassets/scripts/mcp_public_canary.py --url https://tinyassets.io
 
 If canary stays red after trying the steps above:
 
-1. Check `docs/audits/2026-04-23-p0-auto-recovery-trace.md` for patterns.
+1. Check `2026-04-23-p0-auto-recovery-trace.md (archived in git)` for patterns.
 2. Check `SUCCESSION.md §6.1` for admin-pool escalation path.
 3. File a `p0-outage` GitHub issue (the uptime-canary GHA workflow does this
    automatically on 2 consecutive reds — check if it already filed one).

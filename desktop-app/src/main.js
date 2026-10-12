@@ -7,7 +7,7 @@
 // synced. Continuity ("the phone knows what you said on the computer") is a
 // backend property — the universe + cross-turn memory are keyed on the verified
 // WorkOS principal, so signing in the same user here lands in the same universe.
-// See docs/design-notes/2026-08-22-desktop-app-client-surface.md.
+// See 2026-08-22-desktop-app-client-surface.md (archived in git).
 //
 // Security posture (Codex adversarial review 2026-08-23): the window renders
 // REMOTE, continuously-changing code, so the shell treats the page as untrusted:

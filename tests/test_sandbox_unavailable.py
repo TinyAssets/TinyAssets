@@ -1,6 +1,7 @@
 """Tests for the loud sandbox-unavailable surface + design-only branch role.
 
-Spec: docs/vetted-specs.md §Loud sandbox-unavailable surface for dev/checker exec nodes.
+Spec: openspec/specs/scratch-storage/spec.md.
+Topic: Loud sandbox-unavailable surface for dev/checker exec nodes.
 
 Covered:
 - check_bwrap_failure raises SandboxUnavailableError on bwrap failure signature

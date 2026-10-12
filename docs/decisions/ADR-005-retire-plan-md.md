@@ -43,6 +43,8 @@ supersedes it. The always-loaded budget is enforced by
 
 ## Consequences
 
+The current document-home contract is `openspec/specs/development-coordination-runtime/`.
+
 - Direction lives in one short block, so a re-steer is one replacement.
 - Design text that was aspirational or stale is gone from the search path;
   git keeps it (`git show 922e36d504:PLAN.md`).

@@ -1,6 +1,6 @@
 """Git-native catalog backend for branch, node, goal, and bid YAML.
 
-Spec: ``docs/specs/phase7_github_as_catalog.md``. The initial scope is
+Spec: ``openspec/specs/community-patch-loop/spec.md``. The initial scope is
 the storage layout + serializer with no git seam yet. Follow-up work
 bolts on ``git_bridge.py`` and cuts over the MCP write handlers.
 

@@ -17,7 +17,7 @@ TinyAssets is **a global goals engine + paid-market AI workflow platform** with 
 - **MCP tools live now** (I just called them): `wiki`, `get_status`, `universe`, `goals`, `gates`, `extensions`
 
 ### Tokenomics (specced, not yet shipped)
-Source: `docs/specs/2026-04-18-paid-market-crypto-settlement.md` (Track E, ~4 dev-day estimate)
+Source: `2026-04-18-paid-market-crypto-settlement.md (archived in git)` (Track E, ~4 dev-day estimate)
 - **Crypto settlement on Base L2** — Base Sepolia testnet (`chain_id: 84532`) → Base mainnet (`8453`) by config flip
 - **TinyAssets test-token (ERC-20)** as the bid currency
 - **1% fee to treasury / 99% to daemon-host** on each settled bid
@@ -28,7 +28,7 @@ Source: `docs/specs/2026-04-18-paid-market-crypto-settlement.md` (Track E, ~4 de
 - **Outcome gates** with bonus staking — `gates` MCP tool already has `stake_bonus / unstake_bonus / release_bonus` actions (needs `TINYASSETS_PAID_MARKET=on`)
 
 ### Website plan (specced, not yet shipped)
-Source: `docs/specs/2026-04-18-web-app-landing-and-catalog.md` (Track B, ~7-8 dev-day estimate)
+Source: `2026-04-18-web-app-landing-and-catalog.md (archived in git)` (Track B, ~7-8 dev-day estimate)
 - **Hero copy from spec: "Summon the daemon"** — exact match to Claude design
 - **Stack pick: SvelteKit** with dual adapter (`adapter-static` for catalog, `adapter-node` for dynamic routes)
 - **Hosting: GitHub Pages primary + GoDaddy cPanel SFTP as fast-fallback** (both fronted by Cloudflare)

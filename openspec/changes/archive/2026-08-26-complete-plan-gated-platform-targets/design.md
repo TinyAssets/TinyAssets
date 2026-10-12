@@ -1,6 +1,6 @@
 ## Context
 
-`docs/audits/2026-07-22-openspec-full-coverage-audit.md` § *Full-platform target
+`2026-07-22-openspec-full-coverage-audit.md (archived in git)` § *Full-platform target
 ownership* names three target groups with no complete active owner, each blocked
 on a PLAN position requiring host approval:
 

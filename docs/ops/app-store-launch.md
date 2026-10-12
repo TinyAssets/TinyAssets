@@ -128,7 +128,7 @@ landed the reviewed Xcode 26.3 selection and fail-closed SDK check as merge comm
 `59f9e3ee-57b3-41c9-871b-91cb357b536f`. App Store Connect showed the same UUID as
 **Processing** under Build Uploads at 2026-09-03 18:56 PDT, then **Ready to Submit**
 under Version 1.0.0 after processing completed. Receipt:
-`docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
+`2026-09-03-ios-testflight-upload-receipt.md (archived in git)`.
 
 The App Store Connect API then saved Build 3's en-US **What to Test** text and
 attached it to the empty `Internal` group. After founder reauthentication, the web
@@ -141,7 +141,7 @@ distribution for Xcode builds. The internal-group and build pages expose no
 automatic tester-notification control; Apple's documented checkbox is in the
 external-testing flow, so the API's residual `autoNotifyEnabled=true` is inert with
 no external group or tester. Receipt:
-`docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
+`2026-09-03-ios-testflight-preparation-receipt.md (archived in git)`.
 
 ---
 

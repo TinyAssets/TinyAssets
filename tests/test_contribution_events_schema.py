@@ -10,7 +10,7 @@ Coverage:
   design_used event executes the §4 recursive-CTE shape and produces the
   expected (actor_id, share) tuples with depth-decayed weights.
 
-Spec: docs/design-notes/2026-04-25-contribution-ledger-proposal.md §1, §4.
+Spec: 2026-04-25-contribution-ledger-proposal.md (archived in git) §1, §4.
 """
 from __future__ import annotations
 

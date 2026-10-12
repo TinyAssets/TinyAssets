@@ -6,7 +6,7 @@ memoized. Caching both took a status read from 73 ms to 15 ms — a 4.8x cut in 
 each request costs, which is the same thing as 4.8x the requests one core can serve.
 
 Caching a LIVENESS probe is the kind of change that can quietly break monitoring, so the
-TTL is justified rather than picked: `docs/specs/daemon-liveness-watchdog.md` alerts on
+TTL is justified rather than picked: `daemon-liveness-watchdog.md (archived in git)` alerts on
 `stuck_pending_max_age_s < 60`, and the real wedges it exists for measured 312 s, 420 s
 and 851 s. A 5-second-old snapshot under-reports an age by at most 5 s, which cannot
 flip a 60-second decision.

@@ -1,6 +1,6 @@
 """Phase C.1 — `origin` field on WorkTarget.
 
-Per docs/specs/taskproducer_phase_c.md §3 + §7. Pure schema addition:
+Per taskproducer_phase_c.md (archived in git) §3 + §7. Pure schema addition:
 the dataclass gains `origin: str = "unknown"`; no consumer in C.1.
 C.4 wires actual producers to stamp authoritative values.
 

@@ -1,7 +1,7 @@
 # Shipping Plan — Track B Phase 1: Landing-First
 
 ## Decisions locked
-- **Stack:** SvelteKit per spec (`docs/specs/2026-04-18-web-app-landing-and-catalog.md` §1)
+- **Stack:** SvelteKit per spec (`2026-04-18-web-app-landing-and-catalog.md (archived in git)` §1)
 - **Adapter:** `adapter-static` for Phase 1 (just landing), upgrade to dual `adapter-static + adapter-node` in Phase 2
 - **Hosting target:** Cloudflare → GitHub Pages (primary) + GoDaddy cPanel SFTP (fast fallback). Both per spec §3.1.
 - **Lead positioning:** TinyAssets product (per host); token/Tiny Assets mentioned as the contributor reward layer, not the headline.

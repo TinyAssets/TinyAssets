@@ -2,7 +2,7 @@
 # backup.sh — nightly snapshot of the tinyassets-data named volume.
 #
 # Self-host migration Row J per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Two tiers per run (2026-06-10 redesign — see
 # docs/ops/backup-restore-runbook.md "Two-tier design"):

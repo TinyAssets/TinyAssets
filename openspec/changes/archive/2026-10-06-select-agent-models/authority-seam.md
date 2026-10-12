@@ -59,7 +59,7 @@ or serving-authority implementation, not questions for the user to solve.
 
 Claude returned ADAPT (exit0,284s); full proposal, source citations and remaining
 five pre-build blockers are in
-`docs/reviews/2026-09-09-model-candidate-authority-review.md`. Reuse the existing
+`2026-09-09-model-candidate-authority-review.md (archived in git)`. Reuse the existing
 provider-work and custody stores, add candidate membership to the serving
 assignment, and factor one shared validator rather than copy the chain again.
 The existing per-request invocation limit is2 and must be resolved for a longer

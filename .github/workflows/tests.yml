@@ -24,7 +24,7 @@ on:
   pull_request:
     # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
     # gives signal before a PR is marked ready and becomes auto-merge eligible.
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
   # The merge queue. `required-tests` and `slow-tests` are required checks, and
   # a queue waits for every required check to report on the merge-group commit;
   # without this trigger nothing reports and every queued PR times out.
@@ -194,6 +194,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -223,7 +225,7 @@ jobs:
   # set (tests silently never run); the test is what stops the second.
   # What this run must cover, decided ONCE so six shards and the aggregate
   # cannot disagree about it (lean-CI lever L1,
-  # docs/design-notes/2026-10-02-affected-only-merge-gate.md).
+  # docs/decisions/ADR-020-lean-ci-successor.md).
   #
   # On `merge_group` the queue branch is base_sha + this entry's commits, so
   # `affected_tests.py --base <base_sha>` is exactly the entry's own diff. On
@@ -716,7 +718,7 @@ jobs:
   # baseline, on a runner pool capped near 20 jobs that PR CI and the deploy
   # were queuing for. An hourly tripwire needs no per-merge copy. Naming the
   # events also keeps a future `merge_group` trigger from inheriting it.
-  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
+  # docs/decisions/ADR-020-lean-ci-successor.md
   # Was `full-tests`, which re-ran the ENTIRE required suite a second time.
   # Measured on Linux CI run 33037400288: required-tests 7m26s / 10,700 tests;
   # full-tests 45m09s / 13,865. The ~3,100-test difference IS the heavy list;

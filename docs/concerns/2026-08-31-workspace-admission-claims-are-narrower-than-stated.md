@@ -110,7 +110,7 @@ exact-head review also suggested a direct effector test with a real reconciliati
 sweep clearing a stale holder (2 attempts, 1 conflict, no sleep); the shipped
 coordinated lock-release tests stub that sweep. This is nonblocking test debt,
 not a demonstrated runtime failure. Review:
-`docs/reviews/2026-09-08-workspace-admission-exact-head-claude.md`.
+`2026-09-08-workspace-admission-exact-head-claude.md (archived in git)`.
 
 
 Do **not** open another review round on the same code — that cap exists for a

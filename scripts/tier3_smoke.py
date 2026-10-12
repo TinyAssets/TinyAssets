@@ -1,6 +1,6 @@
 """Tier-3 OSS clone structural smoke.
 
-Per ``docs/design-notes/2026-04-19-tier3-oss-clone-nightly-gha.md`` §5.
+Per ``docs/ops/host-independence-runbook.md`` §5.
 Runs after ``pip install -e .`` on a fresh clone and asserts the
 load-bearing imports succeed. This is NOT a feature-correctness test —
 the main pytest suite owns that surface. This script catches "fresh

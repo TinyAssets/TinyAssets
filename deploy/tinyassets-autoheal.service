@@ -1,6 +1,6 @@
 # TinyAssets autoheal — restart unhealthy TinyAssets containers.
 #
-# docs/specs/daemon-liveness-watchdog.md §1 acceptance: a failing
+# openspec/specs/uptime-and-alarms/spec.md §1 acceptance: a failing
 # healthcheck must lead to a restart. Docker Compose does not restart
 # unhealthy containers on its own (restart policies act on exit, not
 # health), so this host-side oneshot closes the loop without granting

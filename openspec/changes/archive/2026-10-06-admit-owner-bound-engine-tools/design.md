@@ -4,7 +4,7 @@ On 2026-09-19 the second user's guided OpenRouter callback and free-model
 approval completed on production `bcac8d1a2503`, but the first greeting failed
 before inference. The server and route reader both required an obsolete env
 allowlist. Claude Fable 5.1 independently reviewed the shape (terminal exit 0,
-317 seconds; retained review: `docs/reviews/2026-09-19-engine-owner-admission-shape.md`). Verdict:
+317 seconds; retained review: `2026-09-19-engine-owner-admission-shape.md (archived in git)`). Verdict:
 ADAPT, with owner-ACL verification, live resource sizing and sandbox verification
 required. This change implements that general admission shape, not an exception.
 
@@ -84,7 +84,7 @@ missing route; workflow_agent has the same premature route check. Removing the
 membership gate alone does not make a fresh first-send journey reliable.
 
 Independent Fable5.1 shape review completed September19 (terminal exit0,
-195seconds, ADAPT; docs/reviews/2026-09-19-engine-startup-shape.md). Implement
+195seconds, ADAPT; 2026-09-19-engine-startup-shape.md (archived in git)). Implement
 bounded readiness BEFORE provider inference or tool dispatch in the shared
 HTTP tool client: notify only the existing matching-root supervisor, wait at
 most min(caller timeout,30seconds) for current authorized route and a no-bytes

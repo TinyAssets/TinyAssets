@@ -3,7 +3,7 @@
 The wiki action handlers, helpers, constants, and dispatch live here so
 they're independently testable and the decomposition audit's Step 2 ships
 clean. The MCP tool decoration stays in `tinyassets/universe_server.py`
-(Pattern A2 from `docs/exec-plans/completed/2026-04-26-decomp-step-2-prep.md`):
+(Pattern A2 from `docs/architecture.md`):
 the decorated tool there delegates to the plain `wiki(...)` function below.
 
 Public surface (test imports):
@@ -2615,7 +2615,7 @@ def write_universe_canon(
     """First-party, in-process canon write into a universe's OWN wiki.
 
     The universe intelligence is the sole writer of its own private canon (relay
-    reshape, ``docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md``
+    reshape, ``docs/architecture.md``
     §13/§14). Like :func:`tinyassets.universe_intelligence.converse` and
     :func:`tinyassets.soul_edit.apply_soul_edit`, this is scoped to the universe
     by construction and does NOT pass through the :func:`_wiki_impl` MCP ACL gate

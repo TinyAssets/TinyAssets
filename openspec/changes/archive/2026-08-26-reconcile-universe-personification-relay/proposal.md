@@ -9,11 +9,11 @@ shipped production behavior.** Three independent sources agree, re-verified agai
 `origin/main` at `7a118dca` on 2026-07-22:
 
 1. **Ratified correction** — PR #1578 / `f605bb99` amends
-   `docs/specs/2026-06-10-tiny-first-principles-spec.md:128` to the host-directed relay model:
+   `2026-06-10-tiny-first-principles-spec.md (archived in git):128` to the host-directed relay model:
    the universe intelligence is the first-party personified speaker and the chatbot forwards
    through `converse` without impersonating it.
 2. **Design note** —
-   `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` §3 documents
+   `2026-07-02-universe-intelligence-relay-architecture.md (archived in git)` §3 documents
    *why* it was falsified: a behavioral contract delivered in a tool result is structurally
    indistinguishable from prompt injection, and careful hosts correctly refuse it. Embodiment
    moved to a first-party model (persona in the universe intelligence's own system prompt).

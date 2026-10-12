@@ -335,7 +335,7 @@
   not be used, both production builds pass, and rendered `/goals` + `/graph`
   proof is clean in both sites.
   **Host-local zero-active proved 2026-07-26:** see
-  `docs/audits/2026-07-26-retire-cheat-loop.md` §Host-local registered-role
+  `2026-07-26-retire-cheat-loop.md (archived in git)` §Host-local registered-role
   authority proof. Production and third-party hosts remain unproved.
   **Public-read boundary review 2026-07-27 — ADAPT, not final approval:**
   independent Codex and Claude Opus 5 exact-head reviews of draft PR #1812 at
@@ -385,7 +385,7 @@
   provenance were removed manually from both mirrors. The sole retained Goal,
   `dd187997039b`, is independently declared public by
   `branches/echoes-reddit-source-intake.yaml` and
-  `docs/portfolio/echoes-of-the-cosmos/README.md`; both provenance paths are
+  `README.md (archived in git)`; both provenance paths are
   embedded in and tested against the snapshot. Exact review then found
   orphaned `goal:<id>` tag records for removed Goals plus two retired
   Community Change Loop draft records. Those residues were removed; every

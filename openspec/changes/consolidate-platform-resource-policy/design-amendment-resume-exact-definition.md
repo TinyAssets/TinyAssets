@@ -394,7 +394,7 @@ release; nothing here is a deployment claim.
 Independent cross-family review (Claude66315, source read only, no tests run):
 **APPROVE** with four non-blocking notes. Full report:
 `output/resume-envelope-final-review-peer.md` (worktree `0a7f`). Evidence record:
-`docs/reviews/2026-09-24-resume-exact-admission-evidence.md`.
+`2026-09-24-resume-exact-admission-evidence.md (archived in git)`.
 
 - [x] **E.1 Correct the stale codec comment.** `_require_int`'s docstring claimed
   `BranchDefinition.validate()` "does not constrain `concurrency_budget` at
@@ -465,5 +465,5 @@ full live resume.** The real interrupt → checkpoint → compile → invoke pat
 covered by `tests/test_resume_lifecycle_integration.py` and
 `tests/test_resume_execution_choices.py`, neither of which stubs `resume_run`,
 `_invoke_graph_resume` or `_has_checkpoint`. Evidence record:
-`docs/reviews/2026-09-24-resume-exact-admission-evidence.md`. Committed on the
+`2026-09-24-resume-exact-admission-evidence.md (archived in git)`. Committed on the
 branch only; root owns push, PR and the final exact-head review.

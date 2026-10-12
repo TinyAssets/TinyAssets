@@ -9,7 +9,7 @@ The original public converse lacked selection, its sink produced no plan, and
 set_serving rejected every manifest. September10 integration now joins canonical
 converse, stored/current policy, fresh member catalogue and real readiness, with
 public binding opt-in. New acceptance cases do not bypass the readiness gate.
-See docs/reviews/2026-09-10-preference-consumption-proof.md:765 Windows/767 actual
+See 2026-09-10-preference-consumption-proof.md (archived in git):765 Windows/767 actual
 Linux passes (3/1skips). Independent review ADAPT454s found a saved-automatic
 compatibility regression on legacy bindings; corrected tree now passes793 Windows/
 795 Linux (3/1skips), exact5167596c correction independently APPROVE208s.

@@ -158,7 +158,7 @@ replace enterSignedIn's routing key (not just append data), distinct callback
 path before WorkOS code handling, safe non-serving first-binding helper, explicit
 home recheck at exchange and existing owner-capable request_from_user. The prior
 claim that raising model consent requires an agent was wrong; no new raiser.
-Review artifact: docs/reviews/2026-09-15-automatic-model-bootstrap-fable.md.
+Review artifact: 2026-09-15-automatic-model-bootstrap-fable.md (archived in git).
 Implement web-first; native deep-link return stays explicitly unverified rather
 than inheriting the web success claim. Exact implementation review remains ahead.
 

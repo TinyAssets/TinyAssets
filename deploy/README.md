@@ -1,7 +1,7 @@
 # TinyAssets deploy — build + run
 
 Artifacts for running the TinyAssets daemon on any Linux host. Per
-`docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`, this
+`openspec/specs/uptime-and-alarms/spec.md`, this
 directory holds provider-agnostic deploy material (Row A container
 image, Row C tunnel config, future Row D provider-specific wiring).
 

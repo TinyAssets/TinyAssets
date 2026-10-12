@@ -152,7 +152,7 @@ across all of them. That made two shipped assumptions category errors.
       `--assert-handles`. Fixed by running the overlay in its own project
       (`-p tinyassets-slack`) with external volume/network, PROVEN by re-running
       the exact outage command and watching the main stack survive. Postmortem:
-      `docs/audits/2026-08-06-partial-compose-overlay-outage.md`. Landing #2348
+      `2026-08-06-partial-compose-overlay-outage.md (archived in git)`. Landing #2348
       removes the second compose file — but NOT the fencing; see 10.1.
 
 - [x] 9.2 **Addendum — the overlay also FENCED production deploys, so the 24/7

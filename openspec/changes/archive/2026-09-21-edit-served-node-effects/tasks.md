@@ -8,4 +8,4 @@
 
 - [x] 2.1 Run focused Windows/Linux regressions, Ruff, mirror build, strict spec validation and independent exact-head review.
 - [x] 2.2 Pass required CI, merge, deploy, verify protected SHA and public handle canary.
-- [x] 2.3 Obtain app-agent existing-workflow effect-edit acceptance, retain organic-use caveat, sync spec and archive. September 21 rendered runs 3bade2d341e84935 and d35d8357fc8a4555 completed on the original branch; agent restored original content. See docs/reviews/2026-09-21-served-effect-edit-deployment.md.
+- [x] 2.3 Obtain app-agent existing-workflow effect-edit acceptance, retain organic-use caveat, sync spec and archive. September 21 rendered runs 3bade2d341e84935 and d35d8357fc8a4555 completed on the original branch; agent restored original content. See 2026-09-21-served-effect-edit-deployment.md (archived in git).

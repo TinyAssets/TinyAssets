@@ -499,7 +499,7 @@ the guard is removed is decor.
 
 - Receiver-directed **retry** (task 2.5) is untouched here.
 - September24: root independently approved this shape before implementation
-  (docs/reviews/2026-09-23-file-bridge-shape.md). Claude independently approved
+  (2026-09-23-file-bridge-shape.md (archived in git)). Claude independently approved
   runtime01b8f2e2 after the source-authority and declared-position corrections.
   Root measured70passed/1skip across six focused modules; independent Opus
   measured133passed/0skips across nine related modules. These Windows runs do not

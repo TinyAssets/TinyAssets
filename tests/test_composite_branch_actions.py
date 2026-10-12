@@ -1,7 +1,7 @@
 """Composite branch actions — `build_branch` and `patch_branch`.
 
 Covers acceptance criteria from
-`docs/specs/composite_branch_actions.md`:
+`composite_branch_actions.md (archived in git)`:
 
 1. Recipe-tracker builds in a single `build_branch` call.
 2. Validation failure returns `suggestions`; applying them succeeds.

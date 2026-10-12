@@ -3,7 +3,8 @@
 Pure business logic; callers pass an sqlite3.Connection and pre-validated args.
 No writes outside the passed connection. PAID_MARKET gate enforced by callers.
 
-Spec: docs/vetted-specs.md §Gate bonuses — escrow stays on the node, not the attempt.
+Spec: openspec/specs/paid-market-economy/spec.md.
+Topic: Gate bonuses — escrow stays on the node, not the attempt.
 """
 
 from __future__ import annotations

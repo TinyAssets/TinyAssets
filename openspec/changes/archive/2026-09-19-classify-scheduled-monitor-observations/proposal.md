@@ -42,4 +42,4 @@ the receipt substrate; no new artifact or cross-run content store is required.
 Owner: Codex, delegated lane `/root/engine_regressions` under the founder's
 coordinated MVP push. Branch: `codex/hostless-revert-acceptance`. One PR for
 this intent, not yet opened. Fable shape review gates implementation.
-Evidence: `docs/reviews/2026-09-19-hostless-monitor-contract-diagnosis.md`.
+Evidence: `2026-09-19-hostless-monitor-contract-diagnosis.md (archived in git)`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure what an affected-only merge gate would have MISSED, and attribute it.
 
-The evidence for `docs/design-notes/2026-10-02-affected-only-merge-gate.md`.
+The evidence for `docs/decisions/ADR-020-lean-ci-successor.md`.
 Committed because the note's first version cited a `miss_attr.py` that was never
 in the repo, so its table could not be reproduced or re-run after the selector
 changed.

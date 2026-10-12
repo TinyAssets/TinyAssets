@@ -4,7 +4,7 @@ Split out of `complete-independent-full-platform-targets` on 2026-07-25 to
 discharge that change's task 6.3. Provenance is unchanged: the integrated
 full-platform architecture (§§13, 14, 26, 30) plus the legacy moderation
 execution spec, classified as absent from canonical specs by
-`docs/audits/2026-07-22-openspec-full-coverage-audit.md`.
+`2026-07-22-openspec-full-coverage-audit.md (archived in git)`.
 
 Two facts shaped the split rather than a rewrite:
 

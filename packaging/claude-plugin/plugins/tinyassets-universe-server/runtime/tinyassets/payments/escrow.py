@@ -1,6 +1,7 @@
 """Escrow primitives for gate bonus staking.
 
-Spec: docs/vetted-specs.md §Gate bonuses — staked payouts attached to gate milestones.
+Spec: openspec/specs/paid-market-economy/spec.md.
+Topic: Gate bonuses — staked payouts attached to gate milestones.
 
 This module owns the budget-lock / release / refund lifecycle for bonus stakes.
 It is intentionally decoupled from MCP action wiring (universe_server.py) and

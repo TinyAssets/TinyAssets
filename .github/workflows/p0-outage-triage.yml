@@ -401,7 +401,7 @@ jobs:
                 `**Rotation runbook:** Cloudflare dashboard → Zero Trust → Networks → Tunnels → tinyassets-daemon-prod → rotate token → copy new value → update in:`,
                 `  - GH secret: \`gh secret set CLOUDFLARE_TUNNEL_TOKEN --body "<new>"\``,
                 `  - Droplet env: update \`/etc/tinyassets/env\` via \`.github/workflows/deploy-prod.yml\` next deploy`,
-                `  - 1Password vault: per \`docs/design-notes/2026-04-22-secrets-vault-integration.md\``,
+                `  - 1Password vault: per \`openspec/specs/credential-vault/spec.md\``,
                 ``,
                 `**Upstream P0 issue:** #${process.env.ISSUE_NUMBER}`,
                 `**Triage run:** ${runUrl}`,
