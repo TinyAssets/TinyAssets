@@ -475,6 +475,9 @@ def auth_middleware(token: str | None) -> Identity | None:
     """
     _current_bearer_present.set(bool(token))
     _current_request_boundary_id.set(None)
+    from tinyassets.auth.workos_provider import clear_rejection_category
+
+    clear_rejection_category()
     provider = _get_provider()
 
     identity: Identity | None = None
@@ -685,8 +688,24 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     """
     prm = _challenge_prm_url()
     if invalid_token:
-        challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
-        body = b'{"error":"invalid_token"}'
+        from tinyassets.auth.workos_provider import (
+            rejection_category,
+            rejection_description,
+        )
+
+        description = rejection_description(rejection_category())
+        if description:
+            challenge = (
+                f'Bearer error="invalid_token", error_description="{description}", '
+                f'resource_metadata="{prm}"'
+            )
+            body = json.dumps(
+                {"error": "invalid_token", "error_description": description},
+                separators=(",", ":"),
+            ).encode()
+        else:
+            challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
+            body = b'{"error":"invalid_token"}'
     else:
         challenge = f'Bearer resource_metadata="{prm}"'
         body = b'{"error":"authentication_required"}'
@@ -737,7 +756,10 @@ def _tool_linking_challenge_body(
 
     prm = _challenge_prm_url()
     error = "invalid_token"
-    description = (
+    from tinyassets.auth.workos_provider import rejection_category, rejection_description
+
+    specific = rejection_description(rejection_category()) if invalid_token else None
+    description = specific or (
         "The TinyAssets access token is invalid or expired; sign in again."
         if invalid_token
         else "Sign in to TinyAssets to continue."

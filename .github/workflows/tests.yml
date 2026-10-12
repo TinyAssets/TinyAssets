@@ -280,15 +280,9 @@ jobs:
           if [ "${{ github.event_name }}" = "merge_group" ] && [ -n "${BASE:-}" ]; then
             # --gate, not the advisory PR-time selection: ALL unless the diff
             # shape carries a completeness argument (affected_tests.provable_shape).
-            python scripts/affected_tests.py --gate --base "$BASE" --out affected.txt
-            # Drop files that collect nothing under this gate's -m "not slow",
-            # BEFORE the digest, so a slow-only file neither fails coverage nor
-            # makes its shard exit 5.
-            python scripts/ci_required_tests.py \
-              --exclude-from .github/heavy-test-files.txt \
-              --prune-to-collectible affected.txt
+            python scripts/ci_required_tests.py --ci-select gate --base "$BASE" --out affected.txt
           else
-            echo ALL > affected.txt
+            python scripts/ci_required_tests.py --ci-select all --out affected.txt
           fi
           DIGEST="$(python scripts/ci_required_tests.py --print-selection-digest affected.txt)"
           if [ "$(cat affected.txt)" = "ALL" ]; then SCOPE=ALL; else SCOPE=affected; fi
@@ -519,7 +513,8 @@ jobs:
 
       - name: Select the tests this change can affect
         run: |
-          python scripts/affected_tests.py --pr --base HEAD^1 --out affected.txt
+          python scripts/ci_required_tests.py --ci-select pr --base HEAD^1 --out affected.txt
+          python scripts/ci_required_tests.py --print-selection-digest affected.txt
           { echo "### Selection"; echo; echo '```'; head -c 60000 affected.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       # Preview rendering requires a bubblewrap PID namespace as well as

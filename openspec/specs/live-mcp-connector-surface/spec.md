@@ -238,7 +238,7 @@ The system SHALL attach the following title, tag set, and four MCP behavior hint
 | `read_graph` | `Read Graph` | `graph`, `read`, `tinyassets` | T | F | T | F |
 | `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | F | F | F |
 | `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | F | F | F |
-| `read_page` | `Read Page` | `page`, `read`, `tinyassets`, `wiki` | T | F | T | F |
+| `read_page` | `Read Page` | `page`, `read`, `tinyassets`, `wiki` | T | F | T | T |
 | `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | F | F | T |
 | `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | F |
 | `universe` | `Universe Operations` | `agent-workflow`, `ai-builder`, `collaboration`, `custom-ai`, `daemon`, `general-purpose`, `tinyassets`, `universe`, `universe-builder`, `workflow-builder` | F | F | F | T |
@@ -1148,7 +1148,7 @@ SHALL exist because a first-party client reads it.
 
 ### Requirement: Conservative directory safety metadata
 
-The server SHALL describe the aggregate side effects of each canonical handle and SHALL advertise explicit read-only, destructive, idempotent and open-world hints. A handle that can overwrite, delete, publish, or delegate external actions SHALL NOT be labelled safe solely because some of its operations are reads or previews. Annotations SHALL NOT replace authorization.
+The server SHALL describe the aggregate side effects of each canonical handle and SHALL advertise explicit read-only, destructive, idempotent and open-world hints. A handle that can overwrite, delete, publish, or delegate external actions SHALL NOT be labelled safe solely because some of its operations are reads or previews. Annotations SHALL NOT replace authorization. Each handle's title and four hints SHALL come from the shared table `tinyassets.mcp_tool_annotations.TOOL_ANNOTATIONS`; registration SHALL refuse a wire name that has no row.
 
 #### Scenario: Directory scans canonical tools
 
@@ -1156,4 +1156,5 @@ The server SHALL describe the aggregate side effects of each canonical handle an
 - **THEN** the seven canonical handles remain unchanged
 - **AND** `write_graph`, `write_page`, `run_graph`, and `converse` advertise `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false`, and `openWorldHint=true`
 - **AND** `read_graph`, `read_page`, and `get_status` remain read-only
+- **AND** `read_page` advertises `openWorldHint=true` because the wiki is shared with other users
 - **AND** write descriptions disclose their material side effects

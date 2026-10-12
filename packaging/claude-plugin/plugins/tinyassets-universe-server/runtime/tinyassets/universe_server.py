@@ -41,7 +41,6 @@ import uvicorn
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools.function_tool import FunctionTool
-from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.applications import Starlette
 
@@ -76,6 +75,7 @@ from tinyassets.command_center_names import (
 )
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
+from tinyassets.mcp_tool_annotations import annotations_for
 
 logger = logging.getLogger("universe_server")
 
@@ -343,7 +343,7 @@ def _bound_arguments(fn, args, kwargs) -> dict:
         return dict(kwargs)
 
 
-def _register_structured_tool(fn, *, title, tags, annotations, name=None):
+def _register_structured_tool(fn, *, tags, name=None):
     """Register an MCP adapter without changing the direct Python API.
 
     ``name`` pins the advertised wire name explicitly. The canonical
@@ -351,8 +351,15 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
     Anthropic connector API rejects any tool name that does not match
     ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
 
+    The directory title and the four behavior hints come from
+    ``tinyassets.mcp_tool_annotations``. A wire name with no row raises
+    before the tool is added.
+
     Every request without a valid bearer is challenged before dispatch.
     """
+    wire_name = name or fn.__name__
+    annotations = annotations_for(wire_name)
+
     @wraps(fn)
     def _tool(*args, **kwargs):
         from tinyassets.auth.middleware import (
@@ -366,7 +373,7 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
         if reserve is not None:
             capability = claim_provider_request(
                 reserve,
-                tool_name=name or fn.__name__,
+                tool_name=wire_name,
             )
         try:
             # The dispatched call names itself, so the single-result ceiling can
@@ -376,7 +383,7 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
             # passed `target` positionally must not read as an unidentified call.
             return _structured_return(
                 fn(*args, **kwargs),
-                tool=name or fn.__name__,
+                tool=wire_name,
                 arguments=_bound_arguments(fn, args, kwargs),
             )
         finally:
@@ -391,8 +398,8 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
     _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
     tool = _OAuthFunctionTool.from_function(
         _tool,
-        name=name or fn.__name__,
-        title=title,
+        name=wire_name,
+        title=annotations.title,
         tags=tags,
         annotations=annotations,
         # OpenAI hosts historically read this compatibility mirror. The
@@ -631,7 +638,9 @@ def branch_design_guide() -> str:
 # ---------------------------------------------------------------------------
 # read_graph / write_graph / run_graph / read_page / write_page, plus converse
 # and get_status, are the canonical user-facing tools. The first five are thin
-# shape/target routers over existing tinyassets.api.* handlers.
+# shape/target routers over existing tinyassets.api.* handlers. Titles and the
+# four behavior hints are not inlined at each call; registration reads
+# tinyassets.mcp_tool_annotations.
 # The legacy fat tools below (universe, extensions, goals, gates, wiki) are
 # no longer registered (2026-09-30); they remain as in-process functions the
 # canonical routers call.
@@ -897,15 +906,7 @@ def _model_door_automations(
 _mcp_read_graph = _register_structured_tool(
     read_graph,
     name="read_graph",
-    title="Read Graph",
     tags={"graph", "tinyassets", "read"},
-    annotations=ToolAnnotations(
-        title="Read Graph",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
 )
 
 
@@ -1691,15 +1692,7 @@ def write_graph(
 _mcp_write_graph = _register_structured_tool(
     write_graph,
     name="write_graph",
-    title="Write Graph",
     tags={"graph", "tinyassets", "write"},
-    annotations=ToolAnnotations(
-        title="Write Graph",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
 )
 
 
@@ -2018,15 +2011,7 @@ def run_graph(
 _mcp_run_graph = _register_structured_tool(
     run_graph,
     name="run_graph",
-    title="Run Graph",
     tags={"graph", "tinyassets", "run"},
-    annotations=ToolAnnotations(
-        title="Run Graph",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
 )
 
 
@@ -2088,15 +2073,7 @@ def read_page(
 _mcp_read_page = _register_structured_tool(
     read_page,
     name="read_page",
-    title="Read Page",
     tags={"page", "wiki", "tinyassets", "read"},
-    annotations=ToolAnnotations(
-        title="Read Page",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
 )
 
 
@@ -2315,15 +2292,7 @@ def write_page(
 _mcp_write_page = _register_structured_tool(
     write_page,
     name="write_page",
-    title="Write Page",
     tags={"page", "wiki", "tinyassets", "write"},
-    annotations=ToolAnnotations(
-        title="Write Page",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
 )
 
 
@@ -3532,15 +3501,7 @@ def _with_unsettled_steering(payload, universe_dir, memory_session, live_id):
 _mcp_converse = _register_structured_tool(
     converse,
     name="converse",
-    title="Talk With Your Command Center",
     tags={"universe", "tinyassets", "relay"},
-    annotations=ToolAnnotations(
-        title="Talk With Your Command Center",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
 )
 
 
@@ -3602,18 +3563,10 @@ _MODEL_DOOR_CONVERSATION_PAGE = 30
 
 _mcp_get_status = _register_structured_tool(
     get_status,
-    title="Daemon Status + Routing Evidence",
     tags={
         "status", "routing", "privacy", "verification",
         "confidential-tier", "tinyassets",
     },
-    annotations=ToolAnnotations(
-        title="Daemon Status + Routing Evidence",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
 )
 
 
