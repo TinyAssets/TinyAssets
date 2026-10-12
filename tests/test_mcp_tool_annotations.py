@@ -14,9 +14,7 @@ def test_every_registered_tool_has_a_title_every_hint_and_a_table_entry() -> Non
     tools = asyncio.run(mcp.list_tools(run_middleware=False))
     assert tools
     for tool in tools:
-        assert tool.name in TOOL_ANNOTATIONS, (
-            f"{tool.name} has no entry in TOOL_ANNOTATIONS"
-        )
+        assert tool.name in TOOL_ANNOTATIONS, f"{tool.name} has no entry in TOOL_ANNOTATIONS"
         row = TOOL_ANNOTATIONS[tool.name]
         assert isinstance(row.title, str) and row.title.strip(), tool.name
         assert isinstance(tool.title, str) and tool.title.strip(), tool.name

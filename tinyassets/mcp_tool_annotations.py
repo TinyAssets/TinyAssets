@@ -83,8 +83,6 @@ def annotations_for(wire_name: str) -> ToolAnnotations:
     for hint in HINTS:
         value = getattr(row, hint)
         if not isinstance(value, bool):
-            raise ValueError(
-                f"MCP tool {wire_name!r} hint {hint} must be an explicit boolean"
-            )
+            raise ValueError(f"MCP tool {wire_name!r} hint {hint} must be an explicit boolean")
         hints[hint] = value
     return ToolAnnotations(title=title, **hints)
