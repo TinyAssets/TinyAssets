@@ -7,56 +7,39 @@ not a grant: the store reconstructs current member/model authority before arming
 from pathlib import Path
 
 
-def prepare_work_model_snapshot(*, base_path, universe_id, provider=None, model_id=""):
-    from tinyassets.provider_assignment import (
-        load_provider_assignment_in_transaction,
-        provider_assignment_admission,
-    )
-    from tinyassets.provider_serving_binding import (
-        _current_selected_member_authority,
-        resolve_serving_agent_binding,
-    )
-    from tinyassets.providers.discovery_snapshot import refresh_model_discovery
-    from tinyassets.storage.current_home import check_current_home
-    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+def observed_price_caps(snapshot):
+    """Bound each price component to the owner's fresh advertised catalogue."""
+    return tuple((name, max(
+        (charge.amount_micros for model in snapshot.models.models
+         for charge in model.pricing.charges
+         if charge.component == name and charge.confirmed),
+        default=0,
+    )) for name in sorted(snapshot.contract().price_components)) or None
+
+
+def prepare_work_model_snapshot(*, base_path, universe_id, owner_user_id,
+                                provider, model_id=""):
+    """Discover one currently connected source before the reservation transaction."""
+    from tinyassets.providers.served_model_plan import connected_sources
 
     base = Path(base_path)
     universe = base / universe_id
-    store = SQLiteProviderWorkAuthorityStore(base)
-    with provider_assignment_admission().shared(universe):
-        with store.connection() as conn:
-            conn.execute("BEGIN")
-            assignment = load_provider_assignment_in_transaction(conn, universe_id=universe_id)
-            if assignment is None or not assignment.manifest_digest:
-                return None
-            selected_provider = provider or assignment.provider
-            native = not selected_provider.startswith("api_key_http:")
-            if native:
-                member = next((m for m in assignment.candidates
-                               if m.provider == selected_provider), None)
-                if (not model_id or member is None
-                        or member.access.model_scope != "discovered"):
-                    return None
-            check_current_home(conn, assignment.owner_user_id, universe_id)
-            agent = resolve_serving_agent_binding(
-                base, universe_id=universe_id, owner_user_id=assignment.owner_user_id,
-            )
-            _current_selected_member_authority(
-                conn, store=store, universe_dir=universe, base_path=base,
-                universe_id=universe_id, owner_user_id=assignment.owner_user_id,
-                agent=agent, provider=selected_provider,
-            )
-    # Deliberately outside BOTH the assignment fence and every SQL transaction.
-    if native:
+    if provider not in connected_sources(base, universe, owner_user_id):
+        raise PermissionError(f"source {provider!r} is not connected for this owner")
+    if not provider.startswith("api_key_http:"):
+        if not model_id:
+            return None
         from tinyassets.providers.native_discovery import discover_native_models_sync
 
         return discover_native_models_sync(
-            base_path=base, owner_user_id=assignment.owner_user_id,
-            universe_id=universe_id, provider=selected_provider,
+            base_path=base, owner_user_id=owner_user_id,
+            universe_id=universe_id, provider=provider,
         )
+    from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+
     return refresh_model_discovery(
-        owner_user_id=assignment.owner_user_id, universe_id=universe_id,
-        definition_id=selected_provider.removeprefix("api_key_http:"),
+        owner_user_id=owner_user_id, universe_id=universe_id,
+        definition_id=provider.removeprefix("api_key_http:"),
     )
 
 

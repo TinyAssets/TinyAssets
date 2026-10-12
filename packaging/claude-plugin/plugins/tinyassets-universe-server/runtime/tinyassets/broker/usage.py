@@ -18,6 +18,7 @@ _FIELDS = {
 }
 _POLICY = {"max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
            "deadline"}
+_POLICY_LIMITS = {"max_tokens", "max_cost_microunits"}
 
 
 def validate(document):
@@ -50,8 +51,12 @@ def validate(document):
         raise ValueError("invalid accounting link")
     if action == "create":
         policy = document["policy"]
-        if not isinstance(policy, dict) or set(policy) != _POLICY:
+        if (not isinstance(policy, dict) or not _POLICY <= set(policy)
+                or not set(policy) <= _POLICY | _POLICY_LIMITS):
             raise ValueError("invalid accounting policy")
+        if any(type(policy[name]) is not int or policy[name] < 1
+               for name in _POLICY_LIMITS if name in policy):
+            raise ValueError("invalid accounting allowance")
         deadline = policy["deadline"]
         if deadline is not None and (type(deadline) not in {int, float}
                                      or not math.isfinite(deadline)):

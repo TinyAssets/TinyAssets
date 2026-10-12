@@ -21,7 +21,7 @@
       `call_with_policy_sync`, `_call_policy_router_with_retry` and both
       mocks. Verify: `git grep` finds no removed name, and a node with no model
       raises `CompilerError`. Net below 0.
-- [ ] 2.4 Authority is the connected set (D2, decided: admission snapshots
+- [x] 2.4 Authority is the connected set (D2, decided: admission snapshots
       the live set). Build: admission in foreground, background and cloud
       continuation reads `connected_sources` once and writes the sorted set
       into the receipt as `admitted_sources` (its digest in `manifest_digest`);

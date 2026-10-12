@@ -63,11 +63,15 @@ from tinyassets.platform_runtime_provenance import resolve_process_cloud_admissi
 from tinyassets.provider_work_authority import (
     ProviderInvocationReservationRequest,
     ProviderUniverseWorkAuthority,
+    ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
-    ProviderWorkBindingState,
     ProviderWorkExecutionClaimRequest,
-    ProviderWorkReceiptService,
+    ProviderWorkReceiptState,
+    provider_work_receipt_id,
+)
+from tinyassets.provider_work_authority import (
+    _content_digest as _provider_content_digest,
 )
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
@@ -2060,16 +2064,16 @@ class PreparedCloudContinuationProviderResolver:
             and provider.max_tokens == definition.max_tokens
             and provider.max_cost_microunits == definition.max_cost_microunits
         )
-        max_invocations = (
-            definition.max_provider_invocations
-            if definition is not None
-            else provider.max_invocations
+        max_invocations = min(
+            definition.max_provider_invocations if definition is not None
+            else provider.max_invocations,
+            attempt.remaining_count,
         )
         max_tokens = definition.max_tokens if definition is not None else provider.max_tokens
-        max_cost_microunits = (
-            definition.max_cost_microunits
-            if definition is not None
-            else min(provider.max_cost_microunits, attempt.remaining_cost_microunits)
+        max_cost_microunits = min(
+            definition.max_cost_microunits if definition is not None
+            else provider.max_cost_microunits,
+            attempt.remaining_cost_microunits,
         )
 
         lease_expires_at = attempt.lease_expires_at
@@ -2077,9 +2081,6 @@ class PreparedCloudContinuationProviderResolver:
             return None
         try:
             lease_expiry = datetime.fromisoformat(lease_expires_at.removesuffix("Z") + "+00:00")
-            provider_expiry = datetime.fromisoformat(
-                provider.expires_at.removesuffix("Z") + "+00:00"
-            )
         except ValueError:
             return None
         exact = (
@@ -2111,15 +2112,10 @@ class PreparedCloudContinuationProviderResolver:
             lease_expiry > now,
             max_invocations > 0,
             attempt.remaining_cost_microunits >= max_cost_microunits,
-            provider.state is ProviderWorkBindingState.ACTIVE,
-            provider.binding_id == continuation.provider_binding_id,
-            provider.generation == continuation.provider_binding_generation,
-            provider.binding_digest == continuation.provider_binding_digest,
             provider.owner_user_id == continuation.principal_id,
             provider.universe_id == continuation.universe_id,
             provider.allowed_operations == ("repository_spec_delivery",),
             "writer" in provider.allowed_roles,
-            provider_expiry > now,
         )
         if not all(exact):
             return None
@@ -2142,7 +2138,7 @@ class PreparedCloudContinuationProviderResolver:
             # The receipt is inert identity/budget state. It may survive a
             # rotating queue/background lease only because every launch is
             # transactionally revalidated against those current leases.
-            expires_at=provider.expires_at,
+            expires_at=lease_expires_at,
         )
 
 
@@ -2325,6 +2321,27 @@ class _ClaimedCloudProviderSession:
         require_supported_policy(policy)
         if role not in self._receipt.allowed_roles:
             raise PermissionError("cloud provider role is outside prepared authority")
+        from tinyassets.provider_work_authority import ProviderInvocationSelection
+        from tinyassets.providers.served_model_plan import connected_sources
+        from tinyassets.providers.work_candidate_data import select_admitted_work_model
+        from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
+
+        live_sources = connected_sources(
+            self._base_path, self._base_path / self._continuation.universe_id,
+            self._continuation.principal_id,
+        )
+        provider, model_id = select_admitted_work_model(
+            self._base_path, owner=self._continuation.principal_id,
+            universe=self._continuation.universe_id,
+            admitted_sources=self._receipt.admitted_sources,
+            live_sources=live_sources, preferred=(policy or {}).get("preferred", {}),
+        )
+        model_snapshot = prepare_work_model_snapshot(
+            base_path=self._base_path, universe_id=self._continuation.universe_id,
+            owner_user_id=self._continuation.principal_id,
+            provider=provider, model_id=model_id,
+        )
+        selection = ProviderInvocationSelection.connected(provider, model_id)
         with self._lock:
             self._refresh_background_authority()
             self._claim = self._refresh_provider_claim()
@@ -2363,12 +2380,14 @@ class _ClaimedCloudProviderSession:
                     role=role,
                     max_tokens=(token_share + int(ordinal <= token_remainder)),
                     max_cost_microunits=(cost_share + int(ordinal <= cost_remainder)),
+                    selection=selection,
                 )
                 fence = self._revalidate_in_transaction(conn, request)
                 carrier = self._provider_store._reserve_and_arm_cloud_branch_carrier_in_transaction(
                     conn,
                     request,
                     fence,
+                    model_snapshot=model_snapshot,
                 )
                 conn.commit()
             except Exception:
@@ -2425,16 +2444,7 @@ def prepare_claimed_cloud_provider_call(
         return None
     if str(getattr(claimed_task, "automation_executor_class", "") or "") != "cloud":
         raise PermissionError("cloud automation task has the wrong executor class")
-    # Caller ordering for the registration-read gate, not a new enforcement
-    # site. `runtime_matches_worker_provider` below is deliberately cached-only
-    # (`daemon_registry.py`) so it can be called from inside a transaction, and
-    # it refuses an unobserved process. This is the last point in this flow that
-    # is provably outside every transaction — the admission read above closes
-    # its connection before the runtime match — so the one bounded resolve
-    # happens here and the predicate downstream stays a pure peek.
-    #
-    # The task has already declared itself `cloud`-class; resolving the process
-    # verdict here is what stops that declaration from being self-certifying.
+    # Resolve cloud admission outside SQL; the runtime match below is cached-only.
     resolve_process_cloud_admission()
     now_clock = clock or (lambda: datetime.now(timezone.utc))
     now = now_clock()
@@ -2685,16 +2695,48 @@ def prepare_claimed_cloud_provider_call(
         continuation_store=continuation_store,
         clock=now_clock,
     )
-    receipt = (
-        ProviderWorkReceiptService(
-            provider_store,
-            provider_resolver,
-        )
-        .issue(provider_root)
-        .record
+    receipt_id = provider_work_receipt_id(
+        universe_id=continuation.universe_id, root=provider_root,
     )
+    receipt = provider_store.get_receipt(receipt_id)
     if receipt is None:
-        raise PermissionError("cloud provider receipt is unavailable")
+        from tinyassets.providers.served_model_plan import connected_sources
+
+        sources = tuple(sorted(connected_sources(
+            root_path, root_path / continuation.universe_id, continuation.principal_id,
+        )))
+        if not sources:
+            raise PermissionError("cloud continuation has no connected model source")
+        authority = provider_resolver.resolve(provider_root)
+        if authority is None:
+            raise PermissionError("cloud continuation provider authority is unavailable")
+        digest = _provider_content_digest(sources)
+        candidate = ProviderUniverseWorkReceipt(
+            schema_version=5, authority_scope="manifest", admitted_sources=sources,
+            manifest_digest=digest, receipt_id=receipt_id,
+            receipt_digest="sha256:" + "0" * 64, generation=1,
+            state=ProviderWorkReceiptState.ACTIVE,
+            work_item_kind="background_attempt", work_item_id=attempt.attempt_id,
+            binding_id=None, binding_generation=None, binding_digest=None,
+            binding_revocation_generation=None, principal_id=continuation.principal_id,
+            actor_id=authority.actor_id, universe_id=continuation.universe_id,
+            branch_def_id=continuation.branch_def_id,
+            branch_version_id=continuation.branch_version_id,
+            provider=None, credential_reference_digest=None,
+            assignment_generation=1, assignment_digest=digest,
+            executor_class="cloud", allowed_operations=("repository_spec_delivery",),
+            allowed_roles=authority.allowed_roles,
+            max_invocations=authority.max_invocations, max_tokens=authority.max_tokens,
+            max_cost_microunits=authority.max_cost_microunits,
+            expires_at=authority.expires_at, created_at=provider_store.timestamp(),
+            execution_subject=_continuation_execution_subject(continuation),
+        )
+        candidate = replace(candidate, receipt_digest=candidate.expected_digest())
+        receipt = provider_store.issue_connected_receipt(candidate).record
+    if (receipt is None or receipt.schema_version != 5
+            or receipt.state is not ProviderWorkReceiptState.ACTIVE
+            or receipt.principal_id != continuation.principal_id):
+        raise PermissionError("cloud continuation has stale connected admission")
 
     def revalidate_claim_roots_in_transaction(
         conn: sqlite3.Connection,
@@ -2827,9 +2869,6 @@ def prepare_claimed_cloud_provider_call(
             attempt_lease > current_now,
             attempt_lease == task_lease,
             authority.root == provider_root,
-            authority.binding.binding_id == continuation.provider_binding_id,
-            authority.binding.generation == continuation.provider_binding_generation,
-            authority.binding.binding_digest == continuation.provider_binding_digest,
             authority.principal_id == continuation.principal_id,
             authority.actor_id == actor_id,
             authority.branch_def_id == continuation.branch_def_id,

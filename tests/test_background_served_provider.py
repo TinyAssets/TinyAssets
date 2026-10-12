@@ -134,7 +134,7 @@ def _authority_fixture(
 ):
     monkeypatch.setattr(
         "tinyassets.providers.served_model_plan.connected_sources",
-        lambda base, universe, owner: frozenset({provider}),
+        lambda base, universe, owner, *, conn=None: frozenset({provider}),
     )
     binding_expires_at = binding_expires_at.replace("+00:00", "Z")
     if attempt_lease_expires_at is not None:
@@ -230,7 +230,6 @@ def _authority_fixture(
         assignment_digest="sha256:" + "f" * 64,
         manifest_digest="",
     )
-    serving_binding = SimpleNamespace(expires_at="2099-01-01T02:00:00+00:00")
     custody = SimpleNamespace(
         reference_id="credential-a",
         reference_digest="sha256:" + "1" * 64,
@@ -374,6 +373,10 @@ def _authority_fixture(
             return background_binding, attempt
 
         @staticmethod
+        def get_attempt_by_logical_key(_logical_attempt_key):
+            return attempt
+
+        @staticmethod
         def read_queue_owner_in_transaction(_conn, *, owner_id):
             return SimpleNamespace(owner_id=owner_id, state=SimpleNamespace(value="running"))
 
@@ -385,35 +388,31 @@ def _authority_fixture(
     monkeypatch.setattr(
         background_provider, "provider_assignment_admission", lambda: _AdmissionFence()
     )
-    monkeypatch.setattr(
-        background_provider,
-        "load_provider_assignment_in_transaction",
-        lambda *_a, **_k: assignment,
-    )
     import tinyassets.config as config_module
     import tinyassets.credential_vault as vault_module
-    import tinyassets.provider_assignment as assignment_module
     import tinyassets.provider_serving_binding as serving_module
+    import tinyassets.providers.work_candidate_data as work_candidate_data
+    import tinyassets.providers.work_model_selection as work_model_selection
     import tinyassets.storage.background_branch_authority as background_store_module
+    import tinyassets.storage.current_home as current_home
     import tinyassets.storage.request_admissions as admission_store_module
+    from tinyassets.providers.model_policy import ModelRef
 
     monkeypatch.setattr(config_module, "load_universe_config", lambda _path: {})
+    monkeypatch.setattr(current_home, "check_current_home", lambda *_a: None)
+    monkeypatch.setattr(work_model_selection, "prepare_work_model_snapshot", lambda **_k: None)
     monkeypatch.setattr(
-        assignment_module,
-        "load_provider_assignment_in_transaction",
-        lambda *_a, **_k: assignment,
+        work_candidate_data, "prepare_captured_choices",
+        lambda *_a, **_k: SimpleNamespace(order=(ModelRef(provider, ""),)),
     )
     monkeypatch.setattr(
         admission_store_module,
         "RequestAdmissionStore",
         lambda _base_path: _AdmissionStore(conn),
     )
-    if fabricated:
-        monkeypatch.setattr(
-            background_store_module,
-            "SQLiteBackgroundBranchAuthorityStore",
-            _BackgroundStore,
-        )
+    monkeypatch.setattr(
+        background_store_module, "SQLiteBackgroundBranchAuthorityStore", _BackgroundStore,
+    )
     monkeypatch.setattr(
         serving_module,
         "resolve_serving_agent_binding",
@@ -423,13 +422,8 @@ def _authority_fixture(
     )
     current_assignment = {"value": assignment}
     monkeypatch.setattr(
-        serving_module,
-        "_current_serving_authority",
-        lambda *_a, **_k: (
-            current_assignment["value"],
-            serving_binding,
-            custody,
-        ),
+        serving_module, "current_connected_source_custody",
+        lambda _conn, **scope: custody if scope["provider"] == provider else None,
     )
     monkeypatch.setattr(serving_module, "_is_open_provider", lambda _provider: False)
 
@@ -623,7 +617,9 @@ def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(
     assert _reservation_count(conn) == 0
 
 
-def test_assignment_rotation_before_launch_fails_closed(tmp_path: Path, monkeypatch) -> None:
+def test_assignment_rotation_does_not_revoke_connected_background_source(
+    tmp_path: Path, monkeypatch,
+) -> None:
     task, conn, assignment, current, events = _authority_fixture(tmp_path, monkeypatch)
     current["value"] = SimpleNamespace(**{**assignment.__dict__, "generation": 5})
     raw_calls: list[str] = []
@@ -634,12 +630,11 @@ def test_assignment_rotation_before_launch_fails_closed(tmp_path: Path, monkeypa
         lambda *_a, **_k: raw_calls.append("raw") or "unexpected",
     )
 
-    with pytest.raises(ProviderAuthorityHeldError):
-        session("prompt")
+    assert session("prompt") == "unexpected"
 
-    assert raw_calls == []
-    assert _reservation_count(conn) == 0
-    assert events == ["hold"]
+    assert raw_calls == ["raw"]
+    assert _reservation_count(conn) == 1
+    assert events == ["snapshot", "cleanup"]
 
 
 def test_budget_is_reserved_before_launch_snapshot_is_cleaned_and_retry_does_not_remint(

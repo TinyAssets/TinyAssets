@@ -166,8 +166,8 @@ def _effective_universe_provider_ceiling(
 ) -> list[str] | None:
     """Return the requester's provider ceiling, or legacy/platform ``None``.
 
-    A server-minted invocation carrier is already pinned to one provider and
-    remains subject to any explicit assignment allowlist. An unarmed explicit
+    A server-minted invocation carrier is already pinned to a source in its
+    admitted and live connected sets. An unarmed explicit
     universe context is requester work: legacy ``allowed_providers=None`` may
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
@@ -175,7 +175,9 @@ def _effective_universe_provider_ceiling(
     from tinyassets.provider_authority import current
 
     universe_dir = universe_context.universe_dir if universe_context is not None else None
-    if carrier_armed or universe_context is None:
+    if carrier_armed:
+        return None
+    if universe_context is None:
         resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
@@ -1227,8 +1229,7 @@ class ProviderRouter:
                 # capability, which background does not carry — skipped below when
                 # absent; reservation + finalization are common to both.
                 if served_authority is not None and served_authority.budget_owner not in (
-                    "served_request",
-                    "background_attempt",
+                    "connected_request",
                 ):
                     # An authority with an UNKNOWN budget owner must never reach a
                     # provider: it would skip the reservation block below and launch
@@ -1236,8 +1237,7 @@ class ProviderRouter:
                     # with a forged authority). Fail closed before routing.
                     raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
                 if served_authority is not None and served_authority.budget_owner in (
-                    "served_request",
-                    "background_attempt",
+                    "connected_request",
                 ):
                     from tinyassets.auth.middleware import (
                         consume_provider_request_invocation,

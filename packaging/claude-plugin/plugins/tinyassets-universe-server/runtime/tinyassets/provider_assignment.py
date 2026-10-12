@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 _WINDOWS_LOCK_RETRY_ATTEMPTS = 100
 _WINDOWS_LOCK_RETRY_SECONDS = 0.01
-_SERVED_REQUEST_MAX_INVOCATIONS = 2
+_SERVED_REQUEST_MAX_INVOCATIONS = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,10 +372,6 @@ def reserve_served_provider_budget(
     conservative fallback timeout.
     """
 
-    from tinyassets.credential_vault import (
-        current_connection_grant_custody,
-        current_llm_subscription_custody,
-    )
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
@@ -402,156 +398,20 @@ def reserve_served_provider_budget(
     store = SQLiteProviderWorkAuthorityStore(base_path)
     with store.connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        assignment = load_provider_assignment_in_transaction(
-            conn, universe_id=authority.universe_id,
-        )
-        binding = store.get_binding_in_transaction(conn, binding_id=authority.binding_id)
-        if _is_open_provider(authority.provider):
-            # connection_grant: re-read the secret-free connection-grant custody, then
-            # revalidate the LIVE grant under the authority's owner + universe (owner +
-            # bound + not-revoked + not-rotated) — _open_connection_id alone omits the
-            # owner/universe gate, so a foreign grant reusing the connection_id would
-            # otherwise satisfy a stale-digest compare (Codex reject #3).
-            from tinyassets.provider_serving_binding import (
-                _open_connection_id,
-                verify_open_grant_custody,
-            )
+        from tinyassets.provider_serving_binding import current_connected_source_custody
 
-            custody = current_connection_grant_custody(
-                conn,
-                owner_user_id=authority.owner_user_id,
-                universe_id=authority.universe_id,
-                connection_id=_open_connection_id(
-                    Path(base_path), authority.universe_id, authority.provider,
-                    owner_user_id=authority.owner_user_id,
-                ),
-            )
-            verify_open_grant_custody(
-                Path(base_path), authority.universe_id, authority.owner_user_id,
-                authority.provider, custody,
-            )
-        else:
-            custody = current_llm_subscription_custody(
-                conn,
-                universe_dir=universe_dir,
-                owner_user_id=authority.owner_user_id,
-                universe_id=authority.universe_id,
-                service=authority.credential_service,
-            )
-        # Which provider-work binding may reserve against this assignment?
-        #  - a founder-facing SERVED turn must carry the assignment's OWN binding
-        #    (exact id + generation + digest equality — the original gate);
-        #  - a daemon-owned BACKGROUND attempt carries a DISTINCT binding
-        #    (binding_class = the background operation, so a different id under the
-        #    same root) that was ISSUED FROM this assignment — proven by the binding
-        #    recording the assignment's current generation + digest. Demanding id
-        #    equality for it made every background reservation fail closed (the
-        #    design floor under Codex REJECT #2, PR #2528/#2531).
-        if authority.operation == _BACKGROUND_BRANCH_RUN_OPERATION:
-            binding_matches_assignment = (
-                assignment is not None
-                and binding is not None
-                and binding.assignment_generation == assignment.generation
-                and binding.assignment_digest == assignment.assignment_digest
-                and binding.binding_id == authority.binding_id
-                and binding.generation == authority.binding_generation
-                and binding.binding_digest == authority.binding_digest
-            )
-        elif assignment is not None and assignment.manifest_digest:
-            member = next(
-                (m for m in assignment.candidates if m.provider == authority.provider), None
-            )
-            native_default = False
-            if (
-                member is not None and authority.selected_model is None
-                and authority.native_selection is None
-                and authority.authority_kind == "subscription_snapshot"
-            ):
-                from tinyassets.providers.model_selection import _native_default
-
-                try:
-                    native_default = _native_default(member.provider, "", member.access)
-                except PermissionError:
-                    pass  # An accepted specific native model is not its default.
-            native_explicit = False
-            if member is not None and authority.native_selection is not None:
-                from tinyassets.providers.native_model_selection import (
-                    NativeSelection,
-                )
-
-                native_explicit = (
-                    authority.authority_kind == "subscription_snapshot"
-                    and type(authority.native_selection) is NativeSelection
-                    and authority.native_selection.provider == member.provider
-                )
-                if native_explicit:
-                    authority.native_selection.assert_access(
-                        member.access, member.credential_reference_digest,
-                    )
-            binding_matches_assignment = (
-                authority.operation == "converse"
-                and (
-                    native_default or native_explicit or (
-                        authority.selected_model is not None
-                        and authority.selected_model.provider == authority.provider
-                    )
-                )
-                and member is not None
-                and member.binding_id == authority.binding_id
-                and member.binding_generation == authority.binding_generation
-                and member.binding_digest == authority.binding_digest
-                and binding is not None
-                and binding.assignment_generation == assignment.generation
-                and binding.assignment_digest == assignment.assignment_digest
-                and member.credential_reference_id == authority.credential_reference_id
-                and (
-                    member.credential_reference_generation
-                    == authority.credential_reference_generation
-                )
-                and member.credential_reference_digest == authority.credential_reference_digest
-            )
-        else:
-            binding_matches_assignment = (
-                assignment is not None
-                and authority.selected_model is None
-                and assignment.binding_id == authority.binding_id
-                and assignment.binding_generation == authority.binding_generation
-                and assignment.binding_digest == authority.binding_digest
-            )
-        if role not in authority.allowed_roles:
-            conn.rollback()
+        if authority.budget_owner != "connected_request" or role not in authority.allowed_roles:
             raise ProviderAuthorityHeldError(held)
-        if (
-            assignment is None
-            or assignment.state != "ready"
-            or not binding_matches_assignment
-            or binding is None
-            or not store.validate_in_transaction(
-                conn,
-                binding_id=authority.binding_id,
-                binding_generation=authority.binding_generation,
-                binding_digest=authority.binding_digest,
-                owner_user_id=authority.owner_user_id,
-                universe_id=authority.universe_id,
-                provider=authority.provider,
-                # Validate the binding for the operation/role THIS authority actually
-                # carries, not a hard-coded served literal. A founder-facing served
-                # turn carries operation="converse"; a daemon-owned background
-                # attempt carries operation="background_branch_run" with the Branch's
-                # own roles. Hard-coding "converse"/"writer" made every background
-                # reservation fail closed (the design floor under Codex REJECT #2).
-                operation=authority.operation,
-                # The ACTUAL routed role (Codex: allowed_roles[0] is caller-controlled
-                # and need not be the role this call runs as). Refused above when it
-                # is outside the authority's allowed set.
-                role=role,
-            )
-            or custody is None
-            or custody.reference_id != authority.credential_reference_id
-            or custody.generation != authority.credential_reference_generation
-            or custody.reference_digest != authority.credential_reference_digest
-        ):
-            conn.rollback()
+        universe = Path(universe_dir)
+        if universe != Path(base_path) / authority.universe_id:
+            raise ProviderAuthorityHeldError(held)
+        custody = current_connected_source_custody(
+            conn, base=Path(base_path), universe=universe,
+            owner=authority.owner_user_id, provider=authority.provider,
+        )
+        if (custody.reference_id != authority.credential_reference_id
+                or custody.generation != authority.credential_reference_generation
+                or custody.reference_digest != authority.credential_reference_digest):
             raise ProviderAuthorityHeldError(held)
         _ensure_served_budget_schema(conn)
         now = time.time()
@@ -1294,18 +1154,32 @@ def _served_request_agent(base_path, universe, request_carrier, role, operation)
 
 
 def _selected_chain(store, base_path, universe, capability, agent, selection):
-    from tinyassets.provider_serving_binding import _current_selected_member_authority
+    """Read the selected owner's live custody, independent of saved assignment."""
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import current_connected_source_custody
     from tinyassets.providers.model_policy import ModelRef
 
     if not isinstance(selection, ModelRef):
         raise PermissionError("invalid model selection")
     with store.connection() as conn:
         conn.execute("BEGIN")
-        return _current_selected_member_authority(
-            conn, store=store, universe_dir=universe, base_path=Path(base_path),
-            owner_user_id=capability.principal_id, universe_id=universe.name,
-            agent=agent, provider=selection.connection_id,
+        custody = current_connected_source_custody(
+            conn, base=Path(base_path), universe=universe,
+            owner=capability.principal_id, provider=selection.connection_id,
         )
+        conn.rollback()
+    if selection.connection_id.startswith("api_key_http:"):
+        from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+        from tinyassets.providers.work_model_selection import observed_price_caps
+
+        snapshot = refresh_model_discovery(
+            owner_user_id=capability.principal_id, universe_id=universe.name,
+            definition_id=selection.connection_id.removeprefix("api_key_http:"),
+        )
+        caps = observed_price_caps(snapshot)
+    else:
+        caps = None
+    return selection.connection_id, custody, ModelAccess("discovered", cost_caps=caps)
 
 
 def check_served_agent_tool_authority(universe_context) -> str:
@@ -1413,9 +1287,6 @@ async def authorize_served_provider_call_async(
                 SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
                 capability, agent, model_selection,
             )
-            member = next(
-                m for m in chain[0].candidates if m.provider == model_selection.connection_id
-            )
         # No assignment fence or SQL transaction spans the remote request.
         from tinyassets.providers.model_selection import saved_effort_level
 
@@ -1424,8 +1295,8 @@ async def authorize_served_provider_call_async(
         )
         selected, recheck = await prepare_selected_model_async(
             base_path=Path(base_path), owner_user_id=capability.principal_id,
-            universe_id=universe.name, provider=member.provider,
-            model_id=model_selection.model_id, access=member.access,
+            universe_id=universe.name, provider=chain[0],
+            model_id=model_selection.model_id, access=chain[2],
             needs_tools=agent_turn, effort=effort,
         )
     except ProviderAuthorityHeldError:
@@ -1450,230 +1321,142 @@ _SERVED_PROVIDER_SERVICE = {"codex": "codex", "claude-code": "claude"}
 _SERVED_AUTHORITY_HELD = _CONNECT_PROVIDER_MESSAGE
 
 
-def _seal_agent_launch_allowance(conn, store, assignment, capability) -> None:
-    """Finite accepted-binding ceiling; rolling usage is still admitted each call."""
-    from tinyassets.auth.middleware import seal_provider_request_launch_allowance
-
-    if not assignment.manifest_digest or not assignment.candidates:
-        raise PermissionError("agent inference requires an accepted candidate manifest")
-    seen = set()
-    total = 0
-    for member in assignment.candidates:
-        if member.binding_id in seen:
-            continue
-        binding = store.get_binding_in_transaction(conn, binding_id=member.binding_id)
-        if binding is None or (
-            binding.owner_user_id, binding.universe_id, binding.generation, binding.binding_digest,
-        ) != (
-            assignment.owner_user_id, assignment.universe_id,
-            member.binding_generation, member.binding_digest,
-        ):
-            raise PermissionError("agent launch plan binding changed")
-        allowance = binding.max_invocations
-        if type(allowance) is not int or not 0 < allowance <= 2**63 - 1 - total:
-            raise PermissionError("agent launch plan has invalid finite allowance")
-        total += allowance
-        seen.add(member.binding_id)
-    # Set-once operation refuses late sealing and a changed plan. Never refill.
-    seal_provider_request_launch_allowance(capability, limit=total)
-
-
 @contextmanager
 def _authorize_served_provider_call(
-    base_path: str | Path,
-    *,
-    universe_dir: str | Path,
-    request_carrier: object,
-    role: str,
-    operation: str,
-    model_selection: ModelRef | None = None,
-    _prepared_selection=None,
+    base_path: str | Path, *, universe_dir: str | Path,
+    request_carrier: object, role: str, operation: str,
+    model_selection: ModelRef | None = None, _prepared_selection=None,
     agent_turn: bool = False,
 ) -> Iterator[ServedProviderAuthority]:
-    """Fence selection + request + binding + custody immediately before launch."""
-
+    """Authorize one model on the request principal's live connected set."""
     from tinyassets.credential_vault import (
         cleanup_llm_credential_snapshot,
         snapshot_llm_subscription_credential,
     )
     from tinyassets.custom_agents import get_binding
     from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_serving_binding import (
-        _current_selected_member_authority,
-        _current_serving_authority,
-    )
-    from tinyassets.storage.provider_work_authority import (
-        SQLiteProviderWorkAuthorityStore,
-    )
+    from tinyassets.provider_serving_binding import current_connected_source_custody
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_selection import prepare_selected_model, saved_effort_level
+    from tinyassets.providers.served_model_plan import connected_sources
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
-    held = _SERVED_AUTHORITY_HELD
     universe = Path(universe_dir)
-    uid = universe.name
-    carrier_uid = str(getattr(request_carrier, "universe_id", ""))
-    carrier_binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
-    carrier_revision = getattr(request_carrier, "binding_revision", 0)
-    if carrier_uid != uid or not carrier_binding_id:
-        raise ProviderAuthorityHeldError(held)
-    if agent_turn and (role != "writer" or operation != "converse" or model_selection is None):
-        raise ProviderAuthorityHeldError(held)
-
-    with provider_assignment_admission().shared(universe):
-        authority: ServedProviderAuthority | None = None
-        credential_snapshot = None
-        try:
+    base = Path(base_path)
+    authority = None
+    snapshot = None
+    try:
+        with provider_assignment_admission().shared(universe):
             capability, agent = _served_request_agent(
-                base_path, universe, request_carrier, role, operation
+                base, universe, request_carrier, role, operation,
             )
+            sources = tuple(sorted(connected_sources(base, universe, capability.principal_id)))
+            if not sources:
+                raise PermissionError("no connected model source for this owner")
+            if model_selection is None:
+                from tinyassets.providers.work_candidate_data import prepare_captured_choices
 
-            store = SQLiteProviderWorkAuthorityStore(base_path)
-            selected_model = None
-            selection_recheck = None
-            selected_chain = None
-            if model_selection is not None:
-                from tinyassets.providers.model_selection import (
-                    prepare_selected_model,
-                    saved_effort_level,
+                candidates = prepare_captured_choices(
+                    base, owner=capability.principal_id, universe=universe.name,
+                    sources=sources, document={
+                        "version": 1, "saved": None,
+                        "observed_generation": 0, "current": None,
+                    },
                 )
-
-                selected_chain = _selected_chain(
-                    store, base_path, universe, capability, agent, model_selection
+                model_selection = candidates.order[0]
+            if type(model_selection) is not ModelRef:
+                raise PermissionError("invalid selected model")
+            store = SQLiteProviderWorkAuthorityStore(base)
+            chain = _selected_chain(store, base, universe, capability, agent, model_selection)
+            if _prepared_selection is None:
+                selected, selection_recheck = prepare_selected_model(
+                    base_path=base, owner_user_id=capability.principal_id,
+                    universe_id=universe.name, provider=chain[0],
+                    model_id=model_selection.model_id, access=chain[2],
+                    needs_tools=agent_turn,
+                    effort=saved_effort_level(
+                        base, capability.principal_id, universe.name, model_selection,
+                    ),
                 )
-                selected_assignment = selected_chain[0]
-                member = next(
-                    m for m in selected_assignment.candidates
-                    if m.provider == model_selection.connection_id
-                )
-                if _prepared_selection is None:
-                    # Synchronous callers retain the original fenced path.
-                    # Never keep a SQLite read transaction over discovery IO.
-                    selected_model, selection_recheck = prepare_selected_model(
-                        base_path=Path(base_path),
-                        owner_user_id=capability.principal_id, universe_id=uid,
-                        provider=member.provider, model_id=model_selection.model_id,
-                        access=member.access,
-                        needs_tools=agent_turn,
-                        effort=saved_effort_level(
-                            base_path, capability.principal_id, uid, model_selection,
-                        ),
-                    )
-                else:
-                    (before_agent, before_chain, selected_model,
-                     selection_recheck) = _prepared_selection
-                    if before_agent != agent or before_chain != selected_chain:
-                        raise PermissionError("selected authority changed during model discovery")
-                    if selection_recheck is not None:
-                        selection_recheck()
-                if get_binding(
-                    base_path, universe_id=uid, binding_id=carrier_binding_id
-                ) != agent:
-                    raise PermissionError("agent binding changed during model discovery")
-
-            def before_selected_launch() -> None:
-                selection_recheck()
-                if get_binding(
-                    base_path, universe_id=uid, binding_id=carrier_binding_id
-                ) != agent:
-                    raise PermissionError("agent binding changed before model launch")
+            else:
+                before_agent, before_chain, selected, selection_recheck = _prepared_selection
+                if before_agent != agent or before_chain != chain:
+                    raise PermissionError("selected source changed during discovery")
+                if selection_recheck is not None:
+                    selection_recheck()
             with store.connection() as conn:
                 conn.execute("BEGIN")
-                resolver = (
-                    _current_serving_authority if model_selection is None
-                    else _current_selected_member_authority
+                custody = current_connected_source_custody(
+                    conn, base=base, universe=universe,
+                    owner=capability.principal_id, provider=model_selection.connection_id,
                 )
-                assignment, provider_binding, custody = resolver(
-                    conn,
-                    store=store,
-                    universe_dir=universe,
-                    base_path=Path(base_path),
-                    owner_user_id=capability.principal_id,
-                    universe_id=uid,
-                    agent=agent,
-                    **({} if model_selection is None else {
-                        "provider": model_selection.connection_id,
-                    }),
-                )
-                if selected_chain is not None and selected_chain != (
-                    assignment, provider_binding, custody,
-                ):
-                    raise PermissionError("selected provider authority changed during discovery")
-                provider = (
-                    assignment.provider if model_selection is None
-                    else model_selection.connection_id
-                )
-                if agent_turn:
-                    _seal_agent_launch_allowance(conn, store, assignment, capability)
-                if _is_open_provider(provider):
-                    authority = ServedProviderAuthority(
-                        authority_kind="connection_grant",
-                        provider=provider,
-                        max_invocations=provider_binding.max_invocations,
-                        request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
-                        max_tokens=provider_binding.max_tokens,
-                        max_cost_microunits=provider_binding.max_cost_microunits,
-                        owner_user_id=capability.principal_id,
-                        universe_id=uid,
-                        agent_binding_id=carrier_binding_id,
-                        binding_revision=carrier_revision,
-                        binding_id=provider_binding.binding_id,
-                        binding_generation=provider_binding.generation,
-                        binding_digest=provider_binding.binding_digest,
-                        credential_reference_id=custody.reference_id,
-                        credential_reference_generation=custody.generation,
-                        credential_reference_digest=custody.reference_digest,
-                        credential_service="http",
-                        credential_snapshot_dir=None,
-                        request_capability=capability,
-                        selected_model=selected_model,
-                        before_provider_launch=(
-                            before_selected_launch if selection_recheck is not None else None
-                        ),
-                    )
-                else:
-                    service = _SERVED_PROVIDER_SERVICE.get(provider)
-                    if service is None:
-                        raise PermissionError("provider is not supported for serving")
-                    credential_snapshot = snapshot_llm_subscription_credential(
-                        universe_dir=universe,
-                        custody=custody,
-                    )
-                    authority = ServedProviderAuthority(
-                        authority_kind="subscription_snapshot",
-                        provider=provider,
-                        max_invocations=provider_binding.max_invocations,
-                        request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
-                        max_tokens=provider_binding.max_tokens,
-                        max_cost_microunits=provider_binding.max_cost_microunits,
-                        owner_user_id=capability.principal_id,
-                        universe_id=uid,
-                        agent_binding_id=carrier_binding_id,
-                        binding_revision=carrier_revision,
-                        binding_id=provider_binding.binding_id,
-                        binding_generation=provider_binding.generation,
-                        binding_digest=provider_binding.binding_digest,
-                        credential_reference_id=custody.reference_id,
-                        credential_reference_generation=credential_snapshot.generation,
-                        credential_reference_digest=credential_snapshot.reference_digest,
-                        credential_service=service,
-                        credential_snapshot_dir=credential_snapshot.directory,
-                        request_capability=capability,
-                        native_selection=selected_model,
-                        before_provider_launch=(
-                            before_selected_launch if selection_recheck is not None else None
-                        ),
-                    )
+                if custody != chain[1]:
+                    raise PermissionError("connected source custody changed during discovery")
                 conn.rollback()
-            yield authority
-        except ProviderAuthorityHeldError:
+            provider = model_selection.connection_id
+            if _is_open_provider(provider):
+                kind, service, snapshot_dir = "connection_grant", "http", None
+            else:
+                service = _SERVED_PROVIDER_SERVICE.get(provider)
+                if service is None:
+                    raise PermissionError("connected subscription executor is unavailable")
+                snapshot = snapshot_llm_subscription_credential(
+                    universe_dir=universe, custody=custody,
+                )
+                kind, snapshot_dir = "subscription_snapshot", snapshot.directory
+            import hashlib
+
+            budget_digest = "sha256:" + hashlib.sha256(
+                f"connected:{capability.principal_id}:{universe.name}".encode("utf-8")
+            ).hexdigest()
+            budget_id = "connected_" + budget_digest.removeprefix("sha256:")[:32]
+
+            def before_launch() -> None:
+                if selection_recheck is not None:
+                    selection_recheck()
+                if get_binding(
+                    base, universe_id=universe.name,
+                    binding_id=str(request_carrier.agent_binding_id),
+                ) != agent:
+                    raise PermissionError("agent binding changed before model launch")
+                with store.connection() as current_conn:
+                    current_conn.execute("BEGIN")
+                    current = current_connected_source_custody(
+                        current_conn, base=base, universe=universe,
+                        owner=capability.principal_id, provider=provider,
+                    )
+                    if current != custody:
+                        raise PermissionError("connected source custody changed before launch")
+                    current_conn.rollback()
+
+            authority = ServedProviderAuthority(
+                authority_kind=kind, provider=provider,
+                max_invocations=10_000,
+                request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
+                max_tokens=4_000_000, max_cost_microunits=400_000_000,
+                owner_user_id=capability.principal_id, universe_id=universe.name,
+                agent_binding_id=str(request_carrier.agent_binding_id),
+                binding_revision=int(request_carrier.binding_revision),
+                binding_id=budget_id, binding_generation=1,
+                binding_digest=budget_digest,
+                credential_reference_id=custody.reference_id,
+                credential_reference_generation=custody.generation,
+                credential_reference_digest=custody.reference_digest,
+                credential_service=service, credential_snapshot_dir=snapshot_dir,
+                request_capability=capability, budget_owner="connected_request",
+                selected_model=selected if _is_open_provider(provider) else None,
+                native_selection=selected if not _is_open_provider(provider) else None,
+                before_provider_launch=before_launch,
+            )
+        yield authority
+    except ProviderAuthorityHeldError:
+        raise
+    except Exception as exc:
+        if authority is not None:
             raise
-        except Exception as exc:
-            # Exceptions from the provider body are raised back through the
-            # context-manager yield. They are not authority failures and must
-            # retain their original type/diagnostics.
-            if authority is not None:
-                raise
-            raise ProviderAuthorityHeldError(held) from exc
-        finally:
-            cleanup_llm_credential_snapshot(credential_snapshot)
+        raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
+    finally:
+        cleanup_llm_credential_snapshot(snapshot)
 
 
 __all__ = [

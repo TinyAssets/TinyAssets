@@ -488,6 +488,7 @@ def _run_branch(
         provider_router = ProviderRouter(providers)
     provider = providers[selected_provider]
     captured["providers"] = providers
+    captured["router"] = provider_router
 
     def governed_provider_call(
         prompt,
@@ -577,8 +578,12 @@ def test_foreground_run_launches_active_serving_provider_and_settles_once(
         "FROM provider_invocation_reservations"
     ).fetchone()
     receipt = conn.execute(
-        "SELECT work_item_kind, work_item_id FROM provider_work_receipts"
+        "SELECT work_item_kind, work_item_id, record_json FROM provider_work_receipts"
     ).fetchone()
+    child_count = conn.execute(
+        "SELECT COUNT(*) FROM provider_work_bindings "
+        "WHERE record_json LIKE '%\"allowed_operations\":[\"run_graph\"]%'"
+    ).fetchone()[0]
     claim = conn.execute(
         "SELECT state FROM provider_work_execution_claims"
     ).fetchone()
@@ -589,11 +594,76 @@ def test_foreground_run_launches_active_serving_provider_and_settles_once(
         "actual_total_tokens": 100,
         "actual_cost_microunits": 5,
     }
-    assert dict(receipt) == {
-        "work_item_kind": "run",
-        "work_item_id": response["run_id"],
-    }
+    assert (receipt["work_item_kind"], receipt["work_item_id"]) == (
+        "run", response["run_id"],
+    )
+    assert json.loads(receipt["record_json"])["admitted_sources"] == ["codex"]
+    assert child_count == 0
     assert claim["state"] == "released"
+
+
+def test_newly_connected_source_runs_on_next_admission_without_assignment_write(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    from tinyassets.api import runs as api_runs
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody,
+        write_credential_vault,
+    )
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.runs import get_run, wait_for
+
+    first, _, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
+    )
+    assert first["terminal_status"] == "completed", first["terminal_error"]
+    db = authority_db_path(tmp_path)
+    with sqlite3.connect(db) as conn:
+        assignment_before = conn.execute(
+            "SELECT generation, assignment_digest FROM provider_assignments "
+            "WHERE universe_id='universe_alice'"
+        ).fetchone()
+    write_credential_vault(
+        tmp_path / "universe_alice",
+        [
+            {"credential_type": "llm_subscription", "service": "codex",
+             "auth_json_b64": "e30="},
+            {"credential_type": "llm_subscription", "service": "claude",
+             "oauth_token": "synthetic-claude-test-only"},
+        ], owner_user_id="acct_alice", universe_id="universe_alice",
+    )
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        adopt_llm_subscription_custody(
+            conn, universe_dir=tmp_path / "universe_alice",
+            owner_user_id="acct_alice", universe_id="universe_alice", service="claude",
+        )
+        conn.commit()
+    second_provider = _CountingProvider("claude-code")
+    captured["router"].register(second_provider)
+    next_branch = _branch(node_count=1, provider="claude-code")
+    next_branch.branch_def_id = "branch_connected_after_first_run"
+    save_branch_definition(tmp_path, branch_def=next_branch.to_dict())
+    next_run = json.loads(api_runs._action_run_branch({
+        "branch_def_id": next_branch.branch_def_id, "universe_id": "universe_alice",
+    }))
+    wait_for(next_run["run_id"], timeout=10)
+    result = get_run(tmp_path, next_run["run_id"])
+    assert result["status"] == "completed", result["error"]
+    assert len(second_provider.calls) == 1
+    with sqlite3.connect(db) as conn:
+        assignment_after = conn.execute(
+            "SELECT generation, assignment_digest FROM provider_assignments "
+            "WHERE universe_id='universe_alice'"
+        ).fetchone()
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT record_json FROM provider_work_receipts ORDER BY rowid"
+        )]
+    assert assignment_after == assignment_before
+    assert receipts[0]["admitted_sources"] == ["codex"]
+    assert receipts[1]["admitted_sources"] == ["claude-code", "codex"]
 
 
 @pytest.mark.parametrize("pin_provider", [False, True], ids=["default", "pinned"])
@@ -684,7 +754,7 @@ def test_manifest_run_uses_independent_members_under_one_receipt(
 
 
 @pytest.mark.parametrize("authority_case", ["revoked", "stale", "home_rebound"])
-def test_manifest_run_still_refuses_invalid_owner_or_authority(
+def test_assignment_edits_do_not_grant_or_revoke_connected_run(
     tmp_path, monkeypatch, authenticate_request, authority_case,
 ):
     from tinyassets.provider_assignment_manifest import ModelAccess
@@ -693,8 +763,12 @@ def test_manifest_run_still_refuses_invalid_owner_or_authority(
         tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
         authority_case=authority_case, model_access={"codex": ModelAccess("explicit", ("",))},
     )
-    assert response["terminal_status"] == "failed"
-    assert provider.calls == []
+    if authority_case == "home_rebound":
+        assert response["terminal_status"] == "failed"
+        assert provider.calls == []
+    else:
+        assert response["terminal_status"] == "completed", response["terminal_error"]
+        assert len(provider.calls) == 1
 
 
 def test_manifest_work_model_pin_is_not_silently_replaced_by_native_default(
@@ -855,112 +929,6 @@ def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
     assert list_serving_universes(tmp_path) == ["universe_alice"]
 
 
-def test_foreground_run_refreshes_a_stale_run_binding_after_serving_rebind(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    """A real credential rotation refreshes once, then exact children replay."""
-    first, provider, _captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-    )
-    assert first["terminal_status"] == "completed", first["terminal_error"]
-
-    from tinyassets.api import runs as api_runs
-    from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import list_bindings
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-    from tinyassets.provider_work_authority import provider_work_binding_id
-    from tinyassets.runs import get_run, wait_for
-    from tinyassets.storage.provider_work_authority import (
-        SQLiteProviderWorkAuthorityStore,
-    )
-
-    binding_id = provider_work_binding_id(
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-        provider="codex",
-        binding_class="run_graph",
-    )
-    store = SQLiteProviderWorkAuthorityStore(tmp_path)
-    original_child = store.get(binding_id)
-    assert original_child is not None
-
-    # Rotate the actual deposited record, then drive the same public serving
-    # rebind path that reconnecting the app uses.  This advances custody,
-    # assignment, and parent-binding generations while leaving the deterministic
-    # run-class child from the first run in place.
-    write_credential_vault(
-        tmp_path / "universe_alice",
-        [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
-        }],
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-    )
-    serving = next(
-        row
-        for row in list_bindings(
-            tmp_path, universe_id="universe_alice", limit=100,
-        )
-        if row["status"] == "serving" and row["created_by"] == "acct_alice"
-    )
-    rebound = bind_serving_provider(
-        base_path=tmp_path,
-        universe_dir=tmp_path / "universe_alice",
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-        agent_binding_id=serving["agent_binding_id"],
-        expected_revision=int(serving["revision"]),
-        provider="codex",
-    )
-    configured = rebound["agent_binding"]
-    set_serving(
-        base_path=tmp_path,
-        universe_dir=tmp_path / "universe_alice",
-        owner_user_id="acct_alice",
-        universe_id="universe_alice",
-        agent_binding_id=configured["agent_binding_id"],
-        expected_revision=int(configured["revision"]),
-        enabled=True,
-    )
-    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
-    assert assignment is not None
-    assert assignment.generation > original_child.assignment_generation
-    assert store.get(binding_id) == original_child, "serving rebind leaves the child stale"
-
-    def run_again() -> dict[str, Any]:
-        response = json.loads(api_runs._action_run_branch({
-            "branch_def_id": "branch_foreground_1",
-            "universe_id": "universe_alice",
-        }))
-        wait_for(response["run_id"], timeout=10)
-        record = get_run(tmp_path, response["run_id"])
-        assert record is not None
-        return record
-
-    second = run_again()
-    assert second["status"] == "completed", second["error"]
-    refreshed_child = store.get(binding_id)
-    assert refreshed_child is not None
-    assert refreshed_child.generation == original_child.generation + 1
-    assert refreshed_child.assignment_generation == assignment.generation
-    assert refreshed_child.assignment_digest == assignment.assignment_digest
-
-    # A third admission sees an exact child. It must reuse it without another
-    # rebind, otherwise a normal concurrent run would fence the prior receipt.
-    third = run_again()
-    assert third["status"] == "completed", third["error"]
-    assert store.get(binding_id) == refreshed_child
-    assert len(provider.calls) == 3
-
-
 def test_foreground_run_launches_selected_open_provider_and_settles_once(
     tmp_path: Path,
     monkeypatch,
@@ -1069,13 +1037,7 @@ def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
 #: connected, serving `api_key_http` source was sent to connect a provider
 #: (tests/test_free_account_run_provider_parity.py). Only the two cases that
 #: genuinely have no serving binding keep that sentence.
-_HELD_CASE_REASON = {
-    "missing": None,
-    "registered_only": None,
-    "stale": "provider assignment digest is invalid",
-    "revoked": "connect your provider before enabling serving",
-    "cross_universe": "foreground run is not the principal's own command center",
-}
+_HELD_CASE_REASON = {"missing": "no connected model source for this owner"}
 
 
 @pytest.mark.parametrize("authority_case", sorted(_HELD_CASE_REASON))
@@ -1085,11 +1047,6 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     monkeypatch,
     authenticate_request,
 ) -> None:
-    from tinyassets.providers.owner_binding import (
-        AUTHORITY_HELD_DETAIL,
-        CONNECT_PROVIDER_MESSAGE,
-    )
-
     response, provider, captured = _run_branch(
         tmp_path,
         monkeypatch,
@@ -1102,13 +1059,41 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     assert response["terminal_status"] == "failed"
     error = response["terminal_error"]
     reason = _HELD_CASE_REASON[authority_case]
-    if reason is None:
-        assert CONNECT_PROVIDER_MESSAGE in error, error
-    else:
-        assert AUTHORITY_HELD_DETAIL + reason in error, error
-        assert CONNECT_PROVIDER_MESSAGE not in error, error
+    assert reason in error, error
     assert provider.calls == []
     assert captured["effects"] == []
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM provider_work_receipts"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM provider_invocation_reservations"
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("authority_case", ["registered_only", "revoked", "stale"])
+def test_connected_run_does_not_require_saved_assignment_authority(
+    authority_case, tmp_path, monkeypatch, authenticate_request,
+) -> None:
+    proxy = None
+    if authority_case == "registered_only":
+        from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+        proxy = _OpenProxy()
+        monkeypatch.setattr(
+            ApiKeyHttpProvider, "_resolve_proxy",
+            accounting_resolver(lambda _self, **_kwargs: proxy),
+        )
+    response, provider, _captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
+        authority_case=authority_case,
+        open_provider=authority_case == "registered_only",
+    )
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    if proxy is not None:
+        assert len(proxy.calls) == 1
+    else:
+        assert len(provider.calls) == 1
 
 
 @pytest.mark.parametrize("policy", [
@@ -1456,7 +1441,7 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
 
 
 @pytest.mark.parametrize("host,model,expected_calls", [
-    ("openrouter.ai", "synthetic-model:free", 6),
+    ("openrouter.ai", "synthetic-model:free", 8),
     ("openrouter.ai", "synthetic-model", 8),
     ("api.example.com", "synthetic-model:free", 8),
 ])
