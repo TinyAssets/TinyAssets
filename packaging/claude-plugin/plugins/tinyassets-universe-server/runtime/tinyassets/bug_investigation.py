@@ -12,7 +12,7 @@ this path (``tests/test_bug_investigation_wiring.py``).
 What is left serves only ``bug_investigation`` tasks that may already sit in a
 queue: the payload mapper the claimed-task executor uses for legacy tasks and
 the patch-packet attach helper. Both are listed for deletion in
-``docs/reviews/2026-09-24-platform-llm-call-audit.md``.
+``docs/decisions/ADR-006-the-platform-has-no-llm.md``.
 """
 
 from __future__ import annotations

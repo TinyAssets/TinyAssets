@@ -12,7 +12,7 @@ summary: deployed and rendered acceptance passed; independent customer clean use
 Rendered primary-app acceptance at 00:03 and 00:06 PDT confirmed an agent
 edited effects/code and then separately changed a workspace binding on its own
 existing branch, ran successfully and restored original content. Receipt:
-docs/reviews/2026-09-21-served-effect-edit-deployment.md.
+2026-09-21-served-effect-edit-deployment.md (archived in git).
 
 These were operator-requested ordinary-chat tests, not independent customer
 activity. The inspected rendered history contains no newer owner-originated

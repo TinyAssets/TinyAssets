@@ -677,7 +677,7 @@ live; Google consent screen **In production** (any Google account can sign in); 
 PR-writer re-established through production WorkOS Pipes (provider enabled, OAuth app
 `TinyAssets WorkOS Pipes` carries both callbacks, connections reconciled for
 `u-01kxm1vszd8hwp7em418asq8h9` and `u-tiny`). Record and boundary:
-`docs/reviews/2026-08-29-codex-subject-migration-boundary.md`. Delete this paragraph on the
+`2026-08-29-codex-subject-migration-boundary.md (archived in git)`. Delete this paragraph on the
 next host-actions pass.
 
 ---
@@ -949,7 +949,7 @@ records the claude.ai baseline (task 3.1) and the permitted-regression decision 
 ### Cloud drain activation — dark deploy, cutover, and 24/7 proof
 
 Implementation landed; the dark deploy/canary, single-active cutover, and 24/7 PC-off proof remain.
-*Owner artifacts:* `docs/audits/2026-08-03-cloud-drain-epoch2-consumer.md`,
+*Owner artifacts:* `2026-08-03-cloud-drain-epoch2-consumer.md (archived in git)`,
 `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain/tasks.md`.
 
 > **Changed 2026-08-25.** This row carried the dependency *"keep local drain until reviewed cloud

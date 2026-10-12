@@ -100,7 +100,7 @@ and diff check all pass. No baseline failure was hidden or new skip introduced.
 
 PR3909 subsequently passed exact-head Fable81316 approval and CI and deployed
 as8f4ee4a8 at02:15UTC September22. See
-[rendered acceptance](../../../../docs/reviews/2026-09-22-owned-run-activity-acceptance.md).
+rendered acceptance (archived in git).
 The app could recover stored failed-run evidence but misread model_status as
 provider acknowledgment, including after one ordinary correction. No further
 coaching or private-workflow rerun was used to manufacture acceptance.

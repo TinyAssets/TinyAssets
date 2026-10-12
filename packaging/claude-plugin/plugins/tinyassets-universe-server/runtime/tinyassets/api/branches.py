@@ -1623,7 +1623,7 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
 
 # ── Composite: build_branch / patch_branch ────────────────────────────────
-# Per docs/specs/composite_branch_actions.md: Claude.ai's per-turn tool-call
+# Per openspec/specs/background-branch-execution-authority/spec.md: Claude.ai's per-turn tool-call
 # budget tops out around 15–20 atomic actions, below a full workflow build.
 # Composite actions let a client ship one spec / one batch and get back a
 # validated branch. build_branch is strict-with-suggestions (reject

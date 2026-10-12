@@ -1,7 +1,7 @@
 # TinyAssets daemon env file template.
 #
 # Self-host migration Row D per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Install:
 #   1. sudo mkdir -p /etc/tinyassets

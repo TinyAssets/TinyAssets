@@ -1,6 +1,7 @@
 """Tests for canonical_branch storage layer.
 
-Spec: docs/vetted-specs.md §canonical_branch — first-experience fork target per Goal.
+Spec: openspec/specs/community-patch-loop/spec.md.
+Topic: canonical_branch — first-experience fork target per Goal.
 """
 
 from __future__ import annotations

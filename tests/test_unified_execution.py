@@ -1,6 +1,6 @@
 """TINYASSETS_UNIFIED_EXECUTION unified-execution tests.
 
-Covers docs/specs/phase_d_preflight.md §4.4:
+Covers phase_d_preflight.md (archived in git) §4.4:
 - Compiler-extension tests (5): opaque-node resolution + error modes.
 - Wrapper-registration tests (2).
 - Flag-gated dispatch tests (3).

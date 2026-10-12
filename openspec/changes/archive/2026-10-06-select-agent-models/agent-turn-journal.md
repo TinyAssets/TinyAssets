@@ -150,7 +150,7 @@ Linux as well as Windows. No live workflow, provider or permission edits.
 ## Applied independent ADAPT352s, September10 04:23UTC
 
 Full shape review at8480ec10 is committed in
-docs/reviews/2026-09-10-agent-turn-journal-shape-review.md. The following exact
+2026-09-10-agent-turn-journal-shape-review.md (archived in git). The following exact
 refinements supersede ambiguous prose above before any storage code:
 
 1. finish_tool receives raw validated MCP CallToolResult, not codec.ToolOutcome.

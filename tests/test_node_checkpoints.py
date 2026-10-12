@@ -4,7 +4,7 @@ Tests for the checkpoint spec: declarative reached_when predicates,
 event emission, idempotency (fires at most once per run), validation,
 and the checkpoint() helper for code nodes.
 
-Spec: docs/vetted-specs.md §Node checkpoints
+Spec: openspec/specs/community-patch-loop/spec.md §Node checkpoints
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """S0 of the app.html split: the ES-module route, its allowlist and CSP grant.
 
-docs/design-notes/2026-10-01-split-app-html-into-es-modules.md. Nothing loads a
+2026-10-01-split-app-html-into-es-modules.md (archived in git). Nothing loads a
 module yet; these pin the serving contract S1 relies on.
 """
 

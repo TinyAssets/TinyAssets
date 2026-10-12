@@ -24,8 +24,8 @@ kept overall red and caused the ordinary alarm comment. Natural post-merge cron
 classification and watcher-output normal-path acceptance are now verified;
 this bounded change is archived, not the broader coverage gaps. Main spec
 reflects deployed classification, not completed coverage. Evidence:
-`docs/reviews/2026-09-19-monitor-classification-deployed-proof.md`.
-Closeout receipts: `docs/reviews/2026-09-19-natural-scheduled-classification-proof.md`
+`2026-09-19-monitor-classification-deployed-proof.md (archived in git)`.
+Closeout receipts: `2026-09-19-natural-scheduled-classification-proof.md (archived in git)`
 and `docs/reviews/2026-09-19-community-monitor-output-boundary.md`.
 Fresh cadence inventory is retained separately in
 `docs/concerns/2026-09-19-hostless-monitor-schedule-cadence-gap.md`; requested

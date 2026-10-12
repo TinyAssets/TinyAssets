@@ -19,7 +19,7 @@ rail. The served agent cannot see most of them and can change almost none:
   fills with asks the agent already knows are wrong
   (`docs/concerns/2026-08-28-an-agent-cannot-withdraw-its-own-stale-ask.md`).
 
-Evidence: `docs/reviews/2026-09-24-capability-gap-audit.md` row C27 (PR
+Evidence: `2026-09-24-capability-gap-audit.md (archived in git)` row C27 (PR
 #3947), `docs/concerns/2026-09-08-served-tool-capability-parity-gaps.md`.
 
 ## What changes

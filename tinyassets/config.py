@@ -53,7 +53,7 @@ class UniverseConfig:
     single provider first, then the allowlist filter applies; if the
     pinned provider is not in the allowlist the call hard-fails.
 
-    See ``docs/design-notes/2026-04-27-q63-third-party-provider-privacy.md``
+    See ``docs/decisions/ADR-007-vendor-neutral-connections.md``
     and ``.claude/agent-memory/navigator/q63_section4_dispositions.md``
     for the design rationale."""
 

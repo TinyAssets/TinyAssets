@@ -1,6 +1,6 @@
 """Tests for goals action=set_canonical MCP wiring.
 
-Spec: docs/vetted-specs.md §canonical_branch.
+Spec: openspec/specs/community-patch-loop/spec.md §canonical_branch.
 Implementation: tinyassets/universe_server.py _action_goal_set_canonical().
 Depends on canonical_branch storage layer (Task #43 / daemon_server.py).
 """

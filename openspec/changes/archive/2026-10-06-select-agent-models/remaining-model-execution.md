@@ -2,7 +2,7 @@
 
 Owner approved one remaining-design Fable5.1 review and one final release review.
 The first completed against f8299c49 in576s, VERDICT ADAPT, source reasoning only.
-Full artifact: `docs/reviews/2026-09-14-model-selector-shape-fable.md`.
+Full artifact: `2026-09-14-model-selector-shape-fable.md (archived in git)`.
 This document is the lead disposition before implementation. It does not approve
 the full PR or describe deployed behavior.
 
@@ -81,14 +81,14 @@ actual admitted receipt, never a caller's synthetic chat request.
 
 The lineage format is now implemented and tested on Windows and Linux (258
 passes in each, zero skips). Evidence:
-`docs/reviews/2026-09-14-work-agent-journal-proof.md`. Current-home checks and
+`2026-09-14-work-agent-journal-proof.md (archived in git)`. Current-home checks and
 all execution guards remain unchanged; this checkpoint grants no work authority.
 
 Shared progress extraction now built locally: AgentTurnCoordinator plus the
 served-chat adapter retain existing chat behavior, including original input
 records and typed fallback refusal. Ten executable differential cases compare
 the old coordinator with the new composition through real stores and router.
-Evidence: docs/reviews/2026-09-14-shared-agent-coordinator-proof.md. This neither
+Evidence: 2026-09-14-shared-agent-coordinator-proof.md (archived in git). This neither
 implements the workflow adapter nor relaxes the pinned authorization refusals.
 
 AGREE with the finding: current admission counts one inference per node attempt;
@@ -131,7 +131,7 @@ now built. The check rereads live receipt/claim/member/parent (and legacy child)
 current owner and immutable running subject without reserving or rearming. Its
 adapter call sites remain pending. Windows/Linux group193/193 passes, zero skips;
 provider-neutrality plus new files57 passes. Evidence:
-`docs/reviews/2026-09-14-work-agent-admission-proof.md`.
+`2026-09-14-work-agent-admission-proof.md (archived in git)`.
 
 R6 refinement from the actual compiler: `_call_policy_router_with_retry` catches
 AllProvidersExhaustedError and starts the entire node again. Even a *known*
@@ -146,7 +146,7 @@ pre-inference observer. HTTP tool/result/second-round execution and native
 completion/capacity/uncertainty use work-owned journal roots. Prelaunch failures
 release unused reservations, injected caller authority refuses, and effectful
 or unknown failures cannot restart the node.292Windows/292Linux tests pass;
-see docs/reviews/2026-09-14-foreground-work-agent-proof.md. Background integration
+see 2026-09-14-foreground-work-agent-proof.md (archived in git). Background integration
 and work-owned within-turn safe fallback traversal remain open. The current
 foreground adapter pins the initially resolved source/model for later rounds;
 it does not fabricate a served-chat model plan for workflow authority.
@@ -179,7 +179,7 @@ ceiling, owner/admin, immutable subject, activation and consumer/task leases sta
 authoritative at each step. Final accounting group211Windows/211Linux passes,
 zero skips; broader initial integration323Windows/335Linux. Exact evidence and
 the fixed obsolete persona unit seam are in
-docs/reviews/2026-09-14-background-work-agent-proof.md. User acceptance and final
+2026-09-14-background-work-agent-proof.md (archived in git). User acceptance and final
 review remain open; no private workflow or user background project was edited.
 
 ## Order and completion

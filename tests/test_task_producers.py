@@ -1,6 +1,6 @@
 """Phase C.4 — producer wrappers + dispatcher + ON/OFF identity test.
 
-Per docs/specs/taskproducer_phase_c.md §5 + §7. The load-bearing step:
+Per taskproducer_phase_c.md (archived in git) §5 + §7. The load-bearing step:
 wrapping existing logic as producers must not change observable
 behavior. The identity test asserts byte-identical WorkTargets across
 flag settings after timestamp normalization.

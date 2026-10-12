@@ -7,7 +7,7 @@ enqueue context) and skips the fantasy cycle. Gated behind
 ``TINYASSETS_SOUL_LOOP_DISPATCH``; default off leaves soulless/legacy universes
 untouched.
 
-See docs/design-notes/2026-06-03-soul-loop-dispatch-activation-plan.md.
+See 2026-06-03-soul-loop-dispatch-activation-plan.md (archived in git).
 """
 
 from __future__ import annotations

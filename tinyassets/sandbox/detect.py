@@ -4,7 +4,8 @@ Shared module for any component that needs to know whether a bwrap sandbox
 is available on the current host. Keeps detection logic out of individual
 provider modules so it can be tested and imported independently.
 
-Spec: docs/vetted-specs.md §Loud sandbox-unavailable surface for dev/checker exec nodes.
+Spec: openspec/specs/scratch-storage/spec.md.
+Topic: Loud sandbox-unavailable surface for dev/checker exec nodes.
 """
 
 from __future__ import annotations

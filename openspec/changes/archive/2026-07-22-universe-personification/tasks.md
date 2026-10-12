@@ -12,7 +12,7 @@
 > **Every unchecked task below is annotated with its classification. Read the annotation
 > before acting on any line.** Re-verified against `origin/main` @ `7a118dca`, 2026-07-22.
 
-## 1. Ratified-spec amendments (`docs/specs/2026-06-10-tiny-first-principles-spec.md`) — NOT applied in this draft
+## 1. Ratified-spec amendments (`2026-06-10-tiny-first-principles-spec.md (archived in git)`) — NOT applied in this draft
 
 > ⚠ **The "NOT applied" annotation is contradicted by the repo.** The amendment text IS
 > present when this task ledger was retired, carrying the full embody / "never relays"
@@ -46,7 +46,7 @@
 
 ## 3. Cross-provider review
 
-- [x] 3.1 Codex review obtained — verdict **ADAPT** (`docs/audits/2026-06-25-universe-personification-codex-review.md`); 7 required adaptations
+- [x] 3.1 Codex review obtained — verdict **ADAPT** (`2026-06-25-universe-personification-codex-review.md (archived in git)`); 7 required adaptations
 - [x] 3.2 Folded all 7 adaptations into proposal + design + spec delta:
   - [x] 3.2.1 Invariant = projection of the WHOLE mind (not soul+brain+voice only)
   - [x] 3.2.2 Anti-collision requirement (instructions/views + reject profile-shaped writes)

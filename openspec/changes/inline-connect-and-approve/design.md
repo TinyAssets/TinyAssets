@@ -161,7 +161,7 @@ retryable refusal with the interrupted count; never imply it completed.
 
 ## Founder decision implementation details (2026-10-04)
 
-Source: [Muse connection research](../../../docs/design-notes/2026-10-04-muse-connection-methods.md), rows 6, 7 and 17. The supplied report's descriptions of Muse panes are research evidence, not the chosen TinyAssets UX. The founder selects an approval SHEET, never a side requests panel. delivery.md and completed S1 remain historical evidence, not acceptance of this revised presentation.
+Source: Muse connection research (archived in git), rows 6, 7 and 17. The supplied report's descriptions of Muse panes are research evidence, not the chosen TinyAssets UX. The founder selects an approval SHEET, never a side requests panel. delivery.md and completed S1 remain historical evidence, not acceptance of this revised presentation.
 
 Grant records bind owner, initiating agent, connection incarnation, action class, destination predicate, scope, expiry and issuing policy digest. Once consumes one reservation. Task ends at task/generation termination or its displayed deadline. Site binds an exact normalized origin (scheme, host, port; no implicit subdomains or redirects), permitted operations and connection incarnation; it persists until its displayed optional deadline or revocation. Always persists until revoked, only for the displayed connector/action predicate. A site grant neither grants the entire network nor upgrades reads to writes. Scope changes require a fresh protected preview/token. Site grants use the same coordinated finalization, policy checks and revocation as task/always; Stop cannot resurrect a pending card through either persistent scope.
 

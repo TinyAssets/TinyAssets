@@ -10,7 +10,7 @@ never advanced the plan, while the HTTP loop advanced to native with an
 incompatible structured request. Coordinator d1d3b39e corrects those dispatch
 paths locally, preserving default/current/saved ordering. Complete native
 attempted-capacity evidence and live acceptance remain open; see
-docs/reviews/2026-09-11-mixed-agent-execution-proof.md.
+2026-09-11-mixed-agent-execution-proof.md (archived in git).
 
 ## One coordinator, two installed execution capabilities
 

@@ -1,7 +1,7 @@
 """One-shot git hygiene setup (Layer 0). Idempotent; safe to re-run anywhere.
 
 Part of the branch lifecycle automation; see
-``docs/design-notes/2026-06-24-branch-lifecycle-automation.md``.
+``docs/reference/worktree-discipline.md``.
 
 Sets the table-stakes config that prevents the "1,209 behind / stale refs"
 drift:

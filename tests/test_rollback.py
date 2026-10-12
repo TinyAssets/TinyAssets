@@ -1,6 +1,6 @@
 """Phase B surgical-rollback engine tests (Task #22).
 
-Spec: docs/design-notes/2026-04-25-surgical-rollback-proposal.md.
+Spec: 2026-04-25-surgical-rollback-proposal.md (archived in git).
 Implementation: tinyassets/rollback.py.
 
 Covers:

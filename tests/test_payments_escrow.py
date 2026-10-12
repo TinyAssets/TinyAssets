@@ -1,6 +1,6 @@
 """Tests for tinyassets.payments.escrow — gate bonus escrow primitives.
 
-Spec: docs/vetted-specs.md §Gate bonuses invariants:
+Spec: openspec/specs/community-patch-loop/spec.md §Gate bonuses invariants:
   * bonus_stake locked when claim made; release to node's last-claimer on pass
   * refund to staker on gate fail / timeout / retraction
   * unstake by non-staker rejected (tested at caller contract level here)

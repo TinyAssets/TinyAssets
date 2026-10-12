@@ -19,7 +19,7 @@ logic lives in `tinyassets/api/first_contact.py` with the atomic claim in
 `tinyassets/daemon_server.py`.
 
 Per the 2026-07-22 host directive
-(`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`), birth moved off
+(`2026-07-22-first-contact-birth-moves-to-converse.md (archived in git)`), birth moved off
 `get_status` and its `allow_first_contact_birth` parameter was deleted, because a mutating *opening*
 call proved refusable in production: the assistant declined to call `get_status` on the grounds that
 its own tool description advertised a side effect. The 2026-07-15 commitment this replaces — a founder

@@ -1,6 +1,6 @@
 """Goals as a first-class shared primitive.
 
-Covers AC from ``docs/specs/community_branches_phase5.md`` §Executable
+Covers AC from ``community_branches_phase5.md (archived in git)`` §Executable
 Addendum:
 
 1. Storage: goals table + branch_definitions.goal_id column.

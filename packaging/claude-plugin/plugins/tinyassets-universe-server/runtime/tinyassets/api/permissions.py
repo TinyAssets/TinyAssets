@@ -1,7 +1,7 @@
 """Shared MCP permission checks for universe-scoped writes.
 
 Single source of truth for the ownership/visibility model ratified in
-``docs/design-notes/2026-06-26-founder-and-universe-identity.md``:
+``docs/decisions/ADR-016-identity-follows-the-account.md``:
 
   * **Visibility** is the ``public_read`` rule on a universe. A universe with
     no recorded rule is publicly readable by default; ``public_read=False``

@@ -1,1 +1,0 @@
-Which PR, branch, commit range, or worktree should I review? The current checkout is `main` with only unrelated coordination-log changes, while 30+ PRs are open, so selecting one would be arbitrary.

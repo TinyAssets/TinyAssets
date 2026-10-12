@@ -1,6 +1,6 @@
 """Tests for cross-run state query primitive.
 
-Spec: docs/vetted-specs.md §Cross-run state query primitive.
+Spec: openspec/specs/graph-execution-substrate/spec.md §Cross-run state query primitive.
 
 Covered:
 - filter by status, actor, since/until

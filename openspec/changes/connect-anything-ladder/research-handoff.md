@@ -2,7 +2,7 @@
 
 `initial_provider: codex`; research only, not a new accepted spec or completed build task.
 Evidence, source dates, tap budgets and full landing packet:
-[`2026-10-09-zero-tap-connections.md`](../../../docs/design-notes/2026-10-09-zero-tap-connections.md).
+`2026-10-09-zero-tap-connections.md` (archived in git).
 
 Applies when touching OAuth discovery/token persistence, remote MCP/extensions,
 broker auth headers/retries, inline continuation, mobile auth or browser custody.

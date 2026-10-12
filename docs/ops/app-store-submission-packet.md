@@ -105,7 +105,7 @@ Account Holder was added to the Internal group; after the beta review details we
 completed and the Build 3 relationship was refreshed, Apple's API and UI both showed
 the tester as **Invited** with one tester and one build. No external group or beta
 review submission was created. Receipt:
-`docs/audits/2026-09-10-ios-review-recovery-access.md`.
+`2026-09-10-ios-review-recovery-access.md (archived in git)`.
 
 Internal testing comes first. External testing may trigger TestFlight App Review
 and is a separate submission boundary.
@@ -321,8 +321,8 @@ one, so the server must remain compatible with the last released shell.
    and Build 3 is **Ready to Submit**. The App Store Connect API then saved the en-US
    **What to Test** text and attached Build 3 to the empty `Internal` group. No App
    Review submission, external testing submission, tester invitation, or public
-   release occurred. Receipts: `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`
-   and `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
+   release occurred. Receipts: `2026-09-03-ios-testflight-upload-receipt.md (archived in git)`
+   and `2026-09-03-ios-testflight-preparation-receipt.md (archived in git)`.
 8. **Partially complete 2026-09-03:** an authenticated App Store Connect session
    saved the beta app description and marketing URL, selected Build 3 for Version
    1.0, confirmed the free price schedule, saved factual App Review Notes, saved
@@ -348,7 +348,7 @@ one, so the server must remain compatible with the last released shell.
     or code defect. Apple requires a latest-iOS physical-device recording plus purpose,
     audience, access, service, regional, and regulated-content answers. Keep the
     submission intact and resubmit after the complete response is saved. Receipt:
-    `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
+    `2026-09-09-ios-app-review-submission-receipt.md (archived in git)`.
 
 ### Guideline 2.1 response packet
 

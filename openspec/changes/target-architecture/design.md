@@ -588,7 +588,7 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
   2. Litestream v0.5 for platform state.
      - **Deferred** until `command-center-cutover` (#4262) lands `.platform/` (D8a). Then it replicates `.platform/` only.
      - **Interim, shipped:** the brain tier goes off-region hourly, an RPO of about 1 hour.
-     - **Constraints:** `docs/design-notes/2026-10-02-litestream-platform-state.md` §Refute outcome. Restores must replay the deletion ledger (`docs/concerns/2026-10-02-restores-resurrect-deleted-accounts.md`).
+     - **Constraints:** `2026-10-02-litestream-platform-state.md (archived in git)` §Refute outcome. Restores must replay the deletion ledger (`docs/concerns/2026-10-02-restores-resurrect-deleted-accounts.md`).
   3. Move `BACKUP_DEST` off-region. The GitHub copy keeps the brain tier only.
   4. Restore test, including point in time.
   5. Schedule `dr-drill.yml` weekly, restoring from the off-region copy (MODIFIED requirement, see reconciliation).

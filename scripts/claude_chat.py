@@ -1227,8 +1227,7 @@ def _try_recover_input(page, *, on_step=None):
          choice to the conversation; the widget's Skip button does.
          Escape twice if the widget is still visible after the first
          press. We deliberately never click Skip (persona authenticity
-         rule — see docs/design-notes/2026-04-19-option-select-bug-
-         claude-chat.md).
+         rule; see the option-select recovery test).
       3. Scroll the message list to the bottom (puts the input back in
          view; sometimes it's virtualized off-screen).
       4. Tab into the input role by keyboard.
@@ -1284,7 +1283,7 @@ def _try_recover_input(page, *, on_step=None):
     # authenticity requires that user-sim's next typed message be the
     # persona's real answer. Escape closes the widget without posting,
     # so the next `ask` carries the persona's voice verbatim.
-    # Full rationale: docs/design-notes/2026-04-19-option-select-bug-claude-chat.md
+    # Full rationale: docs/architecture.md
 
     # 3. Escape to dismiss overlays. Some Claude.ai widgets take two Esc
     # presses (one to close active element, one to dismiss the wrapper),
@@ -1815,8 +1814,7 @@ def cmd_ask(message: str) -> int:
                         "persona's freeform answer typed into the "
                         "message — posting a new user turn re-mounts "
                         "the input. Do NOT click Skip (posts 'no "
-                        "preference'; see docs/design-notes/2026-04-19-"
-                        "option-select-bug-claude-chat.md). Diagnostic "
+                        "preference'; see the option-select recovery test). Diagnostic "
                         f"dump: output/claude_chat_failures/{dump}."
                         "{html,png,txt}",
                         file=sys.stderr,

@@ -12,7 +12,7 @@ The reconciler lists their state.
 Each net figure is an estimate of executable plus document lines, mirror
 excluded. The PR measures the real figure, and a positive net does not merge.
 
-- [ ] 2.1 **C1 Guards, document homes, document prune.** Add
+- [x] 2.1 **C1 Guards, document homes, document prune.** Add
       `scripts/check_shapes.py` with one `SHAPES` table keyed S1–S27, plus
       `tests/test_shape_registry.py`. Register it in
       `scripts/ci_structural_guards.py`. Checks: registry-parity, ceiling,
@@ -165,12 +165,13 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       the unwired `okf_export.py` branch.
       Guard: S17 converged. Net about −2k. Depends on C6.
 
-- **N1–N9 founder-approved primitives** (2026-10-11, #4624; registry
-      rows N1–N9, item 10 is S28). Unbuilt; each is a new primitive built
+- **N1–N10 founder-approved primitives** (2026-10-11, #4624; registry
+      rows N1–N10; credential custody is S28). Unbuilt; each is a new primitive built
       only after its dependencies converge, never a second path: N9 after
       C3; N3 after C3 and C9; N5, N6 after C6; N8 after C5 and C6; N4
       after C6 and C11; N1 after C7 and C8; N2 after C7 and C11; N7 after
-      C3, C10 and `credential-vault-reshape`, spec first. C1's `SHAPES`
+      C3, C10 and `credential-vault-reshape`, spec first; N10 after C6.
+      C1's `SHAPES`
       table carries the N rows and their planned guards.
 
 ## 3. Pull requests and notes folded by this change

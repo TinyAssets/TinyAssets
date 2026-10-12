@@ -2,7 +2,7 @@
 
 - [x] 1.1 `git fetch --prune`; classify against `origin/main`, then re-verify at `7a118dca` after PR #1578
 - [x] 1.2 Confirm source 1 — ratified correction: PR #1578 / `f605bb99` replaces chatbot embodiment with the relay model
-- [x] 1.3 Confirm source 2 — `docs/design-notes/2026-07-02-universe-intelligence-relay-architecture.md` §3 (why embodiment was live-falsified)
+- [x] 1.3 Confirm source 2 — `2026-07-02-universe-intelligence-relay-architecture.md (archived in git)` §3 (why embodiment was live-falsified)
 - [x] 1.4 Confirm source 3 — shipped code: `tinyassets/universe_server.py:209` ("You do NOT speak as the universe … RELAY … RENDER")
 - [x] 1.5 Confirm the landed as-built capability `openspec/specs/universe-personification-and-relay/spec.md` codifies relay
 - [x] 1.6 Find the **fourth** stale source, then verify PR #1578 / `f605bb99` corrected it before this reconciliation lands

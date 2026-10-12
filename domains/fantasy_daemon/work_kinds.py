@@ -1,7 +1,7 @@
 """Fantasy-authoring execution kinds + scope inference.
 
 Moved here from `tinyassets/work_targets.py` in Phase C.2 per
-`docs/specs/taskproducer_phase_c.md` §2. BOOK/CHAPTER/SCENE are fantasy
+`taskproducer_phase_c.md (archived in git)` §2. BOOK/CHAPTER/SCENE are fantasy
 concepts; a second domain would never emit them. `EXECUTION_KIND_NOTES`
 stays on the generic engine side (every domain has notes-class work).
 

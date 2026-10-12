@@ -53,4 +53,4 @@ the fleet itself retire together. The 16 `background_branch_bindings` + 9 `cloud
 still authorizing the staging subject are retired, not migrated -- they are generated consequences of
 preparation (Codex, finding 5).
 
-Evidence: `docs/reviews/2026-08-29-codex-background-loop-shape.md`.
+Evidence: `2026-08-29-codex-background-loop-shape.md (archived in git)`.

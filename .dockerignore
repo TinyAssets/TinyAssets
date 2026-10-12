@@ -1,5 +1,5 @@
 # Docker build context exclusions.
-# Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row A
+# Per 2026-04-20-selfhost-uptime-migration.md (archived in git) Row A
 # + `docs/ops/docker-notes.md` build discipline.
 #
 # What goes IN the image: tinyassets/ + domains/ + pyproject.toml.

@@ -1,6 +1,6 @@
 # Dockerfile for the TinyAssets daemon (MCP server).
 #
-# Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row A:
+# Per 2026-04-20-selfhost-uptime-migration.md (archived in git) Row A:
 # provider-agnostic container image that ships to Fly.io, Hetzner, or any
 # Linux host. No Fly-specific config baked in; that lives in Row D.
 #

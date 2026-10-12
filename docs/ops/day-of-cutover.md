@@ -386,4 +386,4 @@ Host-required actions going forward:
 
 - `deploy/HETZNER-DEPLOY.md` — detailed Hetzner deploy (if you want to do it yourself instead).
 - `docs/ops/host-independence-runbook.md` — ongoing maintenance (bills, emergency DNS, secrets rotation).
-- `docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md` — full 14-row exec plan.
+- `2026-04-20-selfhost-uptime-migration.md (archived in git)` — full 14-row exec plan.

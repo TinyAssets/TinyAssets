@@ -38,7 +38,7 @@
   one-running/one-replaceable-pending model and prove one corrective dispatch,
   no active-build cancellation, and no stale-run over-suppression.
 - [x] 4.2 Record the command, environment, date, result, and scheduler-model
-  limitation in `docs/audits/2026-07-25-release-reconcile-concurrency-proof.md`.
+  limitation in `2026-07-25-release-reconcile-concurrency-proof.md (archived in git)`.
 - [x] 4.3 Reproduce Opus 5's production-Python and repeated-deploy findings,
   make the exact scripts pass on Python 3.12, add a pinned CI contract, and cap
   failed same-SHA explicit retries before another build or deploy.

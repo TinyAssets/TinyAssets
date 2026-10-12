@@ -1,7 +1,7 @@
 # TinyAssets daemon deploy runbook (provider-neutral Debian 12 VM)
 
 Self-host migration Row D per
-`docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
+`openspec/specs/uptime-and-alarms/spec.md`.
 
 **Current target (2026-04-20):** DigitalOcean **Basic Droplet** ($6/mo, 1 vCPU / 1 GB RAM / 25 GB SSD tier or larger), **Debian 12** image, region NYC / SFO / AMS / FRA.
 

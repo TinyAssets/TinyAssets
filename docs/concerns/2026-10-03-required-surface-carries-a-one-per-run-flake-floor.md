@@ -47,7 +47,7 @@ are new and have no owner yet; they are the reason this file exists.
 3. **A lone failure under a lone queue entry is weak evidence of causation.**
    `scripts/miss_attr.py` reports such cases separately for exactly this reason
    rather than counting them as escapes
-   (`docs/design-notes/2026-10-02-affected-only-merge-gate.md`).
+   (`2026-10-02-affected-only-merge-gate.md (archived in git)`).
 
 ## Resolving it
 

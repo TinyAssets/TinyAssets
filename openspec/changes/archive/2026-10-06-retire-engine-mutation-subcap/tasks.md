@@ -14,7 +14,7 @@
 - [ ] 3.3 Obtain rendered owner-held acceptance when authorized and record organic follow-up without substituting canaries for it.
 
 Technical delivery and same-lane spec sync:
-[deployed proof](../../../docs/reviews/2026-09-08-engine-edit-subcap-proof.md).
+deployed proof (archived in git).
 Deploy 34312901542 succeeded September 9 at 04:57:38 UTC with authenticated
 canary and production containment of 8f1b47609330. Task 3.3 is not inferred from
 technical checks or the owner's earlier 21:39 PDT report on the prior deploy.

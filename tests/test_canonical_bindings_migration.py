@@ -3,7 +3,7 @@
 Step 0: schema DDL (table + 4 indexes).
 Step 1: idempotent backfill from goals.canonical_branch_version_id.
 
-See docs/design-notes/2026-04-25-variant-canonicals-proposal.md.
+See 2026-04-25-variant-canonicals-proposal.md (archived in git).
 """
 from __future__ import annotations
 

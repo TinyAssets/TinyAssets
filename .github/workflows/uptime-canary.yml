@@ -1,7 +1,7 @@
 name: Uptime canary
 
 # Row H of the self-host migration (cloud-canary + out-of-band alarm sink).
-# Spec: docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# Spec: openspec/specs/uptime-and-alarms/spec.md.
 #
 # Host directive 2026-04-20: retire mcp.tinyassets.io/mcp as a public URL.
 # Canonical is tinyassets.io/mcp ONLY. Canary probes the single canonical.

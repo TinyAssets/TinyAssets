@@ -1,6 +1,6 @@
 """Tests for ``tinyassets.auto_ship_ledger`` (PR #198 §8 — Slice A).
 
-Spec source: ``docs/milestones/auto-ship-canary-v0.md`` §8.
+Spec source: ``auto-ship-canary-v0.md (archived in git)`` §8.
 
 Coverage:
 - ID generation shape + collision resistance
@@ -692,7 +692,7 @@ def test_ship_attempt_has_rollback_pr_identity_fields():
 def test_update_attempt_can_mutate_rollback_pr_identity_fields(tmp_path):
     """update_attempt accepts rollback_pr_number + rollback_pr_url because
     they're in MUTABLE_FIELDS. This is the contract record_rollback_decision
-    relies on per docs/specs/auto-ship-rollback-v0.md."""
+    relies on per auto-ship-rollback-v0.md (archived in git)."""
     row = ShipAttempt(
         ship_attempt_id="ship_20260504_cc33dd44",
         created_at="2026-05-04T01:01:00+00:00",

@@ -1,6 +1,6 @@
 """Stage and pack the TinyAssets Server MCPB bundle.
 
-Per `docs/design-notes/2026-04-14-packaging-mirror-decision.md` Option 1:
+Per `2026-04-14-packaging-mirror-decision.md (archived in git)` Option 1:
 the bundle stages the live `tinyassets/` package directly. The legacy
 `fantasy_author/universe_server.py` shim path is gone — `server.py`
 inside the bundle imports `tinyassets.universe_server` like a normal

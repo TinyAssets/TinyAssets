@@ -1,7 +1,7 @@
 """Executable acceptance gate for the founder/universe write boundary (D0a).
 
 Encodes the invariant from the founder/universe identity design — see
-``docs/design-notes/2026-06-26-founder-and-universe-identity.md`` (decision
+``2026-06-26-founder-and-universe-identity.md (archived in git)`` (decision
 D0a) and ``openspec/changes/archive/2026-08-26-universe-creation`` requirement *"MCP writes are
 scoped to the founder's own command center"*:
 

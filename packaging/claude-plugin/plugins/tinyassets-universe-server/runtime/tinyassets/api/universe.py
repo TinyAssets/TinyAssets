@@ -377,7 +377,7 @@ def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
                 "the command center is migrated to a soul-declared loop. Scheduled "
                 "for removal once PROGRAM.md-only command centers are migrated; "
                 "tracked under the de-fantasy audit "
-                "docs/audits/2026-06-24-fantasy-architecture-residue-audit.md."
+                "docs/architecture.md."
             ),
         }
     branch_def_id = soul.loop_branch_def_id.strip()
@@ -1353,7 +1353,7 @@ def _worker_liveness(
     worker is wedged AND when there is simply nothing to do.
     This field answers "is the worker process alive right now" from the
     ``.worker_supervisor.json`` beat the served `AssignedQueueConsumer`
-    writes (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
+    writes (openspec/specs/uptime-and-alarms/spec.md). Consumers (the activity
     canary) use it to page on wedge and stay quiet on idle.
     """
     legacy_path = udir / _WORKER_SUPERVISOR_FILENAME

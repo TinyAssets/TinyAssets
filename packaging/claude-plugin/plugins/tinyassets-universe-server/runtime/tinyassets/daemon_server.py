@@ -346,7 +346,7 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
 
     -- Phase 5: Goal as first-class shared primitive.
     -- Flat namespace; users propose Goals freely. Soft-delete via
-    -- visibility='deleted'. See docs/specs/community_branches_phase5.md.
+    -- visibility='deleted'. See openspec/specs/community-patch-loop/spec.md.
     CREATE TABLE IF NOT EXISTS goals (
         goal_id     TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
@@ -393,7 +393,7 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
         ON unreconciled_writes(recorded_at);
 
     -- Variant canonicals (Task #61 Step 0). See
-    -- docs/design-notes/2026-04-25-variant-canonicals-proposal.md.
+    -- docs/architecture.md.
     -- Composite PK enforces "one canonical per (goal, scope)". scope_token
     -- is opaque: '' = default/unscoped, 'user:<actor_id>' = personal,
     -- 'tier:<tier>' / 'team:<team>' = future. The legacy

@@ -10,7 +10,7 @@
 
 ## 3. Wiring — BLOCKED by a real cross-boundary seam (mapped 2026-08-19)
 The record-side wiring cannot land as originally drafted. Enumerated map:
-`docs/audits/2026-08-19-slice3-record-wiring-seam.md` (or the Explore report inline
+`2026-08-19-slice3-record-wiring-seam.md (archived in git)` (or the Explore report inline
 in this change's design.md).
 
 - **The seam:** `run_id` and the Slack conversation origin are NEVER co-present.

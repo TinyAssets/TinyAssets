@@ -29,7 +29,7 @@ baseline and candidate refs, verify the executed SHAs and compare relevant
 test outcomes/skips. Required PR CI remains an additional landing gate. This is
 Linux evidence for this change, not a claim that sandbox-jail tests ran.
 
-Delivery evidence: [bounded proof record](../../../docs/reviews/2026-09-08-workspace-resource-policy-proof.md).
+Delivery evidence: bounded proof record (archived in git).
 Linux PR checkout 18443d16050715cfa352e4b04b89704d509909cc has the identical
 complete tree to approved head 79a4f765; its relevant suite passed 400 tests
 with two unchanged Windows-only skips. Deploy 34305023434 passed both

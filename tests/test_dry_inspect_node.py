@@ -1,6 +1,6 @@
 """Tests for dry_inspect_node + dry_inspect_patch MCP actions.
 
-Spec: docs/vetted-specs.md §dry_inspect_node.
+Spec: openspec/specs/community-patch-loop/spec.md §dry_inspect_node.
 
 Covered:
 - inspect_node_dry helper: existing node, nonexistent node, all-nodes path

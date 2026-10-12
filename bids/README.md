@@ -146,13 +146,13 @@ Preflight §4.3 invariant 1 requires BOTH boundaries:
 - [ ] Daemon process runs with least-privilege OS-level permissions
       (no uncontrolled write paths, no long-lived secrets on disk
       readable by the daemon user).
-- [ ] Host has read `docs/planning/node_bid_conventions.md` for the
+- [ ] Host has read `node_bid_conventions.md (archived in git)` for the
       full contract (claim atomicity, settlements, outcome-gate
       coupling).
 
 ### See also
 
-- `docs/planning/node_bid_conventions.md` — full Phase G contract
+- `node_bid_conventions.md (archived in git)` — full Phase G contract
   (commit `20c3dd9`).
 - `tinyassets/graph_compiler.py:_BID_DANGEROUS_PATTERNS` — single
   source of truth for the pattern list.

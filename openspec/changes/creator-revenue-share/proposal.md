@@ -24,7 +24,7 @@ This is **money**, and it touches **storage shape** and **authority**, so
 AGENTS.md requires a proposal and design before any code. Nothing here moves
 money, creates a wallet or signs a transaction. Paying out mainnet `Destiny
 (tiny)` also stays behind the 2026-04-29 boundary
-(`docs/design-notes/2026-04-29-token-naming-and-test-currency.md`): the roadmap
+(`2026-04-29-token-naming-and-test-currency.md (archived in git)`): the roadmap
 touches only `test tiny` on Base Sepolia until the founder explicitly opens the
 real-currency phase. The legal questions in design §9 must be answered before
 that happens.

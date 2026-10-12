@@ -1,5 +1,5 @@
 -- Track A — Moderation hook-point.
--- Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §3.4 / §7.
+-- Spec: 2026-04-19-track-a-schema-auth-rls.md (archived in git) §3.4 / §7.
 -- Minimal moderation entry-point. Full moderation surface ships post-first-draft.
 --
 -- Control plane reads state='flagged' on flags.target_kind. Flagged rows

@@ -1,6 +1,6 @@
 """Tests for publish_version — content-addressed branch snapshots.
 
-Spec: docs/vetted-specs.md §publish_version.
+Spec: openspec/specs/community-patch-loop/spec.md §publish_version.
 """
 
 from __future__ import annotations

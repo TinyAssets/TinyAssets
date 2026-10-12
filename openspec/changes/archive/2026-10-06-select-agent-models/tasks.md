@@ -36,7 +36,7 @@ pinned model/binding reads, preference save and discovery-only configuration
 implemented locally on codex/served-model-setup, now including canonical shared
 connector preference save and real discovery-grant boundary tests.207Windows
 passes/3skips,13.53s, Ruff,
-442-file mirror/import pass. See docs/reviews/2026-09-14-served-model-setup-progress.md.
+442-file mirror/import pass. See 2026-09-14-served-model-setup-progress.md (archived in git).
 Typed owner-consent action is now locally implemented with assignment/current-home
 fences and partial-stage replay, after Fable's sequence review. Final366Windows
 passes/3skips,33.82s,443-file mirror/import pass. Exact91409a36 Fable5.1 review
@@ -48,7 +48,7 @@ September14 follow-up after deployed PR3832: the app reports six workflow smoke
 checks PASS, but the picker still exposed defaults only. Native named/discovered
 setup is now built locally following one additional owner-approved Fable5.1
 shape review (ADAPT357s), with99Windows/99Linux tests, zero skips. Evidence:
-docs/reviews/2026-09-14-native-picker-proof.md. Shipped deltas are synchronized
+2026-09-14-native-picker-proof.md (archived in git). Shipped deltas are synchronized
 to main specs locally; full change remains open, not archived. Exact-code
 release review/CI/deploy/native-account proof remain ahead. Engine model-options
 and agent-binding read parity is a fresh adjacent blocker, not yet implemented.
@@ -60,7 +60,7 @@ Actual queue/HTTP tools/second-round and native evidence cases pass. Initial
 combined323Windows/335Linux; final native-accounting211/211, zero skips. Unknown
 native usage retains its conservative charge. The old persona dispatch test is
 updated; prior f4cd CI's only new failure is that now-corrected test. Evidence:
-docs/reviews/2026-09-14-background-work-agent-proof.md. Integrated selector/real
+2026-09-14-background-work-agent-proof.md (archived in git). Integrated selector/real
 account proof, final approved review, CI/deploy and app acceptance remain open.
 Final20-file group:497Windows passes/1unchanged base-reproduced symlink failure;
 498Linux passes, zero skips. Prior f4cd CI's single new persona-seam failure and
@@ -70,7 +70,7 @@ September14 foreground tool integration now passes through the real compiler,
 admission, router and work journal. HTTP tool/continuation and native evidence
 cases, effect-safe refusal, finite remaining budget, stale capability and injected
 authority checks pass:292Windows/292Linux, zero skips. Supplementary94Windows
-checks pass. See docs/reviews/2026-09-14-foreground-work-agent-proof.md.
+checks pass. See 2026-09-14-foreground-work-agent-proof.md (archived in git).
 Background adapter, work-owned safe capacity traversal, integrated user proof
 and final approved release review remain open. No live deployment claimed.
 
@@ -79,18 +79,18 @@ dispositions in remaining-model-execution.md. Native explicit propagation now
 built for chat/workflows, both CLIs, sealed evidence and honest picker basis.
 Final14-file group367Windows/369Linux (3/1skips), including existing concurrency
 and sandbox checks on Linux. Real-account CLI test remains skipped. See
-docs/reviews/2026-09-14-native-model-propagation-proof.md. No deployment, private
+2026-09-14-native-model-propagation-proof.md (archived in git). No deployment, private
 workflow edit or complete enumeration/tool-loop claim. Final release review
 remains unused. Full task checkboxes stay open pending their actual outcomes.
 
 Next internal checkpoint: native metadata types, registered Codex paginated
 metadata-only adapter, and owner-custody snapshot lifecycle built. No model-list
 release table or inference-based enumeration. Claude enumeration remains unknown.
-See docs/reviews/2026-09-14-native-discovery-adapter-proof.md. Advisory display and
+See 2026-09-14-native-discovery-adapter-proof.md (archived in git). Advisory display and
 discovered-scope launch/work evidence wiring subsequently landed locally in the
 September14 integration checkpoint: real-store chat/foreground/background and
 picker-refresh cases pass. Final18files442Windows/444Linux,3/1skips. Evidence:
-docs/reviews/2026-09-14-native-discovery-integration-proof.md. Real account proof,
+2026-09-14-native-discovery-integration-proof.md (archived in git). Real account proof,
 Claude enumeration and final release work remain open; task1.3 stays open.
 
 - [ ] 1.1 Resolve the design's exact storage/authority and discovery seams; obtain one cross-family shape review before implementing public/storage/authority changes.
@@ -105,7 +105,7 @@ Claude enumeration and final release work remain open; task1.3 stays open.
   Catalogue/price/benchmark interpreter now built internally and consumed by
   existing legacy decoding. Review ADAPT113s required strict custom completeness;
   corrected with legacy behavior preserved.552Windows/552actualLinux pass, zero skips; see
-  docs/reviews/2026-09-11-shared-discovery-decoder-proof.md. Full source-contract
+  2026-09-11-shared-discovery-decoder-proof.md (archived in git). Full source-contract
   publication and execution were separate follow-up work, now described below;
   the final user-facing discovery task remains open.
 
@@ -114,28 +114,28 @@ Claude enumeration and final release work remain open; task1.3 stays open.
   Real scoped-broker -> compiled catalogue tests plus expanded group pass
   646Windows/646actualLinux, zero skips after initial ADAPT corrected malformed
   string decimals without changing legacy presets; see
-  docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Exact28714628 correction
+  2026-09-11-exact-discovery-numbers-proof.md (archived in git). Exact28714628 correction
   independently APPROVE92s. The later publisher/consumer work is described below;
   no live activation or complete source-support claim.
 
   Mixed-source ranking now preserves each accepted source's own Interaction and
   caps through the advisory plan and picker, removing same-Interaction rejection
   and the union of maximum caps.252Windows/252actualLinux pass, zero skips; see
-  docs/reviews/2026-09-11-per-source-model-policy-proof.md. Exacta8408b66 review
+  2026-09-11-per-source-model-policy-proof.md (archived in git). Exacta8408b66 review
   APPROVE85s,18cases independently passed; no required correction.
   This is not full custom source publication/enforcement or live acceptance.
 
   Pure usage/capacity/request-ceiling execution shapes are now built, including
   exact observed-cost rounding and existing token/request reservation arithmetic.
   538Windows/538actualLinux pass, zero skips; see
-  docs/reviews/2026-09-11-discovery-execution-proof.md. Exact6f4096cd APPROVE104s,
+  2026-09-11-discovery-execution-proof.md (archived in git). Exact6f4096cd APPROVE104s,
   66cases independently passed. Follow-up composition ADAPT85s corrects the
   activation boundary: validate final-envelope structure and declared quantity/
   charge closure; installed codecs cannot prove future remote extension meanings.
   Finite aggregate quantity arithmetic4d38b964 now reserves internal samples and
   overhead, with bounded affordability and signed64 cost refusal.618Windows/
   618actualLinux pass, zero skips; exact review APPROVE73s,80cases independently
-  passed. See docs/reviews/2026-09-11-discovery-quantities-proof.md.
+  passed. See 2026-09-11-discovery-quantities-proof.md (archived in git).
   Existing source-cap authority is unchanged. Tariff-only sources require a
   separate explicit money-authority design, not inferred permission.
   The later whole-source composition and consumers below use this arithmetic.
@@ -145,7 +145,7 @@ Claude enumeration and final release work remain open; task1.3 stays open.
   Initial review ADAPT117s found JSON type coercion and agent numeric-check bypass;
   corrected315a0bba,703Windows/703actualLinux pass, zero skips. Exact correction
   independently APPROVE78s,58cases reproduced. See
-  docs/reviews/2026-09-11-source-contract-compiler-proof.md. Existing descriptors,
+  2026-09-11-source-contract-compiler-proof.md (archived in git). Existing descriptors,
   public publication and captured-contract consumers followed below; legacy
   full-price migration followed below; live proof remains. Do not mark this task done.
 
@@ -155,27 +155,27 @@ Claude enumeration and final release work remain open; task1.3 stays open.
   checks. Real broker refresh uses exact custom numbers and captures the whole
   compiled source with server-derived semantic provenance; that commit left admission unchanged.
   440Windows/440actualLinux pass, zero skips; exact APPROVE79s,26cases independently
-  reproduced. See docs/reviews/2026-09-11-custom-discovery-publication-proof.md.
+  reproduced. See 2026-09-11-custom-discovery-publication-proof.md (archived in git).
   Routing614d1709 now carries the captured source through real selection/request,
   aggregate affordability/reservation, usage and capacity fallback. Server-derived
   semantic admission retains owner_filtered=false and visible source-claim caveats.
   398Windows/398actualLinux pass, zero skips, including real configured-source
   writer/tool/broker/journal tests and synthetic-DOM picker proof. Independent
   exact-commit APPROVE135s,13cases reproduced; see
-  docs/reviews/2026-09-11-custom-source-routing-proof.md.
+  2026-09-11-custom-source-routing-proof.md (archived in git).
   Legacy full-price compatibility52f56a94 now uses the same shared data interpreters
   for14prices,4ceilings, benchmark, requests, capacity and usage. Initial APPROVE140s
   found a nonblocking byte-order claim mismatch; correction9963d04b preserves old
   caller-cap ordering.287 frozen differential cases and870Windows/870actualLinux
   pass, zero skips. Exact correction APPROVE59s reproduced287cases;
-  see docs/reviews/2026-09-11-bundled-source-contract-proof.md. Two discovery ratchet
+  see 2026-09-11-bundled-source-contract-proof.md (archived in git). Two discovery ratchet
   loci removed through actual shared execution. Agent envelope separation
   e2b67fca now removes the remaining wire-code regressions; exact APPROVE105s,
   781Windows/781actualLinux pass, zero skips. The engine uses installed finite
   envelope data around canonical message/history validation, not legacy wrappers.
   Frozen oracle197cases independently reproduced; wheel assets/import proved
   locally. Downward-only baseline refresh passes15ratchet tests. See
-  docs/reviews/2026-09-11-agent-envelope-proof.md. No arbitrary wire/CLI claim.
+  2026-09-11-agent-envelope-proof.md (archived in git). No arbitrary wire/CLI claim.
   Discoverable authoring schema/help and live acceptance remain. Configuration
   alone is not agent authority/readiness; native/all-universe choices are still open.
 
@@ -224,7 +224,7 @@ deployment and credential-renewal rendered proof remain pending.
 
   September10 partial: saved preferences/CAS and authenticated unpowered GET/POST
   implemented;352 Windows and352 actual Docker Linux checks pass, zero skips.
-  See saved-preferences.md and docs/reviews/2026-09-10-model-preferences-proof.md.
+  See saved-preferences.md and 2026-09-10-model-preferences-proof.md (archived in git).
   Current-choice ingress and runtime consumption are still pending; do not mark
   this task complete or expose enabled UI before those pieces work.
 
@@ -256,11 +256,11 @@ deployment and credential-renewal rendered proof remain pending.
   Checker570Win/Linux0skips; journal366Win,363Linux+3reset failures0skips.
   Base292Linux+same3failures, no added failures;71new cases pass on both systems.
   Journal independently APPROVE79s,71cases reproduced.
-  See docs/reviews/2026-09-11-native-agent-journal-proof.md. Coordinator d1d3b39e
+  See 2026-09-11-native-agent-journal-proof.md (archived in git). Coordinator d1d3b39e
   now integrates both execution kinds, fresh authority, exact portable history
   and final receipts.574Windows/1Linux-only skip;575Linux/0skips. Additional
   compatibility384Windows/0skips. Independent bounded APPROVE120s,11cases
-  reproduced; docs/reviews/2026-09-11-mixed-agent-execution-proof.md. Native
+  reproduced; 2026-09-11-mixed-agent-execution-proof.md (archived in git). Native
   attempted-capacity observation remains incomplete, so those failures hold;
   all-skipped quota can advance. Whole-PR release review and live acceptance
   remain open. Do not mark the full task complete from synthetic evidence.
@@ -276,7 +276,7 @@ deployment and credential-renewal rendered proof remain pending.
   September11 further internal correction: inference encoding/decoding and
   discovery executor-tool support use the installed protocol capability;
   usage semantics are declared by the discovery contract.444Windows/444actualLinux
-  passes, zero skips; see docs/reviews/2026-09-11-agent-protocol-capability-proof.md.
+  passes, zero skips; see 2026-09-11-agent-protocol-capability-proof.md (archived in git).
   Six channel-ratchet loci remain and public extensible discovery is not built.
   Exact-head review and deployment pending for this correction.
 
@@ -284,14 +284,14 @@ deployment and credential-renewal rendered proof remain pending.
   now validate their canonical record directly, without a synthetic vendor HTTP
   response. Frozen parent decoder/loader differential tests and the expanded
   inference/continuation group pass259Windows/259actualLinux, zero skips.
-  See docs/reviews/2026-09-11-agent-reply-record-proof.md. Exact-head review and
+  See 2026-09-11-agent-reply-record-proof.md (archived in git). Exact-head review and
   the remaining discovery/executor coupling corrections are pending; not deployed.
 
   September10 integration shape a5689312 independently ADAPT294s; seven mandatory
   corrections incorporated in interactive-agent-runtime.md. Portable completed
   history, guarded journal retry/unused abandon, and constrained tool-shaped HTTP
   bodies now implemented locally.373 Windows/373 actual Linux checks pass,0skips.
-  See docs/reviews/2026-09-10-agent-runtime-adaptations-proof.md. Actual
+  See 2026-09-10-agent-runtime-adaptations-proof.md (archived in git). Actual
   runner, per-inference observer/sealing/accounting and tools-capable selection
   were subsequently implemented in the integration below. No new deployment claimed.
 
@@ -301,7 +301,7 @@ deployment and credential-renewal rendered proof remain pending.
   request and tool-shaped response, commits intent after launch admission, then
   commits exact known tool results before continuing. Unknown transport/effect
   outcomes hold without replay.409 Windows/409 actual Linux checks pass,0skips.
-  See docs/reviews/2026-09-10-interactive-http-agent-proof.md. Independent exact
+  See 2026-09-10-interactive-http-agent-proof.md (archived in git). Independent exact
   implementation review ADAPT567s found one required settled-frontier close fix;
   applied and now418 Windows/418 Linux tests pass,0skips. Known results remain
   preserved and incomplete/ambiguous tools remain held; exact correction review
@@ -330,7 +330,7 @@ deployment and credential-renewal rendered proof remain pending.
   Pure agent-chat codec now implemented after shape ADAPT300s;224 Windows and
   224 actual Linux checks pass,0skips. Immutable whole-batch tool requests and
   exact same-source result continuation are fixtures only, not live dispatch.
-  See docs/reviews/2026-09-10-agent-chat-codec-proof.md. Exact e6bc197b review
+  See 2026-09-10-agent-chat-codec-proof.md (archived in git). Exact e6bc197b review
   APPROVE330s independently reproduced91cases; no required changes.
   All existing HTTP full-agent holds remain in place.
 
@@ -339,7 +339,7 @@ deployment and credential-renewal rendered proof remain pending.
   Exact7470b3d4 baseline in identical image reproduces the same3failures.
   Independent implementation APPROVE432s,48cases reproduced; full review and
   follow-ups recovered from its exact transcript (stop-hook recap issue).
-  See docs/reviews/2026-09-10-agent-turn-journal-proof.md. Private storage only;
+  See 2026-09-10-agent-turn-journal-proof.md (archived in git). Private storage only;
   actual per-inference admission/tool-loop/picker integration remains pending.
 
 ## 3. User proof and delivery
@@ -418,13 +418,13 @@ deployment and credential-renewal rendered proof remain pending.
   and requiring separate confirmation. Actual picker36 cases and public API21
   cases pass; final37-file group1074Windows/1076Linux (3/1skips). Network-disabled
   rendered confirmation/select/order/focus checks pass at390/1280px. See
-  docs/reviews/2026-09-10-model-access-ui-proof.md. No live account changed;
+  2026-09-10-model-access-ui-proof.md (archived in git). No live account changed;
   exact release integration/review, deployment and app acceptance remain open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 
   September11 assignment projection now consumes resolved candidate records,
   retaining legacy behavior and current admission authority.119Windows/119Linux
-  pass, zero skips; see docs/reviews/2026-09-11-assignment-projection-proof.md.
+  pass, zero skips; see 2026-09-11-assignment-projection-proof.md (archived in git).
   Config's two provider-name regressions removed; subsequent shared source and
   agent-envelope work removes the other gate regressions. Exact narrow reviews
   pass; complete PR-head review, fresh CI and live release validation remain.

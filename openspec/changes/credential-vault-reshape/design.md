@@ -32,7 +32,7 @@ own page, not the page itself. Inference is labelled as such.
 - **The plan already exists.** target-architecture D12 and slice S6 call for a
   broker that is the sole key holder, per-command-center DEKs wrapped by account
   KEKs, escrow, and migration of the plaintext vault. The 2026-10-02 escrow note
-  (`docs/design-notes/2026-10-02-vault-key-escrow.md`) lists the "broker vault
+  (`2026-10-02-vault-key-escrow.md (archived in git)`) lists the "broker vault
   key / account KEKs" as unbuilt escrow items. This change is S6's credential
   half, specified.
 
@@ -40,7 +40,7 @@ own page, not the page itself. Inference is labelled as such.
 
 **Meta Muse.** Sources: Meta's engineering post
 <https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse>
-(2026-09-08), and `docs/design-notes/2026-10-04-muse-connection-methods.md`.
+(2026-09-08), and `2026-10-04-muse-connection-methods.md (archived in git)`.
 - Each user gets a dedicated VM. A host-side service, `hatch-authd`, holds the
   OAuth tokens. The agent cell only ever sees **surrogate tokens**.
 - **Sentinel** authorizes each concrete request, then swaps in the real

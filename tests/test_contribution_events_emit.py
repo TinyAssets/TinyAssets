@@ -10,7 +10,7 @@ Coverage:
 - Bounty-calc smoke on real-data path (events emitted via update_run_status,
   not synthetic INSERT) — confirms §4 recursive-CTE finds production events.
 
-Spec: docs/design-notes/2026-04-25-contribution-ledger-proposal.md §3.
+Spec: 2026-04-25-contribution-ledger-proposal.md (archived in git) §3.
 """
 from __future__ import annotations
 

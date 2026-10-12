@@ -1,7 +1,7 @@
 # TinyAssets disk pressure watchdog timer — fires hourly.
 #
 # Self-host migration Row K (ops hardening) per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Cadence bumped daily→hourly 2026-04-24 (BUG-023 Phase 4): daily was
 # too slow to catch the silent disk-fill outage class. Hourly lets

@@ -17,7 +17,7 @@ JSON + slug utilities that were previously at the top of
 ``daemon_server.py``.
 
 R7 ship sequence (see
-``docs/exec-plans/active/2026-04-19-storage-package-split.md``):
+``openspec/specs/storage-runtime-accounting/spec.md``):
 
 - Commit 1 (this commit): shared helpers + constants. ``daemon_server.py``
   imports the helpers back from here rather than duplicating them.
@@ -447,7 +447,7 @@ def _reject_orphaned_legacy_sidecars(base: Path) -> None:
 def _migrate_legacy_db_filename(base_path: str | Path) -> None:
     """Promote the newest surviving on-disk generation onto ``DB_FILENAME``.
 
-    Option A per ``docs/design-notes/2026-04-27-author-server-db-filename-migration.md``:
+    Option A per ``docs/architecture.md``:
     a one-shot forward rename, never a dual-read fallback. Superseded
     generations are backed up rather than deleted, so a wrong guess about
     which file is authoritative stays recoverable by the host.
@@ -892,8 +892,7 @@ __all__ = [
 # Bounded-context re-exports — lazy via PEP-562 ``__getattr__``
 # -------------------------------------------------------------------
 #
-# Rationale (docs/design-notes/2026-04-19-storage-init-stale-bytecode-
-# mitigation.md Option A): eager re-exports at module-body tail created
+# Rationale: eager re-exports at module-body tail created
 # a circular-import window (``accounts.py`` top-imports constants from
 # ``tinyassets.storage``; this file end-imports functions from
 # ``accounts``). Worked by accident of ordering. The 2026-04-19 P0

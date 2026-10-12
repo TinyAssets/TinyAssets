@@ -14,9 +14,9 @@ knowledge store.
 
 ## Existing Linked Knowledge Assets
 
-- [docs/planning_sweep_2026-04-08.md](../docs/planning_sweep_2026-04-08.md)
-- [docs/reality_audit.md](../docs/reality_audit.md)
-- [docs/plan_revalidation.md](../docs/plan_revalidation.md)
+- planning_sweep_2026-04-08.md (archived in git) (archived in git)
+- reality_audit.md (archived in git) (archived in git)
+- plan_revalidation.md (archived in git) (archived in git)
 - [AGENTIC_SEARCH_RESEARCH.md](../AGENTIC_SEARCH_RESEARCH.md)
 
 ## Current Pages

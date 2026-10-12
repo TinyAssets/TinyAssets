@@ -8,7 +8,7 @@ allowed — that is the ratchet turning. Raising one is not: it is the edit that
 must not happen quietly, so it happens here, in a reviewed diff, or not at all.
 
 Best-practice basis (2026-06-24 SDLC/vibe-coding + Claude-large-codebases audit,
-`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`):
+`docs/architecture.md`):
 instruction files that load on *every* turn are static context the model pays
 for unconditionally. The "lean and layered" rule only holds if something
 measures it — a 2026-04-28 cross-check put AGENTS.md at ~17.6 KB, and by
@@ -128,9 +128,8 @@ AGGREGATES: tuple[Aggregate, ...] = (
               note="Procedure docs. A new gate here displaces an old one."),
     Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 51730,
               note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
-    Aggregate("docs/reviews/*", "docs/reviews/*", 538389,
-              note="Only reviews an open concern or spec CITES -- a transcript "
-                   "nobody reaches for does not live in the repo."),
+    Aggregate("docs/reviews/*", "docs/reviews/*", 0,
+              note="Retired reviews cannot grow back outside the document homes."),
 )
 
 
@@ -265,7 +264,7 @@ def imported_files(root: Path, seeds: list[str]) -> list[str]:
 
 
 def measure_aggregate(agg: Aggregate, root: Path) -> Result:
-    """Total the matched set. An empty match is a violation, not a pass.
+    """Total the matched set. An empty positive pin is a violation.
 
     A glob that stops matching -- a rename, a moved directory -- would otherwise
     read as "0 bytes, well under the pin", which is how a ratchet quietly stops
@@ -278,7 +277,7 @@ def measure_aggregate(agg: Aggregate, root: Path) -> Result:
     total = sum(len(p.read_bytes()) for p in paths)
     lines = len(paths)  # the "lines" column carries the file count for a set
     return Result(
-        agg.label, "hard", bool(paths), total, lines,
+        agg.label, "hard", bool(paths) or agg.max_bytes == 0, total, lines,
         agg.max_bytes, 0, total > agg.max_bytes, False, agg.note,
         always_loaded=False,
     )

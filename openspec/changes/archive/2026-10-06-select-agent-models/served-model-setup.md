@@ -3,7 +3,7 @@
 September14 2026. Existing select-agent-models intent; platform enablement only.
 PR3843 is deployed as005b01df; six app smoke checks pass. This document is a pre-code
 public-surface/authority proposal, not a shipped specification or implementation.
-Fable5.1 shape review: docs/reviews/2026-09-14-model-setup-tools-shape-fable.md.
+Fable5.1 shape review: 2026-09-14-model-setup-tools-shape-fable.md (archived in git).
 
 ## Outcome
 
@@ -54,7 +54,7 @@ equivalent behavior. Do not create a new failure-state schema just for this acti
 ## Verification to implement
 
 September14 sequence review is preserved in
-docs/reviews/2026-09-14-model-consent-sequence-fable.md (ADAPT,341seconds).
+2026-09-14-model-consent-sequence-fable.md (archived in git) (ADAPT,341seconds).
 Confirmed in source: bind increments R and resets configured; enable changes
 status only, so completion is R+1/serving, not R+2. The universe assignment can
 change through a different binding without advancing this agent's revision.

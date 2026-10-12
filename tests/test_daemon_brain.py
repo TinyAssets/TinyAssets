@@ -198,7 +198,7 @@ def test_daemon_memory_lifecycle_blocks_invalid_transitions(tmp_path: Path) -> N
 def test_session_trace_summary_is_recognized_kind_with_full_lifecycle(
     tmp_path: Path,
 ) -> None:
-    """Slice 2 of PrivateTraceCommons (per docs/design-notes/2026-05-02-private-trace-commons.md).
+    """Slice 2 of PrivateTraceCommons (per 2026-05-02-private-trace-commons.md (archived in git)).
 
     Verifies session_trace_summary is a recognized memory_kind that moves
     through the existing promotion state machine like any other kind:

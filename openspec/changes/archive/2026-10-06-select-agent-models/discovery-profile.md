@@ -122,10 +122,10 @@ Profile publication now follows this adapted design and received independent
 APPROVE atc8d0dbab. Profile-bound refresh/snapshot provenance and per-event-loop
 single-flight are also implemented locally, with no app consumer yet. Combined
 tests pass301 Windows/Ubuntu, no skips. Actual selection remains unfinished.
-Evidence: docs/reviews/2026-09-09-discovery-snapshot-proof.md and the publication
+Evidence: 2026-09-09-discovery-snapshot-proof.md (archived in git) and the publication
 proof/review artifacts it links.
 
-Review: docs/reviews/2026-09-09-model-discovery-review.md. Internal transport and
+Review: 2026-09-09-model-discovery-review.md (archived in git). Internal transport and
 decoders APPROVED at4e21c3d5; publication APPROVED atc8d0dbab. Snapshot/selection
 integration still needs independent review before landing. Actual account pricing may contain
 additional charge components; do not claim automatic eligibility from fixtures.

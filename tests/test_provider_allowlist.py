@@ -1,6 +1,6 @@
 """Tests for Q6.3 — per-universe `allowed_providers` allowlist primitive.
 
-Spec: docs/design-notes/2026-04-27-q63-third-party-provider-privacy.md §5
+Spec: 2026-04-27-q63-third-party-provider-privacy.md (archived in git) §5
 Dispositions: .claude/agent-memory/navigator/q63_section4_dispositions.md
 
 Hard Rule 15 (the platform has no LLM) removed the platform fallback chain,

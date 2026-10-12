@@ -1,7 +1,7 @@
 name: Docker build smoke
 
 # Self-host migration Row A drift protection per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Fires on any change that could plausibly break the Dockerfile build:
 # the Dockerfile itself, .dockerignore, pyproject.toml (dep changes),

@@ -1,7 +1,7 @@
 """Memory-scope Stage 2b — write-site threading + episodic migration.
 
-Exec plan: ``docs/exec-plans/completed/2026-04-16-memory-scope-stage-2b.md``.
-Design reference: ``docs/design-notes/2026-04-15-memory-scope-tiered.md``
+Exec plan: ``2026-04-16-memory-scope-stage-2b.md (archived in git)``.
+Design reference: ``2026-04-15-memory-scope-tiered.md (archived in git)``
 §4 "Write-site behavior".
 
 Stage 2b ships three guarantees tests here pin down:

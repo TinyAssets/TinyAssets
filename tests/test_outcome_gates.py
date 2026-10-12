@@ -1,6 +1,6 @@
 """Phase 6.1 — Outcome Gates schema + tool surface.
 
-Covers docs/specs/outcome_gates_phase6.md §Rollout 6.1:
+Covers outcome_gates_phase6.md (archived in git) §Rollout 6.1:
 - Schema migration (goals.gate_ladder_json + gate_claims table).
 - gates tool gated by GATES_ENABLED.
 - define_ladder owner-only.

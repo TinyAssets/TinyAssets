@@ -59,7 +59,7 @@ webhook success response lacks an outcome identifier, its bearer does not verify
 the sender, and authoring file handles remain owner/session scoped. A separate
 test-order failure was reproduced without runtime changes and repaired in the
 test fixture; combined ownership tests now pass, without relaxing runtime ACLs.
-Evidence: `docs/reviews/2026-09-09-cross-user-delivery-existing-boundaries.md`.
+Evidence: `2026-09-09-cross-user-delivery-existing-boundaries.md (archived in git)`.
 
 One user exposes a node accepting a chosen deliverable from a selected user;
 the sender links an output and sends; the receiving workflow processes it; both
@@ -84,7 +84,7 @@ the revised design no longer assumes queued rows are a durable worker queue or
 that runtime file handles already exist. Concrete recovery/file-binding seams
 were resolved into explicit implementation interfaces. Selected-node projection
 is locally implemented/tested; receiver/link/delivery/file integration is still
-unfinished. See `docs/reviews/2026-09-09-cross-user-node-shape-review.md`.
+unfinished. See `2026-09-09-cross-user-node-shape-review.md (archived in git)`.
 
 Fresh rendered read at about 08:36 UTC includes a 01:33 PDT owner request:
 "Lets work on that go to market stratagy". The agent proposed agency/client

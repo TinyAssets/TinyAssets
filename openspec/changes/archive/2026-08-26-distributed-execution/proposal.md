@@ -2,7 +2,7 @@
 
 > Current-main change surface for the complete distributed-execution program.
 > The detailed anti-loss plan remains
-> `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`.
+> `2026-07-18-distributed-execution-platform.md (archived in git)`.
 > This change preserves the complete V1-V8 destination, S0-S16 stage map, and
 > B01-B44 backlog while making the next apply slice deliberately dark and
 > test-only.

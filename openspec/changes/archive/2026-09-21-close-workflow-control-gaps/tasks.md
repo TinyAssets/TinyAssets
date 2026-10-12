@@ -21,7 +21,7 @@
 
 September21 model-policy follow-up is live-accepted: app20:46PDT changed
 original1271c2f748cd in place, runb8a6b2af938b48c5 completedOK, no replacement.
-See docs/reviews/2026-09-21-served-node-policy-deployment.md. Historical five-gap
+See 2026-09-21-served-node-policy-deployment.md (archived in git). Historical five-gap
 proofs contained individual acknowledgments but no consolidatedall-five statement;
 20:56PDT response now supplies it. Current closeout branch
 codex/served-model-edit-closeout; no operator private workflow edits. Broader

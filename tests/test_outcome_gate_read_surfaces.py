@@ -1,6 +1,6 @@
 """Outcome gates integration into goals get and branch get.
 
-Covers docs/specs/outcome_gates_phase6.md rollout details:
+Covers outcome_gates_phase6.md (archived in git) rollout details:
 - `goals get goal_id=X` gains `gate_summary` field.
 - `extensions get_branch branch_def_id=X` gains `gate_claims` field.
 - Both threads through GATES_ENABLED=0 fallback (6.2.1 precedent):

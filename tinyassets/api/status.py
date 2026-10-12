@@ -2,7 +2,7 @@
 
 Houses the `get_status` MCP-tool body and its `_policy_hash` helper. The MCP
 tool decoration stays in `tinyassets/universe_server.py` (Pattern A2 from
-``docs/exec-plans/active/2026-04-26-decomp-step-2-prep.md`` §4 — same as Task
+``docs/architecture.md`` §4 — same as Task
 #9 wiki extraction). The decorated tool there delegates to the plain
 ``get_status(...)`` function below.
 
@@ -717,7 +717,7 @@ def _provider_auth_snapshot() -> dict[str, Any]:
 #: 73 ms to 15 ms.
 #:
 #: Five seconds is chosen against the watchdog's own threshold, not by feel:
-#: `docs/specs/daemon-liveness-watchdog.md` alerts on
+#: `openspec/specs/uptime-and-alarms/spec.md` alerts on
 #: `stuck_pending_max_age_s < 60`, and the real wedges it was built for measured
 #: 312 s, 420 s and 851 s. A snapshot up to 5 s old under-reports those ages by at
 #: most 5 s, which cannot flip a 60-second decision. Set to 0 to disable.

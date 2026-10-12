@@ -1,6 +1,6 @@
 """Tests for uptime_canary_layer2 + SOFT_YELLOW alarm path in uptime_alarm.
 
-Spec: docs/design-notes/2026-04-19-layer2-canary-scope.md §2.6 amendment.
+Spec: 2026-04-19-layer2-canary-scope.md (archived in git) §2.6 amendment.
 
 Exercises:
   - exit-code table (GREEN, SOFT_YELLOW, RED variants, SKIP)

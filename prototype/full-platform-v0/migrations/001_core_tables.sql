@@ -1,7 +1,7 @@
 -- Track A — Daemon-economy first-draft core tables.
--- Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §2.
+-- Spec: 2026-04-19-track-a-schema-auth-rls.md (archived in git) §2.
 -- Scope: 9 in-scope tables. Foundation shape — alter/add only, never re-shape.
--- Subset of docs/specs/2026-04-18-full-platform-schema-sketch.md.
+-- Subset of 2026-04-18-full-platform-schema-sketch.md (archived in git).
 --
 -- In-scope: users, host_pool, capabilities, requests, bids, ledger,
 --           settlements, nodes (minimal slice), flags (see 002_flags.sql).

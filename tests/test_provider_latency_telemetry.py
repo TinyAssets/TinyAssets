@@ -1,6 +1,6 @@
 """Latency evidence a completed provider turn must leave behind (2026-09-24).
 
-The parallel-probe investigation (docs/reviews/2026-09-24-provider-latency-rootcause.md)
+The parallel-probe investigation (2026-09-24-provider-latency-rootcause.md (archived in git))
 had to reconstruct node timing from CLI session transcripts because a node's
 receipt recorded ``latency_ms: null`` and nothing about tool calls, and a turn
 that went quiet for most of the idle bound and then recovered left no trace.

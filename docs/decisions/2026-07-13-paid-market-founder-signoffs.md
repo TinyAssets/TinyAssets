@@ -14,14 +14,14 @@ Jonathan (founder), in a Claude Code session.
 
 ## Context
 
-Basis: `docs/WORK-2026-07-11-DRIVING-SESSION.md` §5 and
-`docs/exec-plans/active/2026-07-08-production-mcp-sweep.md` P0. During
+Basis: `WORK-2026-07-11-DRIVING-SESSION.md (archived in git)` §5 and
+`2026-07-08-production-mcp-sweep.md (archived in git)` P0. During
 production hardening of the live `/mcp` service and while preparing the
 paid-market Wave 2 transport, four cross-cutting questions needed a founder
 ruling before they could gate implementation, migration, and OpenSpec adoption.
 This ADR records those rulings so downstream specs, migrations, and the write
 gate do not re-litigate them. The OpenSpec step-1.5 migration
-(`docs/PAID-MARKET-START-HERE-2026-07-08.md`) folds D4's serialization rule into
+(`PAID-MARKET-START-HERE-2026-07-08.md (archived in git)`) folds D4's serialization rule into
 the capability specs as a HARD RULE.
 
 ## Decisions

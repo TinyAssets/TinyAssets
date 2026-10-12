@@ -14,9 +14,9 @@ Rule 11 (shared-account / cross-session, task #5):
 - DO-cutover echo: third incident confirmed recurring pattern.
 
 Refs:
-- `docs/audits/user-chat-intelligence/2026-04-19-devin-session-2.md` §6
-- `docs/audits/user-chat-intelligence/2026-04-19-p0-uptime-canary-probe.md` §2.2
-- `docs/design-notes/2026-04-19-shared-account-tier2-ux.md`
+- `2026-04-19-devin-session-2.md (archived in git)` §6
+- `2026-04-19-p0-uptime-canary-probe.md (archived in git)` §2.2
+- `2026-04-19-shared-account-tier2-ux.md (archived in git)`
 
 The directives live in `tinyassets.api.prompts._CONTROL_STATION_PROMPT`.
 These tests catch silent removal or accidental regression of key phrases.

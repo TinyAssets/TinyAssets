@@ -1,6 +1,6 @@
 -- Track A — RLS policies for the 9 in-scope tables.
--- Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §5.
--- Subset of docs/specs/2026-04-18-full-platform-schema-sketch.md §2.
+-- Spec: 2026-04-19-track-a-schema-auth-rls.md (archived in git) §5.
+-- Subset of 2026-04-18-full-platform-schema-sketch.md (archived in git) §2.
 --
 -- Production: auth.uid() reads request.jwt.claims.sub (Supabase).
 -- v0 / tests: auth.uid() reads current_setting('app.current_user_id')

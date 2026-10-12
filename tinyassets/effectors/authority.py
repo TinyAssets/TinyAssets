@@ -1,7 +1,7 @@
 """Soul-scoped effect-authority resolution for external-write effectors.
 
 Gap 1 of the souled-universe self-maintenance model (design note
-``docs/design-notes/2026-05-28-souled-universe-effect-authority.md``). The
+``openspec/specs/universe-lifecycle-and-soul/spec.md``). The
 running universe's soul is the SOURCE of effect-authority: it declares which
 real-world hands (``<sink>:<destination>`` grants) the universe's founder
 authorizes. The secret/token comes from the owner's own connection (the

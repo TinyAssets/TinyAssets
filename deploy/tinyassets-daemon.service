@@ -1,7 +1,7 @@
 # TinyAssets daemon systemd unit — wraps docker compose up.
 #
 # Self-host migration Row D per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Install:
 #   sudo cp deploy/tinyassets-daemon.service /etc/systemd/system/

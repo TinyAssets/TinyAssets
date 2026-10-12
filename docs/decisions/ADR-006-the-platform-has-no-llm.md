@@ -26,6 +26,8 @@ command center, like any user's.
 
 ## Consequences
 
+The executable contract is `openspec/specs/provider-routing/`.
+
 - The shared host logins and their keepalives were removed
   (`deploy/retire_platform_llm_logins.sh`).
 - A command center with no connected source is unpowered and says so; it never

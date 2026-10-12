@@ -1,7 +1,7 @@
 """Classify and optionally clean up stale git branches (Layer 1).
 
 Part of the branch lifecycle automation; see
-``docs/design-notes/2026-06-24-branch-lifecycle-automation.md``.
+``docs/reference/worktree-discipline.md``.
 
 Report-first by design. The default mode only classifies and prints (and can
 write a rolling tracking issue with ``--issue``). ``--apply`` is the only mode

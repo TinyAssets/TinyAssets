@@ -1,6 +1,6 @@
 """Phase A surgical-rollback schema migration tests (Task #22).
 
-Spec: docs/design-notes/2026-04-25-surgical-rollback-proposal.md §2.3.
+Spec: 2026-04-25-surgical-rollback-proposal.md (archived in git) §2.3.
 
 Covers:
 - Fresh DB: CREATE TABLE includes the 5 new columns + 2 new indexes.
