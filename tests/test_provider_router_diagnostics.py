@@ -192,7 +192,10 @@ class TestProviderRouterDiagnostics:
         from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner", universe_id="u-diag")
+        carrier._receipt = MagicMock(
+            principal_id="owner", universe_id="u-diag",
+            admitted_sources=frozenset({provider}),
+        )
         carrier.provider = provider
         carrier.role = role
         carrier.operation = "run_graph"

@@ -132,7 +132,10 @@ class _SubmitSignallingPool(concurrent.futures.ThreadPoolExecutor):
 
 def _owner_carrier() -> MagicMock:
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-sync-queue")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-sync-queue",
+        admitted_sources=frozenset({"claude-code"}),
+    )
     carrier.provider = "claude-code"
     carrier.role = "writer"
     carrier.operation = "run_graph"
