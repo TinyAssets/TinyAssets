@@ -220,7 +220,7 @@ class BrokerClient:
     def usage(self, usage_id: str, document: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import validate
         from tinyassets.request_budget import RequestBudgetExceeded
-        from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+        from tinyassets.storage.agent_request_usage import InferenceUsageStopped, ModelLaunchEnded
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
         validate(document)
@@ -248,6 +248,8 @@ class BrokerClient:
                     or type(receipt.get("dispatched")) is not int):
                 raise ProxyRequestError("invalid accounting stop")
             raise RequestBudgetExceeded(reason, receipt)
+        if answer.get("op") == "USAGE_MODEL_ENDED":
+            raise ModelLaunchEnded()
         if answer.get("op") != "USAGE_RESULT" or not isinstance(answer.get("result"), dict):
             raise BrokerRefused("credential broker accounting refused")
         return answer["result"]

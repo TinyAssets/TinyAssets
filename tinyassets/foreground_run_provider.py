@@ -1155,6 +1155,9 @@ class _ForegroundRunProviderSession:
                 call_config, request_budget=self._request_budget,
                 credential_snapshot_dir=snapshot_dir or call_config.credential_snapshot_dir,
                 workflow_node=True,
+                model_launch_parent=("run", self._run_id,
+                                     carrier.work_receipt_id, None)
+                if carrier is not None else None,
             )
             result = self._provider_call(
                 prompt,

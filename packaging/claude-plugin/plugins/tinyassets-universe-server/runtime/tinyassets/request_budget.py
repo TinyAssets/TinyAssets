@@ -87,6 +87,8 @@ class TurnRequestBudget:
         self.usage_id = None
         self._lease = None
         self._borrowed = False
+        self._launch_reference = None
+        self._launch_parent = None
 
     @property
     def _scope(self):
@@ -130,6 +132,23 @@ class TurnRequestBudget:
     def issue_reference(self, ordinal, **kwargs):
         with self._lock:
             return self._require_store().issue_reference(self._scope, ordinal, **kwargs)
+
+    def issue_launch_reference(self, kind, subject_id, agent_binding_id,
+                               binding_revision=None):
+        with self._lock:
+            if self._closed:
+                raise ProviderAuthorityHeldError("this launch's model authority has ended")
+            parent = (kind, subject_id, agent_binding_id, binding_revision)
+            if self._launch_reference is not None:
+                if parent != self._launch_parent:
+                    raise ProviderAuthorityHeldError("model launch parent changed")
+                return self._launch_reference
+            reference = self._require_store().issue_launch_reference(
+                self._scope, authority_kind=kind, authority_id=subject_id,
+                agent_binding_id=agent_binding_id,
+                binding_revision=binding_revision)
+            self._launch_reference, self._launch_parent = reference, parent
+            return reference
 
     def settle_invocation(self, ordinal, outcome):
         with self._lock:

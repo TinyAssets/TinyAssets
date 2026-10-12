@@ -19,6 +19,31 @@ Callers SHALL NOT branch on a provider or vendor name.
 - **WHEN** an extension or `ta` issues a model call during a turn
 - **THEN** the call names that turn's allocation as its parent
 
+### Requirement: A `ta` model call's parent is its launch's allocation
+A model call made through `ta` or by the engine's action reviewer SHALL take
+its owner, command center and allocation only from a launch reference that the
+platform issued for the invoking allocation and sealed inside the signed launch
+grant. The call SHALL join that allocation. A `ta` request SHALL NOT supply an
+owner, a usage ID, a turn or a carrier. The reference SHALL stop working when
+the parent allocation settles or is stopped. MCP sampling SHALL NOT be used to
+reach a model.
+
+#### Scenario: a ta model call meters on its parent
+- **WHEN** an agent in a running turn calls `ta call model`
+- **THEN** the call's attempt is reserved and settled once on that turn's
+  allocation, and its receipt names the parent usage
+
+#### Scenario: forged or stale launch authority
+- **WHEN** the grant is edited, comes from another owner's engine, names its
+  own usage ID, or is used after the parent allocation settled
+- **THEN** the call is refused before any reservation or transport, with a
+  message naming the reason
+
+#### Scenario: a launch with no reference
+- **WHEN** an unsigned launch calls `ta call model`
+- **THEN** it is refused, saying the launch has no model authority, and no
+  other model path is tried
+
 ### Requirement: The owner's authority is the set of connected sources
 A call SHALL be admitted only for a source in the owner's connected set for
 that command center: HTTP connections with an active grant and a model

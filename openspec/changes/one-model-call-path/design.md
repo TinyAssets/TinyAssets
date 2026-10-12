@@ -195,6 +195,55 @@ records store the receipt as they store `execution` today.
   class, with this text. The 19-line prompt band-aid at
   `engine_mcp_server.py:1745-1763` becomes this one rule.
 
+#### D6a. Where a `ta` model call gets its parent (decided 2026-10-11, task 2.7)
+
+The engine launch carries a signed grant over (session, live turn, tools);
+it carries no allocation and no carrier, and the live turn ID is not the
+journal ID the allocation links to. The platform therefore binds the
+allocation to the launch itself, server-side, reusing the private usage
+reference the broker already uses for HTTP sends
+(`agent_request_dispatches`, `issue_reference` / `claim_reference`):
+
+1. **At launch.** The two launch sites that sign an engine route
+   (`claude_provider` engine flags, `engine_tool_client`) run inside an
+   admitted allocation. There, the platform issues one launch reference for
+   that allocation (`config.request_budget`), shared across its rounds: a random
+   secret whose hash row records owner, command center, `usage_id` and the
+   parent's authority (the run's receipt ID, or the
+   turn's agent binding ID and revision). The secret goes inside the signed
+   grant, so the MAC covers it; editing or moving it voids the grant.
+2. **At `ta call model`.** The engine verifies the grant (as today), takes the
+   reference from the verified grant only, and resolves its row. It refuses
+   unless the row is active, its owner and command center equal the engine
+   server's own, and the allocation is open and not stopped. The engine then
+   builds `Parent(owner, command_center, usage_id=<row>)` and a server-side
+   launch authority from the row, then calls `call`. Nothing in the `ta`
+   request names an owner, a usage ID, a turn or a carrier; such fields are
+   rejected.
+3. **Each child attempt** joins the parent allocation (D4), so it counts
+   against the parent's policy and settles exactly once on it. Its source must
+   pass the live membership check (D2), and for a run also the receipt's
+   `admitted_sources` (2.4). The journal link comes from the allocation's own
+   `agent_request_usage_links` row, never from the route's live turn ID.
+4. **Revocation.** When the parent allocation settles, or is stopped,
+   the reference row goes inactive in the same transaction (as
+   `settle_invocation` already does for HTTP references). Any later
+   `ta call model` from that launch fails loudly with "this launch's model
+   authority has ended". An unsigned or stdio launch has no reference, and
+   `ta call model` says so; there is no fallback.
+
+The engine's action reviewer (D7) uses the same launch authority with
+`purpose="review"`. Both replace MCP sampling, so the engine has one way to
+reach a model. The launch authority is accepted only by `call`'s owner check,
+next to the served, invocation and request authorities it is derived from;
+no caller can construct it from input.
+
+Rejected: passing `usage_id` or a carrier through the `ta` request (forgeable
+by the agent); looking up "the current turn" by the live turn ID (it is not
+the journal ID, and races with the next turn); an in-process carrier registry
+(engine routes and work runs can be in different processes, and it does not
+survive a restart).
+
 ### D7. Action review and fail-loudly
 
 The engine's action reviewer stops using MCP sampling (`ta_capabilities.py`
@@ -262,6 +311,8 @@ definitions; their deletion size is measured from each PR's actual numstat.
 | The assignment as run authority: `_admit_manifest`, the provider-scope child binding mint, `_current_work_manifest`, `_current_work_member`, `_issue_manifest_receipt`, `manifest_bindings`, `_current_selected_member_authority`, the assignment rewrite on disconnect, `_ensure_manifest_receipt_schema` | `foreground_run_provider.py`, `background_served_provider.py`, `storage/provider_work_authority.py`, `provider_serving_binding.py`, `providers/connection_lifecycle.py` | measured in the 2.4 PR |
 | `WriterExecutionReceipt` | `providers/execution_receipt.py:149-195` | 47 measured |
 | The MCP-sampling reviewer | `ta_capabilities.py:410-445`, `agent_review.py` bound callback | -50 |
+| The `review_provider` plumbing on `Capabilities` and `engine_dispatch` | `ta_capabilities.py` | measured in the 2.7 PR |
+| The launch reference (issue at launch, resolve in the engine) | `served_tools.py`, `engine_steering.py`, `storage/agent_request_usage.py` | measured in the 2.7 PR |
 | The prompt band-aid; the old refusal text | `engine_mcp_server.py:1745-1763`, `agent_request_usage.py:126-136` | -25 |
 | **Deleted** | | **Net measured per PR** |
 | `model_call.py` (contract, resolution, allocation, receipt) | new | +320 |

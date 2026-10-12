@@ -401,6 +401,13 @@ class AgentTurnCoordinator:
             actor_id=actor_id, graph_id=graph_id,
             enabled_tools=model_tools(self.config),
             capability_grant=granted_tools(self.config), timeout=timeout,
+            model_budget=getattr(self, "request_budget", None),
+            model_parent=("turn", self.turn.turn_id,
+                          getattr(getattr(self.context, "provider_request", None),
+                                  "agent_binding_id", ""),
+                          getattr(getattr(self.context, "provider_request", None),
+                                  "binding_revision", None))
+            if getattr(self.context, "provider_request", None) is not None else None,
             **self.steering(),
         )
 
@@ -597,6 +604,13 @@ class AgentTurnCoordinator:
                         observer = self._begin_native
                     config = replace(
                         config, request_budget=self.request_budget,
+                        model_launch_parent=(
+                            "turn", self.turn.turn_id,
+                            getattr(getattr(self.context, "provider_request", None),
+                                    "agent_binding_id", ""),
+                            getattr(getattr(self.context, "provider_request", None),
+                                    "binding_revision", None),
+                        ) if getattr(self.context, "provider_request", None) is not None else None,
                         request_purpose="tool_review" if self._completed_tools() else "reply",
                     )
                     self.inference_system = system

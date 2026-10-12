@@ -560,6 +560,11 @@ ACCOUNTING_SCHEMA = (
       operation_id TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       UNIQUE(owner, universe, usage_id, first_ordinal))""",
+    """CREATE TABLE agent_model_launches (
+      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, universe TEXT NOT NULL,
+      usage_id TEXT NOT NULL, authority_kind TEXT NOT NULL, authority_id TEXT NOT NULL,
+      agent_binding_id TEXT NOT NULL, binding_revision INTEGER,
+      active INTEGER NOT NULL DEFAULT 1)""",
 )
 ACCOUNTING_TABLES = tuple(sql.split()[2] for sql in ACCOUNTING_SCHEMA)
 ACCOUNTING_INDEX = """CREATE INDEX agent_request_attempt_day
