@@ -87,7 +87,11 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
     )
     from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
     from tinyassets.providers.native_discovery import discover_native_models_sync
-    from tinyassets.providers.served_model_plan import _http_models, _native_models
+    from tinyassets.providers.served_model_plan import (
+        _http_models,
+        _native_models,
+        _refused_models,
+    )
     from tinyassets.providers.work_model_selection import observed_price_caps
 
     if (not isinstance(document, dict)
@@ -155,6 +159,7 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
     plan = AgentModelPlan(
         Catalog(owner, universe, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
+        refused_models=_refused_models(base, owner, sources),
     )
     return WorkCandidateData(plan)
 

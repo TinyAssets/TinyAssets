@@ -414,11 +414,11 @@ def _reconnect_sources(base, owner, uid, chains):
     )
 
 
-def _refused_models(base, owner, chains):
+def _refused_models(base, owner, sources):
     """This owner's recently refused models on the sources in this plan."""
     from tinyassets.storage.refused_models import active_refused_models
 
-    providers = {provider for provider, _chain in chains}
+    providers = set(sources)
     return tuple(
         ModelRef(mark.connection_id, mark.model_id)
         for mark in active_refused_models(base, owner_user_id=owner)
@@ -626,7 +626,7 @@ def prepare_owned_model_plan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
         _reconnect_sources(base, owner, universe.name, chains),
-        _refused_models(base, owner, chains),
+        _refused_models(base, owner, (provider for provider, _chain in chains)),
         cooling_sources(owner, admitted),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
