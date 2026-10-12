@@ -260,6 +260,42 @@ def test_receipt_check_fails_closed(monkeypatch):
     assert qf.has_receipt("o/r", 1, "h", "b") is False
 
 
+def test_receipt_check_passes_the_base_and_fetches_a_carried_head(monkeypatch):
+    """An unchanged rebase keeps its receipt only if the cited commit is fetched."""
+    sha = "a" * 40
+    base = "d" * 40
+    body = (
+        "Drain-Review-Verdict: APPROVE\n"
+        f"Drain-Review-Head: {sha}\n"
+        "https://github.com/o/r/pull/7#issuecomment-1\n"
+    )
+    calls: list[tuple] = []
+
+    def fake_gh(*args: str) -> str:
+        if args[:2] == ("api", "repos/o/r/pulls/7"):
+            return json.dumps({"b": body})
+        return ""
+
+    def fake_run(*cmd: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        stdout = ""
+        if "--list-carry-heads" in cmd:
+            stdout = sha + "\n"
+        elif "--print-diff-key" in cmd:
+            stdout = "b" * 64 + "\n"
+        elif "--blocking-review" in cmd:
+            stdout = "allow\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(qf, "_gh", fake_gh)
+    monkeypatch.setattr(qf, "_run", fake_run)
+    assert qf.has_receipt("o/r", 7, "c" * 40, base) is True
+    review = next(c for c in calls if "--blocking-review" in c)
+    assert review[review.index("--base") + 1] == base
+    fetched = next(c for c in calls if c[:2] == ("git", "fetch") and sha in c)
+    assert calls.index(fetched) < calls.index(review)
+
+
 def test_a_verdict_missing_fields_is_never_acted_on():
     """Codex on #4293 r3: a verdict without `why` dequeued, then crashed."""
     t = {"number": 5, "head": "h"}
