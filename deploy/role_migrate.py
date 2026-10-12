@@ -436,7 +436,8 @@ def target(path, info, bindings, modes):
             return (DAEMON, 1102, 0o710, None, None)
         if len(parts) == 2 and directory:
             return (DAEMON, 1102, 0o710, None, None)
-        if len(parts) == 3 and parts[2] == 'rules.db':
+        if len(parts) == 3 and parts[2] in (
+                'rules.db', 'rules.db-wal', 'rules.db-shm', 'rules.db-journal'):
             return (0, 1102, 0o440, None, None)
         return platform
     if top == ".consumer_liveness":
@@ -698,21 +699,35 @@ def check_policy(root):
                 (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
                 (uid, gid, mode)):
             diffs.append(f'freeze: {name}')
-    legacy = data / '.agent-sessions'
-    if legacy.is_dir():
-        for center in legacy.iterdir():
-            if not CENTER.fullmatch(center.name) or not (center / 'rules.db').is_file():
-                continue
-            frozen = data / '.platform/accounts/.legacy-policy' / f'{center.name}.db'
-            try:
-                info = frozen.lstat()
-            except FileNotFoundError:
-                diffs.append(f'freeze: {center.name}/rules.db')
-                continue
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
-                    (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
-                    (0, BROKER, 0o440)):
-                diffs.append(f'freeze: {center.name}/rules.db')
+    if _stat(root, '.agent-sessions') is not None:
+        with _directory(root, '.agent-sessions') as legacy:
+            for center_name in os.listdir(legacy):
+                if not CENTER.fullmatch(center_name):
+                    continue
+                try:
+                    with _directory(legacy, center_name) as center:
+                        source = _stat(center, 'rules.db')
+                        if source is None:
+                            continue
+                        infos = [info for name in ('rules.db', 'rules.db-wal',
+                                                   'rules.db-shm', 'rules.db-journal')
+                                 if (info := _stat(center, name)) is not None]
+                        if any(not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                               not (info.st_uid == DAEMON or
+                                    (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) ==
+                                    (0, 1102, 0o440)) for info in infos):
+                            continue  # unsafe center is refused independently
+                        if any((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
+                               (0, 1102, 0o440) for info in infos):
+                            diffs.append(f'freeze: {center_name}/rules.db')
+                        frozen = _stat(root, f'.platform/accounts/.legacy-policy/{center_name}.db')
+                        if (frozen is None or not stat.S_ISREG(frozen.st_mode) or
+                                frozen.st_nlink != 1 or
+                                (frozen.st_uid, frozen.st_gid, stat.S_IMODE(frozen.st_mode)) !=
+                                (0, BROKER, 0o440)):
+                            diffs.append(f'freeze: {center_name}/rules.db snapshot')
+                except OSError:
+                    continue  # alert is emitted by the apply; no other owner is held
     return diffs
 
 
@@ -985,7 +1000,7 @@ def step_labels(root, bindings, modes):
 
 
 def step_policy(root):
-    """Freeze legacy rules in broker custody (offline or online under root)."""
+    """Freeze stopped legacy writers, then snapshot each center independently."""
     changed = 0
     with ExitStack() as stack:
         staging = stack.enter_context(_directory(root, BROKER_DIR))
@@ -1034,71 +1049,97 @@ def step_policy(root):
         if _stat(root, '.agent-sessions') is None:
             return changed
         legacy = stack.enter_context(_directory(root, '.agent-sessions'))
+        legacy_info = os.fstat(legacy)
+        if (legacy_info.st_uid, legacy_info.st_gid,
+                stat.S_IMODE(legacy_info.st_mode)) != (DAEMON, 1102, 0o710):
+            raise MigrationRefused('unsafe legacy rules parent')
         for center_name in os.listdir(legacy):
             if not CENTER.fullmatch(center_name):
                 continue
-            with _directory(legacy, center_name) as center:
-                if _stat(center, 'rules.db') is None:
-                    continue
-                target = f'{center_name}.db'
-                if _stat(frozen, target) is not None:
-                    continue
-                source_fd = os.open('rules.db', _LEAF, dir_fd=center)
-                try:
-                    info = os.fstat(source_fd)
-                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                            or info.st_uid != 0):
-                        raise MigrationRefused(f'unsafe legacy rules: {center_name}')
-                    # Copy pinned descriptors to a private root-only directory.
-                    # SQLite then sees committed WAL rows without following a
-                    # replaceable daemon-owned center path as root.
-                    with tempfile.TemporaryDirectory(prefix='ta-policy-') as private:
-                        for suffix in ('', '-wal', '-journal'):
-                            fd = source_fd if not suffix else None
-                            if suffix:
-                                if _stat(center, 'rules.db' + suffix) is None:
-                                    continue
-                                fd = os.open('rules.db' + suffix, _LEAF, dir_fd=center)
-                            try:
-                                side = os.fstat(fd)
-                                if (not stat.S_ISREG(side.st_mode) or side.st_nlink != 1
-                                        or side.st_uid != 0 or side.st_mode & 0o222):
-                                    raise MigrationRefused(
-                                        f'unsafe legacy rules sidecar: {center_name}')
-                                os.lseek(fd, 0, os.SEEK_SET)
-                                with os.fdopen(os.dup(fd), 'rb') as source, open(
-                                        Path(private) / ('rules.db' + suffix), 'xb') as copy:
-                                    shutil.copyfileobj(source, copy)
-                            finally:
-                                if suffix:
-                                    os.close(fd)
-                        temporary = target + '.tmp'
-                        if _stat(frozen, temporary) is not None:
-                            os.unlink(temporary, dir_fd=frozen)
-                        with closing(sqlite3.connect(
-                                (Path(private) / 'rules.db').as_uri() + '?mode=ro',
-                                uri=True)) as db:
-                            with closing(sqlite3.connect(
-                                    f'/proc/self/fd/{frozen}/{temporary}')) as snapshot:
-                                db.backup(snapshot)
-                        temp_fd = os.open(temporary, _LEAF, dir_fd=frozen)
-                        try:
-                            os.fchown(temp_fd, 0, BROKER)
-                            os.fchmod(temp_fd, 0o440)
-                            os.fsync(temp_fd)
-                        finally:
-                            os.close(temp_fd)
-                        os.replace(temporary, target, src_dir_fd=frozen,
-                                   dst_dir_fd=frozen)
-                        os.fsync(frozen)
-                        changed += 1
-                finally:
-                    os.close(source_fd)
+            try:
+                with _directory(legacy, center_name) as center:
+                    changed += _freeze_center_policy(center, center_name, frozen)
+            except (MigrationRefused, OSError, sqlite3.Error) as exc:
+                print(f'ALARM: legacy policy refused for {center_name}: {exc}',
+                      file=sys.stderr)
     return changed
 
 
+def _freeze_center_policy(center, center_name, frozen):
+    """All source names are pinned and checked before changing any label."""
+    center_info = os.fstat(center)
+    if (center_info.st_uid, center_info.st_gid,
+            stat.S_IMODE(center_info.st_mode)) != (DAEMON, 1102, 0o710):
+        raise MigrationRefused(f'unsafe legacy rules tree: {center_name}')
+    names = ('rules.db', 'rules.db-wal', 'rules.db-shm', 'rules.db-journal')
+    with ExitStack() as opened:
+        fds = {}
+        for name in names:
+            if _stat(center, name) is None:
+                continue
+            fd = os.open(name, _LEAF, dir_fd=center)
+            opened.callback(os.close, fd)
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                    not (info.st_uid == DAEMON or
+                         (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) ==
+                         (0, 1102, 0o440))):
+                raise MigrationRefused(f'unsafe legacy rules: {center_name}/{name}')
+            fds[name] = fd
+        if not fds:
+            return 0
+        if 'rules.db' not in fds:
+            raise MigrationRefused(f'orphan legacy rules sidecar: {center_name}')
+        target = f'{center_name}.db'
+        existing = _stat(frozen, target)
+        if existing is not None:
+            if (not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1 or
+                    (existing.st_uid, existing.st_gid, stat.S_IMODE(existing.st_mode)) !=
+                    (0, BROKER, 0o440)):
+                raise MigrationRefused(f'unsafe frozen legacy rules: {center_name}')
+            if all((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) ==
+                   (0, 1102, 0o440) for info in map(os.fstat, fds.values())):
+                return 0
+        # Work from descriptor copies. SQLite checkpoints the private WAL before
+        # the source is frozen, so every committed row enters the snapshot.
+        with tempfile.TemporaryDirectory(prefix='ta-policy-') as private:
+            for name in ('rules.db', 'rules.db-wal', 'rules.db-journal'):
+                if name not in fds:
+                    continue
+                os.lseek(fds[name], 0, os.SEEK_SET)
+                with os.fdopen(os.dup(fds[name]), 'rb') as source, open(
+                        Path(private) / name, 'xb') as copy:
+                    shutil.copyfileobj(source, copy)
+            with closing(sqlite3.connect(Path(private) / 'rules.db')) as db:
+                checkpoint = db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                if checkpoint and checkpoint[0]:
+                    raise MigrationRefused(f'busy legacy rules WAL: {center_name}')
+                for fd in fds.values():
+                    os.fchown(fd, 0, 1102)
+                    os.fchmod(fd, 0o440)
+                    os.fsync(fd)
+                target = f'{center_name}.db'
+                temporary = target + '.tmp'
+                if _stat(frozen, temporary) is not None:
+                    os.unlink(temporary, dir_fd=frozen)
+                with closing(sqlite3.connect(
+                        f'/proc/self/fd/{frozen}/{temporary}')) as snapshot:
+                    db.backup(snapshot)
+                temp_fd = os.open(temporary, _LEAF, dir_fd=frozen)
+                try:
+                    os.fchown(temp_fd, 0, BROKER)
+                    os.fchmod(temp_fd, 0o440)
+                    os.fsync(temp_fd)
+                finally:
+                    os.close(temp_fd)
+                os.replace(temporary, target, src_dir_fd=frozen,
+                           dst_dir_fd=frozen)
+                os.fsync(frozen)
+                return 1
+
+
 def policy_online(data_root, *, apply):
-    """Converge only policy custody while the old daemon keeps serving."""
+    """Converge policy custody after the deploy has stopped the old daemon."""
     if os.geteuid() != 0:
         raise MigrationRefused('online policy freeze requires root in the operator container')
     with _root(data_root) as root:

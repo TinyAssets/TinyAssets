@@ -10,6 +10,7 @@
 #
 #   lock  ->  record current image  ->  pull new  ->  prove it loads (ephemeral)
 #     ->  validate + snapshot + install the runtime bundle
+#     ->  drain old daemon + privileged policy freeze
 #     ->  swap TINYASSETS_IMAGE + compose up -d
 #     ->  health + running-image check
 #     ->  restore the bundle snapshot AND roll back the image if unhealthy
@@ -1520,29 +1521,14 @@ if [ -z "$LAYOUT_MARKER" ] || ! {
   exit 1
 fi
 
-# The old daemon is still serving here. Converge only policy custody in the
-# candidate's privileged migration container, then prove the same online-safe
-# subset of ta-migrate --check is clean before any bundle or image swap.
-if [ "$RESTORE_BUNDLE" = "0" ] && [ -e "$LAYOUT_MARKER" ]; then
-  policy_migrate() {
-    timeout 180 docker run --rm --user 0 --cap-drop ALL \
-      --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
-      --security-opt no-new-privileges=true --network none \
-      -v tinyassets-data:/data \
-      --entrypoint /opt/venv/bin/python "$NEW_IMAGE" \
-      -I -B /usr/local/libexec/ta-migrate.py "$@"
-  }
-  if ! policy_migrate --policy-online --apply; then
-    err "privileged online policy freeze failed; old image remains serving"
-    echo "deploy_result=policy_freeze_refused"
-    exit 1
-  fi
-  if ! policy_migrate --check --policy-only; then
-    err "ta-migrate --check still reports policy create/freeze diffs; old image remains serving"
-    echo "deploy_result=policy_freeze_refused"
-    exit 1
-  fi
-fi
+policy_migrate() {
+  timeout 180 docker run --rm --user 0 --cap-drop ALL \
+    --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
+    --security-opt no-new-privileges=true --network none \
+    -v tinyassets-data:/data \
+    --entrypoint /opt/venv/bin/python "$NEW_IMAGE" \
+    -I -B /usr/local/libexec/ta-migrate.py "$@"
+}
 
 # --- 3b. the runtime bundle: validate -> snapshot -> install ---------------
 if ! ensure_state_dir; then
@@ -1645,6 +1631,36 @@ else
 fi
 
 # --- 4. swap + restart ----------------------------------------------------
+# The bundle and image are proved. Stop the old writer with the same bounded
+# drain used by compose, freeze its legacy policy, then start the candidate.
+# Owner-specific anomalies alarm and fence that owner inside ta-migrate.
+POLICY_WRITER_STOPPED=0
+if [ "$RESTORE_BUNDLE" = "0" ] && [ -e "$LAYOUT_MARKER" ]; then
+  if ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" >/dev/null; then
+    err "could not stop the old policy writer"
+    if [ "$INSTALLED_THIS_RUN" = "1" ]; then
+      restore_previous_bundle || { echo "deploy_result=rollback_failed"; exit 3; }
+    fi
+    docker start "$DAEMON_CONTAINER" >/dev/null || {
+      echo "deploy_result=rollback_failed"; exit 3;
+    }
+    echo "deploy_result=policy_freeze_refused"
+    exit 1
+  fi
+  POLICY_WRITER_STOPPED=1
+  if ! policy_migrate --policy-online --apply ||
+     ! policy_migrate --check --policy-only; then
+    err "privileged policy freeze failed after the drain; restoring old service"
+    if [ "$INSTALLED_THIS_RUN" = "1" ]; then
+      restore_previous_bundle || { echo "deploy_result=rollback_failed"; exit 3; }
+    fi
+    docker start "$DAEMON_CONTAINER" >/dev/null || {
+      echo "deploy_result=rollback_failed"; exit 3;
+    }
+    echo "deploy_result=policy_freeze_refused"
+    exit 1
+  fi
+fi
 log "swapping TINYASSETS_IMAGE and converging the stack"
 if ! set_image "$NEW_IMAGE"; then
   err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}"
@@ -1653,9 +1669,15 @@ if ! set_image "$NEW_IMAGE"; then
     if ! restore_bundle_from "$SNAPSHOT_PATH"; then
       err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
       mark_dirty "$SNAPSHOT_PATH" || true
+      [ "$POLICY_WRITER_STOPPED" = "0" ] || docker start "$DAEMON_CONTAINER" >/dev/null || true
       echo "deploy_result=rollback_failed"
       exit 3
     fi
+  fi
+  if [ "$POLICY_WRITER_STOPPED" = "1" ] &&
+     ! docker start "$DAEMON_CONTAINER" >/dev/null; then
+    echo "deploy_result=rollback_failed"
+    exit 3
   fi
   echo "deploy_result=failed_env_write"
   exit 1

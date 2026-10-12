@@ -110,15 +110,14 @@ migrate --check                                   # must print nothing; exit 0
 ```
 
 After the owner-split marker exists, each normal `deploy_fail_safe.sh` run
-automatically runs the candidate image's privileged `ta-migrate --policy-online
---apply` against the live volume before changing the runtime bundle or image.
-It then runs `ta-migrate --check --policy-only`; any remaining `create:` or
-`freeze:` diff refuses the deploy while the old daemon keeps serving. This
-online step only creates and labels `.platform` policy custody and copies frozen
-legacy rules through SQLite backup. It is idempotent and needs no host action.
-If it refuses, inspect the logged reason and use the same two commands from
-section 4 in an operator container as the manual fallback. Do not rerun the
-full offline `--snapshot` on a serving volume.
+drains and stops the old daemon, then runs the candidate image's privileged
+`ta-migrate --policy-online --apply` before starting the new image. The step
+opens each legacy `rules.db` and sidecar without following links, checks the
+daemon-owned single-link source, checkpoints copied WAL content, freezes the
+source as root:1102 mode 0440, and takes a broker-owned SQLite snapshot. It
+then runs `ta-migrate --check --policy-only`. An unsafe center is alarmed and
+refused for that owner; other centers and the deploy continue. A global custody
+failure restarts the old service. Reruns are idempotent. This needs no host action.
 
 - The apply refuses before its first write if any precondition fails:
   - a process still holds `/data/.layout.lock`;

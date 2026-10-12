@@ -38,8 +38,9 @@ and the spec is synced.
         - The read-only projection, and `ta policy show` and
           `ta policy propose` (the proposal becomes an owner request).
         - The guard `policy-writers`.
-      - **Migration:** freeze each center's `rules.db` in broker custody during
-        the offline cutover, then copy its rules and grants into the owner's
+      - **Migration:** the privileged deploy step drains and stops the old
+        daemon, freezes each safe center's `rules.db` and sidecars, then copies
+        its rules and grants into the owner's
         `policy.db` at broker bootstrap or center admission, verified
         by count and digest; refuse and report unfrozen sources.
         Old files stay read-only until P6.

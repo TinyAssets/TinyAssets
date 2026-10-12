@@ -299,9 +299,9 @@ class PolicyStore:
         owners = {row.principal for row in self._admissions.admissions_after(0)
                   if row.event == "admit"}
         for owner in sorted(owners):
-            if (self._path(owner).parent / ".deleted").exists():
-                continue
             try:
+                if (self._path(owner).parent / ".deleted").exists():
+                    continue
                 for center in self._centers(owner):
                     self._legacy(center)
                 with closing(self._connect(owner)) as db, db:

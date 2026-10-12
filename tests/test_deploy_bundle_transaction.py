@@ -338,6 +338,14 @@ def main(argv):
         save_state(state)
         return 0
 
+    if argv[:1] in (["stop"], ["start"]):
+        if argv[0] == "stop" and not state.get("stop_ok", True):
+            return 1
+        state["containers"][argv[-1]]["status"] = (
+            "exited" if argv[0] == "stop" else "running")
+        save_state(state)
+        return 0
+
     if argv[:1] == ["run"]:
         if "--policy-online" in argv:
             return 0 if state.get("policy_freeze_ok", True) else 1
@@ -1396,7 +1404,7 @@ def test_forward_deploy_uses_the_candidate_layout_declaration(box: Box, supporte
 
 
 @pytest.mark.parametrize("failure", ["policy_freeze_ok", "policy_check_ok"])
-def test_policy_freeze_gate_keeps_old_version_serving(box: Box, failure):
+def test_policy_freeze_gate_restores_old_version_after_drain(box: Box, failure):
     volume = box.root / "data-volume"
     volume.mkdir()
     (volume / ".layout.json").write_text(
@@ -1411,7 +1419,27 @@ def test_policy_freeze_gate_keeps_old_version_serving(box: Box, failure):
     assert _result(completed) == "policy_freeze_refused"
     assert box.env_image() == OLD_IMAGE and box.live() == before
     assert "compose up" not in box.docker_calls_text()
+    assert "stop --time 20 tinyassets-daemon" in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
     assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == OLD_IMAGE
+
+
+def test_policy_writer_stop_failure_restores_bundle_and_old_service(box: Box):
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "split": "owner-split"}', encoding="utf-8")
+    box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]}, stop_ok=False)
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+
+    assert completed.returncode == 1
+    assert _result(completed) == "policy_freeze_refused"
+    assert box.live() == before and box.env_image() == OLD_IMAGE
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["status"] == "running"
 
 
 @pytest.mark.parametrize("probe_state", [
@@ -1477,15 +1505,23 @@ def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: B
 
 def test_env_write_failure_after_install_restores_the_bundle(box: Box):
     """A failure between install and converge must not strand the new config."""
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "split": "owner-split"}', encoding="utf-8")
+    box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]})
     before = box.live()
     box.stage_bundle()
 
-    completed = box.run(NEW_IMAGE, FAKE_ENV_HELPER_FAIL="1")
+    completed = box.run(NEW_IMAGE, FAKE_ENV_HELPER_FAIL="1",
+                        FAKE_DOCKER_VOLUME_DIR=str(volume))
 
     assert completed.returncode == 1
     assert _result(completed) == "failed_env_write"
     assert box.live() == before
     assert box.env_image() == OLD_IMAGE
+    assert "stop --time 20 tinyassets-daemon" in box.docker_calls_text()
+    assert "start tinyassets-daemon" in box.docker_calls_text()
 
 
 # ---------------------------------------------------------------------------
