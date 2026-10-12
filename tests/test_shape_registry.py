@@ -257,9 +257,19 @@ def _queue_history(repo: Path) -> tuple[str, str]:
 
 
 def test_merge_group_diff_starts_at_base_sha_not_a_stale_main(tmp_path: Path, monkeypatch):
+    """Each case owns the event context.
+
+    A merge_group runner already has GITHUB_EVENT_PATH, GITHUB_ACTIONS and
+    GITHUB_EVENT_NAME. Clearing only MERGE_GROUP_BASE_SHA lets the guard read
+    that payload's base sha, which is not a commit in this temp repo.
+    """
     repo = tmp_path / "checkout"
     base, stale = _queue_history(repo)
+
+    # No queue base: the event name alone must not adopt a leaked payload.
     monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
     assert check_shapes.git_added(repo) == {"tinyassets/from_main.py", "tinyassets/new.py"}
 
@@ -268,12 +278,18 @@ def test_merge_group_diff_starts_at_base_sha_not_a_stale_main(tmp_path: Path, mo
         json.dumps({"merge_group": {"base_sha": base, "head_sha": "queued-head"}}),
         encoding="utf-8",
     )
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
     assert check_shapes._merge_base(repo) == base
     assert check_shapes.git_added(repo) == {"tinyassets/new.py"}
 
-    monkeypatch.setenv("MERGE_GROUP_BASE_SHA", base)
+    # The oracle has no event file; the shard passes the sha in the environment.
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "merge_group")
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setenv("MERGE_GROUP_BASE_SHA", base)
     assert check_shapes.git_added(repo) == {"tinyassets/new.py"}
     assert stale != base
 
@@ -301,6 +317,9 @@ def test_oracle_snapshot_borrows_the_queue_base_from_the_checkout_mount(
     assert check_shapes._merge_base(snapshot) == base
     assert check_shapes.git_added(snapshot) == {"tinyassets/new.py"}
 
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     monkeypatch.setenv("MERGE_GROUP_BASE_SHA", "a" * 40)
     with pytest.raises(RuntimeError, match="merge queue base"):
         check_shapes._merge_base(snapshot)
@@ -313,11 +332,15 @@ def test_actions_without_main_history_still_fails(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
     monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     monkeypatch.setattr(check_shapes, "_checkout_git_dir", lambda: None)
     with pytest.raises(RuntimeError, match="fetch-depth must be 0"):
         check_shapes._merge_base(repo)
 
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     assert check_shapes._merge_base(repo) is None
 
 
@@ -342,6 +365,7 @@ def test_oracle_snapshot_borrows_head_parent_when_there_is_no_queue_base(
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.delenv("MERGE_GROUP_BASE_SHA", raising=False)
     monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     # An image whose `git init` defaults to main must not treat that snapshot
     # commit as upstream main.
     _git(snapshot, "branch", "-M", "main")
