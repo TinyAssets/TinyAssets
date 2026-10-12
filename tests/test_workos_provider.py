@@ -357,6 +357,15 @@ def test_canonical_resource_audience_is_accepted(keypair) -> None:
     assert p.resolve_token(_sign(
         keypair, aud="https://user@tinyassets.io/mcp",
     )) is None
+    # Password-only userinfo still has to stay distinct. urlsplit reports an
+    # empty username for ``https://:secret@host``, and an out-of-range port
+    # raises; neither may authenticate or raise out of resolve_token.
+    assert p.resolve_token(_sign(
+        keypair, aud="https://:secret@tinyassets.io/mcp",
+    )) is None
+    assert p.resolve_token(_sign(
+        keypair, aud="https://tinyassets.io:99999/mcp",
+    )) is None
 
 
 def test_client_id_audience_is_a_named_401(

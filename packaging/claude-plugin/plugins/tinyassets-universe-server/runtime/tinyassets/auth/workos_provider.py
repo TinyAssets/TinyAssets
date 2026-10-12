@@ -131,16 +131,25 @@ def canonical_resource(value: str) -> str:
     """MCP canonical resource form (lowercase scheme and host, no default port,
     no trailing slash). A query, fragment, or userinfo keeps the value distinct
     so it cannot collapse onto the registered resource. A non-URL audience is
-    returned stripped and still has to match exactly.
+    returned stripped and still has to match exactly. An unparseable port
+    stays distinct too: a crafted audience must be a rejection, not a 500.
     """
     text = (value or "").strip()
-    parts = urlsplit(text)
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return text
     host = parts.hostname
-    if parts.scheme.lower() not in ("http", "https") or not host or parts.username:
+    if (
+        parts.scheme.lower() not in ("http", "https")
+        or not host
+        or parts.username
+        or parts.password
+    ):
         return text
     if parts.query or parts.fragment:
         return text
-    port = parts.port
     default_port = (parts.scheme.lower() == "https" and port == 443) or (
         parts.scheme.lower() == "http" and port == 80
     )
