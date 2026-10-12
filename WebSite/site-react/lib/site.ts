@@ -36,14 +36,8 @@ export const SITE = {
     firstPr: "https://github.com/TinyAssets/TinyAssets/pull/2720",
     firstPrNumber: 2720,
   },
-  /**
-   * The one mailbox the maintainer reads. Dedicated aliases are not in use.
-   */
-  contact: {
-    general: "info@tinyassets.io",
-    security: "info@tinyassets.io",
-    legal: "info@tinyassets.io",
-  },
+  /** The one mailbox the maintainer reads. */
+  contact: "info@tinyassets.io",
 } as const;
 
 export const NAV = [

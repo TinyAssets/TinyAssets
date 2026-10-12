@@ -42,7 +42,7 @@ export function Footer() {
           <ul>
             <li><Link href="/legal/">Terms and privacy</Link></li>
             <li><Link href="/account/">Your account</Link></li>
-            <li><a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a></li>
+            <li><a href={`mailto:${SITE.contact}`}>{SITE.contact}</a></li>
           </ul>
         </div>
       </div>

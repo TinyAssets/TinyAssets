@@ -106,8 +106,8 @@ export default function HomePage() {
             <Link className="btn btn--primary btn--md" href="/start/">
               See the join steps
             </Link>
-            <a className="quiet" href={`mailto:${SITE.contact.general}`}>
-              {SITE.contact.general}
+            <a className="quiet" href={`mailto:${SITE.contact}`}>
+              {SITE.contact}
             </a>
           </div>
         </div>

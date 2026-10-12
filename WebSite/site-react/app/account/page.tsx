@@ -68,7 +68,7 @@ export default function AccountPage() {
         <span className="eyebrow">Can&apos;t sign in?</span>
       </div>
       <p>
-        Write to <a href={`mailto:${SITE.contact.legal}`}>{SITE.contact.legal}</a> from the address
+        Write to <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a> from the address
         you signed in with, subject &ldquo;Delete my account&rdquo;. We confirm it is you, run the
         same deletion within 30 days, and reply when it is done. The same address handles
         data-export requests.

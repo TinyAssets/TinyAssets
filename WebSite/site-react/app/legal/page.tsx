@@ -88,7 +88,7 @@ export default function LegalPage() {
           </p>
           <p id="app-data-retention">
             <strong>Retention and deletion.</strong> We keep your data for as long as your account exists, and deletion is immediate — there is no grace window. Delete your account yourself inside any app (<strong>Account → Delete my account</strong>) or follow <a href="/account">tinyassets.io/account</a>: your command center (memory, history, deposited credentials, connections), every record keyed to it and your sign-in identity are removed at once, and a paid plan is cancelled immediately. What we keep is listed in full on <a href="/account">/account</a>: audit records with the actor replaced by an opaque id and their content emptied, published commons and settlement rows, the invoices Stripe holds, and server backups until they age out on our retention schedule. If a step cannot complete — the payment processor is unreachable, say — the app tells you so and we finish it by hand rather than reporting a deletion that did not happen. Deletion or export by email — CCPA / GDPR Articles 17 and 20 — is handled within 30 days:{" "}
-            <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a>.
+            <a href={`mailto:${legal.contact}`}>{legal.contact}</a>.
           </p>
           <p>
             <strong>Published shapes are a choice; contents stay in your account.</strong> Nothing is public until you publish it. A published shape is the structure of a graph or branch, not the documents and prompts inside it. Those stay in your hosted account. They do not stay only on your own computer: the app is hosted. <strong>We</strong> do not train models on your data. What the AI provider you connect does with the messages your agent sends it is governed by <em>your</em> agreement with that provider, not by us.
@@ -98,7 +98,7 @@ export default function LegalPage() {
           <p><strong>Cookies / analytics:</strong> this site does not run an analytics product today. There are no advertising cookies and no cross-site tracking pixels.</p>
           <p>
             <strong>Minimum age.</strong> TinyAssets is not directed at children. You must be at least <strong>18 years old</strong> to use the service or hold a wallet connection. Wallet features are not live today; the age self-declaration described here pre-positions the obligation for if and when wallet-connect opens. You self-declare your age at wallet-connect; misrepresentation is grounds for termination. We do not knowingly collect data from minors; if you believe we have, contact{" "}
-            <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a>.
+            <a href={`mailto:${legal.contact}`}>{legal.contact}</a>.
           </p>
 
           <h2 id="terms">Terms of use</h2>
@@ -183,7 +183,7 @@ export default function LegalPage() {
           </ul>
 
           <h2 id="dmca">DMCA</h2>
-          <p>If you believe content on the public goals surface or wiki infringes your copyright, send a DMCA takedown notice to <a href={`mailto:${legal.contact.dmca_agent}`}>{legal.contact.dmca_agent}</a> including: identification of the work, identification of the infringing material with URL, your contact info, statement of good-faith belief, statement under penalty of perjury, and your physical or electronic signature.</p>
+          <p>If you believe content on the public goals surface or wiki infringes your copyright, send a DMCA takedown notice to <a href={`mailto:${legal.contact}`}>{legal.contact}</a> including: identification of the work, identification of the infringing material with URL, your contact info, statement of good-faith belief, statement under penalty of perjury, and your physical or electronic signature.</p>
           <p>Counter-notices follow standard <a href="https://www.copyright.gov/dmca/" target="_blank" rel="noreferrer">17 U.S.C. § 512</a> procedure. Designated DMCA agent registration with the U.S. Copyright Office is in progress.</p>
 
           <h2 id="dispute">Disputes &amp; governing law</h2>
@@ -197,7 +197,7 @@ export default function LegalPage() {
 
           <h2 id="contact">Contact</h2>
           <p>
-            One mailbox is monitored: <a href={`mailto:${legal.contact.general}`}>{legal.contact.general}</a>.
+            One mailbox is monitored: <a href={`mailto:${legal.contact}`}>{legal.contact}</a>.
             Use it for general questions, security reports, privacy requests, and copyright notices.
             This page does not promise a reply window.
           </p>

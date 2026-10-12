@@ -78,7 +78,7 @@ export default function FinePrintPage() {
             run or how much they store. When a cap is enforced, it will be simultaneous runs and
             storage only, the same on every tier except for the numbers. There is no control in the
             app to buy a higher tier. Questions:{" "}
-            <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a>. The platform never
+            <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a>. The platform never
             bills you for a model; your subscription is your own.
           </p>
         </div>

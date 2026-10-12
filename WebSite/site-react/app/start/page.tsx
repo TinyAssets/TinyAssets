@@ -119,7 +119,7 @@ export default function StartPage() {
                 It is in a closed test on Google Play: open the test page with your Google account,
                 join, then install from Play. During the closed test only invited accounts can
                 join; write to{" "}
-                <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a> to be added.
+                <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a> to be added.
               </p>
               <a className="btn btn--ghost btn--md" href={SITE.android} target="_blank" rel="noreferrer">
                 Join the test on Google Play
