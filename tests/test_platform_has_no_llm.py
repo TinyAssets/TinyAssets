@@ -126,6 +126,7 @@ def test_router_call_with_no_universe_is_refused_before_any_provider_or_probe():
         asyncio.run(router.call("writer", "prompt", "system"))
     with pytest.raises(PlatformLLMCallRefusedError):
         router.call_sync("writer", "prompt", "system")
+    assert not hasattr(router, "call_judge_ensemble")
 
     assert _calls(spies) == {}
     health.assert_not_called()
