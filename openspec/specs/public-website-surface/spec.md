@@ -47,19 +47,26 @@ The public site SHALL name the operator as TinyAssets and SHALL NOT publish a se
 
 ### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
-The site SHALL describe plans in the `Plans` section of `/fine-print` (anchor `#plans`). Free and any later paid tier SHALL be the same app and the same security. The only differences the copy may name are simultaneous runs and storage. The section SHALL NOT print a price, a run cap, or a storage cap until the owner publishes those numbers; unfinished numbers SHALL be a visible owner-decision note, not a guessed figure. Because enforcement is not refusing work today, the section SHALL say usage is metered and the gate is not switched on. It SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/` MAY summarise the same two differences and MUST NOT name a price. `/start` MAY carry one sentence that links to the section. No public text asset (`llms.txt`, `robots.txt`) states a price.
+The site SHALL describe plans in the `Plans` section of `/fine-print` (anchor `#plans`). Free and any later paid tier SHALL be the same app and the same security. The only differences the copy may name are simultaneous runs and storage. The section SHALL NOT print a price, a run cap, or a storage cap until the owner publishes those numbers; unfinished numbers SHALL be a visible owner-decision note, not a guessed figure. Because enforcement is not refusing work today, the section SHALL say usage is metered and the gate is not switched on. It SHALL NOT describe hitting a limit as a thing that currently happens, and SHALL NOT say that no upgrade control exists. The only upgrade entry is the app at `https://tinyassets.io/app?upgrade=1`. Home (`/`) and `/start` SHALL link to that entry without restating a price. No public text asset (`llms.txt`, `robots.txt`) states a price.
 
 #### Scenario: A visitor looks for pricing
 
 - **WHEN** a visitor opens `/fine-print/#plans`
-- **THEN** they read that free and paid are the same app and the same security, that the only named differences are simultaneous runs and storage, that no price or cap is printed, and that the refusal gate is not switched on, with no upgrade control
+- **THEN** they read that free and paid are the same app and the same security, that the only named differences are simultaneous runs and storage, that no price or cap is printed, and that the refusal gate is not switched on, with a link to plans in the app
 - **AND** unfinished numbers are an owner-decision note rather than a guessed figure
+- **AND** they do not read a daily limit or a claim that there is no upgrade control
+
+#### Scenario: Home and start link to plans
+
+- **WHEN** a visitor reads the home page or `/start`
+- **THEN** each page links to `https://tinyassets.io/app?upgrade=1`
+- **AND** neither page states a price
 
 #### Scenario: A grounding crawler reads the text assets
 
 - **WHEN** an AI-grounding crawler reads `/llms.txt`
 - **THEN** it finds that joining is free during early access and a pointer to `/fine-print/#plans`
-- **AND** it does not find a price, so the two cannot drift apart
+- **AND** it does not find a price or a daily-limit claim, so the two cannot drift apart
 
 ### Requirement: Public Views Distinguish Live Reads From The Checked-In Snapshot
 

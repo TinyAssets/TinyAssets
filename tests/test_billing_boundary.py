@@ -719,13 +719,13 @@ def test_every_checkout_error_the_route_can_return_is_classified():
     """
     from tinyassets.onboarding import _CHECKOUT_STATUS
 
-    source = (REPO / "tinyassets" / "onboarding" / "__init__.py").read_text(
+    source = (REPO / "tinyassets" / "billing" / "plan_action.py").read_text(
         encoding="utf-8"
     )
-    body = source.split("async def _handle_billing_checkout")[1].split(
-        "async def _handle_billing_cancel"
-    )[0]
+    body = source.split("def _start_checkout")[1]
     returned = set(re.findall(r'"error":\s*"([a-z_]+)"', body))
+    # Android never opens checkout. The action returns this before the lease.
+    returned.add("unavailable_in_app")
     assert returned, "the grep found nothing - the anchor moved"
     assert returned <= set(_CHECKOUT_STATUS), (
         f"unclassified checkout errors: {sorted(returned - set(_CHECKOUT_STATUS))}"
