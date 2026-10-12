@@ -482,6 +482,9 @@ def auth_middleware(token: str | None) -> Identity | None:
 
     identity: Identity | None = None
     if token:
+        from tinyassets.observability import observe_bearer
+
+        observe_bearer(token)
         identity = provider.resolve_token(token)
     _current_identity.set(identity)
     if identity is not None:
@@ -643,6 +646,11 @@ def _auth_challenge_path(path: str) -> bool:
     # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
     # /app/billing/... route is exempt, so checkout and cancel stay identity-gated.
     if path == "/app/billing/webhook":
+        return False
+    # Browser page loads and uncaught errors. The marketing site has no bearer.
+    # Exactly this path; ``/app/client-error/x`` and ``/app/client-errors`` stay
+    # challenged.
+    if path == "/app/client-error":
         return False
     # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
@@ -1150,6 +1158,12 @@ class AuthContextMiddleware:
                     return
             await self.app(scope, receive, send)
         finally:
+            try:
+                from tinyassets.observability import observe_identity
+
+                observe_identity(_current_identity.get())
+            except Exception:
+                logger.exception("session trail identity snapshot failed")
             reset_wiki_canary_authority(previous_canary)
             _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)

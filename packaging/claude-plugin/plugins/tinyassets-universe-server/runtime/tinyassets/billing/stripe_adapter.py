@@ -236,21 +236,24 @@ def _post(
         # check cannot see it because a pending session is not yet a subscription
         # (Codex round 3, 3).
         request.add_unredirected_header("Idempotency-Key", idempotency_key)
+    from tinyassets.observability import dependency
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with dependency("stripe", path) as span:
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    span.status = int(getattr(response, "status", 200) or 200)
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                span.status = int(getattr(exc, "code", 0) or 0)
+                span.error = f"HTTP{exc.code}"
+                raise
     except urllib.error.HTTPError as exc:
         # Do NOT surface Stripe's message. It can quote request parameters back,
         # and those include customer and subscription identifiers — an avoidable
         # disclosure surface once this string is returned to a browser
-        # (Codex REJECT 2026-08-28 D). Log the detail, return only the class.
-        try:
-            detail = json.loads(exc.read().decode("utf-8"))["error"]["message"]
-        except Exception:
-            detail = ""
-        _log.warning(
-            "stripe rejected %s: HTTP %s %s", path, exc.code, detail or "(no message)"
-        )
+        # (Codex REJECT 2026-08-28 D). The trail records the status only.
+        _log.warning("stripe rejected %s: HTTP %s", path, exc.code)
         raise BillingUnavailable(
             f"Stripe rejected the request (HTTP {exc.code})"
         ) from None
@@ -268,9 +271,18 @@ def _get(path: str, *, timeout: float = 20.0) -> dict:
     request = urllib.request.Request(f"{_API}/{path.lstrip('/')}", method="GET")
     request.add_unredirected_header("Authorization", _basic_auth(key))
     request.add_unredirected_header("Stripe-Version", STRIPE_API_VERSION)
+    from tinyassets.observability import dependency
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with dependency("stripe", path) as span:
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    span.status = int(getattr(response, "status", 200) or 200)
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                span.status = int(getattr(exc, "code", 0) or 0)
+                span.error = f"HTTP{exc.code}"
+                raise
     except urllib.error.HTTPError as exc:
         raise BillingUnavailable(f"Stripe rejected the request: HTTP {exc.code}") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

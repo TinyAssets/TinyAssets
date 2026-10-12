@@ -15,6 +15,7 @@ whose next step is *"the founder logs into Cloudflare."*
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
 | Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup opens a canary-not-provisioned warning/issue; it never blocks or rolls back a deploy. |
+| Read-only production log key | `ssh-keygen -t ed25519 -f tinyassets-log-read -N ""`. Secret `DO_LOG_READ_SSH_KEY` is the private key. Variable `DO_LOG_READ_SSH_PUBKEY` is the public key line. Re-run Install host services, then Fetch production logs. Deploys are not blocked. The deploy key stays as it is. |
 
 ## Isolation production refusal acceptance (2026-10-10)
 

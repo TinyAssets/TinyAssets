@@ -500,8 +500,8 @@ def test_journald_dropin_bounds_retention_in_bytes_and_time():
         for line in text.splitlines()
         if "=" in line and not line.lstrip().startswith("#")
     )
-    assert settings["SystemMaxUse"] == "1G"
-    assert settings["MaxRetentionSec"] == "14day"
+    assert settings["SystemMaxUse"] == "2G"
+    assert settings["MaxRetentionSec"] == "30day"
     assert settings["SystemKeepFree"] == "2G"
     # Rate limiting drops messages to protect the journal, and a dropped line
     # during an incident is the evidence this change exists to keep -- so the

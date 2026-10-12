@@ -1754,6 +1754,7 @@ def test_writer_affecting_remote_mutations_run_inside_authoritative_host_lock():
         WORKFLOW: {
             "Ensure off-host backup configuration": 2,
             "Install exact uptime bundle": 1,
+            "Install read-only log reader": 1,
         },
     }
     for path, names in expected_steps.items():
@@ -1778,6 +1779,7 @@ def test_host_mutation_workflow_shell_blocks_parse():
             "Refuse host mutation during stop-writer cutover",
             "Ensure off-host backup configuration",
             "Install exact uptime bundle",
+            "Install read-only log reader",
         ),
         P0_WORKFLOW: (
             "Refuse host mutation during stop-writer cutover",

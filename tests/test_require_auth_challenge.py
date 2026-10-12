@@ -243,6 +243,9 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/app/token", False),                 # its PKCE exchange
         ("/app/settings", True),               # every other app route needs the bearer
         ("/app/billing/webhook", False),       # Stripe-signed
+        ("/app/client-error", False),          # browser trail beacon
+        ("/app/client-errors", True),
+        ("/app/client-error/x", True),
         ("/app/billing/checkout", True),
         ("/mcp/pulse", True),                      # service-principal release facts
         ("/mcp/pulse/", True),                     # exact path, nothing under it

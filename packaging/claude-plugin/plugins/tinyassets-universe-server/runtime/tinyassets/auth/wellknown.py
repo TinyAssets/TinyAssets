@@ -207,11 +207,16 @@ async def _fetch_authkit_as_metadata(issuer: str) -> dict[str, Any] | None:
         import json as _json
         import urllib.request
 
+        from tinyassets.observability import dependency
+
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                if getattr(resp, "status", 200) != 200:
-                    return None
-                data = _json.loads(resp.read().decode("utf-8"))
+            with dependency("workos", url) as span:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    span.status = int(getattr(resp, "status", 200) or 0)
+                    if span.status != 200:
+                        span.error = f"HTTP{span.status}"
+                        return None
+                    data = _json.loads(resp.read().decode("utf-8"))
         except Exception:
             logger.warning(
                 "AuthKit AS metadata proxy failed for %s", url, exc_info=True,

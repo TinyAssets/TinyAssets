@@ -1,10 +1,10 @@
 """Origin-ingress admission backstop.
 
 OpenSpec change ``cloud-only-runtime-admission``, enforcement site (D). This is
-the outermost ASGI wrapper on the real HTTP app: an origin that is not an
+the outermost admission wrapper on the real HTTP app: an origin that is not an
 admitted cloud runtime refuses every request before it reaches any handler —
 before the auth middleware, before discovery, before the MCP transport and
-before any universe work.
+before any universe work. Request logging sits outside it and only records.
 
 **It is a backstop, not the prevention.** A refusing off-cloud origin has
 already absorbed the public request; prevention is the removed in-repo

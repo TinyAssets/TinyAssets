@@ -143,9 +143,12 @@ the question spans a deploy.
 `/etc/systemd/journald.conf.d/tinyassets.conf` by
 `deploy/install-host-uptime-services.sh`, which runs after every successful
 production deploy and restarts `systemd-journald` only when the bytes changed.
-`Storage=persistent`, `SystemMaxUse=1G`, `MaxRetentionSec=14day`,
-`SystemKeepFree=2G`, rate limiting off — a dropped message during an incident is
-the evidence this exists to keep.
+`Storage=persistent`, `SystemMaxUse=2G`, `MaxRetentionSec=30day`,
+`SystemKeepFree=2G`. Rate limiting stays on at a high ceiling
+(`RateLimitBurst=100000` per 30s). A dropped message during an incident is
+the evidence this exists to keep, and journald records the loss with its own
+suppressed-message line. The age cap is a maximum, not a promise: 2 GiB at a
+sustained 100 KiB/s is about six hours, and whichever bound runs out first wins.
 
 Change it there, not on the box, or the next install reverts it.
 
@@ -225,7 +228,7 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 | No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/tinyassets/env`; restart `logs` container |
 | Vector container not running | Depends-on daemon unhealthy | Check `docker logs tinyassets-logs`; confirm daemon healthcheck passes. While it is down the fluentd driver buffers in memory and then **drops** — the journal gets nothing, so fix this first |
 | `journalctl CONTAINER_NAME=tinyassets-logs` is empty | The `logs` container is not on the journald driver (compose drift) | `docker inspect -f '{{.HostConfig.LogConfig.Type}}' tinyassets-logs` must print `journald`; if not, the deployed compose.yml is behind `deploy/compose.yml` |
-| Journal history shorter than 14 days | Drop-in missing, or `SystemMaxUse` hit | `cat /etc/systemd/journald.conf.d/tinyassets.conf`; `journalctl --disk-usage`. Absent drop-in means the installer has not run since the change landed |
+| Journal history shorter than 30 days | Drop-in missing, or `SystemMaxUse` hit | `cat /etc/systemd/journald.conf.d/tinyassets.conf`; `journalctl --disk-usage`. Absent drop-in means the installer has not run since the change landed |
 | Journal empties on reboot | `Storage` is not persistent | `/var/log/journal` must exist; the drop-in sets `Storage=persistent` and journald creates it on restart |
 | ship-logs.sh exits 1 | `LOG_DEST` missing, a required container missing, or its logs unreadable | Set `LOG_DEST`; then inspect `docker ps -a` and `docker logs <container>` for every required fleet member |
 | rclone upload fails | Remote misconfigured | Run `rclone lsd "${LOG_DEST}/"` to test connectivity |

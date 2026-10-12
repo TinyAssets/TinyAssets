@@ -400,6 +400,39 @@ jobs:
               bash "${remote_stage}/source/deploy/install-host-uptime-services.sh"
           REMOTE
 
+      - name: Install read-only log reader
+        env:
+          LOG_READ_PUBKEY: ${{ vars.DO_LOG_READ_SSH_PUBKEY }}
+        run: |
+          set -euo pipefail
+          [[ "${DO_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]
+          cleanup() {
+            shred -u /tmp/tinyassets-log-read.pub 2>/dev/null \
+              || rm -f /tmp/tinyassets-log-read.pub
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "shred -u /tmp/tinyassets-log-read.pub /tmp/read-prod-logs.py /tmp/install-log-reader.py 2>/dev/null || rm -f /tmp/tinyassets-log-read.pub /tmp/read-prod-logs.py /tmp/install-log-reader.py" \
+              || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/read-prod-logs.py deploy/install-log-reader.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+          pubkey_args=()
+          if [[ -n "${LOG_READ_PUBKEY}" ]]; then
+            printf '%s\n' "${LOG_READ_PUBKEY}" > /tmp/tinyassets-log-read.pub
+            scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+                /tmp/tinyassets-log-read.pub \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-log-read.pub"
+            pubkey_args=(--pubkey-file /tmp/tinyassets-log-read.pub)
+          else
+            echo "DO_LOG_READ_SSH_PUBKEY is unset; installing the reader script only."
+          fi
+          quoted_user="$(printf '%q' "${DO_SSH_USER}")"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 60 -- sudo python3 /tmp/install-log-reader.py --user ${quoted_user} --script /tmp/read-prod-logs.py ${pubkey_args[*]}"
+
       - name: Exercise and verify two-tier backup
         if: github.event_name == 'workflow_dispatch' && inputs.run_backup
         run: |

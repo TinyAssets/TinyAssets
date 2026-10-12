@@ -1,0 +1,181 @@
+name: Fetch production logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Inclusive UTC start (YYYY-MM-DDTHH:MM:SSZ)
+        required: true
+        type: string
+      until:
+        description: Inclusive UTC end (YYYY-MM-DDTHH:MM:SSZ)
+        required: true
+        type: string
+      session_id:
+        description: One session trail
+        required: false
+        type: string
+        default: ""
+      account_id:
+        description: Every session for one opaque account id
+        required: false
+        type: string
+        default: ""
+      trace_id:
+        description: The session trail that contains this request
+        required: false
+        type: string
+        default: ""
+      grep:
+        description: Literal substring applied after the trail is joined
+        required: false
+        type: string
+        default: ""
+  repository_dispatch:
+    types: [fetch-prod-logs]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-host-observation
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve the log query
+        env:
+          EVENT_JSON: ${{ toJson(github.event) }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from datetime import datetime, timedelta
+
+          event = json.loads(os.environ["EVENT_JSON"])
+          if os.environ["EVENT_NAME"] == "repository_dispatch":
+              src = event.get("client_payload") or {}
+          else:
+              src = event.get("inputs") or {}
+          if not isinstance(src, dict):
+              sys.exit("log query payload is not an object")
+
+          def take(key):
+              value = src.get(key, "")
+              if value is None:
+                  return ""
+              if not isinstance(value, str):
+                  sys.exit(f"{key} must be a string")
+              if "\n" in value or "\r" in value or "\x00" in value:
+                  sys.exit(f"{key} contains a newline")
+              return value.strip()
+
+          since = take("since")
+          until = take("until")
+          session = take("session_id")
+          account = take("account_id")
+          trace = take("trace_id")
+          needle = take("grep")
+          stamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+          if not stamp.fullmatch(since) or not stamp.fullmatch(until):
+              sys.exit("since and until must be YYYY-MM-DDTHH:MM:SSZ")
+          start = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ")
+          end = datetime.strptime(until, "%Y-%m-%dT%H:%M:%SZ")
+          if end < start or end - start > timedelta(days=7):
+              sys.exit("the window must be within 7 days")
+          ident = re.compile(r"^[A-Za-z0-9_|.-]{1,128}$")
+          for label, value in (("session_id", session), ("account_id", account)):
+              if value and (not ident.fullmatch(value) or "@" in value):
+                  sys.exit(f"{label} is not an opaque id")
+          if trace and not re.fullmatch(r"^[A-Za-z0-9_-]{8,64}$", trace):
+              sys.exit("trace_id is not a trace id")
+          if len(needle) > 80:
+              sys.exit("grep is longer than 80 characters")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              for name, value in (
+                  ("LOG_SINCE", since),
+                  ("LOG_UNTIL", until),
+                  ("LOG_SESSION_ID", session),
+                  ("LOG_ACCOUNT_ID", account),
+                  ("LOG_TRACE_ID", trace),
+                  ("LOG_GREP", needle),
+              ):
+                  handle.write(f"{name}<<EOF\n{value}\nEOF\n")
+          PY
+
+      - name: Install the read-only SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_LOG_READ_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY}" ]; then
+            echo "DO_LOG_READ_SSH_KEY is not set."
+            echo "1. ssh-keygen -t ed25519 -f tinyassets-log-read -N \"\""
+            echo "2. Save the private key as secret DO_LOG_READ_SSH_KEY."
+            echo "3. Save the public key line as variable DO_LOG_READ_SSH_PUBKEY."
+            echo "4. Re-run Install host services so the forced command is installed."
+            echo "5. Re-run Fetch production logs."
+            exit 1
+          fi
+          [ -n "${DO_DROPLET_HOST}" ]
+          [ -n "${DO_SSH_USER}" ]
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_log_read
+          chmod 600 ~/.ssh/do_log_read
+          ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Fetch the timeline
+        run: |
+          set -euo pipefail
+          cmd=(read-logs --since "${LOG_SINCE}" --until "${LOG_UNTIL}")
+          if [ -n "${LOG_SESSION_ID}" ]; then
+            cmd+=(--session "${LOG_SESSION_ID}")
+          fi
+          if [ -n "${LOG_ACCOUNT_ID}" ]; then
+            cmd+=(--account "${LOG_ACCOUNT_ID}")
+          fi
+          if [ -n "${LOG_TRACE_ID}" ]; then
+            cmd+=(--trace-id "${LOG_TRACE_ID}")
+          fi
+          if [ -n "${LOG_GREP}" ]; then
+            cmd+=(--grep "${LOG_GREP}")
+          fi
+          remote="$(printf '%q ' "${cmd[@]}")"
+          set +e
+          ssh -i ~/.ssh/do_log_read \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "${remote}" \
+              > prod-logs.jsonl \
+              2> prod-logs.summary
+          status=$?
+          set -e
+          cat prod-logs.summary
+          {
+            echo "### Production log timeline"
+            cat prod-logs.summary
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${status}" -ne 0 ]; then
+            echo "read-only log fetch failed"
+            exit 1
+          fi
+
+      - name: Upload the timeline
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-log-timeline
+          path: prod-logs.jsonl
+          if-no-files-found: error

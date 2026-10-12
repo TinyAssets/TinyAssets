@@ -131,6 +131,11 @@ def test_build_image_publishes_only_short_sha_tag():
     assert "${image}:latest" not in text
 
 
+def test_image_build_bakes_the_commit_the_process_can_read():
+    text = _text()
+    assert "TINYASSETS_BUILD_SHA=${{ github.sha }}" in text
+
+
 # --- skip the image (and so the recreate) when production already serves it --
 
 _DEPLOY_WORKFLOW = _REPO / ".github" / "workflows" / "deploy-prod.yml"
