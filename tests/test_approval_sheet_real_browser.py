@@ -83,24 +83,34 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     page.evaluate("""() => {
       window.calls=[];window.rows=[];window.receipts=[];
       token=()=>'test-owner';readInflight=()=>({message:'Send my update'});
-      Owner.listRequests=async()=>({pending:rows,recently_answered:receipts});
+      Owner.listRequests=async()=>({pending:window.rows,recently_answered:window.receipts});
       window.row={request_id:'bound-1',status:'pending',revision:1,agent:'main',
         title:'POST https://api.example.com/message',action_sha256:'hash',
         destination:'https://api.example.com/message',draft:'Exactly this message',
-        expires_at:1999999999,action:{type:'approve_action',envelope:{subject:{turn:'live'}}}};
+        expires_at:1999999999,action:{type:'approve_action',envelope:{
+          subject:{turn:'live',home:'test-home'},destination:'api.example.com',
+          arguments:{grant_id:'grant',connection_id:'connection',verb:'POST',
+            request:{path:'/message'}}}}};
       const previous=fetch;
       window.fetch=async(url,options)=>{
+        if(String(url)==='/app/api/policy'){
+          const payload=options?.body&&JSON.parse(options.body);
+          return Response.json(payload?.action==='issue_once'?{token:'policy-once'}:
+            {generation:1,policy:{entries:[],egress:{mode:'open',allowlist:[]},
+              spend:{daily:null,monthly:null,transaction:null,ask_above:null,
+                source_ceilings:{}}}});
+        }
         if(!String(url).startsWith('/app/approvals/'))return previous(url,options);
         const payload=JSON.parse(options.body);calls.push({url,payload});
         if(url.endsWith('/decide')){
-          rows=[];receipts=[{...row,status:'answered'}];
+          window.rows=[];window.receipts=[{...window.row,status:'answered'}];
           return Response.json({...row,status:'answered',phase:'confirmed',result:{status:200}});
         }
         return Response.json({...row,scope:payload.scope,approval_token:'token-'+payload.scope,
           predicate:{scope:payload.scope,action_class:'app.write',operation:'POST',
             origin:'https://api.example.com',expires_at:1999999999}});
       };
-      rows=[row];renderRail(rows);
+      window.rows=[window.row];renderRail(window.rows);
     }""")
     sheet = page.locator("#request-rail")
     assert sheet.evaluate('el=>el.matches(":modal")')
@@ -110,10 +120,13 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     assert box["y"] >= 0 and box["y"] + box["height"] <= 844
     page.get_by_role("combobox", name="Approval scope").select_option("site")
     page.get_by_role("button", name="Allow for this site", exact=True).click()
-    page.wait_for_function("() => rows.length===0 && !document.getElementById('request-rail').open")
+    page.wait_for_function(
+        "() => Array.isArray(window.rows) && window.rows.length===0 "
+        "&& !document.getElementById('request-rail').open")
     payload = page.evaluate("calls.at(-1).payload")
     assert payload["scope"] == "site"
     assert payload["approval_token"] == "token-site"
+    assert payload["policy_approval"] == "policy-once"
     assert payload["expected_revision"] == 1
     assert payload["decision"] == "approve"
     assert page.evaluate("calls.length") == 3
@@ -126,7 +139,7 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     page.evaluate("() => { window.relays=[];sendTurn=(...args)=>relays.push(args); }")
     history.get_by_role("button", name="Ask again", exact=True).click()
     assert page.evaluate("calls.length") == 3  # No answer, grant, or approval replay.
-    assert page.evaluate("rows") == []
+    assert page.evaluate("window.rows") == []
     assert page.evaluate("receipts[0].status") == "answered"
     assert page.evaluate("relays.length") == 1
     assert "request_id=bound-1" in page.evaluate("relays[0][0]")
@@ -134,7 +147,8 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     assert not sheet.is_visible()
     page.evaluate("""() => {
       readInflight=()=>null;
-      rows=[{...row,request_id:'away',draft:'Private away draft'}];renderRail(rows);
+      window.rows=[{...window.row,request_id:'away',draft:'Private away draft'}];
+      renderRail(window.rows);
     }""")
     assert not sheet.is_visible()
     page.locator("#needs-you-open").click()

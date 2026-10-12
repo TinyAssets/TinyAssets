@@ -78,6 +78,7 @@ CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
     "start_activity", "approve_action", "connect_browser",
+    "policy_proposal",
 })
 # System-created approve_action and notify use dedicated branches before the
 # general gate; classify them too so creation paths cannot escape the inventory.

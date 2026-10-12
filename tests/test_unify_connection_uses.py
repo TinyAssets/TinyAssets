@@ -63,12 +63,13 @@ class _Auth:
 
 
 @pytest.fixture
-def owner(tmp_path, monkeypatch):
+def owner(tmp_path, monkeypatch, frozen_owner_policy):
     """A founder's own unpowered universe, logged in as its owner."""
     from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
     base = tmp_path / "data"
     (base / UID).mkdir(parents=True)
+    frozen_owner_policy(base, principal=OWNER, center=UID)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     # Served turns use engine tools (on in production; dark by default here).
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
@@ -119,9 +120,15 @@ def _broker_proxy(base, grant_id, destination, runtime):
     class _Proxy:
         closed = False
 
-        def request(self, verb, request, *, inference_usage=None):
+        def request(self, verb, request, *, inference_usage=None,
+                    policy_approval=None, policy_grant_ref=None, policy_agent=None,
+                    policy_task_id=None):
             return dispatch(
                 grant_id, verb, request,
+                **({"policy_approval": policy_approval} if policy_approval else {}),
+                **({"policy_grant_ref": policy_grant_ref,
+                    "policy_agent": policy_agent,
+                    "policy_task_id": policy_task_id} if policy_grant_ref else {}),
                 **({"inference_usage": inference_usage.document(),
                     "operation_id": inference_usage.operation_id}
                    if inference_usage is not None else {}),
@@ -519,7 +526,7 @@ def test_never_seen_platform_connects_and_the_broker_applies_its_constant_header
     finally:
         loop.stop()
 
-    assert evidence["delivered"] is True, evidence
+    assert evidence.get("delivered") is True, evidence
     (wire,) = loop.recorded
     assert wire["path"] == "/v1/tasks"
     assert wire["headers"]["X-Api-Version"] == "2026-07"

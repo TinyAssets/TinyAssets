@@ -17,7 +17,8 @@ from tinyassets.ta_capabilities import ExecutionContext
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch):
+def case(tmp_path, monkeypatch, frozen_owner_policy):
+    frozen_owner_policy(tmp_path, principal="alice", center="cc-alice")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
     for owner in ("alice", "bob"):
@@ -33,17 +34,23 @@ def case(tmp_path, monkeypatch):
             universe_id="cc-alice", unprompted_action_cap=ActionCap("calls", 3, "requests"))
     calls = []
 
+    from tinyassets.broker.client import BrokerClient as RealBrokerClient
+
     class Client:
         def __init__(self, path, *, principal, command_center, **kwargs):
             self.principal, self.center = principal, command_center
+            self.path, self.kwargs = path, kwargs
 
         def ledger_query(self, **kwargs):
             calls.append((self.principal, self.center, kwargs))
             return ledger_queries.local_query(ledger, principal=self.principal,
                                               command_center=self.center, **kwargs)
 
-    monkeypatch.setattr(supervisor, "get_supervisor", lambda _: SimpleNamespace(
-        socket_path=tmp_path / "broker.sock", fence=lambda: (1, "synthetic"), verify_broker=None))
+        def owner_policy(self, action, **fields):
+            return RealBrokerClient(self.path, principal=self.principal,
+                                    command_center=self.center,
+                                    **self.kwargs).owner_policy(action, **fields)
+
     monkeypatch.setattr("tinyassets.broker.client.BrokerClient", Client)
 
     def no_local(*args, **kwargs):
