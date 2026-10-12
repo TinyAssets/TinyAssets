@@ -4,9 +4,9 @@ Spec: 2026-04-27-q63-third-party-provider-privacy.md (archived in git) §5
 Dispositions: .claude/agent-memory/navigator/q63_section4_dispositions.md
 
 Hard Rule 15 (the platform has no LLM) removed the platform fallback chain,
-the judge fan-out and the host writer pin this allowlist used to filter. The
-allowlist now bounds the ONE provider an owner's authority names: a carrier
-whose provider the universe does not allow is refused before launch.
+the judge fan-out and the host writer pin this allowlist used to filter. A
+workflow carrier pins one source admitted from the owner's live connections;
+the legacy config allowlist cannot override that admission.
 """
 from __future__ import annotations
 
@@ -88,7 +88,10 @@ def _router_with_all_providers() -> tuple[
 
 def _bound_call(router, *, provider: str, allowed_providers):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-allowlist")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-allowlist",
+        admitted_sources=frozenset({provider}),
+    )
     carrier.provider = provider
     carrier.role = "writer"
     carrier.operation = "run_graph"
