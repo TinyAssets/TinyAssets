@@ -18,7 +18,9 @@ import logging
 import os
 import threading
 import time
+from contextvars import ContextVar
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import jwt
 from jwt import PyJWKClient
@@ -58,6 +60,8 @@ _TOKEN_REJECTION_CATEGORIES = frozenset({
     "invalid_token",
     "issuer",
     "malformed",
+    "outside_authority",
+    "outside_store",
     "required_claim",
     "signature",
     "signing_key",
@@ -65,6 +69,28 @@ _TOKEN_REJECTION_CATEGORIES = frozenset({
 _token_rejection_log_lock = threading.Lock()
 _token_rejection_log_state: dict[str, tuple[float, int]] = {}
 _rejection_log_now = time.monotonic
+# Request-local. The rate-limited log can suppress a repeat, but the 401 for
+# THIS token still has to name the category. Cleared at the start of validation.
+_rejection_category: ContextVar[str | None] = ContextVar(
+    "workos_rejection_category",
+    default=None,
+)
+# Fixed sentences only. A description must not contain a quote or a claim value:
+# it is copied into a WWW-Authenticate parameter.
+_REJECTION_DESCRIPTIONS = {
+    "algorithm": "The access token uses an unsupported signing algorithm.",
+    "audience": "The access token was not issued for this connector.",
+    "expired": "The access token is expired.",
+    "invalid_subject": "The access token has no usable account id.",
+    "invalid_token": "The access token could not be verified.",
+    "issuer": "The access token was not issued by this connector's sign-in provider.",
+    "malformed": "The access token is not a valid sign-in token.",
+    "outside_authority": "This sign-in is not allowed to use the connector.",
+    "outside_store": "The connector's client-access store is unavailable.",
+    "required_claim": "The access token is missing a required claim.",
+    "signature": "The access token signature could not be verified.",
+    "signing_key": "This connector could not verify the sign-in provider's signing key.",
+}
 
 
 def _validation_failure_category(error: jwt.PyJWTError) -> str:
@@ -84,11 +110,62 @@ def _validation_failure_category(error: jwt.PyJWTError) -> str:
     return "invalid_token"
 
 
+def clear_rejection_category() -> None:
+    """Drop any rejection recorded on this task before resolving another token."""
+    _rejection_category.set(None)
+
+
+def rejection_category() -> str | None:
+    """Bounded category for the token rejected on this task, or None."""
+    return _rejection_category.get()
+
+
+def rejection_description(category: str | None) -> str | None:
+    """A fixed sentence for one allowlisted category. Never echoes a claim."""
+    if category is None:
+        return None
+    return _REJECTION_DESCRIPTIONS.get(category)
+
+
+def canonical_resource(value: str) -> str:
+    """MCP canonical resource form (lowercase scheme and host, no default port,
+    no trailing slash). A query, fragment, or userinfo keeps the value distinct
+    so it cannot collapse onto the registered resource. A non-URL audience is
+    returned stripped and still has to match exactly.
+    """
+    text = (value or "").strip()
+    parts = urlsplit(text)
+    host = parts.hostname
+    if parts.scheme.lower() not in ("http", "https") or not host or parts.username:
+        return text
+    if parts.query or parts.fragment:
+        return text
+    port = parts.port
+    default_port = (parts.scheme.lower() == "https" and port == 443) or (
+        parts.scheme.lower() == "http" and port == 80
+    )
+    netloc = host.lower() if port is None or default_port else f"{host.lower()}:{port}"
+    return urlunsplit((parts.scheme.lower(), netloc, parts.path.rstrip("/"), "", ""))
+
+
+def _audience_matches(aud: object, expected: str) -> bool:
+    """True when one audience is the canonical form of the registered resource."""
+    if isinstance(aud, str):
+        candidates = [aud]
+    elif isinstance(aud, list) and aud and all(isinstance(item, str) for item in aud):
+        candidates = list(aud)
+    else:
+        return False
+    wanted = canonical_resource(expected)
+    return any(canonical_resource(item) == wanted for item in candidates)
+
+
 def _log_token_rejection(category: str) -> None:
     """Log a bounded safe reason, never token or exception material."""
     safe_category = (
         category if category in _TOKEN_REJECTION_CATEGORIES else "invalid_token"
     )
+    _rejection_category.set(safe_category)
     now = _rejection_log_now()
     with _token_rejection_log_lock:
         last_logged, suppressed = _token_rejection_log_state.get(
@@ -190,6 +267,7 @@ class WorkOSAuthProvider(AuthProvider):
         The returned claims are sensitive: never serialize them into a receipt.
         This does not establish client grants or a reconnect generation.
         """
+        clear_rejection_category()
         if not token or not token.strip():
             return None
         try:
@@ -202,22 +280,29 @@ class WorkOSAuthProvider(AuthProvider):
             _log_token_rejection("signing_key")
             return None
 
-        options: dict[str, Any] = {"require": ["exp", "sub"]}
+        options: dict[str, Any] = {
+            "require": ["exp", "sub"],
+            # Audience is checked below against the canonical resource. PyJWT's
+            # comparison is byte-exact, so a trailing slash, a default port, or
+            # a capitalised host would reject a token AuthKit minted for this
+            # connector. The environment client id is not accepted here.
+            "verify_aud": False,
+        }
         decode_kwargs: dict[str, Any] = {
             "algorithms": list(_ALGORITHMS),  # pin RS256 (alg-substitution defense)
             "issuer": self._issuer,
             "leeway": self._leeway,
             "options": options,
         }
-        if self._audience:
-            decode_kwargs["audience"] = self._audience
-        else:
-            options["verify_aud"] = False
 
         try:
             claims = jwt.decode(token, signing_key.key, **decode_kwargs)
         except jwt.PyJWTError as error:
             _log_token_rejection(_validation_failure_category(error))
+            return None
+
+        if self._audience and not _audience_matches(claims.get("aud"), self._audience):
+            _log_token_rejection("audience")
             return None
 
         sub = named_principal(claims.get("sub"))
@@ -257,7 +342,11 @@ class WorkOSAuthProvider(AuthProvider):
                 authority = current_store()
                 authority.observe(sub, outside)
                 outside = authority.admit(sub, outside)
-        except (OutsideRefused, OSError, sqlite3.Error):
+        except OutsideRefused:
+            _log_token_rejection("outside_authority")
+            return None
+        except (OSError, sqlite3.Error):
+            _log_token_rejection("outside_store")
             return None
 
         return Identity(
