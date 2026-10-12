@@ -395,4 +395,5 @@ def test_ci_oracle_replays_workflow_shards_and_queue_verdict(monkeypatch):
     assert all("--selection" not in args.pytest_args for args in runners[:4])
     assert all(args.pytest_args[-2:] == ["--selection", "gate-digest"]
                for args in runners[4:])
+    assert len({args.ci_name for args in runners}) == 10
     assert any(getattr(args, "ci_browser", None) for args in commands)

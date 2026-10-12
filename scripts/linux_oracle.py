@@ -75,6 +75,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 
 IMAGE_REPO = "tinyassets-linux-oracle"
@@ -304,10 +305,12 @@ def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
             return 1
         for tier, count, name, scope, digest in selections:
             tier_output = output / tier
+            shard_runs = {}
             for shard in range(1, count + 1):
                 runner = argparse.Namespace(**vars(args))
                 runner.ci = False
                 runner.required_runner = True
+                runner.ci_name = f"{tier}-{shard}"
                 runner.out = str(tier_output)
                 runner.env = ["TINYASSETS_DATA_DIR=/tmp/ta-data", "CI=true",
                               "GITHUB_ACTIONS=true"]
@@ -324,11 +327,17 @@ def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
                                            "--profile", "affected"]
                     if tier == "gate":
                         runner.pytest_args += ["--selection", digest]
-                result = subprocess.run(docker_command(runner, root, tag))
-                if result.returncode:
-                    _ci_summary(f"FAIL {tier} shard {shard}/{count} ({result.returncode})",
-                                selections)
-                    return result.returncode
+                shard_runs[shard] = docker_command(runner, root, tag)
+            failures = []
+            with ThreadPoolExecutor(max_workers=count) as pool:
+                futures = {pool.submit(subprocess.run, command): shard
+                           for shard, command in shard_runs.items()}
+                for future in as_completed(futures):
+                    if future.result().returncode:
+                        failures.append(futures[future])
+            if failures:
+                _ci_summary(f"FAIL {tier} shards {sorted(failures)}", selections)
+                return 1
             if tier == "gate":
                 aggregate = [sys.executable, "scripts/ci_required_tests.py",
                              "--aggregate", str(tier_output), "--expect-shards", "6",
@@ -448,7 +457,8 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     # init, runuser becomes PID 1 and hundreds of exited children accumulate.
     run = ["docker", "run", "--label", "tinyassets.disposable=true",
            "--label", f"tinyassets.created-at={int(time.time())}",
-           "--init", "--rm", "--name", f"ta-oracle-{os.getpid()}",
+           "--init", "--rm", "--name",
+           f"ta-oracle-{os.getpid()}-{getattr(args, 'ci_name', 'run')}",
            "-v", f"{_docker_path(root)}:/src:ro"]
     for pair in args.env:
         if "=" not in pair:
