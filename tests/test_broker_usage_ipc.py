@@ -317,10 +317,14 @@ def test_run_model_call_enforces_receipt_sources_before_reservation(source, monk
         denied = asyncio.run(service.dispatch(request("api_key_http:new/model")))
         assert "admitted live source" in denied["error"]
         assert parent.receipt()["reserved"] == 0
+        recovered = request("api_key_http:new/model")
+        recovered["arguments"]["fallbacks"] = ["api_key_http:admitted/model"]
+        assert asyncio.run(service.dispatch(recovered))["result"]["text"] == "answer"
         allowed = asyncio.run(service.dispatch(request("api_key_http:admitted/model")))
         assert allowed["result"]["text"] == "answer"
         assert observed[0][1].usage_id == parent.usage_id
         assert observed[0][0].context.launch_reference == reference
+        assert len(observed) == 2
     finally:
         parent.close()
 
