@@ -185,6 +185,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | N8 | Optional link to the user's personal computer (Dir 8: optional) (founder 2026-10-11, frontier baseline #4624) | an optional external box connector the owner adds; every hosted surface works without it | tray host `desktop/` (S15) | unbuilt | `host-paths` stays green: nothing hosted requires the link | after C5, C6 (S8, S15) |
 | N9 | `model_call` returns media (images, audio, video) (founder 2026-10-11, frontier baseline #4624) | `model_call` outputs typed media parts with a receipt per call | none | unbuilt | `call-sites` plus a media-receipt test (planned) | after C3 (S1) |
 | N10 | Owner-only policy layer (ADR-019, frontier baseline v2 #4624) | one broker-private account policy; protected owner-session writes; read-only agent projection; every broker decision receipted | P5 box-boundary gate and P6 legacy source retirement remain | drifted | `policy-writers` (`test_policy_writers`): no box or agent path writes policy | C6 P1, P5, P6 |
+| N11 | One user-built app (founder 2026-10-12) | `tinyassets/app_object.py`: the command center's id, manifest and default screen; the launch list is `GET /app/apps` inside the existing `/app` shell (S16) | none | converged | `test_app_object`; `app_manifest` outside that module is a second path | — |
 
 Findings against a row go in [`docs/concerns/`](concerns/); a new shape is a
 new row with its guard in the same PR.

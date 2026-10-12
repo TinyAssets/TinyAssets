@@ -2520,6 +2520,7 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.app_object import handle_apps
     from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.browser_login import handle as handle_browser_login
@@ -2549,6 +2550,7 @@ def onboarding_routes() -> list[Any]:
 
     return [
         Route("/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/app/apps", handle_apps, methods=["GET"]),
         Route("/app/run/{listing}", handle_public_run, methods=["GET", "HEAD"]),
         Route("/app/run/{listing}/preview.png", handle_public_run, methods=["GET", "HEAD"]),
         Route("/app/unread", handle_unread, methods=["GET", "POST"]),

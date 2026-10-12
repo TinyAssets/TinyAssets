@@ -466,6 +466,7 @@
           <span id="ui-mode" hidden></span>
           <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-apps" class="btn btn--link" type="button">Apps</button>
           <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </div>
@@ -781,6 +782,20 @@
     <!-- Connect subscription (secondary). -->
     <!-- Account: who you are here, and the in-app deletion path Google Play
          requires (mirrored on tinyassets.io/account for the web). -->
+    <section id="view-apps" class="view view--connect" hidden>
+      <header class="chat-header">
+        <div class="chat-title">Your apps</div>
+        <nav class="chat-actions">
+          <button id="btn-apps-back" class="btn btn--link" type="button">Back</button>
+        </nav>
+      </header>
+      <div class="connect-body">
+        <p>Each app opens on its default screen. A command center is an app for your own agents.</p>
+        <div id="apps-list"></div>
+        <p id="apps-status" class="notice" role="status"></p>
+      </div>
+    </section>
+
     <section id="view-account" class="view view--connect" hidden>
       <header class="chat-header">
         <div class="chat-title">Your account</div>
@@ -1999,11 +2014,91 @@
 
   // ---- UI ----
   const $=(id)=>document.getElementById(id);
-  const views={signin:$("view-signin"),chat:$("view-chat"),account:$("view-account")};
+  const views={signin:$("view-signin"),chat:$("view-chat"),account:$("view-account"),apps:$("view-apps")};
   let viewGeneration=0;
   function showView(n){
     viewGeneration++; for(const k in views) views[k].hidden=(k!==n);
     if(n==="chat" && typeof followChatLatest==="function") followChatLatest(true);
+  }
+  // One card per app from GET /app/apps. The id stays off the card: a command
+  // center id is not a name (the header already refuses to show one).
+  function appCards(doc){
+    const apps=doc&&Array.isArray(doc.apps)?doc.apps:[];
+    return apps.map(app=>{
+      const manifest=app&&app.manifest||{};
+      const screen=manifest.default_screen||{};
+      const open=app&&app.open||{};
+      const name=String(manifest.name||"").trim();
+      return {
+        name:name||"Command center",
+        description:String(manifest.description||""),
+        kind:manifest.kind==="command_center"?"Command center":String(manifest.kind||""),
+        version:manifest.version,
+        screen:String(screen.name||screen.ui_id||""),
+        openable:open.method==="signed_in_command_center",
+        blocked:String(open.reason||""),
+      };
+    });
+  }
+  function openListedApp(card){
+    if(!card||card.openable!==true){
+      return {opened:false, reason:(card&&card.blocked)||"This app is not the signed-in command center."};
+    }
+    showView("chat");
+    return {opened:true, screen:card.screen};
+  }
+  function paintApps(doc){
+    const list=$("apps-list");
+    if(!list) return;
+    list.replaceChildren();
+    for(const card of appCards(doc)){
+      const article=document.createElement("article");
+      const title=document.createElement("h3");
+      title.textContent=card.name;
+      article.appendChild(title);
+      const meta=document.createElement("p");
+      meta.textContent=card.kind+" · Version "+card.version+" · Opens "+card.screen;
+      article.appendChild(meta);
+      if(card.description){
+        const description=document.createElement("p");
+        description.textContent=card.description;
+        article.appendChild(description);
+      }
+      const button=document.createElement("button");
+      button.type="button";
+      button.className="btn";
+      button.textContent="Open";
+      button.addEventListener("click",()=>{
+        const result=openListedApp(card);
+        const status=$("apps-status");
+        if(status) status.textContent=result.opened?"":result.reason;
+      });
+      article.appendChild(button);
+      list.appendChild(article);
+    }
+  }
+  async function showApps(){
+    showView("apps");
+    const list=$("apps-list"), status=$("apps-status");
+    if(list) list.replaceChildren();
+    if(status) status.textContent="Loading your apps…";
+    const epoch=MCP._loginEpoch;
+    try{
+      let response=await fetch("/app/apps",{headers:authHeaders(),credentials:"same-origin",cache:"no-store"});
+      if(response.status===401 && await refreshAccessToken())
+        response=await fetch("/app/apps",{headers:authHeaders(),credentials:"same-origin",cache:"no-store"});
+      if(epoch!==MCP._loginEpoch) return;
+      if(response.status===401){ sessionExpired(); return; }
+      const doc=await response.json();
+      if(epoch!==MCP._loginEpoch) return;
+      if(!response.ok||!doc||!Array.isArray(doc.apps))
+        throw new Error((doc&&doc.error)||"Could not read your apps.");
+      paintApps(doc);
+      if(status) status.textContent=doc.apps.length?"":"You have no apps yet.";
+    }catch(error){
+      if(epoch!==MCP._loginEpoch) return;
+      if(status) status.textContent=(error&&error.message)||"Could not read your apps.";
+    }
   }
 
   // All agent surfaces share #thread. Follow content/layout changes until the
@@ -8162,6 +8257,8 @@
     // disconnect that is chat with the connect request first, never a
     // separate setup screen.
     function leaveAccount(){ enterSignedIn(); }
+    $("btn-apps").addEventListener("click", ()=>showApps());
+    $("btn-apps-back").addEventListener("click", ()=>showView("chat"));
     $("btn-account").addEventListener("click", showAccount);
     $("btn-account-back").addEventListener("click", leaveAccount);
     $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
