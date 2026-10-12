@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "name": "codex",
+  "description": "OpenAI Codex CLI package",
+  "external_agents": [
+    {
+      "name": "codex",
+      "description": "OpenAI Codex CLI",
+      "family": "openai",
+      "install": {"npm": "@openai/codex", "version": "0.160.0", "bin": "codex"},
+      "auth": {
+        "service": "codex",
+        "home_env": "CODEX_HOME",
+        "home_dir": "codex",
+        "files": ["auth.json"],
+        "writeback": ["auth.json"],
+        "env_from_file": {}
+      },
+      "catalogue": {
+        "transport": "jsonrpc",
+        "argv": ["app-server"],
+        "initialize": {
+          "method": "initialize",
+          "params": {"clientInfo": {"name": "tinyassets", "version": "1"}},
+          "notification": "initialized"
+        },
+        "list": {
+          "method": "model/list",
+          "params": {"limit": 100, "includeHidden": true},
+          "items": "/data",
+          "cursor": "/nextCursor",
+          "cursor_param": "cursor"
+        },
+        "row": {
+          "model": "/model",
+          "default": "/isDefault",
+          "hidden": "/hidden",
+          "modalities": "/inputModalities",
+          "effort_levels": "/supportedReasoningEfforts",
+          "effort_level": "/reasoningEffort"
+        }
+      },
+      "job": {
+        "transport": "jsonrpc",
+        "argv": ["app-server"],
+        "start": {
+          "method": "thread/start",
+          "params": {"model": "{model}", "cwd": "{workdir}", "ephemeral": false,
+                     "approvalPolicy": "never", "sandbox": "danger-full-access"}
+        },
+        "resume": {"method": "thread/resume", "params": {"threadId": "{session}"}},
+        "input": {
+          "method": "turn/start",
+          "params": {"threadId": "{session}", "input": "{input}", "effort": "{effort}"}
+        },
+        "session_handle": "/thread/id",
+        "tools": {"mode": "dynamic_rpc", "define_at": "/dynamicTools",
+                  "call_method": "item/tool/call"},
+        "events": {
+          "text_delta": {"method": "item/agentMessage/delta", "text": "/delta"},
+          "item_done": {"method": "item/completed"},
+          "usage": {"method": "thread/tokenUsage/updated",
+                    "input": "/tokenUsage/total/inputTokens",
+                    "output": "/tokenUsage/total/outputTokens"},
+          "model": {"method": "turn/started", "value": "/turn/model"},
+          "done": {"method": "turn/completed", "status": "/turn/status"}
+        },
+        "cancel": {"method": "turn/interrupt", "params": {"threadId": "{session}"},
+                   "grace_s": 10}
+      }
+    }
+  ]
+}

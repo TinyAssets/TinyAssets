@@ -29,6 +29,8 @@ from tests.test_native_model_discovery import (
     metadata_transport_processes,  # noqa: F401 - a fixture, requested by name below
 )
 from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.external_agents.registry import resolve
+from tinyassets.external_agents.runner import _protocol
 from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.model_options import model_options_document
 from tinyassets.providers.model_policy import ModelRef
@@ -43,6 +45,8 @@ from tinyassets.providers.served_model_plan import (
     prepare_owned_model_plan,
 )
 from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+CODEX_PROTOCOL = _protocol(resolve("codex").row["catalogue"])
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
@@ -339,7 +343,7 @@ def metadata_snapshot(universe):
 #: transport starts it in the owner's provider-discovery cell;
 #: `metadata_transport_processes` (tests/test_native_model_discovery.py) stands a
 #: plain child in for the cell, so the protocol and the decoder are real. The
-#: cell itself is proven in tests/test_role_provider_discovery.py.
+#: cell itself is proven in tests/test_role_external_agent.py.
 real_metadata_child = pytest.mark.usefixtures("metadata_transport_processes")
 
 
@@ -639,9 +643,7 @@ def test_codex_registers_its_own_effort_shape():
     Claude's shape left every Codex row with no levels, so the founder's
     explicit ask (codex `model_reasoning_effort`) had no control at all.
     """
-    from tinyassets.providers.codex_provider import CodexProvider
-
-    protocol = CodexProvider.native_discovery_protocol
+    protocol = CODEX_PROTOCOL
     assert protocol.effort_levels_key == "supportedReasoningEfforts"
     assert protocol.effort_level_key == "reasoningEffort"
     assert protocol.effort_key is None, "Codex implies support by listing levels"
@@ -661,9 +663,7 @@ def test_codex_registers_its_own_effort_shape():
 
 def test_a_source_with_no_boolean_gate_and_no_levels_has_no_control():
     """Absence is a truthful "no control", not a fault, without a gate."""
-    from tinyassets.providers.codex_provider import CodexProvider
-
-    protocol = CodexProvider.native_discovery_protocol
+    protocol = CODEX_PROTOCOL
     assert protocol.row_effort({"model": "m"}) == (False, ())
     assert protocol.row_effort({"model": "m", "supportedReasoningEfforts": []}) == (False, ())
 
@@ -675,10 +675,8 @@ def test_a_source_with_no_boolean_gate_and_no_levels_has_no_control():
     {"model": "m", "supportedReasoningEfforts": "low"},
 ])
 def test_malformed_codex_effort_entries_refuse(row):
-    from tinyassets.providers.codex_provider import CodexProvider
-
     with pytest.raises(ValueError):
-        CodexProvider.native_discovery_protocol.row_effort(row)
+        CODEX_PROTOCOL.row_effort(row)
 
 
 def test_a_gated_source_claiming_support_without_levels_still_refuses():
@@ -868,8 +866,6 @@ def test_claude_declares_the_unsupported_marker():
 
 def test_a_protocol_without_a_marker_treats_every_error_as_an_error():
     """Opt-in: codex's JSON-RPC envelope has no such concept and keeps none."""
-    from tinyassets.providers.codex_provider import CodexProvider
-
     assert getattr(
-        CodexProvider.native_discovery_protocol, "unsupported_error_marker", None,
+        CODEX_PROTOCOL, "unsupported_error_marker", None,
     ) is None

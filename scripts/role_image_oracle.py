@@ -51,7 +51,8 @@ COMPOSE_ENV = {
 MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 #: Every in-container leg this script can drive, in the order it drives them.
 LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
-             "provider_exec", "provider_turns", "workspace_remote", "workspace_provision",
+             "provider_exec", "external_agent", "provider_turns", "workspace_remote",
+             "workspace_provision",
              "engine_http", "preview", "two_pass_delete")
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
@@ -843,7 +844,6 @@ def leg_workspace_remote():
     lease and its content directory must come out owner-owned, which is the
     whole reason that work moved into a cell.
     """
-    import secrets
 
     from tinyassets import role_remote_git, workspace_owner_pool
     from tinyassets.workspace_pool import WORKSPACES_DIR
@@ -982,9 +982,53 @@ def leg_two_pass_delete():
 
 # EXTENSION POINT. One cell class is one leg: add the function above and its
 # name to LEG_NAMES (and DEFAULT_LEGS) in this file's host half.
+def leg_external_agent():
+    """A receipted package catalogue through the shipped owner home and cell."""
+    import base64
+    import secrets
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody, llm_subscription_credential_record,
+        write_credential_vault,
+    )
+    from tinyassets.external_agents.home import Custody, materialize
+    from tinyassets.external_agents.registry import resolve
+    from tinyassets.external_agents.receipts import status
+    from tinyassets.external_agents.runner import run_catalogue
+    from tinyassets.role_external_agent import CellLauncher
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    principal, center_name = 'dana', center_of('dana')
+    center = DATA / center_name
+    auth_file = Path('/run/oracle-auth.json')
+    auth = base64.b64encode(auth_file.read_bytes() if auth_file.exists() else b'{}').decode()
+    write_credential_vault(center, [llm_subscription_credential_record(
+        service='codex', auth_json_b64=auth,
+    )], owner_user_id=principal, universe_id=center_name)
+    with SQLiteProviderWorkAuthorityStore(DATA).connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        reference = adopt_llm_subscription_custody(
+            conn, universe_dir=center, owner_user_id=principal,
+            universe_id=center_name, service='codex',
+        )
+        conn.commit()
+    custody = Custody(center, principal, reference)
+    assert custody.current(), 'new custody is not current'
+    original = materialize(custody, resolve('codex').row['auth'])
+    assert original, 'auth was not materialized'
+    launcher = CellLauncher(universe_dir=center, owner_user_id=principal)
+    with identity_context(Identity(principal, principal)):
+        result = asyncio.run(run_catalogue('codex', launcher, custody))
+    assert result.catalogue.models, 'installed package returned no models'
+    state = status(DATA, owner=principal, universe_id=center_name, agent='codex')
+    assert state == 'fresh', state
+    return dict(owner=principal, center=center_name, models=len(result.catalogue.models),
+                default=result.catalogue.default_model_id, status=state)
+
+
 LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
         'admission': leg_admission, 'new_center_cell': leg_new_center_cell,
         'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
+        'external_agent': leg_external_agent,
         'provider_turns': leg_provider_turns,
         'workspace_remote': leg_workspace_remote,
         'workspace_provision': leg_workspace_provision,
@@ -1331,12 +1375,18 @@ def stage_cells(args):
     """The booted image drives every owner-cell class it can, as the daemon."""
     _metadata(args, start=True)
     docker("rm", "-f", f"{args.prefix}-cells", check=False)
+    extra = ["--rm", "-i", "--network", args.network,
+             "-e", "ORACLE_LEGS=" + json.dumps(list(args.legs)),
+             "-e", "ORACLE_OUTSIDE_HOST=" + METADATA_ADDRESS,
+             "-e", "ORACLE_OUTSIDE_PORT=80"]
+    if args.synthetic_auth_file:
+        source = str(Path(args.synthetic_auth_file).resolve(strict=True))
+        if len(source) > 2 and source[1] == ':':
+            source = '/' + source[0].lower() + source[2:].replace('\\', '/')
+        extra.extend(["-v", source + ":/run/oracle-auth.json:ro"])
     command = _posture(f"{args.prefix}-cells", args.image, args.volume, user=COMPOSE_USER,
                        caps=COMPOSE_CAPS, entrypoint="/opt/venv/bin/python",
-                       extra=["--rm", "-i", "--network", args.network,
-                              "-e", "ORACLE_LEGS=" + json.dumps(list(args.legs)),
-                              "-e", "ORACLE_OUTSIDE_HOST=" + METADATA_ADDRESS,
-                              "-e", "ORACLE_OUTSIDE_PORT=80"])
+                       extra=extra)
     result = subprocess.run(command + ["-I", "-B", "-"], input=CELLS, text=True, encoding="utf-8",
                             capture_output=True, timeout=args.cells_timeout)
     output = result.stdout + result.stderr
@@ -1511,6 +1561,8 @@ def main(argv=None):
     parser.add_argument('--backup-archive', help='restore this full backup instead of the fixture; '
                         'chat acceptance uses only a local streaming endpoint')
     parser.add_argument('--command-center', help='production command center for chat acceptance')
+    parser.add_argument('--synthetic-auth-file',
+                        help='local credential mounted read-only for the external-agent cell leg')
     parser.add_argument("--prefix", default="role-image-oracle",
                         help="name prefix for this run's volume and containers")
     parser.add_argument("--volume", help="data volume name (default <prefix>-data)")

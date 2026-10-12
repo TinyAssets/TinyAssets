@@ -80,6 +80,7 @@ def safe_environment(env, owner_values=frozenset()):
             if len(value) <= 128 and re.fullmatch(r'[A-Za-z0-9_.@+-]*', value):
                 allowed[key] = value
         elif (value == SNAPSHOT or value.startswith(SNAPSHOT + '/')
+              or value == '/agent-home' or value.startswith('/agent-home/')
               or value == '/tmp' or value.startswith('/tmp/')):
             if not any(part in ('.', '..') for part in value.split('/')):
                 allowed[key] = value

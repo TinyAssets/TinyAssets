@@ -279,25 +279,6 @@ class CodexProvider(BaseProvider):
     native_command_resolver = staticmethod(lambda: _resolve_codex_cmd())
     native_process_options = staticmethod(_no_window_kwargs)
     native_install_mounts = staticmethod(lambda command: _codex_sandbox_mounts(command))
-    native_metadata_arguments = ("app-server",)
-    from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
-
-    native_discovery_protocol = NativeJsonRpcProtocol(
-        list_method="model/list", items_key="data", model_key="model", default_key="isDefault",
-        modalities_key="inputModalities", hidden_key="hidden", cursor_key="nextCursor",
-        cursor_param="cursor", initialize_method="initialize",
-        initialized_notification="initialized",
-        # Effort, from the source rather than a constant here. Codex advertises
-        # no boolean gate and lists OBJECTS, so support is implied by a
-        # non-empty list and the level name sits inside each entry. Its
-        # vocabulary also differs from Claude Code's -- a live catalogue offers
-        # `ultra`, which Claude does not -- which is why the admissible set is
-        # always per model and never a shared enum.
-        effort_levels_key="supportedReasoningEfforts",
-        effort_level_key="reasoningEffort",
-        initialize_params_json='{"clientInfo":{"name":"tinyassets_model_discovery","version":"1"}}',
-        list_params_json='{"limit":100,"includeHidden":true}',
-    )
 
     @classmethod
     def is_available(cls) -> bool:

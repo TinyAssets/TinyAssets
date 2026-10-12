@@ -101,6 +101,7 @@ def _native_inventory(conn, universe, owner):
 
 def _native_enumeration(provider):
     """Installed metadata support, not proof this account has a model list."""
+    from tinyassets.external_agents.registry import PACKAGES
     from tinyassets.providers.base import BaseProvider
     from tinyassets.providers.call import get_provider_router
 
@@ -109,7 +110,8 @@ def _native_enumeration(provider):
     if executor is None:
         return "unavailable"
     method = getattr(executor, "enumerate_models", None)
-    supported = (getattr(executor, "native_discovery_protocol", None) is not None
+    supported = (provider in PACKAGES
+                 or getattr(executor, "native_discovery_protocol", None) is not None
                  or callable(method)
                  and getattr(method, "__func__", method) is not BaseProvider.enumerate_models)
     return "supported" if supported else "unknown"

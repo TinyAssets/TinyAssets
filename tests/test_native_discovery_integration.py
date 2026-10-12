@@ -41,6 +41,10 @@ def catalogue(ids, *, age=0):
 def install_discovery(native, monkeypatch, discover=None):
     from tinyassets.daemon_server import set_founder_home
 
+    # This fixture exercises a synthetic executor's legacy metadata seam.
+    # Package catalogue operations have their own transport/custody tests.
+    monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
+
     set_founder_home(native.base, founder_sub="owner-1", universe_id=native.universe.name,
                      platform_generated=True)
     seen, configs = [], []

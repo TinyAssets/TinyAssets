@@ -368,19 +368,19 @@ a live sign-in through the package path succeeds for a fresh account
 
 ## Deletions (same release) and estimated net
 
-| Delete | Where | Approx. lines |
+| Delete | Where | Measured base span or file lines |
 |---|---|---|
-| Codex executor, app-server codec, launch contract | `providers/codex_provider.py`, `codex_app_server.py`, `codex_launch_contract.py` | -1,171 |
-| Claude Code executor | `providers/claude_provider.py` | -1,335 |
-| `_CLI_PROVIDER_CLASSES`, `_cli_provider`; `_CLI_PROTOCOLS`; `_CLI_REFS` | `providers/provider_resolver.py`, `providers/definition.py`, `api/compute_connection.py` | -55 |
-| Per-vendor child env and auth overlay (`_PROVIDER_AUTH_OVERLAY_ENV_VARS`, `_provider_child_runtime_env`, `_valid_provider_auth_overlay`, the vendor branches of `subprocess_env_for_provider`) | `providers/base.py:598-990` | -300 |
-| Codex auth probes and refresh viability; bubblewrap probe and failure classification | `providers/base.py:990-1500` | -500 |
-| Codex and Claude home and token helpers (`_codex_home_from_record` ... `apply_provider_auth_env`), `_decode_codex_auth_json` | `credential_vault.py:2283-2600`, `:192` | -350 |
-| The provider-discovery cell kind; the snapshot rewrite in the execution cell | `role_provider_discovery.py`; `role_provider_cell.py` | -220 |
-| Vendor-specific discovery glue, `catalogue_refresh_pending` | `native_discovery.py`, `native_jsonrpc_discovery.py`, `shortlist_refresh.py`, `model_options.py` | -150 |
-| Device login reimplementation and its routes (task 7, after live parity) | `onboarding/openai_device.py`, `onboarding/__init__.py` | -640 |
-| `codex_home` status probe | `api/status.py:470-490` | -20 |
-| **Deleted** | | **about -4,740** |
+| Codex executor, app-server codec, launch contract | `providers/codex_provider.py`, `codex_app_server.py`, `codex_launch_contract.py` | 607 + 492 + 72 = 1,171 full-file lines |
+| Claude Code executor | `providers/claude_provider.py` | 1,335 full-file lines |
+| `_CLI_PROVIDER_CLASSES`, `_cli_provider`; `_CLI_PROTOCOLS`; `_CLI_REFS` | `providers/provider_resolver.py`, `providers/definition.py`, `api/compute_connection.py` | `_cli_provider` 39-51 (13); `provider_for_definition` 54-67 (14), with only its CLI branch removed in task 3; other constants measured at edit |
+| Per-vendor child env and auth overlay | `providers/base.py` | `_provider_child_runtime_env` 758-807 (50), `_valid_provider_auth_overlay` 810-825 (16), `subprocess_env_for_provider` 848-975 (128), including shared code to retain |
+| Codex auth probes and refresh viability; bubblewrap probe and failure classification | `providers/base.py` | candidate range 990-1500 (511); exact removed functions measured at task 4 |
+| Codex and Claude home and token helpers | `credential_vault.py` | 17 top-level function spans total 258 lines, including `_decode_codex_auth_json` 192-218 (27) and the 2283-2575 block; shared callers measured at edit |
+| Provider-discovery cell kind; snapshot rewrite in execution cell | `role_provider_discovery.py`; `role_provider_cell.py` | discovery file 184; `copy_snapshot` 156-188 (33) and snapshot relocation in `cell_main` 204-211 (8), plus constants/mapper wiring |
+| Discovery glue and `catalogue_refresh_pending` | `native_discovery.py`, `native_jsonrpc_discovery.py`, `shortlist_refresh.py`, `model_options.py` | `read_native_catalogue` 355-452 (98); refresh/discover functions 92-171 (76); remaining parser is shared until replaced; pending diagnostics measured at edit |
+| Device login reimplementation and routes (task 7, after live parity) | `onboarding/openai_device.py`, `onboarding/__init__.py` | login file 543; route spans measured at task 7 |
+| `codex_home` status probe | `api/status.py` | `_provider_auth_snapshot` 682-710 (29), of which only the probe branch is removed |
+| **Deleted** | | **The actual net is measured per PR; partial spans above are candidate bounds, not a sum.** |
 | Package parser kind and registry | `extension_manifest.py`, `external_agents/registry.py` | +80 |
 | Runner: two transports, two tool modes, events, cancel | `external_agents/runner.py`, `transports.py` | +650 |
 | Agent home, auth materialize and write-back | `external_agents/home.py`, broker custody CAS | +160 |
@@ -390,10 +390,14 @@ a live sign-in through the package path succeeds for a fresh account
 | `cli:*` to `agent:*` migration | `deploy/` | +40 |
 | Image install script | `scripts/install_external_agents.py` (not core) | — |
 | Package manifests | `external_agents/packages/*/extension.json` (data) | — |
-| **Estimated net** | | **about -3,540** |
+| **Estimated net** | | **Replaced by `git diff --numstat` at each PR.** |
 
-Without task 7 the net is about -2,900. Figures are function spans on
-`a27a311acc3`; task 1 measures them. The gate per PR is
+The base commit is `6932c180ab27e2ef6709515d620f9947dbc9ae47` (the spec
+branch). The exact full-file line counts and every Python importer of the
+full-file deletion targets are in
+`tests/fixtures/external_agents/baseline_inventory.json`; the pinned image's
+redacted catalogue/job envelopes are in `cli_transcripts.json` beside it.
+The gate per PR is
 `git diff --numstat origin/main -- tinyassets deploy ':!**/tests/**'` with
 added minus deleted below zero.
 

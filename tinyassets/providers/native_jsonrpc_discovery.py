@@ -373,7 +373,7 @@ async def read_native_catalogue(
             raise ValueError("native metadata requires its owning command center")
         del spawn_kwargs, install_mounts
         view = metadata_view(universe_dir, cwd, env, auth_env_names)
-        from tinyassets.role_provider_discovery import aspawn_cell
+        from tinyassets.role_external_agent import aspawn_cell
 
         async with asyncio.timeout(timeout):
             # D82: metadata runs only in the owner's provider-discovery cell;

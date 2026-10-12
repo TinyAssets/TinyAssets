@@ -49,8 +49,8 @@ def test_declared_models_are_not_labelled_verified_available(tmp_path):
 
 
 @pytest.mark.parametrize("reason,label", [
-    ("catalogue_refresh_pending", "checking…"),
-    ("native_catalogue_unavailable", "couldn't refresh"),
+    ("refreshing", "checking…"),
+    ("failed: native_catalogue_unavailable", "couldn't refresh"),
 ])
 def test_catalogue_refresh_is_visible_without_disabling_known_choices(tmp_path, reason, label):
     doc = catalogue()
@@ -73,7 +73,7 @@ def test_retained_native_catalogue_age_does_not_expire_the_picker_read(
     doc["sources"] = [{"provider_ref": "owned:future-source", "access_method": method,
                        "expires_at": "2000-01-01T00:00:00+00:00"}]
     doc["source_failures"] = [{"provider_ref": "owned:future-source",
-                               "reasons": [{"reason": "catalogue_refresh_pending"}]}]
+                               "reasons": [{"reason": "refreshing"}]}]
     result = run_picker(tmp_path, """
       await ModelPicker.menuOpen();
       await ModelPicker.choose(ModelPicker.key(""" + json.dumps(ref("first")) + """));
