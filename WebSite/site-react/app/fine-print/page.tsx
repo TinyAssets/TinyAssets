@@ -111,7 +111,7 @@ export default function FinePrintPage() {
               <li style={{ gridTemplateColumns: "1fr" }}>
                 <div>
                   <h3>No paid work market</h3>
-                  <p>Nothing on this site is an offer to sell anything, and no currency moves. The <Link href="/legal/">legal page</Link> carries the disclosures.</p>
+                  <p>Nothing on this site is an offer to sell the token or anything else. The contract address is on the <Link href="/token/">token page</Link>. The app does not move that token for you. The <Link href="/legal/">legal page</Link> carries the disclosures.</p>
                 </div>
               </li>
             </ul>
