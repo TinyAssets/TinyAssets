@@ -1,23 +1,4 @@
-"""Single source of truth for the served agent's engine-MCP tool allowlist.
-
-Founder rule: every surface does the same things. The served universe answers on
-different provider families (codex via ``codex exec``, claude via ``claude -p``),
-and each wires the engine-MCP server with an ``enabled_tools`` allowlist. Those
-two allowlists MUST be identical — a codex-served and a claude-served universe get
-exactly the same capability. They used to be two hand-maintained tuples
-(``codex_provider._ENGINE_MCP_ENABLED_TOOLS`` and
-``universe_intelligence._ENGINE_MCP_TOOLS``), which silently drifted: ``run_graph``
-landed on the claude list only, so a codex-served founder could not run their own
-automations at all (caught 2026-08-23).
-
-Making both providers import THIS one tuple removes the drift class structurally —
-they are now the same object, so "meant to be in sync" is guaranteed by
-construction, not by a guard test that only notices after the fact. To change what
-the served agent can do, edit this list ONCE and every surface moves together.
-
-Kept deliberately dependency-free so any provider module can import it without a
-cycle.
-"""
+"""Canonical engine-MCP tool allowlist for every served provider."""
 
 from __future__ import annotations
 

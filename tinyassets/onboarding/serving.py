@@ -22,8 +22,6 @@ arbitrary rediscovered binding), re-pointed to the newly deposited provider
 founder created is disabled so exactly one serves. A CURRENT admin ACL is
 re-checked before any mutation. All authority checks inside the serving module
 still run — this composes the public primitives, it does not bypass them.
-Claude serving stays behind the operator opt-in (``TINYASSETS_ALLOW_CLAUDE_SERVING``);
-when that refuses, the result says so.
 """
 
 from __future__ import annotations

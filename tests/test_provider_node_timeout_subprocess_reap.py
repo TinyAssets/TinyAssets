@@ -152,7 +152,7 @@ def _bridge_owning_a_child(marker: Path, pids: list[int]):
     """A provider bridge that owns a real subprocess, like the real one does.
 
     It spawns the child, then blocks on it -- exactly the shape of
-    ``call_with_policy_sync`` blocking on a ``claude -p`` stream. The node
+    ``call_sync`` blocking on a ``claude -p`` stream. The node
     timeout fires while this is still running.
     """
     started: dict[str, subprocess.Popen] = {}
@@ -326,7 +326,7 @@ def test_provider_spawn_sites_own_their_family_through_one_module():
     root = Path(__file__).resolve().parents[1] / "tinyassets"
     group_tokens = ("start_new_session", "CREATE_NEW_PROCESS_GROUP")
 
-    for provider in ("providers/claude_provider.py", "providers/codex_provider.py"):
+    for provider in ("providers/claude_provider.py",):
         source = (root / provider).read_text(encoding="utf-8", errors="replace")
         assert "aspawn_owned" in source, (
             f"{provider} no longer spawns through owned_process; its CLI's "

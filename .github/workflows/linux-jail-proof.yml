@@ -91,9 +91,8 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      - "tinyassets/providers/codex_provider.py"
-      # Discovery cell confinement is proved by scripts/role_provider_cell_probe.py
-      # against the production image; the pre-cell jail test is retired.
+      - "tinyassets/external_agents/runner.py"
+      # External-agent confinement is proved by the role image oracle.
       - "tinyassets/providers/native_jsonrpc_discovery.py"
       # The shared jail pieces, the cell seccomp profiles, the spawn point,
       # the router that binds the owning universe and the adapters.
@@ -173,9 +172,8 @@ on:
       - "tests/test_delivery_public.py"
       - "tests/test_receiver_links.py"
       - "tests/conftest.py"
-      - "tinyassets/providers/codex_provider.py"
-      # Discovery cell confinement is proved by scripts/role_provider_cell_probe.py
-      # against the production image; the pre-cell jail test is retired.
+      - "tinyassets/external_agents/runner.py"
+      # External-agent confinement is proved by the role image oracle.
       - "tinyassets/providers/native_jsonrpc_discovery.py"
       # The shared jail pieces, the cell seccomp profiles, the spawn point,
       # the router that binds the owning universe and the adapters.

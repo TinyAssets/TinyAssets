@@ -64,7 +64,7 @@ PLATFORM_NAMES = frozenset({
     ".credentials", ".credentials.json", ".credential-vault.json", ".oauth-refresh", ".runtime",
     ".runtime_status.json", ".engine_mcp_config.json", ".engine_mcp_http_routes.json",
     ".pause", ".agent-sessions", ".consumer_liveness", ".quarantine",
-    ".workspace-staging", ".authoring_blobs", ".tinyassets_auth_probe.json",
+    ".workspace-staging", ".authoring_blobs",
     ".idle_cycle_stamp.json",
     # the queue consumer's heartbeat (api/universe.py _WORKER_SUPERVISOR_FILENAME,
     # runtime/assigned_queue_consumer.py SUPERVISOR_HEARTBEAT_FILENAME)

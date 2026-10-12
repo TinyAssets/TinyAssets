@@ -8,6 +8,8 @@ Validates:
 
 from __future__ import annotations
 
+import pytest
+
 from tinyassets.constraints.constraint_surface import (
     empty_constraint_surface,
     score_constraint_surface,
@@ -15,6 +17,8 @@ from tinyassets.constraints.constraint_surface import (
 from tinyassets.constraints.constraint_synthesis import ConstraintSynthesis
 from tinyassets.planning.dome_expansion import DOMEExpander
 from tinyassets.planning.htn_planner import HTNPlanner
+
+pytestmark = pytest.mark.usefixtures("connected_fantasy_model")
 
 # ------------------------------------------------------------------
 # HTN Planner

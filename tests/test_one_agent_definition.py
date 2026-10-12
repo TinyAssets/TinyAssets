@@ -52,12 +52,8 @@ def definition():
 
 def _registered_kinds() -> list[str]:
     """Every provider kind the platform can execute, from its registries."""
-    from tinyassets.providers import call
-
     kinds = [f"cli:{name}" for name in provider_resolver._CLI_PROVIDER_CLASSES]
     kinds += [f"http:{protocol}" for protocol in _HTTP_PROTOCOLS]
-    source = Path(call.__file__).read_text(encoding="utf-8")
-    kinds += ["local:ollama"] if "OllamaProvider()" in source else []
     return kinds
 
 
@@ -328,69 +324,12 @@ def _listed_for(url, monkeypatch):
             for t in listed]
 
 
-def _codex(definition, tmp_path, monkeypatch):
-    from tests.support.fake_codex_app_server import FakeAppServer, Turn
-    from tests.support.owned_spawn import install_fake_owned_spawn
-    from tinyassets.providers import codex_app_server, codex_provider
-
-    opened = []
-    from tinyassets import credential_vault
-
-    auth = tmp_path / ".runtime" / "provider-launch-credentials" / "codex-1"
-    auth.mkdir(parents=True)
-    monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools",
-                        _recording_engine_tools(opened))
-    monkeypatch.setattr(codex_provider, "_resolve_codex_cmd", lambda: (["codex"], False))
-    monkeypatch.setattr(codex_provider, "subprocess_env_for_provider",
-                        lambda *a, **k: {"CODEX_HOME": str(auth)})
-    monkeypatch.setattr(credential_vault, "_write_exclusive_snapshot_file",
-                        lambda path, data: path.write_bytes(data))
-
-    async def bundled(base_cmd, **k):
-        return {"models": [
-            {"slug": "m", "tool_mode": "code_mode_only", "multi_agent_version": "v2"}]}
-    monkeypatch.setattr(codex_app_server, "bundled_catalog", bundled)
-    held = {}
-    launch = install_fake_owned_spawn(
-        monkeypatch, codex_provider.__name__,
-        side_effect=lambda argv, **kw: held.setdefault("server", FakeAppServer()))
-    config = _served_config(sandbox_workspace=True, credential_snapshot_dir=auth)
-    asyncio.run(codex_provider.CodexProvider().complete(
-        "Reply OK.", definition.instructions, config, universe_dir=tmp_path))
-    argv = list(launch.call_args.args)
-    [catalog_file] = auth.glob("model-catalog-*.json")
-    catalog = json.loads(catalog_file.read_text())
-    native_tools_off = (
-        argv[1:1 + len(codex_app_server.SERVED_LAUNCH_ARGS)]
-        == list(codex_app_server.SERVED_LAUNCH_ARGS)
-        and not any("mcp_servers" in arg for arg in argv)
-        and all("tool_mode" not in m and m["multi_agent_version"] is None
-                for m in catalog["models"]))
-    route = native_tools_off and _asked_the_route_for_model_tools(opened, config)
-    (start,) = held["server"].requests("thread/start")
-    tools = tuple(AgentTool(t["name"], t["description"], t["inputSchema"])
-                  for t in start["params"]["dynamicTools"]) if route else ()
-
-    def hanging_call():
-        server = FakeAppServer(Turn(hang=True))
-        install_fake_owned_spawn(monkeypatch, codex_provider.__name__,
-                                 side_effect=lambda argv, **kw: server)
-        call = codex_provider.CodexProvider().complete(
-            "Reply OK.", definition.instructions, config, universe_dir=tmp_path)
-        return call, lambda: server.killed
-
-    return tools, start["params"]["baseInstructions"], _capabilities(
-        route_tools=route, kind="native_agent", provider_call=hanging_call)
-
-
 def _render(kind, definition, tmp_path, monkeypatch):
     family, _, name = kind.partition(":")
     if family == "http":
         return _http(name, definition, tmp_path, monkeypatch)
     if kind == "cli:claude-code":
         return _claude(definition, tmp_path, monkeypatch)
-    if kind == "cli:codex":
-        return _codex(definition, tmp_path, monkeypatch)
     if kind == "local:ollama":
         return None
     raise AssertionError(f"registered provider kind {kind} has no renderer in this guard")
@@ -400,8 +339,19 @@ def _render(kind, definition, tmp_path, monkeypatch):
 
 def test_the_guard_covers_every_registered_provider_kind():
     kinds = _registered_kinds()
-    assert {"cli:codex", "cli:claude-code", "local:ollama"} <= set(kinds)
-    assert {f"http:{p}" for p in _HTTP_PROTOCOLS} <= set(kinds)
+    assert set(kinds) == (
+        {f"cli:{name}" for name in provider_resolver._CLI_PROVIDER_CLASSES}
+        | {f"http:{protocol}" for protocol in _HTTP_PROTOCOLS}
+    )
+    assert "cli:claude-code" in kinds
+    from tinyassets.external_agents.registry import PACKAGES
+
+    assert "codex" in PACKAGES
+
+
+def test_unregistered_local_provider_cannot_execute_an_agent_turn():
+    assert "local:ollama" not in _registered_kinds()
+    _assert_refused_for_agent_turns("local:ollama")
 
 
 @pytest.mark.parametrize("kind", _registered_kinds())
@@ -480,24 +430,23 @@ def test_the_turn_gives_every_executor_the_same_instructions(tmp_path, monkeypat
 
 # --- the guard fails the defects it exists for -----------------------------------
 
-@pytest.mark.parametrize("kind", ["http:openai_chat", "cli:codex"])
+@pytest.mark.parametrize("kind", ["http:openai_chat"])
 def test_the_guard_fails_an_adapter_that_asks_for_its_grant(
     kind, definition, tmp_path, monkeypatch,
 ):
     """An adapter that requested the backend capabilities instead of
     ``model_tools`` shows the model the grant; the guard must see it."""
     from tinyassets import agent_turn_coordinator
-    from tinyassets.providers import codex_provider
     from tinyassets.served_tools import granted_tools
 
-    module = codex_provider if kind == "cli:codex" else agent_turn_coordinator
+    module = agent_turn_coordinator
     monkeypatch.setattr(module, "model_tools", granted_tools)
     tools, _, capabilities = _render(kind, definition, tmp_path, monkeypatch)
     assert sorted(t.key() for t in tools) != list(definition.tool_keys())
     assert capabilities != AGENT_CAPABILITIES
 
 
-@pytest.mark.parametrize("kind", ["cli:claude-code", "cli:codex"])
+@pytest.mark.parametrize("kind", ["cli:claude-code"])
 def test_the_guard_fails_a_provider_that_shields_itself_from_cancellation(
     kind, definition, tmp_path, monkeypatch,
 ):
@@ -505,9 +454,8 @@ def test_the_guard_fails_a_provider_that_shields_itself_from_cancellation(
     survives the yield's cancellation (and so keeps its process) has none."""
     from tinyassets.providers.base import ProviderResponse
     from tinyassets.providers.claude_provider import ClaudeProvider
-    from tinyassets.providers.codex_provider import CodexProvider
 
-    cls = CodexProvider if kind == "cli:codex" else ClaudeProvider
+    cls = ClaudeProvider
     real = cls.complete
 
     async def shielded(self, *args, **kwargs):

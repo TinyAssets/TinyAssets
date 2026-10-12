@@ -13,7 +13,8 @@ from jsonschema.exceptions import SchemaError
 from tinyassets import command_center_packages as packages
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-KINDS = ("tools", "hooks", "commands", "cards", "connections", "mcp_servers")
+KINDS = ("tools", "hooks", "commands", "cards", "connections", "mcp_servers",
+         "external_agents")
 EVENTS = {"input", "turn_start", "context", "before_tool", "after_tool", "turn_end"}
 
 
@@ -102,6 +103,10 @@ def parse_manifest(raw: bytes) -> dict:
                                 re.fullmatch(r"[A-Z]+", v) or parse_git_scope(v))
                                    for v in verbs) or len(set(verbs)) != len(verbs)):
                         raise ExtensionError("connection verbs must be unique uppercase names")
+                elif kind == "external_agents":
+                    from tinyassets.external_agents.contract import validate_agent
+
+                    validate_agent(row)
                 else:
                     _object(row, {"name", "description", "transport", "url", "slot",
                                   "executable", "args"}, {"name", "description", "transport"})

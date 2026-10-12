@@ -213,9 +213,7 @@ def test_the_free_model_approval_names_no_internal_ids(rig):
 
 def test_an_unpowered_turn_says_nothing_ran_and_points_at_the_request(rig, monkeypatch):
     from tinyassets import universe_server
-    from tinyassets.providers import call as provider_calls
 
-    monkeypatch.setattr(provider_calls, "_force_mock", False)
     out = json.loads(universe_server.converse(message="hi! what can you do?", graph_id="u-owner"))
     assert out["status"] == "held" and out["reason"] == "setup_required"
     assert out["turn_failure"]["code"] == "setup_required"
@@ -229,12 +227,10 @@ def test_a_disconnected_universe_turn_is_setup_not_a_mystery(rig, monkeypatch):
     """The live account's exact state: a configured agent, an unassigned model."""
     from tinyassets import universe_server
     from tinyassets.api.http_connection import remove_http
-    from tinyassets.providers import call as provider_calls
 
     first = finish(rig, key="first-test-key")
     assert _answer(first["request_id"])["status"] == "answered"
     remove_http(universe_id="u-owner", payload={"destination": "model:openrouter_user_models_v1"})
-    monkeypatch.setattr(provider_calls, "_force_mock", False)
     out = json.loads(universe_server.converse(message="hello?", graph_id="u-owner"))
     assert out.get("reason") == "setup_required", out
     assert "Actions may already have occurred" not in json.dumps(out)

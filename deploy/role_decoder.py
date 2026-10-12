@@ -62,10 +62,11 @@ def tool_mounts(uid, root_fd=3):
 def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=False,
           tool=False, video=False, provider=False, tool_files=False, package=False,
           owner_delete=False, provider_exec=False, center_root=False, content=False, measure=False,
-          browser=False):
+          browser=False, external_agent=False):
     identity(uid)
     host = namespaces()
-    mounted = (preview_write or tool or provider or tool_files or package or owner_delete
+    mounted = (preview_write or tool or provider or external_agent or tool_files
+               or package or owner_delete
                or center_root or content or measure or (node and mime == 'workspace'))
     if center_root or content:
         # DA3: daemon-private staging S; the mapper matched its exact path and
@@ -75,7 +76,7 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
             raise RuntimeError('center-root staging is invalid')
         host['source'] = [info.st_dev, info.st_ino]
         os.set_inheritable(3, True)
-    elif provider or package:
+    elif provider or external_agent or package:
         # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
         # read access only. The mapper already matched its exact path.
         info = os.fstat(3)
@@ -92,9 +93,9 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
     # A package names its sockets after the 64-hex revision, which may itself
     # contain 'e'; only the suffix selects descriptors.
     selector = mime[64:] if package else mime
-    if tool or provider or package:
+    if tool or provider or external_agent or package:
         host['sockets'] = {}
-        slots = (('e', 4), ('g', 5)) if provider else (('e', 4), ('t', 5))
+        slots = (('e', 4), ('g', 5)) if provider or external_agent else (('e', 4), ('t', 5))
         for key, fd in slots:
             if key in selector:
                 info = os.fstat(fd)
@@ -117,7 +118,8 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
-            "--setenv", "HOME", "/tmp", "--setenv", "LANG", "C.UTF-8",
+            "--setenv", "HOME", "/agent-home" if external_agent else "/tmp",
+            "--setenv", "LANG", "C.UTF-8",
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1"]
     for path in ("/usr", "/opt/venv", "/app", "/etc/ld.so.cache"):
         argv.extend(["--ro-bind", path, path])
@@ -143,12 +145,13 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
             argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
         if 't' in selector:
             argv.extend(['--bind-fd', '5', '/package-broker.sock'])
-    elif provider:
+    elif provider or external_agent:
         # Fixed immutable shipped CLI trees only; node itself lives under /usr.
         for path in sorted(glob.glob('/opt/*-install')):
             if os.path.isdir(path) and not os.path.islink(path):
                 argv.extend(['--ro-bind', path, path])
-        argv.extend(['--ro-bind-fd', '3', '/snapshot'])
+        argv.extend(['--bind-fd' if external_agent else '--ro-bind-fd', '3',
+                     '/agent-home' if external_agent else '/snapshot'])
         if 'e' in mime:
             argv.extend(['--bind-fd', '4', '/provider-egress.sock'])
             argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
@@ -166,8 +169,13 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
                 argv.extend(['--bind-fd', str(fd), destination])
     elif mounted:
         argv.extend(['--ro-bind-fd' if measure else '--bind-fd', '3', '/workspace'])
+    if external_agent:
+        # A killed cell cannot run its finally block. Keep per-job auth and
+        # workdirs in a private mount that vanishes when the cell is reaped.
+        argv.extend(['--perms', '0700', '--size', str(32 * 1024 * 1024),
+                     '--tmpfs', '/agent-home/jobs'])
     argv.extend(["--proc", "/proc", "--dev", "/dev"])
-    if package or provider_exec:
+    if package or provider_exec or external_agent:
         argv.extend(['--size', str(256 * 1024 * 1024)])
     argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
@@ -177,6 +185,7 @@ def enter(mime, data_root, uid, *, preview=False, preview_write=False, node=Fals
                  'inside-content' if content else
                  'inside-center-root' if center_root else
                  'inside-package' if package else 'inside-tool-files' if tool_files else
+                 'inside-external-agent' if external_agent else
                  'inside-provider-exec' if provider_exec else
                  'inside-provider' if provider else 'inside-video' if video else
                  'inside-tool' if tool else 'inside-node' if node else
@@ -383,6 +392,36 @@ if __name__ == "__main__":
             and sys.argv[2] in ('-', 'e', 'eg') and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True,
               provider_exec=sys.argv[1] == 'enter-provider-exec')
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-external-agent'
+          and sys.argv[2] in ('-', 'e', 'eg') and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), external_agent=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-external-agent'
+          and sys.argv[2] in ('-', 'e', 'eg') and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        sockets = host.pop('sockets')
+        mounted = os.stat('/agent-home', follow_symlinks=False)
+        if ([mounted.st_dev, mounted.st_ino] != source or not stat.S_ISDIR(mounted.st_mode)
+                or (mounted.st_uid, mounted.st_gid) != (int(sys.argv[5]),) * 2
+                or stat.S_IMODE(mounted.st_mode) not in (0o700, 0o770)):
+            raise RuntimeError('external-agent home differs from pinned source')
+        if set(sockets) != set(sys.argv[2].strip('-')):
+            raise RuntimeError('external-agent relays differ from admitted flags')
+        for key, path in (('e', '/provider-egress.sock'), ('g', '/provider-engine.sock')):
+            if key in sockets:
+                info = os.stat(path, follow_symlinks=False)
+                if [info.st_dev, info.st_ino] != sockets[key] or not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError('external-agent relay differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        proof['sockets'] = sockets
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.external_agents.cell import cell_main
+
+        raise SystemExit(cell_main(sys.argv[4], egress='e' in sockets,
+                                   engine='g' in sockets))
     elif (len(sys.argv) == 6 and sys.argv[1] in ('inside-provider', 'inside-provider-exec')
             and sys.argv[2] in ('-', 'e', 'eg') and 0 < int(sys.argv[5]) < 100000):
         host = json.loads(sys.argv[3])

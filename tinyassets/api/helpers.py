@@ -305,7 +305,8 @@ def _wiki_root() -> Path:
     """Resolve the wiki root directory.
 
     Delegates to ``tinyassets.storage.wiki_path`` — canonical env var
-    ``TINYASSETS_WIKI_PATH``. Platform default is ``data_dir() / "wiki"``.
+    ``TINYASSETS_WIKI_PATH``. A fresh volume uses ``data_dir() / ".wiki"``;
+    an already-present ``data_dir() / "wiki"`` stays the root.
 
     Pre-2026-04-20 this hardcoded ``r"C:\\Users\\Jonathan\\Projects\\Wiki"``
     as the fallback, which broke every non-host deploy. See

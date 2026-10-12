@@ -110,7 +110,7 @@ def test_stale_or_foreign_process_handle_cannot_transfer(monkeypatch):
             assert other.parent is None
             assert pa.admission_snapshot()["live"] == 2
 
-@pytest.mark.parametrize("entry", ["call_sync", "call_with_policy_sync", "call"])
+@pytest.mark.parametrize("entry", ["call_sync", "call"])
 def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
     from unittest.mock import MagicMock
 
@@ -126,7 +126,7 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
     pa.reset_for_tests()
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id=tmp_path.name)
     for name, value in dict(provider="codex", role="judge", operation="run_graph",
                             max_tokens=10, max_cost_microunits=5, selected_model=None,
                             native_selection=None, settlement_owner=None).items():
@@ -162,8 +162,6 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
                 if entry == "call":
                     with pa.blocking_provider_child():
                         await router.call(*args, config, **kw)
-                elif entry == "call_with_policy_sync":
-                    await asyncio.to_thread(router.call_with_policy_sync, *args, {}, config, **kw)
                 else:
                     await asyncio.to_thread(router.call_sync, *args, config, **kw)
             return ProviderResponse(text="finished", provider="codex", model="fake",
@@ -281,3 +279,14 @@ def test_parent_does_not_resume_before_a_timed_out_borrower_settles(monkeypatch)
         assert returned.is_set() and not errors
         assert not parent.lent
     assert pa.admission_snapshot()["live"] == 0
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

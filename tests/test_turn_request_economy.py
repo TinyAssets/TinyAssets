@@ -290,7 +290,7 @@ def test_learning_budget_threshold(agent, monkeypatch, caplog, remaining, skippe
     if remaining is not None:
         seed_budget(agent, monkeypatch, remaining)
     calls = []
-    monkeypatch.setattr(universe_intelligence, "call_provider",
+    monkeypatch.setattr(universe_intelligence, "text_sync",
                         lambda *a, **kw: calls.append(kw) or '{}')
     with caplog.at_level(logging.INFO):
         assert universe_intelligence.extract_learning("hello", "reply", agent.served.context) == {}
@@ -308,7 +308,7 @@ def test_learning_refuses_an_unissued_carrier_before_budget_or_model_call(agent,
         pytest.fail("unissued carrier reached budget evidence or a model")
 
     monkeypatch.setattr(request_budget, "budget_for_context", forbidden)
-    monkeypatch.setattr(universe_intelligence, "call_provider", forbidden)
+    monkeypatch.setattr(universe_intelligence, "text_sync", forbidden)
     real = agent.served.context.provider_request
     forged = SimpleNamespace(universe_id=real.universe_id, agent_binding_id=real.agent_binding_id,
                              binding_revision=real.binding_revision)

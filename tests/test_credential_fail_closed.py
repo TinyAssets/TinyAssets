@@ -123,12 +123,10 @@ def test_universe_without_credential_does_not_inherit_host_auth(host_auth, tmp_p
 
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert Path(env["CLAUDE_CONFIG_DIR"]).is_relative_to(universe)
-    assert Path(env["CODEX_HOME"]).is_relative_to(universe)
+    assert "CODEX_HOME" not in env
+    assert "ANTHROPIC_API_KEY" not in env
     assert ".runtime/provider-child/claude-code/auth-empty" in (
         Path(env["CLAUDE_CONFIG_DIR"]).as_posix()
-    )
-    assert ".runtime/provider-child/claude-code/auth-empty" in (
-        Path(env["CODEX_HOME"]).as_posix()
     )
     assert claude_subscription_auth_available(universe) is False
     assert not (universe / ".credentials").exists()
@@ -230,8 +228,8 @@ def test_partial_vault_overlay_cannot_retain_alternate_host_auth(
 
     assert env.get("CLAUDE_CONFIG_DIR") == str(vault_config_dir)
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
-    assert env.get("CODEX_HOME") != "host-value-for-CODEX_HOME"
-    assert Path(env["CODEX_HOME"]).is_relative_to(universe)
+    assert "CODEX_HOME" not in env
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_universe_credential_resolution_failure_is_explicit(
@@ -285,13 +283,13 @@ def test_environment_bound_universe_does_not_inherit_host_auth(
     universe.mkdir()
     monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe))
 
-    env = subprocess_env_for_provider("codex", universe_dir=None)
+    env = subprocess_env_for_provider("claude-code", universe_dir=None)
 
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert env.get("CLAUDE_CONFIG_DIR") != "host-value-for-CLAUDE_CONFIG_DIR"
-    assert env.get("CODEX_HOME") != "host-value-for-CODEX_HOME"
+    assert "CODEX_HOME" not in env
     assert Path(env["CLAUDE_CONFIG_DIR"]).is_relative_to(universe)
-    assert Path(env["CODEX_HOME"]).is_relative_to(universe)
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_nonexistent_environment_binding_is_still_universe_scope(
@@ -301,13 +299,13 @@ def test_nonexistent_environment_binding_is_still_universe_scope(
     universe = tmp_path / "not-created" / "u-bound"
     monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe))
 
-    env = subprocess_env_for_provider("codex", universe_dir=None)
+    env = subprocess_env_for_provider("claude-code", universe_dir=None)
 
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert Path(env["CLAUDE_CONFIG_DIR"]).is_relative_to(universe)
-    assert Path(env["CODEX_HOME"]).is_relative_to(universe)
+    assert "CODEX_HOME" not in env
     assert Path(env["CLAUDE_CONFIG_DIR"]).is_absolute()
-    assert Path(env["CODEX_HOME"]).is_absolute()
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_relative_universe_binding_emits_absolute_child_paths(
@@ -316,7 +314,7 @@ def test_relative_universe_binding_emits_absolute_child_paths(
     monkeypatch.chdir(tmp_path)
     universe = Path("relative-universe")
 
-    env = subprocess_env_for_provider("codex", universe_dir=universe)
+    env = subprocess_env_for_provider("claude-code", universe_dir=universe)
 
     canonical_universe = (tmp_path / universe).resolve()
     for name in (
@@ -333,7 +331,6 @@ def test_relative_universe_binding_emits_absolute_child_paths(
         "TMP",
         "TEMP",
         "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
     ):
         assert Path(env[name]).is_absolute()
         assert Path(env[name]).is_relative_to(canonical_universe)
@@ -405,16 +402,15 @@ def test_default_cli_homes_cannot_recover_host_auth(tmp_path, monkeypatch):
     for name in HOST_SUBSCRIPTION_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
-    env = subprocess_env_for_provider("codex", universe_dir=universe)
-    effective_codex_home = Path(env.get("CODEX_HOME", host_home / ".codex"))
+    env = subprocess_env_for_provider("claude-code", universe_dir=universe)
     effective_claude_home = Path(
         env.get("CLAUDE_CONFIG_DIR", host_home / ".claude")
     )
 
-    assert effective_codex_home.is_relative_to(universe)
     assert effective_claude_home.is_relative_to(universe)
-    assert effective_codex_home != host_home / ".codex"
+    assert "CODEX_HOME" not in env
     assert effective_claude_home != host_home / ".claude"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
 def test_host_local_execution_does_not_invoke_vault_helpers(host_auth, monkeypatch):
@@ -498,7 +494,6 @@ def test_universe_child_environment_is_default_deny_with_safe_runtime_basics(
         "TMP",
         "TEMP",
         "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
         "AWS_EC2_METADATA_DISABLED",
     }
     windows_runtime = {
@@ -546,7 +541,7 @@ def test_universe_child_replaces_every_ambient_home_and_profile_root(
     ):
         monkeypatch.setenv(name, str(host_root / name))
 
-    env = subprocess_env_for_provider("codex", universe_dir=universe)
+    env = subprocess_env_for_provider("claude-code", universe_dir=universe)
 
     for name in (
         "HOME",
@@ -559,7 +554,6 @@ def test_universe_child_replaces_every_ambient_home_and_profile_root(
         "XDG_STATE_HOME",
         "XDG_RUNTIME_DIR",
         "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
     ):
         assert Path(env[name]).is_relative_to(universe)
         assert not Path(env[name]).is_relative_to(host_root)
@@ -676,11 +670,6 @@ def test_universe_child_rejects_noncanonical_provider_before_vault_helper(
         "tinyassets.credential_vault.resolve_claude_config_dir",
         tracking_resolver,
     )
-    monkeypatch.setattr(
-        "tinyassets.credential_vault.resolve_codex_home",
-        tracking_resolver,
-    )
-
     with pytest.raises(ProviderUnavailableError, match="credential resolution"):
         subprocess_env_for_provider(provider_name, universe_dir=universe)
 
@@ -699,7 +688,7 @@ def test_universe_child_accepts_only_valid_ca_bundle_files(tmp_path, monkeypatch
     monkeypatch.setenv("CODEX_CA_CERTIFICATE", str(tmp_path / "missing.pem"))
     monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
 
-    env = subprocess_env_for_provider("codex", universe_dir=universe)
+    env = subprocess_env_for_provider("claude-code", universe_dir=universe)
 
     assert env["REQUESTS_CA_BUNDLE"] == str(valid_bundle)
     assert "CURL_CA_BUNDLE" not in env

@@ -148,32 +148,40 @@ test("no page imports a reader the client does not export", () => {
   }
 });
 
-test("plans are stated in exactly one place, and never overstate enforcement", () => {
-  // The gate that would refuse an action is dark (usage_policy.enforcement_enabled
-  // defaults off), so no page may describe hitting a limit as a live consequence,
-  // and the price/benefit must not be restated anywhere it can drift.
+test("plans name no price and do not claim a live cutoff", () => {
+  // Caps are not published. Paid tiers are not on sale. The refusal gate is
+  // dark, so no page may describe hitting a limit as something that happens now.
   const finePrint = source("app/fine-print/page.tsx");
-  assert.match(finePrint, /\$20 a month/);
-  assert.match(finePrint, /usage is metered/);
+  assert.match(finePrint, /same app and the same security/);
+  assert.match(finePrint, /simultaneous runs/);
+  assert.match(finePrint, /storage/);
+  assert.match(finePrint, /usage is metered/i);
   assert.match(finePrint, /is not switched on/);
-  // the three dimensions must be named as the policy implements them
-  assert.match(finePrint, /daily allowance/i);
-  assert.match(finePrint, /guard against a runaway loop/i);
-  assert.match(finePrint, /capacity cap/i);
+  assert.match(finePrint, /<OwnerDecision>/);
+  assert.match(source("components/OwnerDecision.tsx"), /Owner decision/);
+  assert.doesNotMatch(finePrint, /\$20\b|USD 20/);
   assert.doesNotMatch(finePrint, /\b5,?000\b|\b12,?000\b|\b20 GB\b/, "no allowance numbers while the gate is dark");
 
-  const others = pages.filter((f) => !f.path.replace(/\\/g, "/").includes("app/fine-print/"));
-  for (const file of others) {
-    assert.doesNotMatch(file.body, /\$20\b/, `${file.path} must not restate the price`);
+  for (const file of pages) {
+    assert.doesNotMatch(file.body, /\$20\b|USD 20/, `${file.path} must not name a price`);
+    assert.doesNotMatch(
+      file.body,
+      /ops@tinyassets\.io|security@tinyassets\.io|legal@tinyassets\.io|dmca@tinyassets\.io/,
+      `${file.path} must not publish an unmonitored mailbox`,
+    );
   }
 
-  // Public text assets may point at the section but must not restate it.
-  for (const asset of ["public/llms.txt", "public/robots.txt"]) {
+  for (const asset of ["public/llms.txt", "public/robots.txt", "lib/site.ts", "lib/legal-info.json"]) {
     const body = source(asset);
-    assert.doesNotMatch(body, /\$?\bUSD 20\b|\$20\b/, `${asset} must not restate the price`);
-    assert.doesNotMatch(body, /raises the daily/i, `${asset} must not restate the premium benefit`);
+    assert.doesNotMatch(body, /\$?\bUSD 20\b|\$20\b/, `${asset} must not name a price`);
+    assert.doesNotMatch(
+      body,
+      /ops@tinyassets\.io|security@tinyassets\.io|legal@tinyassets\.io|dmca@tinyassets\.io/,
+      `${asset} must not publish an unmonitored mailbox`,
+    );
   }
   assert.match(source("public/llms.txt"), /fine-print\/#plans/);
+  assert.match(source("lib/site.ts"), /info@tinyassets\.io/);
 });
 
 test("robots.txt keeps every named crawler in the group that carries the exclusions", () => {

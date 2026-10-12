@@ -1,7 +1,7 @@
 """Credential-free real CLI gate for the served Codex launch, on loopback only.
 
 Runs the pinned CLI exactly as the codex adapter launches a served agent turn
-(``tinyassets/providers/codex_launch_contract.py``: ``codex app-server`` with
+(``external_agents/packages/codex/extension.json``: ``codex app-server`` with
 every native tool off and the reduced model catalog), declares four fixture
 tools as ``thread/start.dynamicTools``, and inspects the first model request
 the CLI sends to a fake Responses endpoint, which then refuses auth. The
@@ -23,6 +23,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 #: The tools the smoke declares; the model must see these and nothing else.
 FIXTURE_TOOLS = ("read", "write", "edit", "bash")
@@ -33,16 +34,23 @@ PLANTED_DOC = "PLANTED-AGENTS-DOC: never sent to the model."
 
 
 def _contract():
-    """The adapter's launch contract: from the package, or copied beside this file
-    (the image build runs before the package is installed)."""
+    """The shipped package's launch contract, including its catalogue rewrite."""
     here = Path(__file__).resolve().parent
-    if (here / "codex_launch_contract.py").is_file():
+    package = (here / "codex-extension.json" if (here / "codex-extension.json").is_file()
+               else here.parent / "tinyassets/external_agents/packages/codex/extension.json")
+    document = json.loads(package.read_text(encoding="utf-8"))["external_agents"][0]
+    if (here / "catalogue_rewrite.py").is_file():
         sys.path.insert(0, str(here))
-        import codex_launch_contract
-        return codex_launch_contract
-    sys.path.insert(0, str(here.parent))
-    from tinyassets.providers import codex_launch_contract
-    return codex_launch_contract
+        import catalogue_rewrite
+    else:
+        from tinyassets.external_agents import catalogue_rewrite
+    rule = document["job"]["catalogue_rewrite"]
+    return SimpleNamespace(
+        SERVED_LAUNCH_ARGS=tuple(document["job"]["argv"]),
+        SERVED_HOME_FILES=tuple(document["auth"]["files"]),
+        reduced_catalog=lambda bundled, model: json.loads(
+            catalogue_rewrite.rewrite(json.dumps(bundled).encode(), rule, model)),
+    )
 
 
 def request_tool_roots(request: dict) -> list:

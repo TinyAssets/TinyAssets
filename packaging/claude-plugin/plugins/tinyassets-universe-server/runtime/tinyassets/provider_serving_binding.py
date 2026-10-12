@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -244,7 +243,7 @@ class ServingProviderHeld(PermissionError):
     """Readiness hold with a fixed display code; existing refusal semantics stay."""
 
     def __init__(self, message: str, *, reason: str):
-        if reason not in {"host_serving_hold", "role_not_supported"}:
+        if reason != "role_not_supported":
             raise ValueError("invalid serving hold reason")
         super().__init__(message)
         self.reason = reason
@@ -363,49 +362,8 @@ def _resolve_serving_source(
         selected = provider_name
         open_grant = (grant_id, connection_id, credential_ref)
     if selected == "claude-code":
-        # claude-code serving is HELD BY DEFAULT. The OpenSpec design
-        # (byo-llm-connect-flow/design.md §"Claude requester-local readiness")
-        # requires that Slice 1 "must not silently bypass" the role-completeness
-        # invariant "merely because `converse` currently asks only for `writer`".
-        # So enabling it requires BOTH, and neither alone is enough:
-        #
-        #   (a) an EXPLICIT operator opt-in (`TINYASSETS_ALLOW_CLAUDE_SERVING`).
-        #       Off by default, so no deployment silently gains claude serving;
-        #       the vetted single-founder host sets it deliberately (host
-        #       directive: the founder's universe serves on their own deposited
-        #       Claude subscription). This is the documented ratification of the
-        #       decision the founder drove — it is NOT computed away silently.
-        #   (b) a COMPUTED proof that claude-code covers every role THIS binding
-        #       actually grants (`_SERVING_ROLES`). Today that is `("writer",)`
-        #       and claude-code heads the writer chain, so converse serving is
-        #       covered. If the serving scope ever widens to a role claude-code
-        #       cannot cover (judge/extract), (b) re-blocks automatically — the
-        #       invariant is enforced, not bypassed.
-        #
-        # Cross-family review 2026-08-19 (Codex reject #2) flagged the earlier
-        # (b)-only form as a silent bypass. Gate (a) restores the spec DEFAULT
-        # (claude-code serving held) and makes any relaxation an explicit host
-        # deployment decision, not a computed no-op. Formal OpenSpec sync of this
-        # host exception (byo-llm-connect-flow/design.md §"Claude requester-local
-        # readiness") is owed and pending founder ratification — tracked in
-        # STATUS.md; the code fails safe (held) until the host opts in.
-        from tinyassets.providers.router import FALLBACK_CHAINS
-
-        opt_in = os.environ.get("TINYASSETS_ALLOW_CLAUDE_SERVING", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        uncovered = [
-            role for role in _SERVING_ROLES if selected not in FALLBACK_CHAINS.get(role, ())
-        ]
-        if not opt_in:
-            raise ServingProviderHeld(
-                "claude-code serving is held by default; set "
-                "TINYASSETS_ALLOW_CLAUDE_SERVING for the vetted host to enable it",
-                reason="host_serving_hold",
-            )
+        # A connected subscription can serve if it covers every granted role.
+        uncovered = [role for role in _SERVING_ROLES if role != "writer"]
         if uncovered:
             raise ServingProviderHeld(
                 "claude-code serving is held until every live role is covered; "

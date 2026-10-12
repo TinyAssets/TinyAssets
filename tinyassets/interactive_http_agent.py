@@ -62,10 +62,18 @@ class ServedChatAgentAdapter:
         )
 
     async def infer(self, *, router, prompt, system, config, context, observer, kind):
-        return await router.call(
-            "writer", prompt, system, config, operation="converse",
-            universe_context=context, _agent_observer=observer, _agent_execution_kind=kind,
-        )
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+        result = await call(ModelCall(
+            model=context.model_selection, fallbacks=(),
+            context=ModelContext(
+                prompt=prompt, system=system, config=config, operation="converse",
+                universe_context=context, agent_observer=observer,
+                agent_execution_kind=kind,
+                router=router,
+            ), origin="chat",
+        ), Parent(owner="", command_center=context.universe_dir.name))
+        return result.response
 
     def round_input(self, authority, reservation, config, *, owner, context,
                     prompt, system, native_input, kind):

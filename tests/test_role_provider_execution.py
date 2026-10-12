@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets import role_decoder, role_provider_discovery, role_provider_execution
+from tinyassets import role_decoder, role_external_agent, role_provider_execution
 from tinyassets.providers import owned_process, provider_jail
 
 
@@ -50,7 +50,7 @@ def test_execution_only_relocates_the_snapshot_not_a_persistent_workspace(tmp_pa
     snapshot = center / '.runtime/provider-launch-credentials/one'
     snapshot.mkdir(parents=True)
     (snapshot / 'auth.json').write_text('owner-token' + chr(10))
-    result = json.loads(role_provider_discovery.cell_config(
+    result = json.loads(role_external_agent.cell_config(
         ['/installed/cli', '-C', '/tmp/workspace', str(snapshot / 'config')],
         {'AUTH_HOME': str(snapshot), 'HOST_SECRET': 'never', 'LD_PRELOAD': '/tmp/evil',
          'OWNER_TOKEN': 'owner-token', 'FEATURE_OFF': 'false', 'NAME': 'free text'},

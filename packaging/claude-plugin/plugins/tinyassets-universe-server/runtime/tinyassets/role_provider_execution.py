@@ -166,7 +166,7 @@ async def spawn(argv, *, scope, shell, view, nested_sandbox, options):
     through its pinned relay socket.
     """
     from tinyassets.broker import supervisor
-    from tinyassets.role_provider_discovery import aspawn_cell
+    from tinyassets.role_external_agent import aspawn_cell
 
     if (scope is None or scope.universe_dir is None or scope.credential_dir is None
             or shell or view is not None or nested_sandbox

@@ -187,16 +187,29 @@ class ShortlistCache:
             needs = age is None or age >= REFRESH_AGE
             reason = entry.reason
             snapshot = entry.snapshot
+            inflight = entry.inflight
+            attempted = entry.attempted
         if needs:
             self.schedule(base=base, owner=owner, universe_id=universe_id,
                           provider=provider)
+        from tinyassets.external_agents.registry import PACKAGES
+
+        if provider in PACKAGES:
+            from tinyassets.external_agents.receipts import status
+
+            diagnostic = status(Path(base), owner=owner, universe_id=universe_id,
+                                agent=provider)
+        else:
+            diagnostic = ("failed: " + reason if reason else
+                          "refreshing" if inflight else
+                          "never_run" if not attempted else
+                          "stale" if needs else "fresh")
         if usable:
-            diagnostic = reason or ("catalogue_refresh_pending" if needs else "")
-            return snapshot, diagnostic if display_only else ""
+            return snapshot, ("" if diagnostic == "fresh" else diagnostic) if display_only else ""
         # A failed attempt reports ITS reason; a cold one reports pending. The
         # two are different facts and a client should not have to guess which.
         retained = snapshot if display_only and age is not None and age >= 0 else None
-        return retained, reason or "catalogue_refresh_pending"
+        return retained, diagnostic
 
     # -- refresh --------------------------------------------------------
 

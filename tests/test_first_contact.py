@@ -96,7 +96,7 @@ def _capture_universe_reply(monkeypatch, reply: str) -> dict:
 
     captured: dict = {}
 
-    def fake_call_provider(prompt, system="", *, role="writer", **kwargs):
+    def fake_text_sync(prompt, system="", *, role="writer", **kwargs):
         if "strict JSON" in system:
             return "{}"
         captured.update(
@@ -107,7 +107,7 @@ def _capture_universe_reply(monkeypatch, reply: str) -> dict:
         )
         return reply
 
-    monkeypatch.setattr(intelligence, "call_provider", fake_call_provider)
+    monkeypatch.setattr(intelligence, "text_sync", fake_text_sync)
     return captured
 
 
@@ -1024,11 +1024,11 @@ def _engine_raises(monkeypatch, exc: BaseException):
 
     called: dict = {"count": 0}
 
-    def fake_call_provider(prompt, system="", *, role="writer", **kwargs):
+    def fake_text_sync(prompt, system="", *, role="writer", **kwargs):
         called["count"] += 1
         raise exc
 
-    monkeypatch.setattr(intelligence, "call_provider", fake_call_provider)
+    monkeypatch.setattr(intelligence, "text_sync", fake_text_sync)
     return called
 
 
@@ -1143,8 +1143,7 @@ def test_fresh_owner_gets_inline_connection_without_model_call(data_dir, monkeyp
         raise AssertionError("a new account must not call a model")
 
     monkeypatch.setattr(BaseProvider, "complete", forbidden)
-    monkeypatch.setattr(provider_call, "_force_mock", False)
-    monkeypatch.setattr(provider_call, "_real_router", ProviderRouter({}))
+    monkeypatch.setattr(provider_call, "_router", ProviderRouter({}))
     _login("brand-new-model-owner")
     out = json.loads(converse(message="Help me plan my day"))
     assert out["status"] == "held", out

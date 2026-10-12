@@ -23,7 +23,6 @@ GITIGNORE = REPO_ROOT / ".gitignore"
 COMPOSE = REPO_ROOT / "deploy" / "compose.yml"
 ENV_TEMPLATE = REPO_ROOT / "deploy" / "tinyassets-env.template"
 ENTRYPOINT = REPO_ROOT / "deploy" / "docker-entrypoint.sh"
-CODEX_PROVIDER = REPO_ROOT / "tinyassets" / "providers" / "codex_provider.py"
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +34,7 @@ def test_dockerfile_installs_codex_npm():
     """Builder stage must install @openai/codex via npm."""
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert "@openai/codex" in text, (
-        "Dockerfile must install @openai/codex — required by codex_provider.py"
+        "Dockerfile must install the pinned Codex package"
     )
     assert "CODEX_CLI_VERSION=0." in text, (
         "Dockerfile must pin the Codex CLI package version for reproducible builds"
@@ -469,32 +468,8 @@ def test_no_cloud_worker_module_ships_in_the_package():
         )
 
 
-# ---------------------------------------------------------------------------
-# codex_provider.py — --skip-git-repo-check flag (BUG-004 fix A)
-# ---------------------------------------------------------------------------
 
 
-def test_codex_provider_has_skip_git_repo_check():
-    """codex exec must pass --skip-git-repo-check so it works outside a git repo."""
-    text = CODEX_PROVIDER.read_text(encoding="utf-8")
-    assert "--skip-git-repo-check" in text, (
-        "codex_provider.py must pass --skip-git-repo-check to 'codex exec'; "
-        "without it codex v0.122+ refuses to run in /app (not a git repo)"
-    )
-
-
-def test_codex_provider_flag_is_on_exec_command():
-    """--skip-git-repo-check must be on the exec invocation, not a separate call."""
-    text = CODEX_PROVIDER.read_text(encoding="utf-8")
-    start = text.index("cmd = [")
-    end = text.index("]", start)
-    cmd_block = text[start:end]
-    assert '"exec"' in cmd_block
-    assert "--skip-git-repo-check" in cmd_block
-    assert "*sandbox_args" in cmd_block
-    assert '"--sandbox", "workspace-write"' not in text
-    assert '"--full-auto"' not in text
-    assert "--dangerously-bypass-approvals-and-sandbox" in text
 
 
 # ---------------------------------------------------------------------------

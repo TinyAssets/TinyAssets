@@ -1135,14 +1135,11 @@ def _real_providers(**providers):
     from tinyassets.providers.router import ProviderRouter
 
     previous_router = provider_call_module.get_provider_router()
-    previous_force_mock = provider_call_module.is_force_mock()
     provider_call_module.set_provider_router(ProviderRouter(dict(providers)))
-    provider_call_module.set_force_mock(False)
     try:
         yield
     finally:
         provider_call_module.set_provider_router(previous_router)
-        provider_call_module.set_force_mock(previous_force_mock)
 
 
 def _receipt_provider(tmp_path: Path, run_id: str) -> tuple[str, int]:
@@ -2437,9 +2434,7 @@ def test_the_real_run_path_admits_through_the_live_session_and_records_a_run(
 
     fake = _CountingProvider()
     previous_router = provider_call_module.get_provider_router()
-    previous_force_mock = provider_call_module.is_force_mock()
     provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
-    provider_call_module.set_force_mock(False)
     try:
         reason = run_due_automation(
             tmp_path,
@@ -2450,7 +2445,6 @@ def test_the_real_run_path_admits_through_the_live_session_and_records_a_run(
         )
     finally:
         provider_call_module.set_provider_router(previous_router)
-        provider_call_module.set_force_mock(previous_force_mock)
 
     assert reason.startswith("ok:ran:"), reason
     run_id = reason.split("ok:ran:", 1)[1]

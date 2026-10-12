@@ -22,7 +22,6 @@ def manifest_connection(tmp_path, monkeypatch, request):
     universe, agent = _seed_universe(tmp_path)
     providers = getattr(request, "param", ("codex",))
     if "claude-code" in providers:
-        monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
         (universe / "claude-config").mkdir()
         (universe / "claude-config" / ".credentials.json").write_text("{}", encoding="utf-8")
         write_credential_vault(universe, [

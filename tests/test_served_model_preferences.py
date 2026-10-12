@@ -75,7 +75,7 @@ def configured(rig, reader, monkeypatch, request):
                 ))
 
         native = NativeRecording("codex")
-        monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"codex": native}))
+        monkeypatch.setattr(provider_calls, "_router", ProviderRouter({"codex": native}))
         access["codex"] = ModelAccess("explicit", ("",))
     connected = custom_agents(
         action="bind_serving_provider", universe_id="u-models",

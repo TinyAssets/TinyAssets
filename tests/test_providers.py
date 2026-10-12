@@ -11,7 +11,7 @@ import concurrent.futures
 import threading
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -34,7 +34,7 @@ from tinyassets.providers.base import (
     UniverseContext,
 )
 from tinyassets.providers.quota import QuotaTracker
-from tinyassets.providers.router import FALLBACK_CHAINS, ProviderRouter
+from tinyassets.providers.router import ProviderRouter
 
 # Hard Rule 15: every routed call names the universe whose owner authorised it.
 _UDIR = Path("universe-under-test")
@@ -172,7 +172,7 @@ class TestProviderRouterCall:
         max_cost_microunits: int = 1,
     ):
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner")
+        carrier._receipt = MagicMock(principal_id="owner", universe_id=_UDIR.name)
         carrier.provider = provider
         carrier.role = role
         carrier.operation = operation
@@ -337,7 +337,7 @@ class TestProviderRouterCall:
         assert all(provider.call_count == 0 for provider in providers.values())
 
     @pytest.mark.asyncio
-    async def test_armed_carrier_bypasses_policy_fallback_and_ensemble_fanout(self):
+    async def test_armed_carrier_bypasses_ensemble_fanout(self):
         providers = _make_providers()
         router = ProviderRouter(providers=providers)
         policy_carrier = self._carrier(role="judge")
@@ -345,10 +345,8 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(policy_carrier),
         ):
-            text, provider, _meta = await router.call_with_policy(
-                "judge", "prompt", "system",
-                {"preferred": {"provider": "claude-code"}},
-                ModelConfig(max_tokens=10),
+            response = await router.call(
+                "judge", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=_ctx(policy_carrier),
             )
@@ -363,8 +361,8 @@ class TestProviderRouterCall:
                 universe_context=_ctx(ensemble_carrier),
             )
 
-        assert text == "codex-resp"
-        assert provider == "codex"
+        assert response.text == "codex-resp"
+        assert response.provider == "codex"
         assert [response.provider for response in ensemble] == ["codex"]
         assert providers["codex"].call_count == 2
         assert providers["claude-code"].call_count == 0
@@ -496,16 +494,6 @@ class TestProviderRegistration:
                 router.register(ClaudeProvider())
             assert "claude-code" not in router.available_providers
 
-    def test_codex_provider_not_registered_when_binary_absent(self):
-        """codex must not appear in available_providers when 'codex' binary is missing."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        with patch("shutil.which", return_value=None):
-            assert not CodexProvider.is_available()
-            router = ProviderRouter()
-            if CodexProvider.is_available():
-                router.register(CodexProvider())
-            assert "codex" not in router.available_providers
 
     def test_claude_provider_registered_when_binary_present(self):
         """claude-code is registered when 'claude' binary is found."""
@@ -513,28 +501,6 @@ class TestProviderRegistration:
 
         with patch("shutil.which", return_value="/usr/local/bin/claude"):
             assert ClaudeProvider.is_available()
-
-    def test_codex_provider_registered_when_binary_present(self):
-        """codex is registered when 'codex' binary is found."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        with patch("shutil.which", return_value="/usr/local/bin/codex"):
-            assert CodexProvider.is_available()
-
-    def test_effective_chain_excludes_unregistered_providers(self):
-        """Runtime chain skips absent CLI providers instead of advertising them first."""
-        router = ProviderRouter(
-            providers={
-                "codex": FakeProvider("codex", "openai"),
-                "ollama-local": FakeProvider("ollama-local", "local"),
-            },
-        )
-
-        chain, excluded = router.effective_chain(FALLBACK_CHAINS["writer"])
-
-        assert chain == ["codex", "ollama-local"]
-        assert [attempt.provider for attempt in excluded] == ["claude-code"]
-        assert {attempt.skip_class for attempt in excluded} == {"not_in_registry"}
 
 
 # =====================================================================
@@ -683,188 +649,6 @@ class TestClaudeProvider:
 # =====================================================================
 
 
-class TestCodexProvider:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            resp = await provider.complete("prompt", "system", ModelConfig())
-
-        assert resp.text == "codex output"
-        assert resp.provider == "codex"
-        assert resp.family == "openai"
-
-    @pytest.mark.asyncio
-    async def test_error_raises_provider_error(self):
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"bad"))
-        mock_proc.returncode = 2
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            with pytest.raises(ProviderError):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    async def test_empty_stdout_raises_provider_error(self):
-        """Empty stdout with exit 0 must raise ProviderError, not return ''."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            with pytest.raises(ProviderError, match="empty response"):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    async def test_auth_failure_exit_0_raises_provider_error(self):
-        """codex v0.122 exits 0 on 401 but emits Unauthorized in stderr."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(
-            b"",
-            b"Error: 401 Unauthorized - Reconnecting...",
-        ))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            provider = CodexProvider()
-            with pytest.raises(ProviderError, match="auth-error"):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("override", [None, "", " \t"])
-    async def test_skip_git_repo_check_in_command_without_bwrap(self, monkeypatch, override):
-        """codex exec must bypass sandbox only when bwrap is unavailable."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        if override is None:
-            monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
-        else:
-            monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            response = await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert "--skip-git-repo-check" in captured_cmd, (
-            f"Expected --skip-git-repo-check in command: {captured_cmd}"
-        )
-        assert "--dangerously-bypass-approvals-and-sandbox" in captured_cmd
-        assert "--full-auto" not in captured_cmd
-        for name in ("apps", "plugins", "remote_plugin"):
-            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
-        assert "--ephemeral" in captured_cmd
-        assert "-C" in captured_cmd
-        assert "-m" not in captured_cmd and "--model" not in captured_cmd
-        assert "gpt-5.4" not in captured_cmd
-        assert response.model == "provider-default"
-
-    @pytest.mark.asyncio
-    async def test_runs_in_the_cells_own_empty_workspace(self):
-        """Never the platform checkout: the cell's private scratch directory."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert captured_cmd[captured_cmd.index("-C") + 1] == "/tmp/workspace"
-
-    @pytest.mark.asyncio
-    async def test_model_can_be_overridden_by_env(self, monkeypatch):
-        """Operators can move the provider forward after the deployed CLI supports it."""
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "future-model-2030")
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ) as spawn,
-        ):
-            provider = CodexProvider()
-            await provider.complete("prompt", "system", ModelConfig())
-
-        captured_cmd = list(spawn.call_args.args)
-        assert captured_cmd[captured_cmd.index("-m") + 1] == "future-model-2030"
 
 
 # =====================================================================
@@ -909,34 +693,8 @@ class TestOllamaProvider:
 
 
 # =====================================================================
-# Fallback chain definitions
+# Explicit model choice
 # =====================================================================
-
-
-class TestFallbackChainDefinitions:
-    def test_writer_preference_chain_starts_with_claude(self):
-        """Static preference may name Claude; runtime effective_chain probes it."""
-        assert FALLBACK_CHAINS["writer"][0] == "claude-code"
-        assert FALLBACK_CHAINS["writer"][-1] == "ollama-local"
-
-    def test_judge_chain_starts_with_codex(self):
-        assert FALLBACK_CHAINS["judge"][0] == "codex"
-
-    def test_extract_chain_starts_with_codex(self):
-        assert FALLBACK_CHAINS["extract"][0] == "codex"
-        assert FALLBACK_CHAINS["extract"][-1] == "ollama-local"
-
-    def test_embed_is_local_only(self):
-        assert FALLBACK_CHAINS["embed"] == ["ollama-local"]
-
-    def test_all_chains_include_ollama(self):
-        """Ollama is in every chain as last-resort fallback."""
-        for role, chain in FALLBACK_CHAINS.items():
-            assert "ollama-local" in chain, f"{role} chain missing ollama-local"
-
-    def test_ollama_is_last_in_judge_chain(self):
-        """Ollama is last in judge chains (text-parsed, not JSON)."""
-        assert FALLBACK_CHAINS["judge"][-1] == "ollama-local"
 
 
 class TestCarrierSettlementWithUnknownUsage:
@@ -967,7 +725,7 @@ class TestCarrierSettlementWithUnknownUsage:
     @staticmethod
     def _settling_carrier():
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner")
+        carrier._receipt = MagicMock(principal_id="owner", universe_id=_UDIR.name)
         carrier.provider = "codex"
         carrier.role = "writer"
         carrier.operation = "run_graph"
@@ -1050,3 +808,14 @@ class TestCarrierSettlementWithUnknownUsage:
         assert carrier.settle.call_args.kwargs == {
             "input_tokens": 70, "output_tokens": 30, "cost_microunits": 5,
         }
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

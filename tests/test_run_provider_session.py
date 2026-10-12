@@ -270,7 +270,7 @@ def _seed_open_serving_assignment(
         connection_class="http",
         connection_type="http",
         auth_scheme="bearer",
-        scopes=("http",) if model_access is None else ("GET", "POST"),
+        scopes=("POST",) if model_access is None else ("GET", "POST"),
         provider="http",
         destination="compute:synthetic",
         credential_ref="vault://http/compute:synthetic",
@@ -306,6 +306,14 @@ def _seed_open_serving_assignment(
                         "catalogue_url": "https://api.example.com/api/v1/models/user?output_modalities=all",
                         "benchmark_url": ""},
             expected_grant=ledger.get_grant(grant_id),
+        )
+    else:
+        ledger.configure_capability(
+            connection_id=connection_id, capability_kind="model_use", enabled=True,
+            descriptor={
+                "wire": "openai_chat", "billing": "free",
+                "models": [{"id": model, "tools": True, "context": 8192}],
+            },
         )
     published = publish_definition(
         base_path,
@@ -359,7 +367,6 @@ def _run_branch(
     branch: BranchDefinition,
     *,
     authority_case: str = "active",
-    mock_provider: bool = False,
     open_provider: bool = False,
     open_model: str = "synthetic-model",
     open_host: str = "api.example.com",
@@ -492,6 +499,14 @@ def _run_branch(
         operation=None,
         **_kwargs,
     ):
+        from dataclasses import replace
+
+        from tinyassets.providers.model_call import _policy_models
+
+        preferred, _ = _policy_models(_kwargs.get("policy"))
+        if (universe_context is not None and universe_context.model_selection is None
+                and preferred is not None):
+            universe_context = replace(universe_context, model_selection=preferred)
         if open_router_resolution_refusal and getattr(
             universe_context, "provider_invocation", None
         ) is not None:
@@ -513,12 +528,8 @@ def _run_branch(
             operation=operation,
         ).text
 
-    injected_provider_call = (
-        (lambda prompt, _system="", **_kwargs: f"fixture:{prompt}")
-        if mock_provider
-        else governed_provider_call
-    )
-    monkeypatch.setattr(call_module, "call_provider", injected_provider_call)
+    injected_provider_call = governed_provider_call
+    monkeypatch.setattr("tinyassets.providers.model_call.text_sync", injected_provider_call)
     bind_run_provider = api_runs._bind_run_provider_call
     monkeypatch.setattr(
         api_runs,
@@ -543,35 +554,6 @@ def _run_branch(
     response["terminal_status"] = record["status"]
     response["terminal_error"] = record["error"]
     return response, provider, captured
-
-
-def test_mock_foreground_run_needs_no_serving_binding_or_run_receipt(
-    tmp_path: Path,
-    monkeypatch,
-    authenticate_request,
-) -> None:
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1),
-        authority_case="missing",
-        mock_provider=True,
-    )
-
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert provider.calls == []
-    assert len(captured["effects"]) == 1
-    db = authority_db_path(tmp_path)
-    if db.exists():
-        with sqlite3.connect(db) as conn:
-            receipt_table = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'provider_work_receipts'"
-            ).fetchone()[0]
-            assert receipt_table == 0 or conn.execute(
-                "SELECT COUNT(*) FROM provider_work_receipts"
-            ).fetchone()[0] == 0
 
 
 def test_foreground_run_launches_active_serving_provider_and_settles_once(
@@ -656,7 +638,6 @@ def test_manifest_run_uses_independent_members_under_one_receipt(
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
     before = branch.to_dict()
@@ -736,7 +717,6 @@ def test_parallel_manifest_members_share_one_work_receipt(
 ):
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
     branch.edges = [
@@ -853,7 +833,6 @@ def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
     from tinyassets.provider_serving_binding import list_serving_universes
 
     authenticate_request("acct_alice")
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     set_founder_home(
         tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
         platform_generated=True,
@@ -1132,15 +1111,19 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     assert captured["effects"] == []
 
 
+@pytest.mark.parametrize("policy", [
+    {"preferred": {"provider": "claude-code"}},
+    {"preferred": {"provider": "codex", "model": "gpt-x"}},
+    {"difficulty_override": [{"if_difficulty": "hard", "use": {"provider": "claude-code"}}]},
+])
 def test_foreground_run_rejects_policy_outside_active_provider_before_effects(
     tmp_path: Path,
     monkeypatch,
     authenticate_request,
+    policy,
 ) -> None:
     branch = _branch(node_count=1)
-    branch.node_defs[0].llm_policy = {
-        "preferred": {"provider": "claude-code"},
-    }
+    branch.node_defs[0].llm_policy = policy
     response, provider, captured = _run_branch(
         tmp_path,
         monkeypatch,
@@ -1375,7 +1358,7 @@ def test_an_ordinary_provider_call_is_still_left_alone() -> None:
 def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
     """`_rebind` asserted a wrapper shape it never checked.
 
-    The docstring said "the wrapper is a `UniverseBoundProviderCall`, which
+    The docstring said "the wrapper is a `BoundModelCall`, which
     enforces one exact universe context and operation" -- but `replace()` was
     called on whatever arrived. Any dataclass exposing a real session as
     `.provider_call` passed depth 1 and was rebound, carrying whatever
@@ -1411,18 +1394,18 @@ def test_a_forged_outer_wrapper_cannot_be_rebound() -> None:
 def test_the_real_wrapper_still_rebinds_and_keeps_its_binding() -> None:
     """Fail-closed must not break the one shape that is supposed to work."""
     from tinyassets import foreground_run_provider as frp
-    from tinyassets.providers.call import UniverseBoundProviderCall
+    from tinyassets.providers.model_call import BoundModelCall
 
     parent = object.__new__(frp._ForegroundRunProviderSession)
     child = object.__new__(frp._ForegroundRunProviderSession)
     sentinel = object()
-    wrapper = UniverseBoundProviderCall(
-        provider_call=parent, universe_context=sentinel, operation="run_graph"
+    wrapper = BoundModelCall(
+        runner=parent, universe_context=sentinel, operation="run_graph"
     )
 
     rebound = frp._rebind(wrapper, child)
-    assert type(rebound) is UniverseBoundProviderCall
-    assert rebound.provider_call is child
+    assert type(rebound) is BoundModelCall
+    assert rebound.runner is child
     # The whole point: swapping the session must not swap the binding.
     assert rebound.universe_context is sentinel
     assert rebound.operation == "run_graph"
@@ -1442,7 +1425,6 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
     from tinyassets.providers.base import HOST_REACH_TOOLS
     from tinyassets.providers.claude_provider import _sandbox_cli_args
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
     response, _provider, captured = _run_branch(

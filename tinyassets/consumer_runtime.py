@@ -129,7 +129,7 @@ def prepare_admitted_consumer(base, envelope, *, author_conn, runs_conn):
     from tinyassets.config import load_universe_config
     from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import bind_universe_provider_call, call_provider
+    from tinyassets.providers.model_call import bind_model_call, text_sync
     from tinyassets.run_input_runtime import PreparedRunExecution
 
     row = validate_prepared_turn(
@@ -143,13 +143,13 @@ def prepare_admitted_consumer(base, envelope, *, author_conn, runs_conn):
             raise PermissionError("canonical prepared envelope changed")
         # Discovery/provider preparation must never run inside SQL writers.
         session = _ForegroundRunProviderSession(
-            base, universe_id=universe, principal_id=owner, provider_call=call_provider,
+            base, universe_id=universe, principal_id=owner, provider_call=text_sync,
             model_preference_data=context["preferences"],
         )
         session.prepare(run_id=envelope["run_id"], branch=branch,
                         branch_version_id=envelope["branch_version_id"],
                         allowed_statuses={"queued"})
-        return bind_universe_provider_call(
+        return bind_model_call(
             session, UniverseContext(universe_dir=Path(base) / universe,
                                      config=load_universe_config(Path(base) / universe)),
             operation="run_graph",

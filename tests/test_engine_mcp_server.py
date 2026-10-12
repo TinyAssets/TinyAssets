@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from tests.engine_authority_helpers import mock_engine_admission
-from tests.test_codex_app_server import served  # noqa: F401 - the shared fixture
 
 # ── engine_mcp_server: fail-closed + confinement ────────────────────────────
 
@@ -823,7 +822,7 @@ def _codex_session(monkeypatch, config):
     from mcp.types import ListToolsResult, Tool
 
     from tinyassets import engine_tool_client
-    from tinyassets.providers import codex_provider
+    from tinyassets.external_agents.runner import _engine_tools
 
     dialled = []
 
@@ -850,36 +849,23 @@ def _codex_session(monkeypatch, config):
 
     async def go():
         async with contextlib.AsyncExitStack() as stack:
-            session = await codex_provider._served_engine_tools(stack, config, timeout=0.2)
+            session = await _engine_tools(stack, config)
             return [tool.name for tool in session.tools] if session is not None else None
 
     return asyncio.run(go()), dialled
 
 
-@pytest.mark.asyncio
-async def test_codex_engine_mcp_args_off_adds_only_untrusted_workspace(served):  # noqa: F811
-    """Engine tools off: no route, no tools, and /workspace is still forced
-    untrusted so no project .codex/config.toml (or its mcp_servers) loads."""
-    run, launch, state, config, _ = served
-    _, server = await run(cfg=config(engine_mcp_enabled=False))
-    argv = launch.call_args.args
-    assert _UNTRUSTED in set(zip(argv, argv[1:]))
-    assert state["opened"] == [] and server.requests("thread/start")[0]["params"][
-        "dynamicTools"] == []
-    assert not any("mcp_servers" in arg for arg in argv)
-
-
 def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path, monkeypatch):
     """Engine tools requested but no running route: the turn fails before any
     launch rather than running without its tools."""
-    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.engine_tool_client import EngineToolError
     from tinyassets.providers.base import ModelConfig
 
     _codex_route(tmp_path, monkeypatch)                      # no routes file
     cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
                       engine_mcp_graph_id="u-9")
     dialled = []
-    with pytest.raises(ProviderUnavailableError, match="engine_tools_unavailable"):
+    with pytest.raises(EngineToolError, match="engine_tools_unavailable"):
         _, dialled = _codex_session(monkeypatch, cfg)
     assert dialled == []
 
@@ -916,14 +902,14 @@ def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path, monkeypatch):
 
 
 def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path, monkeypatch):
-    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.engine_tool_client import EngineToolError
     from tinyassets.providers.base import ModelConfig
 
     _codex_route(tmp_path, monkeypatch, secret="")
     cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
                       engine_mcp_graph_id="u-9")
     dialled = []
-    with pytest.raises(ProviderUnavailableError):
+    with pytest.raises(EngineToolError):
         _, dialled = _codex_session(monkeypatch, cfg)
     assert dialled == []
 
@@ -1288,15 +1274,14 @@ def test_served_allowlists_do_not_drift():
     (founder rule: all surfaces do the same things). run_graph drifting onto the
     claude list ONLY (caught 2026-08-23) meant a codex-served founder could not run
     automations at all; this guard prevents that class of silent divergence."""
-    from tinyassets import served_tools
-    from tinyassets.providers import codex_provider
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from types import SimpleNamespace
+
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, model_tools
     from tinyassets.universe_intelligence import _ENGINE_MCP_TOOLS as claude_tools
 
-    # Structural guarantee: both surfaces select from the SAME canonical tuple,
-    # so they cannot drift by construction (not merely "equal today"). Codex
-    # declares exactly model_tools(config) as its app-server dynamicTools.
-    assert codex_provider.model_tools is served_tools.model_tools
+    # Both served executors use this canonical tuple; the runner passes
+    # model_tools(config) to its owner-pinned engine route.
+    assert model_tools(SimpleNamespace(engine_tool_grant=None)) == SERVED_ENGINE_MCP_TOOLS
     assert claude_tools is SERVED_ENGINE_MCP_TOOLS
     # run_graph is the capability that lets a universe RUN automations from the app.
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES

@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from langgraph.graph import END
 
 from domains.fantasy_daemon.graphs import (
@@ -36,6 +37,8 @@ from domains.fantasy_daemon.graphs.universe import (
     should_continue_universe,
 )
 from tinyassets.checkpointing import compile_all_graphs
+
+pytestmark = pytest.mark.usefixtures("connected_fantasy_model")
 
 # -----------------------------------------------------------------------
 # Graph compilation tests

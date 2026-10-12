@@ -136,7 +136,7 @@ def test_converse_injects_history_into_the_turn_system_prompt(tmp_path, monkeypa
     udir = _seed(tmp_path)
     captured: dict = {}
 
-    def fake_call_provider(prompt, system="", *, role="writer", universe_context=None, **_kw):
+    def fake_text_sync(prompt, system="", *, role="writer", universe_context=None, **_kw):
         if "strict JSON" in system:
             return "{}"
         captured["system"] = system
@@ -145,7 +145,7 @@ def test_converse_injects_history_into_the_turn_system_prompt(tmp_path, monkeypa
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
     # History rides the founder path (granted); force a founder turn.
     monkeypatch.setattr(
         ui.interlocutor,
@@ -179,7 +179,7 @@ def test_converse_without_history_omits_the_memory_block(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     captured: dict = {}
 
-    def fake_call_provider(prompt, system="", *, role="writer", universe_context=None, **_kw):
+    def fake_text_sync(prompt, system="", *, role="writer", universe_context=None, **_kw):
         if "strict JSON" in system:
             return "{}"
         captured["system"] = system
@@ -188,7 +188,7 @@ def test_converse_without_history_omits_the_memory_block(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
 
     ui.converse("u-test", "hi")
     assert "CONVERSATION SO FAR" not in captured["prompt"]
@@ -206,7 +206,7 @@ def test_history_is_gated_to_founder_turns(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     captured: dict = {}
 
-    def fake_call_provider(prompt, system="", *, role="writer", universe_context=None, **_kw):
+    def fake_text_sync(prompt, system="", *, role="writer", universe_context=None, **_kw):
         if "strict JSON" in system:
             return "{}"
         captured["prompt"] = prompt
@@ -214,7 +214,7 @@ def test_history_is_gated_to_founder_turns(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
-    monkeypatch.setattr(ui, "call_provider", fake_call_provider)
+    monkeypatch.setattr(ui, "text_sync", fake_text_sync)
     # A non-founder (external floor) turn.
     # EXTERNAL_SENDER_FLOOR (== interlocutor.T0) was removed with the external-chat
     # converse path in the channel rip; T0 is the same non-founder floor tier.

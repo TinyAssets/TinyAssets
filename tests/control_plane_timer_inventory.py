@@ -177,6 +177,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/effectors/__init__.py::EffectChain.settle": (CALL_SCOPED, "effect settle wait"),
     "tinyassets/engine_mcp_http.py::wait_for_engine_mcp_route": (CALL_SCOPED, "startup wait"),
     "tinyassets/engine_mcp_server.py::_read_run_settled": (CALL_SCOPED, "run settle wait"),
+    "tinyassets/external_agents/home.py::exclusive_refresh": (
+        CALL_SCOPED, "owner/service refresh lease wait; 30-second deadline",
+    ),
     "tinyassets/execution_authority/blob_proof.py::_lock_fd": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/node_sandbox.py::NodeSandbox.run_nested": (CALL_SCOPED, "child process wait"),
     "tinyassets/node_sandbox.py::_watch_process_tree_rss": (CALL_SCOPED, "child RSS watch"),
@@ -189,9 +192,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
     ),
-    "tinyassets/providers/codex_app_server.py::AppServerTurn.read": (
+    "tinyassets/external_agents/jsonrpc_job.py::JsonRpcJob.read": (
         CALL_SCOPED,
-        "reads ONE codex app-server turn's stdout under its idle/tool/absolute "
+        "reads one external-agent JSON-RPC turn under idle/tool/absolute "
         "budgets; ends with the turn's terminal notification, EOF or timeout",
     ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
@@ -241,9 +244,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/conversation_store.py::backfill_once": (CALL_SCOPED, "bounded retry"),
     "tinyassets/conversation_store.py::record_turn": (CALL_SCOPED, "bounded retry"),
     "tinyassets/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/graph_compiler.py::_call_policy_router_with_retry": (
-        CALL_SCOPED, "bounded retry",
-    ),
     "tinyassets/memory/versioning.py::OutputVersionStore.save_draft": (
         CALL_SCOPED, "bounded retry",
     ),

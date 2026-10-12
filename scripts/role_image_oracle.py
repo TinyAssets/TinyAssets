@@ -5,10 +5,11 @@
 
 The default migrate,serve,chat stages restore the backup into a disposable volume,
 run the image's migration, verify the real CMD in compose posture, then drive real
-HTTP converse turns with real read/write/edit/bash for Claude Code and Codex.
+HTTP converse turns with real read/write/edit/bash for Claude Code. The
+external_agent cell leg runs the actual Codex package on the same copy.
 The production persona, history,
 argv, environment construction and engine MCP configuration are built by the real
-server. Only vendor credentials/endpoint are replaced with a local streaming API;
+server. Claude's vendor credentials/endpoint are replaced with a local streaming API;
 an internal Docker network and the real egress proxy prevent external API traffic.
 
 Explicit cells/providers stages remain isolation diagnostics on synthetic data;
@@ -22,7 +23,6 @@ import json
 import runpy
 import secrets
 import subprocess
-import sys
 import tarfile
 import time
 from pathlib import Path
@@ -51,7 +51,8 @@ COMPOSE_ENV = {
 MIGRATION_CAPS = ("CHOWN", "FOWNER", "DAC_OVERRIDE")
 #: Every in-container leg this script can drive, in the order it drives them.
 LEG_NAMES = ("bootstrap", "daemon_reader", "admission", "new_center_cell", "tool_files",
-             "provider_exec", "provider_turns", "workspace_remote", "workspace_provision",
+             "provider_exec", "external_agent", "workspace_remote",
+             "workspace_provision",
              "engine_http", "preview", "two_pass_delete")
 #: Legs a known defect blocks. Excluded from the default set, named loudly at
 #: both ends of a run, and still runnable with ``--legs``. Never silently
@@ -524,219 +525,6 @@ print(json.dumps(dict(uid=os.getuid(), gid=os.getgid(), caps=int(fields['CapEff'
                 outside=list(outside))
 
 
-def leg_provider_turns():
-    """Real CLI streams over the cell egress relay on the migrated fixture.
-
-    Only the fixture hostname's DNS answer is substituted to loopback. The
-    real HTTP proxy, pinned socket, in-cell forwarder and CLI remain intact.
-    No real credentials or external API calls are used.
-    """
-    import http.server
-    import subprocess
-    import time
-    from tinyassets.credential_vault import _write_exclusive_snapshot_file
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.claude_provider import ClaudeProvider
-    from tinyassets.providers import codex_app_server as app
-    from tinyassets.agent_definition import agent_definition
-
-    requests = []
-    engine_requests = []
-    prompt = ('Persona and conversation history: preserve the owner context.\n' * 1024
-              + 'Say hello. END-OF-LARGE-PROMPT')
-    answer = 'ORACLE streamed response'
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            if self.path == '/mcp':
-                engine_requests.append(body['method'])
-                if 'id' not in body:
-                    self.send_response(202)
-                    self.end_headers()
-                    return
-                result = (dict(protocolVersion='2024-11-05', capabilities={'tools': {}},
-                               serverInfo=dict(name='oracle', version='1'))
-                          if body['method'] == 'initialize' else {'tools': []})
-                payload = json.dumps(dict(jsonrpc='2.0', id=body['id'], result=result)).encode()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-                return
-            requests.append((self.path, body))
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/event-stream')
-            self.send_header('Connection', 'close')
-            self.end_headers()
-            if '/messages' in self.path:
-                events = [
-                    ('message_start', dict(type='message_start', message=dict(
-                        id='msg_oracle', type='message', role='assistant', content=[],
-                        model=body['model'], stop_reason=None, stop_sequence=None,
-                        usage=dict(input_tokens=12, output_tokens=0)))),
-                    ('content_block_start', dict(type='content_block_start', index=0,
-                        content_block=dict(type='text', text=''))),
-                    ('content_block_delta', dict(type='content_block_delta', index=0,
-                        delta=dict(type='text_delta', text=answer))),
-                    ('content_block_stop', dict(type='content_block_stop', index=0)),
-                    ('message_delta', dict(type='message_delta',
-                        delta=dict(stop_reason='end_turn', stop_sequence=None),
-                        usage=dict(output_tokens=4))),
-                    ('message_stop', dict(type='message_stop')),
-                ]
-            else:
-                message = dict(id='msg_oracle', type='message', role='assistant',
-                    status='completed', content=[dict(type='output_text', text=answer,
-                                                      annotations=[])])
-                response = dict(id='resp_oracle', object='response', model='gpt-5',
-                    status='completed', output=[message],
-                    usage=dict(input_tokens=12, output_tokens=4, total_tokens=16))
-                events = [
-                    ('response.created', dict(type='response.created',
-                        response={**response, 'status': 'in_progress', 'output': []})),
-                    ('response.output_item.added', dict(type='response.output_item.added',
-                        output_index=0, item={**message, 'status': 'in_progress', 'content': []})),
-                    ('response.output_text.delta', dict(type='response.output_text.delta',
-                        item_id='msg_oracle', output_index=0, content_index=0, delta=answer)),
-                    ('response.output_item.done', dict(type='response.output_item.done',
-                        output_index=0, item=message)),
-                    ('response.completed', dict(type='response.completed', response=response)),
-                ]
-            try:
-                for event, payload in events:
-                    time.sleep(0.15)  # output arrives after the adapter closes stdin
-                    self.wfile.write(('event: ' + event + '\ndata: ' +
-                                      json.dumps(payload) + '\n\n').encode())
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    port = server.server_port
-    original = universe_egress._checked_addresses
-    def fixture_addresses(host, target_port):
-        if host != 'stream.oracle.test' or target_port != port:
-            raise universe_egress.EgressRefused('oracle permits only its fixture endpoint')
-        return ['127.0.0.1']
-    universe_egress._checked_addresses = fixture_addresses
-    original_route = universe_egress._route_port
-    universe_egress._route_port = lambda actor_id, graph_id: port
-    principal = 'bob'
-    center = center_of(principal)
-    results = {}
-    async def run():
-        with identity_context(Identity(principal, principal)):
-            snapshot = snapshot_dir(center)
-            base = f'http://stream.oracle.test:{port}'
-            key = 'sk-oracle-fixture-only'
-            for name, value in [('stream-key', key), ('stream-url', base)]:
-                _write_exclusive_snapshot_file(snapshot / name, value.encode())
-            from tinyassets.universe_intelligence import (
-                _ENGINE_MCP_ALLOWED, _ENGINE_DISALLOWED_TOOLS_WITH_MCP)
-            mcp = snapshot / 'engine-mcp.json'
-            _write_exclusive_snapshot_file(mcp, json.dumps({'mcpServers': {'tinyassets': {
-                'type': 'http', 'url': f'http://127.0.0.1:{port}/mcp'}}}).encode())
-            commands = {
-                'claude': ([CLAUDE, '-p', '--model', 'claude-sonnet-4-5',
-                    '--output-format', 'stream-json', '--verbose',
-                    '--include-partial-messages', '--max-turns', '1',
-                    '--tools', '', '--setting-sources', '', '--permission-mode', 'default',
-                    '--allowedTools', *_ENGINE_MCP_ALLOWED,
-                    '--disallowedTools', *_ENGINE_DISALLOWED_TOOLS_WITH_MCP,
-                    '--mcp-config', str(mcp), '--strict-mcp-config'],
-                    dict(ANTHROPIC_API_KEY=key, ANTHROPIC_BASE_URL=base,
-                         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', ENABLE_TOOL_SEARCH='false')),
-                'codex': (['/usr/local/bin/codex', 'exec', '--skip-git-repo-check',
-                    '--json', '--sandbox', 'read-only', '-m', 'gpt-5',
-                    '-c', 'model_provider="oracle"',
-                    '-c', 'model_providers.oracle.name="Oracle"',
-                    '-c', f'model_providers.oracle.base_url="{base}/v1"',
-                    '-c', 'model_providers.oracle.wire_api="responses"',
-                    '-c', 'model_providers.oracle.env_key="OPENAI_API_KEY"', '-'],
-                    dict(OPENAI_API_KEY=key, CODEX_HOME=str(snapshot))),
-            }
-            flags = app.SERVED_LAUNCH_ARGS
-            commands['codex-app-server'] = ([commands['codex'][0][0],
-                *flags, *commands['codex'][0][8:-1]], commands['codex'][1])
-            for name, (argv, env) in commands.items():
-                with provider_launch_scope(DATA / center, credential_dir=snapshot,
-                                           engine_route=(principal, center)):
-                    proc = await aspawn_owned(argv, env=env,
-                        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE, limit=4 * 1024 * 1024)
-                try:
-                    async with asyncio.timeout(120):
-                        if name == 'claude':
-                            result = await ClaudeProvider()._read_stream(
-                                proc, prompt, ModelConfig(init_timeout_s=60,
-                                    first_progress_s=60, idle_timeout_s=60))
-                            assert answer in result.text, result
-                        elif name == 'codex-app-server':
-                            drain = asyncio.create_task(proc.stderr.read())
-                            try:
-                                turn = app.AppServerTurn(proc, tools=None,
-                                    profile=ModelConfig().stream_timeout_profile(),
-                                    start=time.monotonic(), turn_wait=60, tool_wait=60)
-                                outcome = await turn.run(thread=('thread/start',
-                                    app.thread_start_params(agent_definition((), 'Say hello'),
-                                        model='gpt-5', cwd='/tmp/workspace', ephemeral=True)),
-                                    input_text=prompt, effort=None)
-                                assert outcome.status == 'completed', outcome
-                                assert answer in outcome.messages[-1], outcome
-                                assert outcome.usage_seen, outcome
-                            finally:
-                                proc.revoke()
-                                await proc.wait()
-                                error = await drain
-                                if error:
-                                    print('APP SERVER STDERR',
-                                          error.decode(errors='replace')[-3000:])
-                        else:
-                            out, err = await proc.communicate(prompt.encode())
-                            assert proc.returncode == 0 and answer.encode() in out, (
-                                proc.returncode, out[-3000:], err[-3000:])
-                    results[name] = dict(streamed=True, exit=proc.returncode)
-                finally:
-                    proc.revoke()
-                    await proc.wait()
-    stop = threading.Event()
-    churn_errors = []
-    def churn():
-        try:
-            while not stop.is_set():
-                children = [subprocess.Popen(['/bin/true']) for _ in range(24)]
-                for child in children:
-                    child.wait()
-        except BaseException as exc:
-            churn_errors.append(type(exc).__name__)
-    churn_worker = threading.Thread(target=churn)
-    churn_worker.start()
-    try:
-        asyncio.run(run())
-        assert any('/messages' in path for path, _ in requests), requests
-        assert any('/responses' in path for path, _ in requests), requests
-        assert 'initialize' in engine_requests and 'tools/list' in engine_requests, engine_requests
-        for marker in ('/messages', '/responses'):
-            assert any(marker in path and 'END-OF-LARGE-PROMPT' in json.dumps(body)
-                       for path, body in requests), marker
-        return dict(results=results, prompt_bytes=len(prompt.encode()),
-                    engine_requests=engine_requests, requests=[path for path, _ in requests])
-    finally:
-        stop.set()
-        churn_worker.join(10)
-        universe_egress._checked_addresses = original
-        universe_egress._route_port = original_route
-        server.shutdown()
-        server.server_close()
-        worker.join(5)
-        assert not churn_worker.is_alive() and not churn_errors, churn_errors
-
-
 def leg_engine_http():
     """Real HTTP handler reaches an owner tool cell using the daemon's clients."""
     import sqlite3
@@ -843,7 +631,6 @@ def leg_workspace_remote():
     lease and its content directory must come out owner-owned, which is the
     whole reason that work moved into a cell.
     """
-    import secrets
 
     from tinyassets import role_remote_git, workspace_owner_pool
     from tinyassets.workspace_pool import WORKSPACES_DIR
@@ -982,10 +769,130 @@ def leg_two_pass_delete():
 
 # EXTENSION POINT. One cell class is one leg: add the function above and its
 # name to LEG_NAMES (and DEFAULT_LEGS) in this file's host half.
+def leg_external_agent():
+    """A real catalogue, job and forced token refresh in an owner cell."""
+    import base64
+    import secrets
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody, llm_subscription_credential_record,
+        write_credential_vault,
+    )
+    from tinyassets.external_agents.home import Custody, materialize
+    from tinyassets.external_agents.registry import resolve
+    from tinyassets.external_agents.receipts import status
+    from tinyassets.external_agents.runner import run_catalogue
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.definition import list_definitions
+    from tinyassets.providers.provider_resolver import provider_for_definition
+    from tinyassets.role_external_agent import CellLauncher
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    requested_center = os.environ.get('ORACLE_COMMAND_CENTER', '')
+    if requested_center:
+        principal, center_name = next(
+            ((owner, center) for owner, center in BINDINGS if center == requested_center),
+            (None, None))
+        assert principal, 'production command center has no owner binding'
+    else:
+        principal, center_name = 'dana', center_of('dana')
+    center = DATA / center_name
+    auth_file = Path('/run/oracle-auth.json')
+    if auth_file.exists():
+        auth = base64.b64encode(auth_file.read_bytes()).decode()
+        write_credential_vault(center, [llm_subscription_credential_record(
+            service='codex', auth_json_b64=auth,
+        )], owner_user_id=principal, universe_id=center_name)
+        with SQLiteProviderWorkAuthorityStore(DATA).connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            reference = adopt_llm_subscription_custody(
+                conn, universe_dir=center, owner_user_id=principal,
+                universe_id=center_name, service='codex',
+            )
+            conn.commit()
+    else:
+        from tinyassets.providers.native_discovery import _custody
+        reference = _custody(DATA, center, principal, 'codex')
+        assert reference, 'production copy has no Codex custody'
+    custody = Custody(center, principal, reference)
+    assert custody.current(), 'new custody is not current'
+    original = materialize(custody, resolve('codex').row['auth'])
+    assert original, 'auth was not materialized'
+    launcher = CellLauncher(universe_dir=center, owner_user_id=principal)
+    with identity_context(Identity(principal, principal)):
+        result = asyncio.run(run_catalogue('codex', launcher, custody))
+    assert result.catalogue.models, 'installed package returned no models'
+    state = status(DATA, owner=principal, universe_id=center_name, agent='codex')
+    assert state == 'fresh', state
+    model = result.catalogue.default_model_id or result.catalogue.models[0].model_id
+    definition = next(d for d in list_definitions(center_name)
+                      if d.access_method == 'subscription_cli' and d.ref == 'codex')
+    provider = provider_for_definition(definition)
+    assert isinstance(provider, ExternalAgentProvider), 'existing Codex binding bypassed runner'
+    def turn():
+        with identity_context(Identity(principal, principal)):
+            return asyncio.run(provider.complete(
+                'Reply with exactly ORACLE_OK.', 'Answer the owner briefly.',
+                ModelConfig(native_model_id=model,
+                            invocation_owner_user_id=principal,
+                            absolute_cap_s=120, init_timeout_s=30,
+                            first_progress_s=60, idle_timeout_s=60),
+                universe_dir=center,
+            ))
+    response = turn()
+    assert response.text and response.reported_model, 'Codex did not report its model'
+    # Expire only the disposable copy's access token. The valid refresh token
+    # must be spent by the installed CLI and carried into custody by CAS.
+    latest = custody.reload()
+    current_bytes = materialize(Custody(center, principal, latest), resolve('codex').row['auth'])
+    document = json.loads(current_bytes['auth.json'])
+    access = document['tokens']['access_token'].split('.')
+    assert len(access) == 3, 'Codex access token is not a JWT'
+    payload = access[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+    claims['exp'] = 1
+    access[1] = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
+    document['tokens']['access_token'] = '.'.join(access)
+    document['last_refresh'] = '2025-01-01T00:00:00Z'
+    stale = json.dumps(document).encode()
+    write_credential_vault(center, [llm_subscription_credential_record(
+        service='codex', auth_json_b64=base64.b64encode(stale).decode(),
+    )], owner_user_id=principal, universe_id=center_name)
+    with SQLiteProviderWorkAuthorityStore(DATA).connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        reference = adopt_llm_subscription_custody(
+            conn, universe_dir=center, owner_user_id=principal,
+            universe_id=center_name, service='codex',
+        )
+        conn.commit()
+    custody = Custody(center, principal, reference)
+    refreshed_response = turn()
+    assert refreshed_response.text and refreshed_response.reported_model
+    carried = custody.reload()
+    assert carried != reference, 'forced CLI refresh was not carried by custody CAS'
+    refreshed = materialize(Custody(center, principal, carried), resolve('codex').row['auth'])
+    assert refreshed['auth.json'] != stale, 'CLI refresh bytes did not reach custody'
+    from tinyassets.broker.owner_identities import owner_identity
+    machine = owner_identity(DATA, principal=principal).uid
+    with SQLiteProviderWorkAuthorityStore(DATA).connection() as conn:
+        receipt = conn.execute("""SELECT execution, native_agent, reported_model,
+            usage_provenance, outcome FROM external_agent_job_receipts
+            WHERE owner_user_id=? AND universe_id=? ORDER BY id DESC LIMIT 1""",
+            (principal, center_name)).fetchone()
+    receipt = tuple(receipt) if receipt is not None else None
+    assert receipt == ('native_agent', 'codex', refreshed_response.reported_model,
+                       'cli_reported', 'succeeded'), receipt
+    return dict(owner=principal, center=center_name, machine=machine,
+                models=len(result.catalogue.models),
+                default=result.catalogue.default_model_id, status=state,
+                job_receipt=receipt, first_reported_model=response.reported_model,
+                refresh_carried=True)
+
+
 LEGS = {'bootstrap': leg_bootstrap, 'daemon_reader': leg_daemon_reader,
         'admission': leg_admission, 'new_center_cell': leg_new_center_cell,
         'tool_files': leg_tool_files, 'provider_exec': leg_provider_exec,
-        'provider_turns': leg_provider_turns,
+        'external_agent': leg_external_agent,
         'workspace_remote': leg_workspace_remote,
         'workspace_provision': leg_workspace_provision,
         'engine_http': leg_engine_http, 'preview': leg_preview,
@@ -1231,12 +1138,16 @@ def _metadata(args, *, start):
                 METADATA_ADDRESS, role_http_fixture.ADDRESS)
         started = docker('run', '--label', 'tinyassets.disposable=true',
             '--label', f'tinyassets.created-at={int(time.time())}',
-            '-d', '--name', name, '--network', 'none', '--user', '0',
+            '-d', '--name', name, '--network',
+            ('bridge' if args.backup_archive and 'cells' in args.stages.split(',')
+             and 'external_agent' in args.legs else 'none'), '--user', '0',
             '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_BIND_SERVICE',
             *(['-v', args.tls_fixture.name + ':/fixture:ro'] if args.backup_archive else []),
             '--entrypoint', '/opt/venv/bin/python', args.image, '-I', '-B', '-c', setup + service)
         args.network = 'container:' + name
-        expect(started.returncode == 0, 'isolated metadata namespace (loopback only)')
+        expect(started.returncode == 0, 'isolated metadata namespace'
+               + (' with Codex egress' if args.backup_archive and
+                  'external_agent' in args.legs else ' (loopback only)'))
         return name
     _network(args)
     started = subprocess.run(
@@ -1331,12 +1242,19 @@ def stage_cells(args):
     """The booted image drives every owner-cell class it can, as the daemon."""
     _metadata(args, start=True)
     docker("rm", "-f", f"{args.prefix}-cells", check=False)
+    extra = ["--rm", "-i", "--network", args.network,
+             "-e", "ORACLE_LEGS=" + json.dumps(list(args.legs)),
+             "-e", "ORACLE_COMMAND_CENTER=" + (args.command_center or ''),
+             "-e", "ORACLE_OUTSIDE_HOST=" + METADATA_ADDRESS,
+             "-e", "ORACLE_OUTSIDE_PORT=80"]
+    if args.synthetic_auth_file:
+        source = str(Path(args.synthetic_auth_file).resolve(strict=True))
+        if len(source) > 2 and source[1] == ':':
+            source = '/' + source[0].lower() + source[2:].replace('\\', '/')
+        extra.extend(["-v", source + ":/run/oracle-auth.json:ro"])
     command = _posture(f"{args.prefix}-cells", args.image, args.volume, user=COMPOSE_USER,
                        caps=COMPOSE_CAPS, entrypoint="/opt/venv/bin/python",
-                       extra=["--rm", "-i", "--network", args.network,
-                              "-e", "ORACLE_LEGS=" + json.dumps(list(args.legs)),
-                              "-e", "ORACLE_OUTSIDE_HOST=" + METADATA_ADDRESS,
-                              "-e", "ORACLE_OUTSIDE_PORT=80"])
+                       extra=extra)
     result = subprocess.run(command + ["-I", "-B", "-"], input=CELLS, text=True, encoding="utf-8",
                             capture_output=True, timeout=args.cells_timeout)
     output = result.stdout + result.stderr
@@ -1344,22 +1262,32 @@ def stage_cells(args):
     expect(result.returncode == 0 and "IMAGE ORACLE CELLS PASS" in result.stdout,
            f"owner-cell legs {','.join(args.legs)}")
     body = output.split("ORACLE REPORT ", 1)[1].rsplit("IMAGE ORACLE CELLS", 1)[0]
-    return json.loads(body)
-
-
-def stage_providers(args):
-    """Real CLIs and isolation checks in execution and discovery cells."""
-    probe = Path(__file__).resolve().parent / "role_provider_cell_probe.py"
-    result = subprocess.run([sys.executable, "-I", str(probe), "--image", args.image],
-                            capture_output=True, text=True, encoding="utf-8")
-    print(result.stdout[-6000:] + result.stderr[-2000:], flush=True)
-    expect(result.returncode == 0 and "PROVIDER CELL PROBE PASS" in result.stdout,
-           "role_provider_cell_probe: the shipped Claude and Codex CLIs in provider-exec cells")
-    return {"probe": "PROVIDER CELL PROBE PASS"}
+    report = json.loads(body)
+    if 'external_agent' in args.legs:
+        machine = str(report['external_agent']['machine'])
+        assert machine.isdecimal(), machine
+        check = '''from pathlib import Path
+import sys
+home = Path('/data/.platform/owners') / sys.argv[1] / 'agent-home'
+assert home.is_dir()
+assert not (home / 'codex/auth.json').exists()
+assert not list((home / 'jobs').glob('*/codex/auth.json'))
+'''
+        proof = subprocess.run([
+            'docker', 'run', '--rm', '--network', 'none', '--user', '0',
+            '--cap-drop', 'ALL', '--cap-add', 'DAC_OVERRIDE',
+            '-v', f'{args.volume}:/data:ro',
+            '--entrypoint', '/opt/venv/bin/python', args.image,
+            '-c', check, machine,
+        ], capture_output=True, text=True, encoding='utf-8', timeout=30)
+        expect(proof.returncode == 0,
+               'Codex auth absent after the job: ' + proof.stderr[-400:])
+        report['external_agent']['auth_file_absent'] = True
+    return report
 
 
 def stage_chat(args, *, runs_only=False):
-    """Acceptance: real HTTP converse and both CLIs on the production copy."""
+    """Acceptance: real HTTP converse with Claude on the production copy."""
     if not args.backup_archive or not args.command_center:
         raise SystemExit('chat acceptance requires --backup-archive and --command-center')
     _metadata(args, start=True)
@@ -1388,7 +1316,7 @@ def stage_chat(args, *, runs_only=False):
         raise RuntimeError('oracle container did not start: ' + result.stderr)
     for line in result.stdout.splitlines():
         if line.startswith('PRODUCTION CHAT PASS '):
-            expect(result.returncode == 0, 'both HTTP converse turns executed read/write/edit/bash')
+            expect(result.returncode == 0, 'HTTP converse turns executed read/write/edit/bash')
             return json.loads(line.removeprefix('PRODUCTION CHAT PASS '))
     # Logs contain owner conversation/route material: retain only fixed diagnostics.
     import re
@@ -1500,7 +1428,7 @@ print(json.dumps(dict(actual=actual, replay=replay)))
 
 STAGES = {"restore": stage_restore, "repair": stage_repair,
           "migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
-          "providers": stage_providers, "chat": stage_chat, "runs": stage_runs,
+          "chat": stage_chat, "runs": stage_runs,
           "writers": stage_writers}
 
 
@@ -1511,6 +1439,8 @@ def main(argv=None):
     parser.add_argument('--backup-archive', help='restore this full backup instead of the fixture; '
                         'chat acceptance uses only a local streaming endpoint')
     parser.add_argument('--command-center', help='production command center for chat acceptance')
+    parser.add_argument('--synthetic-auth-file',
+                        help='local credential mounted read-only for the external-agent cell leg')
     parser.add_argument("--prefix", default="role-image-oracle",
                         help="name prefix for this run's volume and containers")
     parser.add_argument("--volume", help="data volume name (default <prefix>-data)")
@@ -1531,10 +1461,11 @@ def main(argv=None):
     if ({'chat', 'runs', 'repair'} & set(args.stages.split(','))
             and (not args.backup_archive or not args.command_center)):
         parser.error('chat acceptance requires --backup-archive and --command-center')
-    if args.backup_archive and ('providers' in args.stages.split(',') or
-            ('cells' in args.stages.split(',') and args.legs != ('bootstrap',))):
-        parser.error('restored backups permit migrate,serve and the bootstrap cell leg only; '
-                     'run synthetic owner/provider legs on a separate fixture volume')
+    if args.backup_archive and ('cells' in args.stages.split(',') and
+            args.legs not in {('bootstrap',), ('external_agent',),
+                              ('bootstrap', 'external_agent')}):
+        parser.error('restored backups permit the bootstrap and external_agent '
+                     'cell legs only')
     if args.backup_archive:
         args.isolated_metadata = True
     unknown = set(args.legs) - set(LEG_NAMES)

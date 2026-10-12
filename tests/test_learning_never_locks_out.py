@@ -82,9 +82,9 @@ def _rate_limit(agent, monkeypatch):
 
 def _secondary_call(agent, config):
     """One plain (non-agent) writer call, exactly as extract_learning makes it."""
-    from tinyassets.providers.call import call_provider
+    from tinyassets.providers.model_call import text_sync
 
-    return call_provider(
+    return text_sync(
         "founder said this", system="extract what was taught", role="writer",
         universe_context=agent.served.context, config=config,
         operation="converse", retry_on_exhaustion=False,
@@ -127,7 +127,7 @@ def test_extract_learning_marks_its_own_call_secondary(monkeypatch, tmp_path):
         captured.update(kwargs)
         return "{}"
 
-    monkeypatch.setattr(universe_intelligence, "call_provider", capture)
+    monkeypatch.setattr(universe_intelligence, "text_sync", capture)
     (tmp_path / "u-learn").mkdir()
     ctx = UniverseContext(universe_dir=tmp_path / "u-learn", config=None)
     universe_intelligence.extract_learning("taught", "replied", ctx)
@@ -155,7 +155,7 @@ def test_learning_rate_limit_leaves_the_founder_s_next_turn_eligible(agent, monk
 
 def test_converse_logs_a_note_when_learning_is_skipped(agent, monkeypatch, caplog):
     """Never raised, never a traceback, never user-visible: one honest line."""
-    from tinyassets.providers import call as provider_calls
+    from tinyassets.providers import model_call as provider_calls
 
     def exhausted(*args, **kwargs):
         raise AllProvidersExhaustedError(
@@ -168,8 +168,8 @@ def test_converse_logs_a_note_when_learning_is_skipped(agent, monkeypatch, caplo
             )],
         )
 
-    monkeypatch.setattr(provider_calls, "call_provider", exhausted)
-    monkeypatch.setattr(universe_intelligence, "call_provider", exhausted)
+    monkeypatch.setattr(provider_calls, "text_sync", exhausted)
+    monkeypatch.setattr(universe_intelligence, "text_sync", exhausted)
     with caplog.at_level(logging.INFO, logger="tinyassets.universe_intelligence"):
         skipped = universe_intelligence._learn_from_turn(
             agent.served.context, universe_dir=agent.served.context.universe_dir,
@@ -363,7 +363,10 @@ def test_an_unresolvable_source_reports_no_display_name(agent, provider):
 
 def test_the_writer_receipt_carries_the_connection_name(agent, monkeypatch):
     """What the app renders: the connection's name plus the answering model."""
-    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+    from tinyassets.providers.execution_receipt import (
+        normalize_execution_receipt,
+        receipt_from_response,
+    )
 
     monkeypatch.setattr("tinyassets.broker.owner_identities.admitted_owner",
                         lambda root, *, center: "owner")
@@ -373,19 +376,17 @@ def test_the_writer_receipt_carries_the_connection_name(agent, monkeypatch):
                      "WHERE connection_id = ?",
                      ("model:openrouter_user_models_v1", "conn-models"))
         conn.commit()
-    receipt = WriterExecutionReceipt()
-    assert integration.run(agent, receipt.observe) == "finished exact answer"
-    projected = receipt.projection()
+    responses = []
+    assert integration.run(agent, responses.append) == "finished exact answer"
+    projected = normalize_execution_receipt(receipt_from_response(responses[0]))
     usage = projected.pop("usage")
     assert usage["dispatched"] == len(agent.wires) == 2
     assert usage["quota_authoritative"] is False
     assert usage["sources"][0]["purpose"] == "reply"
-    assert projected == {
-        "provider": _provider(agent),
-        "provider_display": "OpenRouter",
-        "model": "actual-answer-model",
-        "model_status": "reported",
-    }
+    assert projected["provider"] == _provider(agent)
+    assert projected["provider_display"] == "OpenRouter"
+    assert projected["model"] == "actual-answer-model"
+    assert projected["model_status"] == "reported"
 
 
 def test_a_receipt_with_no_display_name_keeps_its_legacy_shape(agent):

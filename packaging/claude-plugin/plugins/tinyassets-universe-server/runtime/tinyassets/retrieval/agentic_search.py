@@ -378,17 +378,13 @@ def build_phase_query(
 
 def _build_provider_call() -> Callable[[str, str, str], Any] | None:
     """Return the async decomposition callable when real providers are enabled."""
-    from tinyassets.providers import call as provider_call
-
-    if provider_call.is_force_mock():
-        return None
+    from tinyassets.providers.model_call import text_sync
 
     async def _async_provider_call(prompt: str, system: str, role: str) -> str:
-        return provider_call.call_provider(
+        return text_sync(
             prompt,
             system,
             role=role,
-            fallback_response="",
         )
 
     return _async_provider_call

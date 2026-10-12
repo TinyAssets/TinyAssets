@@ -766,20 +766,6 @@ class _BackgroundAssignedProviderSession:
                     providers.add(str(candidate["provider"]))
         return providers
 
-    def call_with_policy_sync(
-        self,
-        role: str,
-        prompt: str,
-        system: str,
-        policy: dict[str, Any] | None,
-        config: Any = None,
-        difficulty: str = "",
-        **kwargs: Any,
-    ) -> tuple[str, str, dict[str, Any]]:
-        del difficulty
-        response, provider = self._call(role, prompt, system, config, policy, kwargs)
-        return response, provider, {"authority": BACKGROUND_BRANCH_RUN_OPERATION, "attempts": 1}
-
     def __call__(
         self, prompt: str, system: str = "", *, role: str = "writer", **kwargs: Any
     ) -> str:
@@ -821,11 +807,12 @@ class _BackgroundAssignedProviderSession:
                 raise PermissionError("background parent request budget cannot be substituted")
             config = replace(config, request_budget=self._request_budget,
                              request_purpose="helper")
+        from tinyassets.providers.model_call import require_supported_policy
+
+        require_supported_policy(policy)
         declared_providers = self._declared_policy_providers(policy)
         # Enforcement site (C), served half (design.md § Enforcement sites).
-        # Both public entries land here — `__call__` (raw prompt/system) and
-        # `call_with_policy_sync` (structured role/policy) — so one gate covers
-        # both shapes. It has to be *before* the shared-self branch below:
+        # Every prompt step reaches this gate before the shared-self branch.
         # that branch calls `load_background_executor_identity` and
         # `prepare_shared_self_turn` and then hands the turn to the workflow
         # agent, all before `_authorize_launch` is ever reached.
@@ -904,6 +891,7 @@ class _BackgroundAssignedProviderSession:
                     call_config = replace(call_config, workflow_node=True)
                 call_kwargs.update(
                     operation=BACKGROUND_BRANCH_RUN_OPERATION,
+                    policy=policy,
                     universe_context=UniverseContext(
                         universe_dir=universe_dir,
                         config=load_universe_config(universe_dir),
@@ -1254,12 +1242,6 @@ class _BackgroundAssignedProviderSession:
                         )
                         if assignment is None or assignment.state != "ready":
                             raise PermissionError("assigned provider is unavailable")
-                        if not assignment.manifest_digest and declared_providers - {
-                            assignment.provider
-                        }:
-                            raise PermissionError(
-                                "background policy provider is outside assigned authority"
-                            )
                         agent = resolve_serving_agent_binding(
                             self._base_path,
                             universe_id=self._task.universe_id,
@@ -1762,17 +1744,17 @@ def authorize_background_served_provider_call(
     if claimed_task.claimed_by != consumer_lease.consumer_id:
         raise PermissionError("consumer lease does not own the claimed task")
     try:
-        from domains.fantasy_daemon.phases._provider_stub import call_provider
+        from domains.fantasy_daemon.phases._provider_stub import text_sync
     except ImportError as exc:
         raise PermissionError("provider bridge is unavailable") from exc
     from tinyassets.config import load_universe_config
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import UniverseBoundProviderCall
+    from tinyassets.providers.model_call import BoundModelCall
 
     root = Path(base_path)
     universe_dir = root / claimed_task.universe_id
-    session = _BackgroundAssignedProviderSession(root, claimed_task, consumer_lease, call_provider)
-    return UniverseBoundProviderCall(
+    session = _BackgroundAssignedProviderSession(root, claimed_task, consumer_lease, text_sync)
+    return BoundModelCall(
         session,
         UniverseContext(
             universe_dir=universe_dir,

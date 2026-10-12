@@ -100,7 +100,12 @@ def _native_inventory(conn, universe, owner):
 
 
 def _native_enumeration(provider):
-    """Installed metadata support, not proof this account has a model list."""
+    """Installed metadata support, not proof this account has a model list.
+
+    The bound executor decides. A package name alone does not: a stand-in
+    registered under a shipped package's name has not installed that catalogue.
+    """
+    from tinyassets.external_agents.provider import ExternalAgentProvider
     from tinyassets.providers.base import BaseProvider
     from tinyassets.providers.call import get_provider_router
 
@@ -109,9 +114,12 @@ def _native_enumeration(provider):
     if executor is None:
         return "unavailable"
     method = getattr(executor, "enumerate_models", None)
-    supported = (getattr(executor, "native_discovery_protocol", None) is not None
-                 or callable(method)
-                 and getattr(method, "__func__", method) is not BaseProvider.enumerate_models)
+    supported = (
+        isinstance(executor, ExternalAgentProvider)
+        or getattr(executor, "native_discovery_protocol", None) is not None
+        or callable(method)
+        and getattr(method, "__func__", method) is not BaseProvider.enumerate_models
+    )
     return "supported" if supported else "unknown"
 
 

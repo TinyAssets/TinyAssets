@@ -24,6 +24,13 @@ from tests.test_provider_served_router import _RecordingProvider, _served_contex
 from tinyassets.exceptions import ProviderAuthenticationError
 from tinyassets.providers.model_policy import ModelRef
 
+
+def _refresh_before_launch(**kwargs):
+    from tinyassets.subscription_refresh import _refresh_document
+
+    return bool(_refresh_document(**kwargs))
+
+
 OWNER = "owner-1"
 UID = "u-owner"
 
@@ -55,14 +62,15 @@ def _document(
     return base64.b64encode(json.dumps(doc).encode("utf-8")).decode("ascii")
 
 
-def _deposit(universe_dir, encoded: str, *, owner: str = OWNER, uid: str = UID) -> None:
+def _deposit(universe_dir, encoded: str, *, owner: str = OWNER, uid: str = UID,
+             service: str = "codex") -> None:
     from tinyassets.credential_vault import write_credential_vault
 
     write_credential_vault(
         universe_dir,
         [{
             "credential_type": "llm_subscription",
-            "service": "codex",
+            "service": service,
             "auth_json_b64": encoded,
         }],
         owner_user_id=owner,
@@ -150,7 +158,7 @@ def test_concurrent_launches_spend_the_refresh_token_once(tmp_path, monkeypatch)
     def run(index):
         barrier.wait()
         try:
-            results[index] = subscription_refresh.refresh_before_launch(
+            results[index] = _refresh_before_launch(
                 universe_dir=universe_dir, service="codex",
                 owner_user_id=OWNER, universe_id=UID,
                 token_url="https://auth.example.net/token", client_id="c-1",
@@ -188,7 +196,7 @@ def test_a_rotation_preserves_every_other_key_of_the_stored_document(tmp_path, m
         lambda d, **_: subscription_refresh._rebuild(
             d, access_token="a-2", refresh_token="r-2", id_token=""),
     )
-    assert subscription_refresh.refresh_before_launch(
+    assert _refresh_before_launch(
         universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
         token_url="https://auth.example.net/token", client_id="c-1",
     )
@@ -237,7 +245,7 @@ def test_only_a_document_provably_stale_is_refreshed(
             document, access_token="a-2", refresh_token="r-2", id_token="")
 
     monkeypatch.setattr(subscription_refresh, "_spend", fake_spend)
-    rotated = subscription_refresh.refresh_before_launch(
+    rotated = _refresh_before_launch(
         universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
         token_url="https://auth.example.net/token", client_id="c-1", now=now,
     )
@@ -265,7 +273,7 @@ def test_the_refresh_is_spent_where_the_credential_says_it_was_issued(tmp_path, 
             document, access_token="a-2", refresh_token="r-2", id_token="")
 
     monkeypatch.setattr(subscription_refresh, "_spend", fake_spend)
-    assert subscription_refresh.refresh_before_launch(
+    assert _refresh_before_launch(
         universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
     ) is True
     assert seen == ["https://sign-in.example.net"]
@@ -285,7 +293,7 @@ def test_a_credential_that_does_not_say_where_it_came_from_is_not_refreshed(
     _endpoint_from_the_credential(monkeypatch)
     monkeypatch.setattr(subscription_refresh, "_spend", lambda *a, **k: pytest.fail(
         "nothing may be spent without an issuer the credential names"))
-    assert subscription_refresh.refresh_before_launch(
+    assert _refresh_before_launch(
         universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
     ) is False
 
@@ -310,7 +318,7 @@ def test_a_path_backed_record_is_not_migrated_by_a_refresh(tmp_path, monkeypatch
     )
     monkeypatch.setattr(subscription_refresh, "_spend", lambda *a, **k: pytest.fail(
         "a path-backed record must not be refreshed into an inline one"))
-    assert subscription_refresh.refresh_before_launch(
+    assert _refresh_before_launch(
         universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
         token_url="https://auth.example.net/token", client_id="c-1",
     ) is False
@@ -322,183 +330,12 @@ def test_a_path_backed_record_is_not_migrated_by_a_refresh(tmp_path, monkeypatch
 
 
 # --------------------------------------------------------------------------- #
-# 3. A rotation made DURING a run is persisted, not deleted with the copy.
-# --------------------------------------------------------------------------- #
-
-
-def _materialize(universe_dir):
-    """The real materializer, so the home under test is the one launches read."""
-    from tinyassets.credential_vault import ensure_codex_home_from_vault
-
-    home = ensure_codex_home_from_vault(universe_dir)
-    assert home is not None
-    return home
-
-
-def _deposit_with_home(universe_dir, encoded: str):
-    """A record that NAMES its home, which is the launch-writable shape."""
-    from tinyassets.credential_vault import write_credential_vault
-
-    home = universe_dir / "sign-in-home"
-    home.mkdir(exist_ok=True)
-    from tinyassets.credential_vault import llm_subscription_credential_record
-
-    write_credential_vault(
-        universe_dir,
-        [{
-            **llm_subscription_credential_record(
-                service="codex", auth_json_b64=encoded),
-            "codex_home": str(home),
-        }],
-        owner_user_id=OWNER, universe_id=UID,
-    )
-    return home
-
-
-def test_a_rotation_the_cli_made_on_disk_is_adopted_into_the_vault(tmp_path):
-    """The other half of removing the stale overwrite.
-
-    Leaving the newer document only on disk means the platform refresh, which
-    reads the VAULT, spends a refresh token that document has already replaced.
-    """
-    from tinyassets.subscription_refresh import adopt_newer_on_disk_document
-
-    universe_dir = tmp_path / UID
-    universe_dir.mkdir()
-    _deposit_with_home(universe_dir, _document(last_refresh="2026-09-01T00:00:00Z"))
-    home = _materialize(universe_dir)
-    (home / "auth.json").write_text(json.dumps({
-        "auth_mode": "subscription",
-        "tokens": {"id_token": "i-9", "access_token": "a-9", "refresh_token": "r-9"},
-        "last_refresh": "2026-09-20T00:00:00Z",
-    }), encoding="utf-8")
-
-    assert adopt_newer_on_disk_document(
-        universe_dir=universe_dir, service="codex", owner_user_id=None, universe_id=UID,
-    ) is True
-    assert _stored_tokens(universe_dir)["tokens"]["refresh_token"] == "r-9"
-
-
-@pytest.mark.parametrize("disk_stamp,reason", [
-    ("2026-08-01T00:00:00Z", "an OLDER on-disk document must not replace the vault's"),
-    ("", "an unstamped document is never preferred over a stamped one"),
-])
-def test_an_older_or_unstamped_on_disk_document_is_not_adopted(tmp_path, disk_stamp, reason):
-    from tinyassets.subscription_refresh import adopt_newer_on_disk_document
-
-    universe_dir = tmp_path / UID
-    universe_dir.mkdir()
-    _deposit_with_home(
-        universe_dir, _document(refresh="r-vault", last_refresh="2026-09-01T00:00:00Z"))
-    home = _materialize(universe_dir)
-    document = {"tokens": {"access_token": "a-9", "refresh_token": "r-disk"}}
-    if disk_stamp:
-        document["last_refresh"] = disk_stamp
-    (home / "auth.json").write_text(json.dumps(document), encoding="utf-8")
-
-    assert adopt_newer_on_disk_document(
-        universe_dir=universe_dir, service="codex", owner_user_id=None, universe_id=UID,
-    ) is False, reason
-    assert _stored_tokens(universe_dir)["tokens"]["refresh_token"] == "r-vault"
-
-
-def test_the_sealed_launch_copy_cannot_hold_a_rotation(tmp_path):
-    """Why there is no recovery hook on the cleanup path: the copy is read-only.
-
-    Pinned as a test because the absence of that hook is a DECISION, and this is
-    the fact it rests on. If a future change makes the copy writable, this goes
-    red and the discard is back on the table.
-    """
-    import sqlite3
-
-    from tinyassets.credential_vault import (
-        adopt_llm_subscription_custody,
-        cleanup_llm_credential_snapshot,
-        snapshot_llm_subscription_credential,
-    )
-    from tinyassets.storage import db_path
-
-    universe_dir = tmp_path / UID
-    universe_dir.mkdir()
-    _deposit(universe_dir, _document())
-    conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
-    try:
-        conn.execute("BEGIN")
-        custody = adopt_llm_subscription_custody(
-            conn, universe_dir=universe_dir, owner_user_id=OWNER,
-            universe_id=UID, service="codex",
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    snapshot = snapshot_llm_subscription_credential(
-        universe_dir=universe_dir, custody=custody,
-    )
-    with pytest.raises((PermissionError, OSError)):
-        (snapshot.directory / "auth.json").write_bytes(b"{}")
-    cleanup_llm_credential_snapshot(snapshot)
-    assert not snapshot.directory.exists()
-
-
-# --------------------------------------------------------------------------- #
 # 4. A stale vault copy never overwrites a newer on-disk document.
 # --------------------------------------------------------------------------- #
 
 
-def test_the_vault_never_overwrites_a_provably_newer_on_disk_document(tmp_path):
-    """`ensure_codex_home_from_vault` is the real caller; it wrote the OLD bytes.
-
-    It had no notion of which document was newer, so a document the CLI had
-    refreshed was replaced by the older vault copy and the next launch replayed a
-    spent refresh token. "Provably" is the whole rule: see the companion test for
-    why an unstamped document cannot be allowed to win.
-    """
-    from tinyassets.credential_vault import ensure_codex_home_from_vault
-
-    universe_dir = tmp_path / UID
-    universe_dir.mkdir()
-    _deposit(universe_dir, _document(
-        access="stale", refresh="r-stale", last_refresh="2026-09-01T00:00:00Z"))
-
-    home = ensure_codex_home_from_vault(universe_dir)
-    assert home is not None
-    auth_file = home / "auth.json"
-    assert json.loads(auth_file.read_text())["tokens"]["refresh_token"] == "r-stale"
-
-    # What the CLI writes after refreshing: new tokens AND a new stamp.
-    auth_file.write_text(json.dumps({
-        "tokens": {"access_token": "a-new", "refresh_token": "r-new"},
-        "last_refresh": "2026-09-20T00:00:00Z",
-    }), encoding="utf-8")
-
-    assert ensure_codex_home_from_vault(universe_dir) == home
-    assert json.loads(auth_file.read_text())["tokens"]["refresh_token"] == "r-new"
 
 
-def test_an_owners_redeposit_still_reaches_the_materialized_home(tmp_path):
-    """The other side of the same rule, and why it is not "never overwrite".
-
-    An owner re-depositing IS a rotation and must land on disk. An unstamped
-    on-disk document therefore never wins -- otherwise a re-deposit would be
-    ignored in favour of whatever the CLI happened to leave.
-    """
-    from tinyassets.credential_vault import ensure_codex_home_from_vault
-
-    universe_dir = tmp_path / UID
-    universe_dir.mkdir()
-    _deposit(universe_dir, _document(refresh="r-first", last_refresh="2026-09-01T00:00:00Z"))
-    home = ensure_codex_home_from_vault(universe_dir)
-    assert home is not None
-    # An unstamped document on disk: not evidence of anything, so it loses.
-    (home / "auth.json").write_text(
-        json.dumps({"tokens": {"access_token": "a-x", "refresh_token": "r-unstamped"}}),
-        encoding="utf-8",
-    )
-    _deposit(universe_dir, _document(refresh="r-second", last_refresh="2026-09-25T00:00:00Z"))
-
-    assert ensure_codex_home_from_vault(universe_dir) == home
-    stored = json.loads((home / "auth.json").read_text())
-    assert stored["tokens"]["refresh_token"] == "r-second"
 
 
 # --------------------------------------------------------------------------- #
@@ -506,20 +343,6 @@ def test_an_owners_redeposit_still_reaches_the_materialized_home(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("excerpt,terminal", [
-    ("stream error: refresh token was already used", True),
-    ("token request failed: invalid_grant", True),
-    ("you are not logged in; run codex login", True),
-    ("stream disconnected before completion", False),
-    ("the model produced no output", False),
-    # NOT terminal despite naming auth: an ordinary failure that mentions an auth
-    # header must not become a request for the owner to sign in again.
-    ("request failed: missing authorization header on a proxied call", False),
-])
-def test_a_finished_signin_is_told_apart_from_an_outage(excerpt, terminal):
-    from tinyassets.providers.codex_provider import _terminal_auth_failure
-
-    assert _terminal_auth_failure(excerpt) is terminal
 
 
 def test_the_interactive_served_launch_refreshes_before_it_pins_anything(tmp_path, monkeypatch):
@@ -770,7 +593,8 @@ def test_no_token_reaches_a_result_log_or_exception(tmp_path, monkeypatch, caplo
     secrets = ("r-1", "a-1", ID_TOKEN)
     universe_dir = tmp_path / UID
     universe_dir.mkdir()
-    _deposit(universe_dir, _document(last_refresh="2020-01-01T00:00:00Z"))
+    _deposit(universe_dir, _document(last_refresh="2020-01-01T00:00:00Z"),
+             service="claude")
 
     def refusing(document, **_):
         assert document.refresh_token == "r-1"  # it WAS read; it must not be echoed
@@ -782,21 +606,17 @@ def test_no_token_reaches_a_result_log_or_exception(tmp_path, monkeypatch, caplo
         with pytest.raises(ProviderAuthenticationError) as caught:
             subscription_refresh.refresh_deposited_subscriptions(
                 base_path=tmp_path, universe_dir=universe_dir,
-                owner_user_id=OWNER, universe_id=UID, launching="codex",
+                owner_user_id=OWNER, universe_id=UID, launching="claude",
             )
     rendered = f"{caught.value!r} {caught.value} {caplog.text}"
     for secret in secrets:
         assert secret not in rendered
     # The owner is still told which source, and what to do about it.
-    assert "codex" in str(caught.value) and "sign in again" in str(caught.value)
+    assert "claude" in str(caught.value) and "sign in again" in str(caught.value)
 
 
-def test_another_sources_dead_signin_does_not_fail_this_launch(tmp_path, monkeypatch):
-    """Codex refute-review, P1 #2: the owner has more than one source on purpose.
-
-    Raising for ANY deposited source let a second, unrelated dead credential kill
-    a launch that was never going to use it. Only the launching source may.
-    """
+def test_cli_owned_codex_refresh_is_not_spent_by_platform(tmp_path, monkeypatch):
+    """The platform may refresh Claude; Codex's isolated CLI owns its token."""
     from tinyassets import subscription_refresh
     from tinyassets.credential_refresh import RefreshRejected
     from tinyassets.credential_vault import write_credential_vault
@@ -830,16 +650,13 @@ def test_another_sources_dead_signin_does_not_fail_this_launch(tmp_path, monkeyp
         base_path=tmp_path, universe_dir=universe_dir,
         owner_user_id=OWNER, universe_id=UID, launching="claude",
     )
-    # Both were still attempted -- a stale document costs whoever launches next a
-    # turn, so refreshing it is right; only the RAISE is scoped.
-    assert sorted(asked) == ["r-dead", "r-live"]
-
-    # ...and when the launch IS that source, it does raise.
-    with pytest.raises(ProviderAuthenticationError):
-        subscription_refresh.refresh_deposited_subscriptions(
-            base_path=tmp_path, universe_dir=universe_dir,
-            owner_user_id=OWNER, universe_id=UID, launching="codex",
-        )
+    # Codex refresh is owned by its isolated CLI and CAS writeback.
+    assert asked == ["r-live"]
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=tmp_path, universe_dir=universe_dir,
+        owner_user_id=OWNER, universe_id=UID, launching="codex",
+    )
+    assert asked == ["r-live"]
 
 
 def test_the_refresh_token_is_sent_through_the_hardened_transport(tmp_path, monkeypatch):
@@ -963,7 +780,7 @@ def test_the_endpoint_comes_from_the_document_read_under_the_locks(tmp_path, mon
         return result
 
     monkeypatch.setattr(subscription_refresh, "_stored", swapping_read)
-    subscription_refresh.refresh_before_launch(
+    _refresh_before_launch(
         universe_dir=universe_dir, service="codex", owner_user_id=OWNER, universe_id=UID,
     )
     assert sent, "nothing was spent at all"
@@ -1013,32 +830,3 @@ def test_an_unsaveable_rotation_is_terminal_not_transient(tmp_path, monkeypatch)
         )
     assert spent == ["once"]
     assert "sign in again" in str(caught.value)
-
-
-def test_the_two_newest_wins_comparators_agree_on_a_fresh_deposit(tmp_path):
-    """Codex refute-review, P1 #4: adoption must not undo a re-deposit.
-
-    A newly deposited document with no internal stamp, whose RECORD is stamped
-    today, against a yesterday-stamped document on disk. The materializer prefers
-    the deposit via the record fallback; adoption must reach the same answer, or
-    it restores yesterday's credential over today's.
-    """
-    from tinyassets.credential_vault import ensure_codex_home_from_vault
-    from tinyassets.subscription_refresh import adopt_newer_on_disk_document
-
-    universe_dir = tmp_path / UID
-    universe_dir.mkdir()
-    home = _deposit_with_home(universe_dir, _document(refresh="r-old", last_refresh=""))
-    (home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "a-y", "refresh_token": "r-yesterday"},
-        "last_refresh": "2020-01-01T00:00:00Z",
-    }), encoding="utf-8")
-    # The record's own deposited_at is now, so the deposit is the newer of the two.
-    _deposit_with_home(universe_dir, _document(refresh="r-new", last_refresh=""))
-
-    assert adopt_newer_on_disk_document(
-        universe_dir=universe_dir, service="codex", owner_user_id=None, universe_id=UID,
-    ) is False, "adoption restored an older document over a fresh deposit"
-    assert _stored_tokens(universe_dir)["tokens"]["refresh_token"] == "r-new"
-    ensure_codex_home_from_vault(universe_dir)
-    assert json.loads((home / "auth.json").read_text())["tokens"]["refresh_token"] == "r-new"

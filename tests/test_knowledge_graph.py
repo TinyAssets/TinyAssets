@@ -739,7 +739,7 @@ class TestRAPTOR:
 
         try:
             with patch(
-                "tinyassets.providers.call.call_provider",
+                "tinyassets.providers.model_call.text_sync",
                 return_value="Summary of the cluster.",
             ):
                 tree = rebuild_raptor_from_canon(
@@ -788,7 +788,7 @@ class TestRAPTOR:
                 no_tray=True,
             )
             with patch(
-                "tinyassets.providers.call.call_provider",
+                "tinyassets.providers.model_call.text_sync",
                 return_value="Summary of cluster.",
             ):
                 controller._build_raptor_tree()

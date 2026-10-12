@@ -55,7 +55,9 @@ def catalogue(ids, *, provider="codex"):
 
 
 @pytest.fixture
-def cache():
+def cache(monkeypatch):
+    # These cache tests use a synthetic executor and no package receipt store.
+    monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
     instance = ShortlistCache()
     try:
         yield instance
@@ -111,7 +113,7 @@ def test_a_cold_read_schedules_instead_of_discovering(monkeypatch, cache):
     elapsed = time.monotonic() - began
 
     assert snapshot is None
-    assert reason == "catalogue_refresh_pending", "a cold source must say so truthfully"
+    assert reason == "never_run", "a cold source must say so truthfully"
     assert elapsed < 1.0, f"the read waited {elapsed:.2f}s on discovery"
     assert started.wait(5), "no background refresh was scheduled"
     release.set()
@@ -217,14 +219,14 @@ def test_a_failed_refresh_reports_its_own_reason_when_cold(monkeypatch, cache):
     install(monkeypatch, cache, {"codex": ProviderError("nope")})
     where = {"base": "/b", "owner": "o", "universe_id": "u", "provider": "codex"}
     cache.refresh_now(**where)
-    assert cache.get(**where) == (None, "native_catalogue_unavailable")
+    assert cache.get(**where) == (None, "failed: native_catalogue_unavailable")
 
 
 def test_unsupported_enumeration_keeps_its_own_reason(monkeypatch, cache):
     install(monkeypatch, cache, {"codex": None})
     where = {"base": "/b", "owner": "o", "universe_id": "u", "provider": "codex"}
     cache.refresh_now(**where)
-    assert cache.get(**where) == (None, "native_enumeration_unsupported")
+    assert cache.get(**where) == (None, "failed: native_enumeration_unsupported")
 
 
 def test_an_unexpected_error_does_not_kill_the_worker(monkeypatch, cache):
@@ -233,7 +235,7 @@ def test_an_unexpected_error_does_not_kill_the_worker(monkeypatch, cache):
     install(monkeypatch, cache, answers)
     where = {"base": "/b", "owner": "o", "universe_id": "u", "provider": "codex"}
     cache.refresh_now(**where)
-    assert cache.get(**where) == (None, "catalogue_refresh_unavailable")
+    assert cache.get(**where) == (None, "failed: catalogue_refresh_unavailable")
 
     answers["codex"] = catalogue(["recovered"])
     cache.refresh_now(**where)
@@ -294,7 +296,7 @@ def test_the_bound_evicts_the_coldest_rather_than_refusing_the_newest(monkeypatc
     assert drain(cache)
     # Once they settle, a brand-new source is admitted rather than turned away.
     _snapshot, reason = cache.get(owner="newcomer", **where)
-    assert reason == "catalogue_refresh_pending", (
+    assert reason == "never_run", (
         "a new source was refused while evictable entries existed"
     )
     assert cache.stats()["tracked"] <= 3
@@ -334,8 +336,8 @@ def test_a_display_read_runs_no_discovery_and_keeps_the_default(native, monkeypa
     assert calls == [], "a display read ran discovery on the request path"
     offered = {m.model_id for m in prepared.catalog.connections[0].models}
     assert "" in offered, "the provider default must survive a cold catalogue"
-    assert any(item.reason == "catalogue_refresh_pending"
-               for item in prepared.ineligible), "the pending state was not reported"
+    assert any(item.reason == "never_run"
+               for item in prepared.ineligible), "the cold state was not reported"
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
@@ -445,8 +447,8 @@ def test_a_warming_catalogue_leaves_the_default_PICKABLE(native, monkeypatch):  
         "a warming catalogue made the provider default unpickable: "
         f"{default['reasons']}"
     )
-    # ...while the source itself still reports the pending state honestly.
-    assert any(reason["reason"] == "catalogue_refresh_pending"
+    # ...while the source itself still reports its cold state honestly.
+    assert any(reason["reason"] == "never_run"
                for entry in document["source_failures"]
                for reason in entry["reasons"])
 
@@ -486,7 +488,7 @@ def test_a_refresh_started_before_a_reconnect_cannot_resurrect_its_result(monkey
 
     snapshot, reason = cache.get(**where)
     assert snapshot is None, "a forgotten key was resurrected by its old worker"
-    assert reason == "catalogue_refresh_pending"
+    assert reason == "never_run"
 
 
 def test_a_stale_worker_does_not_clear_a_replacements_claim(monkeypatch, cache):

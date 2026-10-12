@@ -253,17 +253,19 @@ def _answer_response(*frames, text="hello"):
 
 
 def test_root_answer_reports_observed_model_through_receipt_and_native_record():
-    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+    from tinyassets.providers.execution_receipt import (
+        normalize_execution_receipt,
+        receipt_from_response,
+    )
     from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 
     response = _answer_response(_root_answer(model=" actual-model "))
     assert response.model == "requested-alias"
     assert response.reported_model == "actual-model"
-    receipt = WriterExecutionReceipt()
-    receipt.observe(response)
-    assert receipt.projection() == {
-        "provider": "claude-code", "model": "actual-model", "model_status": "reported",
-    }
+    receipt = normalize_execution_receipt(receipt_from_response(response))
+    assert receipt["provider"] == "claude-code"
+    assert receipt["model"] == "actual-model"
+    assert receipt["model_status"] == "reported"
     candidate = NativeInput(
         source_ref="claude-code", model="requested-alias", binding_id="binding",
         reservation_id="reservation", binding_generation=1,
@@ -1128,7 +1130,7 @@ def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     from tinyassets.providers.base import UniverseContext
 
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-stream")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = "run_graph"
@@ -1238,7 +1240,7 @@ class TestInteractiveNoSleep:
 
         seen_kwargs = {}
 
-        def _fake_call_provider(*args, **kwargs):
+        def _fake_text_call(*args, **kwargs):
             seen_kwargs.update(kwargs)
             # All-skipped exhaustion => the safe case that used to sleep+retry.
             from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
@@ -1251,33 +1253,14 @@ class TestInteractiveNoSleep:
                 )],
             )
 
-        monkeypatch.setattr(ui, "call_provider", _fake_call_provider)
+        monkeypatch.setattr(ui, "text_sync", _fake_text_call)
 
         with pytest.raises(AllProvidersExhaustedError):
             ui._call_writer("hi", system="s", universe_context=object(), config=None)
 
         assert slept == []  # NEVER sleeps on the interactive path
-        # And it disables the tenacity backoff in call.py.
+        # The interactive call does not request a retry.
         assert seen_kwargs.get("retry_on_exhaustion") is False
-
-    def test_call_provider_no_retry_does_not_engage_tenacity_sleep(self, monkeypatch):
-        from unittest.mock import MagicMock
-
-        import tinyassets.providers.call as call_mod
-
-        slept: list[float] = []
-        monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
-
-        router = MagicMock()
-        router.call_sync.side_effect = AllProvidersExhaustedError("exhausted")
-        monkeypatch.setattr(call_mod, "_real_router", router)
-        monkeypatch.setattr(call_mod, "_force_mock", False)
-
-        with pytest.raises(AllProvidersExhaustedError):
-            call_mod.call_provider("p", role="writer", retry_on_exhaustion=False)
-
-        assert router.call_sync.call_count == 1  # no retry loop
-        assert slept == []
 
 
 # ---------------------------------------------------------------------------
@@ -1286,30 +1269,6 @@ class TestInteractiveNoSleep:
 
 
 class TestBackwardSafeNonStreaming:
-    @pytest.mark.asyncio
-    async def test_other_provider_still_returns_terminal_response(self):
-        from unittest.mock import AsyncMock, patch
-
-        from tinyassets.providers.codex_provider import CodexProvider
-
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
-
-        with (
-            patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-                  return_value=(["codex"], False)),
-            fake_owned_spawn(
-                "tinyassets.providers.codex_provider", return_value=mock_proc,
-            ),
-        ):
-            resp = await CodexProvider().complete("prompt", "system", ModelConfig())
-
-        assert isinstance(resp, ProviderResponse)
-        assert resp.text == "codex output"
-        assert resp.provider == "codex"
 
     @pytest.mark.asyncio
     async def test_claude_complete_json_is_unchanged_terminal_response(self):
@@ -1540,9 +1499,7 @@ class TestPolicyRouterCooldownMap:
         # Must be re-raised on the policy path, NOT swallowed as generic error +
         # fallthrough (blocker F).
         with pytest.raises(ProviderAuthorityHeldError):
-            await router.call_with_policy(
-                "writer", "p", "s", _policy("claude-code"), ModelConfig(), **_bound(),
-            )
+            await router.call("writer", "p", "s", ModelConfig(), **_bound())
         assert provider.calls == 1  # no fallthrough retry
 
 
@@ -1773,3 +1730,14 @@ def test_cell_heartbeats_do_not_extend_claude_absolute_cap(monkeypatch):
     with pytest.raises(InteractiveDeadlineError):
         _run_stream(proc, ModelConfig(first_progress_s=0.02, absolute_cap_s=0.08))
     assert proc.killed
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

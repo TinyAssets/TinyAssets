@@ -1,15 +1,7 @@
-"""Bounded native line-metadata transport, never a writer or host session.
+"""Bounded native catalogue transport for owner-pinned CLI processes.
 
-Only registered metadata methods are sent. The caller supplies an owned
-credential snapshot environment and clean cwd, and retains authority checks.
-No thread/turn, implicit inference, shell, stderr relay or partial catalogue.
-
-Two ENVELOPES share this one process boundary, because the boundary is the part
-worth hardening: owned-snapshot env, byte/page/model ceilings, no stderr relay,
-and a process-group teardown that survives a launcher exiting before its
-children. :class:`NativeJsonRpcProtocol` frames integer-id JSON-RPC; agent CLIs
-that speak a typed control stream instead use :class:`NativeControlProtocol`.
-A new executor registers an envelope here rather than forking the transport.
+Only registered metadata methods are sent. JSON-RPC and typed control streams
+share byte, page and model ceilings; incomplete lists fail closed.
 """
 
 import asyncio
@@ -354,7 +346,7 @@ def parse_model_page(result, protocol):
 
 async def read_native_catalogue(
     argv, *, protocol, env, cwd, universe_dir=None, timeout=30,
-    spawn_kwargs=None, install_mounts=None, auth_env_names=(),
+    spawn_kwargs=None, install_mounts=None, auth_env_names=(), process=None,
 ):
     """Read the complete bounded list or fail with sanitized fixed prose.
 
@@ -365,24 +357,25 @@ async def read_native_catalogue(
     ``auth_env_names`` carries the caller's own auth directory variable names
     down to the jail, which is channel-agnostic and names no vendor itself.
     """
-    proc = None
+    proc = process
+    owned = process is None
     try:
         if type(protocol) not in (NativeJsonRpcProtocol, NativeControlProtocol):
             raise ValueError("native metadata requires a registered protocol")
         if universe_dir is None:
             raise ValueError("native metadata requires its owning command center")
         del spawn_kwargs, install_mounts
-        view = metadata_view(universe_dir, cwd, env, auth_env_names)
-        from tinyassets.role_provider_discovery import aspawn_cell
-
         async with asyncio.timeout(timeout):
-            # D82: metadata runs only in the owner's provider-discovery cell;
-            # refusal, never a daemon subprocess.
-            try:
-                proc = await aspawn_cell(argv, env=env, view=view, universe_dir=universe_dir,
-                                         snapshot_dir=cwd, limit=_MAX_BYTES)
-            except (PermissionError, RuntimeError, KeyError) as exc:
-                raise ProviderError("native model discovery cell refused") from exc
+            if owned:
+                view = metadata_view(universe_dir, cwd, env, auth_env_names)
+                from tinyassets.role_external_agent import aspawn_cell
+
+                # Legacy Claude discovery still owns its provider cell.
+                try:
+                    proc = await aspawn_cell(argv, env=env, view=view, universe_dir=universe_dir,
+                                             snapshot_dir=cwd, limit=_MAX_BYTES)
+                except (PermissionError, RuntimeError, KeyError) as exc:
+                    raise ProviderError("native model discovery cell refused") from exc
             consumed = 0
 
             async def send(message):
@@ -448,5 +441,5 @@ async def read_native_catalogue(
         # Never relay process output, errors, paths or account material.
         raise ProviderError("native model discovery unavailable") from None
     finally:
-        if proc is not None:
+        if owned and proc is not None:
             await _close_metadata_process(proc)

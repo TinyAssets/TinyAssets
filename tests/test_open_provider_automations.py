@@ -84,7 +84,6 @@ def _run_on_a_fresh_thread(tmp_path, automation, due):
 def test_an_open_assignment_registers_and_its_due_run_launches(
     tmp_path, monkeypatch, http_wire, authenticate_request,
 ):
-    import tinyassets.providers.call as call_module
     from tinyassets.automations import AutomationStore, register_automation
 
     branch = _owner_on_an_open_source(tmp_path, monkeypatch)
@@ -97,7 +96,6 @@ def test_an_open_assignment_registers_and_its_due_run_launches(
     )
     assert AutomationStore(tmp_path).get(automation.automation_id) is not None
 
-    monkeypatch.setattr(call_module, "_force_mock", False)
     _reads, writes, errors = http_wire
     reason = _run_on_a_fresh_thread(tmp_path, automation, "2026-09-29T12:10:00+00:00")
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import os
 import sqlite3
 import stat
@@ -16,14 +15,11 @@ from tinyassets.credential_vault import (
     VAULT_FILENAME,
     apply_provider_auth_env,
     claude_subscription_auth_available,
-    codex_subscription_auth_available,
     ensure_claude_config_dir_from_vault,
-    ensure_codex_home_from_vault,
     load_credential_vault,
     provider_auth_env_overrides,
     resolve_claude_config_dir,
     resolve_claude_oauth_token,
-    resolve_codex_home,
     write_credential_vault,
 )
 
@@ -454,166 +450,18 @@ def test_empty_write_clears_existing_vault(tmp_path):
     assert summary["credential_count"] == 0
 
 
-def test_codex_subscription_auth_can_materialize_from_vault(tmp_path):
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "codex",
-                "auth_json_b64": "e30=",
-            }
-        ],
-    )
-
-    codex_home = ensure_codex_home_from_vault(tmp_path)
-    assert codex_home == tmp_path / ".credentials" / "codex"
-    assert (codex_home / "auth.json").read_text(encoding="utf-8") == "{}"
-    assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
-        'cli_auth_credentials_store = "file"\n'
-    )
-    assert resolve_codex_home(tmp_path) == codex_home
-    assert codex_subscription_auth_available(tmp_path) is True
 
 
-def test_codex_subscription_auth_rotation_replaces_materialized_auth(tmp_path):
-    configured = tmp_path / "codex-home"
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "codex_home": str(configured),
-        "auth_json_b64": "eyJ0b2tlbiI6Ik9MRC1DT0RFWC1BVVRIIn0=",
-    }])
-    assert ensure_codex_home_from_vault(tmp_path) == configured
-    assert (configured / "auth.json").read_text(encoding="utf-8") == (
-        '{"token":"OLD-CODEX-AUTH"}'
-    )
-
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": "eyJ0b2tlbiI6Ik5FVy1ST1RBVEVELUFVVEgifQ==",
-    }])
-
-    assert load_credential_vault(tmp_path) == [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "codex_home": str(configured),
-        "auth_json_b64": "eyJ0b2tlbiI6Ik5FVy1ST1RBVEVELUFVVEgifQ==",
-    }]
-    assert ensure_codex_home_from_vault(tmp_path) == configured
-    assert (configured / "auth.json").read_text(encoding="utf-8") == (
-        '{"token":"NEW-ROTATED-AUTH"}'
-    )
 
 
-@pytest.mark.parametrize(
-    "malformed_auth_b64",
-    ["!!!!", "e30=!!!!", "e30=\u00a0", ""],
-)
-def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
-    tmp_path,
-    malformed_auth_b64,
-):
-    configured = tmp_path / "codex-home"
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "codex_home": "codex-home",
-        "auth_json_b64": "eyJ0b2tlbiI6IldPUktJTkMifQ==",
-    }])
-    assert ensure_codex_home_from_vault(tmp_path) == configured
-    working_auth = (configured / "auth.json").read_bytes()
-
-    (tmp_path / VAULT_FILENAME).write_text(
-        '{"schema_version":1,"credentials":[{"credential_type":'
-        '"llm_subscription","service":"codex","codex_home":"codex-home",'
-        f'"auth_json_b64":"{malformed_auth_b64}"}}]}}',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="auth_json_b64"):
-        ensure_codex_home_from_vault(tmp_path)
-
-    assert (configured / "auth.json").read_bytes() == working_auth
 
 
-def test_codex_auth_write_rejects_non_json_blob_and_preserves_vault(tmp_path):
-    configured = tmp_path / "codex-home"
-    existing = {
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "codex_home": "codex-home",
-        "auth_json_b64": "eyJ0b2tlbiI6IldPUktJTkMifQ==",
-    }
-    write_credential_vault(tmp_path, [existing])
-    assert ensure_codex_home_from_vault(tmp_path) == configured
-    working_auth = (configured / "auth.json").read_bytes()
-
-    with pytest.raises(ValueError, match="auth_json_b64"):
-        write_credential_vault(tmp_path, [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": "bm90LWpzb24=",
-        }])
-
-    assert load_credential_vault(tmp_path) == [existing]
-    assert (configured / "auth.json").read_bytes() == working_auth
 
 
-def test_codex_auth_write_rejects_utf8_bom_and_preserves_vault(tmp_path):
-    configured = tmp_path / "codex-home"
-    existing = {
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "codex_home": "codex-home",
-        "auth_json_b64": "eyJ0b2tlbiI6IldPUktJTkMifQ==",
-    }
-    write_credential_vault(tmp_path, [existing])
-    assert ensure_codex_home_from_vault(tmp_path) == configured
-    working_auth = (configured / "auth.json").read_bytes()
-    bom_auth_b64 = base64.b64encode(
-        b'\xef\xbb\xbf{"token":"REJECTED"}'
-    ).decode("ascii")
-
-    with pytest.raises(ValueError, match="UTF-8 BOM"):
-        write_credential_vault(tmp_path, [{
-            "credential_type": "llm_subscription",
-            "service": "codex",
-            "auth_json_b64": bom_auth_b64,
-        }])
-
-    assert load_credential_vault(tmp_path) == [existing]
-    assert (configured / "auth.json").read_bytes() == working_auth
 
 
-def test_codex_auth_accepts_line_wrapped_base64(tmp_path):
-    write_credential_vault(tmp_path, [{
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": "eyJ0b2tlbiI6\nIldSQVBQRUQifQ==",
-    }])
-
-    codex_home = ensure_codex_home_from_vault(tmp_path)
-
-    assert (codex_home / "auth.json").read_bytes() == b'{"token":"WRAPPED"}'
 
 
-def test_codex_home_path_from_vault_is_resolved_without_env(tmp_path):
-    configured = tmp_path / "durable-codex"
-    write_credential_vault(
-        tmp_path,
-        [
-            {
-                "credential_type": "llm_subscription",
-                "service": "codex",
-                "codex_home": str(configured),
-            }
-        ],
-    )
-
-    assert ensure_codex_home_from_vault(tmp_path) == configured
-    assert resolve_codex_home(tmp_path) == configured
 
 
 def test_claude_config_dir_from_vault_sets_provider_env(tmp_path):

@@ -372,7 +372,6 @@ def test_manual_adapter_never_calls_install_or_inference(installed, monkeypatch)
     from tinyassets.providers.router import ProviderRouter
 
     monkeypatch.setattr(ProviderRouter, "call_sync", forbidden)
-    monkeypatch.setattr(ProviderRouter, "call_with_policy_sync", forbidden)
     monkeypatch.setattr(package_requests, "_materialise", forbidden)
     monkeypatch.setattr(provider_serving_binding, "bind_serving_provider", forbidden)
     # Removing all synthetic recipient provider bindings makes this an unpowered

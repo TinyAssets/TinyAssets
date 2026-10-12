@@ -58,8 +58,11 @@ def model_options_document(
                 if (ref in admitted
                         and reason["reason"] in {
                             "native_catalogue_unavailable", "native_enumeration_unsupported",
-                            "catalogue_refresh_pending", "catalogue_refresh_unavailable",
+                            "refreshing", "never_run", "stale",
+                            "catalogue_refresh_unavailable",
                         }):
+                    continue
+                if ref in admitted and reason["reason"].startswith("failed: "):
                     continue
                 if reason not in row_reasons:
                     row_reasons.append(reason)

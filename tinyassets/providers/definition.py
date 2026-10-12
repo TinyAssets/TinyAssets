@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _universe_dir
+from tinyassets.external_agents.registry import PACKAGES
 from tinyassets.providers.wire_dialects import known_names
 
 ACCESS_METHODS = ("subscription_cli", "api_key_http")
@@ -51,13 +52,14 @@ VISIBILITIES = ("private", "commons")
 # Protocol shapes, partitioned by the access method they are valid with. A CLI
 # protocol may only pair with subscription_cli; an HTTP protocol only with
 # api_key_http — so the descriptor cannot describe an incoherent executor.
-_CLI_PROTOCOLS = ("cli:codex", "cli:claude-code")
+_CLI_PROTOCOLS = ("cli:claude-code",)
+_PACKAGE_PROTOCOLS = tuple(f"cli:{name}" for name in PACKAGES)
 # HTTP protocols are the bundled wire dialects (``providers/dialects/*.json``):
 # their structural names (``chat_messages``, ``content_blocks``) and the aliases
 # stored rows already carry (``openai_chat``, ``anthropic_messages``). A stored
 # row keeps its exact string, because the definition id content-addresses it.
 _HTTP_PROTOCOLS = known_names()
-PROTOCOLS = _CLI_PROTOCOLS + _HTTP_PROTOCOLS
+PROTOCOLS = _CLI_PROTOCOLS + _PACKAGE_PROTOCOLS + _HTTP_PROTOCOLS
 
 _STORE_FILENAME = "provider_definitions.json"
 
@@ -137,7 +139,9 @@ def _validate(
         raise ProviderDefinitionError(f"protocol must be one of {PROTOCOLS}")
     # Access-method / protocol coherence — a descriptor cannot name an executor
     # it could not run.
-    if access_method == "subscription_cli" and protocol not in _CLI_PROTOCOLS:
+    if access_method == "subscription_cli" and protocol not in (
+        *_CLI_PROTOCOLS, *_PACKAGE_PROTOCOLS
+    ):
         raise ProviderDefinitionError(
             "subscription_cli requires a cli:* protocol"
         )

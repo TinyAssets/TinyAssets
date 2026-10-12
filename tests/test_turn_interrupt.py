@@ -255,7 +255,10 @@ def _call_sync(provider, operation):
     carrier = owner_carrier(provider.name, operation=operation)
     context = UniverseContext(universe_dir=Path("u-owner-bound"), provider_invocation=carrier)
     with patch("tinyassets.providers.router._provider_invocation_carrier",
-               return_value=carrier):
+               return_value=carrier), patch(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        return_value=frozenset({provider.name}),
+    ):
         return router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
                                 operation=operation, universe_context=context)
 
@@ -307,7 +310,10 @@ def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing():
     with interactive_turn("owner", "u-1") as live:
         live.request()
         with patch("tinyassets.providers.router._provider_invocation_carrier",
-                   return_value=carrier), pytest.raises(TurnInterrupted):
+                   return_value=carrier), patch(
+            "tinyassets.providers.served_model_plan.connected_sources",
+            return_value=frozenset({provider.name}),
+        ), pytest.raises(TurnInterrupted):
             router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
                              operation="converse", universe_context=context)
     assert entered == [], "the provider was launched after the owner's Stop"

@@ -1,0 +1,118 @@
+{
+  "base_commit": "6932c180ab27e2ef6709515d620f9947dbc9ae47",
+  "production_copy": {
+    "volume": "c3-24-guard-data",
+    "center_files": 3,
+    "definition_counts": {
+      "subscription_cli/cli:codex": 1,
+      "subscription_cli/cli:claude-code": 1,
+      "api_key_http/openai_chat": 6
+    },
+    "founder_center_present": true,
+    "founder_native_session_dirs": [
+      "codex"
+    ]
+  },
+  "deleted_file_importers": {
+    "tinyassets/providers/codex_provider.py": [
+      "fantasy_daemon/providers/codex_provider.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/call.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/codex_app_server.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/provider_resolver.py",
+      "scripts/role_chat_probe.py",
+      "tests/test_codex_app_server.py",
+      "tests/test_codex_cli_compat.py",
+      "tests/test_codex_stream_watchdog.py",
+      "tests/test_engine_mcp_routes.py",
+      "tests/test_engine_mcp_server.py",
+      "tests/test_native_model_discovery.py",
+      "tests/test_native_model_execution.py",
+      "tests/test_node_reasoning_effort.py",
+      "tests/test_one_agent_definition.py",
+      "tests/test_owner_steering.py",
+      "tests/test_platform_has_no_llm.py",
+      "tests/test_provider_admission.py",
+      "tests/test_provider_advertised_shortlist_and_effort.py",
+      "tests/test_provider_binary_probe.py",
+      "tests/test_provider_sandbox.py",
+      "tests/test_provider_served_router.py",
+      "tests/test_provider_stream_and_classify.py",
+      "tests/test_providers.py",
+      "tests/test_sandbox_unavailable.py",
+      "tests/test_subscription_credential_refresh.py",
+      "tests/test_text_only_review_provider.py",
+      "tinyassets/providers/base.py",
+      "tinyassets/providers/call.py",
+      "tinyassets/providers/codex_app_server.py",
+      "tinyassets/providers/provider_resolver.py"
+    ],
+    "tinyassets/providers/codex_app_server.py": [
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/codex_provider.py",
+      "tests/test_agent_sessions.py",
+      "tests/test_codex_app_server.py",
+      "tests/test_codex_cli_compat.py",
+      "tests/test_one_agent_definition.py",
+      "tests/test_provider_sandbox.py",
+      "tinyassets/providers/codex_provider.py"
+    ],
+    "tinyassets/providers/codex_launch_contract.py": [
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/codex_app_server.py",
+      "scripts/codex_cli_smoke.py",
+      "tests/test_role_provider_discovery.py",
+      "tinyassets/providers/codex_app_server.py"
+    ],
+    "tinyassets/providers/claude_provider.py": [
+      "fantasy_daemon/providers/claude_provider.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/call.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/provider_resolver.py",
+      "scripts/core_capability_image.py",
+      "scripts/peer_agent.py",
+      "scripts/role_chat_probe.py",
+      "tests/test_bounded_tool_results.py",
+      "tests/test_claude_compaction_liveness.py",
+      "tests/test_engine_mcp_routes.py",
+      "tests/test_engine_mcp_server.py",
+      "tests/test_native_model_discovery.py",
+      "tests/test_native_model_execution.py",
+      "tests/test_one_agent_definition.py",
+      "tests/test_owner_steering.py",
+      "tests/test_platform_has_no_llm.py",
+      "tests/test_platform_secret_scope.py",
+      "tests/test_provider_advertised_shortlist_and_effort.py",
+      "tests/test_provider_binary_probe.py",
+      "tests/test_provider_sandbox.py",
+      "tests/test_provider_stream_and_classify.py",
+      "tests/test_providers.py",
+      "tests/test_run_provider_session.py",
+      "tests/test_sandbox_unavailable.py",
+      "tests/test_text_only_review_provider.py",
+      "tests/test_turn_interrupt.py",
+      "tests/test_universe_tools.py",
+      "tinyassets/providers/call.py",
+      "tinyassets/providers/provider_resolver.py"
+    ],
+    "tinyassets/role_provider_discovery.py": [
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/native_jsonrpc_discovery.py",
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/role_provider_execution.py",
+      "tests/test_native_model_discovery.py",
+      "tests/test_role_provider_discovery.py",
+      "tests/test_role_provider_execution.py",
+      "tinyassets/providers/native_jsonrpc_discovery.py",
+      "tinyassets/role_provider_execution.py"
+    ],
+    "tinyassets/onboarding/openai_device.py": [
+      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/__init__.py",
+      "tests/test_onboarding_openai_device.py",
+      "tinyassets/onboarding/__init__.py"
+    ]
+  },
+  "file_lines": {
+    "tinyassets/providers/codex_provider.py": 607,
+    "tinyassets/providers/codex_app_server.py": 492,
+    "tinyassets/providers/codex_launch_contract.py": 72,
+    "tinyassets/providers/claude_provider.py": 1335,
+    "tinyassets/role_provider_discovery.py": 184,
+    "tinyassets/onboarding/openai_device.py": 543
+  }
+}

@@ -21,9 +21,9 @@ private information.
 ## Reporting
 
 Email [info@tinyassets.io](mailto:info@tinyassets.io). That is the mailbox
-the maintainer reads. An `ops@tinyassets.io` alias may be added later. The
-public site still publishes `ops@tinyassets.io`. None of the public start
-page links a chat or forum this file should also cover.
+the maintainer reads, and it is the only address the public site publishes.
+None of the public start page links a chat or forum this file should also
+cover.
 
 The maintainer reads reports. This file does not promise a reply window.
 The maintainer may edit or hide a comment, lock a thread, or block an

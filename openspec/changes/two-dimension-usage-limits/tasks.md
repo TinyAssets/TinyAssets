@@ -71,3 +71,9 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
 - [ ] 3.3 Sync deltas into `openspec/specs/`, archive this change, and archive
       `usage-limits-replace-caps` and `consolidate-platform-resource-policy`,
       which this supersedes.
+
+## Folded lanes (one owner and one cutover)
+- [ ] Complete `usage-limits-replace-caps` obligations in the folded design section (2 open source tasks); use the surviving path only.
+- [ ] Complete `remove-non-usage-limits` obligations in the folded design section (17 open source tasks); use the surviving path only.
+- [ ] Complete `account-storage-quota` obligations in the folded design section (10 open source tasks); use the surviving path only.
+- [ ] Complete `consolidate-platform-resource-policy` obligations in the folded design section (1 open source tasks); use the surviving path only.

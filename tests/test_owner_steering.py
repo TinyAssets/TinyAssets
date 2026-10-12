@@ -158,7 +158,7 @@ def _codex_dialled(monkeypatch, config):
     import asyncio
     import contextlib
 
-    from tinyassets.providers import codex_provider
+    from tinyassets.external_agents.runner import _engine_tools
 
     opened = []
 
@@ -171,7 +171,7 @@ def _codex_dialled(monkeypatch, config):
 
     async def dial():
         async with contextlib.AsyncExitStack() as stack:
-            await codex_provider._served_engine_tools(stack, config, timeout=5)
+            await _engine_tools(stack, config)
 
     asyncio.run(dial())
     return opened[0] if opened else None
@@ -179,10 +179,11 @@ def _codex_dialled(monkeypatch, config):
 
 def test_a_codex_launch_routes_its_engine_calls_with_its_session_and_turn(monkeypatch):
     from tinyassets import turn_interrupt
+    from tinyassets.providers.base import ModelConfig
 
-    config = SimpleNamespace(engine_mcp_enabled=True, engine_mcp_actor_id="owner-1",
-                             engine_mcp_graph_id="u-alpha", engine_tool_grant=None,
-                             agent_session=SimpleNamespace(key=THREAD))
+    config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="owner-1",
+                         engine_mcp_graph_id="u-alpha", engine_tool_grant=None,
+                         agent_session=SimpleNamespace(key=THREAD))
     with turn_interrupt.interactive_turn("owner-1", "u-alpha") as live:
         dialled = _codex_dialled(monkeypatch, config)
     assert dialled["session_key"] == THREAD

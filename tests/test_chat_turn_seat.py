@@ -58,7 +58,7 @@ def test_a_chat_turn_holds_an_interactive_seat_of_its_account(home, monkeypatch)
             )])
         return "hello back"
 
-    monkeypatch.setattr(ui, "call_provider", provider)
+    monkeypatch.setattr(ui, "text_sync", provider)
     assert ui.converse("u-chat", "hello") == "hello back"
     assert seen == [[(KEY, "interactive", "chat_turn", "u-chat")]]
     assert _occupancy(home)["running"] == 0, "released when the turn ends"
@@ -67,7 +67,7 @@ def test_a_chat_turn_holds_an_interactive_seat_of_its_account(home, monkeypatch)
 def test_a_chat_is_served_while_background_work_fills_the_account(home, monkeypatch):
     """Free tier: both background seats busy. The chat is served at once on the
     reserved seat -- never behind automation."""
-    monkeypatch.setattr(ui, "call_provider", lambda prompt, system="", **_kw: "ok")
+    monkeypatch.setattr(ui, "text_sync", lambda prompt, system="", **_kw: "ok")
     db = seats.ledger_path(home)
     background = [seats.acquire(KEY, db=db) for _ in range(2)]
     assert isinstance(seats.acquire(KEY, db=db), seats.Waiting)  # background is full
@@ -91,7 +91,7 @@ def test_a_chat_over_the_seat_count_waits_visibly_then_answers(home, monkeypatch
     """Every seat held by other chats: this one WAITS (never refused), the owner's
     status shows this universe's chat waiting with the Upgrade link, and it
     answers once a seat frees."""
-    monkeypatch.setattr(ui, "call_provider", lambda prompt, system="", **_kw: "finally")
+    monkeypatch.setattr(ui, "text_sync", lambda prompt, system="", **_kw: "finally")
     db = seats.ledger_path(home)
     chats = [seats.acquire(KEY, seat_class=seats.CLASS_INTERACTIVE, db=db) for _ in range(3)]
     replies = []

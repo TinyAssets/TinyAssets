@@ -16,7 +16,7 @@ export default function BuildPage() {
   return (
     <>
       <section className="container hero">
-        <RitualLabel>Build</RitualLabel>
+        <RitualLabel>How it works</RitualLabel>
         <h1>Five primitives. Anything you can describe.</h1>
         <p className="lead">
           A command center does not come with a list of integrations. It builds them, from a small set of

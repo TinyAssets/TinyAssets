@@ -385,22 +385,6 @@ def reserve_served_provider_budget(
         for value in (requested_output_tokens, estimated_input_tokens)
     ):
         raise ProviderAuthorityHeldError(held)
-    # Serve-time re-check of the claude-code serving hold (Codex 2026-08-19
-    # re-review concern #1). `bind_serving_provider` gates claude-code serving at
-    # binding CREATION behind `TINYASSETS_ALLOW_CLAUDE_SERVING`, but serving
-    # authorization loads PERSISTED bindings — a binding created while the flag
-    # was on (or before this gate existed) would otherwise keep serving after the
-    # flag is cleared. Re-checking here on every served call makes the opt-in a
-    # true kill switch and makes "held by default" hold for grandfathered
-    # bindings too. Fail-closed: no opt-in -> no claude-code serving.
-    if getattr(authority, "provider", None) == "claude-code" and (
-        os.environ.get("TINYASSETS_ALLOW_CLAUDE_SERVING", "").strip().lower()
-        not in ("1", "true", "yes", "on")
-    ):
-        raise ProviderAuthorityHeldError(
-            "claude-code serving is held; set TINYASSETS_ALLOW_CLAUDE_SERVING "
-            "for the vetted host to enable it"
-        )
     # Explicit authority_kind consistency (Codex reject #5): the credential model is
     # NEVER inferred from the provider-name prefix alone. The kind, the provider shape,
     # and the snapshot presence must agree, or fail closed — an absent subscription

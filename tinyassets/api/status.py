@@ -452,21 +452,10 @@ def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
-    """Return host-wide provider evidence without requiring a universe.
+    """Return host-wide provider evidence, not the selected model.
 
-    ``llm_endpoint_bound`` is a HOST heuristic and is NOT the model any universe
-    selected. No universe id enters this function: it probes the daemon's own
-    process -- OLLAMA_HOST, ANTHROPIC_BASE_URL, a ``codex`` binary with an
-    auth.json, a logged-in ``claude`` -- so ``"codex"`` means only "this box has
-    a codex CLI it could start". It says nothing about which source a universe
-    will run on, whether that source has capacity, or whose credential it uses.
-
-    A universe's actual choices live behind ``read_graph target=model_options``
-    (authorized sources, saved default, ordered fallbacks). Reading this field as
-    a universe's selection produced the live 2026-09-20 misdiagnosis: the agent
-    saw ``llm_endpoint_bound: codex``, concluded the universe had selected codex,
-    and told the owner an operator had to switch the global binding. Nested under
-    ``active_host`` because that is exactly what it describes.
+    A command center's selected source belongs to model_options; this hint
+    reports only which installed and authenticated host endpoint is available.
     """
     import shutil as _shutil
 
@@ -474,9 +463,12 @@ def _active_host_snapshot(
     api_key_vars_present = [
         name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
     ]
-    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-    codex_auth_file = codex_home / "auth.json"
+    from tinyassets.external_agents.registry import PACKAGES
     from tinyassets.providers.base import subscription_auth_health as _auth_health
+
+    package_bound = next((name for name, package in PACKAGES.items()
+                          if _shutil.which(package.row["install"]["bin"])
+                          and _auth_health(name, allow_probe=False)["status"] == "ok"), None)
 
     claude_authed = (
         _shutil.which("claude")
@@ -487,12 +479,10 @@ def _active_host_snapshot(
         endpoint_hint = "ollama"
     elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
         endpoint_hint = "anthropic"
-    elif _shutil.which("codex") and codex_auth_file.is_file():
-        endpoint_hint = "codex"
+    elif package_bound:
+        endpoint_hint = package_bound
     elif claude_authed:
         endpoint_hint = "claude"
-    elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
-        endpoint_hint = "codex"
     else:
         endpoint_hint = "unset"
 
@@ -704,7 +694,7 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         writers[name] = {"status": status, "detail": detail}
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
-    all_down = bool(known_states) and all(
+    all_down = len(known_states) == len(_SUBSCRIPTION_WRITERS) and all(
         s == "not_logged_in" for s in known_states
     )
     return {"writers": writers, "all_writers_unauthenticated": all_down}
@@ -1763,13 +1753,10 @@ def get_status(
     # Best-effort — a missing router or quota object yields an empty dict.
     per_provider_cooldown_remaining: dict[str, int] = {}
     try:
-        from tinyassets.principals import named_principal
-        from tinyassets.providers.router import FALLBACK_CHAINS
-        all_provider_names: list[str] = list(
-            dict.fromkeys(p for chain in FALLBACK_CHAINS.values() for p in chain)
-        )
         from tinyassets.graph_compiler import _get_shared_router
+        from tinyassets.principals import named_principal
         router = _get_shared_router()
+        all_provider_names = list(router.available_providers) if router is not None else []
         cooldown_owner = named_principal(permissions.current_actor_id())
         if cooldown_owner and router is not None and hasattr(router, "_quota"):
             per_provider_cooldown_remaining = (

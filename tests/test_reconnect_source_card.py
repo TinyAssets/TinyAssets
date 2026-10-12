@@ -13,10 +13,7 @@ import pytest
 
 # ONE identity token and ONE metadata fixture for both suites, so the endpoint
 # resolution these exercise is the same one the refresh tests pin.
-from tests.test_subscription_credential_refresh import (  # noqa: E402
-    ID_TOKEN,
-    _endpoint_from_the_credential,
-)
+from tests.test_subscription_credential_refresh import ID_TOKEN  # noqa: E402
 from tinyassets.credential_vault import (
     clear_refresh_rejected,
     record_refresh_rejected,
@@ -97,105 +94,156 @@ def test_the_rejection_is_not_stored_on_the_credential_record(tmp_path):
 def test_a_refused_refresh_records_the_rejection_and_a_fixed_one_clears_it(
     tmp_path, monkeypatch,
 ):
-    """Drives the real launch seam, not the recorder."""
-    import base64
+    """The package runner keeps the reconnect card until a job succeeds."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
 
-    from tinyassets import subscription_refresh
-    from tinyassets.credential_refresh import RefreshRejected
-    from tinyassets.credential_vault import (
-        llm_subscription_credential_record,
-        write_credential_vault,
-    )
+    from tinyassets import credential_vault
     from tinyassets.exceptions import ProviderAuthenticationError
+    from tinyassets.external_agents import runner
+    from tinyassets.providers.base import ModelConfig
 
     universe = tmp_path / UID
     universe.mkdir()
-    document = json.dumps({
-        "tokens": {
-            "id_token": ID_TOKEN, "access_token": "a-1", "refresh_token": "r-1",
-        },
-        "last_refresh": "2020-01-01T00:00:00Z",
-    })
-    write_credential_vault(
-        universe,
-        [llm_subscription_credential_record(
-            service="codex", auth_json_b64=base64.b64encode(document.encode()).decode(),
-        )],
-        owner_user_id="owner", universe_id=UID,
-    )
+    _deposit(universe)
+    custody = SimpleNamespace(universe_dir=universe, owner_user_id="owner",
+                              reference=SimpleNamespace(service="codex"))
+    held = False
 
-    _endpoint_from_the_credential(monkeypatch)
-    monkeypatch.setattr(subscription_refresh, "_spend", lambda *a, **k: (_ for _ in ()).throw(
-        RefreshRejected("the stored sign-in is no longer accepted; sign in again")))
+    @asynccontextmanager
+    async def unlocked(_):
+        nonlocal held
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    original_record = credential_vault.record_refresh_rejected
+    original_clear = credential_vault.clear_refresh_rejected
+
+    def record_while_locked(*args, **kwargs):
+        assert held
+        return original_record(*args, **kwargs)
+
+    def clear_while_locked(*args, **kwargs):
+        assert held
+        return original_clear(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "exclusive_refresh", unlocked)
+    monkeypatch.setattr(credential_vault, "record_refresh_rejected", record_while_locked)
+    monkeypatch.setattr(credential_vault, "clear_refresh_rejected", clear_while_locked)
+
+    async def refused(*_args, **_kwargs):
+        raise ProviderAuthenticationError("refresh token rejected")
+
+    monkeypatch.setattr(runner, "_run_job_locked", refused)
+    config = ModelConfig(invocation_owner_user_id="owner")
 
     with pytest.raises(ProviderAuthenticationError):
-        subscription_refresh.refresh_deposited_subscriptions(
-            base_path=tmp_path, universe_dir=universe,
-            owner_user_id="owner", universe_id=UID, launching="codex",
-        )
+        asyncio.run(runner.run_job("codex", None, custody, prompt="", system="",
+                                   config=config))
     assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"codex"}
 
-    # ...and a refresh that then works takes the card away without the owner acting.
-    monkeypatch.setattr(
-        subscription_refresh, "_spend",
-        lambda d, **k: subscription_refresh._rebuild(
-            d, access_token="a-2", refresh_token="r-2", id_token=""),
-    )
-    subscription_refresh.refresh_deposited_subscriptions(
-        base_path=tmp_path, universe_dir=universe,
-        owner_user_id="owner", universe_id=UID, launching="codex",
-    )
+    async def recovered(*_args, **_kwargs):
+        return object()
+
+    monkeypatch.setattr(runner, "_run_job_locked", recovered)
+    asyncio.run(runner.run_job("codex", None, custody, prompt="", system="",
+                               config=config))
     assert refresh_rejected_sources(tmp_path, universe_id=UID) == {}
 
 
 def test_a_rejection_for_another_source_is_still_recorded(tmp_path, monkeypatch):
-    """A non-launching source's dead sign-in does not fail the launch, but the owner
-    must still be asked -- otherwise the card only ever appears for whichever source
-    happened to be launching when it died."""
-    import base64
+    """One package's recovery cannot erase another package's reconnect card."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
 
-    from tinyassets import subscription_refresh
-    from tinyassets.credential_refresh import RefreshRejected
-    from tinyassets.credential_vault import (
-        llm_subscription_credential_record,
-        write_credential_vault,
-    )
+    from tinyassets.external_agents import runner
+    from tinyassets.providers.base import ModelConfig
 
     universe = tmp_path / UID
     universe.mkdir()
-    identity = ID_TOKEN
+    _deposit(universe)
 
-    def doc(refresh):
-        return base64.b64encode(json.dumps({
-            "tokens": {
-                "id_token": identity, "access_token": "a", "refresh_token": refresh,
-            },
-            "last_refresh": "2020-01-01T00:00:00Z",
-        }).encode()).decode()
+    @asynccontextmanager
+    async def unlocked(_):
+        yield
 
-    write_credential_vault(
-        universe,
-        [
-            llm_subscription_credential_record(service="codex", auth_json_b64=doc("r-dead")),
-            llm_subscription_credential_record(service="claude", auth_json_b64=doc("r-live")),
-        ],
-        owner_user_id="owner", universe_id=UID,
-    )
-    _endpoint_from_the_credential(monkeypatch)
+    async def recovered(*_args, **_kwargs):
+        return object()
 
-    def spend(document, **_):
-        if document.refresh_token == "r-dead":
-            raise RefreshRejected("the stored sign-in is no longer accepted; sign in again")
-        return subscription_refresh._rebuild(
-            document, access_token="a-2", refresh_token="r-live", id_token="")
-
-    monkeypatch.setattr(subscription_refresh, "_spend", spend)
-    # Launching the HEALTHY source: no raise, and the dead one still gets its card.
-    subscription_refresh.refresh_deposited_subscriptions(
-        base_path=tmp_path, universe_dir=universe,
-        owner_user_id="owner", universe_id=UID, launching="claude",
-    )
+    monkeypatch.setattr(runner, "exclusive_refresh", unlocked)
+    monkeypatch.setattr(runner, "_run_job_locked", recovered)
+    record_refresh_rejected(tmp_path, universe_id=UID, service="codex")
+    custody = SimpleNamespace(universe_dir=universe, owner_user_id="owner",
+                              reference=SimpleNamespace(service="claude"))
+    asyncio.run(runner.run_job("claude", None, custody, prompt="", system="",
+                               config=ModelConfig(invocation_owner_user_id="owner")))
     assert "codex" in refresh_rejected_sources(tmp_path, universe_id=UID)
+
+
+def test_inline_source_refusal_still_raises_and_success_clears_its_card(tmp_path, monkeypatch):
+    """The non-package refresh seam still owns its rejection and repair card."""
+    from tinyassets import subscription_refresh
+    from tinyassets.credential_refresh import RefreshRejected
+    from tinyassets.exceptions import ProviderAuthenticationError
+
+    universe = tmp_path / UID
+    universe.mkdir()
+    _deposit(universe, service="claude", refresh="r-dead")
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_: True)
+    monkeypatch.setattr(subscription_refresh, "_source_endpoint",
+                        lambda *_: ("https://issuer.example/token", "client"))
+
+    def refused(*_args, **_kwargs):
+        raise RefreshRejected("stored sign-in rejected")
+
+    monkeypatch.setattr(subscription_refresh, "_spend", refused)
+    with pytest.raises(ProviderAuthenticationError):
+        subscription_refresh.refresh_deposited_subscriptions(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner",
+            universe_id=UID, launching="claude",
+        )
+    assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"claude"}
+
+    monkeypatch.setattr(subscription_refresh, "_spend", lambda doc, **_: (
+        subscription_refresh._rebuild(doc, access_token="a-2", refresh_token="r-live",
+                                      id_token="")))
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner",
+        universe_id=UID, launching="claude",
+    )
+    assert refresh_rejected_sources(tmp_path, universe_id=UID) == {}
+
+
+def test_nonlaunching_inline_source_refusal_does_not_spend_package_token(tmp_path, monkeypatch):
+    """A refused secondary sign-in records its card without failing the package launch."""
+    from tinyassets import subscription_refresh
+    from tinyassets.credential_refresh import RefreshRejected
+
+    universe = tmp_path / UID
+    universe.mkdir()
+    _deposit(universe, service="codex", refresh="r-package")
+    _deposit(universe, service="claude", refresh="r-dead")
+    monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_: True)
+    monkeypatch.setattr(subscription_refresh, "_source_endpoint",
+                        lambda *_: ("https://issuer.example/token", "client"))
+    spent = []
+
+    def refused(doc, **_):
+        spent.append(doc.refresh_token)
+        raise RefreshRejected("stored sign-in rejected")
+
+    monkeypatch.setattr(subscription_refresh, "_spend", refused)
+    subscription_refresh.refresh_deposited_subscriptions(
+        base_path=tmp_path, universe_dir=universe, owner_user_id="owner",
+        universe_id=UID, launching="codex",
+    )
+    assert spent == ["r-dead"]
+    assert set(refresh_rejected_sources(tmp_path, universe_id=UID)) == {"claude"}
 
 
 def _deposit(universe_dir, service="codex", refresh="r-1"):

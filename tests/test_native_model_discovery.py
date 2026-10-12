@@ -12,7 +12,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tinyassets.exceptions import ProviderError
-from tinyassets.providers.codex_provider import CodexProvider
+from tinyassets.external_agents.registry import resolve
+from tinyassets.external_agents.runner import _protocol
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
 from tinyassets.providers.native_jsonrpc_discovery import (
     NativeJsonRpcProtocol,
@@ -20,7 +21,7 @@ from tinyassets.providers.native_jsonrpc_discovery import (
     read_native_catalogue,
 )
 
-PROTOCOL = CodexProvider.native_discovery_protocol
+PROTOCOL = _protocol(resolve("codex").row["catalogue"])
 pytestmark = pytest.mark.usefixtures("metadata_transport_processes")
 
 
@@ -29,12 +30,12 @@ def metadata_transport_processes(monkeypatch):
     """Exercise real protocol children at the cell seam; the cell has its own proofs.
 
     The production transport starts the CLI in the owner's provider-discovery
-    cell (``role_provider_discovery.aspawn_cell``); this stands a plain child
+    cell (``role_external_agent.aspawn_cell``); this stands a plain child
     in for the cell, so the protocol, the decoder and the bounded reads are real.
     """
     import asyncio as _asyncio
 
-    from tinyassets import role_provider_discovery
+    from tinyassets import role_external_agent
 
     async def plain_child(argv, *, env, view, universe_dir, snapshot_dir, limit, **kw):
         assert Path(snapshot_dir).is_relative_to(Path(universe_dir))
@@ -43,7 +44,7 @@ def metadata_transport_processes(monkeypatch):
             stdin=_asyncio.subprocess.PIPE, stdout=_asyncio.subprocess.PIPE,
             stderr=_asyncio.subprocess.DEVNULL, limit=limit)
 
-    monkeypatch.setattr(role_provider_discovery, "aspawn_cell", plain_child)
+    monkeypatch.setattr(role_external_agent, "aspawn_cell", plain_child)
 
 
 def metadata_snapshot(universe):
@@ -192,50 +193,38 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
     asyncio.run(exercise())
 
 
-def test_provider_discovery_requires_snapshot_and_never_falls_back_to_host(tmp_path):
-    from tinyassets.providers.codex_provider import CodexProvider
-
-    with pytest.raises(ProviderError, match="owned credentials"):
-        asyncio.run(CodexProvider().enumerate_models(
-            universe_dir=tmp_path, credential_snapshot_dir=None,
-        ))
-
-
 def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp_path):
-    from tinyassets.providers.codex_provider import CodexProvider
+    from tinyassets.role_external_agent import CellLauncher
 
-    snapshot = tmp_path / "snapshot"
-    expected = NativeCatalogue((), None, datetime.now(timezone.utc))
+    package = resolve("codex")
+    auth = package.row["auth"]
+    argv = [str(package.executable), *package.row["catalogue"]["argv"]]
+    home = "/agent-home/" + auth["home_dir"]
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    process = object()
     with (
-        patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
-              return_value=(["executor"], False)),
-        patch("tinyassets.providers.base.subprocess_env_for_provider",
-              return_value={"OWNED": "yes"}) as environment,
-        patch("tinyassets.providers.native_jsonrpc_discovery.read_native_catalogue",
-              new_callable=AsyncMock, return_value=expected) as reader,
+        patch("tinyassets.role_scope.owner_principal", return_value="owner"),
+        patch("tinyassets.role_external_agent.aspawn_cell", new_callable=AsyncMock,
+              return_value=process) as launch,
     ):
-        assert asyncio.run(CodexProvider().enumerate_models(
-            universe_dir=tmp_path, credential_snapshot_dir=snapshot,
-        )) == expected
-    environment.assert_called_once_with("codex", universe_dir=tmp_path,
-                                        credential_snapshot_dir=snapshot)
-    assert reader.call_args.args == (["executor", "app-server"],)
-    assert reader.call_args.kwargs["env"] == {"OWNED": "yes"}
-    assert reader.call_args.kwargs["cwd"] == str(snapshot)
-    assert reader.call_args.kwargs["protocol"] is PROTOCOL
-    # The generic jail cannot discover native vendor binaries behind a wrapper.
-    # The provider's registered mount resolver must reach metadata as well.
-    mounts = reader.call_args.kwargs["install_mounts"]
-    assert callable(mounts)
-    vendor = tmp_path / "vendor"
-    vendor.mkdir()
-    with (
-        patch("tinyassets.providers.codex_provider._resolved_codex_executable",
-              return_value=(tmp_path / "wrapper", vendor / "codex")) as executable,
-        patch("tinyassets.providers.codex_provider._codex_binary_tree", return_value=vendor),
-    ):
-        assert mounts() == (vendor, tmp_path)
-    executable.assert_called_once_with(["executor"])
+        assert asyncio.run(CellLauncher(
+            universe_dir=center, owner_user_id="owner",
+        ).spawn(
+            argv, {auth["home_env"]: home}, home="/agent-home",
+            workdir="/agent-home/jobs/0123456789abcdef0123456789abcdef",
+            egress=center.name, auth_files={"auth.json": b"owned"}, auth=auth,
+        )) is process
+    args, kwargs = launch.call_args
+    assert args == (argv,)
+    assert kwargs["env"] == {auth["home_env"]: home}
+    assert kwargs["auth_files"] == {"auth.json": b"owned"}
+    assert kwargs["external_agent"] is True
+    assert "snapshot_dir" not in kwargs
+    assert kwargs["owner_user_id"] == "owner"
+    assert kwargs["universe_dir"] == center
+    assert kwargs["workdir"] == "/agent-home/jobs/0123456789abcdef0123456789abcdef"
+    assert package.row["catalogue"]["transport"] == "jsonrpc"
 
 
 def test_new_executor_can_describe_other_metadata_methods_and_fields(tmp_path):

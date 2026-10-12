@@ -1973,7 +1973,7 @@ def _bind_automation_provider_call(base_path: Path, automation: Automation) -> A
     from tinyassets.config import load_universe_config
     from tinyassets.foreground_run_provider import new_foreground_run_provider_session
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import bind_universe_provider_call, call_provider
+    from tinyassets.providers.model_call import bind_model_call, text_sync
 
     universe_dir = (base_path / automation.universe_id).resolve()
     if not universe_dir.is_relative_to(base_path.resolve()):
@@ -1982,9 +1982,9 @@ def _bind_automation_provider_call(base_path: Path, automation: Automation) -> A
         base_path,
         universe_id=automation.universe_id,
         principal_id=automation.owner_principal_id,
-        provider_call=call_provider,
+        provider_call=text_sync,
     )
-    return bind_universe_provider_call(
+    return bind_model_call(
         session,
         UniverseContext(
             universe_dir=universe_dir,
@@ -2044,7 +2044,7 @@ def _authority_guard(base_path: Path, automation: Automation):
         at chain depth exactly 1, so any outer wrapper makes
         `prepare_foreground_run_provider` raise and every run fail
         (foreground_run_provider.py:666-676, 730-742).
-      * Wrapping the INNER `call_provider` handed to the session: the session
+      * Wrapping the INNER `text_sync` handed to the session: the session
         routes any callable whose `__module__` is not
         `tinyassets.providers.call` down its unarmed STUB path, skipping
         `_ensure_admitted()` and `_authorize_attempt` entirely

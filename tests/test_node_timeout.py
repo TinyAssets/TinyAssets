@@ -363,23 +363,20 @@ def _bridge_config(timeout_seconds: float | None):
 
 
 def _policy_config(timeout_seconds: float | None):
-    """The ModelConfig a compiled node hands to the POLICY router route."""
+    """The ModelConfig a compiled node hands to its pinned model call."""
     from tinyassets.graph_compiler import _build_prompt_template_node
 
     captured: dict = {}
 
-    class _RecordingRouter:
-        available_providers = ["claude"]
-
-        def call_with_policy_sync(
-            self, role, prompt, system, policy, config=None, **kwargs,
-        ):
+    class _RecordingCall:
+        def __call__(self, prompt, system, *, config=None, policy=None, **kwargs):
             captured["config"] = config
-            return ("done", "claude", {})
+            assert policy is not None
+            return "done"
 
     fn = _build_prompt_template_node(
         _node_with_timeout(timeout_seconds),
-        provider_call=_RecordingRouter(), event_sink=None,
+        provider_call=_RecordingCall(), event_sink=None,
         llm_policy={"preferred": {}},
     )
     assert fn({"x": "thing"}).get("out") == "done"

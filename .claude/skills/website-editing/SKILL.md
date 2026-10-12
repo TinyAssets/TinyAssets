@@ -55,11 +55,10 @@ the diff.
 - **Honest availability.** No platform model; Claude is a setup-token deposit,
   not an OAuth button; ChatGPT/Codex is one tap. Android is a pre-release APK;
   desktop builds are unsigned and from source. Say so in words.
-- **Plans in one place.** `/fine-print#plans` is the only page that describes
-  free versus premium ($20 a month, higher daily limits on outside-world
-  actions, compute and storage). No numbers until enforcement is live, no
-  upgrade control until the app has one. `/start` may carry one sentence
-  linking there.
+- **Plans.** `/fine-print#plans` states the tiers. Free and paid are the same
+  product and the same security, and differ only by simultaneous runs and
+  storage. No price or cap until the owner sets it. Home and `/start` may
+  summarise that and must not name a price.
 - **Do not advertise** the paid market, crypto or tokens, hardware, host-run
   fleets, per-channel integration lists, the retired `Workflow` name, or
   "powered by <model>". No engagement metrics anywhere.

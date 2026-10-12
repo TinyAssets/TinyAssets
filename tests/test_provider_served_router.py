@@ -117,6 +117,34 @@ def test_native_auth_notice_keeps_served_retry_fenced(
         revoke_provider_request(capability)
 
 
+def test_unavailable_codex_never_calls_claude(tmp_path):
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import ExternalAgentUnavailable
+    from tinyassets.providers.router import ProviderRouter
+
+    _, _, capability, context = _served_context(tmp_path)
+
+    class RefusingProvider(_RecordingProvider):
+        async def complete(self, *args, **kwargs):
+            self.calls += 1
+            raise ExternalAgentUnavailable("codex", "gpt-6.1-sol", "not_signed_in")
+
+    codex = RefusingProvider("codex")
+    claude = _RecordingProvider("claude-code")
+    router = ProviderRouter(providers={"codex": codex, "claude-code": claude})
+    try:
+        with pytest.raises(ExternalAgentUnavailable) as failure:
+            asyncio.run(router.call(
+                "writer", "hello", "system", universe_context=context,
+                operation="converse",
+            ))
+        assert failure.value.reason == "not_signed_in"
+        assert codex.calls == 1
+        assert claude.calls == 0
+    finally:
+        revoke_provider_request(capability)
+
+
 def _binding() -> dict[str, object]:
     return {"schema_version": 1, "name": "Served", "role": "writer"}
 
@@ -832,71 +860,10 @@ def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, m
     assert all(r[1] == 20 for r in rows)  # measured 12 input + 8 output
 
 
-def test_codex_wrapper_resolution_mounts_real_binary_tree(tmp_path):
-    from tinyassets.providers.codex_provider import _codex_sandbox_mounts
-
-    install_root = tmp_path / "codex-install"
-    real_codex = install_root / "node_modules" / ".bin" / "codex"
-    real_codex.parent.mkdir(parents=True)
-    real_codex.write_text("fake executable", encoding="utf-8")
-    wrapper_dir = tmp_path / "bin"
-    wrapper_dir.mkdir()
-    wrapper = wrapper_dir / "codex"
-    wrapper.write_text(
-        f'#!/usr/bin/env bash\nCODEX_BIN="{real_codex}"\nexec "$CODEX_BIN" "$@"\n',
-        encoding="utf-8",
-    )
-
-    mounts = _codex_sandbox_mounts([str(wrapper)])
-
-    assert install_root.resolve() in mounts
-    assert wrapper_dir.resolve() in mounts
 
 
-def test_codex_wrapper_resolution_fails_closed_when_real_tree_is_missing(tmp_path):
-    from tinyassets.exceptions import ProviderError
-    from tinyassets.providers.codex_provider import _codex_sandbox_mounts
-
-    wrapper = tmp_path / "codex"
-    wrapper.write_text(
-        '#!/usr/bin/env bash\nCODEX_BIN="/missing/codex-install/codex"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ProviderError, match="wrapper's real binary"):
-        _codex_sandbox_mounts([str(wrapper)])
 
 
-@pytest.mark.skipif(
-    not (
-        os.environ.get("TINYASSETS_REAL_CODEX_TEST_UNIVERSE")
-        and os.environ.get("TINYASSETS_REAL_CODEX_TEST_SNAPSHOT")
-    ),
-    reason=(
-        "set TINYASSETS_REAL_CODEX_TEST_UNIVERSE and "
-        "TINYASSETS_REAL_CODEX_TEST_SNAPSHOT for the true Codex integration"
-    ),
-)
-def test_true_codex_binary_served_adapter_integration():
-    from pathlib import Path
-
-    from tinyassets.providers.codex_provider import CodexProvider
-
-    universe_dir = Path(os.environ["TINYASSETS_REAL_CODEX_TEST_UNIVERSE"])
-    snapshot_dir = Path(os.environ["TINYASSETS_REAL_CODEX_TEST_SNAPSHOT"])
-    response = asyncio.run(
-        CodexProvider().complete(
-            "Reply with only: integration-ok",
-            "",
-            ModelConfig(
-                sandbox_workspace=True,
-                max_tokens=32,
-                credential_snapshot_dir=snapshot_dir,
-            ),
-            universe_dir=universe_dir,
-        )
-    )
-    assert response.text == "integration-ok"
 
 
 def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
@@ -1257,37 +1224,9 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     assert provider.calls == 5
 
 
-def test_claude_serving_held_by_default_without_optin(tmp_path, monkeypatch):
-    """claude-code serving stays HELD unless the host explicitly opts in.
-
-    The OpenSpec design forbids silently bypassing the role-completeness hold
-    merely because converse asks only for writer (Codex reject #2). The default
-    (no flag) must therefore refuse claude-code serving.
-    """
+def test_claude_serving_requires_a_valid_owner(tmp_path):
     from tinyassets.provider_serving_binding import bind_serving_provider
 
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
-    with pytest.raises(PermissionError, match="held by default"):
-        bind_serving_provider(
-            base_path=str(tmp_path),
-            universe_dir=str(tmp_path),
-            owner_user_id="owner-1",
-            universe_id="u-owner",
-            agent_binding_id="binding-1",
-            expected_revision=1,
-            provider="claude-code",
-        )
-
-
-def test_claude_serving_optin_clears_the_hold(tmp_path, monkeypatch):
-    """With the explicit opt-in AND writer-only serving scope, the hold clears.
-
-    Proven by getting PAST the claude hold to the next validation (missing
-    owner -> ValueError, NOT the PermissionError hold).
-    """
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     with pytest.raises(ValueError):
         bind_serving_provider(
             base_path=str(tmp_path),
@@ -1326,33 +1265,11 @@ def _claude_authority(tmp_path):
     )
 
 
-def test_reserve_holds_claude_serving_authority_without_optin(tmp_path, monkeypatch):
-    """Serve-time re-check: a persisted claude-code serving authority is HELD on
-    every served call unless the host opts in — closing the grandfathered-binding
-    gap where a binding created while the flag was on keeps serving after it is
-    cleared (Codex re-review #1). The check returns before any DB access.
-    """
+def test_reserve_requires_current_claude_authority(tmp_path):
+    """An absent binding or custody refuses a subscription budget reservation."""
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.provider_assignment import reserve_served_provider_budget
 
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
-    with pytest.raises(ProviderAuthorityHeldError, match="claude-code serving is held"):
-        reserve_served_provider_budget(
-            str(tmp_path),
-            universe_dir=str(tmp_path),
-            authority=_claude_authority(tmp_path),
-            requested_output_tokens=10,
-            estimated_input_tokens=10,
-        )
-
-
-def test_reserve_passes_claude_hold_with_optin(tmp_path, monkeypatch):
-    """With the opt-in the serve-time claude hold clears; the call proceeds past
-    it and fails on the (absent) binding/custody, NOT on the claude hold."""
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import reserve_served_provider_budget
-
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     with pytest.raises(ProviderAuthorityHeldError) as exc:
         reserve_served_provider_budget(
             str(tmp_path),

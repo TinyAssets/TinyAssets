@@ -48,7 +48,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable
 from langgraph.graph import END, START, StateGraph
 
 from tinyassets.branches import BranchDefinition, GraphNodeRef, NodeDefinition
-from tinyassets.exceptions import AllProvidersExhaustedError
 
 if TYPE_CHECKING:
     from tinyassets.providers.base import UniverseContext
@@ -56,7 +55,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS = (2.0, 4.0)
 
 
 class CompilerError(Exception):
@@ -540,68 +538,6 @@ def _run_with_timeout(
             node_id=node_id,
         )
     return future.result()
-
-
-def _call_policy_router_with_retry(
-    router: Any,
-    *,
-    role: str,
-    prompt: str,
-    system: str,
-    policy: dict[str, Any],
-    config: Any = None,
-    universe_context: "UniverseContext | None" = None,
-    response_observer: Callable | None = None,
-) -> tuple[str, str, dict]:
-    """Retry policy-aware provider dispatch on transient chain exhaustion."""
-    # Only forward config when set AND the router's call_with_policy_sync
-    # actually accepts it — protects 4-arg routers/stubs (backward-compat),
-    # mirroring the injected provider_call bridge guard.
-    pass_config = config is not None
-    pass_context = universe_context is not None
-    pass_observer = response_observer is not None
-    if pass_config or pass_context or pass_observer:
-        try:
-            import inspect as _inspect
-            _params = _inspect.signature(router.call_with_policy_sync).parameters
-            accepts_kwargs = any(
-                p.kind == p.VAR_KEYWORD for p in _params.values()
-            )
-            pass_config = ("config" in _params) or any(
-                p.kind == p.VAR_KEYWORD for p in _params.values()
-            )
-            pass_context = "universe_context" in _params or accepts_kwargs
-            pass_observer = pass_observer and ("response_observer" in _params or accepts_kwargs)
-        except (ValueError, TypeError):
-            pass_config = False
-            pass_context = False
-            pass_observer = False
-    attempts = len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS) + 1
-    for attempt_index in range(attempts):
-        try:
-            kwargs: dict[str, Any] = {}
-            if pass_context:
-                kwargs["universe_context"] = universe_context
-            if pass_observer:
-                kwargs["response_observer"] = response_observer
-            if pass_config:
-                return router.call_with_policy_sync(
-                    role, prompt, system, policy, config, **kwargs,
-                )
-            return router.call_with_policy_sync(
-                role, prompt, system, policy, **kwargs,
-            )
-        except AllProvidersExhaustedError:
-            if attempt_index == attempts - 1:
-                raise
-            delay = _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS[attempt_index]
-            logger.warning(
-                "Policy provider chain exhausted for role=%s; retrying in %.1fs",
-                role,
-                delay,
-            )
-            time.sleep(delay)
-    raise AssertionError("unreachable policy provider retry state")
 
 
 _MAX_SOURCE_CODE_BYTES = 50_000
@@ -1414,10 +1350,8 @@ def _build_prompt_template_node(
     LLM. Output is stored under the node's first ``output_keys`` entry
     (or ``<node_id>_output`` if none declared).
 
-    When ``llm_policy`` is set, an injected caller that owns a
-    ``call_with_policy_sync`` method retains dispatch authority. Ordinary
-    function callers use the shared ``ProviderRouter`` when available and
-    otherwise fall back to the plain ``provider_call`` callable.
+    An injected bound model caller retains dispatch authority and receives
+    the node's policy with the same call as an unpinned node.
     """
 
     output_key = (
@@ -1506,14 +1440,10 @@ def _build_prompt_template_node(
     except (ValueError, TypeError):
         _bridge_takes_config = False
         _bridge_takes_observer = False
-    _injected_policy_caller = (
-        provider_call
-        if callable(getattr(provider_call, "call_with_policy_sync", None))
-        else None
-    )
-
     def _bridge(_p: str, _s: str, observer, cfg: Any = None) -> str:
         kwargs: dict[str, Any] = {"role": role}
+        if effective_policy:
+            kwargs["policy"] = effective_policy
         effective_cfg = cfg if cfg is not None else _node_cfg
         if _bridge_takes_config and effective_cfg is not None:
             kwargs["config"] = effective_cfg
@@ -1669,18 +1599,19 @@ def _build_prompt_template_node(
             concurrency_tracker.acquire()
         try:
             from tinyassets.providers.execution_receipt import (
-                WriterExecutionReceipt,
                 normalize_execution_receipt,
+                receipt_from_response,
             )
 
             # Per invocation, never a graph/session-wide first/last-response slot.
-            execution_receipt = WriterExecutionReceipt()
+            execution_receipt = None
             provider_served: str = "unknown"
             provider_meta: dict[str, Any] = {}
             provider_timing: dict[str, Any] = {}
 
             def _observe_response(resp: Any) -> None:
-                execution_receipt.observe(resp)
+                nonlocal execution_receipt
+                execution_receipt = normalize_execution_receipt(receipt_from_response(resp))
                 provider_timing.clear()
                 provider_timing.update(_provider_timing(resp))
 
@@ -1730,66 +1661,13 @@ def _build_prompt_template_node(
                 )
 
             if provider_call is None:
-                if effective_policy:
-                    preferred = effective_policy.get("preferred", {})
-                    requested = preferred.get("model_id", preferred.get("model")) or "default"
-                    raise CompilerError(
-                        f"Requested model {requested} "
-                        f"on {preferred.get('provider') or 'selected source'} "
-                        "cannot run: no bound provider policy execution path"
-                    )
-                response = f"[Mock response for {node.node_id}]"
-                provider_served = "mock"
-            elif effective_policy:
-                # Policy-aware path: route through ProviderRouter.call_with_policy_sync
-                try:
-                    # Only the run's own injected, universe-bound caller may
-                    # honour a policy. There is no shared-router fallback
-                    # (Hard Rule 15): without one, the policy node goes
-                    # through the same bound bridge as any other node.
-                    _policy_router = _injected_policy_caller
-                    router_providers = getattr(
-                        _policy_router, "available_providers", None,
-                    )
-                    router_has_providers = (
-                        router_providers is None or bool(router_providers)
-                    )
-                    if _policy_router is not None and router_has_providers:
-                        def _policy_call() -> tuple[str, str, dict]:
-                            return _call_policy_router_with_retry(
-                                _policy_router,
-                                role=role,
-                                prompt=prompt,
-                                system="",
-                                policy=effective_policy,
-                                config=_deadline_cfg(),
-                                universe_context=universe_context,
-                                response_observer=_observe_response,
-                            )
-                        text_and_name = _run_agent_with_timeout(
-                            _policy_call,
-                            timeout_s=timeout_s,
-                            node_id=node.node_id,
-                            universe_context=universe_context, event_sink=event_sink,
-                            seat_scope=seat_scope, on_seated=_seated,
-                        )
-                        response, provider_served, provider_meta = text_and_name
-                    else:
-                        preferred = effective_policy.get("preferred", {})
-                        requested = preferred.get("model_id", preferred.get("model")) or "default"
-                        raise CompilerError(
-                            f"Requested model {requested} "
-                            f"on {preferred.get('provider') or 'selected source'} cannot run: "
-                            "the bound provider has no available policy execution path"
-                        )
-                except NodeTimeoutError:
-                    raise
-                except _SandboxUnavailableError:
-                    raise
-                except Exception as exc:
-                    logger.exception("Policy provider call failed in %s", node.node_id)
-                    _emit_failed_event(event_sink, node.node_id, exc)
-                    raise _wrap_provider_failure(node.node_id, exc) from exc
+                preferred = effective_policy.get("preferred", {}) if effective_policy else {}
+                requested = preferred.get("model_id", preferred.get("model")) or "default"
+                raise CompilerError(
+                    f"Requested model {requested} on "
+                    f"{preferred.get('provider') or 'selected source'} "
+                    "cannot run: no bound model call"
+                )
             else:
                 try:
                     response = _run_agent_with_timeout(
@@ -1848,7 +1726,7 @@ def _build_prompt_template_node(
                     phase="ran",
                     prompt=prompt, response=response, role=role,
                     provider_served=provider_served,
-                    execution=(execution_receipt.projection() or
+                    execution=(execution_receipt or
                                normalize_execution_receipt(provider_meta.get("execution"))),
                     **_meta_detail,
                 )
@@ -4195,8 +4073,7 @@ def compile_branch(
         The branch to compile. Must have passed ``branch.validate()``.
     provider_call
         Synchronous LLM caller with signature ``(prompt, system, *, role)
-        -> str``. When ``None``, prompt_template nodes return a mock
-        string (useful for tests).
+        -> str``. When ``None``, prompt_template nodes refuse execution.
     effect_chain
         The run's ``tinyassets.effectors.EffectChain``. When given, every
         node's declared effects fire the moment the node returns (design D1)

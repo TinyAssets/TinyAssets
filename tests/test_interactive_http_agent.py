@@ -178,8 +178,7 @@ def agent(served, monkeypatch):
     monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
                         accounting_resolver(lambda *args, **kwargs: Proxy()))
-    monkeypatch.setattr(provider_calls, "_real_router", served.router)
-    monkeypatch.setattr(provider_calls, "_force_mock", False)
+    monkeypatch.setattr(provider_calls, "_router", served.router)
     return state
 
 
@@ -364,7 +363,7 @@ def test_later_pre_intent_failure_closes_known_progress(agent, monkeypatch, fail
 
 
 @pytest.mark.parametrize("status,scope", [(402, "account"), (429, "unknown"), (503, "model")])
-def test_capacity_scope_survives_real_router_without_false_spend(agent, status, scope):
+def test_capacity_scope_survives_router_without_false_spend(agent, status, scope):
     from tinyassets.exceptions import AllProvidersExhaustedError
 
     agent.capacity_failures[1] = status

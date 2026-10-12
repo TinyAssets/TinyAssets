@@ -260,22 +260,22 @@ def synthesize_source(
         Filenames of synthesized documents.
     """
     from domains.fantasy_daemon.phases.worldbuild import _write_canon_file
-    from tinyassets.providers.call import call_provider, get_last_provider
+    from tinyassets.providers.model_call import get_last_provider, text_sync
 
     if not source_text.strip():
         return []
 
     # Decide: single-pass or bite-by-bite
     if len(source_text) <= _TIER2_THRESHOLD:
-        docs = _synthesize_single_pass(source_text, filename, premise, call_provider)
+        docs = _synthesize_single_pass(source_text, filename, premise, text_sync)
     else:
-        docs = _synthesize_bite_by_bite(source_text, filename, premise, call_provider)
+        docs = _synthesize_bite_by_bite(source_text, filename, premise, text_sync)
 
     if not docs:
         return []
 
     # --- Verification pass: runs once against full source ---
-    docs = _verify_and_fill_gaps(source_text, filename, docs, premise, call_provider)
+    docs = _verify_and_fill_gaps(source_text, filename, docs, premise, text_sync)
 
     generated: list[str] = []
     for topic, content in docs.items():

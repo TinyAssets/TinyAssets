@@ -48,6 +48,16 @@ reader = snapshot_tests.reader
 MODEL = "new-company/new-model"
 
 
+def test_discovered_model_source_is_connected_without_declared_model_use(served):
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    assert served.rig.ledger.get_connection_capability("conn-models", "model_use") is None
+    source = f"api_key_http:{served.rig.definition.id}"
+    assert source in connected_sources(
+        served.rig.base, served.context.universe_dir, "owner",
+    )
+
+
 @pytest.fixture
 def served(rig, reader, monkeypatch):
     definition = publish_definition(
@@ -166,7 +176,7 @@ def _authorize(served, selection=None):
     )
 
 
-def test_selected_model_flows_through_real_router_and_http_encoder(served):
+def test_selected_model_flows_through_router_and_http_encoder(served):
     before = load_provider_assignment(served.rig.base, universe_id="u-models")
     injected = SelectedModel("other", "injected", "invalid", (), "fake", 1)
     response = _call(served, config=ModelConfig(selected_model=injected))

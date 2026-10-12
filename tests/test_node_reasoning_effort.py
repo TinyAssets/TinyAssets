@@ -16,24 +16,11 @@ import pytest
 
 from tinyassets.branches import NodeDefinition
 from tinyassets.providers.base import ModelConfig
-from tinyassets.providers.codex_provider import _reasoning_effort_args
 
 
 def test_modelconfig_carries_reasoning_effort():
     assert ModelConfig().reasoning_effort == ""
     assert ModelConfig(reasoning_effort="low").reasoning_effort == "low"
-
-
-@pytest.mark.parametrize("effort,expected", [
-    ("low", ["-c", "model_reasoning_effort=low"]),
-    ("MINIMAL", ["-c", "model_reasoning_effort=minimal"]),
-    ("high", ["-c", "model_reasoning_effort=high"]),
-    ("", []),
-    (None, []),
-    ("bogus", []),
-])
-def test_codex_effort_flag_mapping(effort, expected):
-    assert _reasoning_effort_args(effort) == expected
 
 
 def test_node_definition_round_trips_effort():
@@ -106,24 +93,6 @@ def test_subsecond_node_timeout_floors_provider_timeout_to_one():
     fn = _build_prompt_template_node(node, provider_call=fake_provider_call, event_sink=None)
     fn({"x": "now"})
     assert captured["config"].timeout >= 1
-
-
-def test_policy_path_skips_config_for_legacy_4arg_router():
-    """Codex review fix: a router whose call_with_policy_sync takes only
-    (role, prompt, system, policy) must NOT receive a 5th config arg."""
-    from tinyassets.graph_compiler import _call_policy_router_with_retry
-
-    class _LegacyRouter:
-        def call_with_policy_sync(self, role, prompt, system, policy):
-            return ("text", "legacy", {})
-
-    from tinyassets.providers.base import ModelConfig
-    # Should not raise TypeError despite a non-None config.
-    out = _call_policy_router_with_retry(
-        _LegacyRouter(), role="writer", prompt="p", system="",
-        policy={"preferred": {}}, config=ModelConfig(reasoning_effort="low"),
-    )
-    assert out == ("text", "legacy", {})
 
 
 @pytest.fixture

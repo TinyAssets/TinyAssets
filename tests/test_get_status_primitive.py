@@ -355,7 +355,7 @@ def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> No
     (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
     hint = _get_endpoint_hint(
         monkeypatch,
-        env={},
+        env={"CODEX_HOME": str(auth_dir)},
         which_map={"codex": "/usr/local/bin/codex"},
         home=tmp_path,
     )
@@ -430,7 +430,7 @@ def test_llm_endpoint_bound_codex_takes_priority_over_claude(
     (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
     hint = _get_endpoint_hint(
         monkeypatch,
-        env={},
+        env={"CODEX_HOME": str(auth_dir)},
         which_map={
             "codex": "/usr/local/bin/codex",
             "claude": "/usr/local/bin/claude",

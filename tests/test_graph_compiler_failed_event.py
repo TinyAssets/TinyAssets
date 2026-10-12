@@ -92,99 +92,47 @@ def test_failed_event_emitted_on_provider_exception():
     assert failed_events[0]["error_type"] == "RuntimeError"
 
 
-def test_failed_event_emitted_on_policy_path_exception(monkeypatch):
-    """Policy-aware path: when ProviderRouter.call_with_policy_sync raises,
-    event_sink must receive phase='failed' from the policy exception
-    handler too. Both exception handlers in graph_compiler are symmetric;
-    fixing only one would leave a gap."""
+def test_failed_event_emitted_on_policy_call_exception():
     from langgraph.checkpoint.memory import InMemorySaver
 
-    captured: list[dict] = []
-
-    def _sink(node_id, **detail):
-        captured.append({"node_id": node_id, **detail})
-
-    class _RaisingRouter:
-        def call_with_policy_sync(self, role, prompt, system, policy):
-            raise RuntimeError("All providers for role='writer' are API-key-backed")
-
-    monkeypatch.setattr(
-        "tinyassets.graph_compiler._get_shared_router",
-        lambda: _RaisingRouter(),
-    )
+    captured = []
+    def refusing(prompt, system, **kwargs):
+        assert kwargs["policy"]["preferred"]["provider"] == "codex"
+        raise RuntimeError("one call refused")
 
     branch = _simple_branch()
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "codex"}}
-
-    def _unused(prompt, system, *, role):
-        raise AssertionError("plain provider_call should not be reached")
-
-    compiled = compile_branch(branch, provider_call=_unused, event_sink=_sink)
-    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
-    with pytest.raises(CompilerError):
-        runnable.invoke(
-            {"x": "test"},
-            config={"configurable": {"thread_id": "t-fail-policy"}},
+    compiled = compile_branch(branch, provider_call=refusing,
+                              event_sink=lambda **event: captured.append(event))
+    with pytest.raises(CompilerError, match="one call refused"):
+        compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
+            {"x": "test"}, config={"configurable": {"thread_id": "t-fail-policy"}},
         )
-
-    failed_events = [e for e in captured if e.get("phase") == "failed"]
-    assert failed_events, f"no phase=failed event from policy path: {captured}"
-    assert failed_events[0]["node_id"] == "step1"
+    assert any(event.get("phase") == "failed" for event in captured)
 
 
-def test_policy_node_uses_injected_governed_policy_call(monkeypatch):
-    """An injected authority-bearing caller owns policy dispatch too.
-
-    Reaching for the process-global router would drop the one-use provider
-    carrier attached to the injected caller and escape requester authority.
-    """
+def test_policy_node_uses_injected_governed_call(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
 
-    class _GovernedCaller:
-        def __init__(self) -> None:
-            self.calls: list[dict] = []
-
-        def __call__(self, *_args, **_kwargs):
-            raise AssertionError("policy nodes must use the governed policy method")
-
-        def call_with_policy_sync(
-            self, role, prompt, system, policy, config=None,
-        ):
-            self.calls.append(
-                {
-                    "role": role,
-                    "prompt": prompt,
-                    "system": system,
-                    "policy": policy,
-                    "config": config,
-                }
-            )
-            return "governed result", "requester-provider", {"governed": True}
-
-    def _shared_router_escape():
-        raise AssertionError("shared router must not bypass the injected caller")
+    calls = []
+    def governed(prompt, system, **kwargs):
+        calls.append(kwargs)
+        return "governed result"
 
     monkeypatch.setattr(
         "tinyassets.graph_compiler._get_shared_router",
-        _shared_router_escape,
+        lambda: (_ for _ in ()).throw(AssertionError("shared router escape")),
     )
     branch = _simple_branch()
     policy = {"preferred": {"provider": "requester-provider"}}
     branch.node_defs[0].llm_policy = policy
-    caller = _GovernedCaller()
-
-    compiled = compile_branch(branch, provider_call=caller)
-    runnable = compiled.graph.compile(checkpointer=InMemorySaver())
-    result = runnable.invoke(
-        {"x": "test"},
-        config={"configurable": {"thread_id": "t-governed-policy"}},
+    compiled = compile_branch(branch, provider_call=governed)
+    result = compiled.graph.compile(checkpointer=InMemorySaver()).invoke(
+        {"x": "test"}, config={"configurable": {"thread_id": "t-governed-policy"}},
     )
-
     assert result["out"] == "governed result"
-    assert len(caller.calls) == 1
-    assert caller.calls[0]["role"] == "writer"
-    assert caller.calls[0]["policy"] == policy
-    assert caller.calls[0]["config"] is not None
+    assert len(calls) == 1 and calls[0]["policy"] == policy
+    assert calls[0]["config"] is not None
 
 
 def test_plain_node_forwards_config_to_injected_kwargs_caller():

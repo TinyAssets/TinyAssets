@@ -90,6 +90,35 @@ def test_mcp_current_model_choice_preserves_both_response_channels(monkeypatch, 
     assert json.loads(result.content[0].text) == result.structured_content
 
 
+def test_missing_admission_is_not_reported_as_a_missing_scope(monkeypatch, tmp_path):
+    """A launcher that has not installed the mapper is not an OAuth failure."""
+    import tinyassets.role_center_admission as admission
+    from tinyassets.role_center_admission import AdmissionRefused
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    def refuse(*_args, **_kwargs):
+        raise AdmissionRefused("runtime admission requires the bounded mapper client")
+
+    monkeypatch.setattr(admission, "admit_center", refuse)
+    out = json.loads(us.converse(message="Hello"))
+    assert out.get("auth_scope_required") is not True
+    assert out.get("home_unavailable") is True
+    assert "could not be created" in out["error"]
+
+
+def test_missing_create_scope_is_still_a_scope_error(monkeypatch, tmp_path):
+    from tests.test_first_contact import _login
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    # Dev mode does not enforce scopes. WorkOS resolve-always does, and a
+    # token without the costly effect must not be told the home is missing.
+    _login("reader-1", caps=["read", "submit_request", "list"])
+    out = json.loads(us.converse(message="Hello"))
+    assert out.get("auth_scope_required") is True
+    assert "home_unavailable" not in out
+
+
 def test_converse_denied_for_non_owner(monkeypatch):
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-x")
@@ -136,6 +165,9 @@ def test_converse_pairs_reported_model_with_this_reply_only(monkeypatch, tmp_pat
     assert result["reply"] == "answer one"
     assert result["execution"] == {
         "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
+        "resolved_model": "requested-alias", "reported_model": "actual-model",
+        "family": "family", "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
     }
     from tinyassets.conversation_store import load_recent_readonly
     from tinyassets.providers.execution_receipt import normalize_execution_receipt
@@ -180,7 +212,12 @@ def test_converse_legacy_model_is_explicitly_unknown(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ui, "converse", answer)
     result = json.loads(us.converse(message="hello", graph_id="u-x"))
-    assert result["execution"] == {"provider": "codex", "model": "", "model_status": "unknown"}
+    assert result["execution"] == {
+        "provider": "codex", "model": "", "model_status": "unknown",
+        "resolved_model": "provider-default", "family": "openai",
+        "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
+    }
 
 
 def test_converse_error_never_publishes_completed_or_previous_receipt(monkeypatch, tmp_path):
@@ -338,8 +375,12 @@ def test_converse_memory_failure_never_costs_the_turn(monkeypatch, tmp_path):
     )
     result = json.loads(us.converse(message="hi", graph_id="u-x"))
     assert result["reply"] == "ok"
-    assert result["execution"] == {"provider": "owned-provider", "model": "actual-model",
-                                   "model_status": "reported"}
+    assert result["execution"] == {
+        "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
+        "resolved_model": "alias", "reported_model": "actual-model",
+        "family": "family", "execution": "model_response", "outcome": "succeeded",
+        "usage_provenance": "unknown",
+    }
     assert calls == ["hi"]
 
 

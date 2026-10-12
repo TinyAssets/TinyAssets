@@ -490,3 +490,202 @@ person, shared across all their universes; universe creation stays unlimited.
 Known and not fixed here, filed as a concern: a timed-out borrower whose parent
 released first remembers a stale depth, so it cannot lend the seat on to a
 nested blocking call.
+
+## C2 folded obligations
+
+The following unfinished source tasks retain their acceptance detail; the one target change owns them.
+
+### usage-limits-replace-caps
+
+# Tasks: usage-limits-replace-caps
+
+## 1. Build
+- [x] 1.1 Rolling-day run meter, ledger index, day refusal (`engine_admissions.py`, `engine_mcp_server.py`).
+- [x] 1.2 invoke_branch: remove the depth cap, charge and bind every child, name stack exhaustion, pool-derived bound for blocking version invokes (`graph_compiler.py`, `runs.py`).
+- [x] 1.3 Automations: drop the ceiling and cadence floors; charge registration (`automations.py`, `api/automations.py`).
+- [x] 1.4 Schedules/subscriptions: drop per-owner counts; floor = tick; charge registration and every triggered run (`scheduler.py`, `api/runtime_ops.py`, `api/runs.py`).
+- [x] 1.5 Agent definitions: drop the component count (`custom_agents.py`, `agent_runtime.py`).
+- [x] 1.6 Remove `NodeEnqueueBudget` threading; delete the served-recursion concern.
+
+## 2. Prove
+- [x] 2.1 Tests through the real ledger, compiled graph and triggered-run path (`tests/test_usage_limits.py`); cap tests rewritten to the usage contract.
+- [x] 2.2 Mutation-check each meter site.
+- [x] 2.3 gpt-6-astra refute round: cross-user reach and runaway cost (ADAPT; four P1s folded, foreground fail-open kept with reason).
+- [ ] 2.4 Deploy; `python scripts/deployed_sha.py --assert-contains <sha>`.
+
+## 3. Land
+- [ ] 3.1 Sync deltas into `openspec/specs/`, archive.
+
+
+### remove-non-usage-limits
+
+# Tasks: remove-non-usage-limits
+
+## 1. Account-shaped limits (PR 1)
+- [ ] 1.1 Any user may create any number of universes; keep only the identity floor (`universe_server.py`, `api/prompts.py`).
+- [ ] 1.2 Conversation history is never deleted (`conversation_store.py`, `storage/conversation_run_admissions.py`).
+- [ ] 1.3 Storage-shaped caps go — project memory 1 MB, daemon wiki caps + eviction, app-UI-library 4 MiB (`memory/project.py`, `daemon_memory.py`, `custom_agents.py`).
+- [ ] 1.4 Structural caps go — `MAX_PENDING`, `MAX_LINEAGE_DEPTH` + CHECK, `MAX_NOT_BEFORE`, consumer-binding 100 cutoff + `LIST_LIMIT` saturation, `MAX_SKILLS` silent drop, `MAX_DEFINITION_BYTES`/`MAX_OPERATIONS_PER_BATCH`.
+- [ ] 1.5 Receiver per-sender rate becomes owner-set, default none, no ceiling (`storage/receiver_links.py`, `api/deliveries.py`, `storage/deliveries.py`).
+
+## 2. Run and host bounds (PR 2)
+- [ ] 2.1 Per-run and per-node counters go; per-call payload bounds stay (`effectors/__init__.py`, `node_sandbox.py`).
+- [ ] 2.2 No recursion ceiling and no validated range; author retry policy honoured (`runs.py`, `graph_compiler.py`).
+- [ ] 2.3 Wall clocks that capped a turn go; per-call transport timeouts audited and kept (`universe_intelligence.py`, `automations.py`).
+- [ ] 2.4 Host safety waits — `provider_admission`, universe-tool jail slots, nested invoke, workspace job lock.
+- [ ] 2.5 Inbound keeps per-token anti-flood only; per-universe rate/in-flight go and runs queue (`webhook_inbound.py`). Voice per-user windows go.
+- [ ] 2.6 Serving-binding hourly/token/cost windows go; dark `_HTTP_ACTION_CAP` and market `_MAX_FANOUT` deleted after confirming no live caller.
+
+  HTTP portion completed by PR #4476: new HTTP grants are uncapped, legacy
+  `http_requests` caps are cleared on ledger open, and listings return `null`.
+  Preservation, concurrent-open, and initialized-open locking regressions are
+  covered; as-built contract is in `http-connections-and-outbound-authority`.
+  Serving-binding windows and market fanout remain in this task.
+
+## 3. Text, docs, specs (PR 3)
+- [ ] 3.1 `get_status` `resource_usage` publishes storage and seats only (`api/resource_usage.py`).
+- [ ] 3.2 Served handbook, connector docs and compiler guidance describe two dimensions (`engine_mcp_server.py`, `universe_server.py`, `graph_compiler.py`).
+- [ ] 3.3 Website plan table, onboarding and legal text (`WebSite/site-react/app/{fine-print,start,legal}`), per `website-editing`.
+- [ ] 3.4 Spec deltas + `environment-variables.md` default fix + drop the `TINYASSETS_USAGE_ENFORCEMENT` host-action row.
+
+## 4. Prove
+- [ ] 4.1 Limit-gone tests replace limit tests; new waiting behaviour covered; mutation-check each removed gate.
+- [ ] 4.2 `gpt-6-astra` refute per PR: did removing X open a cross-user or host-safety hole.
+
+
+### account-storage-quota
+
+# Tasks: account-storage-quota
+
+Design approval gates task 2 onward. Task 1 is read-only and gates the numbers.
+
+## 1. Ground truth
+
+- [ ] 1.1 Measure what each test account holds today on production, per store in
+      D3, read-only. Record the numbers here. If either account is above 1 GiB,
+      return Q1 to the founder before enforcing.
+
+      **Result, 2026-09-30 ~18:10Z, production, read-only
+      (`scripts/droplet.py ssh` running a `mode=ro` walk):**
+      - 3 universes, 3 `founder_home` rows, 0 ambiguous. The backfill binds all
+        3, and **0 stay unattributed**.
+      - Account `5ac36c1b` (hash) home: **2,898.8 MiB** of non-runtime files.
+        That is **over 1 GiB, so STOP; enforcement is held.** 2,800.2 MiB of it
+        is leaked `.workspace-staging` (334 directories, 2026-09-09 to 09-21).
+        **Resolved 2026-09-30:** leak fixed in #4143, and the boot sweep removed
+        all 334 (2,936,213,247 bytes) at 20:00:54Z. Staging is excluded from
+        user storage (founder decision).
+        Without staging it is about 98 MiB, of which 93.6 MiB is
+        `.credentials/codex`.
+      - The two other accounts hold 0.3 MiB each.
+      - Shared root stores, totals across all accounts: `.runs.db` 70.5 MiB,
+        `.langgraph_runs.db` 94.5 MiB, commons `wiki` 9.5 MiB; custody,
+        daemon wikis and project memory are 0.
+
+## 2. Shape
+
+- [ ] 2.1 `usage_policy`: storage in GiB (free 2, paid 20), with
+      `TINYASSETS_{FREE,PAID}_STORAGE_GIB`. Delete the MB variables,
+      `_universe_quota_kwargs` and the pool's universe-quota predicate. Update
+      `environment-variables.md`.
+- [x] 2.2 `universe_owner.py`: add the `universe_owner` table, written in the creation
+      transaction(s), a backfill from stored bindings only (D2), `owner_of`,
+      `tier_of` and `usage`. Coordinate with the seats-per-account lane so there
+      is a single resolver.
+- [ ] 2.3 `storage_accounting.py`: the store registry, `measurements`, `pending`
+      and `seq`; `reserve` / `commit` / `release` / `touch`; the
+      fresh-before-refuse rule; the bounded unmeasured allowance; and the
+      single-flight sweep.
+- [ ] 2.4 Attribution queries for the shared stores (run records, checkpoints,
+      uploads, branches, commons) and their idempotent indexes. Add the
+      completeness guard test over a populated data directory.
+
+## 3. Enforcement
+
+- [ ] 3.1 Workspaces (D6): fitted reservation with credit for the replaced
+      generation, measure-before-publish, `publish_generation` requires a
+      reservation, and lease-release measurement plus crash-window
+      reconciliation by `lease_id`.
+- [ ] 3.2 Gate files, project memory, UI library, pages (universe, commons and
+      daemon wiki), uploads (including cross-owner delivery charged to the
+      receiver) and branch/version writes (D7). Add the at-quota check on
+      write-capable jail calls. Call `touch` on each delete path.
+- [ ] 3.3 Build the refusal record and message (D8) through `upgrade_sentence`,
+      with no link on the top tier. Prove that reads, the vault, sessions, chat
+      and run records are never refused.
+
+## 4. Prove and land
+
+- [ ] 4.1 Tests:
+      - An empty free account creates a small workspace.
+      - Delete, then retry, succeeds without a `touch`.
+      - Concurrent admissions can't overshoot.
+      - A write that lands mid-scan is still counted.
+      - The unmeasured allowance is bounded.
+      - A shared universe charges only its owner.
+      - One account's bytes are summed across its universes.
+
+      Mutation-check each gate. Run the concurrency tests in the Linux oracle
+      container.
+- [ ] 4.2 Run a gpt-6-astra refute via `peer-agents` from this worktree, at most
+      3 rounds. Then deploy, confirm with
+      `python scripts/deployed_sha.py --assert-contains <sha>`, and run a live
+      `ui-test` on a free account: a refused write that shows the Upgrade link,
+      then delete and retry.
+- [ ] 4.3 Sync the deltas into `openspec/specs/`, archive this change, and
+      record the usage-limit decision as an ADR in `docs/decisions/` (the
+      founder accepts direction-level ADRs).
+
+
+### consolidate-platform-resource-policy
+
+## 1. Shape and existing truth
+
+- [x] 1.1 Diagnose the live ten-start refusal, record owner acceptance boundary and independent review, and adapt the candidate to reuse existing stores without migration or new authority.
+- [x] 1.2 Verify/sync/archive landed run-usage-budgets bookkeeping, preserving its actual current behavior and limitations.
+
+## 2. Bounded platform correction
+
+- [x] 2.1 Remove both workspace jobs-count refusal gates and obsolete parameters; retain observations and add regression tests proving more than ten operations while byte/storage/lock controls still refuse correctly.
+- [x] 2.2 Add non-mutating owner-scoped resource-status observations with missing/corrupt/symlink/privacy/coverage tests; do not claim global capacity or total storage where unmeasured.
+
+## 3. Ship and prove
+
+- [x] 3.1 Run focused Windows and Linux-oracle tests, rebuild plugin parity, obtain independent exact-head review and required CI, then deploy with authenticated canary and SHA containment.
+- [ ] 3.2 Coordinate rendered app-owned continuation/acceptance, record exact scope and organic follow-up, sync shipped specs and archive this bounded correction; keep wider Patches open for remaining platform issues and owner acceptance.
+
+Local evidence (2026-09-08, Windows, uncommitted candidate):
+`python -m pytest -q tests/test_workspace_pool.py tests/test_workspace_effector.py tests/test_run_usage_budgets.py tests/test_engine_mcp_hardening.py tests/test_engine_mcp_server.py tests/test_resource_usage_status.py tests/test_api_status.py tests/test_get_status_primitive.py`
+reported 390 passed, 9 skipped initially; after the round-1 WAL correction and
+three added regressions it reported 393 passed, 9 skipped. This does not satisfy
+the Linux gate.
+
+The local oracle could not start because Docker Desktop crashed initializing its
+inference socket, before any test execution. Commander authorized the existing
+Linux CI alternative without weakening tests or repairing the host. The relevant
+workspace/status suites are not in `.github/heavy-test-files.txt` or quarantine;
+their POSIX/symlink tests do not require bubblewrap. `tests.yml` workflow_dispatch
+checks out the selected ref on Ubuntu/Python 3.11 and uploads JUnit. Use pinned
+baseline and candidate refs, verify the executed SHAs and compare relevant
+test outcomes/skips. Required PR CI remains an additional landing gate. This is
+Linux evidence for this change, not a claim that sandbox-jail tests ran.
+
+Delivery evidence: bounded proof record (archived in git).
+Linux PR checkout 18443d16050715cfa352e4b04b89704d509909cc has the identical
+complete tree to approved head 79a4f765; its relevant suite passed 400 tests
+with two unchanged Windows-only skips. Deploy 34305023434 passed both
+authenticated gates for merge 0eb1388f at 2026-09-09 02:55 UTC.
+
+Task 3.2 is intentionally still open. Shipped specs are synchronized, but the
+owner retains live testing and acceptance. Commander explicitly relayed that no
+new app test message or workflow run is authorized without a fresh user request.
+Do not archive this as fully accepted or treat technical readiness as completion
+of broader Patches.
+
+Update September 8, 21:51 PDT: the rendered app's 21:39 report now supplies
+organic owner-initiated evidence of 12 workspace starts without the old limit
+and contention/recovery success. It also reports explicit discard failure and
+four other gaps, so complete cleanup/whole-goal acceptance is not established.
+The newer owner directive in `goal-completion-contract.md` adds all five gaps
+and authorizes the ordinary retest loop, with explicit agent confirmation as
+the completion gate. No extra test was sent during the read-only inspection.

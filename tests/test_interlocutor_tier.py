@@ -538,7 +538,7 @@ class TestEntrypointBindsTier:
             seen.append(system)
             return "{}" if "strict JSON" in system else "hello"
 
-        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        monkeypatch.setattr(ui, "text_sync", _fake_provider)
         ui.converse("u-pub", "hi")  # tier omitted — the exploited path
 
         assert seen, "provider was never called"
@@ -737,7 +737,7 @@ class TestTheSinkResolvesItsOwnAuthority:
             seen.append(system)
             return "{}" if "strict JSON" in system else "hello"
 
-        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        monkeypatch.setattr(ui, "text_sync", _fake_provider)
         ui.converse("u-own", "hi", tier=il.T2)  # asking for authority they lack
 
         assert seen, "provider was never called"
@@ -782,7 +782,7 @@ class TestTheSinkResolvesItsOwnAuthority:
             seen.append(system)
             return "{}" if "strict JSON" in system else "hello"
 
-        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        monkeypatch.setattr(ui, "text_sync", _fake_provider)
         ui.converse("u-pub", "hi", tier=il.T2)
 
         assert seen, "provider was never called"
@@ -911,7 +911,7 @@ class TestDisclosureMatchesResolutionForEveryCallerInput:
             seen.append(system)
             return "{}" if "strict JSON" in system else "hello"
 
-        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        monkeypatch.setattr(ui, "text_sync", _fake_provider)
         ui.converse("u-own", "hi", actor_id=supplied_actor, tier=requested)
 
         assert seen, "provider was never called"

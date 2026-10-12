@@ -594,8 +594,6 @@ def test_unpowered_recipient_installs_without_model_or_router_calls(monkeypatch,
     for method in (
         "call",
         "call_sync",
-        "call_with_policy",
-        "call_with_policy_sync",
         "call_judge_ensemble",
     ):
         monkeypatch.setattr(ProviderRouter, method, forbidden)

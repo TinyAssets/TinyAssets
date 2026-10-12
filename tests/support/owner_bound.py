@@ -10,17 +10,19 @@ consumer-owned (``settlement_owner=None``).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import ModelConfig, UniverseContext
+from tinyassets.providers.model_policy import ModelRef
 
 
 def owner_carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-owner-bound")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation
@@ -43,20 +45,23 @@ async def owner_bound_call(
     config: ModelConfig | None = None,
     policy: dict | None = None,
 ):
-    """``router.call`` (or ``call_with_policy`` when ``policy`` is given), bound."""
+    """Drive the one router executor under an owner-bound test carrier."""
     carrier = owner_carrier(provider, role=role)
     context = UniverseContext(
         universe_dir=Path("u-owner-bound"), provider_invocation=carrier,
     )
+    if policy and isinstance(policy.get("preferred"), dict):
+        preferred = policy["preferred"]
+        context = replace(context, model_selection=ModelRef(
+            preferred["provider"], preferred.get("model_id", ""),
+        ))
     with patch(
         "tinyassets.providers.router._provider_invocation_carrier",
         return_value=carrier,
+    ), patch(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        return_value=frozenset({provider}),
     ):
-        if policy is not None:
-            return await router.call_with_policy(
-                role, prompt, system, policy, config or ModelConfig(max_tokens=10),
-                operation="run_graph", universe_context=context,
-            )
         return await router.call(
             role, prompt, system, config or ModelConfig(max_tokens=10),
             operation="run_graph", universe_context=context,

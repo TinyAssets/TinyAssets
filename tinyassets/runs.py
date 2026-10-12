@@ -621,7 +621,7 @@ def _bind_waiting_run_provider(
     from tinyassets.config import load_universe_config
     from tinyassets.foreground_run_provider import new_foreground_run_provider_session
     from tinyassets.providers.base import UniverseContext
-    from tinyassets.providers.call import bind_universe_provider_call, call_provider
+    from tinyassets.providers.model_call import bind_model_call, text_sync
     from tinyassets.storage import _connect as author_connect
     from tinyassets.storage.current_home import check_principal_not_deleted
 
@@ -634,16 +634,27 @@ def _bind_waiting_run_provider(
         check_principal_not_deleted(authority, owner_id)
     session = new_foreground_run_provider_session(
         base_path, universe_id=universe_id, principal_id=owner_id,
-        provider_call=call_provider,
+        provider_call=text_sync,
     )
     session.prepare(run_id=run_id, branch=branch, branch_version_id=branch_version_id,
                     allowed_statuses={RUN_STATUS_QUEUED})
     universe_dir = Path(base_path) / universe_id
-    return bind_universe_provider_call(
+    return bind_model_call(
         session,
         UniverseContext(universe_dir=universe_dir, config=load_universe_config(universe_dir)),
         operation="run_graph",
     )
+
+
+def _owner_helper_scope(provider_call):
+    """Give nested platform helpers the run's admitted model call."""
+    from contextlib import nullcontext
+
+    from tinyassets.providers.model_call import BoundModelCall, owner_model_scope
+
+    if isinstance(provider_call, BoundModelCall):
+        return owner_model_scope(provider_call)
+    return nullcontext()
 
 
 def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
@@ -4837,13 +4848,14 @@ def _invoke_graph(
             initial_state = seed_initial_state(
                 dict(inputs), getattr(branch, "state_schema", None),
             )
-            result = app.invoke(
-                initial_state,
-                config={
-                    "configurable": {"thread_id": thread_id},
-                    "recursion_limit": recursion_limit,
-                },
-            )
+            with _owner_helper_scope(provider_call):
+                result = app.invoke(
+                    initial_state,
+                    config={
+                        "configurable": {"thread_id": thread_id},
+                        "recursion_limit": recursion_limit,
+                    },
+                )
     except RunCancelledError as exc:
         update_run_status(
             base_path, run_id,
@@ -6719,13 +6731,14 @@ def _invoke_graph_resume(
             # None inputs triggers resume from last checkpoint. The admitted
             # recursion limit rides the same config key _invoke_graph uses, so
             # the resumed segment gets the cap the run was admitted with.
-            result = app.invoke(
-                None,
-                config={
-                    "configurable": {"thread_id": thread_id},
-                    "recursion_limit": recursion_limit,
-                },
-            )
+            with _owner_helper_scope(provider_call):
+                result = app.invoke(
+                    None,
+                    config={
+                        "configurable": {"thread_id": thread_id},
+                        "recursion_limit": recursion_limit,
+                    },
+                )
     except RunCancelledError as exc:
         update_run_status(
             base_path, run_id,

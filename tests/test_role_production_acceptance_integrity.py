@@ -15,8 +15,7 @@ def substitutions(source):
             application.update(name.asname or name.name.split('.')[0] for name in node.names
                                if name.name.startswith('tinyassets'))
     permitted = {'provider_base.subprocess_env_for_provider',
-                 'claude_provider.subprocess_env_for_provider',
-                 'codex_provider.subprocess_env_for_provider'}
+                 'claude_provider.subprocess_env_for_provider'}
     failures = []
     for node in ast.walk(tree):
         targets = (node.targets if isinstance(node, ast.Assign) else

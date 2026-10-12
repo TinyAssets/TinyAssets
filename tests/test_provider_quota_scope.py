@@ -12,6 +12,15 @@ from tinyassets.providers.quota import QuotaTracker
 from tinyassets.providers.router import ProviderRouter
 
 
+@pytest.fixture(autouse=True)
+def _mock_owner_connections():
+    with patch(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        return_value=frozenset({"codex", "claude-code"}),
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_name", ["claude-code", "codex"])
 async def test_owner_a_failure_does_not_block_owner_b(provider_name):

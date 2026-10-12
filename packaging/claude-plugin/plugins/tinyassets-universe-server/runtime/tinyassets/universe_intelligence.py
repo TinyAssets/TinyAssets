@@ -32,7 +32,7 @@ from tinyassets.providers.base import (
     ModelConfig,
     UniverseContext,
 )
-from tinyassets.providers.call import call_provider
+from tinyassets.providers.model_call import text_sync
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
     SoulEditError,
@@ -700,7 +700,7 @@ def extract_learning(
     if budget is not None:
         logger.info("Skipping learning extraction: automatic metered-free extraction is disabled")
         return {}
-    raw = call_provider(
+    raw = text_sync(
         f"Founder's latest message:\n{founder_message}\n\n"
         f"Your reply this turn:\n{reply}",
         system=_LEARNING_SYSTEM,
@@ -1117,7 +1117,7 @@ def _call_writer(
 
             return call_interactive_agent_turn(http_turn, response_observer=response_observer)
         observe = {} if response_observer is None else {"response_observer": response_observer}
-        return call_provider(
+        return text_sync(
             turn_input,
             system=system,
             role="writer",
