@@ -604,10 +604,6 @@ def _decide(home, data, session):
                 (key, request_id),
             )
             conn.commit()
-            if stored['scope'] != 'once':
-                from tinyassets.policy_grants import materialize
-
-                materialize(home, conn, request_id, stored, env)
             # Current policy/Stop cannot race this check: their writers share control.
             _current(home, conn, request_id, owner)
             conn.execute(

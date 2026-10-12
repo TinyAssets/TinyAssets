@@ -65,19 +65,6 @@ def _recover(home, run):
         for intent in intents:
             try:
                 with bound_requests.execution_attempt(home, intent["request_id"]):
-                    if intent["state"] == "planned":
-                        decision = json.loads(conn.execute(
-                            "SELECT decision_json FROM pending_requests WHERE request_id=?",
-                            (intent["request_id"],)).fetchone()[0])
-                        if (decision.get("scope", "once") != "once"
-                                and not decision.get("finalized")):
-                            # Partial cross-store materialization stays inert.
-                            # Recovery invalidates instead of recreating a grant
-                            # the owner might have revoked after its insertion.
-                            decision["invalidated"] = True
-                            conn.execute("UPDATE pending_requests SET decision_json=? "
-                                         "WHERE request_id=?",
-                                         (json.dumps(decision), intent["request_id"]))
                     state = "unknown" if intent["state"] == "sent" else "failed"
                     conn.execute(
                         "UPDATE effect_intents SET state=? WHERE intent_key=?",

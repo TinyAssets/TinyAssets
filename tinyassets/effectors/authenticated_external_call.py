@@ -706,14 +706,13 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
     What the call MEANS comes from the owner's declarations for this connection
     (harness D1b); an undeclared operation is decided as a write.
     """
-    from tinyassets import agent_review, policy_rules
+    from tinyassets import policy_rules
 
     try:
         action_class, operation = policy_rules.classify(
             universe_dir, connection_id, verb, path)
         agents = [agent] if agent else sorted(
-            {"main"} | policy_rules.configured_agents(universe_dir)
-            | agent_review.configured_agents(universe_dir))
+            {"main"} | policy_rules.configured_agents(universe_dir))
         decisions = [policy_rules.decide(
             universe_dir, action_class, connection=connection_id, operation=operation,
             agent=candidate, destination=destination,

@@ -70,7 +70,6 @@ def _a_reviewer_that_approves(_signed_in_operator, monkeypatch):
     monkeypatch.setattr(policy_rules, "classify", lambda *_: ("app.write", "POST"))
     monkeypatch.setattr(policy_rules, "decide", lambda *_a, **_kw:
                         policy_rules.Decision(policy_rules.DO, None, "test_policy"))
-    monkeypatch.setattr(agent_review, "configured_agents", lambda _home: set())
     monkeypatch.setattr(agent_review, "switched_on", lambda *_args: set())
 
     with identity_context(replace(_signed_in_operator, user_id="user-1")), \

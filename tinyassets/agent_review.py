@@ -127,22 +127,11 @@ _PURPOSE: contextvars.ContextVar[_ReviewPurpose | None] = contextvars.ContextVar
 # -- read-only review preferences ---------------------------------------------
 
 
-def _review_entries(universe_dir: Path, table: str) -> list[dict]:
-    from tinyassets.policy_rules import projection
-
-    policy = projection(universe_dir)["policy"]
-    return [entry["values"] for entry in policy["entries"]
-            if entry["table"] == table
-            and entry["scope"] in ("account", Path(universe_dir).name)]
-
-
 def switched_on(universe_dir: Path, agent: str = "main") -> set[str]:
-    return {row["action_class"] for row in _review_entries(universe_dir, "review_on")
-            if row.get("agent", "main") == agent}
+    from tinyassets.policy_rules import entries
 
-
-def configured_agents(universe_dir: Path) -> set[str]:
-    return {row.get("agent", "main") for row in _review_entries(universe_dir, "review_on")}
+    return {row["values"]["action_class"] for row in entries(universe_dir, "review_on")
+            if row["values"].get("agent", "main") == agent}
 
 
 # -- the review --------------------------------------------------------------------

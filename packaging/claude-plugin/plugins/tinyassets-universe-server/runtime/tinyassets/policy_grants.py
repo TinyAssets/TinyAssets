@@ -1,10 +1,5 @@
-"""Owner-issued HTTP preapprovals in the existing Rules store.
+"""Preview predicates and read-only matching for broker-held owner grants."""
 
-Rows are inert until their protected issuing decision is finalized. They never
-change behavior precedence, connection consent, or another pending preview.
-"""
-
-import json
 import time
 from contextlib import closing
 from contextvars import ContextVar
@@ -91,21 +86,6 @@ def predicate(envelope, scope):
             raise RequestRefused("Task context is missing; request a fresh preview.")
         result.update(task_id=subject["task_id"], task_generation=subject["task_generation"])
     return result
-
-
-def materialize(home, conn, request_id, decision, envelope):
-    """Finalize the owner request; the app writes a standing grant via /app/api/policy.
-
-    A grant absent from the broker policy cannot authorize any later action.
-    The current once approval uses a separate broker token for the immediate
-    dispatch, so losing the app before the standing write fails safely.
-    """
-    decision["finalized"] = True
-    conn.execute(
-        "UPDATE pending_requests SET decision_json=? WHERE request_id=?",
-        (json.dumps(decision), request_id),
-    )
-    conn.commit()
 
 
 def matches(home, packet, owner, agent):

@@ -189,7 +189,6 @@ def _policy_stub(monkeypatch, behaviour=agent_rules.DO, *, review=False):
     monkeypatch.setattr(agent_rules, "decide", lambda *_a, **_kw:
                         agent_rules.Decision(behaviour, None, "test_policy"))
     monkeypatch.setattr(agent_review, "switched_on", lambda *_a: {"app.write"} if review else set())
-    monkeypatch.setattr(agent_review, "configured_agents", lambda _home: set())
 
 
 def test_platform_search_describe_and_call_share_the_catalog(monkeypatch, tmp_path):

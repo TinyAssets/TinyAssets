@@ -42,7 +42,7 @@ def projection(home: Path) -> dict:
     return owner_policy_operation(home.parent, owner, "read")
 
 
-def _entries(home: Path, table: str) -> list[dict]:
+def entries(home: Path, table: str) -> list[dict]:
     document = projection(home)["policy"]
     return [entry for entry in document["entries"]
             if entry["table"] == table and entry["scope"] in ("account", Path(home).name)]
@@ -50,7 +50,7 @@ def _entries(home: Path, table: str) -> list[dict]:
 
 def standing_grants(home: Path, agent: str = MAIN_AGENT) -> list[dict]:
     grants = []
-    for entry in _entries(home, "rules") + _entries(home, "approval_grants"):
+    for entry in entries(home, "rules") + entries(home, "approval_grants"):
         values = entry["values"]
         if (values.get("agent", MAIN_AGENT) != agent
                 or values.get("record_kind", "behavior") != "preapproval"):
@@ -63,7 +63,7 @@ def standing_grants(home: Path, agent: str = MAIN_AGENT) -> list[dict]:
 
 def configured_agents(home: Path) -> set[str]:
     return {entry["values"].get("agent", MAIN_AGENT)
-            for entry in _entries(home, "rules")}
+            for entry in entries(home, "rules") + entries(home, "review_on")}
 
 
 def decide(home: Path, action_class: str, *, connection: str = "",
