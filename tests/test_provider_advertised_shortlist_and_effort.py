@@ -592,34 +592,26 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     }, indent=1))
 
 
-@pytest.mark.parametrize("native", ["explicit"], indirect=True)
-def test_a_declared_native_selection_does_not_clobber_a_node_effort(native, monkeypatch):  # noqa: F811
-    """A workflow node's own effort must survive the served authority path.
+def test_a_native_default_does_not_clobber_a_node_effort(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    """A workflow node's own effort survives the connected native default.
 
-    A node declares effort for itself (`api/branches.py`, reaching the provider
-    as ModelConfig.reasoning_effort). A DECLARED native selection carries no
-    level -- it has no advertised list to validate one against -- so overwriting
-    the config from it unconditionally would silently downgrade every node that
-    runs on a native source with an explicit model id.
+    The provider default carries no advertised effort level. It must not erase
+    the level the node declared for itself.
     """
-    configs = []
-    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: native.router)
-    complete = native.provider.complete
+    from tests.test_run_provider_session import _branch, _run_branch
 
-    async def record(prompt, system, config, **kwargs):
-        configs.append(config)
-        return await complete(prompt, system, config, **kwargs)
-
-    monkeypatch.setattr(native.provider, "complete", record)
-    context = replace(native.context,
-                      model_selection=ModelRef("codex", "future-native-model"))
-    from tinyassets.providers.base import ModelConfig
-
-    _call(native, context, ModelConfig(reasoning_effort="minimal"))
-    assert configs, "the provider was never invoked"
-    assert configs[0].native_model_id == "future-native-model"
-    assert configs[0].reasoning_effort == "minimal", (
-        "a declared selection with no level erased the node's own effort"
+    branch = _branch(node_count=1)
+    branch.node_defs[0].reasoning_effort = "minimal"
+    response, provider, _ = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+    )
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert len(provider.calls) == 1
+    assert provider.calls[0].native_model_id == ""
+    assert provider.calls[0].reasoning_effort == "minimal", (
+        "the provider default erased the node's own effort"
     )
 
 
