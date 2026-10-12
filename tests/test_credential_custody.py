@@ -55,6 +55,25 @@ def test_broker_process_runs_as_uid_1002():
     assert "getresuid() is (1002, 1002, 1002)" in compose
 
 
+def test_an_unreadable_key_database_is_not_an_empty_vault(monkeypatch, tmp_path):
+    import tinyassets.broker.credential_store as store
+
+    def denied(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(store.os, "lstat", denied)
+    seen: dict[str, str] = {}
+
+    def rpc(universe, document):
+        seen["action"] = document["action"]
+        return {"records": [{"credential_type": "llm_subscription", "service": "claude"}]}
+
+    monkeypatch.setattr(store, "_rpc", rpc)
+    records = store.load_center(tmp_path / "u-alice")
+    assert seen["action"] == "load"
+    assert records[0]["service"] == "claude"
+
+
 def test_core_capability_image_starts_from_an_empty_sealed_store():
     source = _source("scripts/core_capability_image.py")
     assert "p.unlink() for p in Path('/data').glob('*/.credential-vault.json')" in source

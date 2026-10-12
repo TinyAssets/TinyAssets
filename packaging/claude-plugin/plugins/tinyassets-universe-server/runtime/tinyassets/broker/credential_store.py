@@ -27,8 +27,17 @@ def _store_absent(data_root: Path) -> bool:
 
     The daemon only checks that the file is absent. It does not open it. Once
     the file exists, an unreachable broker is an outage, not an empty vault.
+    ``.broker`` is mode 0700 and uid 1002, so the daemon's stat is ``EACCES``
+    when the database is there. That is not an empty store.
     """
-    return not os.path.lexists(data_root / ".broker" / "vault-keys.db")
+    path = data_root / ".broker" / "vault-keys.db"
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def load_center(universe_dir: str | Path) -> list[dict[str, Any]]:
