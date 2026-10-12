@@ -81,7 +81,6 @@ def test_workflow_dispatches_each_step_to_its_owners_chosen_family(
     from tests.test_run_provider_session import _branch, _run_branch
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "claude-code", "model": "opus"}}
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "codex", "model": "gpt-6-astra"}}
@@ -104,7 +103,6 @@ def test_workflow_cannot_silently_review_on_claude_when_its_codex_step_is_rate_l
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     monkeypatch.setattr(_CountingProvider, "agent_execution_kind", "native_agent", raising=False)
     branch = _branch(node_count=2)
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "claude-code", "model": "opus"}}

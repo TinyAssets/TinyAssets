@@ -130,7 +130,7 @@ class _SubmitSignallingPool(concurrent.futures.ThreadPoolExecutor):
 
 def _owner_carrier() -> MagicMock:
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-sync-queue")
     carrier.provider = "claude-code"
     carrier.role = "writer"
     carrier.operation = "run_graph"
@@ -158,6 +158,9 @@ def _owner_authority():
     with patch(
         "tinyassets.providers.router._provider_invocation_carrier",
         return_value=_CARRIER,
+    ), patch(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        return_value=frozenset({"claude-code"}),
     ):
         yield
 

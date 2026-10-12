@@ -881,6 +881,31 @@ class ProviderRouter:
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
             carrier_settled = True
+        if invocation_carrier is not None and universe_context is not None:
+            requested = universe_context.model_selection
+            if requested is not None:
+                from tinyassets.providers.model_policy import ModelRef
+
+                if type(requested) is not ModelRef:
+                    settle_carrier(
+                        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                        input_tokens=0, output_tokens=0, cost_microunits=0,
+                    )
+                    raise ProviderAuthorityHeldError("Invalid requested workflow model")
+                selected = invocation_carrier.selected_model
+                native = invocation_carrier.native_selection
+                admitted_model = (selected.model_id if selected is not None else
+                                  native.requested_model_id if native is not None else "")
+                if (requested.connection_id != invocation_carrier.provider
+                        or requested.model_id != admitted_model):
+                    settle_carrier(
+                        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                        input_tokens=0, output_tokens=0, cost_microunits=0,
+                    )
+                    raise ProviderAuthorityHeldError(
+                        f"Requested model {requested.connection_id}/{requested.model_id} "
+                        "is outside the armed workflow invocation"
+                    )
         served_authority = universe_context.served_provider if universe_context else None
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None

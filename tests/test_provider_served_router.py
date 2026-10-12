@@ -1257,37 +1257,9 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     assert provider.calls == 5
 
 
-def test_claude_serving_held_by_default_without_optin(tmp_path, monkeypatch):
-    """claude-code serving stays HELD unless the host explicitly opts in.
-
-    The OpenSpec design forbids silently bypassing the role-completeness hold
-    merely because converse asks only for writer (Codex reject #2). The default
-    (no flag) must therefore refuse claude-code serving.
-    """
+def test_claude_serving_requires_a_valid_owner(tmp_path):
     from tinyassets.provider_serving_binding import bind_serving_provider
 
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
-    with pytest.raises(PermissionError, match="held by default"):
-        bind_serving_provider(
-            base_path=str(tmp_path),
-            universe_dir=str(tmp_path),
-            owner_user_id="owner-1",
-            universe_id="u-owner",
-            agent_binding_id="binding-1",
-            expected_revision=1,
-            provider="claude-code",
-        )
-
-
-def test_claude_serving_optin_clears_the_hold(tmp_path, monkeypatch):
-    """With the explicit opt-in AND writer-only serving scope, the hold clears.
-
-    Proven by getting PAST the claude hold to the next validation (missing
-    owner -> ValueError, NOT the PermissionError hold).
-    """
-    from tinyassets.provider_serving_binding import bind_serving_provider
-
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     with pytest.raises(ValueError):
         bind_serving_provider(
             base_path=str(tmp_path),
@@ -1326,33 +1298,11 @@ def _claude_authority(tmp_path):
     )
 
 
-def test_reserve_holds_claude_serving_authority_without_optin(tmp_path, monkeypatch):
-    """Serve-time re-check: a persisted claude-code serving authority is HELD on
-    every served call unless the host opts in — closing the grandfathered-binding
-    gap where a binding created while the flag was on keeps serving after it is
-    cleared (Codex re-review #1). The check returns before any DB access.
-    """
+def test_reserve_requires_current_claude_authority(tmp_path):
+    """An absent binding or custody refuses a subscription budget reservation."""
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.provider_assignment import reserve_served_provider_budget
 
-    monkeypatch.delenv("TINYASSETS_ALLOW_CLAUDE_SERVING", raising=False)
-    with pytest.raises(ProviderAuthorityHeldError, match="claude-code serving is held"):
-        reserve_served_provider_budget(
-            str(tmp_path),
-            universe_dir=str(tmp_path),
-            authority=_claude_authority(tmp_path),
-            requested_output_tokens=10,
-            estimated_input_tokens=10,
-        )
-
-
-def test_reserve_passes_claude_hold_with_optin(tmp_path, monkeypatch):
-    """With the opt-in the serve-time claude hold clears; the call proceeds past
-    it and fails on the (absent) binding/custody, NOT on the claude hold."""
-    from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_assignment import reserve_served_provider_budget
-
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     with pytest.raises(ProviderAuthorityHeldError) as exc:
         reserve_served_provider_budget(
             str(tmp_path),

@@ -172,7 +172,7 @@ class TestProviderRouterCall:
         max_cost_microunits: int = 1,
     ):
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner")
+        carrier._receipt = MagicMock(principal_id="owner", universe_id=_UDIR.name)
         carrier.provider = provider
         carrier.role = role
         carrier.operation = operation
@@ -923,7 +923,7 @@ class TestCarrierSettlementWithUnknownUsage:
     @staticmethod
     def _settling_carrier():
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner")
+        carrier._receipt = MagicMock(principal_id="owner", universe_id=_UDIR.name)
         carrier.provider = "codex"
         carrier.role = "writer"
         carrier.operation = "run_graph"
@@ -1006,3 +1006,14 @@ class TestCarrierSettlementWithUnknownUsage:
         assert carrier.settle.call_args.kwargs == {
             "input_tokens": 70, "output_tokens": 30, "cost_microunits": 5,
         }
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )

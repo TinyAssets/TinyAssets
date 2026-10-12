@@ -43,7 +43,7 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     ledger.create_connection(
         connection_id=_CONN_ID, owner_user_id="owner-1", connection_class="http",
-        connection_type="http", auth_scheme="bearer", scopes=("http",), provider="http",
+        connection_type="http", auth_scheme="bearer", scopes=("http", "POST"), provider="http",
         destination="compute:x", credential_ref="vault://http/compute:x",
         allowed_endpoints=[{"host": "api.example.com",
                             "path_template": "/v1/chat/completions", "methods": ["POST"]}],
@@ -52,6 +52,13 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         grant_id=_GRANT_ID, connection_id=_CONN_ID, owner_user_id="owner-1",
         universe_id="u-owner",
         unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+    ledger.configure_capability(
+        connection_id=_CONN_ID, capability_kind="model_use", enabled=True,
+        descriptor={
+            "wire": "openai_chat", "billing": "free",
+            "models": [{"id": "moonshotai/kimi-k2", "tools": True, "context": 8192}],
+        },
     )
     definition = register_definition(
         universe_id="u-owner", owner_user_id="owner-1", access_method="api_key_http",

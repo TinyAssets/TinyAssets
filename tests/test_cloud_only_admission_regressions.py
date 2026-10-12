@@ -91,7 +91,6 @@ _COPIED_CONTAINER_ENV = {
     "TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE": "enforce",
     "TINYASSETS_MCP_CANARY_URL": "https://tinyassets.io/mcp",
     "TINYASSETS_ONBOARDING_APP": "1",
-    "TINYASSETS_ALLOW_CLAUDE_SERVING": "1",
 }
 
 #: Container **labels**: the hostname a copied deployment can trivially claim,

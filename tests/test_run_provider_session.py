@@ -270,7 +270,7 @@ def _seed_open_serving_assignment(
         connection_class="http",
         connection_type="http",
         auth_scheme="bearer",
-        scopes=("http",) if model_access is None else ("GET", "POST"),
+        scopes=("POST",) if model_access is None else ("GET", "POST"),
         provider="http",
         destination="compute:synthetic",
         credential_ref="vault://http/compute:synthetic",
@@ -306,6 +306,14 @@ def _seed_open_serving_assignment(
                         "catalogue_url": "https://api.example.com/api/v1/models/user?output_modalities=all",
                         "benchmark_url": ""},
             expected_grant=ledger.get_grant(grant_id),
+        )
+    else:
+        ledger.configure_capability(
+            connection_id=connection_id, capability_kind="model_use", enabled=True,
+            descriptor={
+                "wire": "openai_chat", "billing": "free",
+                "models": [{"id": model, "tools": True, "context": 8192}],
+            },
         )
     published = publish_definition(
         base_path,
@@ -622,7 +630,6 @@ def test_manifest_run_uses_independent_members_under_one_receipt(
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
     before = branch.to_dict()
@@ -702,7 +709,6 @@ def test_parallel_manifest_members_share_one_work_receipt(
 ):
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
     branch.edges = [
@@ -819,7 +825,6 @@ def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
     from tinyassets.provider_serving_binding import list_serving_universes
 
     authenticate_request("acct_alice")
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     set_founder_home(
         tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
         platform_generated=True,
@@ -1408,7 +1413,6 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
     from tinyassets.providers.base import HOST_REACH_TOOLS
     from tinyassets.providers.claude_provider import _sandbox_cli_args
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     branch = _branch(node_count=2)
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "claude-code"}}
     response, _provider, captured = _run_branch(

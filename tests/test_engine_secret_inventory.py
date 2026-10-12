@@ -24,7 +24,6 @@ _CONFIG = {
     "TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE": "gate mode",
     "TINYASSETS_MCP_CANARY_URL": "public endpoint",
     "TINYASSETS_ONBOARDING_APP": "feature flag",
-    "TINYASSETS_ALLOW_CLAUDE_SERVING": "feature flag",
     "UNIVERSE_SERVER_AUTH": "auth mode, not credential material",
     "UNIVERSE_SERVER_DEV_USER": "local operator name",
     "BACKUP_DEST": "rclone remote name and path; credentials live in rclone config",

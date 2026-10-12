@@ -287,7 +287,6 @@ def test_other_accepted_sources_are_preserved_exactly(rig, monkeypatch):
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.provider_serving_binding import bind_serving_provider
 
-    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
     write_credential_vault(rig[1], [
         {"credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30="},
         {"credential_type": "llm_subscription", "service": "claude", "oauth_token": "fixture-only"},

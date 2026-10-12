@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,7 +72,7 @@ def _calls(spies: dict[str, _SpyProvider]) -> dict[str, int]:
 
 def _carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u1")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation
@@ -164,6 +165,41 @@ def test_model_call_with_no_universe_is_refused_before_dispatch():
         bridge.set_provider_router(previous)
 
 
+@pytest.mark.parametrize("requested", [
+    ("codex", "gpt-6"),
+    ("claude-code", "different-model"),
+])
+def test_workflow_model_request_cannot_silently_use_armed_default(
+    tmp_path, requested,
+):
+    from tinyassets.provider_work_authority import (
+        ProviderInvocationReservationState,
+        ProviderInvocationSettlementOwner,
+    )
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call_sync
+    from tinyassets.providers.model_policy import ModelRef
+
+    router, spies = _spy_router()
+    carrier = _carrier("claude-code")
+    carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
+    context = UniverseContext(
+        universe_dir=tmp_path / "u1", provider_invocation=carrier,
+    )
+    with patch("tinyassets.providers.router._provider_invocation_carrier",
+               side_effect=_resolver(carrier)):
+        with pytest.raises(ProviderAuthorityHeldError, match="Requested model"):
+            call_sync(ModelCall(
+                model=ModelRef(*requested), fallbacks=(),
+                context=ModelContext(prompt="review", universe_context=context,
+                                     operation="run_graph", router=router),
+            ), Parent(owner="owner", command_center="u1"))
+    assert _calls(spies) == {}
+    carrier.settle.assert_called_once_with(
+        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+        input_tokens=0, output_tokens=0, cost_microunits=0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Host and environment credentials never serve a call
 # ---------------------------------------------------------------------------
@@ -213,6 +249,113 @@ def test_exactly_the_host_credential_executors_declare_it():
     assert host_only == ["ollama-local"]
 
 
+def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
+    tmp_path, monkeypatch,
+):
+    from tests.test_open_serving_bind import _CONN_ID, _GRANT_ID, _setup
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.owner_binding import require_owner_bound_dispatch
+    from tinyassets.providers.served_model_plan import connected_sources
+    from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+    universe, _agent, definition = _setup(tmp_path, monkeypatch)
+    source = f"api_key_http:{definition.id}"
+    authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
+    carrier = SimpleNamespace(
+        _receipt=SimpleNamespace(principal_id="owner-1", universe_id=universe.name),
+        provider=source,
+    )
+    assert source in connected_sources(tmp_path, universe, "owner-1")
+    require_owner_bound_dispatch(source, universe_dir=universe, served_authority=authority)
+    require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
+    foreign_carrier = SimpleNamespace(
+        _receipt=SimpleNamespace(principal_id="owner-2", universe_id=universe.name),
+        provider=source,
+    )
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(
+            source, universe_dir=universe, served_authority=authority,
+            invocation_carrier=foreign_carrier,
+        )
+    other_connection = "http_" + "c" * 32
+    other_grant = "http_grant_" + "d" * 32
+    other_ledger = ConnectionLedger(
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-2",
+    )
+    other_ledger.create_connection(
+        connection_id=other_connection, owner_user_id="owner-2",
+        connection_class="http", connection_type="http", auth_scheme="bearer",
+        scopes=("http",), provider="http", destination="compute:other",
+        credential_ref="vault://http/other",
+        allowed_endpoints=[{"host": "api.example.com",
+                            "path_template": "/v1/chat/completions", "methods": ["POST"]}],
+    )
+    other_ledger.grant_connection(
+        grant_id=other_grant, connection_id=other_connection, owner_user_id="owner-2",
+        universe_id=universe.name,
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+    other_definition = register_definition(
+        universe_id=universe.name, owner_user_id="owner-2",
+        access_method="api_key_http", protocol="openai_chat",
+        model="other/model", ref=other_grant,
+    )
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(
+            f"api_key_http:{other_definition.id}", universe_dir=universe,
+            served_authority=authority,
+        )
+
+    owner_ledger = ConnectionLedger(
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-1",
+    )
+    owner_ledger.configure_capability(
+        connection_id=_CONN_ID, capability_kind="model_use", enabled=False,
+    )
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(source, universe_dir=universe, served_authority=authority)
+    owner_ledger.configure_capability(
+        connection_id=_CONN_ID, capability_kind="model_use", enabled=True,
+        descriptor={
+            "wire": "openai_chat", "billing": "free",
+            "models": [{"id": "moonshotai/kimi-k2", "tools": True, "context": 8192}],
+        },
+    )
+    owner_ledger.revoke_grant(_GRANT_ID)
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(source, universe_dir=universe, served_authority=authority)
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
+
+
+def test_unavailable_http_broker_does_not_block_owned_subscription(tmp_path, monkeypatch):
+    from tests.test_open_serving_bind import _setup
+    from tinyassets.providers.owner_binding import require_owner_bound_dispatch
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    universe, _agent, definition = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.current_llm_subscription_custody",
+        lambda _conn, **scope: object() if scope["service"] == "claude" else None,
+    )
+
+    def broker_down(*_args, **_kwargs):
+        raise ProxyRequestError("broker unavailable")
+
+    monkeypatch.setattr("tinyassets.broker.ledger_queries.query_ledger", broker_down)
+    authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
+    require_owner_bound_dispatch(
+        "claude-code", universe_dir=universe, served_authority=authority,
+    )
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(
+            f"api_key_http:{definition.id}", universe_dir=universe,
+            served_authority=authority,
+        )
+
+
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():
     """No universe dir means the child env is the host's: refuse before launch."""
     router, spies = _spy_router()
@@ -236,6 +379,10 @@ def test_bound_call_is_served_by_the_owners_provider_and_ignores_host_pin(
     health = MagicMock(return_value={"status": "not_logged_in"})
     router, spies = _spy_router(auth_health=health)
     carrier = _carrier("codex")
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda base, universe, owner: frozenset({"codex"}),
+    )
 
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):

@@ -1130,7 +1130,7 @@ def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     from tinyassets.providers.base import UniverseContext
 
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner")
+    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-stream")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = "run_graph"
@@ -1754,3 +1754,14 @@ def test_cell_heartbeats_do_not_extend_claude_absolute_cap(monkeypatch):
     with pytest.raises(InteractiveDeadlineError):
         _run_stream(proc, ModelConfig(first_progress_s=0.02, absolute_cap_s=0.08))
     assert proc.killed
+
+@pytest.fixture(autouse=True)
+def _router_test_connected_sources(monkeypatch):
+    """Router fixtures simulate an already admitted owner's source."""
+    monkeypatch.setattr(
+        "tinyassets.providers.served_model_plan.connected_sources",
+        lambda *args, **kwargs: frozenset({
+            "codex", "claude-code", "gemini-free", "groq-free",
+            "grok-free", "ollama-local",
+        }),
+    )
