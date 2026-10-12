@@ -796,7 +796,7 @@ def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> 
 def test_affected_tests_select_then_run_their_slice_through_the_gate_script() -> None:
     job = _load()["jobs"]["affected-tests"]
     run = "\n".join(s.get("run", "") for s in job["steps"])
-    assert "scripts/affected_tests.py --pr --base HEAD^1 --out affected.txt" in run
+    assert "ci_required_tests.py --ci-select pr --base HEAD^1 --out affected.txt" in run
     assert "--affected affected.txt" in run
     assert "--profile affected" in run
     # Same exclusion as the required shards: the heavy list is red at baseline.
@@ -814,7 +814,7 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
 def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
     jobs = _load()["jobs"]
     unit = "\n".join(s.get("run", "") for s in jobs["affected-tests"]["steps"])
-    assert "--pr --base HEAD^1" in unit
+    assert "--ci-select pr --base HEAD^1" in unit
     assert "linux_oracle.py --required-runner" in unit
     assert "--apparmor ta-jail-userns" in unit
     image = jobs["core-capabilities"]
@@ -841,7 +841,7 @@ def test_select_installs_before_it_selects() -> None:
         i for i, s in enumerate(steps) if "pip install -e" in s.get("run", "")
     )
     pick = next(
-        i for i, s in enumerate(steps) if "affected_tests.py" in s.get("run", "")
+        i for i, s in enumerate(steps) if "--ci-select gate" in s.get("run", "")
     )
     assert install < pick
     assert "if" not in steps[install]
@@ -857,10 +857,10 @@ def test_the_gate_asks_for_the_conservative_selection() -> None:
     """
     run = next(
         s["run"] for s in _load()["jobs"]["select"]["steps"]
-        if "affected_tests.py" in s.get("run", "")
+        if "--ci-select gate" in s.get("run", "")
     )
-    assert "--gate" in run
-    assert re.search(r"affected_tests\.py\s+--gate\s+--base", run), run
+    assert "ci_required_tests.py --ci-select gate --base" in run
+    assert 'f"--{tier}"' in _SCRIPT.read_text(encoding="utf-8")
 
 
 def test_the_selection_is_pruned_before_it_is_digested() -> None:
@@ -871,10 +871,12 @@ def test_the_selection_is_pruned_before_it_is_digested() -> None:
     """
     run = next(
         s["run"] for s in _load()["jobs"]["select"]["steps"]
-        if "affected_tests.py" in s.get("run", "")
+        if "--ci-select gate" in s.get("run", "")
     )
-    assert "--prune-to-collectible affected.txt" in run
-    assert run.index("--prune-to-collectible") < run.index("--print-selection-digest"), run
+    assert run.index("--ci-select gate") < run.index("--print-selection-digest"), run
+    selector = _SCRIPT.read_text(encoding="utf-8").split("def ci_select(", 1)[1].split(
+        "\ndef run_oracle_venues", 1)[0]
+    assert selector.index("collectible_under_gate") < selector.index("selection_digest")
 
 
 def test_a_selective_run_still_refuses_a_skipped_browser_proof() -> None:

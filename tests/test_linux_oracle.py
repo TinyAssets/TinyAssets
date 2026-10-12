@@ -334,3 +334,66 @@ def test_invalid_required_runner_refuses_before_any_docker_or_output_effect(monk
 def test_default_mode_is_still_pytest():
     assert _pytest_argv(_command("-q"))[:4] == ["python", "-m", "pytest", "-p"]
     assert "ci_required_tests" not in _user_script(_command("-q"))
+
+
+def test_ci_oracle_selection_matches_workflow_selector_for_fixture_diff(tmp_path):
+    """The oracle and workflow CLI publish identical bytes and digests."""
+    import subprocess
+    import sys
+
+    from scripts.ci_required_tests import selection_digest, selection_entries
+
+    changed = ["tests/test_linux_oracle.py"]
+    oracle = tmp_path / "oracle"
+    oracle.mkdir()
+    selections = linux_oracle._ci_selections(changed, oracle)
+    for tier, _, name, scope, digest in selections:
+        workflow = tmp_path / f"workflow-{tier}.txt"
+        subprocess.run([
+            sys.executable, "scripts/ci_required_tests.py", "--ci-select", tier,
+            "--changed", *changed, "--out", str(workflow),
+        ], cwd=Path(__file__).resolve().parents[1], check=True)
+        assert (oracle / tier / name).read_bytes() == workflow.read_bytes()
+        assert digest == selection_digest(selection_entries(workflow))
+        assert scope == ("ALL" if workflow.read_text().strip() == "ALL" else "affected")
+
+
+def test_ci_oracle_replays_workflow_shards_and_queue_verdict(monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    jobs = yaml.safe_load((root / ".github/workflows/tests.yml").read_text())["jobs"]
+    selected = [("pr", 4, "pr-selection.txt", "affected", "pr-digest"),
+                ("gate", 6, "gate-selection.txt", "affected", "gate-digest")]
+    monkeypatch.setattr(linux_oracle, "_ci_selections", lambda *_a, **_k: selected)
+    commands = []
+
+    def command(args, _root, _tag):
+        commands.append(args)
+        return ["docker", "mock"]
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ["git", "merge-base"]:
+            return SimpleNamespace(returncode=0, stdout="base\n")
+        if argv[:2] == ["git", "diff"]:
+            return SimpleNamespace(returncode=0, stdout="tests/test_linux_oracle.py\n")
+        if argv[:2] == ["git", "ls-files"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(linux_oracle, "docker_command", command)
+    monkeypatch.setattr(linux_oracle.subprocess, "run", run)
+    assert linux_oracle._run_ci(argparse.Namespace(), root, "image") == 0
+    runners = [args for args in commands if getattr(args, "required_runner", False)]
+    assert len(runners) == sum(len(jobs[j]["strategy"]["matrix"]["shard"])
+                               for j in ("affected-tests", "required-tests-shard"))
+    assert [args.pytest_args[args.pytest_args.index("--shard") + 1] for args in runners] == [
+        *(f"{i}/4" for i in range(1, 5)), *(f"{i}/6" for i in range(1, 7))]
+    assert all("--selection" not in args.pytest_args for args in runners[:4])
+    assert all(args.pytest_args[-2:] == ["--selection", "gate-digest"]
+               for args in runners[4:])
+    assert len({args.ci_name for args in runners}) == 10
+    assert any(getattr(args, "ci_browser", None) for args in commands)
