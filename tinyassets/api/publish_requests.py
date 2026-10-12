@@ -817,7 +817,9 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
         # publishes nothing, and a blob stored but never listed stays charged.
         _store_package(actor, package, package["component"].get("bundle_id", action["name"]))
     try:
-        return _publish_snapshot(actor, action, snap, request_id=request_id)
+        return _publish_snapshot(
+            actor, action, snap, request_id=request_id, universe_id=uid,
+        )
     except BaseException:
         if package:
             # Unlisted, and charged until a measurement drops it; a retry
@@ -850,7 +852,7 @@ def _narrowed(snap: dict[str, Any], leave_out: list[str]) -> dict[str, Any]:
 
 
 def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], *,
-                      request_id: str) -> dict[str, Any]:
+                      request_id: str, universe_id: str = "") -> dict[str, Any]:
     from tinyassets.api.custom_agents import custom_agents
     from tinyassets.api.helpers import _base_path
     from tinyassets.branch_versions import (
@@ -905,6 +907,17 @@ def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], 
         receipt["package"] = {"version": package["version"],
                               "size_bytes": len(package["blob"]),
                               "file_count": package["component"]["file_count"]}
+    bundle_id = str((snap.get("definition") or {}).get("bundle_id") or "")
+    if bundle_id and universe_id:
+        from tinyassets.commons_bundles import remember_source
+
+        try:
+            remember_source(
+                _base_path(), author=actor, universe_id=universe_id,
+                action=action, bundle_id=bundle_id,
+            )
+        except Exception:  # noqa: BLE001 - the publication is already complete
+            logger.warning("Published bundle source could not be recorded", exc_info=True)
     return receipt
 
 
