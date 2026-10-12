@@ -28,6 +28,7 @@ from tests.test_native_model_authority import _call, native  # noqa: F401
 from tests.test_native_model_discovery import (
     metadata_transport_processes,  # noqa: F401 - a fixture, requested by name below
 )
+from tests.test_pending_requests_power import _install_native_executor
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.external_agents.registry import resolve
 from tinyassets.external_agents.runner import _protocol
@@ -49,6 +50,15 @@ from tinyassets.storage.model_preferences import ModelPreferenceStore
 CODEX_PROTOCOL = _protocol(resolve("codex").row["catalogue"])
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
+
+@pytest.fixture(autouse=True)
+def discovered_native_executor(request, monkeypatch):
+    """Serving setup must not depend on a host-installed Codex executable."""
+    params = getattr(getattr(request.node, "callspec", None), "params", {})
+    if params.get("native") == "discovered":
+        _install_native_executor(monkeypatch)
+
 
 #: The shape the installed Claude Code CLI actually answers `list_models` with,
 #: captured from 2.1.288 on 2026-10-02. Alias rows, a `default` marker, no
