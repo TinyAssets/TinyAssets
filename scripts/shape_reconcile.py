@@ -70,6 +70,14 @@ def declared_rows(body: str) -> list[str]:
 def shape_paths(files: list[dict], *, old_only: bool = False) -> set[str]:
     found: set[str] = set()
     for row, shape in check_shapes.SHAPES.items():
+        if row in {"S20", "S21"}:
+            if not old_only and any(
+                item["filename"] == "docs/architecture.md"
+                and re.search(rf"^[+-]\| {row} \|", item.get("patch") or "", re.MULTILINE)
+                for item in files
+            ):
+                found.add(row)
+            continue
         patterns = (
             shape.old
             if old_only
@@ -83,10 +91,114 @@ def shape_paths(files: list[dict], *, old_only: bool = False) -> set[str]:
             check_shapes.registered_path(item["filename"], glob)
             and (not regex or re.search(regex, item.get("patch") or ""))
             for item in files
+            if attributable(item["filename"])
             for glob, regex in patterns
         ):
             found.add(row)
     return found
+
+
+def attributable(path: str) -> bool:
+    return not path.startswith(
+        (
+            "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/",
+            "tests/",
+            "docs/",
+            "openspec/",
+        )
+    )
+
+
+def overlap_file(path: str) -> bool:
+    return attributable(path) and path.startswith(
+        (
+            "tinyassets/", "domains/", "starter/", "packages/", "desktop/",
+            "desktop-app/", "mobile/", "agents/", "WebSite/",
+        )
+    ) and path.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".swift", ".sh"))
+
+
+def old_path_changes(files: list[dict]) -> tuple[set[str], set[str]]:
+    """Return rows whose old-path evidence grew and shrank in this PR."""
+    growth: set[str] = set()
+    convergence: set[str] = set()
+    for row, shape in check_shapes.SHAPES.items():
+        added_total = removed_total = 0
+        for item in files:
+            path = item["filename"]
+            if not attributable(path):
+                continue
+            for glob, regex in shape.old:
+                if not check_shapes.registered_path(path, glob):
+                    continue
+                patch = item.get("patch") or ""
+                added = sum(
+                    bool(not regex or re.search(regex, line[1:]))
+                    for line in patch.splitlines()
+                    if line.startswith("+") and not line.startswith("+++")
+                )
+                removed = sum(
+                    bool(not regex or re.search(regex, line[1:]))
+                    for line in patch.splitlines()
+                    if line.startswith("-") and not line.startswith("---")
+                )
+                if item.get("status") == "added" and not patch:
+                    added = 1
+                if item.get("status") == "removed" and not patch:
+                    removed = 1
+                added_total += added
+                removed_total += removed
+        if added_total >= removed_total and added_total:
+            growth.add(row)
+        elif removed_total > added_total:
+            convergence.add(row)
+    return growth, convergence
+
+
+def lowered_ceilings(files: list[dict]) -> set[str]:
+    """Read pin reductions from the registry diff without fetching stale base commits."""
+    result = set()
+    source_rows = []
+    for number, line in enumerate(
+        (ROOT / "scripts/check_shapes.py").read_text(encoding="utf-8").splitlines(), 1
+    ):
+        match = re.search(r'["\'](B[12]|S\d+|N\d+)["\']:\s*Shape\(', line)
+        if match:
+            source_rows.append((number, match.group(1)))
+    for item in files:
+        if item["filename"] != "scripts/check_shapes.py":
+            continue
+        row = None
+        removed = added = None
+        new_line = 0
+        for line in (item.get("patch") or "").splitlines():
+            hunk = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if hunk:
+                new_line = int(hunk.group(1))
+                row = next(
+                    (name for number, name in reversed(source_rows) if number <= new_line), None
+                )
+                removed = added = None
+                continue
+            match = re.search(r'["\'](B[12]|S\d+|N\d+)["\']:\s*Shape\(', line)
+            if match:
+                row = match.group(1)
+            pin = re.search(r"\bceiling=(\d+)", line)
+            if not pin:
+                if not line.startswith("-"):
+                    new_line += 1
+                continue
+            if line.startswith("-"):
+                removed = int(pin.group(1))
+            elif line.startswith("+"):
+                added = int(pin.group(1))
+            if row and removed is not None and added is not None:
+                if added < removed:
+                    result.add(row)
+                removed = added = None
+            if not line.startswith("-"):
+                new_line += 1
+    return result
 
 
 def registry_status() -> dict[str, str]:
@@ -116,18 +228,27 @@ def issue_body(repo: str, now: datetime) -> str:
     for pr in pulls:
         number = pr["number"]
         file_items = pages(f"repos/{repo}/pulls/{number}/files?per_page=100")
-        files = {item["filename"] for item in file_items}
+        files = {item["filename"] for item in file_items if overlap_file(item["filename"])}
         declared = declared_rows(pr.get("body") or "")
         touched = shape_paths(file_items)
-        old = shape_paths(file_items, old_only=True)
+        old_growth, old_convergence = old_path_changes(file_items)
+        converges = old_convergence | lowered_ceilings(file_items)
         lane_files[number] = files
         lane_rows[number] = set(declared)
         findings = []
-        if old - set(declared):
-            findings.append("old path without row: " + ", ".join(sorted(old - set(declared))))
-        deleting = sorted(row for row in old if statuses.get(row) == "drifted")
+        if converges:
+            findings.append("converges: " + ", ".join(sorted(converges)))
+        if old_growth - set(declared):
+            findings.append(
+                "old path without row: " + ", ".join(sorted(old_growth - set(declared)))
+            )
+        deleting = sorted(row for row in old_growth if statuses.get(row) == "drifted")
         if deleting:
             findings.append("builds on deleting path: " + ", ".join(deleting))
+        if not declared and datetime.fromisoformat(
+            pr["created_at"].replace("Z", "+00:00")
+        ) < now - timedelta(days=7):
+            findings.append("registry row missing")
         if pr.get("draft") and datetime.fromisoformat(
             pr["updated_at"].replace("Z", "+00:00")
         ) < now - timedelta(days=7):
