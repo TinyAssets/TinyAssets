@@ -9,6 +9,7 @@ import pytest
 
 from tests import test_interactive_http_agent as integration
 from tests import test_selected_model_authority as authority
+from tests.test_pending_requests_power import _install_native_executor
 from tests.test_provider_served_router import _RecordingProvider, _served_context
 from tinyassets import daemon_server, universe_intelligence
 from tinyassets.api.custom_agents import custom_agents
@@ -31,6 +32,13 @@ rig = authority.rig
 reader = authority.reader
 agent = integration.agent
 REAL_GET_HOME = daemon_server.get_founder_home
+
+
+@pytest.fixture
+def served_native_context(tmp_path, monkeypatch):
+    """Prepare native serving without a host-installed executor."""
+    _install_native_executor(monkeypatch)
+    return _served_context(tmp_path)
 
 
 @pytest.fixture
@@ -456,10 +464,10 @@ def test_invalid_current_choice_refuses_before_provider_work(agent, monkeypatch,
     assert agent.wires == [] and agent.tools == []
 
 
-def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch):
+def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch, served_native_context):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id="different-home", platform_generated=True,
@@ -473,10 +481,10 @@ def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch):
         auth.revoke_provider_request(capability)
 
 
-def test_connected_home_without_preferences_builds_automatic_plan(tmp_path):
+def test_connected_home_without_preferences_builds_automatic_plan(tmp_path, served_native_context):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
@@ -494,12 +502,12 @@ def test_connected_home_without_preferences_builds_automatic_plan(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["absent", "automatic", "explicit", "corrupt", "deleted"])
-def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode):
+def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode, served_native_context):
     from tinyassets.account_deletion import principal_digest
     from tinyassets.storage.current_home import CurrentHomeChanged
     from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
@@ -549,10 +557,10 @@ def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode):
         auth.revoke_provider_request(capability)
 
 
-def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path):
+def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path, served_native_context):
     from tinyassets.storage.current_home import CurrentHomeChanged
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id="other-home", platform_generated=True,
@@ -586,10 +594,12 @@ def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch)
 
 
 @pytest.mark.parametrize("explicit", [False, True])
-def test_saved_policy_on_connected_source_preserves_auto_and_explicit(tmp_path, explicit):
+def test_saved_policy_on_connected_source_preserves_auto_and_explicit(
+    tmp_path, explicit, served_native_context,
+):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
