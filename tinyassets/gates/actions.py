@@ -3,7 +3,8 @@
 Pure business logic; callers pass an sqlite3.Connection and a pre-validated
 GateBonusClaim.  No writes outside the passed connection.
 
-Spec: docs/vetted-specs.md §Gate bonuses — staked payouts attached to gate milestones.
+Spec: openspec/specs/paid-market-economy/spec.md.
+Topic: Gate bonuses — staked payouts attached to gate milestones.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ def stake_bonus(
             "status": "rejected",
             "error": (
                 "attachment_scope='branch' gate bonuses not yet implemented. "
-                "See deferred spec in docs/vetted-specs.md."
+                "See deferred spec in openspec/specs/paid-market-economy/spec.md."
             ),
         }
     if attachment_scope != "node":

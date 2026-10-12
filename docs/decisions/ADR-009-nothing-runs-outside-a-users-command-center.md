@@ -30,6 +30,8 @@ agent container, no "host user" acting inside command centers.
 
 ## Consequences
 
+The cutover is tracked in `openspec/changes/target-architecture/`.
+
 - The cloud-worker fleet was removed; the user-owned background loop stays.
 - Deploy and Docker tests derive the long-running service set rather than
   hand-listing it, so a new fleet cannot slip back in.

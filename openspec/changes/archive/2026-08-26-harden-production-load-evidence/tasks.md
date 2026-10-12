@@ -3,7 +3,7 @@
 - [x] 1.1 Reconcile the April Track J pre-draft, PLAN §14, current capability-owned §14 tasks, and the user-growth concurrency audit against current main.
 - [x] 1.2 Define the `production-load-evidence` ownership boundary, registry, immutable manifest, verdict algebra, substrate classification, recomputable evidence, oracle, fault, reconciliation, and baseline requirements.
 - [x] 1.3 Obtain Opus 5 review of the drafted proposal, design, delta spec, tasks, and supersession text; resolve every Critical and Important finding.
-- [x] 1.4 After review approval, mark `docs/specs/2026-04-18-load-test-harness-plan.md` superseded as implementation authority while preserving it as historical scenario research.
+- [x] 1.4 After review approval, mark `2026-04-18-load-test-harness-plan.md (archived in git)` superseded as implementation authority while preserving it as historical scenario research.
 - [x] 1.5 After review approval, retire the reviewed §14 harness entry from `ideas/INBOX.md` with this change as durable build authority.
 - [x] 1.6 Run strict OpenSpec validation and land this target change without syncing it into as-built specs.
 

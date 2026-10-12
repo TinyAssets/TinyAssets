@@ -20,7 +20,7 @@ From `PLAN.md` § Open Tensions at `922e36d504`:
 > **God-module decomposition is in-flight, not done.**
 > `tinyassets/universe_server.py` is down from 14k peak to 972 LOC live in
 > main; remaining cluster extractions sequenced per
-> `docs/audits/2026-04-25-universe-server-decomposition.md`.
+> `2026-04-25-universe-server-decomposition.md (archived in git)`.
 
 ## Evidence
 

@@ -1,6 +1,6 @@
 """Outcome Gates retract, list_claims, and leaderboard behavior.
 
-Covers docs/specs/outcome_gates_phase6.md rollout details:
+Covers outcome_gates_phase6.md (archived in git) rollout details:
 - retract: soft-delete, claimant/goal-owner/`retract_gate_claim`-grant
   authority, reason required.
 - list_claims: one-filter rule, include_retracted, orphan tagging.

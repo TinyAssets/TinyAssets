@@ -11,7 +11,7 @@ to every surface; shell, preload, icon and config changes require a desktop rebu
 > **Why this is automatically synced with the phone + connector:** the universe
 > and the cross-turn conversation memory are keyed on the *authenticated WorkOS
 > principal*, not the device — see
-> [`docs/design-notes/2026-08-22-desktop-app-client-surface.md`](../docs/design-notes/2026-08-22-desktop-app-client-surface.md)
+> `2026-08-22-desktop-app-client-surface.md (archived in git)` (archived in git)
 > for the exact code cites. Sign in as the same user on desktop, phone, and the
 > Claude.ai connector and you are in one universe and one continuous conversation
 > thread. The desktop client builds nothing to achieve that.

@@ -88,7 +88,7 @@ Typical directory requirements:
 
 ### 2.4 Compliance + security
 
-- **Public privacy policy** at stable URL. Content driven by `project_privacy_per_piece_chatbot_judged.md` + schema spec #25 §2 RLS structure + `docs/catalogs/privacy-principles-and-data-leak-taxonomy.md`.
+- **Public privacy policy** at stable URL. Content follows `docs/decisions/ADR-010-private-by-default.md` and the deployed schema.
 - **Terms of service.** Likely includes "you must meet your chatbot provider's age requirements" per `project_q10_q11_q12_resolutions.md` Q11 + the CC0 licensing commitment.
 - **Security contact:** `security@tinyassets.io` — must be monitored per SUCCESSION.md §7.
 - **Incident-response policy:** public statement that security reports get a <72h first response + coordinated disclosure timeline.
@@ -226,8 +226,8 @@ Directory listing may not be achievable at MVP launch if the submission process 
 
 ## 7. Cross-reference
 
-- **Spec:** `docs/specs/2026-04-18-mcp-gateway-skeleton.md` — OAuth 2.1 + PKCE implementation.
-- **Spec:** `docs/specs/2026-04-18-web-app-landing-and-catalog.md` §2 — `/connect` + `/legal` pages.
+- **Spec:** `2026-04-18-mcp-gateway-skeleton.md (archived in git)` — OAuth 2.1 + PKCE implementation.
+- **Spec:** `2026-04-18-web-app-landing-and-catalog.md (archived in git)` §2 — `/connect` + `/legal` pages.
 - **Runbook:** `SUCCESSION.md` §2 — `ops@` + `security@` aliases that the submission references.
 - **Memory:** `project_daemon_product_voice.md` — "Summon the daemon" copy.
 - **Memory:** `project_q13_q14_resolutions.md` — multilingual posture (relevant to Q10).

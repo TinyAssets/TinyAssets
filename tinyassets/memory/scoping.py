@@ -3,7 +3,7 @@
 The scope layer answers: *for a given row in a memory table, who can see
 it, and under what predicate?* Stage 2b reshapes ``MemoryScope`` from the
 2026-04-14 nested-narrowing model to the 5-tier orthogonal-composition
-model described in ``docs/design-notes/2026-04-15-memory-scope-tiered.md``.
+model described in ``openspec/specs/knowledge-retrieval-and-memory/spec.md``.
 
 Five tiers, each acting as an independent filter:
 

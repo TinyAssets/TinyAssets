@@ -1,6 +1,6 @@
 """Tests for `provider_exhaustion` triage class (Lane 4b per spec).
 
-Per docs/design-notes/2026-04-23-revert-loop-canary-spec.md §Q6:
+Per 2026-04-23-revert-loop-canary-spec.md (archived in git) §Q6:
 - Signal: terminal Commit:REVERT verdicts (not Draft:FAILED).
 - Priority ordering: env_unreadable > tunnel_token > provider_exhaustion
   > disk_full > oom > image_pull_failure > watchdog_hotloop > unknown.

@@ -1,7 +1,7 @@
 # TinyAssets daemon — Docker Compose for self-host deploys.
 #
 # Self-host migration Row D per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Two services:
 #   daemon      — the MCP server image (Row A Dockerfile, published to

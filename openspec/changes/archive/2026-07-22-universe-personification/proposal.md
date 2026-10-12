@@ -42,7 +42,7 @@ Host directive 2026-06-24. Every interaction with a universe — on every surfac
 ## Impact
 
 - **Connector behavioral surface:** the `control_station` MCP prompt (`tinyassets/universe_server.py` `@mcp.prompt` registration, ~:270) + the MCP `instructions` field + tool descriptions — must instruct first-person embodiment of the bound universe's persona.
-- **Ratified spec:** `docs/specs/2026-06-10-tiny-first-principles-spec.md` §9 (voice → embody/first-person invariant), §3 (personification = the mind, invariant), §7 (visitor governance floor). Amendment tasks listed; **NOT applied in this draft**.
+- **Ratified spec:** `2026-06-10-tiny-first-principles-spec.md (archived in git)` §9 (voice → embody/first-person invariant), §3 (personification = the mind, invariant), §7 (visitor governance floor). Amendment tasks listed; **NOT applied in this draft**.
 - **Brain:** `brain-canonical-store` (PR #1369) supplies the assembled-view content; this layer governs its in-voice delivery. No code overlap.
 - **Identity/auth:** OAuth → universe binding (PR-165 actor-identity substrate; §7 founder recognition).
-- **Gates:** host-directed design change (NOT external-research-derived). Codex cross-provider review obtained 2026-06-25: **ADAPT** (`docs/audits/2026-06-25-universe-personification-codex-review.md`) — 7 adaptations folded. Connector embody behavior stays gated behind the normal verification gates + these adaptations.
+- **Gates:** host-directed design change (NOT external-research-derived). Codex cross-provider review obtained 2026-06-25: **ADAPT** (`2026-06-25-universe-personification-codex-review.md (archived in git)`) — 7 adaptations folded. Connector embody behavior stays gated behind the normal verification gates + these adaptations.

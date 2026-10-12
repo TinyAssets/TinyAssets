@@ -377,4 +377,4 @@ class TestBookClosePromiseWiring:
 # `git log --all -S` for each of those names returns nothing. These are
 # not accidentally removed production methods — they were never in
 # version control. Deleted per planner decision memo
-# `docs/planning/orphaned_test_phase7_decision.md`. Do not resurrect.
+# `orphaned_test_phase7_decision.md (archived in git)`. Do not resurrect.

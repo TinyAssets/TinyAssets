@@ -21,7 +21,7 @@ legacy-tool retirement change will unregister the hidden `universe` tool.
 
 Opus 5 reviewed this boundary on current main and returned ADAPT. Its durable
 verdict is
-`docs/audits/2026-07-24-retire-mcp-provider-secret-deposit-opus5-review.md`.
+`2026-07-24-retire-mcp-provider-secret-deposit-opus5-review.md (archived in git)`.
 
 ## Goals / Non-Goals
 

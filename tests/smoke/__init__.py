@@ -8,5 +8,5 @@ work correctly."
 Invoked by ``.github/workflows/tier3-oss-clone-nightly.yml`` after a
 fresh clone. Also safe to run locally: ``pytest tests/smoke/ -q``.
 
-Per ``docs/design-notes/2026-04-19-tier3-oss-clone-nightly-gha.md`` §6.
+Per ``2026-04-19-tier3-oss-clone-nightly-gha.md (archived in git)`` §6.
 """

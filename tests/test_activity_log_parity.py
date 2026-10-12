@@ -1,6 +1,6 @@
 """Activity.log byte-parity automation.
 
-Covers docs/specs/phase_h_preflight.md §4.1 #7 (R6, invariant 7).
+Covers phase_h_preflight.md (archived in git) §4.1 #7 (R6, invariant 7).
 
 Automates the unified-execution follow-up: verifies that the same daemon events
 produce equivalent activity.log output under both

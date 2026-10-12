@@ -140,7 +140,7 @@ ordering, first-resolution sealing, explicit failed-inference continuation,
 transaction-local home guard/unused abandon, both-side accounting, claiming-thread
 runner placement, and tools-capable constrained selection. Build these in the
 existing integration lane; no further proposal layer was requested. Full
-evidence: docs/reviews/2026-09-10-interactive-agent-runtime-shape-review.md.
+evidence: 2026-09-10-interactive-agent-runtime-shape-review.md (archived in git).
 
 Keep actual token/cost observations nullable. OpenRouter's current documented
 usage.cost is account charge, not upstream cost; usage is now automatic. Parse

@@ -1,7 +1,7 @@
 # TinyAssets daemon watchdog — one-shot probe + restart.
 #
 # Self-host migration Row L per
-# docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md.
+# openspec/specs/uptime-and-alarms/spec.md.
 #
 # Triggered by tinyassets-watchdog.timer every 2 min. Runs a single
 # probe-tick via scripts/watchdog.py and exits. State persists at

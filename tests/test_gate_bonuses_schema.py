@@ -1,6 +1,7 @@
 """Tests for tinyassets.gates schema layer.
 
-Spec: docs/vetted-specs.md §Gate bonuses — staked payouts attached to gate milestones.
+Spec: openspec/specs/paid-market-economy/spec.md.
+Topic: Gate bonuses — staked payouts attached to gate milestones.
 
 Covers:
   * GateBonusClaim: field defaults, validation invariants, from_row deserialization.

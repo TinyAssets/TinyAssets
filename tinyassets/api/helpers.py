@@ -23,7 +23,7 @@ The 4 wiki-adjacent helpers move here (rather than into a new
 ``_wiki_pages_dir`` / ``_wiki_drafts_dir`` both call ``_wiki_root``;
 splitting them would create a `helpers.py → universe_server.py → helpers.py`
 cycle until the wiki extraction (Task #9) lands. See
-``docs/exec-plans/completed/2026-04-26-decomp-step-1-prep.md`` for the
+``docs/architecture.md`` for the
 helpers-already-extracted lesson that prompted this batch.
 """
 

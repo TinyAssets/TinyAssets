@@ -12,7 +12,7 @@ The reconciler lists their state.
 Each net figure is an estimate of executable plus document lines, mirror
 excluded. The PR measures the real figure, and a positive net does not merge.
 
-- [ ] 2.1 **C1 Guards, document homes, document prune.** Add
+- [x] 2.1 **C1 Guards, document homes, document prune.** Add
       `scripts/check_shapes.py` with one `SHAPES` table keyed S1–S27, plus
       `tests/test_shape_registry.py`. Register it in
       `scripts/ci_structural_guards.py`. Checks: registry-parity, ceiling,
@@ -59,8 +59,8 @@ excluded. The PR measures the real figure, and a positive net does not merge.
         `automation-event-triggers`, `served-inbound-webhook-triggers` and
         `automation-schedule-timezone` into one wake-triggers change.
       - Turn `target-architecture` tasks into pointers to C6, C7 and C9.
-      - Close one of #4589 and #4602. The survivor drops its public
-        `/api/v1` and becomes `ta` and model-door work.
+      - #4589 closed as the duplicate of #4602 (done). Founder 2026-10-11: `/api`
+        is an allowed public door (S25, Fact 11); #4602 keeps it.
 
       Gate-file change: one cross-family round.
       Guard: superseded-open, public-routes. Net about −6k. Depends on C1.
@@ -164,6 +164,15 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       **Deletes:** the canonical-store duplicates in `daemon_brain.py` and
       the unwired `okf_export.py` branch.
       Guard: S17 converged. Net about −2k. Depends on C6.
+
+- **N1–N10 founder-approved primitives** (2026-10-11, #4624; registry
+      rows N1–N10; credential custody is S28). Unbuilt; each is a new primitive built
+      only after its dependencies converge, never a second path: N9 after
+      C3; N3 after C3 and C9; N5, N6 after C6; N8 after C5 and C6; N4
+      after C6 and C11; N1 after C7 and C8; N2 after C7 and C11; N7 after
+      C3, C10 and `credential-vault-reshape`, spec first; N10 after C6.
+      C1's `SHAPES`
+      table carries the N rows and their planned guards.
 
 ## 3. Pull requests and notes folded by this change
 

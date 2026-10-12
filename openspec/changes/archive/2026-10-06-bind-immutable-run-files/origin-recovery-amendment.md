@@ -2,7 +2,7 @@
 
 2026-09-19 proposal; 2026-09-20 lead disposition accepted the bounded Fable
 96232 ADAPT corrections in
-[`admitted-origin-shape-review`](../../../docs/reviews/2026-09-20-admitted-origin-shape-review.md).
+`admitted-origin-shape-review` (archived in git).
 That complete shape review gates the implementation recorded below; it is not
 an exact-code approval or release claim.
 This is a dependency of durable initial dispatch, not another workflow queue or

@@ -138,7 +138,7 @@ def test_short_feed_caps_each_file_so_other_sources_surface(tmp_path: Path) -> N
         "\n".join(f"Pending promotion {index}: review gate." for index in range(8)),
         encoding="utf-8",
     )
-    second = tmp_path / "docs" / "audits" / "review.md"
+    second = tmp_path / "docs" / "concerns" / "review.md"
     second.parent.mkdir(parents=True)
     second.write_text("Needs follow-up: compare implications before build.\n", encoding="utf-8")
 
@@ -150,11 +150,11 @@ def test_short_feed_caps_each_file_so_other_sources_surface(tmp_path: Path) -> N
     )
 
     assert sum(item.path == "ideas/PIPELINE.md" for item in candidates) == 4
-    assert any(item.path == "docs/audits/review.md" for item in candidates)
+    assert any(item.path == "docs/concerns/review.md" for item in candidates)
 
 
 def test_short_feed_caps_each_source_type_so_exec_plans_do_not_saturate(tmp_path: Path) -> None:
-    exec_root = tmp_path / "docs" / "exec-plans" / "active"
+    exec_root = tmp_path / "openspec" / "changes"
     exec_root.mkdir(parents=True)
     for index in range(14):
         (exec_root / f"plan-{index}.md").write_text(

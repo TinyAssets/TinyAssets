@@ -8,7 +8,7 @@ change owns only the proposed behavioral contract until host-approved foldback.
 
 On 2026-06-12 Google published **OKF v0.1** (`github.com/GoogleCloudPlatform/knowledge-catalog` → `okf/SPEC.md`): markdown + YAML-frontmatter files, one file per concept, cross-links as an UNTYPED relationship graph, reserved `index.md`/`log.md`; only `type` required; consumers MUST tolerate unknown types and SHOULD preserve unknown keys; broken links are valid; versioned `<major>.<minor>` with backward-compatible minor bumps; bundle root MAY declare `okf_version`. There is **no profile registry** — extensibility is free `type` + additional keys + GitHub-governed PRs. Host directive 2026-06-24: OKF is the brain's format foundation and the brain must auto-sync as it evolves.
 
-Current live state: the brain write path is **unbuilt** and gated behind the Codex 6 pre-build gates; the designated first slice is a read-only `assemble(lens)` over the existing wiki. So the canonicality decision can be corrected before code locks it in. Codex review of THIS amendment: **ADAPT** (`docs/audits/2026-06-24-brain-okf-canonical-codex-review.md`) — direction approved, the six adaptations below folded.
+Current live state: the brain write path is **unbuilt** and gated behind the Codex 6 pre-build gates; the designated first slice is a read-only `assemble(lens)` over the existing wiki. So the canonicality decision can be corrected before code locks it in. Codex review of THIS amendment: **ADAPT** (`2026-06-24-brain-okf-canonical-codex-review.md (archived in git)`) — direction approved, the six adaptations below folded.
 
 ## Goals / Non-Goals
 

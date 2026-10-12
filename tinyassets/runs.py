@@ -7020,7 +7020,7 @@ def query_runs(
 ) -> dict[str, Any]:
     """Query runs table with optional field projection + simple aggregation.
 
-    Spec: docs/vetted-specs.md §Cross-run state query primitive.
+    Spec: openspec/specs/graph-execution-substrate/spec.md §Cross-run state query primitive.
 
     Returns:
         {"rows": [...], "count": N} for plain queries.

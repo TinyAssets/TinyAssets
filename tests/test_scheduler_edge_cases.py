@@ -1,6 +1,6 @@
 """Edge-case tests for tinyassets/scheduler.py.
 
-Spec: docs/vetted-specs.md §Scheduled + event-triggered branch invocation.
+Spec: openspec/specs/user-owned-automations/spec.md §Scheduled + event-triggered branch invocation.
 
 These extend the 39 baseline tests in tests/test_scheduler.py with:
 - Cron parser: invalid format strings, boundary values

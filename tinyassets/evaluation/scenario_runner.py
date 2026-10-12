@@ -1,7 +1,7 @@
 """AcceptanceScenario runtime — thin dispatcher to existing primitives.
 
-Per `docs/design-notes/2026-05-02-acceptance-scenario-packs.md` + spec
-`docs/specs/2026-05-02-acceptance-scenario-minimal-schema.md` (landed via
+Per `docs/ops/acceptance-probe-catalog.md` + spec
+`docs/ops/acceptance-probe-catalog.md` (landed via
 PR #936). Slice 2 of the AcceptanceScenario lane.
 
 The runner is intentionally a thin dispatcher. It does NOT execute

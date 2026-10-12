@@ -1,6 +1,6 @@
 """Phase C.2 — execution_kind genericization.
 
-Per docs/specs/taskproducer_phase_c.md §2 + §7.
+Per taskproducer_phase_c.md (archived in git) §2 + §7.
 
 Contract:
 - `tinyassets.work_targets` exports ONLY `EXECUTION_KIND_NOTES` among

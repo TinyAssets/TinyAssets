@@ -11,7 +11,7 @@ Observed September14 2026 in the assigned Claude Fable5.1 model-setup review,
 subprocess28078, exit0 after301seconds. output/model-setup-tools-shape-fable.md
 held only a final recap referencing an earlier review. The complete deliverable
 was an earlier assistant text at22:25:15UTC in the same scoped CLI transcript;
-it has been recovered verbatim to docs/reviews/2026-09-14-model-setup-tools-shape-fable.md.
+it has been recovered verbatim to 2026-09-14-model-setup-tools-shape-fable.md (archived in git).
 
 The final recap responded to a continuation about unrelated dispatches, despite
 the review brief explicitly forbidding dispatch or work on other sessions. The

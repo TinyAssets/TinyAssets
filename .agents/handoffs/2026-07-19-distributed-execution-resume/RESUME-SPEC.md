@@ -11,9 +11,9 @@
 This is the **live-state + next-action** layer. It does **not** re-specify the slice
 contracts — those are canonical in the **design/exec plan**:
 
-> `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
+> `2026-07-18-distributed-execution-platform.md (archived in git)`
 > (currently on branch **`feat/patch-loop-runner`**, not yet on `main`.
-> Read it with: `git show feat/patch-loop-runner:docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`)
+> Read it with: `git show feat/patch-loop-runner:2026-07-18-distributed-execution-platform.md (archived in git)`)
 
 That plan owns: the execution-capsule contract (§5), Layer-A isolated executor (§6),
 typed result contract (§7), Layer-B2 daemon protocol (§8), Layer-B3 market (§9),
@@ -447,7 +447,7 @@ you need to keep).
   `design-rereview-codex-verdict.md`, `design-final-codex-verdict.md`,
   `design-note-democratized-commons.md`, `plan-foldback-proposal.md`
 - **Exec plan (canonical slice program):**
-  `git show feat/patch-loop-runner:docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
+  `git show feat/patch-loop-runner:2026-07-18-distributed-execution-platform.md (archived in git)`
   (also copied to `execplan-runner.md` in the job tmp)
 - **Review-dispatch script:** `scripts/peer_agent.py` (the retired `codex_review` and `kimi_review` wrappers were consolidated into it 2026-08-26)
 

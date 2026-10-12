@@ -8,7 +8,7 @@ The compiler synthesizes a dynamic TypedDict from ``state_schema`` with
 ``Annotated`` reducers per field, builds node adapters for prompt_template
 and (host-approved) source_code nodes, and wires simple + conditional edges.
 
-Design rules (from `docs/specs/community_branches_phase3.md`):
+Design rules (from `openspec/specs/community-patch-loop/spec.md`):
 - prompt_template nodes are always safe — rendered via a custom regex
   substitution (see ``_render_template`` + ``_PLACEHOLDER_RE``), NOT
   ``str.format_map``. Single ``{``/``}`` characters are literal; only

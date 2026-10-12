@@ -8,7 +8,7 @@ cycle can pick them by tier, and ``_run_graph`` routes them to
 ``execute_node_bid`` instead of the Branch wrapper stream.
 
 Flat-dict invariant on ``inputs`` is inherited from Phase F
-(``validate_pool_task_inputs``). See docs/specs/phase_g_preflight.md §R4.
+(``validate_pool_task_inputs``). See docs/architecture.md §R4.
 """
 
 from __future__ import annotations

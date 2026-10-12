@@ -1,7 +1,7 @@
 # Cloudflare tunnel — provider-agnostic runbook
 
 Self-host migration Row C per
-`docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
+`openspec/specs/uptime-and-alarms/spec.md`.
 
 The TinyAssets MCP daemon binds `0.0.0.0:8001` locally. To expose it
 through the canonical public endpoint (`https://tinyassets.io/mcp`)

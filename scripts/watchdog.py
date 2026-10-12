@@ -1,7 +1,7 @@
 """TinyAssets daemon watchdog — probe + restart on sustained failure.
 
 Self-host migration Row L per
-``docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md``.
+``openspec/specs/uptime-and-alarms/spec.md``.
 
 Beyond systemd's ``Restart=always`` (which handles process crash + OOM),
 this watchdog catches the failure mode systemd CAN'T see: the daemon

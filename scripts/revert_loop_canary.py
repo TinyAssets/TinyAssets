@@ -6,7 +6,7 @@ the "busy-broken" state where the daemon IS making progress but every
 scene terminates as REVERT — the 2026-04-23 P0 class (67 reverts on
 concordance before host noticed).
 
-Spec: ``docs/design-notes/2026-04-23-revert-loop-canary-spec.md``.
+Spec: ``docs/architecture.md``.
 
 Signal (per spec Q2): count **terminal REVERT verdicts** in
 ``get_status.evidence.activity_log_tail`` within a time window. REVERT

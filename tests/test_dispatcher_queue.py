@@ -1,6 +1,6 @@
 """Tier-aware DaemonController and BranchTask queue tests.
 
-Covers docs/specs/phase_e_preflight.md §4.4:
+Covers phase_e_preflight.md (archived in git) §4.4:
 
 - Queue plumbing (8 tests)
 - Dispatcher scoring (6 tests)

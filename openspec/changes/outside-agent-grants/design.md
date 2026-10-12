@@ -1,6 +1,6 @@
 ## Context
 
-This is a proposed authority/storage/public-surface contract, not shipped behavior. The [research](../../../docs/design-notes/2026-10-05-outside-agents-both-ways.md), preserved in full with [DOC]/[3P]/[REPO]/[INF] labels and Sources, pins its repo audit to `aab7b2d1f7`. C1-C4 locate the existing MCP/AuthKit surface and missing client authority; D2 proposes the keystone. Its external compatibility claims remain research evidence, not live acceptance. The authoritative 2026-10-05 founder instruction in proposal.md fixes the scope; the round-2 owner direction below makes defaults and delegation owner-editable.
+This is a proposed authority/storage/public-surface contract, not shipped behavior. The research (archived in git), preserved in full with [DOC]/[3P]/[REPO]/[INF] labels and Sources, pins its repo audit to `aab7b2d1f7`. C1-C4 locate the existing MCP/AuthKit surface and missing client authority; D2 proposes the keystone. Its external compatibility claims remain research evidence, not live acceptance. The authoritative 2026-10-05 founder instruction in proposal.md fixes the scope; the round-2 owner direction below makes defaults and delegation owner-editable.
 
 Existing owners of adjacent behavior:
 

@@ -1,7 +1,7 @@
 """Session-start sync gate (Layer 3): catch the off-main / behind trap.
 
 Part of the branch lifecycle automation; see
-``docs/design-notes/2026-06-24-branch-lifecycle-automation.md``.
+``docs/reference/worktree-discipline.md``.
 
 Provider-agnostic. Every session runs this at start (Claude Code wires it as a
 SessionStart hook; Codex/Cursor/Cowork call the script). It:

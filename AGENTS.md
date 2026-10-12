@@ -53,7 +53,6 @@ Converge a shape; add no second path. Write durable state before replying.
 
 1. `SqliteSaver`, never `AsyncSqliteSaver`.
 2. Reuse the LanceDB connection; never recreate it.
-3. Vendor-neutral compute only — ADR-007.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
    for new spending, irreversible acts, or outward-facing acts outside the
    agreed work (host-only: a minimal host-actions row, blocking nothing else).
@@ -64,13 +63,12 @@ Converge a shape; add no second path. Write durable state before replying.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.
 9. Uploads are verbatim.
 10. Ship-time attribution — `tinyassets/attribution/`.
-11. Public doors: `tinyassets.io/mcp` and `/api/v1` (keyed agents); `mcp.` is
+11. Doors: `tinyassets.io/mcp`, `/api` (keyed), `/hooks/inbound`; `mcp.`
     internal. After DNS/tunnel/connector edits:
     `python scripts/mcp_public_canary.py --assert-handles`.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
 14. `python scripts/deployed_sha.py --assert-contains <sha>` before "shipped".
-15. The platform has no LLM — ADR-006.
 
 Required CI omits `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
 Sandbox, filesystem or process-limit work needs `python scripts/linux_oracle.py`;

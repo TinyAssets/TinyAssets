@@ -41,4 +41,4 @@ baseline. [Reconciliation](https://github.com/Jonnyton/TinyAssets/pull/3568#issu
 PR #3568 merged as cb74e216. Deploy 34308081219 passed authenticated public
 canary and revision containment at 2026-09-09 03:42 UTC. No broader policy or owner
 acceptance is inferred. Approval was published without changing the reviewed head;
-this record is same-lane documentation follow-through. [Release proof](../../../docs/reviews/2026-09-08-attributable-storage-proof.md).
+this record is same-lane documentation follow-through. Release proof (archived in git).

@@ -5,7 +5,7 @@ One file per unresolved concern. **This directory replaced the `STATUS.md` Conce
 
 ## Why files, not GitHub issues
 
-Codex's review of the reset plan (`docs/audits/2026-08-25-harness-reset-codex-review.md`) argued
+Codex's review of the reset plan (`2026-08-25-harness-reset-codex-review.md (archived in git)`) argued
 this and was right: GitHub issues are externally mutable, network-dependent, and **absent from a
 clone**. A security finding that only exists in a web UI is not evidence a fresh checkout can act
 on. A tracked file is. Link an issue from a concern file when one exists — but the file is canonical.

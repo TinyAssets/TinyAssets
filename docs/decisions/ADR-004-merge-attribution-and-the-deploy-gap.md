@@ -151,7 +151,7 @@ class closes, and a future `update-branch` automation becomes viable.
 ## References
 
 - AGENTS.md hard rule 14 ("Merged is not deployed")
-- `docs/audits/2026-04-20-public-mcp-outage-postmortem.md` (the post-change probe rule)
+- `2026-04-20-public-mcp-outage-postmortem.md (archived in git)` (the post-change probe rule)
 - [`GITHUB_TOKEN` and workflow runs](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs)
 - [Update a pull request branch](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch)
 - [Required checks and the latest sha](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#required-check-needs-to-succeed-against-the-latest-commit-sha)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-tunnel.sh — start a Cloudflare tunnel pointing at the local TinyAssets daemon.
 #
-# Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row C.
+# Per openspec/specs/uptime-and-alarms/spec.md Row C.
 # Provider-agnostic: runs on any Linux host (Docker, systemd, direct exec).
 #
 # Supports both Cloudflare tunnel auth shapes:

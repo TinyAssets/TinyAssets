@@ -10,7 +10,7 @@ Fable5.1 execution-shape review31374 completed223s/exit0, ADAPT. Reviewer
 confirmed this is the never-designed execution seam, not a checkout/push
 re-review. Required corrections incorporated below after source inspection at
 ec867fa4. Lead accepts the corrected shape for implementation; this is NOT an
-exact-head runtime approval. See docs/reviews/2026-09-15-provisioning-execution-shape-fable.md.
+exact-head runtime approval. See 2026-09-15-provisioning-execution-shape-fable.md (archived in git).
 
 ## Reverified seams
 

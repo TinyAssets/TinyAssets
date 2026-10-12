@@ -99,7 +99,7 @@ ten files plus tests/test_shared_background_self.py through
 `python3 scripts/linux_oracle.py -- -q <those eleven files> --tb=short --show-capture=no`.
 It passes349 in39.63s, zero skips; Python3.11.16, Git2.47.3, bubblewrap0.12.0.
 Invocation uses the existing Ubuntu WSL Docker engine and process-local git paths
-documented in docs/reviews/2026-09-09-linux-oracle-wsl-proof.md. This also exercises
+documented in 2026-09-09-linux-oracle-wsl-proof.md (archived in git). This also exercises
 the POSIX symlink case that cannot run under this Windows user's privileges.
 Neither full CI, independent exact-head approval nor live release is established.
 
@@ -211,7 +211,7 @@ complete these requirements or make this candidate release-ready.
 ## September11 reviewed implementation decisions
 
 The owner's one extra independent review completed in336s, verdict ADAPT.
-Full recovered verdict: docs/reviews/2026-09-11-workflow-model-authority-extra-review.md.
+Full recovered verdict: 2026-09-11-workflow-model-authority-extra-review.md (archived in git).
 The wrapper saved a later stop-hook recap; the actual review was recovered from
 that same invocation's transcript, not by dispatching another review. No tests
 were run by the reviewer. This approves the adapted shape, not unimplemented code.

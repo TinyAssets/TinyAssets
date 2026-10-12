@@ -15,7 +15,7 @@ nothing. It is not rewired to any universe (founder, 2026-09-24): leaderboards
 and selection are superseded by user-built workflows. Resolution, the default
 selector publication and the selector binding columns remain only until the
 follow-up deletion listed in
-``docs/reviews/2026-09-24-platform-llm-call-audit.md``.
+``docs/decisions/ADR-006-the-platform-has-no-llm.md``.
 
 This module owns:
 

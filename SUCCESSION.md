@@ -328,8 +328,8 @@ Every box below MUST be checked before any public launch announcement:
 - **Memory:** `project_godaddy_hosting.md` — current hosting + domain.
 - **Design note:** `docs/design-notes/2026-04-18-persistent-uptime-architecture.md` — infrastructure shape.
 - **Design note:** `docs/design-notes/2026-04-18-full-platform-architecture.md` — system-wide inventory.
-- **Spec:** `docs/specs/2026-04-18-moderation-mvp.md` §1.7 — admin pool ≥2 moderation policy.
-- **Spec:** `docs/specs/2026-04-18-paid-market-crypto-settlement.md` §6.5 — `treasury_config` table.
+- **Spec:** `2026-04-18-moderation-mvp.md (archived in git)` §1.7 — admin pool ≥2 moderation policy.
+- **Spec:** `2026-04-18-paid-market-crypto-settlement.md (archived in git)` §6.5 — `treasury_config` table.
 - **Upstream GitHub Apps docs:** https://docs.github.com/en/apps — for bot account management.
 - **Cloudflare runbook:** internal (TBD).
 - **Supabase restore docs:** https://supabase.com/docs/guides/platform/backups

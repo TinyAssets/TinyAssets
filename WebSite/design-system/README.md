@@ -10,7 +10,7 @@ The project is AI-first across all providers. Every AI design/codegen tool
 (claude.ai/design, v0, shadcn+MCP, AI Elements, agent defaults) targets React,
 and the training-data flywheel widens that lead. Tokens stay framework-neutral
 (DTCG) so the design language is portable; the *components* are React.
-Rationale: `docs/design-notes/2026-06-24-ai-first-design-system-alignment.md`.
+Rationale: `2026-06-24-ai-first-design-system-alignment.md (archived in git)`.
 
 ## Layout
 

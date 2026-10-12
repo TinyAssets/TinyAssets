@@ -272,8 +272,7 @@ class HyperparameterImportanceEvaluator:
     """Ranks hyperparameter importance across sweep run results.
 
     Implements the W&B-Sweeps parity gap surfaced by the Priya competitor
-    trial (2026-04-24). See `docs/design-notes/2026-04-25-hyperparameter-
-    importance-node.md` for the full spec.
+    trial (2026-04-24). See `openspec/specs/evaluation-outcomes-and-attribution/spec.md`.
 
     state keys (required):
       run_results (list[dict]): each entry shaped like {params: dict, metric: float}

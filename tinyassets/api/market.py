@@ -1178,7 +1178,7 @@ _ATTRIBUTION_ACTIONS: dict[str, Any] = {
 # ═══════════════════════════════════════════════════════════════════════════
 # TOOL 3 — Goals (first-class shared primitive above Branches)
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase 5 per docs/specs/community_branches_phase5.md. A Goal is the
+# Phase 5 per openspec/specs/community-patch-loop/spec.md. A Goal is the
 # intent a Branch serves — "produce a research paper", "plan a
 # wedding". Many Branches bind to one Goal. 8 actions: propose,
 # update, bind, list, get, search, leaderboard, common_nodes,

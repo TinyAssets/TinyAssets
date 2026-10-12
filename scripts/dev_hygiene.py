@@ -145,7 +145,7 @@ NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" el
 _DOCKER_HOST: str | None = None
 
 # Temp-root directory names the agents actually produce. Measured from the repo's
-# own review docs (docs/reviews/2026-09-*.md): ta-pt-*, ta-pt2, ta-rev-*,
+# own historical review branches: ta-pt-*, ta-pt2, ta-rev-*,
 # ta-root-*, ta-finq, ta-retirement-final-*, tinyassets-review-*, plus pytest's
 # own default root. A prefix match alone never authorizes removal — see
 # looks_like_pytest_tree.

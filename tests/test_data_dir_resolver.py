@@ -1,6 +1,6 @@
 """Tests for tinyassets.storage.data_dir — canonical TINYASSETS_DATA_DIR resolver.
 
-Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row B.
+Per 2026-04-20-selfhost-uptime-migration.md (archived in git) Row B.
 The 2026-04-19 P0 had a container CWD-drift class: pre-Row-B, the daemon
 wrote to `/app/output` (CWD-relative) rather than `/data` (bind-mount).
 This resolver fixes that by refusing CWD-relative defaults and rooting

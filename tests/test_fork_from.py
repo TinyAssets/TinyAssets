@@ -1,6 +1,6 @@
 """Tests for fork_from lineage tracking on branches.
 
-Spec: docs/vetted-specs.md §fork_from — content-addressed lineage tracking.
+Spec: openspec/specs/community-patch-loop/spec.md §fork_from — content-addressed lineage tracking.
 """
 
 from __future__ import annotations

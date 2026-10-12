@@ -16,4 +16,4 @@ edit. This closes the original served-field refusal, not all workflow reliabilit
 No independent post-fix customer use was visible in the inspected owner history.
 Watch for ordinary output/timeout edits and regressions without replaying settled
 tests. Provider latency/idle failures and inert retry/enabled settings remain
-separate concerns. Evidence: docs/reviews/2026-09-23-node-edit-parity-lead-review.md.
+separate concerns. Evidence: 2026-09-23-node-edit-parity-lead-review.md (archived in git).

@@ -1,6 +1,6 @@
 """Uptime Canary — Layer 1 probe wrapper.
 
-Per ``docs/design-notes/2026-04-19-uptime-canary-layered.md``.
+Per ``openspec/specs/uptime-and-alarms/spec.md``.
 
 Runs ``mcp_public_canary.probe_result`` against the canonical MCP URL
 and, for the production default, verifies the apex site ``/`` returns

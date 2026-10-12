@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted; amended by ADR-019 (one box per owner, the loop in the box, gVisor driver)
 
 ## Date
 

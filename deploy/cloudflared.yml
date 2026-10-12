@@ -1,6 +1,6 @@
 # Cloudflared tunnel config — provider-agnostic template.
 #
-# Per docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md Row C.
+# Per openspec/specs/uptime-and-alarms/spec.md Row C.
 # Parameterized by $TUNNEL_TOKEN + $ORIGIN_PORT; no hardcoded hostnames,
 # no hardcoded tunnel IDs. Same config ships to Fly, Hetzner, GoDaddy VPS,
 # or any Linux host that can run cloudflared.

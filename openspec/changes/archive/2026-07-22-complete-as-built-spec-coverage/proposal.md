@@ -49,7 +49,7 @@ claim that canonical specs describe the full as-built platform.
   `openspec/changes/complete-as-built-spec-coverage/specs/`, later synced to
   matching new `openspec/specs/<capability>/spec.md` files.
 - Durable evidence ledger:
-  `docs/audits/2026-07-22-openspec-full-coverage-audit.md`.
+  `2026-07-22-openspec-full-coverage-audit.md (archived in git)`.
 - No runtime, API, storage, packaging, website, or deployment behavior changes.
 - Existing tests and workflows are evidence sources only. Public-surface runtime
   acceptance is not re-claimed by this documentation-only change.

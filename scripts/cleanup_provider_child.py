@@ -1,6 +1,6 @@
 """Offline, reversible cleanup of legacy provider-child bytes; dry-run by default.
 
-See docs/design-notes/2026-10-05-provider-child-cleanup.md. No deletion is done.
+See docs/architecture.md. No deletion is done.
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 r"""Tests for prompt_template literal-brace escape + build-time validation.
 
-docs/vetted-specs.md — "Prompt_template literal-brace escape +
+openspec/specs/community-patch-loop/spec.md — "Prompt_template literal-brace escape +
 build-time missing-key validation" (navigator-vetted 2026-04-22).
 
 Three additive changes land together:

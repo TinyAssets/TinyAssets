@@ -1,6 +1,6 @@
 """Persona resolution — the named projection of a command center's *learned* self.
 
-Design note: docs/design-notes/2026-06-25-blank-slate-universe-brain.md.
+Design note: docs/architecture.md.
 
 The persona is the command center brain speaking as itself. Its self-understanding
 comes from the brain's **self-model** — a per-universe OKF bundle the brain
@@ -95,8 +95,7 @@ class Persona:
         # (server instructions + the user-invoked meet_command_center prompt), and the
         # pattern there is USER CONSENT: offer, ask, embody on yes. First-party
         # app surfaces put the persona in the system prompt and need none of
-        # this. (Host steer + docs/design-notes/2026-07-01-mcp-personification-
-        # prior-art.md.)
+        # this. See openspec/specs/universe-lifecycle-and-soul/spec.md.
         return {
             "name": self.name,
             "purpose": "",

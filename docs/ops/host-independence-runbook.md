@@ -188,7 +188,7 @@ the emergency-DNS workflow to edit zone records.
 1. Cloudflare → My Profile → API Tokens → "workflow-zone-rw" → Roll.
 2. `gh secret set CLOUDFLARE_API_TOKEN --body "<new token>"`.
 3. Update local vault (1Password "CLOUDFLARE_API_TOKEN" item) per
-   `docs/design-notes/2026-04-22-secrets-vault-integration.md`.
+   `2026-04-22-secrets-vault-integration.md (archived in git)`.
 4. Verify: trigger `.github/workflows/emergency-dns.yml` dry-run OR wait
    for next `deploy-prod.yml` run.
 5. Revoke the prior token in the same Cloudflare UI.

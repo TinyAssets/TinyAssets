@@ -32,7 +32,7 @@ or regressions versus baseline 34305496977. Actual checkout 2c321ed5 has the
 identical full tree to approved bf39c447. [Proof](https://github.com/Jonnyton/TinyAssets/pull/3568#issuecomment-5595397012).
 PR #3568 merged as cb74e216. Deploy 34308081219 passed authenticated public
 canary and protected revision containment at 2026-09-09 03:42 UTC; shipped spec
-is synchronized. [Release proof](../../../docs/reviews/2026-09-08-attributable-storage-proof.md).
+is synchronized. Release proof (archived in git).
 Task 3.2 remains unchecked: the owner owns live testing, no autonomous app prompt
 is authorized, and no rendered feature-use or organic acceptance proof is claimed.
 Do not archive or declare the broader resource system complete on readiness alone.

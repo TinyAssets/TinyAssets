@@ -1,6 +1,6 @@
 """Deterministic coding_packet/release_packet rubric validator.
 
-This implements ``docs/specs/loop-outcome-rubric-v0.md`` Phase 1 for the
+This implements ``openspec/specs/evaluation-outcomes-and-attribution/spec.md`` Phase 1 for the
 KEEP criteria and anti-pattern checks. It is intentionally pure: no IO, no
 network, no repo writes, and no LLM judgment.
 """

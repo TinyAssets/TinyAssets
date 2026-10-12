@@ -8,7 +8,7 @@
 ## 1. Inherited state (no work — provenance)
 
 - [x] 1.1 Host store decision recorded in `PLAN.md` (Brain Module "Canonical store"; Design Decisions; Open Tensions resolved-by-scoping) — host-approved 2026-07-25
-- [x] 1.2 Codex `ADAPT` review and its six adaptations carried in the relocated delta (`docs/audits/2026-06-24-brain-okf-canonical-codex-review.md`)
+- [x] 1.2 Codex `ADAPT` review and its six adaptations carried in the relocated delta (`2026-06-24-brain-okf-canonical-codex-review.md (archived in git)`)
 - [x] 1.3 Delta relocated from the archived amendment; this change is the sole live owner of the `brain-canonical-store` target
   > **Not byte-identical to the archived copy.** The relocation was verbatim except for one 2026-07-25 scoping correction (Codex `ADAPT` finding 1): the source-of-truth and OKF-conformance requirements now bind the commons and the default organization rather than every brain. The archived copy predates that correction and still reads as an all-brains OKF mandate — cite this change, not the archive.
 

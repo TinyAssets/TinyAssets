@@ -1,6 +1,6 @@
 """Dashboard pane isolation and tray extension tests.
 
-Covers docs/specs/phase_h_preflight.md §4.3 invariant 2 (pane isolation)
+Covers phase_h_preflight.md (archived in git) §4.3 invariant 2 (pane isolation)
 and §4.4 test strategy (pane-isolation, 5 tests) plus tray dashboard
 additions (invariant 9, emergency pause).
 

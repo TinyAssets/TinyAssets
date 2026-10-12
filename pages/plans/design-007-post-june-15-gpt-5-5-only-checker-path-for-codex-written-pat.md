@@ -101,7 +101,7 @@ A GPT-5.5-only checker pass is merge evidence only when all of these are true:
 When the cutoff policy is activated, update the policy surfaces together:
 
 - `.github/workflows/daemon-request-policy.yml`
-- `docs/conventions/gate-branch-shape.md`
+- `gate-branch-shape.md (archived in git)`
 
 The compiled CI writer path was retired on 2026-06-25 and no longer
 participates in this cutoff policy.

@@ -56,7 +56,7 @@ overwrite it. Bridge and reply-owned display shipped together in PR3734 as
 2d12f84661f2, protected SHA/canary verified September10,03:55UTC. App21:03PDT
 fresh reply visibly says Answered by codex · Model not reported. Clickable
 selection remains pending. Never use the global label across users.
-See docs/reviews/2026-09-10-interactive-model-receipt-proof.md.
+See 2026-09-10-interactive-model-receipt-proof.md (archived in git).
 
 The newer agent-runtime outcome path requires complete usage/cost before success;
 current HTTP responses do not provide cost there. Missing cost is unknown, not
@@ -111,7 +111,7 @@ unbuilt. Reply-owned display release PR3734 atc4850362 passed352 Windows/352
 Linux checks and exact APPROVE162s; merged/deployed2d12f846 with rendered proof
 above. No model selection activated. Pure inference/tool codec now e6bc197b,
 224Windows/224Linux passes,0skips, exact APPROVE330s; see agent-chat-protocol.md
-and docs/reviews/2026-09-10-agent-chat-codec-proof.md. Legacy text codecs and
+and 2026-09-10-agent-chat-codec-proof.md (archived in git). Legacy text codecs and
 price guards remain unchanged until reviewed integration.
 
 ## Per-inference integration source check, September10 03:38UTC

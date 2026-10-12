@@ -4,7 +4,7 @@
 **Source:** host design chat  
 **Status:** host-approved direction and hard `$0` MVP constraint;
 resource-gated scale design requires approval before build  
-**Specification:** `docs/specs/2026-07-15-riscv-fpga-vertical-proof.md`  
+**Specification:** `2026-07-15-riscv-fpga-vertical-proof.md (archived in git)`
 **Review gate:** Before implementation, a Claude-family reviewer must re-check
 the external sources and compare the proposal against current TinyAssets
 architecture.

@@ -38,7 +38,7 @@ record-wire; the core is not trustworthy as-is):
 
 STATUS: fixes NOT yet applied (Slice 2 is the landing priority this session; the
 Slice 3 record-wire is a deferred cross-boundary change —
-`docs/audits/2026-08-19-slice3-record-wiring-seam.md`). Apply these with the wire.
+`2026-08-19-slice3-record-wiring-seam.md (archived in git)`). Apply these with the wire.
 
 VERDICT (round 1): adapt: require run-and-terminal-revision adapter idempotency,
 prevent concurrent claims, validate receipts and public summary fields, and handle

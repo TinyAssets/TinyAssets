@@ -61,13 +61,13 @@ resubmit.
 - Private-instance data (even if it's yours — use the chatbot or web
   editor for that, not this repo).
 - Credentials, paths, any T2-taxonomy content (see
-  `docs/catalogs/privacy-principles-and-data-leak-taxonomy.md` in
+  `privacy-principles-and-data-leak-taxonomy.md (archived in git)` in
   the main repo).
 - Non-CC0-compatible content.
 
 ## Questions
 
-- Read `docs/specs/2026-04-18-export-sync-cross-repo.md` in the main
+- Read `2026-04-18-export-sync-cross-repo.md (archived in git)` in the main
   repo for the full sync pipeline.
 - Open an issue here for catalog-specific questions.
 - Open an issue in the main repo for platform questions.

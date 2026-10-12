@@ -1,6 +1,7 @@
 """Gate bonus schema — DDL and dataclasses for the node-scoped bonus extension.
 
-Spec: docs/vetted-specs.md §Gate bonuses — staked payouts attached to gate milestones.
+Spec: openspec/specs/paid-market-economy/spec.md.
+Topic: Gate bonuses — staked payouts attached to gate milestones.
 
 This module owns:
   * BONUS_COLUMNS — new columns added to the existing gate_claims table.

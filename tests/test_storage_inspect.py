@@ -1,7 +1,7 @@
 """Storage utilization observability (BUG-023 Phase 1 + BUG-032) tests.
 
 Guards the `inspect_storage_utilization` surface + its wiring into
-`get_status`. Spec source: `docs/vetted-specs.md` §storage_inspect.
+`get_status`. Spec source: `openspec/specs/storage-runtime-accounting/spec.md` §storage_inspect.
 
 Covered:
 - Shape contract (keys present, types correct).
