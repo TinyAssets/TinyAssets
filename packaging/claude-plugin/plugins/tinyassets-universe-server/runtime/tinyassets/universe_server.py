@@ -4041,6 +4041,7 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
 
     from tinyassets.auth.wellknown import starlette_discovery_routes
     from tinyassets.onboarding import onboarding_routes
+    from tinyassets.rest_api import rest_api_routes
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
 
     async def _hooks_endpoint(request):
@@ -4148,6 +4149,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
             # before the MCP transport so the exact path resolves first.
             *onboarding_routes(),
+            # REST door for programmatic clients (API keys only; see the
+            # auth middleware's `_serve_rest_api`).
+            *rest_api_routes(),
             *canonical_app.routes,
         ],
         lifespan=lifespan,
