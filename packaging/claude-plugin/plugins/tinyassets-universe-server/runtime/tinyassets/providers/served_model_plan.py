@@ -523,7 +523,10 @@ def prepare_owned_model_plan(
                     # confirmed is not a saving. Execution's own fresh check in
                     # `prepare_selected_model` is unchanged either way.
                     if allow_empty:
-                        from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+                        from tinyassets.providers.shortlist_refresh import (
+                            SHORTLIST_CACHE,
+                            USABLE_AGE,
+                        )
 
                         native_snapshot, pending = SHORTLIST_CACHE.get(
                             base=base, owner=owner, universe_id=universe.name,
@@ -532,6 +535,12 @@ def prepare_owned_model_plan(
                         )
                         if pending:
                             rejected.append(Ineligible(ModelRef(provider, ""), pending,
+                                                       scope="source"))
+                        if (native_snapshot is not None
+                                and (datetime.now(timezone.utc)
+                                     - native_snapshot.observed_at).total_seconds()
+                                > USABLE_AGE):
+                            rejected.append(Ineligible(ModelRef(provider, ""), "stale",
                                                        scope="source"))
                     else:
                         from tinyassets.providers.native_discovery import (

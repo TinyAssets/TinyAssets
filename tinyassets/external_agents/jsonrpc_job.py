@@ -35,6 +35,24 @@ def method_params(operation: dict, values: dict) -> dict:
     return expand_template(operation["params"], values)
 
 
+def refusal_category(detail) -> str:
+    """Classify upstream errors without carrying their text into a receipt."""
+    message = (detail.get("message", "") if isinstance(detail, dict)
+               else str(detail)).lower()
+    if (any(word in message for word in ("model not found", "unknown model",
+                                          "model unavailable", "unsupported model"))
+            or ("model" in message and any(word in message for word in (
+                "not available", "unavailable", "not supported", "does not exist")))):
+        return "model_unavailable"
+    if any(word in message for word in ("permission denied", "access denied", "forbidden")):
+        return "permission_denied"
+    if any(word in message for word in ("rate limit", "too many requests")):
+        return "rate_limited"
+    if "invalid" in message:
+        return "invalid_request"
+    return "unknown"
+
+
 def tool_result_items(result) -> tuple[bool, list[dict]]:
     """An MCP ``CallToolResult`` as ``DynamicToolCallResponse`` content."""
     items: list[dict] = []
@@ -362,7 +380,8 @@ class JsonRpcJob:
 
                         raise ProviderAuthenticationError(
                             "external agent needs a fresh sign-in")
-                    raise ProviderError(f"external agent refused {method}")
+                    raise ProviderError(
+                        f"external agent refused {method}:{refusal_category(detail)}")
                 return reply.get("result") or {}
 
             init = self.job["initialize"]
