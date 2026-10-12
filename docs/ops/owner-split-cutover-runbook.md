@@ -109,18 +109,9 @@ migrate --snapshot <id> --snapshot-bytes <bytes>  # the apply
 migrate --check                                   # must print nothing; exit 0
 ```
 
-After the owner-split marker exists, each normal `deploy_fail_safe.sh` run
-drains and stops the old daemon, then runs the candidate image's privileged
-`ta-migrate --policy-online --apply` before starting the new image. The step
-opens each legacy `rules.db` and sidecar without following links, checks the
-daemon-owned directory descriptors and relabels the production `0700` directories
-(and newer daemon-created `0770` directories) to `1001:1102 0710` for broker
-traversal, checks the single-link source,
-checkpoints copied WAL content, freezes the
-source as root:1102 mode 0440, and takes a broker-owned SQLite snapshot. It
-then runs `ta-migrate --check --policy-only`. An unsafe center is alarmed and
-refused for that owner; other centers and the deploy continue. A global custody
-failure restarts the old service. Reruns are idempotent. This needs no host action.
+P1 performs an ordinary image swap: every account starts with `DEFAULT_RULES`,
+the agent asks and the owner re-grants once, and legacy `rules.db` files stay
+untouched until P6.
 
 - The apply refuses before its first write if any precondition fails:
   - a process still holds `/data/.layout.lock`;

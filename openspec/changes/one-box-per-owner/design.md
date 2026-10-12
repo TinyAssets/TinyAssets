@@ -232,8 +232,8 @@ owner cannot loosen it:
 
 **Where it lives.**
 
-- **Store.** `.platform/accounts/<id>/policy.db` in broker-private state
-  (uid 1002, mode 0600). Only the broker opens it. It is not in the box,
+- **Store.** `.broker/accounts/<sha>/policy.db` in broker-private state
+  (mode 0700 directories and 0600 database). Only the broker opens it. It is not in the box,
   not in a command-center directory and not in the daemon's records
   directory.
 - **Projection.** A read-only file, `/policy/policy.json`, carries the
@@ -248,8 +248,9 @@ owner cannot loosen it:
   owner session, and never to bearer, MCP or `/api` clients.
 - **The broker verifies the token itself.** It looks up the opaque cookie's
   hash in the existing owner-session table through read-only access and checks
-  its interactive identity, account binding and expiry. The daemon only
-  forwards the cookie; it cannot attest the owner or forge a write.
+  its interactive identity, account binding and expiry. The daemon forwards
+  the cookie; the P1 daemon-writable session table remains a known residual
+  until P2/P3 move session minting into broker custody.
 - **Tightening is the same act as loosening.** Both need the token.
 - **No write from anywhere else.** The model door, `/mcp`, `/api`, the
   box channel and every `ta` command have no policy-write operation. The

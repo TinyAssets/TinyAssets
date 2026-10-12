@@ -51,21 +51,16 @@ have only read-only access to the effective projection.
 - **THEN** a pending owner request shows the literal proposed policy and the effective generation stays unchanged
 - **AND** only the protected owner session can apply that request
 
-### Requirement: Scoped entries retain every command center rule
-The account SHALL have exactly one policy. Entries SHALL carry either account
-scope or a command-center id. Migration SHALL eagerly copy existing per-center
-rules from root-owned 0440 snapshots under a non-daemon-writable parent. The
-privileged deploy SHALL stop the old daemon writer, verify each source and its
-sidecars by no-follow descriptor as a regular single-link daemon-owned file,
-checkpoint committed WAL rows, freeze them root:1102 mode 0440, and snapshot
-each safe center independently before the new image starts. An unsafe center
-SHALL alarm and fail closed for its owner without refusing other centers. The
-broker SHALL import those snapshots at startup
-and on center admission, without merging them, verify counts
-and digests, and report conflicts and refused sources. An unfrozen source
-SHALL be refused and its center SHALL fail closed. Evaluation SHALL never
-read legacy files.
-Evaluation SHALL apply the strictest matching entry.
+### Requirement: One default policy per account
+The account SHALL have exactly one broker-private policy under
+`.broker/accounts/<sha>/policy.db`. The broker SHALL create its directories
+with mode 0700 and its database with mode 0600. Every account SHALL start
+with `DEFAULT_RULES`; the agent asks and the owner re-grants once. Legacy
+`rules.db` files SHALL remain untouched until P6. The broker SHALL never
+read or traverse `.agent-sessions`. Entries SHALL carry account or command-center
+scope, and evaluation SHALL apply the strictest matching entry. Failure to
+initialize one owner's policy SHALL refuse that owner with an alert without
+stopping the broker or other owners.
 
 #### Scenario: The agent proposes a looser egress policy
 - **WHEN** the agent proposes adding a host to the allowlist

@@ -162,7 +162,7 @@ class BrokerClient:
         from tinyassets.storage.outbound_connections import ProxyRequestError
 
         if action not in {"read", "write", "receipts", "proposal", "classify",
-                          "decide", "issue_once", "migration_report"}:
+                          "decide", "issue_once"}:
             raise ValueError("unsupported owner policy operation")
         wire = {"op": "OWNER_POLICY", "action": action, "principal": self._principal,
                 **fields}

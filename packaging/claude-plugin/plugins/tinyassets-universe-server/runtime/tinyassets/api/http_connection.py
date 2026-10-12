@@ -635,7 +635,6 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
     """Pure existing-policy conflict checks, shared with broker preparation/commit."""
     legacy_scope_upgrade = False
     endpoints_extend = False
-    scope_only_extend = False
     if resource is not None and raw_policy is not None:
         # Scopes are otherwise a PROJECTION of the endpoint methods, so anything
         # not derivable from endpoints - a git scope - would silently vanish on
@@ -714,17 +713,9 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
             access_mode == ACCESS_FULL and not non_scope_mismatch
             and set(resource.scopes) <= set(http_scopes)
         )
-        scope_only_extend = (
-            not non_scope_mismatch and not endpoints_extend
-            and _canonical_endpoint_set(requested_endpoints)
-            == _canonical_endpoint_set(stored_endpoints)
-            and set(resource.scopes) < set(http_scopes)
-            and set(http_scopes) - set(resource.scopes)
-            <= {scope for scope in http_scopes if is_git_scope(scope)}
-        )
         if non_scope_mismatch or (
             not scopes_match and not legacy_scope_upgrade and not endpoints_extend
-            and not full_scope_upgrade and not scope_only_extend
+            and not full_scope_upgrade
         ):
             return {"error": "connection_conflict", "resource": "connection"}
     if existing_grant is not None and (
@@ -736,7 +727,7 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
         return {"error": "connection_conflict", "resource": "grant"}
 
     return {"http_scopes": http_scopes, "legacy_scope_upgrade": legacy_scope_upgrade,
-            "endpoints_extend": endpoints_extend or scope_only_extend}
+            "endpoints_extend": endpoints_extend}
 
 
 def _connect_http(

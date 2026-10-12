@@ -1,11 +1,9 @@
-"""Owner authority and lossless scoped policy migration."""
+"""Owner authority and default account policy."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shutil
 import socket
 import sqlite3
 import sys
@@ -18,7 +16,6 @@ import pytest
 
 from tests.test_broker_server import broker, new_op_id  # noqa: F401 -- broker socket fixture
 from tinyassets import ta_cli
-from tinyassets.broker import policy as policy_module
 from tinyassets.broker.client import BrokerRefused
 from tinyassets.broker.policy import PolicyRefused, PolicyStore
 from tinyassets.broker.server import _Connection
@@ -37,13 +34,8 @@ class Admissions:
                 Admission("gamma", "bob")]
 
 
-@pytest.fixture(autouse=True)
-def legacy_uid_for_unprivileged_test(monkeypatch):
-    if os.name == "posix":
-        monkeypatch.setattr(policy_module, "_LEGACY_UID", os.geteuid())
-
-
 def _legacy(root, center, behaviour):
+    """A daemon-owned legacy source that policy must leave untouched."""
     folder = root / ".agent-sessions" / center
     folder.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(folder / "rules.db")) as db, db:
@@ -51,23 +43,7 @@ def _legacy(root, center, behaviour):
                    "connection TEXT, operation TEXT, behaviour TEXT, record_kind TEXT)")
         db.execute("INSERT INTO rules VALUES (1,'main','app.write','','',?,'behavior')",
                    (behaviour,))
-    frozen = root / ".platform" / "accounts" / ".legacy-policy"
-    frozen.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(folder / "rules.db", frozen / f"{center}.db")
-    if os.name == "posix":
-        (root / ".platform").chmod(0o710)
-        (root / ".platform" / "accounts").chmod(0o700)
-        frozen.chmod(0o750)
-        (frozen / f"{center}.db").chmod(0o440)
-
-
-def _empty_policy_custody(root):
-    platform = root / ".platform" / "accounts" / ".legacy-policy"
-    platform.mkdir(parents=True, exist_ok=True)
-    if os.name == "posix":
-        (root / ".platform").chmod(0o710)
-        platform.parent.chmod(0o700)
-        platform.chmod(0o750)
+    return folder / "rules.db"
 
 
 def _session(root, owner, cookie):
@@ -81,10 +57,9 @@ def _session(root, owner, cookie):
                     json.dumps({"user_id": owner}), time.time() + 3600))
 
 
-def test_scoped_migration_cookie_and_receipts(tmp_path):
-    _legacy(tmp_path, "alpha", "do")
-    _legacy(tmp_path, "beta", "hand_off")
-    _legacy(tmp_path, "gamma", "do")
+def test_default_policy_ignores_legacy_rules_and_owner_write_is_receipted(tmp_path):
+    legacy = _legacy(tmp_path, "alpha", "hand_off")
+    original = legacy.read_bytes()
     cookie = "interactive-cookie-" + "a" * 32
     _session(tmp_path, "alice", cookie)
     store = PolicyStore(tmp_path, Admissions())
@@ -92,20 +67,18 @@ def test_scoped_migration_cookie_and_receipts(tmp_path):
 
     before = store.read("alice")
     assert before.generation == 1
-    with sqlite3.connect(store._path("alice")) as db:
-        assert db.execute("SELECT COUNT(*) FROM policy").fetchone()[0] == 1
-    assert {e["scope"] for e in before.document["entries"]} == {"alpha", "beta"}
-    report = store.migration_report("alice")
-    assert [(c["center"], c["rows"]) for c in report["centers"]] == [
-        ("alpha", 1), ("beta", 1)]
-    assert report["conflicts"] == [["main", "app.write", "", ""]]
+    assert before.document["entries"] == []
+    assert store._path("alice").parent.parent.parent == tmp_path / ".broker"
     assert store.decide("alice", center="alpha", action_class="app.write")["decision"] == "allow"
-    assert store.decide("alice", center="beta", action_class="app.write")["decision"] == "deny"
+    assert legacy.read_bytes() == original
 
     changed = json.loads(json.dumps(before.document))
     changed["entries"].append({"scope": "account", "table": "rules", "values": {
         "agent": "main", "action_class": "app.write", "connection": "", "operation": "",
         "behaviour": "ask_first"}})
+    changed["entries"].append({"scope": "beta", "table": "rules", "values": {
+        "agent": "main", "action_class": "app.write", "connection": "", "operation": "",
+        "behaviour": "hand_off"}})
     with pytest.raises(PolicyRefused):
         store.write("alice", "an-agent-token-" + "x" * 32, before.generation, changed)
     with pytest.raises(PolicyRefused):
@@ -116,100 +89,43 @@ def test_scoped_migration_cookie_and_receipts(tmp_path):
     assert after.generation == 2 and after.digest != before.digest
     assert store.decide("alice", center="alpha", action_class="app.write")["decision"] == "ask"
     assert store.decide("alice", center="beta", action_class="app.write")["decision"] == "deny"
+    assert store.decide("alice", center="alpha", action_class="app.read")["decision"] == "allow"
     with sqlite3.connect(store._path("alice")) as db:
         rows = db.execute("SELECT kind,session_id,old_digest,new_digest FROM receipts "
                           "WHERE kind='write'").fetchall()
     assert rows == [("write", hashlib.sha256(cookie.encode()).hexdigest(),
                      before.digest, after.digest)]
-    assert not (tmp_path / "alpha" / "policy.db").exists()
+    assert legacy.read_bytes() == original
 
 
-def test_daemon_replaces_rules_after_migration_without_changing_policy(tmp_path):
-    _legacy(tmp_path, "alpha", "hand_off")
-    store = PolicyStore(tmp_path, Admissions())
-    store.bootstrap()
-    before = store.read("alice")
-    planted = tmp_path / ".agent-sessions" / "alpha" / "rules.db"
-    planted.unlink()
-    with sqlite3.connect(planted) as db:
-        db.execute("CREATE TABLE rules (action_class TEXT, behaviour TEXT)")
-        db.execute("INSERT INTO rules VALUES ('app.write','do')")
-        db.execute("CREATE TABLE approval_grants (decision_id TEXT, grant_json TEXT)")
-        db.execute("INSERT INTO approval_grants VALUES ('forged','{}')")
-    assert store.read("alice") == before
-    assert store.decide("alice", center="alpha", action_class="app.write")[
-        "decision"] == "deny"
-    assert not store.allows_grant("alice", center="alpha", generation=before.generation,
-                                  decision_id="forged", action_class="app.write",
-                                  connection="", operation="", origin="", agent="main")
-
-
-def test_new_center_unfrozen_legacy_is_refused_and_reported(tmp_path):
-    _empty_policy_custody(tmp_path)
+def test_new_center_uses_defaults_without_reading_legacy_rules(tmp_path):
     rows = [Admission("alpha", "alice")]
     admissions = SimpleNamespace(admissions_after=lambda _generation: rows)
     store = PolicyStore(tmp_path, admissions)
     store.bootstrap()
     rows.append(Admission("new", "alice"))
-    folder = tmp_path / ".agent-sessions" / "new"
-    folder.mkdir(parents=True)
-    with sqlite3.connect(folder / "rules.db") as db:
-        db.execute("CREATE TABLE rules (action_class TEXT, behaviour TEXT)")
-        db.execute("INSERT INTO rules VALUES ('money.move','do')")
-    assert not store.migrate_center("alice", "new")
-    assert store.migration_report("alice")["refused"] == [{
-        "center": "new", "reason": "legacy rules are not frozen in broker custody"}]
-    with pytest.raises(PolicyRefused, match="legacy rules are not frozen"):
-        store.decide("alice", center="new", action_class="money.move", amount=1,
-                     request_id="attempt")
+    legacy = _legacy(tmp_path, "new", "hand_off")
+    original = legacy.read_bytes()
+    assert store.decide("alice", center="new", action_class="app.write")["decision"] == "allow"
+    assert legacy.read_bytes() == original
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and mode boundary")
-def test_frozen_source_with_writable_mode_is_refused(tmp_path):
-    _legacy(tmp_path, "alpha", "do")
-    (tmp_path / ".platform" / "accounts" / ".legacy-policy" / "alpha.db").chmod(0o660)
+def test_bootstrap_failure_isolates_one_owner(tmp_path, caplog):
     store = PolicyStore(tmp_path, Admissions())
+    blocked = store._path("alice").parent
+    (tmp_path / ".broker").mkdir(mode=0o700)
+    blocked.parent.mkdir(mode=0o700)
+    blocked.write_text("not a directory")
     store.bootstrap()
-    with pytest.raises(PolicyRefused, match="unsafe frozen legacy rules"):
-        store.decide("alice", center="alpha", action_class="app.write")
-
-
-def test_bootstrap_isolates_missing_snapshot_to_its_owner(tmp_path, caplog):
-    _legacy(tmp_path, "alpha", "do")
-    _legacy(tmp_path, "gamma", "hand_off")
-    (tmp_path / ".platform/accounts/.legacy-policy/alpha.db").unlink()
-    store = PolicyStore(tmp_path, Admissions())
-    store.bootstrap()
-    with pytest.raises(PolicyRefused, match="legacy rules are not frozen"):
+    with pytest.raises(PolicyRefused, match="policy storage unavailable"):
         store.read("alice")
-    assert store.read("bob").document["entries"][0]["scope"] == "gamma"
-    assert "ALARM: owner policy refused for alice" in caplog.text
-
-
-def test_removed_snapshot_fences_only_affected_owner_after_boot(tmp_path):
-    _legacy(tmp_path, "alpha", "do")
-    _legacy(tmp_path, "gamma", "hand_off")
-    store = PolicyStore(tmp_path, Admissions())
-    store.bootstrap()
-    (tmp_path / ".platform/accounts/.legacy-policy/alpha.db").unlink()
-    with pytest.raises(PolicyRefused, match="legacy rules are not frozen"):
-        store.decide("alice", center="alpha", action_class="app.write")
-    assert store.read("bob").document["entries"][0]["scope"] == "gamma"
-
-
-def test_bootstrap_does_not_create_daemon_owned_platform(tmp_path, caplog):
-    store = PolicyStore(tmp_path, Admissions())
-    store.bootstrap()
-    assert not (tmp_path / ".platform").exists()
-    with pytest.raises(PolicyRefused, match="privileged policy freeze is missing"):
-        store.read("alice")
+    assert store.read("bob").document["entries"] == []
     assert "ALARM: owner policy refused for alice" in caplog.text
 
 
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker owner policy uses Unix peer credentials")
 def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  # noqa: F811
-    _empty_policy_custody(tmp_path)
     cookie = "interactive-cookie-" + "g" * 32
     _session(tmp_path, "alice", cookie)
     broker.server._policy_store = PolicyStore(tmp_path, Admissions())
@@ -247,7 +163,6 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker stream uses Unix peer credentials")
 def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_path):  # noqa: F811
-    _empty_policy_custody(tmp_path)
     cookie = "interactive-cookie-" + "h" * 32
     _session(tmp_path, "alice", cookie)
     admissions = SimpleNamespace(admissions_after=lambda _generation: [

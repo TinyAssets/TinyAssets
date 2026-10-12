@@ -421,10 +421,8 @@ class _Connection:
                     raise RuntimeError("owner identities are not initialized")
                 row = self._server._owner_identities.admission(
                     doc["event"], doc["principal"], doc["center"])
-                if (doc["event"] == "admit" and self._server._policy_store is not None
-                        and not self._server._policy_store.migrate_center(
-                            doc["principal"], doc["center"])):
-                    raise PermissionError("center policy migration refused")
+                if doc["event"] == "admit" and self._server._policy_store is not None:
+                    self._server._policy_store.bootstrap_owner(doc["principal"])
                 return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
                         "machine": row.machine}
         except CenterUnadmitted:
@@ -564,9 +562,6 @@ class _Connection:
                 result = store.read(owner).projection()
             elif action == "receipts" and set(doc) == {"op", "action", "principal"}:
                 result = {"receipts": store.receipts(owner)}
-            elif action == "migration_report" and set(doc) == {
-                    "op", "action", "principal"}:
-                result = store.migration_report(owner)
             elif action == "proposal" and set(doc) == {
                     "op", "action", "principal", "center", "change"}:
                 result = store.receipt_proposal(owner, doc["center"], doc["change"])

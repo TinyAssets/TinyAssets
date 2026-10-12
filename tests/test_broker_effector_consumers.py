@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.broker_double import seed_owner_admission
 from tinyassets import bound_requests
 from tinyassets.broker import ledger_queries, supervisor
 from tinyassets.effectors import authenticated_external_call as effector
@@ -17,8 +18,8 @@ from tinyassets.ta_capabilities import ExecutionContext
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch, frozen_owner_policy):
-    frozen_owner_policy(tmp_path, principal="alice", center="cc-alice")
+def case(tmp_path, monkeypatch):
+    seed_owner_admission(tmp_path, principal="alice", center="cc-alice")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     ledger = ConnectionLedger(tmp_path / ".broker/outbound.db", data_root=tmp_path)
     for owner in ("alice", "bob"):

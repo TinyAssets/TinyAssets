@@ -97,11 +97,6 @@ def test_actual_account_deletion_calls_broker_after_tombstone(discovery, monkeyp
     admissions = SimpleNamespace(admissions_after=lambda _generation: [
         SimpleNamespace(center="shared-home", principal=owner, event="admit")
         for owner in ("erase-a", "erase-b")])
-    custody = discovery.root / ".platform/accounts/.legacy-policy"
-    custody.mkdir(parents=True)
-    (discovery.root / ".platform").chmod(0o710)
-    custody.parent.chmod(0o700)
-    custody.chmod(0o750)
     policy = PolicyStore(discovery.root, admissions)
     policy.bootstrap()
     policy.read("erase-a")

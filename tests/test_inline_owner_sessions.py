@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from tests.support.broker_double import seed_owner_admission
 from tinyassets import onboarding
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
@@ -95,13 +96,13 @@ def test_bearer_fetch_cannot_start_interactive_login(setup):
 
 
 def test_policy_bearer_write_cannot_bypass_owner_session(
-        setup, monkeypatch, tmp_path, frozen_owner_policy):
+        setup, monkeypatch, tmp_path):
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
 
     admissions = SimpleNamespace(admissions_after=lambda _generation: [
         SimpleNamespace(center="alpha", principal="alice", event="admit")])
-    frozen_owner_policy(tmp_path, principal="alice", center="alpha")
+    seed_owner_admission(tmp_path, principal="alice", center="alpha")
     store = PolicyStore(tmp_path, admissions)
     store.bootstrap()
     current = store.read("alice")

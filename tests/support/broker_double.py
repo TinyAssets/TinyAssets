@@ -65,25 +65,6 @@ def seed_owner_admission(data_root: Path, *, principal: str, center: str) -> Non
     identities.admission("admit", principal, center)
 
 
-@pytest.fixture
-def frozen_owner_policy():
-    """Prepare empty frozen custody only when no legacy rules need copying."""
-    def freeze(data_root: Path, *, principal: str, center: str) -> None:
-        root = Path(data_root)
-        if (root / ".agent-sessions" / center / "rules.db").exists():
-            raise AssertionError("legacy rules require a frozen snapshot")
-        seed_owner_admission(root, principal=principal, center=center)
-        platform = root / ".platform"
-        accounts = platform / "accounts"
-        snapshot = accounts / ".legacy-policy"
-        snapshot.mkdir(parents=True, exist_ok=True)
-        if os.name == "posix":
-            platform.chmod(0o710)
-            accounts.chmod(0o700)
-            snapshot.chmod(0o750)
-    return freeze
-
-
 def _peer_uid(sock: socket.socket) -> int:
     raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
     return struct.unpack("3i", raw)[1]
@@ -104,11 +85,11 @@ class _InProcessBroker:
         self.socket_path = socket_path
         state = data_root / ".broker"
         state.mkdir(parents=True, exist_ok=True)
+        state.chmod(0o700)
         identity_path = state / "owner-identities.db"
         self.identities = OwnerIdentities(identity_path) if identity_path.exists() else None
-        policy_store = None
-        if (data_root / ".platform/accounts/.legacy-policy").is_dir():
-            policy_store = PolicyStore(data_root, self.identities)
+        policy_store = PolicyStore(data_root, self.identities) if self.identities else None
+        if policy_store is not None:
             policy_store.bootstrap()
         # The same dispatcher factory the broker process uses, so the ledger
         # root and the dispatch config are production's, not the test's.

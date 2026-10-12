@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.broker_double import seed_owner_admission
 from tests.test_authenticated_external_call_effector import (  # noqa: F401
     _a_reviewer_that_approves,  # autouse: an explicit approving D1d reviewer
     _install_loopback_driver,
@@ -63,13 +64,13 @@ class _Auth:
 
 
 @pytest.fixture
-def owner(tmp_path, monkeypatch, frozen_owner_policy):
+def owner(tmp_path, monkeypatch):
     """A founder's own unpowered universe, logged in as its owner."""
     from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
     base = tmp_path / "data"
     (base / UID).mkdir(parents=True)
-    frozen_owner_policy(base, principal=OWNER, center=UID)
+    seed_owner_admission(base, principal=OWNER, center=UID)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     # Served turns use engine tools (on in production; dark by default here).
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")

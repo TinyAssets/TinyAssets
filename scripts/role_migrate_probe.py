@@ -147,11 +147,6 @@ def build(data: Path, *, extra=None):
                b"sealed", 0o600)
         _write(root / ".runtime" / "cache" / "a", b"cache", 0o600)
         os.chmod(root / "notes", 0o700)
-    rules = data / '.agent-sessions' / 'u-alice' / 'rules.db'
-    rules.parent.mkdir(parents=True)
-    with closing(sqlite3.connect(rules)) as db, db:
-        db.execute('CREATE TABLE rules (id INTEGER, behaviour TEXT)')
-        db.execute("INSERT INTO rules VALUES (1, 'ask_first')")
     # Five-link shape: same-owner multi-link inodes inside one owner's .runtime.
     os.link(data / "u-alice/.runtime/cache/a", data / "u-alice/.runtime/cache/b")
     os.symlink("notes", data / "u-alice" / "notes-link")
@@ -210,15 +205,6 @@ def inside(data: Path, app: str):
     expect(any(line.startswith(".broker/outbound.db\t") for line in lines)
            and not any(line.startswith("outbound.db\t") for line in lines),
            "ledger relocated into .broker")
-    frozen = data / '.platform/accounts/.legacy-policy/u-alice.db'
-    with closing(sqlite3.connect(frozen.as_uri() + '?mode=ro&immutable=1', uri=True)) as db:
-        rows = db.execute('SELECT id, behaviour FROM rules').fetchall()
-    expect(rows == [(1, 'ask_first')]
-           and any(line.startswith('.platform/accounts/.legacy-policy/u-alice.db\t')
-                   and '\t0\t1002\t0440\t' in line for line in lines)
-           and any(line.startswith('.agent-sessions/u-alice/rules.db\t')
-                   and '\t0\t1102\t0440\t' in line for line in lines),
-           'legacy rules frozen root-owned 0440 in broker custody')
     expect(not any(".role-admission" in line or "egress-12.sock" in line
                    or line.startswith(".broker/owner.json") for line in lines),
            "staging, stale sockets and the broker owner record removed")
