@@ -19,6 +19,27 @@ main {
 }
 .skip:focus { left: 8px; }
 
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--ember-600);
+  outline-offset: 3px;
+}
+
+.owner-decision {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--s-4);
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  max-width: 68ch;
+}
+
+.owner-decision .eyebrow {
+  color: var(--ember-600);
+}
+
 /* Page container. */
 .container {
   max-width: 1140px;

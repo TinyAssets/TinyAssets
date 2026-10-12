@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { RitualLabel } from "@tiny/design-system";
 import { Reachability } from "../../components/Reachability";
+import { OwnerDecision } from "../../components/OwnerDecision";
 import { SITE } from "../../lib/site";
 
 export const metadata: Metadata = {
@@ -37,53 +38,47 @@ export default function FinePrintPage() {
         <div className="container">
           <div className="head">
             <RitualLabel>Plans</RitualLabel>
-            <h2>Every command center starts free.</h2>
+            <h2>Free is the same app and the same security.</h2>
             <p>
-              Most people never need more than the free tier. Premium exists for the ones who run a
-              lot.
+              Tiers differ only by simultaneous runs and by storage. The product is not cut down on
+              the free tier, and the security is not cut down either. Paid tiers are not on sale.
+              This page does not name a price.
             </p>
           </div>
           <div className="ledger--wrap">
             <table className="ledger">
               <thead>
                 <tr>
-                  <th>Plan</th>
-                  <th>What you get</th>
-                  <th>Allowances</th>
+                  <th>Tier</th>
+                  <th>Product and security</th>
+                  <th>What can differ</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Free</td>
-                  <td>
-                    A command center: brain, storage, connections, automations, workspaces, and the app on
-                    every surface. Runs on your own subscription.
-                  </td>
-                  <td>
-                    A daily allowance for actions that reach the outside world, a guard on compute so
-                    a runaway loop cannot burn your day, and a cap on stored data. All set well above
-                    ordinary use.
-                  </td>
+                  <td>Free, today</td>
+                  <td>The same app and the same security as every other tier. You bring your own model.</td>
+                  <td>Simultaneous runs and storage. The caps are not published.</td>
                 </tr>
                 <tr>
-                  <td>Premium, $20 a month</td>
-                  <td>The same command center, nothing held back.</td>
-                  <td>More of each.</td>
+                  <td>Paid</td>
+                  <td>The same app and the same security. Not on sale, and there is no upgrade control.</td>
+                  <td>Simultaneous runs and storage. No monthly price is stated here.</td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <OwnerDecision>
+            Publish the free simultaneous-run cap and the free storage cap, then any paid tier
+            names, prices, and caps. Until those numbers are chosen, leave them off this page.
+          </OwnerDecision>
           <p className="note">
-            Being straight about where this stands. Outside-world actions are the one dimension with
-            a real daily allowance, and even that gate is not switched on: usage is metered, but
-            nothing is refused for exceeding it. It stays off until the accounting behind it is
-            provably exact, because refusing your work on a number we do not trust is worse than not
-            refusing it. Compute is a guard against a runaway loop rather than a budget you spend,
-            and stored data is a capacity cap, not a daily figure. So today nobody is cut off, and
-            premium raises what applies when the gate goes live. Upgrading will happen per account
-            inside the app; there is no control for it yet, and no page here pretends otherwise.
-            Questions:{" "}
-            <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a>. The platform never
+            Being straight about where this stands. Usage is metered, and the gate that would
+            refuse a run or a save is not switched on. Today nobody is cut off for how much they
+            run or how much they store. When a cap is enforced, it will be simultaneous runs and
+            storage only, the same on every tier except for the numbers. There is no control in the
+            app to buy a higher tier. Questions:{" "}
+            <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a>. The platform never
             bills you for a model; your subscription is your own.
           </p>
         </div>

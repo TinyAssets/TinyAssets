@@ -15,9 +15,9 @@ export default function StartPage() {
     <>
       <section className="container hero">
         <RitualLabel>Start</RitualLabel>
-        <h1>Set up your command center in one sitting.</h1>
+        <h1>Join early access.</h1>
         <p className="lead">
-          Three steps, on whichever surface you like. Everything after that is a conversation.
+          Three steps, on whichever surface you like. It is the same app on each of them.
         </p>
         <div className="actions">
           <a className="btn btn--primary btn--lg" href={SITE.app}>
@@ -36,7 +36,7 @@ export default function StartPage() {
               <div>
                 <h3>Sign in</h3>
                 <p>
-                  Email sign-in. The first time you arrive, a blank command center is created for you and
+                  Email sign-in. The first time you arrive, a blank app is created for you and
                   bound to your account. There is nothing to configure yet.
                 </p>
               </div>
@@ -47,11 +47,11 @@ export default function StartPage() {
                 <p>
                   Open the Connect view. ChatGPT or Codex is one tap. For Claude, paste a setup token
                   from your own Claude account into the deposit form: it goes straight into your
-                  command center&apos;s vault over TLS and never passes through the chat.
+                  vault over TLS and never passes through the chat.
                 </p>
                 <p className="note">
                   The platform never supplies a model. Your subscription is the only thing that runs
-                  your command center. Other routes, such as your own API keys, sit behind one &ldquo;Other&rdquo;
+                  your agent. Other routes, such as your own API keys, sit behind one &ldquo;Other&rdquo;
                   control in the same view.
                 </p>
               </div>
@@ -74,10 +74,10 @@ export default function StartPage() {
         <div className="container">
           <div className="head">
             <RitualLabel>Surfaces</RitualLabel>
-            <h2>One command center. Open it from wherever you are.</h2>
+            <h2>One app. Open it from wherever you are.</h2>
             <p>
-              Every surface is the same command center with the same brain. Say something on your phone;
-              it is already known when you sit down at the desk.
+              Every surface is the same app. Say something on your phone; it is already there when
+              you sit down at the desk.
             </p>
           </div>
 
@@ -98,7 +98,7 @@ export default function StartPage() {
               <span className="eyebrow">Claude.ai or ChatGPT</span>
               <h3>Add the connector</h3>
               <p>
-                Your chatbot relays what you say to your command center, and the agent answers in its
+                Your chatbot relays what you say to your agent, and the agent answers in its
                 own voice. One URL:
               </p>
               <p>
@@ -119,7 +119,7 @@ export default function StartPage() {
                 It is in a closed test on Google Play: open the test page with your Google account,
                 join, then install from Play. During the closed test only invited accounts can
                 join; write to{" "}
-                <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a> to be added.
+                <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a> to be added.
               </p>
               <a className="btn btn--ghost btn--md" href={SITE.android} target="_blank" rel="noreferrer">
                 Join the test on Google Play
@@ -149,8 +149,8 @@ export default function StartPage() {
       <section className="section section--tight">
         <div className="container narrow">
           <p className="note">
-            Every command center starts free. Premium raises the daily limits when you need more; the{" "}
-            <Link href="/fine-print/#plans">fine print</Link> says exactly what changes.
+            What is free, and what a later tier would change, is stated in one place: the{" "}
+            <Link href="/fine-print/#plans">fine print</Link>.
           </p>
         </div>
       </section>

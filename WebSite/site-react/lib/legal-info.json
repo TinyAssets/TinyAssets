@@ -18,12 +18,7 @@
     "liability_cap": "Lesser of (a) fees paid to us in the 12 months preceding the claim, or (b) USD 100",
     "venue_for_injunctive": "State and federal courts located in Delaware"
   },
-  "contact": {
-    "general": "ops@tinyassets.io",
-    "security": "security@tinyassets.io",
-    "legal": "legal@tinyassets.io",
-    "dmca_agent": "dmca@tinyassets.io"
-  },
+  "contact": "info@tinyassets.io",
   "token": {
     "name": "Destiny",
     "display_name": "Destiny (tiny)",

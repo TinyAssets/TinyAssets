@@ -15,7 +15,7 @@ export default function CommonsPage() {
   return (
     <>
       <section className="container hero">
-        <RitualLabel>Commons</RitualLabel>
+        <RitualLabel>Creators</RitualLabel>
         <h1>Shapes to remix.</h1>
         <p className="lead">
           Anything a command center publishes is a shape: a graph, a branch, a way of doing something.
