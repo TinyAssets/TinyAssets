@@ -203,7 +203,7 @@ change.
 
 - The broker checks the opaque owner-session cookie against the existing owner-session table through read-only access. It binds the row's interactive identity to the policy owner, checks expiry, and uses the row's session hash as the receipt identifier. The daemon forwards the cookie on the intended route, but can mint a row in that daemon-owned store in P1; broker-owned session minting in P2/P3 closes this residual. No new signing scheme is introduced.
 - `agent_review.py` proposes rule suggestions through the pending owner-request path. It has no direct `rules.db` write path. The agent and every box process receive only the effective read-only policy projection.
-- There is one policy per account. Each migrated entry retains its original command-center scope (or explicitly has account scope); migration never merges center rows. Evaluation selects the strictest applicable entry, and the migration report lists conflicts.
+- There is one policy per account. Legacy `rules.db` rules are not migrated (founder, 2026-10-11): every account starts with the default fail-closed policy and owners re-grant as the agent asks. The broker never reads or traverses daemon-owned directories. Evaluation selects the strictest applicable entry.
 - A once approval creates a broker receipt bound to the exact outbound request digest and current policy generation, under the same interactive owner cookie. Dispatch consumes that receipt once and rechecks the generation. The daemon's pending-request row is a preview and conversation record, never broker authority by itself.
 - A priced spend reserves against caps in the broker by request id. Today's model connector has no trusted pre-dispatch price, so a configured model cap holds that unpriced call and records the refusal until C3 supplies a priced reservation; an unknown amount never bypasses a cap.
 
@@ -435,9 +435,8 @@ stopped:
 2. For each owner, it creates the box record in the broker log and sets the
    project quota on the owner tree. **No owner byte moves:** the tree
    attaches in place, under the same UID.
-3. It copies each center's `rules.db` and `approval_grants` into the
-   owner's `policy.db`. P1 already writes there; this step catches stragglers
-   and is a no-op when P1 has run. It verifies row counts and digests.
+3. It does not touch policy: legacy `rules.db` and `approval_grants` are
+   not imported (owners re-grant; P1 decision).
 4. It writes the `owner-box` layout marker last.
 5. It is re-runnable after a crash. A second run changes nothing, and
    `--check` reports zero diffs.
