@@ -17,10 +17,10 @@ def test_shape_registry():
 def test_registry_parity_catches_added_row():
     rows = check_shapes.registry_rows(
         "| S1 | one | path | old | drifted | guard | C3 |\n"
-        "| N11 | new | path | old | unbuilt | guard | C13 |"
+        "| N12 | new | path | old | unbuilt | guard | C13 |"
     )
-    assert rows["N11"] == "unbuilt"
-    assert set(rows) - set(check_shapes.SHAPES) == {"N11"}
+    assert rows["N12"] == "unbuilt"
+    assert set(rows) - set(check_shapes.SHAPES) == {"N12"}
 
 
 def test_old_count_is_a_ceiling(tmp_path: Path):
