@@ -1159,19 +1159,19 @@ def test_cleanup_reads_references_after_proving_death(home: Path, monkeypatch) -
 
 
 def test_a_transient_refusal_keeps_the_event_owed(home: Path, monkeypatch) -> None:
-    """No serving assignment at the moment the run ends: the wake cannot be
-    stored yet, so the event stays owed and lands once the assignment is back."""
-    import tinyassets.provider_assignment as assignment
+    """No connected source at the moment the run ends leaves its event owed."""
+    from tinyassets.providers import served_model_plan
     from tinyassets.runs import deliver_terminal_events
 
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
-    real = assignment.load_provider_assignment
-    monkeypatch.setattr(assignment, "load_provider_assignment", lambda *a, **k: None)
+    real = served_model_plan.connected_sources
+    assert real(home, home / UNIVERSE, OWNER)
+    monkeypatch.setattr(served_model_plan, "connected_sources", lambda *a, **k: frozenset())
     _finish(home, actor=OWNER)
     with _as(None):
         assert deliver_terminal_events(home, older_than=0) == 0
     assert _wakes(home) == []
-    monkeypatch.setattr(assignment, "load_provider_assignment", real)
+    monkeypatch.setattr(served_model_plan, "connected_sources", real)
     with _as(None):
         assert deliver_terminal_events(home, older_than=0) == 1
     assert len(_wakes(home)) == 1
