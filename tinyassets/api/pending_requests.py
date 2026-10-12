@@ -162,7 +162,7 @@ _FIRST_PARTY_PATHS = frozenset({
     "/connect", "/contribute", "/developers", "/economy", "/fine-print",
     "/goal", "/goals", "/graph", "/host", "/legal", "/loop", "/notebook",
     "/patch-loop", "/patterns", "/proof", "/soul", "/start", "/status",
-    "/wiki", "/mcp", "/app",
+    "/token", "/wiki", "/mcp", "/app",
 })
 _MAX_ANSWER_CHARS = 2000
 #: Every verb the egress layer knows. The owner reads each one on the tab and

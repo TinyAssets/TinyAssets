@@ -605,6 +605,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "daemon_brain.db": "daemon_memory",
     "daemon_wikis": "daemon_memory",
     "wiki": "commons_pages",
+    ".wiki": "commons_pages (the dot-named home a fresh volume uses)",
     ".storage_accounting.db": "platform: this ledger",
     ".command-center-packages": (
         "packages (published package blobs, by author); its consent pins and "
