@@ -19,6 +19,20 @@ from tinyassets.api.wiki import (
 )
 
 
+@pytest.mark.role_split
+def test_fresh_volume_scaffolds_the_platform_wiki(tmp_path, monkeypatch):
+    """A non-dot child of the data dir is a command center. The commons is not."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TINYASSETS_WIKI_PATH", raising=False)
+    from tinyassets.storage import wiki_path
+
+    root = wiki_path()
+    assert root == (tmp_path / ".wiki").resolve()
+    _ensure_wiki_scaffold(root)
+    assert (tmp_path / ".wiki" / "index.md").is_file()
+    assert not (tmp_path / "wiki").exists()
+
+
 @pytest.fixture
 def wiki_root(tmp_path):
     return tmp_path / "wiki"

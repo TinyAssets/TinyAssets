@@ -36,6 +36,28 @@ Each prompt SHALL return its registered behavioral guide and SHALL expose its fu
 - **WHEN** an authenticated client POSTs `initialize` to `/mcp/`
 - **THEN** the server handles that request as `/mcp` and does not answer with a redirect
 
+#### Scenario: A browser preflight is not an authentication challenge
+
+- **WHEN** a browser sends `OPTIONS /mcp` with `Origin: https://claude.ai` and asks to use `POST` with `authorization` and `mcp-session-id`
+- **THEN** the server returns 204 with `Access-Control-Allow-Origin: https://claude.ai`, methods including `POST`, and headers including `authorization` and `mcp-session-id`
+- **AND** the response is not a 401
+
+#### Scenario: An unlisted browser origin is refused
+
+- **WHEN** a request to `/mcp` carries `Origin: https://evil.example`
+- **THEN** the server returns 403 and does not reflect that origin
+
+#### Scenario: A client that sends no Origin is unchanged
+
+- **WHEN** a server-side client calls `/mcp` with no `Origin` header
+- **THEN** the request is handled as before and the response has no `Access-Control-Allow-Origin`
+
+#### Scenario: Advertised tool descriptions fit a directory client
+
+- **WHEN** a client reads `tools/list`
+- **THEN** every tool name is at most 64 characters and every tool description is non-empty and at most 2048 characters
+- **AND** the description is the contract before `Args:`, so the parameter manual is not repeated into the description field
+
 #### Scenario: Prompt listing returns the exact catalog
 - **WHEN** an MCP client lists prompts on the live server
 - **THEN** the response contains the four names, titles, and tag sets above with no additional registered prompt

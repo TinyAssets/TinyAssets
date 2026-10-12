@@ -90,6 +90,31 @@ def test_mcp_current_model_choice_preserves_both_response_channels(monkeypatch, 
     assert json.loads(result.content[0].text) == result.structured_content
 
 
+def test_missing_admission_is_not_reported_as_a_missing_scope(monkeypatch, tmp_path):
+    """A launcher that has not installed the mapper is not an OAuth failure."""
+    import tinyassets.role_center_admission as admission
+    from tinyassets.role_center_admission import AdmissionRefused
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    def refuse(*_args, **_kwargs):
+        raise AdmissionRefused("runtime admission requires the bounded mapper client")
+
+    monkeypatch.setattr(admission, "admit_center", refuse)
+    out = json.loads(us.converse(message="Hello"))
+    assert out.get("auth_scope_required") is not True
+    assert out.get("home_unavailable") is True
+    assert "could not be created" in out["error"]
+
+
+def test_missing_create_scope_is_still_a_scope_error(signed_in, monkeypatch, tmp_path):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    signed_in("reader-1", ["read", "list"])
+    out = json.loads(us.converse(message="Hello"))
+    assert out.get("auth_scope_required") is True
+    assert "home_unavailable" not in out
+
+
 def test_converse_denied_for_non_owner(monkeypatch):
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-x")

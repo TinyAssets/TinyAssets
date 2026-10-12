@@ -259,9 +259,12 @@ def wiki_path() -> Path:
 
     Resolution order (first match wins):
       1. ``$TINYASSETS_WIKI_PATH`` if set and non-empty.
-      2. Platform default: ``data_dir() / "wiki"`` — inherits the
-         canonical data root's platform handling (Windows
-         ``%APPDATA%\\TinyAssets\\wiki``; Linux/macOS ``~/.tinyassets/wiki``).
+      2. An already-present ``data_dir() / "wiki"`` directory. Volumes
+         that grew the commons there keep it.
+      3. ``data_dir() / ".wiki"``. A fresh volume uses this dot-named
+         platform directory. Admission creates command-center roots only,
+         and a non-dot child of the data dir is one of those, so a fresh
+         ``wiki`` directory cannot be scaffolded.
 
     Pre-2026-04-20 the wiki fallback was hardcoded
     ``r"C:\\Users\\Jonathan\\Projects\\Wiki"`` in
@@ -281,8 +284,11 @@ def wiki_path() -> Path:
         _reject_windows_path_on_posix(explicit, "TINYASSETS_WIKI_PATH")
         return Path(explicit).expanduser().resolve()
 
-    # Platform default — inherit data_dir's platform handling.
-    return (data_dir() / "wiki").resolve()
+    root = data_dir()
+    legacy = root / "wiki"
+    if legacy.is_dir():
+        return legacy.resolve()
+    return (root / ".wiki").resolve()
 
 
 def _sqlite_db_siblings(db_file: Path) -> tuple[Path, ...]:

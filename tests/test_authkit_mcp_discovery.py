@@ -204,6 +204,114 @@ def test_authkit_bearer_on_the_slash_url_lists_tools(authkit_client) -> None:
     _handshake(client, _access_token(key), path="/mcp/")
 
 
+def _cors(response) -> str:
+    return response.headers.get("access-control-allow-origin", "")
+
+
+def test_browser_preflight_is_not_an_auth_challenge(authkit_client) -> None:
+    client, _key = authkit_client
+    preflight = client.options(
+        "/mcp",
+        headers={
+            "Origin": "https://claude.ai",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization, content-type, mcp-session-id",
+        },
+    )
+    assert preflight.status_code == 204, preflight.text
+    assert _cors(preflight) == "https://claude.ai"
+    allow_headers = preflight.headers["access-control-allow-headers"]
+    assert "authorization" in allow_headers
+    assert "mcp-session-id" in allow_headers
+    assert "POST" in preflight.headers["access-control-allow-methods"]
+    assert "www-authenticate" in preflight.headers["access-control-expose-headers"]
+
+    chatgpt = client.options(
+        "/mcp/",
+        headers={
+            "Origin": "https://chatgpt.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert chatgpt.status_code == 204
+    assert _cors(chatgpt) == "https://chatgpt.com"
+
+    local = client.options(
+        "/mcp",
+        headers={
+            "Origin": "http://127.0.0.1:6274",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert local.status_code == 204
+    assert _cors(local) == "http://127.0.0.1:6274"
+
+
+def test_unlisted_browser_origin_is_refused(authkit_client) -> None:
+    client, key = authkit_client
+    token = _access_token(key)
+    refused = client.post(
+        "/mcp",
+        headers={**_headers(token), "Origin": "https://evil.example"},
+        json=_initialize_body(),
+    )
+    assert refused.status_code == 403
+    assert refused.json()["error"] == "origin_not_allowed"
+    assert _cors(refused) == ""
+
+
+def test_missing_origin_still_completes_discovery(authkit_client) -> None:
+    client, key = authkit_client
+    token = _access_token(key)
+    _handshake(client, token)
+    probe = client.get(
+        "/mcp",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+        },
+    )
+    assert probe.status_code == 405
+    assert _cors(probe) == ""
+
+
+def test_allowed_origin_can_read_the_auth_challenge(authkit_client) -> None:
+    client, _key = authkit_client
+    anonymous = client.get(
+        "/mcp",
+        headers={"Accept": "text/event-stream", "Origin": "https://tinyassets.io"},
+    )
+    assert anonymous.status_code == 401
+    assert anonymous.json()["error"] == "authentication_required"
+    assert _cors(anonymous) == "https://tinyassets.io"
+    assert "www-authenticate" in anonymous.headers["access-control-expose-headers"]
+
+
+def test_expired_access_token_is_invalid_token(authkit_client) -> None:
+    client, key = authkit_client
+    expired = client.post(
+        "/mcp",
+        headers=_headers(_access_token(key, exp=int(time.time()) - 60)),
+        json=_initialize_body(),
+    )
+    assert expired.status_code == 401
+    assert expired.json()["error"] == "invalid_token"
+
+
+def test_deleting_a_session_retires_it(authkit_client) -> None:
+    client, key = authkit_client
+    token = _access_token(key)
+    session_id = _handshake(client, token)
+    deleted = client.delete("/mcp", headers=_headers(token, session_id=session_id))
+    assert deleted.status_code in {200, 202, 204}, deleted.text
+    again = client.post(
+        "/mcp",
+        headers=_headers(token, session_id=session_id),
+        json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+    )
+    assert again.status_code == 404
+
+
 def test_client_id_audience_is_still_rejected(authkit_client) -> None:
     """An AuthKit token whose aud is the environment client id is not this resource."""
     client, key = authkit_client
