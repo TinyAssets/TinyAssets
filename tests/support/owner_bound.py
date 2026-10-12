@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import ModelConfig, UniverseContext
+from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 from tinyassets.providers.model_policy import ModelRef
 
 
@@ -47,22 +49,27 @@ async def owner_bound_call(
 ):
     """Drive the one router executor under an owner-bound test carrier."""
     carrier = owner_carrier(provider, role=role)
-    context = UniverseContext(
-        universe_dir=Path("u-owner-bound"), provider_invocation=carrier,
-    )
-    if policy and isinstance(policy.get("preferred"), dict):
-        preferred = policy["preferred"]
-        context = replace(context, model_selection=ModelRef(
-            preferred["provider"], preferred.get("model_id", ""),
-        ))
-    with patch(
-        "tinyassets.providers.router._provider_invocation_carrier",
-        return_value=carrier,
-    ), patch(
-        "tinyassets.providers.served_model_plan.connected_sources",
-        return_value=frozenset({provider}),
-    ):
-        return await router.call(
-            role, prompt, system, config or ModelConfig(max_tokens=10),
-            operation="run_graph", universe_context=context,
-        )
+    with TemporaryDirectory() as root:
+        universe = Path(root) / "u-owner-bound"
+        universe.mkdir()
+        context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
+        if policy and isinstance(policy.get("preferred"), dict):
+            preferred = policy["preferred"]
+            context = replace(context, model_selection=ModelRef(
+                preferred["provider"], preferred.get("model_id", ""),
+            ))
+        with patch(
+            "tinyassets.providers.router._provider_invocation_carrier",
+            return_value=carrier,
+        ), patch(
+            "tinyassets.providers.served_model_plan.connected_sources",
+            return_value=frozenset({provider}),
+        ):
+            result = await call(ModelCall(
+                model=None, fallbacks=(), context=ModelContext(
+                    role=role, prompt=prompt, system=system,
+                    config=config or ModelConfig(max_tokens=10),
+                    operation="run_graph", universe_context=context, router=router,
+                ),
+            ), Parent(owner="owner", command_center=universe.name))
+            return result.response

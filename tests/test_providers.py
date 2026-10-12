@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import sys
 import threading
 import time
 from pathlib import Path
@@ -33,6 +34,7 @@ from tinyassets.providers.base import (
     ProviderResponse,
     UniverseContext,
 )
+from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call, call_sync
 from tinyassets.providers.quota import QuotaTracker
 from tinyassets.providers.router import ProviderRouter
 
@@ -42,6 +44,31 @@ _UDIR = Path("universe-under-test")
 
 def _ctx(carrier) -> UniverseContext:
     return UniverseContext(universe_dir=_UDIR, provider_invocation=carrier)
+
+
+async def _model_call(router, role, prompt, system, config=None, *, operation=None,
+                      universe_context=None):
+    context = universe_context
+    result = await call(ModelCall(
+        model=None, fallbacks=(), context=ModelContext(
+            role=role, prompt=prompt, system=system, config=config,
+            operation=operation, universe_context=context, router=router,
+        ),
+    ), Parent(owner=context.provider_invocation._receipt.principal_id,
+              command_center=context.universe_dir.name))
+    return result.response
+
+
+def _model_call_sync(router, role, prompt, system, config=None, *, operation=None,
+                     universe_context=None):
+    context = universe_context
+    return call_sync(ModelCall(
+        model=None, fallbacks=(), context=ModelContext(
+            role=role, prompt=prompt, system=system, config=config,
+            operation=operation, universe_context=context, router=router,
+        ),
+    ), Parent(owner=context.provider_invocation._receipt.principal_id,
+              command_center=context.universe_dir.name)).response
 
 # =====================================================================
 # Helpers -- fake providers for testing
@@ -165,6 +192,12 @@ class TestQuotaTracker:
 
 
 class TestProviderRouterCall:
+    @pytest.fixture(autouse=True)
+    def _model_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "universe-under-test"
+        root.mkdir()
+        monkeypatch.setattr(sys.modules[__name__], "_UDIR", root)
+
     @staticmethod
     def _carrier(
         *, provider: str = "codex", role: str = "writer",
@@ -201,7 +234,7 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(carrier),
         ):
-            response = await router.call(
+            response = await _model_call(router,
                 "writer", "prompt", "system", ModelConfig(max_tokens=None),
                 operation="repository_spec_delivery",
                 universe_context=_ctx(carrier),
@@ -239,7 +272,7 @@ class TestProviderRouterCall:
             side_effect=self._carrier_resolver(carrier),
         ):
             with pytest.raises(PermissionError, match=message):
-                await router.call(
+                await _model_call(router,
                     "writer",
                     "prompt",
                     "system",
@@ -262,7 +295,7 @@ class TestProviderRouterCall:
             side_effect=self._carrier_resolver(carrier),
         ):
             with pytest.raises(PermissionError, match="token ceiling"):
-                await router.call(
+                await _model_call(router,
                     "writer", "prompt", "system", ModelConfig(max_tokens=max_tokens),
                     operation="repository_spec_delivery",
                     universe_context=_ctx(carrier),
@@ -287,7 +320,7 @@ class TestProviderRouterCall:
             side_effect=self._carrier_resolver(carrier),
         ):
             with pytest.raises(AllProvidersExhaustedError):
-                await router.call(
+                await _model_call(router,
                     "writer", "prompt", "system", ModelConfig(max_tokens=10),
                     operation="repository_spec_delivery",
                     universe_context=_ctx(carrier),
@@ -310,7 +343,7 @@ class TestProviderRouterCall:
             side_effect=self._carrier_resolver(carrier),
         ):
             with pytest.raises(PermissionError, match="stale carrier"):
-                await router.call(
+                await _model_call(router,
                     "writer", "prompt", "system",
                     operation="repository_spec_delivery",
                     universe_context=_ctx(carrier),
@@ -327,9 +360,9 @@ class TestProviderRouterCall:
         context = _ctx(self._carrier())
 
         with pytest.raises(PermissionError, match="requires an operation"):
-            await router.call("writer", "prompt", "system", universe_context=context)
+            await _model_call(router, "writer", "prompt", "system", universe_context=context)
         with pytest.raises(PermissionError, match="server-owned"):
-            await router.call(
+            await _model_call(router,
                 "writer", "prompt", "system",
                 operation="repository_spec_delivery", universe_context=context,
             )
@@ -345,7 +378,7 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(policy_carrier),
         ):
-            response = await router.call(
+            response = await _model_call(router,
                 "judge", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=_ctx(policy_carrier),
@@ -355,11 +388,11 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(ensemble_carrier),
         ):
-            ensemble = await router.call_judge_ensemble(
-                "prompt", "system", ModelConfig(max_tokens=10),
+            ensemble = [await _model_call(router,
+                "judge", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=_ctx(ensemble_carrier),
-            )
+            )]
 
         assert response.text == "codex-resp"
         assert response.provider == "codex"
@@ -379,7 +412,7 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(carrier),
         ):
-            return await router.call(
+            return await _model_call(router,
                 role, "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=UniverseContext(
@@ -424,13 +457,13 @@ class TestProviderRouterCall:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._carrier_resolver(carrier),
         ):
-            ensemble = await router.call_judge_ensemble(
-                "prompt", "system", ModelConfig(max_tokens=10),
+            ensemble = [await _model_call(router,
+                "judge", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=UniverseContext(
                     universe_dir=_UDIR, provider_invocation=carrier,
                 ),
-            )
+            )]
         assert [response.provider for response in ensemble] == ["codex"]
         assert sum(p.call_count for p in providers.values()) == 1
 
@@ -442,7 +475,7 @@ class TestProviderRouterCall:
 
         def _call() -> ProviderResponse:
             start.wait(timeout=2)
-            return router.call_sync(
+            return _model_call_sync(router,
                 "writer", "prompt", "system", ModelConfig(max_tokens=10),
                 operation="repository_spec_delivery",
                 universe_context=UniverseContext(
@@ -896,6 +929,12 @@ class TestOllamaProvider:
 
 
 class TestCarrierSettlementWithUnknownUsage:
+    @pytest.fixture(autouse=True)
+    def _model_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "universe-under-test"
+        root.mkdir()
+        monkeypatch.setattr(sys.modules[__name__], "_UDIR", root)
+
     """A successful call whose usage the provider did not report must survive.
 
     Live failure, 2026-08-27: every prompt-template run in the founder's
@@ -953,7 +992,7 @@ class TestCarrierSettlementWithUnknownUsage:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._resolver(carrier),
         ):
-            response = await router.call(
+            response = await _model_call(router,
                 "writer", "prompt", "system", ModelConfig(max_tokens=None),
                 operation="run_graph",
                 universe_context=_ctx(carrier),
@@ -992,7 +1031,7 @@ class TestCarrierSettlementWithUnknownUsage:
             "tinyassets.providers.router._provider_invocation_carrier",
             side_effect=self._resolver(carrier),
         ):
-            await router.call(
+            await _model_call(router,
                 "writer", "prompt", "system", ModelConfig(max_tokens=None),
                 operation="run_graph",
                 universe_context=_ctx(carrier),

@@ -97,8 +97,7 @@ def test_unpowered_recipient_adopts_only_after_consent_with_zero_provider_calls(
         raise AssertionError("adoption must not call a model")
 
     monkeypatch.setattr("tinyassets.providers.model_call.text_sync", forbidden)
-    for name in ("call", "call_async", "call_sync",
-                 "call_judge_ensemble"):
+    for name in ("call", "call_async", "call_sync"):
         if hasattr(ProviderRouter, name):
             monkeypatch.setattr(ProviderRouter, name, forbidden)
     with _as(BOB):

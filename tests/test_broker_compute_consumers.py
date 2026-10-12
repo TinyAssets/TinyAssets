@@ -182,12 +182,17 @@ def test_router_replaces_caller_principal_with_admitted_serving_owner(tmp_path):
             return await super().complete(prompt, system, config, **kwargs)
 
     router = ProviderRouter(providers={"codex": Capture("codex")})
+    from tinyassets.providers.model_call import open_allocation
+
+    budget = open_allocation("owner-1", context.universe_dir)
     try:
         asyncio.run(router.call("writer", "hello", "system",
-                               replace(ModelConfig(), invocation_owner_user_id="forged"),
+                               replace(ModelConfig(), invocation_owner_user_id="forged",
+                                       request_budget=budget),
                                universe_context=context, operation="converse"))
         assert seen == ["owner-1"]
     finally:
+        budget.close()
         revoke_provider_request(capability)
 
 
@@ -226,10 +231,15 @@ def test_router_releases_served_reservation_for_broker_admission_outage(tmp_path
             raise AssertionError("unavailable broker admitted a source")
 
     router = ProviderRouter(providers={"codex": Outage("codex")})
+    from tinyassets.providers.model_call import open_allocation
+
+    budget = open_allocation("owner-1", context.universe_dir)
     try:
         with pytest.raises(AllProvidersExhaustedError):
             asyncio.run(router.call("writer", "hello", "system",
+                                   ModelConfig(request_budget=budget),
                                    universe_context=context, operation="converse"))
         assert released == [True] and abandoned == []
     finally:
+        budget.close()
         revoke_provider_request(capability)

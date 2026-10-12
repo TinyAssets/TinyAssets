@@ -15,6 +15,23 @@ from tinyassets.providers.base import (
     ProviderResponse,
     UniverseContext,
 )
+from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+
+async def _model_call(router, role, prompt, system, config=None, *, operation=None,
+                      universe_context=None):
+    context = universe_context
+    if context is None or not any((context.provider_request, context.served_provider,
+                                   context.provider_invocation)):
+        return await router.call(role, prompt, system, config, operation=operation,
+                                 universe_context=context)
+    result = await call(ModelCall(
+        model=None, fallbacks=(), context=ModelContext(
+            role=role, prompt=prompt, system=system, config=config,
+            operation=operation, universe_context=context, router=router,
+        ),
+    ), Parent(owner="", command_center=context.universe_dir.name))
+    return result.response
 
 
 class _RecordingProvider(BaseProvider):
@@ -92,7 +109,7 @@ def test_native_auth_notice_keeps_served_retry_fenced(
     try:
         with patch.object(router._quota, "cooldown") as cooldown:
             with pytest.raises(AllProvidersExhaustedError) as caught:
-                asyncio.run(router.call(
+                asyncio.run(_model_call(router,
                     "writer", "hello", "system", universe_context=context,
                     operation="converse",
                 ))
@@ -248,7 +265,7 @@ def test_served_router_uses_only_universe_authorized_provider(tmp_path):
     router = ProviderRouter({"codex": codex, "claude-code": ambient})
     try:
         response = asyncio.run(
-            router.call(
+            _model_call(router,
                 "writer",
                 "hello",
                 "system",
@@ -285,7 +302,7 @@ def test_served_router_fails_closed_without_exact_live_authority(tmp_path):
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
             asyncio.run(
-                router.call(
+                _model_call(router,
                     "writer",
                     "must not run",
                     "system",
@@ -311,7 +328,7 @@ def test_served_router_rejects_request_principal_that_is_not_binding_owner(tmp_p
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
             asyncio.run(
-                ProviderRouter({"codex": provider}).call(
+                _model_call(ProviderRouter({"codex": provider}),
                     "writer",
                     "must not run",
                     "system",
@@ -345,7 +362,7 @@ def test_served_router_rejects_credential_rotation_after_selection(tmp_path):
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
             asyncio.run(
-                ProviderRouter({"codex": provider}).call(
+                _model_call(ProviderRouter({"codex": provider}),
                     "writer",
                     "must not run",
                     "system",
@@ -621,7 +638,7 @@ def test_served_none_max_tokens_reserves_bounded_per_call_not_whole_ceiling(tmp_
     router = ProviderRouter({"codex": _Rec("codex")})
     try:
         asyncio.run(
-            router.call(
+            _model_call(router,
                 "writer", "hi", "sys",
                 config=ModelConfig(max_tokens=None),
                 operation="converse",
@@ -697,7 +714,7 @@ def test_two_concurrent_served_none_max_tokens_calls_both_reach_provider(tmp_pat
         )
         try:
             results[key] = asyncio.run(
-                router.call(
+                _model_call(router,
                     "writer", key, "s", config=ModelConfig(max_tokens=None),
                     operation="converse", universe_context=ctx,
                 )
@@ -742,7 +759,7 @@ def test_universe_scoped_calls_never_route_from_config_without_live_authority(
 
     with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
         asyncio.run(
-            ProviderRouter({"codex": provider}).call(
+            _model_call(ProviderRouter({"codex": provider}),
                 "writer",
                 "must not run",
                 "system",
@@ -792,7 +809,7 @@ def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, m
     try:
         # Turn 1 overruns its reservation -> reply DELIVERED, actual charged.
         r1 = asyncio.run(
-            router.call(
+            _model_call(router,
                 "writer", "p", "s",
                 config=ModelConfig(max_tokens=8),
                 operation="converse",
@@ -803,7 +820,7 @@ def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, m
         # The settled overrun released its in-flight hold, so turn 2 is admitted
         # fresh and likewise delivered.
         r2 = asyncio.run(
-            router.call(
+            _model_call(router,
                 "writer", "p", "s",
                 config=ModelConfig(max_tokens=1),
                 operation="converse",
@@ -946,7 +963,7 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
 
     async def _rotate_during_call():
         task = asyncio.create_task(
-            ProviderRouter({"codex": provider}).call(
+            _model_call(ProviderRouter({"codex": provider}),
                 "writer",
                 "hello",
                 "system",
@@ -990,7 +1007,7 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
             asyncio.run(
-                ProviderRouter({"codex": _SnapshotProvider(pause=False)}).call(
+                _model_call(ProviderRouter({"codex": _SnapshotProvider(pause=False)}),
                     "writer",
                     "must revalidate",
                     "system",
@@ -1033,7 +1050,7 @@ def test_path_backed_credential_snapshot_seals_inflight_cross_process_rotation(
     rotated_provider = _SnapshotProvider(pause=False)
     try:
         rotated_response = asyncio.run(
-            ProviderRouter({"codex": rotated_provider}).call(
+            _model_call(ProviderRouter({"codex": rotated_provider}),
                 "writer",
                 "hello again",
                 "system",
@@ -1058,7 +1075,7 @@ def test_served_request_budget_allows_reply_and_learning_only(tmp_path):
     try:
         for prompt in ("reply", "learning"):
             asyncio.run(
-                router.call(
+                _model_call(router,
                     "writer",
                     prompt,
                     "system",
@@ -1068,7 +1085,7 @@ def test_served_request_budget_allows_reply_and_learning_only(tmp_path):
             )
         with pytest.raises(ProviderAuthorityHeldError, match="Connect your provider"):
             asyncio.run(
-                router.call(
+                _model_call(router,
                     "writer",
                     "third launch",
                     "system",
@@ -1099,7 +1116,7 @@ def test_two_consecutive_founder_turns_share_one_binding_without_rebind(tmp_path
         try:
             for prompt in ("reply", "learning"):
                 asyncio.run(
-                    router.call(
+                    _model_call(router,
                         "writer",
                         prompt,
                         "system",
@@ -1137,7 +1154,7 @@ def test_binding_generation_high_water_blocks_runaway_across_requests(
         try:
             for prompt in ("reply", "learning"):
                 asyncio.run(
-                    router.call(
+                    _model_call(router,
                         "writer",
                         prompt,
                         "system",
@@ -1156,7 +1173,7 @@ def test_binding_generation_high_water_blocks_runaway_across_requests(
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="budget"):
             asyncio.run(
-                router.call(
+                _model_call(router,
                     "writer",
                     "fifth launch",
                     "system",
@@ -1200,7 +1217,7 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
         try:
             for prompt in ("reply", "learning"):
                 asyncio.run(
-                    router.call(
+                    _model_call(router,
                         "writer",
                         prompt,
                         "system",
@@ -1217,7 +1234,7 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     try:
         with pytest.raises(ProviderAuthorityHeldError, match="budget"):
             asyncio.run(
-                router.call(
+                _model_call(router,
                     "writer",
                     "fifth",
                     "system",
@@ -1244,7 +1261,7 @@ def test_runaway_guard_ages_out_and_never_permanently_bricks(tmp_path, monkeypat
     cap6, ctx6 = _fresh_served_request(universe_dir, serving, request_id="recovered")
     try:
         asyncio.run(
-            router.call(
+            _model_call(router,
                 "writer",
                 "sixth",
                 "system",
@@ -1426,7 +1443,7 @@ def test_real_input_above_prompt_estimate_is_not_withheld(tmp_path):
     router = ProviderRouter({"codex": provider})
     try:
         resp = asyncio.run(
-            router.call(
+            _model_call(router,
                 "writer",
                 "hi",
                 "s",
@@ -1462,8 +1479,10 @@ def test_a_provider_error_is_logged_without_its_secrets(tmp_path, caplog):
     try:
         with caplog.at_level(logging.WARNING, logger="tinyassets.providers.router"):
             with pytest.raises(AllProvidersExhaustedError):
-                asyncio.run(router.call("writer", "hello", "system", universe_context=context,
-                                        operation="converse"))
+                asyncio.run(_model_call(
+                    router, "writer", "hello", "system",
+                    universe_context=context, operation="converse",
+                ))
     finally:
         revoke_provider_request(capability)
     assert "refused initialize" in caplog.text

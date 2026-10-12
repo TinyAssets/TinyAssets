@@ -601,10 +601,22 @@ def test_saved_policy_on_legacy_preserves_auto_but_never_ignores_explicit(tmp_pa
                     context, model_choice=ModelPreferences("automatic", None, ()).document(),
                 )
             native = _RecordingProvider("codex")
-            response = asyncio.run(ProviderRouter({"codex": native}).call(
-                role="writer", prompt="hello", system="system", operation="converse",
-                universe_context=prepared,
-            ))
+            from tinyassets.providers.base import ModelConfig
+            from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+            from tinyassets.request_budget import TurnRequestBudget
+
+            budget = TurnRequestBudget("owner-1", universe.name)
+            budget.persist(tmp_path)
+            try:
+                response = asyncio.run(call(ModelCall(
+                    model=None, fallbacks=(), context=ModelContext(
+                        role="writer", prompt="hello", system="system", operation="converse",
+                        universe_context=prepared, router=ProviderRouter({"codex": native}),
+                        config=ModelConfig(request_budget=budget),
+                    ),
+                ), Parent(owner="owner-1", command_center=universe.name))).response
+            finally:
+                budget.close()
             assert response.provider == "codex" and native.calls == 1
         assert store.get("owner-1", universe.name, require_current_home=True) == saved
     finally:

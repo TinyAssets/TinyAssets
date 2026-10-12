@@ -184,12 +184,12 @@ class TestProviderRouterDiagnostics:
     # no longer exists.
 
     @staticmethod
-    async def _bound_call(router, provider: str, role: str = "writer"):
-        from pathlib import Path
+    async def _bound_call(router, provider: str, root, role: str = "writer"):
         from unittest.mock import MagicMock, patch
 
         from tinyassets.provider_work_authority import ProviderInvocationCarrier
         from tinyassets.providers.base import UniverseContext
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 
         carrier = MagicMock(spec=ProviderInvocationCarrier)
         carrier._receipt = MagicMock(principal_id="owner", universe_id="u-diag")
@@ -209,16 +209,20 @@ class TestProviderRouterDiagnostics:
 
         with patch("tinyassets.providers.router._provider_invocation_carrier",
                    side_effect=resolve):
-            return await router.call(
-                role, "prompt", "system", ModelConfig(max_tokens=10),
-                operation="run_graph",
-                universe_context=UniverseContext(
-                    universe_dir=Path("u-diag"), provider_invocation=carrier,
+            universe = root / "u-diag"
+            universe.mkdir()
+            return await call(ModelCall(
+                model=None, fallbacks=(), context=ModelContext(
+                    role=role, prompt="prompt", system="system",
+                    config=ModelConfig(max_tokens=10), operation="run_graph",
+                    universe_context=UniverseContext(
+                        universe_dir=universe, provider_invocation=carrier,
+                    ), router=router,
                 ),
-            )
+            ), Parent(owner="owner", command_center="u-diag"))
 
     @pytest.mark.asyncio
-    async def test_router_attaches_attempts_and_chain_state(self, monkeypatch):
+    async def test_router_attaches_attempts_and_chain_state(self, monkeypatch, tmp_path):
         monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
         router = ProviderRouter(providers={
             "codex": FailingProvider(
@@ -227,7 +231,7 @@ class TestProviderRouterDiagnostics:
         })
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await self._bound_call(router, "codex")
+            await self._bound_call(router, "codex", tmp_path)
 
         err = exc_info.value
         assert err.chain_state is not None
@@ -238,13 +242,13 @@ class TestProviderRouterDiagnostics:
         assert err.attempts[0].skip_class == "auth_invalid"
 
     @pytest.mark.asyncio
-    async def test_router_marks_timeouts(self):
+    async def test_router_marks_timeouts(self, tmp_path):
         router = ProviderRouter(providers={
             "codex": FailingProvider("codex", "openai", ProviderTimeoutError("codex hung")),
         })
 
         with pytest.raises(AllProvidersExhaustedError) as exc_info:
-            await self._bound_call(router, "codex", role="extract")
+            await self._bound_call(router, "codex", tmp_path, role="extract")
 
         attempts = {attempt.provider: attempt for attempt in exc_info.value.attempts}
         assert attempts["codex"].skip_class == "timed_out"

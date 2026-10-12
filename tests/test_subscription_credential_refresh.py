@@ -644,7 +644,9 @@ def test_a_finished_signin_is_not_a_provider_outage(tmp_path):
     try:
         with patch.object(router._quota, "cooldown") as cooldown:
             with pytest.raises(AllProvidersExhaustedError) as caught:
-                asyncio.run(router.call(
+                from tests.support.model_call import call as model_call
+
+                asyncio.run(model_call(router,
                     "writer", "hello", "system", universe_context=context,
                     operation="converse",
                 ))

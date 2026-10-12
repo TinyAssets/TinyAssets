@@ -247,17 +247,17 @@ class _ForegroundRunProviderSession:
         self._universe_dir = self._base_path / self._universe_id
         self._principal_id = principal_id.strip()
         self._provider_call = provider_call
+        from tinyassets.providers.model_call import open_allocation
         from tinyassets.request_budget import (
             RunRequestAllocation,
-            TurnRequestBudget,
-            current_request_budget,
         )
 
-        self._request_budget = request_budget or current_request_budget()
+        self._request_budget = request_budget
         self._owns_request_budget = self._request_budget is None
         if self._request_budget is None:
-            self._request_budget = TurnRequestBudget(self._principal_id, self._universe_id)
+            self._request_budget = open_allocation(self._principal_id, self._universe_dir)
         self._request_budget.check_scope(self._principal_id, self._universe_id)
+        self._request_budget.persist(self._base_path)
         if request_allocation is not None and (
             type(request_allocation) is not RunRequestAllocation
             or request_allocation.budget is not self._request_budget
@@ -420,7 +420,6 @@ class _ForegroundRunProviderSession:
             self._branch_snapshot = snapshot
             self._branch_digest = _content_digest(snapshot)
             self._validate_run(allowed_statuses=allowed_statuses)
-            self._request_budget.persist(self._base_path)
             self._request_budget.link("run", self._run_id)
         except ProviderAuthorityHeldError:
             raise

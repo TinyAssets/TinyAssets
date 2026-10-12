@@ -86,6 +86,15 @@ class ModelResult:
         return self.response.text
 
 
+def open_allocation(owner: str, universe_dir, **policy):
+    """Create a durable parent for a turn or run with several model calls."""
+    from tinyassets.request_budget import TurnRequestBudget
+
+    budget = TurnRequestBudget(owner, universe_dir.name, **policy)
+    budget.persist(universe_dir.parent)
+    return budget
+
+
 def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContext]:
     from tinyassets.providers.call import get_provider_router, register_open_providers_for
 
@@ -103,8 +112,6 @@ def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContex
     authority = universe.served_provider
     if authority is not None and parent.owner and authority.owner_user_id != parent.owner:
         raise PermissionError("Model call parent does not match its owner")
-    # The current router revalidates the selected source and owner authority at
-    # each dispatch. This is a request, never an authority token.
     if request.model is not None:
         universe = replace(universe, model_selection=request.model)
         context = replace(context, universe_context=universe)
@@ -126,28 +133,41 @@ def _result(response: ProviderResponse, request: ModelCall, parent: Parent) -> M
 
 @contextmanager
 def _allocation(context: ModelContext, parent: Parent):
-    """Join the caller's durable root or open one at the call boundary."""
-    from tinyassets.request_budget import (
-        TurnRequestBudget,
-        current_request_budget,
-        request_budget_scope,
-    )
+    from tinyassets.request_budget import TurnRequestBudget
 
     universe = context.universe_context
     authority = universe.served_provider
     carrier = universe.provider_invocation
+    request_carrier = universe.provider_request
     cfg = context.config or ModelConfig()
-    budget = cfg.request_budget or current_request_budget()
+    budget = cfg.request_budget
+    request_owner = ""
+    if request_carrier is not None:
+        from tinyassets.auth.middleware import validate_provider_request_carrier
+
+        try:
+            capability = validate_provider_request_carrier(
+                request_carrier, universe_id=universe.universe_dir.name,
+                agent_binding_id=request_carrier.agent_binding_id,
+                binding_revision=request_carrier.binding_revision,
+                operation=context.operation,
+            )
+        except PermissionError as exc:
+            raise ProviderAuthorityHeldError(f"Connect your provider: {exc}") from exc
+        request_owner = capability.principal_id
     owner = (authority.owner_user_id if authority is not None else
              carrier._receipt.principal_id if carrier is not None else
-             budget.owner if budget is not None else "")
+             request_owner or (budget.owner if budget is not None else ""))
+    if not owner and not parent.owner:
+        raise ProviderAuthorityHeldError(
+            "Connect your provider: an owner-bound source is required"
+        )
     if not owner or (parent.owner and parent.owner != owner):
         raise PermissionError("Model call parent does not match its owner")
-    owns = budget is None and parent.usage_id is None
+    owns = budget is None
     if budget is None:
         if parent.usage_id is None:
-            budget = TurnRequestBudget(owner, parent.command_center)
-            budget.persist(universe.universe_dir.parent)
+            budget = open_allocation(owner, universe.universe_dir)
         else:
             budget = TurnRequestBudget.join(
                 universe.universe_dir.parent, owner, parent.command_center,
@@ -157,10 +177,13 @@ def _allocation(context: ModelContext, parent: Parent):
         raise PermissionError("Model call allocation changed")
     budget.check_scope(owner, parent.command_center)
     budget.persist(universe.universe_dir.parent)
-    with request_budget_scope(budget, close_on_exit=owns):
+    try:
         if parent.subject is not None:
             budget.link(*parent.subject)
         yield replace(context, config=replace(cfg, request_budget=budget))
+    finally:
+        if owns:
+            budget.close()
 
 
 async def call(request: ModelCall, parent: Parent) -> ModelResult:
@@ -241,10 +264,6 @@ def text_sync(
     authority = universe_context.served_provider
     carrier = universe_context.provider_invocation
     budget = getattr(config, "request_budget", None)
-    if budget is None:
-        from tinyassets.request_budget import current_request_budget
-
-        budget = current_request_budget()
     parent = Parent(
         owner=(authority.owner_user_id if authority is not None else
                carrier._receipt.principal_id if carrier is not None else ""),

@@ -247,20 +247,27 @@ def _call_sync(provider, operation):
     """``router.call_sync`` bound to one owner, as the unplanned served path is."""
     from unittest.mock import patch
 
+    from tests.support.model_call import call_sync as model_call_sync
     from tests.support.owner_bound import owner_carrier
     from tinyassets.providers.base import UniverseContext
     from tinyassets.providers.router import ProviderRouter
 
     router = ProviderRouter(providers={provider.name: provider})
     carrier = owner_carrier(provider.name, operation=operation)
-    context = UniverseContext(universe_dir=Path("u-owner-bound"), provider_invocation=carrier)
-    with patch("tinyassets.providers.router._provider_invocation_carrier",
-               return_value=carrier), patch(
-        "tinyassets.providers.served_model_plan.connected_sources",
-        return_value=frozenset({provider.name}),
-    ):
-        return router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
-                                operation=operation, universe_context=context)
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as root:
+        universe = Path(root) / "u-owner-bound"
+        universe.mkdir()
+        context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
+        with patch("tinyassets.providers.router._provider_invocation_carrier",
+                   return_value=carrier), patch(
+            "tinyassets.providers.served_model_plan.connected_sources",
+            return_value=frozenset({provider.name}),
+        ):
+            return model_call_sync(router, "writer", "p", "s",
+                                   ModelConfig(absolute_cap_s=60.0),
+                                   operation=operation, universe_context=context)
 
 
 def test_an_unplanned_native_served_call_is_cancelled_by_the_stop():
@@ -281,11 +288,12 @@ def test_an_unplanned_native_served_call_is_cancelled_by_the_stop():
     assert time.monotonic() - started < 10 and state.cancelled and not state.finished
 
 
-def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing():
+def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing(tmp_path):
     """astra round 2: a native call cancelled before its coroutine ran was settled
     INDETERMINATE (its reservation consumed) although nothing launched."""
     from unittest.mock import patch
 
+    from tests.support.model_call import call_sync as model_call_sync
     from tests.support.owner_bound import owner_carrier
     from tinyassets.provider_work_authority import (
         ProviderInvocationReservationState,
@@ -306,7 +314,9 @@ def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing():
     router = ProviderRouter(providers={provider.name: provider})
     carrier = owner_carrier(provider.name, operation="converse")
     carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
-    context = UniverseContext(universe_dir=Path("u-owner-bound"), provider_invocation=carrier)
+    universe = tmp_path / "u-owner-bound"
+    universe.mkdir()
+    context = UniverseContext(universe_dir=universe, provider_invocation=carrier)
     with interactive_turn("owner", "u-1") as live:
         live.request()
         with patch("tinyassets.providers.router._provider_invocation_carrier",
@@ -314,8 +324,9 @@ def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing():
             "tinyassets.providers.served_model_plan.connected_sources",
             return_value=frozenset({provider.name}),
         ), pytest.raises(TurnInterrupted):
-            router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
-                             operation="converse", universe_context=context)
+            model_call_sync(router, "writer", "p", "s",
+                            ModelConfig(absolute_cap_s=60.0),
+                            operation="converse", universe_context=context)
     assert entered == [], "the provider was launched after the owner's Stop"
     settled = [call.args[0] for call in carrier.settle.call_args_list]
     assert settled == [ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH], settled

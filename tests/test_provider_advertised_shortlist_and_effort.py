@@ -227,10 +227,7 @@ def test_unset_effort_leaves_the_executor_default(native, monkeypatch):  # noqa:
     _seen, configs = install_discovery(native, monkeypatch, discover)
     context = replace(native.context,
                       model_selection=ModelRef("codex", "new-account-model"))
-    asyncio.run(native.router.call(
-        "writer", "hello", "system", operation="converse", universe_context=context,
-        config=ModelConfig(reasoning_effort="max"),
-    ))
+    _call(native, context, ModelConfig(reasoning_effort="max"))
     assert configs and configs[0].reasoning_effort == ""
 
 
@@ -614,10 +611,7 @@ def test_a_declared_native_selection_does_not_clobber_a_node_effort(native, monk
                       model_selection=ModelRef("codex", "future-native-model"))
     from tinyassets.providers.base import ModelConfig
 
-    asyncio.run(native.router.call(
-        "writer", "hello", "system", operation="converse", universe_context=context,
-        config=ModelConfig(reasoning_effort="minimal"),
-    ))
+    _call(native, context, ModelConfig(reasoning_effort="minimal"))
     assert configs, "the provider was never invoked"
     assert configs[0].native_model_id == "future-native-model"
     assert configs[0].reasoning_effort == "minimal", (

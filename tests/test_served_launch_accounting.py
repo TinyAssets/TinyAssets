@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from tests.support.model_call import call as model_call
 from tests.test_provider_served_router import _RecordingProvider, _served_context
 from tinyassets.auth import middleware as auth
 from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -38,7 +39,7 @@ def test_pre_launch_refusal_preserves_request_allowance(tmp_path, monkeypatch, r
             yield replace(authority, before_provider_launch=refused)
 
     def call():
-        return asyncio.run(router.call(
+        return asyncio.run(model_call(router,
             "writer", "hello", "system", operation="converse", universe_context=context,
         ))
 
@@ -80,12 +81,12 @@ def test_sealed_plan_can_launch_more_than_two_without_new_carriers(tmp_path):
     try:
         auth.seal_provider_request_launch_allowance(capability, limit=6)
         for index in range(6):
-            asyncio.run(router.call(
+            asyncio.run(model_call(router,
                 "writer", f"attempt {index}", "system", operation="converse",
                 universe_context=context,
             ))
         with pytest.raises(ProviderAuthorityHeldError):
-            asyncio.run(router.call(
+            asyncio.run(model_call(router,
                 "writer", "too many", "system", operation="converse", universe_context=context,
             ))
         assert provider.calls == 6

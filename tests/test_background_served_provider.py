@@ -767,7 +767,7 @@ def test_background_carrier_actuals_are_finalized_by_the_router(
         # Exactly what production does: the session's authority-bearing context is
         # handed to the real router, which reserves, launches, and finalizes.
         resp = asyncio.run(
-            router.call(role, prompt, system, operation=kwargs["operation"],
+            router.call(role, prompt, system, config=config, operation=kwargs["operation"],
                         universe_context=kwargs["universe_context"])
         )
         return resp.text

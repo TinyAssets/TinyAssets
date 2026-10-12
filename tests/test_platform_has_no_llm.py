@@ -126,8 +126,6 @@ def test_router_call_with_no_universe_is_refused_before_any_provider_or_probe():
         asyncio.run(router.call("writer", "prompt", "system"))
     with pytest.raises(PlatformLLMCallRefusedError):
         router.call_sync("writer", "prompt", "system")
-    with pytest.raises(PlatformLLMCallRefusedError):
-        asyncio.run(router.call_judge_ensemble("prompt", "system"))
 
     assert _calls(spies) == {}
     health.assert_not_called()
@@ -229,13 +227,18 @@ def test_owner_authority_cannot_launch_a_host_credential_provider(
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):
         with pytest.raises(PlatformLLMCallRefusedError, match=host_provider):
-            asyncio.run(router.call(
-                "writer", "prompt", "system", ModelConfig(max_tokens=10),
-                operation="run_graph",
-                universe_context=UniverseContext(
-                    universe_dir=tmp_path / "u1", provider_invocation=carrier,
+            from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+            (tmp_path / "u1").mkdir()
+            asyncio.run(call(ModelCall(
+                model=None, fallbacks=(), context=ModelContext(
+                    role="writer", prompt="prompt", system="system",
+                    config=ModelConfig(max_tokens=10), operation="run_graph",
+                    universe_context=UniverseContext(
+                        universe_dir=tmp_path / "u1", provider_invocation=carrier,
+                    ), router=router,
                 ),
-            ))
+            ), Parent(owner=carrier._receipt.principal_id, command_center="u1")))
     assert _calls(spies) == {}
 
 
@@ -386,13 +389,18 @@ def test_bound_call_is_served_by_the_owners_provider_and_ignores_host_pin(
 
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):
-        response = asyncio.run(router.call(
-            "writer", "prompt", "system", ModelConfig(max_tokens=10),
-            operation="run_graph",
-            universe_context=UniverseContext(
-                universe_dir=tmp_path / "u1", provider_invocation=carrier,
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+        (tmp_path / "u1").mkdir()
+        response = asyncio.run(call(ModelCall(
+            model=None, fallbacks=(), context=ModelContext(
+                role="writer", prompt="prompt", system="system",
+                config=ModelConfig(max_tokens=10), operation="run_graph",
+                universe_context=UniverseContext(
+                    universe_dir=tmp_path / "u1", provider_invocation=carrier,
+                ), router=router,
             ),
-        ))
+        ), Parent(owner=carrier._receipt.principal_id, command_center="u1"))).response
     assert response.provider == "codex"
     assert _calls(spies) == {"codex": 1}
     health.assert_not_called()
