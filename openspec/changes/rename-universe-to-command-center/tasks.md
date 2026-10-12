@@ -56,3 +56,6 @@ later.
       and id migration (`u-` to `cc-`), and external records, in one freeze
       window you open and the measured quiet window. The dry run, backup,
       verification and rollback in D7 apply. Delete C1's edge translation after.
+
+## Folded lanes (one owner and one cutover)
+- [ ] Complete `command-center-cutover` obligations in the folded design section (12 open source tasks); use the surviving path only.

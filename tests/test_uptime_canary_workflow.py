@@ -100,7 +100,7 @@ const core = {
 };
 const context = {repo: {owner: 'owner', repo: 'repo'}};
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-new AsyncFunction('github', 'context', 'core', script)(github, context, core)
+new AsyncFunction('github', 'context', 'core', 'require', script)(github, context, core, require)
   .then(() => console.log('__RESULT__' + JSON.stringify({calls, outputs, warnings, summaries})))
   .catch((error) => {
     console.error(error.stack || error);
@@ -131,6 +131,7 @@ def _run_alarm_script(overall: str, **config: object) -> dict:
             "GITHUB_SERVER_URL": "https://github.com",
             "GITHUB_REPOSITORY": "owner/repo",
             "GITHUB_RUN_ID": "2",
+            "GITHUB_WORKSPACE": str(_REPO),
             "TEST_CONFIG": json.dumps(config),
         },
     )
@@ -332,3 +333,17 @@ def test_disk_alarm_uses_existing_disk_label_without_p0_triage():
     assert "disk-pressure" in gate["env"]["LABEL"]
     page = next(step for step in steps if step.get("id") == "page")
     assert "disk_status" in page["run"] and "SHARED_DISK_PRESSURE" in page["run"]
+
+
+def test_alarm_sink_delegates_incident_mutations_to_the_shared_module():
+    script = _alarm_script()
+    assert "scripts/incident_issue.js" in script
+    assert "recordFailure" in script
+    assert "recordRecovery" in script
+    for direct in (
+        "issues.listForRepo",
+        "issues.createComment",
+        "issues.update",
+        "github.rest.issues.create(",
+    ):
+        assert direct not in script, f"alarm sink inlined {direct}"

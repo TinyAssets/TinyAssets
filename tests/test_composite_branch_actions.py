@@ -654,7 +654,8 @@ def test_patch_branch_requires_changes_json(comp_env):
 
 def test_build_branch_writes_one_ledger_entry(comp_env):
     us, base = comp_env
-    _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    public = {**RECIPE_SPEC, "visibility": "public"}
+    _call(us, "build_branch", spec_json=json.dumps(public))
     ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
     actions = [e["action"] for e in ledger]
     # Exactly one build_branch entry — not three add_nodes + four
@@ -668,7 +669,8 @@ def test_build_branch_writes_one_ledger_entry(comp_env):
 
 def test_patch_branch_writes_one_ledger_entry(comp_env):
     us, base = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
+    public = {**RECIPE_SPEC, "visibility": "public"}
+    built = _call(us, "build_branch", spec_json=json.dumps(public))
     bid = built["branch_def_id"]
     _call(us, "patch_branch", branch_def_id=bid,
           changes_json=json.dumps([
@@ -703,7 +705,8 @@ def test_rejected_patch_does_not_ledger(comp_env):
     bid = built["branch_def_id"]
     _call(us, "patch_branch", branch_def_id=bid,
           changes_json=json.dumps([{"op": "nonsense"}]))
-    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    ledger_path = Path(base) / "ledger.json"
+    ledger = json.loads(ledger_path.read_text("utf-8")) if ledger_path.exists() else []
     assert not any(e["action"] == "patch_branch" for e in ledger)
 
 
@@ -789,7 +792,8 @@ def test_patch_branch_update_node_rejects_unknown_field(comp_env):
     assert [v.branch_version_id for v in after_versions] == [
         v.branch_version_id for v in before_versions
     ]
-    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    ledger_path = Path(base) / "ledger.json"
+    ledger = json.loads(ledger_path.read_text("utf-8")) if ledger_path.exists() else []
     assert not any(e["action"] == "patch_branch" for e in ledger)
 
 

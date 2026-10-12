@@ -15,3 +15,9 @@
 
 ## 3. Land
 - [ ] 3.1 Sync delta into `openspec/specs/user-owned-automations/`, archive.
+
+## Folded lanes (one owner and one cutover)
+- [ ] Complete `node-scheduled-wake` obligations in the folded design section (2 open source tasks); use the surviving path only.
+- [ ] Complete `owner-message-wakes` obligations in the folded design section (2 open source tasks); use the surviving path only.
+- [ ] Complete `served-inbound-webhook-triggers` obligations in the folded design section (4 open source tasks); use the surviving path only.
+- [ ] Complete `automation-schedule-timezone` obligations in the folded design section (12 open source tasks); use the surviving path only.

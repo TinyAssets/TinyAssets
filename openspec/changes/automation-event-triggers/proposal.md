@@ -56,3 +56,5 @@ cannot follow another graph, or wait for its owner's answer, without polling:
 - Public surface: new `create` payload fields, and new projection fields under
   `trigger`.
 - Resolves concern `2026-09-02-non-source-event-subscriptions-never-fire.md`.
+
+C2 folds `node-scheduled-wake`, `owner-message-wakes`, `served-inbound-webhook-triggers`, `automation-schedule-timezone` into this single active change.
