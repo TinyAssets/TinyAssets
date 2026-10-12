@@ -391,7 +391,7 @@ def test_the_shipped_package_executor_reports_enumeration_support(monkeypatch):
     from tinyassets.external_agents.provider import ExternalAgentProvider
 
     monkeypatch.setattr(
-        provider_calls, "_real_router",
+        provider_calls, "_router",
         ProviderRouter({"codex": ExternalAgentProvider("codex")}),
     )
     assert _native_enumeration("codex") == "supported"
