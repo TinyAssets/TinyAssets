@@ -120,6 +120,7 @@ def test_selected_work_agent_changes_model_inside_same_journal_without_repeating
     assert len(usage_id) == 32 and all(c in "0123456789abcdef" for c in usage_id)
     assert usage["dispatched"] == 3
     assert usage["quota_authoritative"] is False
+    assert {source["purpose"] for source in usage["sources"]} == {"reply", "tool_review"}
     assert sum(source["failed"] for source in usage["sources"]) == 1
     assert execution == {
         "provider": sessions[0]._work_candidates.order[0].connection_id,
