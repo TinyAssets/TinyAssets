@@ -9,7 +9,8 @@
 //     404 handler → "Session terminated" in Claude.ai (the 2026-04-19 P0).
 //
 // Fix:
-//   This Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`.
+//   This Worker runs on routes `tinyassets.io/mcp*`, `tinyassets.io/app*` and
+//   `tinyassets.io/api*` (the REST API).
 //   Requests to `/mcp` (the connector endpoint) and `/app` (the web app) are
 //   forwarded to the internal tunnel origin at `mcp.tinyassets.io`,
 //   authenticated via Cloudflare Access service-token headers. The broad
@@ -18,8 +19,9 @@
 //   them to either origin.
 //
 // Security model (host directive 2026-04-20):
-//   - `tinyassets.io/mcp` is the only public connector URL, and
-//     `tinyassets.io/app` the only public app URL.
+//   - `tinyassets.io/mcp` is the only public connector URL,
+//     `tinyassets.io/app` the only public app URL, and
+//     `tinyassets.io/api` the only public REST URL.
 //   - `mcp.tinyassets.io` exists in DNS as the tunnel origin but is
 //     Access-gated: direct requests without CF-Access service-token headers
 //     return 401/403. Only this Worker can reach it, via the secret headers
@@ -259,7 +261,7 @@ async function proxyToTunnel(request, env) {
  * themselves); this is purely the method-allow check.
  */
 function shouldProxy(pathname) {
-    // Two path families belong to the tunnel:
+    // Three path families belong to the tunnel:
     //   /mcp   — the canonical MCP connector endpoint (and its sub-paths).
     //   /app   — the web app (moved off /mcp/app on 2026-09-30).
     // The broader Cloudflare `tinyassets.io/mcp*` binding intentionally reaches
@@ -279,6 +281,8 @@ function shouldProxy(pathname) {
     // to be `tinyassets.io/app*` and cannot be an exact `tinyassets.io/app`.
     if (pathname === '/mcp' || pathname.startsWith('/mcp/')) return true;
     if (pathname === '/app' || pathname.startsWith('/app/')) return true;
+    //   /api — the REST API for programmatic clients (API-key auth).
+    if (pathname === '/api' || pathname.startsWith('/api/')) return true;
     return false;
 }
 
@@ -298,13 +302,19 @@ function shouldProxy(pathname) {
  * reaching the website origin, so the Worker hands them back rather than
  * answering 404 on the site's behalf.
  *
- * Deliberately narrow: only `/app`-prefixed non-app paths pass through.
+ * The `/api*` binding has the same shape (`/api?x` must reach the REST
+ * door), so `/api`-prefixed non-API paths are handed back the same way.
+ *
+ * Deliberately narrow: only `/app`- and `/api`-prefixed non-door paths pass through.
  * `/mcp-directory*` keeps terminating here as an ordinary 404, which is a spec
  * requirement — the fallthrough ambiguity is what made the 2026-04-19 P0 hard
  * to diagnose, and this does not reintroduce it for the MCP family.
  */
 function belongsToWebsite(pathname) {
-    return pathname.startsWith('/app') && !shouldProxy(pathname);
+    // `/app*` and `/api*` are both query-capable wildcard bindings, so each
+    // drags in website paths that merely start with "app" / "api".
+    return (pathname.startsWith('/app') || pathname.startsWith('/api'))
+        && !shouldProxy(pathname);
 }
 
 //: Marks a website pass-through subrequest as ours. Cloudflare sends a Worker's
