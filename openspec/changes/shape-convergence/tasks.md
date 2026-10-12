@@ -141,6 +141,8 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       (#4616 step 4).
       Guard: `vendor-names` ceiling to the data-only floor, `opt-in-flags`.
       Net about −8k. Depends on C6, C8, `broker-streaming-contract`.
+      The external-agent packages, the Codex and Claude Code deletions and
+      the discovery cell were brought forward as `cli-external-agents`.
 - **C10 Workflows and extensions as packages.**
       **Deletes:** the v1 workspace-executable loader (`ta_cli.py:54-105`),
       the Activities branch, and the platform `invoke_branch*` and
