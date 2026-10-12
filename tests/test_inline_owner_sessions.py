@@ -94,12 +94,14 @@ def test_bearer_fetch_cannot_start_interactive_login(setup):
     assert response.status_code == 403
 
 
-def test_policy_bearer_write_cannot_bypass_owner_session(setup, monkeypatch, tmp_path):
+def test_policy_bearer_write_cannot_bypass_owner_session(
+        setup, monkeypatch, tmp_path, frozen_owner_policy):
     from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.policy import PolicyRefused, PolicyStore
 
     admissions = SimpleNamespace(admissions_after=lambda _generation: [
         SimpleNamespace(center="alpha", principal="alice", event="admit")])
+    frozen_owner_policy(tmp_path, principal="alice", center="alpha")
     store = PolicyStore(tmp_path, admissions)
     store.bootstrap()
     current = store.read("alice")
