@@ -1,80 +1,11 @@
 {
-  "version": "privacy-v1.0 / terms-v0-draft",
-  "terms_effective_date": "2026-04-29",
-  "privacy_effective_date": "2026-09-09",
-  "review_status": "Privacy notice published v1.0 and effective 2026-09-09 as an operational disclosure. Counsel review of this page remains pending.",
+  "version": "privacy-v2 / terms-v1",
+  "effective_date": "[EFFECTIVE DATE]",
+  "operator": "TinyAssets, a trade name of Simkal Holdings LLC",
+  "contact": "info@tinyassets.io",
+  "governing_law": "Washington",
+  "minimum_age": 18,
   "platform_license": "MIT",
   "content_license": "CC0-1.0",
-  "platform_repo": "https://github.com/TinyAssets/TinyAssets",
-  "content_repo": "https://github.com/Jonnyton/TinyAssets-catalog",
-  "operating_entity": {
-    "name": "Tiny Assets (operating entity TBD pending Wyoming DAO LLC formation)",
-    "type": "Pre-formation; treat as unincorporated association at v0",
-    "jurisdiction": "Delaware (default \u2014 counsel may relocate to Wyoming for DAO LLC)"
-  },
-  "jurisdiction": {
-    "governing_law": "State of Delaware, USA (without regard to conflict-of-laws)",
-    "dispute_resolution": "JAMS binding arbitration in Delaware, individual claims only (class-action waiver), small-claims-court carve-out preserved",
-    "liability_cap": "Lesser of (a) fees paid to us in the 12 months preceding the claim, or (b) USD 100",
-    "venue_for_injunctive": "State and federal courts located in Delaware"
-  },
-  "contact": "info@tinyassets.io",
-  "token": {
-    "name": "Destiny",
-    "display_name": "Destiny (tiny)",
-    "symbol": "tiny",
-    "workflow_test_currency": "test tiny on Base Sepolia",
-    "current_workflow_status": "TinyAssets touches only the Base Sepolia test currency until real Destiny (tiny) integration is explicitly opened.",
-    "intended_classification": "Digital tool / digital commodity (per SEC 2026 Project Crypto)",
-    "is_security": false,
-    "offers_yield": false,
-    "offers_appreciation": false,
-    "rewards_model": "Activity-based \u2014 daemons earn test tiny for completed work that clears outcome gates. Real Destiny (tiny) payouts are deferred until the real-currency integration phase. No passive yield.",
-    "regulatory_framework_targeted": [
-      "SEC Project Crypto interpretive release (April 2026)",
-      "Digital Asset Market Clarity Act (H.R. 3633)"
-    ]
-  },
-  "geo_restrictions": {
-    "status": "Default block list \u2014 counsel may amend",
-    "blocked_jurisdictions": [
-      "OFAC-comprehensively-sanctioned countries (Cuba, Iran, North Korea, Russia/Crimea, Syria, and other comprehensive-sanctions jurisdictions per 31 CFR 500-599)",
-      "People's Republic of China (PRC crypto-trading ban)",
-      "Any jurisdiction where holding or transacting in utility tokens is prohibited by local law"
-    ],
-    "us_state_review_pending": [
-      "New York (BitLicense scope review)",
-      "Texas (state-level guidance evolving)"
-    ],
-    "enforcement_layer": "Wallet-connect screening (Chainalysis or TRM at MCP gateway). Self-declared geo-attestation at first paid-market action."
-  },
-  "kyc_aml": {
-    "tier1_chatbot_user": "No KYC \u2014 browse, run free-tier daemons, place free workflow runs.",
-    "tier2_daemon_host": "KYC required at lifetime cumulative paid-market threshold of USD 1,000 (Sumsub or Persona).",
-    "treasury_operations": "Full KYC + accredited-investor verification where applicable.",
-    "ofac_screening": "Chainalysis Sanctions API at wallet-connect, real-time, plus daily batch refresh of registered wallets."
-  },
-  "dao": {
-    "current_status": "Informal \u2014 votes are advisory only, non-binding pending legal-entity formation.",
-    "target_structure": "Wyoming DAO LLC (Wyo. Stat. \u00a7 17-31-101 et seq.) before Phase 8 launch.",
-    "voter_liability": "Limited to tiny staked in vote per smart-contract rules once real-token governance is live; no personal liability claim recognized.",
-    "vote_scope": [
-      "Which goals are canonical in the public goal set",
-      "Which third-party verifiers count for outcome-gate clearance",
-      "Which outcome-gate ladders qualify for tiny minting",
-      "Treasury allocations within DAO-controlled multisig"
-    ]
-  },
-  "force_majeure": [
-    "Blockchain-network events (chain reorgs, RPC outages, gas spikes >5x baseline, hard forks)",
-    "Cyberattacks affecting the gateway, MCP, or daemon hosts",
-    "Regulatory action that prohibits continued operation",
-    "Infrastructure-provider outages (Cloudflare, Supabase, Fly.io, GitHub)",
-    "Acts of God, war, civil unrest, pandemics"
-  ],
-  "minimum_age": 18,
-  "tax_reporting": {
-    "us_threshold": "Real-token payouts are disabled at v0. Once real Destiny (tiny) payouts are live, daemon hosts who earn \u2265USD 600/year equivalent will receive a year-end CSV for self-reporting; we do not file 1099-MISC at v0.",
-    "international": "Users responsible for own tax treatment in their jurisdiction."
-  }
+  "platform_repo": "https://github.com/TinyAssets/TinyAssets"
 }
