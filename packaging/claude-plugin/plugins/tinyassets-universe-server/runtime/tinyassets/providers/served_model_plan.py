@@ -65,10 +65,11 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
     The set is rebuilt from custody and broker grants on each launch. A saved
     serving preference or another owner's definition never grants membership.
     """
+    from tinyassets.broker.client import BrokerRefused
     from tinyassets.broker.ledger_queries import HAS_MODEL_USE, query_ledger
     from tinyassets.credential_vault import current_llm_subscription_custody
     from tinyassets.providers.definition import list_definitions
-    from tinyassets.storage.outbound_connections import GrantResolutionError
+    from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
 
     base, universe = Path(base), Path(universe)
     if (universe.resolve(strict=False) != (base.resolve(strict=False) / universe.name)
@@ -92,7 +93,9 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
                 base, query=HAS_MODEL_USE, principal=owner,
                 command_center=universe.name, grant_id=definition.ref,
             )
-        except GrantResolutionError:
+        except (GrantResolutionError, BrokerRefused, ProxyRequestError, ValueError, OSError):
+            # One unavailable HTTP grant cannot withhold an independent
+            # subscription source. An HTTP call still fails membership below.
             continue
         if facts.get("model_use") is True:
             sources.add("api_key_http:" + definition.id)

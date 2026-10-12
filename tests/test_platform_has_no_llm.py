@@ -295,6 +295,32 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
         require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
 
 
+def test_unavailable_http_broker_does_not_block_owned_subscription(tmp_path, monkeypatch):
+    from tests.test_open_serving_bind import _setup
+    from tinyassets.providers.owner_binding import require_owner_bound_dispatch
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    universe, _agent, definition = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.current_llm_subscription_custody",
+        lambda _conn, **scope: object() if scope["service"] == "claude" else None,
+    )
+
+    def broker_down(*_args, **_kwargs):
+        raise ProxyRequestError("broker unavailable")
+
+    monkeypatch.setattr("tinyassets.broker.ledger_queries.query_ledger", broker_down)
+    authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
+    require_owner_bound_dispatch(
+        "claude-code", universe_dir=universe, served_authority=authority,
+    )
+    with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
+        require_owner_bound_dispatch(
+            f"api_key_http:{definition.id}", universe_dir=universe,
+            served_authority=authority,
+        )
+
+
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():
     """No universe dir means the child env is the host's: refuse before launch."""
     router, spies = _spy_router()
