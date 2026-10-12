@@ -15,6 +15,7 @@ from tinyassets.api.http_connection import (
     _canonical_policy,
     _connect_plan,
     _git_scopes_in,
+    is_git_scope,
 )
 
 ACTOR, UID, DESTINATION = "alice", "cc-alice", "example-api"
@@ -25,10 +26,10 @@ SCHEME, CREDENTIAL_REF, GIT_HOST = "bearer", "vault://http/example-api", ""
 def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destination,
                         connection_id, grant_id, scheme, credential_ref, git_host,
                         requested_endpoints, http_scopes):
-    """origin/main `_connect_http` step 4: its code verbatim, comments dropped and
-    the grant read injected, returning the plan instead of assigning locals."""
+    """The inline conflict contract, including additive git-scope widening."""
     legacy_scope_upgrade = False
     endpoints_extend = False
+    scope_only_extend = False
     if resource is not None and raw_policy is not None:
         http_scopes = tuple(
             sorted(set(http_scopes) | _git_scopes_in(raw_policy[1]))
@@ -71,8 +72,17 @@ def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destinat
             and not scopes_match
             and tuple(resource.scopes) == ("http",)
         )
+        scope_only_extend = (
+            not non_scope_mismatch and not endpoints_extend
+            and _canonical_endpoint_set(requested_endpoints)
+            == _canonical_endpoint_set(stored_endpoints)
+            and set(resource.scopes) < set(http_scopes)
+            and set(http_scopes) - set(resource.scopes)
+            <= {scope for scope in http_scopes if is_git_scope(scope)}
+        )
         if non_scope_mismatch or (
             not scopes_match and not legacy_scope_upgrade and not endpoints_extend
+            and not scope_only_extend
         ):
             return {"error": "connection_conflict", "resource": "connection"}
     existing_grant = get_grant(grant_id)
@@ -84,7 +94,7 @@ def _main_inline_checks(*, resource, raw_policy, get_grant, actor, uid, destinat
     ):
         return {"error": "connection_conflict", "resource": "grant"}
     return {"http_scopes": http_scopes, "legacy_scope_upgrade": legacy_scope_upgrade,
-            "endpoints_extend": endpoints_extend}
+            "endpoints_extend": endpoints_extend or scope_only_extend}
 
 
 def _endpoint(path, methods):
