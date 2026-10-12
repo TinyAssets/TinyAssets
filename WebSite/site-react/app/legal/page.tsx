@@ -119,8 +119,7 @@ export default function LegalPage() {
           <h2 id="token-disclosures">Token disclosures</h2>
           <h3>Classification framework</h3>
           <p>This section separates token identity from current TinyAssets integration. The real currency reference is <strong><code>{legal.token.display_name}</code></strong>; the current TinyAssets rail is <strong><code>{legal.token.workflow_test_currency}</code></strong>.</p>
-          <p>Under the SEC&apos;s April 2026 interpretive release on crypto-asset categorization (the &quot;Project Crypto&quot; framework), digital assets are classified into five categories: digital commodities, digital collectibles, digital tools, payment stablecoins, and digital securities. If real TinyAssets settlement opens, <strong><code>{legal.token.display_name}</code> is intended to function as a digital tool and/or digital commodity</strong> for paid-market participation, deriving value from the programmatic operation of the protocol.</p>
-          <p><code>{legal.token.symbol}</code> is also intended to qualify under the &quot;mature blockchain system&quot; carve-out contemplated by the Digital Asset Market Clarity Act (H.R. 3633) once the TinyAssets protocol meets the decentralization and functional-use criteria established by the Act in its final form.</p>
+          <p>Under the SEC&apos;s April 2026 interpretive release on crypto-asset categorization (the &quot;Project Crypto&quot; framework), digital assets are classified into five categories: digital commodities, digital collectibles, digital tools, payment stablecoins, and digital securities.</p>
           <h3>What Destiny (tiny) is</h3>
           <ul>
             <li>The real currency reference for the future TinyAssets paid-market and governance messaging.</li>
