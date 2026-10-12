@@ -30,6 +30,7 @@ READ_CAPABILITIES = frozenset({
     "read_graph", "get_status", "browse_commons", "read_commons_shape", "read_brain",
     "extension:help", "extension:list", "extension:events",
     "wake:list",
+    "policy:show",
 })
 MUTATION_GRANTS = frozenset({
     "write", "edit", "bash", "write_graph", "write_brain", "run_graph",
@@ -83,6 +84,14 @@ class Capabilities:
         from tinyassets.auth.middleware import current_identity_or_none
 
         self.outside_identity = current_identity_or_none()
+
+    def _bound_policy_owner(self):
+        from tinyassets.broker.owner_identities import admitted_owner
+
+        try:
+            return admitted_owner(self.root.parent, center=self.root.name) == self.context.owner
+        except Exception:  # noqa: BLE001 - missing owner admission hides policy capabilities
+            return False
 
     def connections(self):
         # A launch whose grant withholds connections neither lists nor calls one.
@@ -150,6 +159,18 @@ class Capabilities:
                                                            "fallbacks": {"type": "array"},
                                                            "messages": {"type": "array"},
                                                            "tools": {"type": "array"}}}})
+            if self._bound_policy_owner():
+                items.extend((
+                {"name": "policy:show", "description":
+                 "Read the current owner policy, generation and digest.",
+                 "arguments": {"type": "object", "additionalProperties": False}},
+                {"name": "policy:propose", "description":
+                 "Ask the owner to apply a complete policy document at its current generation.",
+                 "arguments": {"type": "object", "required": ["expected_generation", "policy"],
+                               "additionalProperties": False, "properties": {
+                                   "expected_generation": {"type": "integer"},
+                                   "policy": {"type": "object"}}}},
+                ))
             if self.connections_granted:
                 items.append({'name': 'browser', 'description':
                     'Default website connection: connect with official HTTPS url, account label, '
@@ -189,7 +210,7 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
-        known = (name in {"browser", "model"} or name.startswith(("extension:", "wake:"))
+        known = (name in {"browser", "model"} or name.startswith(("extension:", "wake:", "policy:"))
                  or name in self.platform or name in self.connections())
         if known and not _is_read(name) and not self.mutations_granted:
             return {"error": "mutation capability not granted"}
@@ -203,6 +224,32 @@ class Capabilities:
                 return {"error": str(exc)}
             except ProviderError as exc:
                 return {"error": redacted_failure_detail(str(exc))}
+        if name == "policy:show":
+            if not self._bound_policy_owner():
+                return {"error": "owner policy unavailable"}
+            if arguments:
+                return {"error": "policy show takes no arguments"}
+            from tinyassets.broker.client import owner_policy_operation
+
+            return {"result": await asyncio.to_thread(
+                owner_policy_operation, self.root.parent, self.context.owner, "read")}
+        if name == "policy:propose":
+            if not self._bound_policy_owner():
+                return {"error": "owner policy unavailable"}
+            if (set(arguments) != {"expected_generation", "policy"}
+                    or type(arguments["expected_generation"]) is not int
+                    or not isinstance(arguments["policy"], dict)):
+                return {"error": "policy proposal requires a generation and document"}
+            from tinyassets.agent_review import propose_policy
+            from tinyassets.broker.client import owner_policy_operation
+
+            encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+            if len(encoded.encode()) > 12000:
+                return {"error": "policy proposal is too large"}
+            request = await asyncio.to_thread(
+                propose_policy, self.root, arguments["expected_generation"],
+                arguments["policy"])
+            return {"result": {"request": request}}
         if name.startswith("wake:"):
             from tinyassets.wake_capabilities import call
 

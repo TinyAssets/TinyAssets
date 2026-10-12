@@ -1236,17 +1236,16 @@ def test_held_payload_does_not_invoke_a_second_provider_call(
     ("engine_source", "extra"),
     [
         ("self_hosted_endpoint", {"engine_endpoint": "https://llm.internal/v1"}),
-        ("market_rented", {"market_model": "glm-5.2"}),
         ("host_daemon", {}),
     ],
 )
 def test_non_vault_engine_choice_is_an_outage_not_missing_setup(
     data_dir, monkeypatch, engine_source, extra
 ):
-    """Codex ADAPT 2026-07-25 finding 1: a vault-only test misreads three engines.
+    """A vault-only test misreads a configured engine outage.
 
-    `set_engine` records `self_hosted_endpoint` / `market_rented` /
-    `host_daemon` in config and writes NO vault credential. Reading an empty
+    `set_engine` records `self_hosted_endpoint` / `host_daemon` in config
+    and writes no vault credential. Reading an empty
     vault as "never set up" would send a founder who already chose an engine
     back to onboarding and hide that their engine is down.
     """

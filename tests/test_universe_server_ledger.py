@@ -193,7 +193,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",
         "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
-        "set_engine", "offer_engine",
+        "set_engine",
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
         # Mutates soul.md from a caller-supplied universe_id. Membership here is
         # what makes the central universe-ACL gate check it at WRITE strength;

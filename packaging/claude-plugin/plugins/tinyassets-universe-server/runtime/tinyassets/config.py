@@ -71,23 +71,13 @@ class UniverseConfig:
     engine_source: str = "byo_api_key"
     """How this command center sources its engine: ``byo_api_key`` (default; a BYO API
     key in the vault) / ``requester_local`` / ``self_hosted_endpoint`` /
-    ``market_rented`` / ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
+    ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
     persist the founder's choice (deeper market-matching / endpoint-routing
     runtime is post-M1 hardening)."""
 
     engine_endpoint: str = ""
     """Self-hosted engine endpoint (e.g. an ``OLLAMA_HOST`` / ``ANTHROPIC_BASE_URL``
     URL) when ``engine_source=self_hosted_endpoint``."""
-
-    market_model: str = ""
-    """Model to rent from the market (e.g. ``glm-5.2``) when
-    ``engine_source=market_rented``."""
-
-    market_rate: float = 0.0
-    """Per-unit market rate the founder accepts for a rented engine."""
-
-    spending_cap: float = 0.0
-    """Spending cap for a market-rented engine (0 = unset)."""
 
     # Model parameters
     temperature: float = 0.7

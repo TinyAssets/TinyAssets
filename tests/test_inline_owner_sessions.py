@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from tests.support.broker_double import seed_owner_admission
 from tinyassets import onboarding
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
@@ -94,13 +95,51 @@ def test_bearer_fetch_cannot_start_interactive_login(setup):
     assert response.status_code == 403
 
 
-def test_rules_bearer_write_cannot_bypass_action_approval(setup, monkeypatch):
+def test_policy_bearer_write_cannot_bypass_owner_session(
+        setup, monkeypatch, tmp_path):
+    from tinyassets.broker.client import BrokerRefused
+    from tinyassets.broker.policy import PolicyRefused, PolicyStore
+
+    admissions = SimpleNamespace(admissions_after=lambda _generation: [
+        SimpleNamespace(center="alpha", principal="alice", event="admit")])
+    seed_owner_admission(tmp_path, principal="alice", center="alpha")
+    store = PolicyStore(tmp_path, admissions)
+    store.bootstrap()
+    current = store.read("alice")
+
+    def broker(_base, owner, action, **fields):
+        if action == "receipts":
+            return {"receipts": store.receipts(owner)}
+        assert action == "write"
+        try:
+            return store.write(owner, fields["cookie"], fields["expected_generation"],
+                               fields["policy"]).projection()
+        except PolicyRefused as exc:
+            raise BrokerRefused("broker refused policy write") from exc
+
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "alpha")
+    async def payload(_request):
+        return {"expected_generation": current.generation, "policy": current.document}
+    monkeypatch.setattr(onboarding, "_read_small_json", payload)
+    monkeypatch.setattr("tinyassets.broker.client.owner_policy_operation", broker)
     req = request(cookie="")
     req.method = "POST"
     with identity_context(Identity(user_id="alice", username="alice")):
-        response = asyncio.run(onboarding._handle_rules(req))
+        response = asyncio.run(onboarding._handle_policy(req))
     assert response.status_code == 403
+    assert store.read("alice").generation == current.generation
+    owner_cookie = "interactive-" + "p" * 43
+    with sessions.store() as conn:
+        conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                     (sessions.hashed(owner_cookie), json.dumps({"user_id": "alice"}),
+                      time.time() + 300))
+    req.cookies[sessions.COOKIE] = owner_cookie
+    with identity_context(Identity(user_id="alice", username="alice")):
+        accepted = asyncio.run(onboarding._handle_policy(req))
+    assert accepted.status_code == 200, accepted.body
+    assert store.read("alice").generation == current.generation + 1
+    assert any(row["kind"] == "write" for row in json.loads(accepted.body)["receipts"])
 
 
 def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_path):

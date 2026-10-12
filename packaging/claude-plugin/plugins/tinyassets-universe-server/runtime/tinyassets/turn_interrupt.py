@@ -67,7 +67,7 @@ class LiveTurn:
         #: is only the seed.
         self.agent_id = agent_id or "main"
         self.live_id = uuid.uuid4().hex
-        from tinyassets.approval_scopes import continuation_task
+        from tinyassets.policy_grants import continuation_task
 
         self.approval_task = continuation_task.get()
         self._requested = threading.Event()
@@ -89,7 +89,7 @@ class LiveTurn:
                 self.request("agent retired")
         if not self._requested.is_set() and self.approval_task and len(self.approval_task) == 3:
             from tinyassets import bound_requests
-            from tinyassets.approval_scopes import task_is_current
+            from tinyassets.policy_grants import task_is_current
 
             task_home, task_id, generation = self.approval_task
             home = Path(task_home)

@@ -157,6 +157,38 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker catalog response")
         return answer["result"]
 
+    def owner_policy(self, action: str, **fields: Any) -> dict[str, Any]:
+        """Forward policy requests; the broker verifies write cookies itself."""
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        if action not in {"read", "write", "receipts", "proposal", "classify",
+                          "decide", "issue_once"}:
+            raise ValueError("unsupported owner policy operation")
+        wire = {"op": "OWNER_POLICY", "action": action, "principal": self._principal,
+                **fields}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid owner policy response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("owner policy outcome unavailable") from None
+        if answer.get("op") == "OWNER_POLICY_REFUSED":
+            reason = answer.get("reason")
+            raise BrokerRefused(reason if isinstance(reason, str) and reason
+                                else "owner policy request refused")
+        if answer.get("op") != "OWNER_POLICY_RESULT" or not isinstance(
+                answer.get("result"), dict):
+            raise ProxyRequestError("invalid owner policy response")
+        return answer["result"]
+
+
     def disconnect(self, document: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.disconnect import validate
         from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
@@ -184,36 +216,6 @@ class BrokerClient:
                 raise GrantResolutionError("outbound connection identity changed")
             raise BrokerRefused("credential broker disconnect refused")
         if answer.get("op") != "DISCONNECT_RESULT" or not isinstance(answer.get("result"), dict):
-            raise ProxyRequestError("invalid credential broker catalog response")
-        return answer["result"]
-
-    def http_policy(self, document: dict[str, Any]) -> dict[str, Any]:
-        from tinyassets.broker.http_policy import validate
-        from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
-
-        validate(document)
-        generation, token = self._fence()
-        wire = {"op": "HTTP_POLICY", "principal": self._principal,
-                "command_center": self._command_center, "generation": generation,
-                "token": token, "document": document}
-        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(self._timeout)
-            try:
-                sock.connect(os.fspath(self._path))
-                if self._verify_peer is not None:
-                    self._verify_peer(sock)
-                sock.sendall(rf.control(rf.CONNECTION, wire))
-                frame = rf.read_frame_blocking(sock)
-                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
-                    raise rf.FrameError("invalid policy response")
-                answer = frame.control()
-            except (OSError, rf.FrameError):
-                raise ProxyRequestError("broker policy outcome unavailable") from None
-        if answer.get("op") == "HTTP_POLICY_REFUSED":
-            if answer.get("error_class") == "GrantResolutionError":
-                raise GrantResolutionError("outbound connection identity changed")
-            raise BrokerRefused("credential broker policy refused")
-        if answer.get("op") != "HTTP_POLICY_RESULT" or not isinstance(answer.get("result"), dict):
             raise ProxyRequestError("invalid credential broker catalog response")
         return answer["result"]
 
@@ -332,7 +334,11 @@ class BrokerClient:
     @observed('connected_service', owner=lambda self, **kwargs: self._principal)
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
-                inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
+                inference_usage: dict[str, Any] | None = None,
+                policy_approval: str | None = None,
+                policy_grant_ref: str | None = None,
+                policy_agent: str | None = None,
+                policy_task_id: str | None = None) -> dict[str, Any]:
         refresh = (self._refresh_factory(grant_id, connection_id)
                    if self._refresh_factory is not None else None)
         generation, token = self._fence()
@@ -344,6 +350,11 @@ class BrokerClient:
         }
         if inference_usage is not None:
             open_doc["inference_usage"] = inference_usage
+        if policy_approval is not None:
+            open_doc["policy_approval"] = policy_approval
+        if policy_grant_ref is not None:
+            open_doc.update(policy_grant_ref=policy_grant_ref, policy_agent=policy_agent,
+                            policy_task_id=policy_task_id)
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
         if refresh is not None:
@@ -418,3 +429,18 @@ class BrokerClient:
                 head = doc
             elif doc["op"] == "END":
                 return head, body, doc
+
+
+def owner_policy_operation(data_root: Path, owner: str, action: str,
+                           **fields: Any) -> dict[str, Any]:
+    """Daemon-side broker call; never falls back to a local policy file."""
+    from tinyassets.broker.supervisor import get_supervisor
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise ProxyRequestError("owner policy broker unavailable")
+    client = BrokerClient(supervisor.socket_path, principal=owner, command_center="",
+                          fence=supervisor.fence, verify_peer=supervisor.verify_broker,
+                          timeout=30)
+    return client.owner_policy(action, **fields)

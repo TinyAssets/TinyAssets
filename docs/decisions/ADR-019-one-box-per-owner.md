@@ -45,6 +45,10 @@ the owner's connected account.
   caps are written only by the owner through the protected owner session,
   stored outside the box, enforced by the broker at the box boundary, and
   readable but never writable from inside the box.
+- **Known P1 residual:** the broker validates the owner cookie against
+  `.runtime/owner-sessions.db`, which the daemon can write. A compromised
+  daemon can mint an owner session and write policy. P2/P3 close this by
+  moving session minting and validation to broker-owned custody.
 - **No platform mail domain.** The agent sends email as a connector call on
   the owner's connected account.
 

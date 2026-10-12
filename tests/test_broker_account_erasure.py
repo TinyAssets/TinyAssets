@@ -2,6 +2,7 @@
 # ruff: noqa: F811 -- imported pytest fixtures
 import socket
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -89,9 +90,19 @@ unix = pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEE
 @unix
 def test_actual_account_deletion_calls_broker_after_tombstone(discovery, monkeypatch):
     from tinyassets import account_deletion
+    from tinyassets.broker.policy import PolicyRefused, PolicyStore
     from tinyassets.daemon_server import _connect
 
     seed(discovery.ledger)
+    admissions = SimpleNamespace(admissions_after=lambda _generation: [
+        SimpleNamespace(center="shared-home", principal=owner, event="admit")
+        for owner in ("erase-a", "erase-b")])
+    (discovery.root / ".broker").chmod(0o700)
+    policy = PolicyStore(discovery.root, admissions)
+    policy.bootstrap()
+    policy.read("erase-a")
+    policy.read("erase-b")
+    discovery.broker.server._policy_store = policy
     original = erase_account
 
     def checked(root, *, principal):
@@ -107,6 +118,12 @@ def test_actual_account_deletion_calls_broker_after_tombstone(discovery, monkeyp
     assert result["rows_deleted"]["outbound:agent_request_dispatches"] == 1
     assert discovery.ledger.get_connection("erase-a") is None
     assert discovery.ledger.get_connection("erase-b") is not None
+    assert not policy._path("erase-a").exists()
+    with pytest.raises(PolicyRefused, match="erased"):
+        policy.read("erase-a")
+    assert policy.erase("erase-a") == 0
+    policy.bootstrap()
+    assert policy.read("erase-b").owner == "erase-b"
     assert not (discovery.root / "outbound.db").exists()
 
 

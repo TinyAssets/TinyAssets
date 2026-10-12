@@ -14,7 +14,8 @@ from tests.test_authenticated_external_call_effector import (
     _Loopback,
     _setup,
 )
-from tinyassets import agent_review, agent_rules, ta_cli
+from tinyassets import agent_review, ta_cli
+from tinyassets import policy_rules as agent_rules
 from tinyassets.ta_capabilities import Capabilities, ExecutionContext
 
 
@@ -57,9 +58,7 @@ def test_engine_never_uses_client_sampling_for_review(
 
     _, root, db = _setup(tmp_path)
     server = engine(root, monkeypatch)
-    agent_rules.set_rule(root, "app.write", agent_rules.DO, agent="worker")
-    if enabled:
-        agent_review.set_review(root, "app.write", True, confirm=True, agent="worker")
+    _policy_stub(monkeypatch, review=enabled)
     loop = _Loopback()
     _install_loopback_driver(monkeypatch, loop.port)
     _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=root,
@@ -90,7 +89,7 @@ def test_engine_never_uses_client_sampling_for_review(
             assert result["error_kind"] == "auto_review_unavailable"
             assert loop.recorded == []
         else:
-            assert result["delivered"] is True, result
+            assert result.get("delivered") is True, result
             assert len(loop.recorded) == 1
         assert reviews == []
     finally:
@@ -174,6 +173,15 @@ def call(service, **request):
                   arguments={"request": {"path": "/v1/messages", **request}})
 
 
+def _policy_stub(monkeypatch, behaviour=agent_rules.DO, *, review=False):
+    """These transport tests leave the policy decision to the broker policy suite."""
+    monkeypatch.setattr(agent_rules, "configured_agents", lambda _home: set())
+    monkeypatch.setattr(agent_rules, "classify", lambda *_: ("app.write", "POST"))
+    monkeypatch.setattr(agent_rules, "decide", lambda *_a, **_kw:
+                        agent_rules.Decision(behaviour, None, "test_policy"))
+    monkeypatch.setattr(agent_review, "switched_on", lambda *_a: {"app.write"} if review else set())
+
+
 def test_platform_search_describe_and_call_share_the_catalog(monkeypatch, tmp_path):
     calls = []
 
@@ -203,16 +211,12 @@ def test_connection_uses_initiating_agents_rules_and_broker(
 ):
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     _, root, db = _setup(tmp_path, token="D6-SYNTHETIC-SECRET")
-    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
+    _policy_stub(monkeypatch, behaviour)
     loop = _Loopback()
     _install_loopback_driver(monkeypatch, loop.port)
     _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=root,
                              grant_id="grant-http", provider="http", destination="api.example.com",
                              runtime_root=tmp_path / "runtime")
-    # The main agent's rule disagrees: a fallback to main would fail this test.
-    agent_rules.set_rule(root, "app.write", agent_rules.HAND_OFF if expected is None
-                         else agent_rules.DO, agent="main")
-    agent_rules.set_rule(root, "app.write", behaviour, agent="worker")
     try:
         result = call(backend(root), body={"hello": "world"})["result"]
         if expected:
@@ -234,9 +238,8 @@ def test_connection_uses_initiating_agents_rules_and_broker(
 
 def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch):
     _, root, db = _setup(tmp_path, grant_consent_for=False)
-    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
+    _policy_stub(monkeypatch)
     service = backend(root)
-    agent_rules.set_rule(root, "app.write", agent_rules.DO, agent="worker")
     assert call(service)["result"]["error_kind"] == "missing_consent"
     # Scope checks run in the real broker, even if a crafted path reaches it.
     from tinyassets.storage.effector_consents import grant_consent
@@ -302,10 +305,9 @@ def test_reflected_credential_never_crosses_broker_and_revocation_is_current(tmp
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     _, root, db = _setup(tmp_path, token="D6-REFLECTED-SECRET")
-    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
+    _policy_stub(monkeypatch)
     service = backend(root)
     assert invoke(service, op="catalog")["capabilities"]
-    agent_rules.set_rule(root, "app.write", agent_rules.DO, agent="worker")
     loop = _Loopback(lambda *_: b'{"echo":"D6-REFLECTED-SECRET"}')
     _install_loopback_driver(monkeypatch, loop.port)
     _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=root,
