@@ -84,6 +84,7 @@ def test_account_erasure_removes_only_owners_ciphertext_and_key(vault):
         assert conn.execute(
             'SELECT 1 FROM tombstones WHERE account=?', (account_id('alice'),),
         ).fetchone()
+    assert not list(ledger._data_root.rglob('*.key'))
     with pytest.raises(PermissionError):
         call('read', id=own['id'])
     assert call('read', owner='bob', home='home-b', id=foreign['id'])['id'] == foreign['id']
