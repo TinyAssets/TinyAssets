@@ -108,6 +108,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/process.py::_key_service_probe": (
+        CONTROL_PLANE,
+        "broker KMS health probe; raises the uptime alarm after sustained "
+        "failure and clears it when the probe is green; not a box timer",
+    ),
     "tinyassets/broker/server.py::_Connection._refresh": (
         CALL_SCOPED,
         "one broker stream waits for the daemon's refresh answer only until "

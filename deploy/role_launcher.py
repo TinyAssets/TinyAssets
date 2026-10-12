@@ -133,6 +133,11 @@ def broker_environment(data_root):
         # Preserve the deployment's existing opt-in, never arbitrary values.
         result[http_flag] = "1" if os.environ[http_flag].strip().lower() in (
             "1", "true", "yes", "on") else "0"
+    # Synthetic image checks have no KMS key. Production never receives the
+    # in-memory root, even if the flag was set on the parent.
+    if (os.environ.get("TINYASSETS_ENV") != "production"
+            and os.environ.get("TINYASSETS_VAULT_TEST_DOUBLE") == "1"):
+        result["TINYASSETS_VAULT_TEST_DOUBLE"] = "1"
     return result
 
 

@@ -55,6 +55,38 @@ def test_broker_process_runs_as_uid_1002():
     assert "getresuid() is (1002, 1002, 1002)" in compose
 
 
+def test_core_capability_image_starts_from_an_empty_sealed_store():
+    source = _source("scripts/core_capability_image.py")
+    assert "p.unlink() for p in Path('/data').glob('*/.credential-vault.json')" in source
+    assert 'TINYASSETS_VAULT_TEST_DOUBLE="1"' in source
+
+
+def test_published_test_broker_is_refused_in_production(monkeypatch, tmp_path):
+    import json
+
+    from tinyassets.broker.credential_store import _published_test_broker
+
+    monkeypatch.setenv("TINYASSETS_VAULT_TEST_DOUBLE", "1")
+    monkeypatch.setenv(
+        "TINYASSETS_VAULT_TEST_BROKER",
+        json.dumps(
+            {
+                str(tmp_path.resolve()): {
+                    "socket": "/tmp/vault-test.sock",
+                    "generation": 1,
+                    "token": "lease",
+                }
+            }
+        ),
+    )
+    monkeypatch.setenv("TINYASSETS_ENV", "production")
+    assert _published_test_broker(tmp_path) is None
+    monkeypatch.delenv("TINYASSETS_ENV", raising=False)
+    broker = _published_test_broker(tmp_path)
+    assert broker is not None
+    assert broker.fence() == (1, "lease")
+
+
 def test_deploy_refuses_a_missing_vault_kms_file_before_compose_up():
     source = _source("deploy/deploy_fail_safe.sh")
     match = re.search(r"^restart_stack\(\) \{\n(.*?)^\}", source, re.S | re.M)

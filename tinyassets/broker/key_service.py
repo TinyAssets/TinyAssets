@@ -427,6 +427,16 @@ class KeyService:
                     raise ReconnectRequired("erased account key is not re-imported")
                 conn.execute("BEGIN IMMEDIATE")
                 try:
+                    # One owner per center. A later replace must drop the previous
+                    # account's rows or load_center returns the same record twice.
+                    conn.execute(
+                        "DELETE FROM sealed_records WHERE command_center = ? AND account != ?",
+                        (center, account),
+                    )
+                    conn.execute(
+                        "DELETE FROM reconnect_asks WHERE command_center = ? AND account != ?",
+                        (center, account),
+                    )
                     existing = conn.execute(
                         "SELECT record_id, envelope, dek_id FROM sealed_records "
                         "WHERE account = ? AND command_center = ?",

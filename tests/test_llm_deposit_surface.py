@@ -186,18 +186,18 @@ def test_owner_deposits_claude_round_trips(base: Path) -> None:
     '{"access_token":"sk-ant-oat01-value"}', "sk-ant-value#state",
 ])
 def test_wrong_claude_artifact_preserves_existing_connection(base, caplog, wrong):
-    from tinyassets.credential_vault import credential_vault_path, resolve_claude_oauth_token
+    from tinyassets.credential_vault import load_credential_vault, resolve_claude_oauth_token
 
     udir = _make_universe(base, "u-reconnect", admin="founder")
     _login("founder")
     old = "sk-ant-oat01-existing-fixture"
     assert _deposit("u-reconnect", "claude", _b64(old))["status"] == "deposited"
-    before = credential_vault_path(udir).read_bytes()
+    before = load_credential_vault(udir)
     owners = _owner_rows(base, "u-reconnect")
     result = _deposit("u-reconnect", "claude", _b64(wrong))
     assert result["error"] == "connection_setup_invalid"
     assert "back in the terminal" in result["detail"]
-    assert credential_vault_path(udir).read_bytes() == before
+    assert load_credential_vault(udir) == before
     assert _owner_rows(base, "u-reconnect") == owners
     assert resolve_claude_oauth_token(udir) == old
     assert wrong not in json.dumps(result) + caplog.text
@@ -399,10 +399,7 @@ def test_anonymous_refused_before_vault_touch(base: Path, nobody) -> None:
 
 def test_non_owner_admin_cannot_overwrite_owned_credential(base: Path) -> None:
     """A second admin cannot transfer an existing owned credential."""
-    from tinyassets.credential_vault import (
-        credential_vault_path,
-        resolve_claude_oauth_token,
-    )
+    from tinyassets.credential_vault import load_credential_vault, resolve_claude_oauth_token
 
     udir = _make_universe(base, "u-co", admin="founder")
     from tinyassets.daemon_server import grant_universe_access
@@ -413,7 +410,7 @@ def test_non_owner_admin_cannot_overwrite_owned_credential(base: Path) -> None:
 
     _login("founder")
     assert _deposit("u-co", "claude", _b64("sk-ant-founder-token"))["status"] == "deposited"
-    vault_bytes = credential_vault_path(udir).read_bytes()
+    before = load_credential_vault(udir)
     owners_before = _owner_rows(base, "u-co")
 
     _login("coadmin")  # also admin, but NOT the credential owner
@@ -421,7 +418,7 @@ def test_non_owner_admin_cannot_overwrite_owned_credential(base: Path) -> None:
 
     assert result["error"] == "credential_ownership_transfer_unsupported"
     # Existing owned record unchanged, ownership not transferred.
-    assert credential_vault_path(udir).read_bytes() == vault_bytes
+    assert load_credential_vault(udir) == before
     assert resolve_claude_oauth_token(udir) == "sk-ant-founder-token"
     assert _owner_rows(base, "u-co") == owners_before == [("claude", "founder")]
 
@@ -592,7 +589,7 @@ def test_reader_never_sees_new_token_and_file_failure_rolls_back_owner(
 
     observed: dict[str, str] = {}
 
-    def _spy_persist(universe_dir: Any, records: Any) -> None:
+    def _spy_persist(universe_dir: Any, records: Any, *, owner: str = "") -> None:
         # The owner-row DB transaction has already committed here. A concurrent
         # unlocked reader MUST still see the OLD token — the file is not yet
         # written. Then simulate the file-replace failing.
@@ -627,7 +624,7 @@ def test_file_failure_on_first_deposit_leaves_no_orphan_owner(
     _login("founder")
     assert not _owners_table_exists(base) or _owner_rows(base, "u-orphan") == []
 
-    def _fail_persist(universe_dir: Any, records: Any) -> None:
+    def _fail_persist(universe_dir: Any, records: Any, *, owner: str = "") -> None:
         raise OSError("injected file-replace failure")
 
     monkeypatch.setattr(cv, "_persist_credential_vault_file", _fail_persist)
@@ -682,7 +679,7 @@ def test_double_failure_replace_and_compensation_raises(
         universe_id="u-dbl",
     )
 
-    def _persist_boom(universe_dir: Any, records: Any) -> None:
+    def _persist_boom(universe_dir: Any, records: Any, *, owner: str = "") -> None:
         raise OSError("replace failed pre-commit")
 
     def _restore_boom(conn: Any, uid: Any, prior: Any) -> None:

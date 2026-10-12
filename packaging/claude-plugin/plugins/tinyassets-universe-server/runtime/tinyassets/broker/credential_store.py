@@ -7,8 +7,10 @@ vault file.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -139,11 +141,68 @@ def _rpc(universe_dir: str | Path, document: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+class _PublishedTestBroker:
+    """Socket the in-process test double published for a child of this process.
+
+    Production never constructs one. The flag is refused when
+    ``TINYASSETS_ENV=production``, and the value is not a broker path the
+    daemon can discover on its own.
+    """
+
+    def __init__(self, socket_path: Path, generation: int, token: str) -> None:
+        self.socket_path = socket_path
+        self._pair = (generation, token)
+
+    def fence(self) -> tuple[int, str]:
+        return self._pair
+
+    def verify_broker(self, channel: socket.socket) -> None:
+        from tinyassets.broker.supervisor import BrokerUidSplitRequired
+
+        peer = struct.unpack("3i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if peer[1] != os.getuid():
+            raise BrokerUidSplitRequired("broker peer does not have the broker identity")
+
+
+def _published_test_broker(data_root: Path) -> _PublishedTestBroker | None:
+    if os.environ.get("TINYASSETS_ENV") == "production":
+        return None
+    if os.environ.get("TINYASSETS_VAULT_TEST_DOUBLE") != "1":
+        return None
+    raw = os.environ.get("TINYASSETS_VAULT_TEST_BROKER")
+    if not raw:
+        return None
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    entry = document.get(str(Path(data_root).resolve()))
+    if not isinstance(entry, dict):
+        return None
+    socket_path = entry.get("socket")
+    generation = entry.get("generation")
+    token = entry.get("token")
+    if (
+        not isinstance(socket_path, str)
+        or not socket_path.startswith("/")
+        or type(generation) is not int
+        or generation < 1
+        or not isinstance(token, str)
+        or not token
+    ):
+        return None
+    return _PublishedTestBroker(Path(socket_path), generation, token)
+
+
 def _rpc_root(data_root: Path, command_center: str, document: dict[str, Any]) -> dict[str, Any]:
     from tinyassets import rpc_frames as rf
     from tinyassets.broker.supervisor import get_supervisor
 
     supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        supervisor = _published_test_broker(data_root)
     if supervisor is None:
         raise KeyServiceUnavailable("the credential broker is not running")
     generation, token = supervisor.fence()
