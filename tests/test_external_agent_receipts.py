@@ -222,6 +222,8 @@ def test_package_rpc_refusal_names_phase_and_sanitized_category():
 
 
 def test_stale_package_rows_and_refused_models_are_not_pickable():
+    from dataclasses import replace
+
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_options import model_options_document
     from tinyassets.providers.model_policy import (
@@ -254,6 +256,11 @@ def test_stale_package_rows_and_refused_models_are_not_pickable():
     assert rows[""]["reasons"] == []
     assert {reason["reason"] for reason in rows[ref.model_id]["reasons"]} == {
         "stale", "recently_refused"}
+    retry = model_options_document(catalog, replace(plan, policy=ModelPolicy(
+        0, "explicit", (), current_selection=ref)), ())
+    retried = next(row for row in retry["options"]
+                   if row["reference"]["model_id"] == ref.model_id)
+    assert retried["reasons"] == []
 
 
 def test_job_stream_does_not_report_thread_configuration_as_answering_model():

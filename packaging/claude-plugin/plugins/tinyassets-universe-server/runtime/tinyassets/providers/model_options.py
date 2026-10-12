@@ -29,7 +29,9 @@ def model_options_document(
         ModelRef(connection.connection_id, model.model_id)
         for connection in plan.catalog.connections for model in connection.models
     }
-    refused = set(plan.refused_models)
+    refused = (set(plan.refused_models) if plan.policy.mode == "automatic"
+               and plan.policy.current_selection is None
+               and plan.policy.saved_default is None else set())
     reasons: dict[ModelRef, list[dict[str, str]]] = {}
     source_reasons: dict[str, list[dict[str, str]]] = {}
     for item in (*rejected, *order.ineligible):
