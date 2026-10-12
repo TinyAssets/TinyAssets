@@ -7,13 +7,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from tinyassets.exceptions import ProviderError
 from tinyassets.external_agents.registry import resolve
 from tinyassets.external_agents.runner import _protocol
+from tinyassets.providers.codex_provider import CodexProvider
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
 from tinyassets.providers.native_jsonrpc_discovery import (
     NativeJsonRpcProtocol,
@@ -191,6 +192,48 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
                 await task
         assert children and all(child.returncode is not None for child in children)
     asyncio.run(exercise())
+
+
+def test_provider_discovery_requires_snapshot_and_never_falls_back_to_host(tmp_path):
+    from tinyassets.providers.native_discovery import refresh_native_catalogue
+
+    # The package successor requires current owner custody before a CLI is launched.
+    with pytest.raises(ProviderError, match="owned native model discovery unavailable"):
+        asyncio.run(refresh_native_catalogue(
+            CodexProvider(), universe_dir=tmp_path, owner_user_id="owner",
+            expected_custody=None,
+        ))
+
+
+def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp_path):
+    from tinyassets.role_external_agent import CellLauncher
+
+    package = resolve("codex")
+    auth = package.row["auth"]
+    argv = [str(package.executable), *package.row["catalogue"]["argv"]]
+    home = "/agent-home/" + auth["home_dir"]
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    process = object()
+    with (
+        patch("tinyassets.role_scope.owner_principal", return_value="owner"),
+        patch("tinyassets.role_external_agent.aspawn_cell", new_callable=AsyncMock,
+              return_value=process) as launch,
+    ):
+        assert asyncio.run(CellLauncher(
+            universe_dir=center, owner_user_id="owner",
+        ).spawn(
+            argv, {auth["home_env"]: home}, home="/agent-home",
+            workdir="/agent-home/jobs/0123456789abcdef0123456789abcdef",
+            egress=center.name, auth_files={"auth.json": b"owned"}, auth=auth,
+        )) is process
+    args, kwargs = launch.call_args
+    assert args == (argv,)
+    assert kwargs["env"] == {auth["home_env"]: home}
+    assert kwargs["auth_files"] == {"auth.json": b"owned"}
+    assert kwargs["external_agent"] is True
+    assert "snapshot_dir" not in kwargs
+    assert package.row["catalogue"]["transport"] == "jsonrpc"
 
 
 def test_new_executor_can_describe_other_metadata_methods_and_fields(tmp_path):
