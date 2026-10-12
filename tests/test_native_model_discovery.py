@@ -233,6 +233,9 @@ def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp
     assert kwargs["auth_files"] == {"auth.json": b"owned"}
     assert kwargs["external_agent"] is True
     assert "snapshot_dir" not in kwargs
+    assert kwargs["owner_user_id"] == "owner"
+    assert kwargs["universe_dir"] == center
+    assert kwargs["workdir"] == "/agent-home/jobs/0123456789abcdef0123456789abcdef"
     assert package.row["catalogue"]["transport"] == "jsonrpc"
 
 
