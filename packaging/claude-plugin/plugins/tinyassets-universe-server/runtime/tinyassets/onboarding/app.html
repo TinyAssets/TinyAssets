@@ -9485,7 +9485,7 @@
             expected_revision:preview.revision,action_sha256:preview.action_sha256,
             approval_token:preview.approval_token,scope:preview.scope||'once'
           });
-          if(operation==='decide'&&extra.decision==='approve'){
+          if(operation==='decide'&&extra.decision==='approve'&&preview.action?.envelope){
             const current=await fetch('/app/api/policy',{credentials:'same-origin',
               headers:{'Authorization':'Bearer '+token()}});
             if(!current.ok) throw new Error('Owner policy is unavailable.');
@@ -9504,7 +9504,8 @@
           const prior=preview;
           const value=await InlineApprovals.post(operation,payload);
           let standingError='';
-          if(operation==='decide'&&extra.decision==='approve'&&prior.scope!=='once'&&!value.error){
+          if(operation==='decide'&&extra.decision==='approve'&&prior.action?.envelope&&
+             prior.scope!=='once'&&!value.error){
             const headers={'Content-Type':'application/json','Authorization':'Bearer '+token()};
             const read=await fetch('/app/api/policy',{credentials:'same-origin',headers});
             if(!read.ok) standingError='The action ran, but its standing grant was not saved.';

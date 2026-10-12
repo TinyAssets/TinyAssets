@@ -418,6 +418,12 @@ def target(path, info, bindings, modes):
         if len(parts) == 1:
             return (DAEMON, 1102, 0o710, None, None)
         if parts[1] == 'accounts':
+            if len(parts) == 3 and parts[2] == '.legacy-policy':
+                return (0, BROKER, 0o750, None, None)
+            if len(parts) == 4 and parts[2] == '.legacy-policy':
+                if parts[3].endswith('.db.tmp'):
+                    return 'remove'  # interrupted offline snapshot
+                return (0, BROKER, 0o440, None, None)
             return (BROKER, BROKER, 0o700 if directory else 0o600, None, None)
         return platform
     if top == '.runtime' and (len(parts) == 1 or parts[1].startswith('owner-sessions.db')):
@@ -665,6 +671,17 @@ def check(root, modes):
             actual = _live_label(root, path)
             if actual != wanted:
                 diffs.append(f"label: {path} {_show(actual)} -> {_show(wanted)}")
+    policy = Path(f'/proc/self/fd/{root}')
+    for name in ('.platform', '.platform/accounts', '.platform/accounts/.legacy-policy'):
+        if not (policy / name).exists():
+            diffs.append(f'create: {name}')
+    legacy = policy / '.agent-sessions'
+    if legacy.is_dir():
+        for center in legacy.iterdir():
+            if CENTER.fullmatch(center.name) and (center / 'rules.db').is_file():
+                frozen = policy / '.platform/accounts/.legacy-policy' / f'{center.name}.db'
+                if not frozen.is_file():
+                    diffs.append(f'freeze: {center.name}/rules.db')
     if _label(root) != (DAEMON, DAEMON, 0o755, None, None):
         diffs.append("label: data root")
     if document is None or document.get("split") != SPLIT:
@@ -940,6 +957,61 @@ def step_labels(root, bindings, modes):
     return changed
 
 
+def step_policy(root):
+    """Freeze legacy rules in broker custody during the offline privileged cutover."""
+    data = Path(f'/proc/self/fd/{root}')
+    changed = 0
+    for name, uid, gid, mode in (
+            ('.platform', DAEMON, 1102, 0o710),
+            ('.platform/accounts', BROKER, BROKER, 0o700),
+            ('.platform/accounts/.legacy-policy', 0, BROKER, 0o750)):
+        path = data / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            path.mkdir(mode=mode)
+            info = path.lstat()
+            changed += 1
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, DAEMON, BROKER):
+            raise MigrationRefused(f'unsafe policy directory: {name}')
+        if (info.st_uid, info.st_gid) != (uid, gid):
+            os.chown(path, uid, gid)
+            changed += 1
+        if stat.S_IMODE(path.lstat().st_mode) != mode:
+            os.chmod(path, mode)
+            changed += 1
+    legacy = data / '.agent-sessions'
+    if not legacy.exists():
+        return changed
+    frozen = data / '.platform/accounts/.legacy-policy'
+    for center in legacy.iterdir():
+        if not CENTER.fullmatch(center.name):
+            continue
+        source = center / 'rules.db'
+        if not source.exists():
+            continue
+        target = frozen / f'{center.name}.db'
+        if target.exists():
+            continue
+        info = source.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0:
+            raise MigrationRefused(f'unsafe legacy rules: {center.name}')
+        temporary = frozen / f'{center.name}.db.tmp'
+        temporary.unlink(missing_ok=True)
+        # SQLite backup includes committed WAL rows without trusting the daemon's
+        # replaceable source path after the service starts.
+        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as db:
+            with closing(sqlite3.connect(temporary)) as snapshot:
+                db.backup(snapshot)
+        os.chown(temporary, 0, BROKER)
+        os.chmod(temporary, 0o440)
+        with temporary.open('rb') as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        changed += 1
+    return changed
+
+
 # --------------------------------------------------------------------------
 # Step 4: marker, and the census
 # --------------------------------------------------------------------------
@@ -1046,6 +1118,7 @@ def migrate(data_root, snapshot, *, snapshot_bytes, modes):
             step_identities(root, plan)
             step_egress(root)
             changed = step_labels(root, plan["bindings"], modes)
+            changed += step_policy(root)
             marked = step_marker(root, document, snapshot)
             return dict(centers=len(plan["bindings"]), reserved=len(plan["reserve"]),
                         admitted=len(plan["admits"]), changed=changed, marked=marked)

@@ -54,8 +54,9 @@ have only read-only access to the effective projection.
 ### Requirement: Scoped entries retain every command center rule
 The account SHALL have exactly one policy. Entries SHALL carry either account
 scope or a command-center id. Migration SHALL eagerly copy existing per-center
-rules from root-owned 0440 snapshots under a non-daemon-writable parent at
-broker startup and on center admission, without merging them, verify counts
+rules from root-owned 0440 snapshots frozen by the offline migration under a
+non-daemon-writable parent. The broker SHALL import those snapshots at startup
+and on center admission, without merging them, verify counts
 and digests, and report conflicts and refused sources. An unfrozen source
 SHALL be refused and its center SHALL fail closed. Evaluation SHALL never
 read legacy files.
