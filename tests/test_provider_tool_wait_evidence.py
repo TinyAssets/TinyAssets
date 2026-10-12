@@ -283,7 +283,10 @@ async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
 
     # Hard Rule 15: a real router call carries one universe owner's authority.
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-tool-wait")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-tool-wait",
+        admitted_sources=frozenset({"codex"}),
+    )
     carrier.provider = "codex"
     carrier.role = "writer"
     carrier.operation = "run_graph"
