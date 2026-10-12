@@ -3,10 +3,8 @@
 ## Reporting
 
 Email [info@tinyassets.io](mailto:info@tinyassets.io). That is the mailbox
-the maintainer reads. `security@tinyassets.io` and `ops@tinyassets.io`
-aliases may be added later. The public site
-(`WebSite/site-react/lib/site.ts`) still publishes `security@tinyassets.io`;
-that address is not this policy's contact until the alias exists.
+the maintainer reads. The public site (`WebSite/site-react/lib/site.ts`)
+publishes that same address for security reports.
 
 GitHub private vulnerability reporting is **disabled** on this repository
 (checked 2026-10-11 via the private-vulnerability-reporting API,
