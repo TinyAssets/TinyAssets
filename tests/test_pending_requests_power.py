@@ -1,11 +1,40 @@
 """Connect requests follow current universe authority, not a surviving binding row."""
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
 from tests.test_open_serving_bind import _CONN_ID, _GRANT_ID, _bound_and_serving
 from tinyassets.api.pending_requests import _serving_llm_bound
+
+
+def _install_native_executor(monkeypatch):
+    """Give source readiness owned metadata without a host-installed CLI."""
+    from types import SimpleNamespace
+
+    from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
+
+    class Executor:
+        name = "codex"
+        native_credential_service = "codex"
+
+        def is_available(self):
+            return True
+
+        async def enumerate_models(self, *, universe_dir, credential_snapshot_dir):
+            assert universe_dir.is_dir()
+            assert credential_snapshot_dir.is_dir()
+            return NativeCatalogue(
+                (NativeModel("fixture-model", frozenset({"text"})),),
+                "fixture-model", datetime.now(timezone.utc),
+            )
+
+    monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
+    monkeypatch.setattr(
+        "tinyassets.providers.call.get_provider_router",
+        lambda: SimpleNamespace(_providers={"codex": Executor()}),
+    )
 
 
 @pytest.fixture
@@ -190,6 +219,7 @@ def test_subscription_custody_loss_restores_the_actual_request_rail(tmp_path, mo
         tmp_path, universe_id="u-owner", actor_id="owner-1",
         permission="admin", granted_by="owner-1",
     )
+    _install_native_executor(monkeypatch)
     connected = bind_serving_provider(
         base_path=tmp_path, universe_dir=udir, owner_user_id="owner-1",
         universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],

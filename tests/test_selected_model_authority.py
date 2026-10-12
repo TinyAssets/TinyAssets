@@ -496,10 +496,12 @@ def test_revoked_primary_does_not_prevent_independent_connected_source(served, m
     assert row[0].startswith("connected_") and row[1] == "succeeded"
 
 
-def test_without_selected_authority_router_discards_configuration_override(tmp_path):
+def test_without_selected_authority_router_discards_configuration_override(tmp_path, monkeypatch):
     from tests.support.model_call import call as model_call
+    from tests.test_pending_requests_power import _install_native_executor
     from tests.test_provider_served_router import _RecordingProvider, _served_context
 
+    _install_native_executor(monkeypatch)
     _, _, capability, context = _served_context(tmp_path)
     seen = []
 
