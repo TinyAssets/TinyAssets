@@ -121,7 +121,8 @@ jobs:
           jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
 
           # Same diff key as pr-scope-guard.yml; empty on any failure, which
-          # leaves head receipts as the only match.
+          # leaves an exact head receipt as the only match. An unchanged
+          # rebase still carries when the cited commit can be fetched.
           DIFF_KEY=""
           if git fetch --no-tags --filter=blob:none origin \
                 "+refs/pull/${PR}/head:refs/remotes/pr/head" \
@@ -135,8 +136,17 @@ jobs:
           # Every PR needs a receipt for its head (2026-10-02): on 2026-10-01
           # this step armed #4247 -- a superseded head with a known data-loss
           # bug and no review receipt -- and the queue accepted it.
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --filter=blob:none origin "$sha" || true
+            fi
+          done < <(python scripts/drain_review_gate.py --list-carry-heads \
+              --head "$HEAD_OID" \
+              --body-file "$RUNNER_TEMP/pr-body.md" || true)
           if python scripts/drain_review_gate.py \
               --head "$HEAD_OID" \
+              --base "$BASE_OID" \
               --diff-key "$DIFF_KEY" \
               --body-file "$RUNNER_TEMP/pr-body.md"; then
             REVIEW_GATE="allow"

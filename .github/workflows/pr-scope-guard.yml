@@ -310,11 +310,25 @@ jobs:
           done
 
           printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
+          # Fetch the commit a head receipt names, when it is not this head, so
+          # an unchanged rebase can be compared. A fetch failure leaves the
+          # object missing; the gate then cannot prove the diffs match and
+          # requires a receipt for this head. It cannot become a pass.
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --filter=blob:none origin "$sha" || true
+            fi
+          done < <(python scripts/drain_review_gate.py --list-carry-heads \
+              --head "${HEAD_OID}" \
+              --body-file "$RUNNER_TEMP/pr-body-gate.md" \
+              --review-comments-file "$COMMENTS_FILE" || true)
           # The receipt parse and its corroboration are one decision in one
           # unit-tested place. stderr names the head and diff key a receipt
           # must carry, so it can be shown on the PR either way.
           if ! python scripts/drain_review_gate.py --blocking-review \
               --head "${HEAD_OID}" \
+              --base "${BASE_OID}" \
               --diff-key "${DIFF_KEY}" \
               --body-file "$RUNNER_TEMP/pr-body-gate.md" \
               --review-repo "${REPO}" \
@@ -362,9 +376,11 @@ jobs:
               echo "fenced block, an HTML comment, a \`<details>\` or a quote is"
               echo "simply not at the top. If yours is being refused, MOVE IT UP:"
               echo "only blank lines may precede it."
-              echo "A head receipt must name this exact head SHA in BOTH places, so a"
-              echo "push voids it; a \`Drain-Review-Diff:\` receipt survives a rebase"
-              echo "or merge-main that leaves the PR's own change unchanged."
+              echo "A head receipt names the reviewed commit. It stays valid for a"
+              echo "later head when that head's diff against the base is the same"
+              echo "change (the tree-diff hash), so a conflict-free rebase does not"
+              echo "need a new receipt. Any real edit to the code does. A"
+              echo "\`Drain-Review-Diff:\` receipt states that hash explicitly."
               # Both complaints at once. The receipt is checked before the label
               # declaration below, so reporting only this one sends a legitimate
               # PR round the loop twice: stamp, still red, then add the label.
@@ -476,8 +492,8 @@ jobs:
 # "stamper must differ from author" would be unsatisfiable — a wall, not a gate
 # (hard rule 4: an executable gate needs an autonomous default). What the
 # receipt DOES make impossible is the accident that happened: a BLOCK verdict
-# cannot satisfy it, a receipt naming any head but the current one cannot
-# satisfy it, and a verdict that was never published as a visible comment on
+# cannot satisfy it, a receipt for a different change cannot satisfy it, and
+# a verdict that was never published as a visible comment on
 # this PR by a trusted author cannot satisfy it. The day a second writer exists,
 # requiring a different author is a two-line change in
 # scripts/drain_review_gate.py.
@@ -485,9 +501,10 @@ jobs:
 # The first version of this gate checked only that the cited comment EXISTED and
 # came from a trusted author. Cross-family review 2026-09-26 got a receipt past
 # it by citing an OWNER comment whose text was `VERDICT: BLOCK` for that exact
-# head. Closed: the cited comment must itself attest APPROVE at the current head.
-# Requiring the CURRENT head is also what closes a re-cited pre-push approval,
-# and it needs no clock. Binding the comment's `created_at` against the head
+# head. Closed: the cited comment must itself attest APPROVE of this change —
+# the current head, or an earlier commit whose tree-diff against the base is
+# the same. A comment that approved different bytes cannot be re-cited, and
+# that needs no clock. Binding the comment's `created_at` against the head
 # commit's date was considered and rejected — commit dates come from the
 # committer's clock, and a client clock running ahead would make the gate
 # unsatisfiable until real time caught up.

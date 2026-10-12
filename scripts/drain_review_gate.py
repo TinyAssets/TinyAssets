@@ -7,8 +7,9 @@ EVERY pull request needs one (2026-10-02). Two callers, one receipt format:
   receipt (a pre-filter, so unreviewed heads never reach the queue);
 * `pr-scope-guard.yml` -- the REQUIRED check -- asks, via `--blocking-review`,
   for the full receipt: the body's `Drain-Review-Verdict: APPROVE` lines, bound
-  to this head or its diff key, citing a comment on THIS PR by a trusted author
-  that itself opens with the same approval.
+  to this head, to an earlier head of the same tree-diff, or to the diff key,
+  citing a comment on THIS PR by a trusted author that itself opens with the
+  same approval.
 
 Why every PR: until 2026-10-02 only drain/ branches and a narrow set of
 gate-defining and authority paths needed a receipt, and on 2026-10-01
@@ -26,6 +27,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -64,6 +66,7 @@ def review_allows_merge(
     artifact_must_be_comment_on: tuple[str, int] | None = None,
     trusted_comment_urls: frozenset[str] | None = None,
     diff_key: str | None = None,
+    same_change: Callable[[str], bool] | None = None,
 ) -> bool:
     """True when the body carries a receipt for this head (or its diff key).
 
@@ -76,7 +79,7 @@ def review_allows_merge(
         return False
 
     lines = leading_lines(body, 3)
-    if not (_attests_approval(lines, head, diff_key) and len(lines) == 3):
+    if not (_attests_approval(lines, head, diff_key, same_change=same_change) and len(lines) == 3):
         return False
     artifact = lines[2]
     if _ARTIFACT_RE.fullmatch(artifact) is None:
@@ -124,7 +127,22 @@ def leading_lines(text: str, count: int) -> list[str]:
     return lines
 
 
-def _attests_approval(lines: list[str], head: str, diff_key: str | None = None) -> bool:
+def binding_head(text: str) -> str | None:
+    """The commit a receipt's second line names, or None if it names a diff key."""
+    lines = leading_lines(text, 2)
+    if len(lines) < 2:
+        return None
+    match = re.fullmatch(r"Drain-Review-Head: ([0-9a-f]{40})", lines[1])
+    return match.group(1) if match else None
+
+
+def _attests_approval(
+    lines: list[str],
+    head: str,
+    diff_key: str | None = None,
+    *,
+    same_change: Callable[[str], bool] | None = None,
+) -> bool:
     """Do these leading lines OPEN with an approval of `head`, or of its diff?
 
     ONE definition of what an approval looks like, used for the PR body and for
@@ -132,22 +150,47 @@ def _attests_approval(lines: list[str], head: str, diff_key: str | None = None) 
     lines, in order, so `BLOCK`, a lower-case verdict, trailing prose, or a head
     line for any other commit all refuse.
 
-    The second line binds the approval to what was reviewed, in one of two ways:
+    The second line binds the approval to what was reviewed, in one of three ways:
 
-    * `Drain-Review-Head: <sha>` — this exact commit. Any push voids it.
+    * `Drain-Review-Head: <sha>` — this exact commit.
+    * `Drain-Review-Head: <other sha>` — an earlier commit of the SAME change.
+      Honoured only when `same_change(other)` is true, which the caller sets by
+      comparing tree-diff hashes (`diff_key`). A rebase or merge-main that
+      leaves every path's before/after blob unchanged carries the receipt.
+      Any real edit, including a conflict resolution that changes bytes, does
+      not. A missing commit is not the same change.
     * `Drain-Review-Diff: <key>` — this exact CHANGE, as `diff_key` computes it
-      for the current head. Merging main in or rebasing leaves the key alone
-      unless the PR's own change moves with it, so it survives the catch-ups
-      that voided receipts on 2026-09-26 without accepting any content the
-      reviewer did not see. Only honoured when the caller computed a key.
+      for the current head. Only honoured when the caller computed a key.
     """
-    bindings = [f"Drain-Review-Head: {head}"]
-    if diff_key is not None and _DIFF_KEY_RE.fullmatch(diff_key):
-        bindings.append(f"Drain-Review-Diff: {diff_key}")
-    return len(lines) >= 2 and lines[0] == "Drain-Review-Verdict: APPROVE" and lines[1] in bindings
+    if len(lines) < 2 or lines[0] != "Drain-Review-Verdict: APPROVE":
+        return False
+    if lines[1] == f"Drain-Review-Head: {head}":
+        return True
+    if (
+        diff_key is not None
+        and _DIFF_KEY_RE.fullmatch(diff_key)
+        and lines[1] == f"Drain-Review-Diff: {diff_key}"
+    ):
+        return True
+    cited = binding_head("\n".join(lines))
+    if (
+        cited
+        and cited != head
+        and diff_key is not None
+        and _DIFF_KEY_RE.fullmatch(diff_key)
+        and same_change is not None
+    ):
+        return bool(same_change(cited))
+    return False
 
 
-def comment_attests_approval(comment_body: str, head: str, diff_key: str | None = None) -> bool:
+def comment_attests_approval(
+    comment_body: str,
+    head: str,
+    diff_key: str | None = None,
+    *,
+    same_change: Callable[[str], bool] | None = None,
+) -> bool:
     """Does this comment OPEN by publishing an approval of `head`?
 
     Comment identity was not enough. Cross-family review 2026-09-26, finding 6:
@@ -158,7 +201,9 @@ def comment_attests_approval(comment_body: str, head: str, diff_key: str | None 
     gap too (finding 7), because the comment must name the CURRENT head, which
     needs no clock.
     """
-    return _attests_approval(leading_lines(comment_body, 2), head, diff_key)
+    return _attests_approval(
+        leading_lines(comment_body, 2), head, diff_key, same_change=same_change
+    )
 
 
 def artifact_names_trusted_comment(
@@ -195,7 +240,11 @@ def artifact_names_trusted_comment(
 
 
 def published_approval_urls(
-    stream: str, *, head: str, diff_key: str | None = None
+    stream: str,
+    *,
+    head: str,
+    diff_key: str | None = None,
+    same_change: Callable[[str], bool] | None = None,
 ) -> frozenset[str] | None:
     """URLs of comments that PUBLISH a trusted approval of `head`.
 
@@ -241,7 +290,7 @@ def published_approval_urls(
             # inventory is not the shape this gate reads. Refuse it.
             return None
         if association in _TRUSTED_ASSOCIATIONS and comment_attests_approval(
-            body, head, diff_key
+            body, head, diff_key, same_change=same_change
         ):
             urls.add(url.lower())
     return frozenset(urls)
@@ -325,6 +374,34 @@ def _read_text(path: Path | None) -> str | None:
         return None
 
 
+def same_change_as(
+    base: str, current_key: str, *, cwd: Path | None = None
+) -> Callable[[str], bool]:
+    """True when `cited` has the same tree-diff against `base` as `current_key`.
+
+    Any git failure is "not the same change". A receipt must not carry across
+    a commit we cannot read.
+    """
+
+    def same(cited: str) -> bool:
+        if not _SHA_RE.fullmatch(cited) or not _DIFF_KEY_RE.fullmatch(current_key):
+            return False
+        try:
+            return diff_key(base, cited, cwd=cwd) == current_key
+        except (subprocess.CalledProcessError, ValueError, OSError):
+            return False
+
+    return same
+
+
+def _carry_comparer(args: argparse.Namespace) -> Callable[[str], bool] | None:
+    key = args.diff_key or ""
+    base = getattr(args, "base", "") or ""
+    if not base or not _DIFF_KEY_RE.fullmatch(key):
+        return None
+    return same_change_as(base, key)
+
+
 def _blocking_review(args: argparse.Namespace) -> int:
     """`--blocking-review`: does the body carry a corroborated receipt?"""
     print(
@@ -336,10 +413,13 @@ def _blocking_review(args: argparse.Namespace) -> int:
     body = _read_text(args.body_file)
     comments = _read_text(args.review_comments_file)
     key = args.diff_key or None
+    carry = _carry_comparer(args)
     trusted = (
         None
         if comments is None
-        else published_approval_urls(comments, head=args.head, diff_key=key)
+        else published_approval_urls(
+            comments, head=args.head, diff_key=key, same_change=carry
+        )
     )
     if body is not None and review_allows_merge(
         head=args.head,
@@ -347,11 +427,56 @@ def _blocking_review(args: argparse.Namespace) -> int:
         artifact_must_be_comment_on=(args.review_repo, args.review_pr),
         trusted_comment_urls=trusted,
         diff_key=key,
+        same_change=carry,
     ):
         print("allow")
         return 0
     print("deny")
     return 2
+
+
+def _list_carry_heads(argv: list[str]) -> int:
+    """Print head SHAs a receipt names, other than the current head.
+
+    The workflow fetches these so an unchanged rebase can be compared. A
+    missing or unreadable file prints nothing for that source. Garbage in the
+    comment inventory prints the body's SHA only; the gate itself still denies
+    a receipt it cannot corroborate.
+    """
+    parser = argparse.ArgumentParser(prog="drain_review_gate.py --list-carry-heads")
+    parser.add_argument("--body-file", type=Path, required=True)
+    parser.add_argument("--review-comments-file", type=Path)
+    parser.add_argument("--head", default="")
+    args = parser.parse_args(argv)
+    shas: list[str] = []
+
+    def add(text: str) -> None:
+        cited = binding_head(text)
+        if cited and cited != args.head and cited not in shas:
+            shas.append(cited)
+
+    add(_read_text(args.body_file) or "")
+    comments = _read_text(args.review_comments_file)
+    if comments:
+        decoder = json.JSONDecoder()
+        index = 0
+        length = len(comments)
+        while index < length:
+            while index < length and comments[index].isspace():
+                index += 1
+            if index >= length:
+                break
+            try:
+                obj, end = decoder.raw_decode(comments, index)
+            except ValueError:
+                break
+            index = end
+            body = obj.get("body") if isinstance(obj, dict) else None
+            if isinstance(body, str):
+                add(body)
+    for sha in shas:
+        print(sha)
+    return 0
 
 
 def _print_diff_key(argv: list[str]) -> int:
@@ -371,15 +496,26 @@ def _print_diff_key(argv: list[str]) -> int:
 def main() -> int:
     if sys.argv[1:2] == ["--print-diff-key"]:
         return _print_diff_key(sys.argv[2:])
+    if sys.argv[1:2] == ["--list-carry-heads"]:
+        return _list_carry_heads(sys.argv[2:])
     parser = argparse.ArgumentParser()
     parser.add_argument("--head", required=True)
     parser.add_argument("--body-file", type=Path, required=True)
     parser.add_argument(
+        "--base",
+        default="",
+        help="The PR base commit. With a valid --diff-key, a Drain-Review-Head "
+        "receipt for another commit is accepted when that commit's tree-diff "
+        "against this base equals the current head's. Empty means only the "
+        "exact head (or an explicit Drain-Review-Diff) can match.",
+    )
+    parser.add_argument(
         "--diff-key",
         default="",
         help="The PR's diff key as computed by the workflow (diff_key), which "
-        "lets a `Drain-Review-Diff:` receipt match. Empty or malformed means "
-        "only `Drain-Review-Head:` receipts can match.",
+        "lets a `Drain-Review-Diff:` receipt match and lets an unchanged "
+        "rebase carry a head receipt. Empty or malformed means only an exact "
+        "`Drain-Review-Head:` of --head can match.",
     )
     parser.add_argument(
         "--blocking-review",
@@ -413,6 +549,7 @@ def main() -> int:
         head=args.head,
         body=body,
         diff_key=args.diff_key or None,
+        same_change=_carry_comparer(args),
     ):
         print("allow")
         return 0

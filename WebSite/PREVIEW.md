@@ -39,9 +39,10 @@ preview.
 
 ## Shipping
 
-After review and merge, a host manually runs
-`.github/workflows/deploy-site-react.yml` with `confirm: deploy`. Follow
-`WebSite/DEPLOY.md` for the deployment and verification sequence.
+After review and merge, a push to `main` that changes
+`WebSite/site-react/**`, `WebSite/design-system/**`, or `WebSite/shared/**`
+runs `.github/workflows/deploy-site-react.yml`. A manual run with
+`confirm: deploy` is the rollback. Follow `WebSite/DEPLOY.md`.
 
 ## Files involved
 
@@ -53,5 +54,5 @@ After review and merge, a host manually runs
 | `WebSite/design-system/` | Tokens, base styles, components (`@tiny/design-system`) |
 | `WebSite/brand/` | The mark and its exporters |
 | `WebSite/shared/mcp/public-read-contract.js` | Snapshot baker's public projection contract |
-| `.github/workflows/deploy-site-react.yml` | Manual production deployment |
+| `.github/workflows/deploy-site-react.yml` | Production deployment on site-source pushes to main, plus manual rollback |
 | `WebSite/DEPLOY.md` | Deployment and verification playbook |

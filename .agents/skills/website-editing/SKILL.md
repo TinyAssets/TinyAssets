@@ -1,6 +1,6 @@
 ---
 name: website-editing
-description: "Conventions for editing the TinyAssets public site (WebSite/site-react, Next.js static export on @tiny/design-system). Use for website copy, components, routes, styling, the mark and brand assets, live-data surfaces, preview, tests, or deploy. Covers the preview loop, the copy rules, the public-read boundary, the build/test/sweep pipeline, and the manual deploy."
+description: "Conventions for editing the TinyAssets public site (WebSite/site-react, Next.js static export on @tiny/design-system). Use for website copy, components, routes, styling, the mark and brand assets, live-data surfaces, preview, tests, or deploy. Covers the preview loop, the copy rules, the public-read boundary, the build/test/sweep pipeline, and the site deploy."
 ---
 
 # Website editing
@@ -8,7 +8,9 @@ description: "Conventions for editing the TinyAssets public site (WebSite/site-r
 `WebSite/site-react/` is the only source for `tinyassets.io`. It is a Next.js
 14 App Router static export that consumes `@tiny/design-system`
 (`WebSite/design-system/`, tokens + base styles + components). It deploys
-manually through `deploy-site-react.yml`. The Svelte rollback tree was retired
+through `deploy-site-react.yml` on a push to main that changes site source
+(`WebSite/site-react/**`, `WebSite/design-system/**`, `WebSite/shared/**`).
+A manual run with `confirm: deploy` is the rollback. The Svelte rollback tree was retired
 on 2026-09-02; do not recreate a second tree or a parity step.
 
 These are project-level website rules for every provider; `AGENTS.md` only
@@ -114,9 +116,10 @@ and protected live surfaces render an explicit signed-in state while snapshots
 retain their date and provenance. Reject raw placeholders such as `{}`, `[]`,
 `undefined`, or epoch numbers.
 
-Ship through the normal pull-request path. A merge does not deploy. A host runs
-`deploy-site-react.yml` with `confirm: deploy`, then the canary and
-`deployed_sha.py` checks in `WebSite/DEPLOY.md`.
+Ship through the normal pull-request path. A merge that changes the site
+source paths above runs `deploy-site-react.yml`. Then the canary and
+`deployed_sha.py` checks in `WebSite/DEPLOY.md`. A manual run with
+`confirm: deploy` republishes or rolls back.
 
 ## Auto-iterate on recurring website failures
 
@@ -145,5 +148,5 @@ boundary (the pinned preview-worker security test).
 | `WebSite/brand/` | The mark's SVGs and exporters |
 | `WebSite/shared/mcp/public-read-contract.js` | Public read contract shared by site and baker |
 | `WebSite/PREVIEW.md`, `WebSite/DEPLOY.md` | Preview loop; deploy and verify |
-| `.github/workflows/deploy-site-react.yml` | Manual production deployment |
+| `.github/workflows/deploy-site-react.yml` | Production deployment on site-source pushes to main, plus manual rollback |
 | `openspec/specs/public-website-surface/spec.md` | As-built spec of the public site |

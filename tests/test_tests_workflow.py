@@ -961,3 +961,51 @@ def test_every_event_requires_structural_success(tmp_path):
             run = subprocess.run(["bash", "-s"], input=script.encode(),
                                  cwd=tmp_path, capture_output=True)
             assert run.returncode == (0 if result == "success" else 1)
+
+
+# Events that do not change the head. A workflow that listens to them must be
+# the receipt/label gate or auto-enroll, never the build or the test jobs.
+_NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})
+_NON_CODE_WORKFLOWS = frozenset({
+    "pr-scope-guard.yml",
+    "auto-enroll-merge.yml",
+})
+
+
+def test_comment_and_label_events_do_not_start_tests() -> None:
+    """A receipt comment or an infra-change label must not rerun Tests.
+
+    Measured 2026-10-12: Tests listened to edited/labeled/unlabeled with
+    cancel-in-progress, and 140 of 331 PR runs were cancelled. The check is
+    per head SHA. Those events leave the SHA alone, so the run already
+    reported for it stays. pr-scope-guard.yml is the small job that re-reads
+    the receipt and the label.
+    """
+    triggers = _triggers(_load())
+    types = set(triggers["pull_request"]["types"])
+    assert types == {"opened", "reopened", "synchronize", "ready_for_review"}
+    assert "issue_comment" not in triggers
+    workflows = _REPO / ".github" / "workflows"
+    for path in sorted(workflows.glob("*.yml")):
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        on = loaded[True] if True in loaded else loaded.get("on", {})
+        if not isinstance(on, dict):
+            continue
+        assert "issue_comment" not in on, path.name
+        for event in ("pull_request", "pull_request_target"):
+            declared = set((on.get(event) or {}).get("types") or [])
+            noisy = declared & _NON_CODE_TYPES
+            if path.name == "tests.yml":
+                assert not noisy, noisy
+            elif noisy:
+                assert path.name in _NON_CODE_WORKFLOWS, (path.name, noisy)
+                jobs = loaded.get("jobs") or {}
+                for job in jobs.values():
+                    for step in job.get("steps") or []:
+                        code = "\n".join(
+                            line for line in str(step.get("run") or "").splitlines()
+                            if not line.lstrip().startswith("#")
+                        )
+                        assert "pytest" not in code
+                        assert "ci_required_tests.py" not in code
+                        assert "linux_oracle.py" not in code

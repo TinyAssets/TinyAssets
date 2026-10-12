@@ -1,15 +1,24 @@
 # Deploy WebSite/site-react (Next.js static export) to GitHub Pages.
 #
-# THE PRODUCTION SITE; MANUAL DEPLOY ONLY via workflow_dispatch.
-# Merging site source does not publish it. A host runs this workflow after the
-# production build and rendered preview have been verified
-# (WebSite/DEPLOY.md). The Svelte rollback tree and deploy-site.yml were
-# retired on 2026-09-02; rolling back now means re-running this workflow on an
-# earlier revision. After deployment, verify https://tinyassets.io and /mcp via
-# the public canary (AGENTS.md hard rule #11).
+# A push to main publishes when site source changes. The path filter is the
+# site's source folders (the same set preview-worker.yml builds):
+#   WebSite/site-react/**
+#   WebSite/design-system/**
+#   WebSite/shared/**
+# workflow_dispatch stays for a rollback or a republish of an earlier revision;
+# that path still requires confirm=deploy. Two deploys share one group and the
+# second waits, so they cannot overlap. The Svelte rollback tree and
+# deploy-site.yml were retired on 2026-09-02. After deployment, verify
+# https://tinyassets.io and /mcp via the public canary (AGENTS.md hard rule #11).
 name: deploy-site-react
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'WebSite/site-react/**'
+      - 'WebSite/design-system/**'
+      - 'WebSite/shared/**'
   workflow_dispatch:
     inputs:
       confirm:
@@ -24,11 +33,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  # One publisher. cancel-in-progress false means a second deploy waits
+  # instead of killing the one already writing GitHub Pages.
+  group: deploy-site-react
   cancel-in-progress: false
 
 jobs:
   guard:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Require explicit confirmation
@@ -39,6 +51,7 @@ jobs:
 
   build:
     needs: guard
+    if: ${{ !cancelled() && (needs.guard.result == 'success' || needs.guard.result == 'skipped') }}
     runs-on: ubuntu-latest
     defaults:
       run:
