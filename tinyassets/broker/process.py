@@ -110,9 +110,12 @@ async def serve(args: argparse.Namespace) -> None:
     # Initialization belongs to the privileged, fenced volume migration. A
     # missing map must never silently restart allocation at the first UID.
     from tinyassets.broker.owner_identities import OwnerIdentities
+    from tinyassets.broker.policy import PolicyStore
 
     identity_path = state / "owner-identities.db"
     identities = OwnerIdentities(identity_path) if identity_path.exists() else None
+    policy_store = PolicyStore(Path(args.data_root), identities)
+    policy_store.bootstrap()
     if getattr(args, "mapper_channel", None) is not None:
         # DA2: only the bounded bootstrap passes this inherited descriptor.
         from tinyassets.broker import mapper_channel
@@ -128,6 +131,7 @@ async def serve(args: argparse.Namespace) -> None:
                     lease_sha256=args.proof_sha256),
         roles={int(args.owner_uid): OWNER},
         owner_identities=identities,
+        policy_store=policy_store,
     )
     socket_path = Path(args.socket)
     socket_path.unlink(missing_ok=True)

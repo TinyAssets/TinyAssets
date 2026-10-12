@@ -109,6 +109,10 @@ migrate --snapshot <id> --snapshot-bytes <bytes>  # the apply
 migrate --check                                   # must print nothing; exit 0
 ```
 
+P1 performs an ordinary image swap: every account starts with `DEFAULT_RULES`,
+the agent asks and the owner re-grants once, and legacy `rules.db` files stay
+untouched until P6.
+
 - The apply refuses before its first write if any precondition fails:
   - a process still holds `/data/.layout.lock`;
   - the volume is not ext4 or has no POSIX ACLs;

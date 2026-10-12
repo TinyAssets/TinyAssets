@@ -9,11 +9,11 @@ The shared markdown knowledge/coordination commons: draft-then-promote pages, ty
 ## Requirements
 
 ### Requirement: Wiki root resolution and page-substrate layout
-The wiki-commons subsystem (`tinyassets/api/wiki.py`, path helpers in `tinyassets/api/helpers.py`) SHALL resolve its root through `tinyassets.storage.wiki_path`, honoring the `TINYASSETS_WIKI_PATH` env override and defaulting to `data_dir() / "wiki"`; a supplied `universe_id` SHALL instead resolve the root to that universe's private `wiki` directory, and an empty `universe_id` SHALL resolve the shared root wiki. Every page SHALL live under `pages/<category>/<slug>.md` (promoted) or `drafts/<category>/<slug>.md` (unpromoted). The tree SHALL be scaffolded idempotently on each call so read/list/search never error on a fresh deploy, and a `universe_id` containing path separators or a leading dot SHALL be rejected.
+The wiki-commons subsystem (`tinyassets/api/wiki.py`, path helpers in `tinyassets/api/helpers.py`) SHALL resolve its root through `tinyassets.storage.wiki_path`, honoring the `TINYASSETS_WIKI_PATH` env override. With no override, an already-present `data_dir() / "wiki"` directory remains the shared root; otherwise the shared root is `data_dir() / ".wiki"`, a dot-named platform directory that admission allows a fresh volume to create. A non-dot child of the data dir is a command-center root and is created only by admission, so scaffolding MUST NOT mkdir `data_dir() / "wiki"` on a fresh volume and MUST NOT describe that refusal as a filesystem permissions failure. A supplied `universe_id` SHALL instead resolve the root to that universe's private `wiki` directory, and an empty `universe_id` SHALL resolve the shared root wiki. Every page SHALL live under `pages/<category>/<slug>.md` (promoted) or `drafts/<category>/<slug>.md` (unpromoted). The tree SHALL be scaffolded idempotently on each call so read/list/search never error on a fresh deploy, and a `universe_id` containing path separators or a leading dot SHALL be rejected.
 
 #### Scenario: default root falls back to the data dir
 - **WHEN** the wiki resolves its root with no `TINYASSETS_WIKI_PATH` override and no `universe_id`
-- **THEN** the root is `data_dir() / "wiki"`
+- **THEN** the root is `data_dir() / ".wiki"` when `data_dir() / "wiki"` is absent, and `data_dir() / "wiki"` when that directory already exists
 - **AND** the `pages/` and `drafts/` category trees plus anchor files exist after the first call
 
 #### Scenario: per-universe root is isolated from the shared root

@@ -121,6 +121,10 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         raise ValueError("usage: ta search <words> | describe <name> | <name> --json '<args>'")
+    if argv[:2] == ["policy", "show"] and len(argv) == 2:
+        argv = ["policy:show", "--json", "{}"]
+    elif argv[:2] == ["policy", "propose"] and len(argv) == 4 and argv[2] == "--json":
+        argv = ["policy:propose", "--json", argv[3]]
     invoke = dispatch or remote
     catalog = invoke({"op": "catalog"})
     if "error" in catalog:

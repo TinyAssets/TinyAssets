@@ -835,7 +835,9 @@ class _BrokerChannel:
         self._connection_id = connection_id
         self._closed = False
 
-    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None,
+                policy_approval=None, policy_grant_ref=None, policy_agent=None,
+                policy_task_id=None) -> Any:
         from tinyassets.broker.ops import new_op_id
 
         if self._closed:
@@ -846,6 +848,12 @@ class _BrokerChannel:
                                     verb=verb, request=request,
                                     op_id=(inference_usage.operation_id
                                            if inference_usage is not None else new_op_id()),
+                                    **({"policy_approval": policy_approval}
+                                       if policy_approval is not None else {}),
+                                    **({"policy_grant_ref": policy_grant_ref,
+                                        "policy_agent": policy_agent,
+                                        "policy_task_id": policy_task_id}
+                                       if policy_grant_ref is not None else {}),
                                     **({"inference_usage": inference_usage.document()}
                                        if inference_usage is not None else {}))
 
@@ -892,7 +900,9 @@ class ScopedConnectionProxy:
     access_mode: str = ACCESS_EXACT
     _channel: _BrokerChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
-    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None,
+                policy_approval=None, policy_grant_ref=None, policy_agent=None,
+                policy_task_id=None) -> Any:
         if not _verb_within_scopes(verb, self.scopes, self.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
@@ -900,6 +910,12 @@ class ScopedConnectionProxy:
         return self._channel.request(
             verb, request, **({"inference_usage": inference_usage}
                              if inference_usage is not None else {}),
+            **({"policy_approval": policy_approval}
+               if policy_approval is not None else {}),
+            **({"policy_grant_ref": policy_grant_ref,
+                "policy_agent": policy_agent,
+                "policy_task_id": policy_task_id}
+               if policy_grant_ref is not None else {}),
         )
 
     def close(self) -> None:

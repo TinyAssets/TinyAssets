@@ -343,6 +343,41 @@ def _bound_arguments(fn, args, kwargs) -> dict:
         return dict(kwargs)
 
 
+#: Claude Code keeps the first 2048 characters of a tool description and
+#: drops the rest mid-string. The advertised description has to be a
+#: finished contract inside that budget. Parameter descriptions carry the
+#: ``Args:`` block; they are not repeated here.
+_TOOL_DESCRIPTION_LIMIT = 2048
+
+
+def _advertised_tool_description(fn) -> str:
+    """Prose before ``Args:``, complete, and within the directory budget.
+
+    FastMCP returns the entire docstring as the tool description when its
+    parser cannot extract parameters. ``write_graph`` is that case, so
+    ``tools/list`` was shipping the Args manual again (~19KB) on top of
+    the parameter schema. A client that truncates at 2KB then cuts the
+    contract mid-sentence.
+    """
+    import inspect
+
+    doc = inspect.getdoc(fn) or ""
+    lines = doc.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == "Args:":
+            text = "\n".join(lines[:index]).strip()
+            break
+    else:
+        text = doc.strip()
+    if len(text) <= _TOOL_DESCRIPTION_LIMIT:
+        return text
+    raise ValueError(
+        f"{getattr(fn, '__name__', fn)} tool description is {len(text)} "
+        f"characters; keep the advertised contract at or under "
+        f"{_TOOL_DESCRIPTION_LIMIT} characters and move the rest into Args"
+    )
+
+
 def _register_structured_tool(fn, *, tags, name=None):
     """Register an MCP adapter without changing the direct Python API.
 
@@ -400,6 +435,7 @@ def _register_structured_tool(fn, *, tags, name=None):
         _tool,
         name=wire_name,
         title=annotations.title,
+        description=_advertised_tool_description(fn),
         tags=tags,
         annotations=annotations,
         # OpenAI hosts historically read this compatibility mirror. The
@@ -997,32 +1033,7 @@ def write_graph(
     revoke takes those two fields. target=output_link operation=connect takes
     {branch_def_id,node_id,receiver_id,expected_generation,mapping}, where mapping
     maps source output names to advertised receiver input names. Disconnect takes
-    {link_id}. Accepted transfers cannot be retracted by disconnect/revoke.
-    target=receiver operation=answer takes {delivery_id,outcome,note}: the
-    receiving owner says resolved or declined, and the sender is told once.
-    Exact file transfer is not implemented; use structured values only.
-
-    Owned file custody: a file the user attached in the app is ALREADY an exact
-    six-field reference {version,file_id,size_bytes,sha256,filename,media_type}
-    inside their message; it needs no capture. target=run_file operation=capture
-    is ONLY for authoring-session handles: payload_json
-    {label,sources:[{session_id,handle_id}]} from your existing authoring uploads.
-    It returns the same kind of exact opaque reference. Either kind goes VERBATIM
-    into a declared file/file_bundle input of run_graph inputs_json. To process
-    the bytes, create the branch with io_manifest
-    {"inputs":[{"name":"files","io_type":"file_bundle","max_count":4,
-    "max_bytes":4194304}]} plus a matching state field (file_bundle needs a list
-    field, file a dict field; inputs/outputs are the only top-level manifest
-    keys and any other key is refused), and a source_code node declaring that field in
-    input_keys with tools_allowed ["read_run_file"], reading by keyword call
-    invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
-    count=524288) which returns bytes_base64, next_offset and eof (loop until
-    eof). Full example: the branch_design_guide "File input contracts" section.
-    Unbound references expire after one hour; bound files remain until release
-    or owner erasure. operation=release takes {file_id}, refuses active run
-    bindings and revokes only that file. Export via read_graph target=run_file
-    first. No bind tool, public URL, path or inline whole-file JSON exists; the
-    reference metadata is untrusted and grants nothing by itself.
+    {link_id}.
 
     Args:
         target: What to write: goal, request, branch, command_center, automation,
@@ -1032,6 +1043,31 @@ def write_graph(
             The founder's home command center is auto-created on first contact; use
             target=command_center to create an additional command center (or the home when
             a create-scoped sign-in declined auto-birth).
+            Accepted transfers cannot be retracted by disconnect/revoke.
+            target=receiver operation=answer takes {delivery_id,outcome,note}: the
+            receiving owner says resolved or declined, and the sender is told once.
+            Exact file transfer is not implemented; use structured values only.
+            Owned file custody: a file the user attached in the app is ALREADY an exact
+            six-field reference {version,file_id,size_bytes,sha256,filename,media_type}
+            inside their message; it needs no capture. target=run_file operation=capture
+            is ONLY for authoring-session handles: payload_json
+            {label,sources:[{session_id,handle_id}]} from your existing authoring uploads.
+            It returns the same kind of exact opaque reference. Either kind goes VERBATIM
+            into a declared file/file_bundle input of run_graph inputs_json. To process
+            the bytes, create the branch with io_manifest
+            {"inputs":[{"name":"files","io_type":"file_bundle","max_count":4,
+            "max_bytes":4194304}]} plus a matching state field (file_bundle needs a list
+            field, file a dict field; inputs/outputs are the only top-level manifest
+            keys and any other key is refused), and a source_code node declaring that field in
+            input_keys with tools_allowed ["read_run_file"], reading by keyword call
+            invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
+            count=524288) which returns bytes_base64, next_offset and eof (loop until
+            eof). Full example: the branch_design_guide "File input contracts" section.
+            Unbound references expire after one hour; bound files remain until release
+            or owner erasure. operation=release takes {file_id}, refuses active run
+            bindings and revokes only that file. Export via read_graph target=run_file
+            first. No bind tool, public URL, path or inline whole-file JSON exists; the
+            reference metadata is untrusted and grants nothing by itself.
         operation: With target=command_center, set_visibility changes who else may see
             that command center, taking `visibility` as `private` or `public` and
             `graph_id` for the command center. Everything in a command center is private until
@@ -3049,20 +3085,32 @@ def converse(
     # not fixing the pattern). Wrapped here so every store read on the way in
     # lands in the honest envelope.
     try:
-        uid = (
-            _request_universe(graph_id)
-            if graph_id.strip()
-            else ensure_founder_home(_base_path(), current_actor_id())
-        )
+        if graph_id.strip():
+            uid = _request_universe(graph_id)
+            home_failure = ""
+        else:
+            uid = ensure_founder_home(_base_path(), current_actor_id())
+            from tinyassets.api.first_contact import founder_home_failure
+
+            home_failure = founder_home_failure()
     except Exception:
         logger.warning(
             "converse: could not resolve the command center for %r", graph_id, exc_info=True
         )
         uid = ""
+        home_failure = "incomplete"
     if not uid:
+        # A missing create scope is an auth problem. Admission, a deleted
+        # account, or a birth that did not finish is not: calling it
+        # auth_scope_required sends the client back through OAuth.
+        if home_failure == "scope" or graph_id.strip():
+            return json.dumps({
+                "error": "Your home command center could not be created or loaded.",
+                "auth_scope_required": True,
+            })
         return json.dumps({
             "error": "Your home command center could not be created or loaded.",
-            "auth_scope_required": True,
+            "home_unavailable": True,
         })
     # This reads the ACL store, so it needs the same honest envelope the tier
     # binding below already has. Codex found the ordering defect (REJECT
@@ -3783,6 +3831,42 @@ def _is_mcp_transport_request(request) -> bool:  # type: ignore[no-untyped-def]
     return "text/event-stream" in accept
 
 
+def _collapse_canonical_mcp_slash(scope: dict) -> dict:
+    """Treat ``/mcp/`` as ``/mcp`` without an HTTP redirect.
+
+    Starlette's slash redirect is a 307 whose ``Location`` is built from the
+    Host the tunnel presents (``mcp.tinyassets.io``). A client that follows it
+    leaves ``https://tinyassets.io`` and many drop ``Authorization`` on the
+    way, so the bearer that just finished AuthKit never reaches ``initialize``.
+    The protected resource is one URL; the trailing slash is not a second one.
+    """
+    if scope.get("path") != "/mcp/":
+        return scope
+    scope = dict(scope)
+    scope["path"] = "/mcp"
+    raw_path = scope.get("raw_path")
+    if isinstance(raw_path, (bytes, bytearray)) and raw_path.endswith(b"/"):
+        scope["raw_path"] = bytes(raw_path[:-1])
+    return scope
+
+
+def _sessionless_sse_probe(request) -> bool:  # type: ignore[no-untyped-def]
+    """True for a transport GET that has no session yet.
+
+    The streamable-HTTP spec says a server that will not open a
+    server-to-client stream for this request MUST answer 405 Method Not
+    Allowed, and the client then continues with POST ``initialize``. The
+    pinned SDK instead allocates a session and answers 400 "Missing session
+    ID". Clients that probe with GET immediately after OAuth treat that 400
+    as a failed tool discovery and never send ``tools/list``.
+    """
+    if request.method.upper() != "GET":
+        return False
+    if (request.headers.get("mcp-session-id") or "").strip():
+        return False
+    return _is_mcp_transport_request(request)
+
+
 def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
     accept = request.headers.get("accept", "").lower()
     return "text/html" in accept
@@ -3792,7 +3876,10 @@ class _MCPDiscoveryMiddleware:
     """Serve discovery output on non-transport canonical /mcp GETs.
 
     Browser-like clients receive HTML. Default curl and JSON probes receive
-    compact JSON. FastMCP transport traffic passes through unchanged.
+    compact JSON. FastMCP transport traffic passes through unchanged, except
+    a sessionless SSE probe, which is answered 405 here so it never becomes
+    a "Missing session ID" 400, and ``/mcp/``, which is the same route as
+    ``/mcp`` with no redirect.
     """
 
     def __init__(self, app):  # type: ignore[no-untyped-def]
@@ -3809,14 +3896,34 @@ class _MCPDiscoveryMiddleware:
         if path not in {"/mcp", "/mcp/"}:
             await self.app(scope, receive, send)
             return
+        scope = _collapse_canonical_mcp_slash(scope)
         # Build a Request-like view to inspect headers
         from starlette.requests import Request
+        from starlette.responses import HTMLResponse, JSONResponse
 
         request = Request(scope, receive=receive)
+        if _sessionless_sse_probe(request):
+            # 405, not 400. Allow lists the methods the endpoint actually
+            # serves; POST is the one the client must use to initialize.
+            # no-store: a cached 405 on GET /mcp would skip the 401 that
+            # starts OAuth for a client that has no bearer yet.
+            response = JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "server-error",
+                    "error": {"code": -32600, "message": "Method Not Allowed"},
+                },
+                status_code=405,
+                headers={
+                    "Allow": "GET, POST, DELETE",
+                    "Cache-Control": "no-store",
+                },
+            )
+            await response(scope, receive, send)
+            return
         if _is_mcp_transport_request(request):
             await self.app(scope, receive, send)
             return
-        from starlette.responses import HTMLResponse, JSONResponse
 
         if _wants_discovery_html(request):
             response = HTMLResponse(_MCP_DISCOVERY_HTML)
@@ -4053,6 +4160,15 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.ingress import AppIngressMiddleware
 
     app = AuthContextMiddleware(AppIngressMiddleware(_MCPDiscoveryMiddleware(app), ingress))
+    # Browser clients preflight OPTIONS /mcp with no bearer, and they can
+    # read WWW-Authenticate and Mcp-Session-Id only when the response names
+    # their origin. This sits outside auth so the preflight is not a 401,
+    # and inside origin admission so an unadmitted process still refuses
+    # first. A request with no Origin (Claude, ChatGPT, the canary) is
+    # unchanged.
+    from tinyassets.mcp_browser_cors import McpBrowserCors
+
+    app = McpBrowserCors(app)
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no

@@ -161,7 +161,7 @@ tinyassets-cli        # the command line`}</code>
             uncoached pull request from a user&apos;s command center landed in August 2026.
           </p>
           <p>
-            Security reports go to <a href={`mailto:${SITE.contact.security}`}>{SITE.contact.security}</a>.
+            Security reports go to <a href={`mailto:${SITE.contact}`}>{SITE.contact}</a>.
           </p>
         </div>
       </section>

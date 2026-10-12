@@ -5,7 +5,7 @@ Define the public website's route set, its message, the live-versus-snapshot pro
 ## Requirements
 ### Requirement: The Public Site Ships As One Static Multi-Route Application
 
-The website source under `WebSite/site-react` SHALL build with Next.js static export (`output: "export"`, trailing slashes) and expose exactly the public routes `/`, `/start`, `/build`, `/commons`, `/developers`, `/fine-print`, `/legal`, and `/account`. Retired routes (`/host`, `/connect`, `/soul`, `/graph`, `/notebook`, `/goals`, `/goal`, `/catalog`, `/patterns`, `/wiki`, `/alliance`, `/contribute`, `/loop`, `/patch-loop`, `/proof`, `/status`, `/economy`) SHALL remain soft-landing aliases that name their destination, link to it, and follow after a short delay, and SHALL be marked `noindex`. There is no second site tree: the Svelte rollback source and its deploy workflow were retired on 2026-09-02, and rollback means redeploying an earlier revision. The generated static assets SHALL include the canonical hostname (`CNAME`), crawler policy, sitemap, brand marks, web manifest, `llms.txt`, and the `.well-known/openai-apps-challenge` file committed with the site.
+The website source under `WebSite/site-react` SHALL build with Next.js static export (`output: "export"`, trailing slashes) and expose exactly the public routes `/`, `/start`, `/build`, `/commons`, `/developers`, `/fine-print`, `/legal`, `/token`, and `/account`. Retired routes (`/host`, `/connect`, `/soul`, `/graph`, `/notebook`, `/goals`, `/goal`, `/catalog`, `/patterns`, `/wiki`, `/alliance`, `/contribute`, `/loop`, `/patch-loop`, `/proof`, `/status`, `/economy`) SHALL remain soft-landing aliases that name their destination, link to it, and follow after a short delay, and SHALL be marked `noindex`. There is no second site tree: the Svelte rollback source and its deploy workflow were retired on 2026-09-02, and rollback means redeploying an earlier revision. The generated static assets SHALL include the canonical hostname (`CNAME`), crawler policy, sitemap, brand marks, web manifest, `llms.txt`, and the `.well-known/openai-apps-challenge` file committed with the site.
 
 #### Scenario: A retired route is visited
 
@@ -19,13 +19,14 @@ The website source under `WebSite/site-react` SHALL build with Next.js static ex
 
 ### Requirement: Every Page Serves One Positioning And One Job
 
-The site SHALL present TinyAssets as a personal universe: a cloud agent that runs on the visitor's own Claude or ChatGPT subscription, builds any automation to any platform from a small set of primitives, learns its owner continuously, and runs around the clock under the owner's control. Each route SHALL have one job: `/` states the positioning and shows a real receipt; `/start` gets a person to a running universe on any surface; `/build` explains the primitives (connection, graph, code node, workspace, automation, brain) and honest failure; `/commons` shows public shapes to remix; `/developers` covers open source, the MCP endpoint and handles, and specs; `/fine-print` carries operational truth, plans, and boundaries; `/legal` carries terms, privacy, and disclosures; `/account` says accounts live in the app and how to delete one. Copy SHALL sell outcomes rather than mechanisms, SHALL name TinyAssets as the platform and Tiny as the universe a person talks to, SHALL describe a chatbot as a relay, and SHALL NOT advertise a platform-supplied model, a paid work market, tokens, host-run fleets, per-channel integration lists, the retired `Workflow` name, engagement metrics, or "powered by" a model vendor.
+The site SHALL present TinyAssets as one app on any device: the visitor's own agents, a model the visitor brings, and setups that can be copied. Each route SHALL have one job: `/` states that positioning on the first screen and links to join, how it works, status, creators, source, and fine print; `/start` gets a person into early access on any surface; `/build` explains the primitives (connection, graph, code node, workspace, automation, brain) and honest failure; `/commons` shows public shapes to remix; `/developers` covers open source, the MCP endpoint and handles, and specs; `/fine-print` carries operational truth, plans, and boundaries; `/legal` carries terms, privacy, and disclosures; `/token` publishes the currency token's contract addresses from `lib/token-info.json` and does not promise value or sell the token; `/account` says accounts live in the app and how to delete one. Copy SHALL NOT advertise a platform-supplied model, a paid work market, a DAO, KYC, or an in-app wallet, host-run fleets, per-channel integration lists, the retired `Workflow` name, a global goals engine, engagement metrics, user counts, or "powered by" a model vendor. Public contact mail SHALL be info@tinyassets.io.
 
 #### Scenario: The home page proof
 
 - **WHEN** a visitor reads the home page
-- **THEN** the proof is a receipt of a real run (fetch → code → write, pull request #2728, `README: 91 lines.`, merged 2026-08-30) with a link to the public pull request
-- **AND** the primary action is the web app at `https://tinyassets.io/app`
+- **THEN** the first screen says it is one app, the visitor's own agents, a model the visitor brings, and a setup that can be copied
+- **AND** the primary action is joining early access
+- **AND** the receipt of pull request #2728 stays on `/build`, not as the home-page headline
 
 #### Scenario: Subscription copy stays truthful
 
@@ -35,19 +36,19 @@ The site SHALL present TinyAssets as a personal universe: a cloud agent that run
 
 ### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
-The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises what applies to it. The copy SHALL name the three dimensions as `tinyassets/usage_policy.py` actually implements them and no further: a DAILY ALLOWANCE for outside-world actions (the only dimension with a reservation path, `reserve_effect_quota`), a GUARD on compute ("a guard, not a product limit"), and a CAP on stored data ("capped, not charged", with per-universe attribution still known-wrong). Describing compute or storage as daily allowances overstates what exists. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
+The site SHALL describe plans in the `Plans` section of `/fine-print` (anchor `#plans`). Free and any later paid tier SHALL be the same app and the same security. The only differences the copy may name are simultaneous runs and storage. The section SHALL NOT print a price, a run cap, or a storage cap until the owner publishes those numbers; unfinished numbers SHALL be a visible owner-decision note, not a guessed figure. Because enforcement is not refusing work today, the section SHALL say usage is metered and the gate is not switched on. It SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/` MAY summarise the same two differences and MUST NOT name a price. `/start` MAY carry one sentence that links to the section. No public text asset (`llms.txt`, `robots.txt`) states a price.
 
 #### Scenario: A visitor looks for pricing
 
 - **WHEN** a visitor opens `/fine-print/#plans`
-- **THEN** they read that every universe starts free, what premium changes in words, its monthly price, and that enforcement is not switched on yet, with no form, no button, and no numeric allowances
-- **AND** the three dimensions are described as an allowance, a guard and a cap respectively, matching the policy module rather than flattening all three into "daily limits"
+- **THEN** they read that free and paid are the same app and the same security, that the only named differences are simultaneous runs and storage, that no price or cap is printed, and that the refusal gate is not switched on, with no upgrade control
+- **AND** unfinished numbers are an owner-decision note rather than a guessed figure
 
 #### Scenario: A grounding crawler reads the text assets
 
 - **WHEN** an AI-grounding crawler reads `/llms.txt`
-- **THEN** it finds that founding a universe is free and a pointer to `/fine-print/#plans`
-- **AND** it does not find the price or the premium benefit restated, so the two cannot drift apart
+- **THEN** it finds that joining is free during early access and a pointer to `/fine-print/#plans`
+- **AND** it does not find a price, so the two cannot drift apart
 
 ### Requirement: Public Views Distinguish Live Reads From The Checked-In Snapshot
 

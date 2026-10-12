@@ -13,6 +13,10 @@ import pytest
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
 GUARDS = {
+    "test_policy_writers": (
+        "Keep policy writes in the broker store, reachable only through the protected "
+        "owner-door policy route. Retire the former editable rule modules. "
+    ),
     "test_shape_registry": (
         "Remove the named second path or new surface, lower a recorded ceiling after deletion, "
         "and keep docs, ADRs and proposals in their registered homes. "

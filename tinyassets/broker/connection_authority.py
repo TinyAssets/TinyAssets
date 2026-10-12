@@ -44,3 +44,38 @@ def read_authority(authority: ConnectionAuthority, grant_id: str, *, universe_di
             Path(authority.data_root).resolve() / authority.command_center):
         raise PermissionError("effect directory differs from admitted broker scope")
     return authority.snapshot(grant_id)
+
+
+def read_policy(data_root, *, principal, command_center, destination):
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, query_ledger
+    from tinyassets.storage.outbound_connections import (
+        ActionCap,
+        ConnectionGrant,
+        ProxyRequestError,
+        _resource_from_row,
+    )
+
+    connection_id, grant_id = _ids(universe_id=command_center, destination=destination)
+    answer = query_ledger(data_root, query=AUTHORIZED_CONNECTION, principal=principal,
+                          command_center=command_center, connection_id=connection_id,
+                          grant_id=grant_id)
+    try:
+        row, grow = answer["resource"], answer["grant"]
+        resource = _resource_from_row(row)
+        cap = grow["unprompted_action_cap"]
+        grant = ConnectionGrant(**(grow | {
+            "unprompted_action_cap": ActionCap(**cap) if cap is not None else None}))
+        if not all((resource.connection_id == grant.connection_id == connection_id,
+                    grant.grant_id == grant_id, grant.universe_id == command_center,
+                    grant.owner_user_id == resource.owner_user_id == principal,
+                    grant.revoked_at is None, resource.revoked_at is None)):
+            raise ValueError("invalid policy scope")
+        expected = {"endpoints_json": row["allowed_endpoints_json"],
+                    "scopes_json": row["scopes_json"], "access_mode": row["access_mode"],
+                    "incarnation": row["incarnation"]}
+        if any(not isinstance(v, str) or not v for v in expected.values()):
+            raise ValueError("invalid policy snapshot")
+        return resource, grant, expected
+    except (LookupError, TypeError, ValueError):
+        raise ProxyRequestError("invalid broker policy response") from None

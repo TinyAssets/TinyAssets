@@ -10,6 +10,13 @@ from tests.test_ta_capabilities import backend
 from tinyassets.extension_capabilities import ExtensionCapabilities
 
 
+@pytest.fixture(autouse=True)
+def _owner_policy_transport_stub(monkeypatch):
+    from tests.test_ta_capabilities import _policy_stub
+
+    _policy_stub(monkeypatch)
+
+
 def setup(tmp_path):
     _, root, _ = _setup(tmp_path)
     service = backend(root, agent="main")
@@ -85,12 +92,13 @@ def test_remote_discovery_calls_pinned_catalog_and_hides_headers(tmp_path, monke
     assert len(sent) == before
 
 
-def test_remote_preserves_existing_effector_refusal(tmp_path):
+def test_remote_preserves_existing_effector_refusal(tmp_path, monkeypatch):
     service, extensions, args = setup(tmp_path)
     name = activate(service, extensions, args)
-    from tinyassets import agent_rules
+    from tests.test_ta_capabilities import _policy_stub
+    from tinyassets import policy_rules
 
-    agent_rules.set_rule(service.root, "app.write", agent_rules.HAND_OFF, agent="main")
+    _policy_stub(monkeypatch, policy_rules.HAND_OFF)
     # Real effector and an explicit owner rule; no transport is mocked.
     result = call(service, name, {"action": "discover"})["result"]
     assert result["error_kind"] == "rule_hand_off" and not result.get("delivered"), result
@@ -107,11 +115,12 @@ def test_binding_incarnation_fences_replaced_connection(tmp_path):
 
 
 def test_ask_first_never_captures_an_orphaned_protocol_frame(tmp_path, monkeypatch):
-    from tinyassets import agent_rules, bound_requests
+    from tests.test_ta_capabilities import _policy_stub
+    from tinyassets import bound_requests, policy_rules
 
     service, extensions, args = setup(tmp_path)
     name = activate(service, extensions, args)
-    agent_rules.set_rule(service.root, "app.write", agent_rules.ASK_FIRST, agent="main")
+    _policy_stub(monkeypatch, policy_rules.ASK_FIRST)
     monkeypatch.setattr(bound_requests, "capture", lambda *a, **k:
                         pytest.fail("MCP protocol frame must not become an approval"))
     result = call(service, name, {"action": "discover"})["result"]
