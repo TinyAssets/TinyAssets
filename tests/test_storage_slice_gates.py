@@ -123,6 +123,7 @@ class TestCommonsPages:
                 category="notes", filename="big.md", content="# x\n" + "x" * (10 * KIB),
             )
         assert not list((base / "wiki").rglob("big.md"))
+        assert not list((base / ".wiki").rglob("big.md"))
 
     def test_the_wiki_tool_returns_the_refusal_record(self, base, signed_in):
         from tinyassets.api import wiki as api_wiki
