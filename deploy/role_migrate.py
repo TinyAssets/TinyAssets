@@ -701,11 +701,20 @@ def check_policy(root):
             diffs.append(f'freeze: {name}')
     if _stat(root, '.agent-sessions') is not None:
         with _directory(root, '.agent-sessions') as legacy:
+            info = os.fstat(legacy)
+            if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (
+                    DAEMON, 1102, 0o710):
+                diffs.append('freeze: .agent-sessions label')
             for center_name in os.listdir(legacy):
                 if not CENTER.fullmatch(center_name):
                     continue
                 try:
                     with _directory(legacy, center_name) as center:
+                        info = os.fstat(center)
+                        if info.st_uid != DAEMON:
+                            continue  # unsafe center is refused independently
+                        if (info.st_gid, stat.S_IMODE(info.st_mode)) != (1102, 0o710):
+                            diffs.append(f'freeze: {center_name} directory label')
                         source = _stat(center, 'rules.db')
                         if source is None:
                             continue
@@ -1049,20 +1058,31 @@ def step_policy(root):
         if _stat(root, '.agent-sessions') is None:
             return changed
         legacy = stack.enter_context(_directory(root, '.agent-sessions'))
-        legacy_info = os.fstat(legacy)
-        if (legacy_info.st_uid, legacy_info.st_gid,
-                stat.S_IMODE(legacy_info.st_mode)) != (DAEMON, 1102, 0o710):
-            raise MigrationRefused('unsafe legacy rules parent')
+        changed += _label_legacy_directory(legacy, '.agent-sessions')
         for center_name in os.listdir(legacy):
             if not CENTER.fullmatch(center_name):
                 continue
             try:
                 with _directory(legacy, center_name) as center:
+                    changed += _label_legacy_directory(center, center_name)
                     changed += _freeze_center_policy(center, center_name, frozen)
             except (MigrationRefused, OSError, sqlite3.Error) as exc:
                 print(f'ALARM: legacy policy refused for {center_name}: {exc}',
                       file=sys.stderr)
     return changed
+
+
+def _label_legacy_directory(fd, name):
+    """The stopped daemon's pinned directory gains broker traverse permission."""
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != DAEMON:
+        raise MigrationRefused(f'unsafe legacy rules directory: {name}')
+    if (info.st_gid, stat.S_IMODE(info.st_mode)) == (1102, 0o710):
+        return 0
+    os.fchown(fd, -1, 1102)
+    os.fchmod(fd, 0o710)
+    os.fsync(fd)
+    return 1
 
 
 def _freeze_center_policy(center, center_name, frozen):

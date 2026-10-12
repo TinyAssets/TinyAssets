@@ -113,7 +113,10 @@ After the owner-split marker exists, each normal `deploy_fail_safe.sh` run
 drains and stops the old daemon, then runs the candidate image's privileged
 `ta-migrate --policy-online --apply` before starting the new image. The step
 opens each legacy `rules.db` and sidecar without following links, checks the
-daemon-owned single-link source, checkpoints copied WAL content, freezes the
+daemon-owned directory descriptors and relabels the production `0700` directories
+(and newer daemon-created `0770` directories) to `1001:1102 0710` for broker
+traversal, checks the single-link source,
+checkpoints copied WAL content, freezes the
 source as root:1102 mode 0440, and takes a broker-owned SQLite snapshot. It
 then runs `ta-migrate --check --policy-only`. An unsafe center is alarmed and
 refused for that owner; other centers and the deploy continue. A global custody

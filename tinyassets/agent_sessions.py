@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import time
 from collections.abc import Iterator
@@ -84,7 +85,37 @@ class AgentSessionRef:
 def _records_dir(universe_dir: Path) -> Path:
     root = Path(universe_dir)
     path = root.parent / RECORDS_DIR / root.name
-    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "posix" or os.geteuid() != 1001:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    broker_group = 1102 if 1102 in os.getgroups() or os.getegid() == 1102 else os.getegid()
+    if root.parent == Path('/data') and broker_group != 1102:
+        raise PermissionError("daemon needs broker traverse group for agent records")
+    from tinyassets import workspace_fs as fs
+
+    fd = fs.open_dir_nofollow(root.parent)
+    try:
+        for name in (RECORDS_DIR, root.name):
+            try:
+                os.mkdir(name, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = fs.open_subdir_nofollow(fd, name)
+            try:
+                info = os.fstat(child)
+                if info.st_uid != os.geteuid() or info.st_gid not in (os.getegid(), broker_group):
+                    raise PermissionError(f"unsafe agent records directory: {name}")
+                if (info.st_gid, stat.S_IMODE(info.st_mode)) != (broker_group, 0o710):
+                    if info.st_gid != broker_group:
+                        os.fchown(child, -1, broker_group)
+                    os.fchmod(child, 0o710)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd)
+            fd = child
+    finally:
+        os.close(fd)
     return path
 
 

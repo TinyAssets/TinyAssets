@@ -1,11 +1,12 @@
-"""Cutover acceptance on a migrated copy of production data.
+"""Cutover acceptance on a restored copy of production data.
 
     python scripts/role_image_oracle.py --image <image> \
         --backup-archive <snapshot.tar.gz> --command-center <id>
 
-The default migrate,serve,chat stages restore the backup into a disposable volume,
-run the image's migration, verify the real CMD in compose posture, then drive real
-HTTP converse turns with real read/write/edit/bash for Claude Code and Codex.
+With a backup, the default policy_deploy stage restores its real labels into a
+disposable volume, applies the stopped-writer deploy gate, then boots the image.
+The explicit migrate,serve,chat stages also drive real HTTP converse turns with
+real read/write/edit/bash for Claude Code and Codex.
 The production persona, history,
 argv, environment construction and engine MCP configuration are built by the real
 server. Only vendor credentials/endpoint are replaced with a local streaming API;
@@ -1521,7 +1522,7 @@ def stage_policy_deploy(args):
         dict(center=member.name.split('/')[-2], uid=member.uid,
              gid=member.gid, mode=oct(member.mode), bytes=member.size)
         for member in rules], sort_keys=True), flush=True)
-    migrated = stage_migrate(args)
+    restored = stage_restore(args)
 
     def operator(*flags, user='0', caps=MIGRATION_CAPS):
         command = _posture(f'{args.prefix}-migrate', args.image, args.volume,
@@ -1531,36 +1532,36 @@ def stage_policy_deploy(args):
                                          *flags], capture_output=True, text=True,
                               encoding='utf-8')
 
-    # Only remove the policy custody generated on this disposable migrated copy.
-    # Leave all other production-copy content intact.
     reset = _posture(f'{args.prefix}-migrate', args.image, args.volume, user='0',
                      caps=MIGRATION_CAPS, entrypoint='/opt/venv/bin/python',
                      extra=['--rm', '--network', 'none'])
-    script = '''import os
+    labels_script = '''import json,os,stat
 from pathlib import Path
-root = Path('/data/.platform/accounts/.legacy-policy')
-assert root.is_dir()
-files = list(root.iterdir())
-assert files and all(p.is_file() and p.suffix == '.db' for p in files)
-for path in files:
-    path.unlink()
-for center in %r:
-    source = Path('/data/.agent-sessions') / center / 'rules.db'
-    assert source.is_file()
-    os.chown(source, 1001, 1001)
-    source.chmod(0o600)
-root.rmdir()
-accounts = root.parent
-if not list(accounts.iterdir()):
-    accounts.rmdir()
-    platform = accounts.parent
-    if not list(platform.iterdir()):
-        platform.rmdir()
-''' % centers
-    cleared = subprocess.run(reset + ['-I', '-B', '-c', script],
-                             capture_output=True, text=True, encoding='utf-8')
-    expect(cleared.returncode == 0, 'disposable clone policy custody reset: '
-           + cleared.stderr[-1200:])
+base = Path('/data/.agent-sessions')
+names = ['.'] + sorted(p.name for p in base.iterdir() if p.is_dir())
+assert len(names) == 6, names
+result = {}
+for name in names:
+    path = base if name == '.' else base / name
+    info = path.lstat()
+    assert stat.S_ISDIR(info.st_mode) and (info.st_uid,info.st_gid,
+        stat.S_IMODE(info.st_mode)) == (1001,1001,0o700), (name,info)
+    result[name] = [info.st_uid,info.st_gid,format(stat.S_IMODE(info.st_mode),'04o')]
+    source = path / 'rules.db'
+    if name != '.' and source.exists():
+        info = source.lstat()
+        assert stat.S_ISREG(info.st_mode) and (info.st_uid,info.st_gid,
+            stat.S_IMODE(info.st_mode)) == (1001,1001,0o600), (name,info)
+        result[name + '/rules.db'] = [info.st_uid,info.st_gid,
+            format(stat.S_IMODE(info.st_mode),'04o')]
+assert sum(name.endswith('/rules.db') for name in result) == 3
+print(json.dumps(result,sort_keys=True))
+'''
+    labels = subprocess.run(reset + ['-I', '-B', '-c', labels_script],
+                            capture_output=True, text=True, encoding='utf-8')
+    expect(labels.returncode == 0, 'restored production labels: ' + labels.stderr[-1200:])
+    before_labels = json.loads(labels.stdout)
+    print('POLICY LABELS BEFORE ' + json.dumps(before_labels, sort_keys=True), flush=True)
     wal_script = '''import os,sqlite3
 from pathlib import Path
 source = Path('/data/.agent-sessions') / %r / 'rules.db'
@@ -1582,8 +1583,7 @@ os._exit(0)  # model the stopped writer leaving committed WAL bytes behind
            + planted_wal.stderr[-1200:])
     before = operator('--check', '--policy-only')
     expect(before.returncode == 1 and 'freeze:' in before.stdout,
-           'migrated production copy has unfrozen policy before deploy')
-    serving = stage_serve(args, keep=True)
+           'restored production copy has unfrozen policy before deploy')
     def broker_label():
         probe = subprocess.run(reset + ['-I', '-B', '-c',
             "import os,stat; s=os.stat('/data/.broker'); "
@@ -1606,10 +1606,6 @@ os._exit(0)  # model the stopped writer leaving committed WAL bytes behind
     expect(removed.returncode == 0, 'disposable clone policy alias removed')
     failed = operator('--policy-online', '--apply', user='1002', caps=())
     expect(failed.returncode != 0, 'unprivileged policy step is refused')
-    pulse = docker('exec', f'{args.prefix}-serve', '/usr/local/libexec/ta-op',
-                   'pulse', check=False)
-    expect(pulse.returncode == 0, 'failed policy step leaves old version serving')
-    docker('stop', '--time', '20', f'{args.prefix}-serve')
     applied = operator('--policy-online', '--apply')
     expect(applied.returncode == 0, 'privileged online policy freeze: '
            + applied.stderr[-1200:])
@@ -1617,6 +1613,28 @@ os._exit(0)  # model the stopped writer leaving committed WAL bytes behind
     expect(checked.returncode == 0 and not checked.stdout,
            'ta-migrate --check has zero create/freeze policy diffs: '
            + checked.stdout[-1200:] + checked.stderr[-1200:])
+    after_script = '''import json,os,stat
+from pathlib import Path
+base = Path('/data/.agent-sessions')
+result = {}
+for name in %r:
+    path = base if name == '.' else base / name
+    info = path.lstat()
+    assert (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode)) == (1001,1102,0o710)
+    result[name] = [info.st_uid,info.st_gid,format(stat.S_IMODE(info.st_mode),'04o')]
+    source = path / 'rules.db'
+    if name != '.' and source.exists():
+        info = source.lstat()
+        assert (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode)) == (0,1102,0o440)
+        result[name + '/rules.db'] = [info.st_uid,info.st_gid,
+            format(stat.S_IMODE(info.st_mode),'04o')]
+print(json.dumps(result,sort_keys=True))
+''' % sorted(name for name in before_labels if not name.endswith('/rules.db'))
+    labels = subprocess.run(reset + ['-I', '-B', '-c', after_script],
+                            capture_output=True, text=True, encoding='utf-8')
+    expect(labels.returncode == 0, 'post-freeze production labels: ' + labels.stderr[-1200:])
+    after_labels = json.loads(labels.stdout)
+    print('POLICY LABELS AFTER ' + json.dumps(after_labels, sort_keys=True), flush=True)
     evidence_script = '''import hashlib,json,os,sqlite3,stat
 from pathlib import Path
 result = {}
@@ -1711,24 +1729,73 @@ else:
             % (centers[0] + '.db')], capture_output=True, text=True)
         expect(remaining.returncode == 0 and remaining.stdout.strip() == 'False 2',
                kind + ' leaves only the anomalous center without custody')
-        restored = subprocess.run(reset + ['-I', '-B', '-c',
+        restored_source = subprocess.run(reset + ['-I', '-B', '-c',
             mutation.replace("kind = %r" % kind, "kind = 'restore'")],
             capture_output=True, text=True, encoding='utf-8')
-        expect(restored.returncode == 0, kind + ' source restored: ' + restored.stderr)
+        expect(restored_source.returncode == 0, kind + ' source restored: '
+               + restored_source.stderr)
         expect(operator('--policy-online', '--apply').returncode == 0,
                kind + ' recovered without host action')
         anomalies[kind] = 'one center refused; other two preserved'
-    docker('start', f'{args.prefix}-serve')
-    for _ in range(60):
-        pulse = docker('exec', f'{args.prefix}-serve', '/usr/local/libexec/ta-op',
-                       'pulse', check=False)
-        if pulse.returncode == 0:
-            break
-        time.sleep(1)
-    logs = docker('logs', f'{args.prefix}-serve', check=False)
-    expect(pulse.returncode == 0, 'new image serves after stopped-writer freeze: '
-           + (logs.stdout + logs.stderr)[-3000:])
-    docker('rm', '-f', f'{args.prefix}-serve')
+    recent = empty_centers = sorted(name for name in before_labels
+                                    if name != '.' and '/' not in name and name not in centers)
+    label_recent = '''import os,stat
+from pathlib import Path
+base = Path('/data/.agent-sessions')
+for path in (base / %r, base):
+    os.chown(path,1001,1001)
+    os.chmod(path,0o770)
+    assert (path.stat().st_uid,path.stat().st_gid,
+            stat.S_IMODE(path.stat().st_mode)) == (1001,1001,0o770)
+print('0770')
+''' % recent[0]
+    planted = subprocess.run(reset + ['-I', '-B', '-c', label_recent],
+                             capture_output=True, text=True, encoding='utf-8')
+    expect(planted.returncode == 0 and planted.stdout.strip() == '0770',
+           'recent old-daemon parent and center carry natural 0770 labels')
+    expect(operator('--policy-online', '--apply').returncode == 0 and
+           operator('--check', '--policy-only').returncode == 0,
+           'stopped-writer step relabels recent 0770 center without blocking deploy')
+    for kind in ('directory-symlink', 'directory-foreign-owner'):
+        mutation = '''import os
+from pathlib import Path
+center = Path('/data/.agent-sessions') / %r
+frozen = Path('/data/.platform/accounts/.legacy-policy') / %r
+kind = %r
+if kind == 'restore':
+    if center.is_symlink():
+        center.unlink()
+        center.with_name(center.name + '.saved').rename(center)
+    os.chown(center, 1001, 1102)
+    os.chmod(center, 0o710)
+else:
+    frozen.unlink()
+    if kind == 'directory-symlink':
+        center.rename(center.with_name(center.name + '.saved'))
+        center.symlink_to(center.name + '.saved')
+    else:
+        os.chown(center, 2000, 2000)
+''' % (centers[0], centers[0] + '.db', kind)
+        planted = subprocess.run(reset + ['-I', '-B', '-c', mutation],
+                                 capture_output=True, text=True, encoding='utf-8')
+        expect(planted.returncode == 0, kind + ' planted: ' + planted.stderr)
+        refused = operator('--policy-online', '--apply')
+        expect(refused.returncode == 0 and
+               'ALARM: legacy policy refused for ' + centers[0] in refused.stderr,
+               kind + ' refused for one center: ' + refused.stderr[-1200:])
+        remaining = subprocess.run(reset + ['-I', '-B', '-c',
+            'from pathlib import Path; p=Path("/data/.platform/accounts/.legacy-policy"); '
+            'print((p/%r).exists(), sum(x.suffix==".db" for x in p.iterdir()))'
+            % (centers[0] + '.db')], capture_output=True, text=True)
+        expect(remaining.returncode == 0 and remaining.stdout.strip() == 'False 2',
+               kind + ' leaves only the anomalous center without custody')
+        restored_dir = subprocess.run(reset + ['-I', '-B', '-c',
+            mutation.replace('kind = %r' % kind, "kind = 'restore'")],
+            capture_output=True, text=True, encoding='utf-8')
+        expect(restored_dir.returncode == 0, kind + ' restored: ' + restored_dir.stderr)
+        expect(operator('--policy-online', '--apply').returncode == 0,
+               kind + ' recovered without host action')
+        anomalies[kind] = 'one center refused; other two preserved'
     restarted = stage_serve(args, keep=True)
     migrated_script = '''import json,sqlite3
 from pathlib import Path
@@ -1743,17 +1810,55 @@ print(json.dumps(rows))
                                     capture_output=True, text=True, encoding='utf-8')
     expect(migration_rows.returncode == 0, 'broker migration rows: '
            + migration_rows.stderr)
-    migrated_rules = {row[0]: row[1] for row in json.loads(migration_rows.stdout)
+    all_rows = json.loads(migration_rows.stdout)
+    migrated_rules = {row[0]: row[1] for row in all_rows
                       if row[0] in centers and row[1] > 0 and row[2] == row[3]}
     expect(set(migrated_rules) == set(centers),
            'broker migrated all three centers with count and digest agreement')
+    expect(len(empty_centers) == 2 and all(
+        any(row[0] == center and row[1] == 0 and row[2] == row[3]
+            for row in all_rows) for center in empty_centers),
+        'both centers without rules migrate with empty policy')
+    new_script = '''import os,stat
+from pathlib import Path
+root = Path('/data')
+os.umask(0o007)
+from tinyassets.agent_sessions import _records_dir
+path = _records_dir(root / 'u-new-policy-oracle')
+info = path.stat()
+assert (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode)) == (1001,1102,0o710)
+print(path)
+'''
+    daemon_run = _posture(f'{args.prefix}-migrate', args.image, args.volume,
+                          user='1001:1001', caps=(), entrypoint='/opt/venv/bin/python',
+                          extra=['--rm', '--network', 'none', '--group-add', '1100',
+                                 '--group-add', '1101', '--group-add', '1102'])
+    created = subprocess.run(daemon_run + ['-I', '-B', '-c', new_script],
+                             capture_output=True, text=True, encoding='utf-8')
+    expect(created.returncode == 0, 'new daemon center gets broker traverse label: '
+           + created.stderr[-1200:])
+    broker_script = '''from pathlib import Path
+root = Path('/data')
+from tinyassets.broker.policy import PolicyStore
+rows,source = PolicyStore(root, None)._legacy('u-new-policy-oracle')
+assert rows == [] and source['rows'] == 0
+print(source)
+'''
+    broker_run = _posture(f'{args.prefix}-migrate', args.image, args.volume,
+                          user='1002:1002', caps=(), entrypoint='/opt/venv/bin/python',
+                          extra=['--rm', '--network', 'none', '--group-add', '1102'])
+    default = subprocess.run(broker_run + ['-I', '-B', '-c', broker_script],
+                             capture_output=True, text=True, encoding='utf-8')
+    expect(default.returncode == 0, 'broker reads default policy for new center: '
+           + default.stderr[-1200:])
     docker('rm', '-f', f'{args.prefix}-serve')
-    return dict(migration=migrated, before=before.stdout.splitlines(),
+    return dict(restore=restored, before=before.stdout.splitlines(),
                 forced_failure=failed.returncode, alias_refusal=blocked_alias.returncode,
-                serving=serving['pulse'],
+                before_labels=before_labels, after_labels=after_labels,
                 after=checked.stderr.strip(), broker=restarted['pulse'],
                 backup_rules=len(rules), preserved=preserved, anomalies=anomalies,
-                migrated_rules=migrated_rules)
+                migrated_rules=migrated_rules, empty_centers=empty_centers,
+                new_center=default.stdout.strip())
 
 
 STAGES = {"restore": stage_restore, "repair": stage_repair,
@@ -1775,7 +1880,7 @@ def main(argv=None):
     parser.add_argument("--network", help="docker network name (default <prefix>-net)")
     parser.add_argument('--isolated-metadata', action='store_true',
                         help='use isolated loopback metadata for concurrent oracles')
-    parser.add_argument("--stages", default="migrate,serve,chat",
+    parser.add_argument("--stages",
                         help="comma-separated subset of " + ",".join(STAGES))
     parser.add_argument("--legs", default=",".join(DEFAULT_LEGS),
                         help="comma-separated subset of " + ",".join(LEG_NAMES))
@@ -1783,6 +1888,8 @@ def main(argv=None):
     parser.add_argument("--cells-timeout", type=float, default=900)
     parser.add_argument("--keep", action="store_true", help="leave the volume for inspection")
     args = parser.parse_args(argv)
+    args.stages = args.stages or ('policy_deploy' if args.backup_archive
+                                  else 'migrate,serve,chat')
     args.volume = args.volume or f"{args.prefix}-data"
     args.network = args.network or f"{args.prefix}-net"
     args.legs = tuple(name for name in args.legs.split(",") if name)
