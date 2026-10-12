@@ -92,6 +92,7 @@ class TurnRequestBudget:
         self._store = None
         self.usage_id = None
         self._lease = None
+        self._borrowed = False
 
     @property
     def _scope(self):
@@ -112,6 +113,21 @@ class TurnRequestBudget:
             self.usage_id, self._lease = store.create(self)
             weakref.finalize(self, self._lease.close)
             self._store = store
+
+    @classmethod
+    def join(cls, base_path, owner, universe, usage_id):
+        """Join only the durable allocation scoped to this owner and center."""
+        from tinyassets.storage.agent_request_usage import UsageStore
+
+        if (not isinstance(usage_id, str) or len(usage_id) != 32
+                or any(char not in "0123456789abcdef" for char in usage_id)):
+            raise ProviderAuthorityHeldError("invalid parent allocation")
+        budget = cls(owner, universe)
+        budget._store = UsageStore(base_path)
+        budget.usage_id = usage_id
+        budget._borrowed = True
+        budget.receipt()  # Broker rejects an absent or cross-owner allocation.
+        return budget
 
     def link(self, kind, subject_id):
         with self._lock:
@@ -136,6 +152,8 @@ class TurnRequestBudget:
             return int(attempt.dispatched_at is not None)
 
     def _stored(self, operation, *args, **kwargs):
+        if self._borrowed and self._closed:
+            raise ProviderAuthorityHeldError("joined request allocation is closed")
         return self._store.mutate(self._scope, operation, *args, clock=self.clock,
                                   wall_clock=self.wall_clock, **kwargs)
 
@@ -248,6 +266,8 @@ class TurnRequestBudget:
     def close(self):
         with self._lock:
             self._closed = True
+            if self._borrowed:
+                return
             if self._lease is not None:
                 self._lease.close()
             if self._store is not None:

@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from tinyassets.exceptions import ProviderAuthorityHeldError
-from tinyassets.providers.base import ProviderResponse, UniverseContext
+from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.execution_receipt import (
     ExecutionReceipt,
     receipt_from_response,
@@ -112,34 +112,77 @@ def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContex
     return router, context
 
 
-def _result(response: ProviderResponse, request: ModelCall) -> ModelResult:
+def _result(response: ProviderResponse, request: ModelCall, parent: Parent) -> ModelResult:
     _last_provider.set(response.provider)
     receipt = response.execution_receipt or receipt_from_response(
         response, requested=request.model, purpose=request.purpose,
     )
     if request.model is not None:
         receipt = replace(receipt, requested_model=request.model.model_id)
+    if parent.usage_id is not None:
+        receipt = replace(receipt, parent_usage_id=parent.usage_id)
     return ModelResult(response=response, receipt=receipt)
+
+
+@contextmanager
+def _allocation(context: ModelContext, parent: Parent):
+    """Join the caller's durable root or open one at the call boundary."""
+    from tinyassets.request_budget import (
+        TurnRequestBudget,
+        current_request_budget,
+        request_budget_scope,
+    )
+
+    universe = context.universe_context
+    authority = universe.served_provider
+    carrier = universe.provider_invocation
+    cfg = context.config or ModelConfig()
+    budget = cfg.request_budget or current_request_budget()
+    owner = (authority.owner_user_id if authority is not None else
+             carrier._receipt.principal_id if carrier is not None else
+             budget.owner if budget is not None else "")
+    if not owner or (parent.owner and parent.owner != owner):
+        raise PermissionError("Model call parent does not match its owner")
+    owns = budget is None and parent.usage_id is None
+    if budget is None:
+        if parent.usage_id is None:
+            budget = TurnRequestBudget(owner, parent.command_center)
+            budget.persist(universe.universe_dir.parent)
+        else:
+            budget = TurnRequestBudget.join(
+                universe.universe_dir.parent, owner, parent.command_center,
+                parent.usage_id,
+            )
+    if parent.usage_id is not None and budget.usage_id != parent.usage_id:
+        raise PermissionError("Model call allocation changed")
+    budget.check_scope(owner, parent.command_center)
+    budget.persist(universe.universe_dir.parent)
+    with request_budget_scope(budget, close_on_exit=owns):
+        if parent.subject is not None:
+            budget.link(*parent.subject)
+        yield replace(context, config=replace(cfg, request_budget=budget))
 
 
 async def call(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
-    response = await router.call(
-        context.role, context.prompt, context.system, context.config,
-        operation=context.operation, universe_context=context.universe_context,
-        _agent_observer=context.agent_observer,
-        _agent_execution_kind=context.agent_execution_kind,
-    )
-    return _result(response, request)
+    with _allocation(context, parent) as context:
+        response = await router.call(
+            context.role, context.prompt, context.system, context.config,
+            operation=context.operation, universe_context=context.universe_context,
+            _agent_observer=context.agent_observer,
+            _agent_execution_kind=context.agent_execution_kind,
+        )
+    return _result(response, request, parent)
 
 
 def call_sync(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
-    response = router.call_sync(
-        context.role, context.prompt, context.system, context.config,
-        operation=context.operation, universe_context=context.universe_context,
-    )
-    return _result(response, request)
+    with _allocation(context, parent) as context:
+        response = router.call_sync(
+            context.role, context.prompt, context.system, context.config,
+            operation=context.operation, universe_context=context.universe_context,
+        )
+    return _result(response, request, parent)
 
 
 def _policy_models(policy: dict[str, Any] | None) -> tuple[ModelRef | None, tuple[ModelRef, ...]]:
@@ -196,8 +239,10 @@ def text_sync(
     preferred, fallbacks = _policy_models(policy)
     model = universe_context.model_selection or preferred
     authority = universe_context.served_provider
+    carrier = universe_context.provider_invocation
     parent = Parent(
-        owner=authority.owner_user_id if authority is not None else "",
+        owner=(authority.owner_user_id if authority is not None else
+               carrier._receipt.principal_id if carrier is not None else ""),
         command_center=universe_context.universe_dir.name,
     )
     result = call_sync(ModelCall(
