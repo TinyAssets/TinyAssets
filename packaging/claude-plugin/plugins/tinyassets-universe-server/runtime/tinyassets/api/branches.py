@@ -101,10 +101,9 @@ logger = logging.getLogger(__name__)
 # ───────────────────────────────────────────────────────────────────────────
 # Branches are domain-agnostic graph topologies that live in the same SQLite
 # backing store as the rest of the multiplayer substrate (base_path /
-# .tinyassets.db, table branch_definitions). Each write action appends to
-# the global ledger at base_path / "ledger.json" for public attribution —
-# branches are not scoped to a universe, so the ledger target is the global
-# base_path rather than a per-universe directory.
+# .tinyassets.db, table branch_definitions). A PUBLIC branch write appends to
+# the global ledger at base_path / "ledger.json". Private branches, including
+# unpublished remixes, are not public attribution and are not written there.
 
 
 def _split_csv(text: str) -> list[str]:
@@ -165,6 +164,24 @@ def _coerce_node_keys(
     )
 
 
+def _branch_row_is_public(branch_def_id: str) -> bool | None:
+    """Whether the stored branch is public. None when the row is gone."""
+    if not branch_def_id:
+        return None
+    try:
+        from tinyassets.daemon_server import get_branch_definition
+
+        row = get_branch_definition(_base_path(), branch_def_id=branch_def_id)
+    except KeyError:
+        return None
+    except Exception:
+        logger.warning("Could not read branch %s for ledger visibility", branch_def_id)
+        return None
+    if not isinstance(row, dict):
+        return None
+    return str(row.get("visibility") or "private").strip().lower() == "public"
+
+
 def _append_global_ledger(
     action: str,
     *,
@@ -173,11 +190,12 @@ def _append_global_ledger(
     summary: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    """Append a branch-authoring ledger entry at base_path/ledger.json.
+    """Append a public branch-authoring ledger entry at base_path/ledger.json.
 
     Branch definitions are global artifacts (not scoped to a universe), so the
     ledger target is the base_path rather than a universe directory. Never
-    raises: failures are logged but don't roll back the mutation.
+    raises: failures are logged but don't roll back the mutation. Callers
+    skip this for private branches.
     """
     from tinyassets.api.engine_helpers import _append_ledger
 
@@ -349,6 +367,8 @@ def _dispatch_branch_action(
 
     _ensure_workflow_db()
     actor = _request_branch_actor()
+    before_id = str(kwargs.get("branch_def_id") or "").strip()
+    before_public = _branch_row_is_public(before_id) if before_id else None
     if action in _BRANCH_WRITE_ACTIONS and actor is None:
         if action in {"create_branch", "build_branch"}:
             return json.dumps({"error": "Authenticated branch subject required."})
@@ -400,6 +420,13 @@ def _dispatch_branch_action(
             summary_bits.append(
                 f"ops={result.get('ops_applied', '?')}"
             )
+        after_id = str(result.get("branch_def_id") or before_id or "").strip()
+        after_public = _branch_row_is_public(after_id) if after_id else None
+        # A delete removes the row, so the pre-write reading is the one that
+        # says whether the branch was public attribution.
+        public = after_public if after_public is not None else before_public
+        if public is not True:
+            return result_str
         summary = _truncate(" ".join(summary_bits))
         _append_global_ledger(
             action,
@@ -622,6 +649,128 @@ def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
     return resolved[0] if resolved is not None else bid_or_name
 
 
+def _node_map(nodes: Any) -> dict[str, dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for node in nodes or []:
+        if isinstance(node, dict) and node.get("node_id"):
+            found[str(node["node_id"])] = node
+    return found
+
+
+def _edge_set(edges: Any) -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+        src = edge.get("from", edge.get("from_node", ""))
+        dst = edge.get("to", edge.get("to_node", ""))
+        found.add((str(src), str(dst)))
+    return found
+
+
+def _branch_changes(parent: dict[str, Any], child: dict[str, Any]) -> list[str]:
+    """Computed diff of a copy against the parent version it came from."""
+    changes: list[str] = []
+    for field, label in (
+        ("name", "name"),
+        ("description", "description"),
+        ("entry_point", "entry point"),
+    ):
+        before = parent.get(field)
+        if field != "entry_point" and not before:
+            continue
+        if (before or "") != (child.get(field) or ""):
+            changes.append(f"{label} changed")
+    parent_nodes = _node_map(parent.get("node_defs"))
+    child_nodes = _node_map(child.get("node_defs"))
+    for node_id in sorted(set(child_nodes) - set(parent_nodes)):
+        changes.append(f"added node {node_id}")
+    for node_id in sorted(set(parent_nodes) - set(child_nodes)):
+        changes.append(f"removed node {node_id}")
+    for node_id in sorted(set(parent_nodes) & set(child_nodes)):
+        for key, label in (
+            ("display_name", "name"),
+            ("prompt_template", "prompt"),
+            ("source_code", "code"),
+        ):
+            before = parent_nodes[node_id].get(key) or ""
+            after = child_nodes[node_id].get(key) or ""
+            if before != after:
+                changes.append(f"node {node_id} {label} changed")
+    parent_edges = _edge_set(parent.get("edges"))
+    child_edges = _edge_set(child.get("edges"))
+    for src, dst in sorted(child_edges - parent_edges):
+        changes.append(f"added edge {src}->{dst}")
+    for src, dst in sorted(parent_edges - child_edges):
+        changes.append(f"removed edge {src}->{dst}")
+    return changes
+
+
+def _provenance_text(use: dict[str, Any]) -> str:
+    origin = use.get("origin") or {}
+    who = origin.get("author") or "the original author"
+    name = origin.get("name") or origin.get("branch_def_id") or "the original"
+    version = origin.get("branch_version_id") or ""
+    credit = use.get("credit_author") or who
+    lines = [
+        f"Origin: {name} by {who}" + (f" ({version})." if version else "."),
+        f"Credit stays with {credit} until you publish this copy.",
+    ]
+    changes = use.get("changes") or []
+    if changes:
+        lines.append("Changed: " + "; ".join(changes) + ".")
+    else:
+        lines.append("Changed: nothing yet.")
+    return "\n".join(lines)
+
+
+def _copy_use(branch: dict[str, Any]) -> dict[str, Any] | None:
+    """Origin, credit, and computed changes for a fork. None without a readable parent.
+
+    An unpublished copy keeps the original author's credit. Publishing the copy
+    (public and published) is what moves credit to the copy's author.
+    """
+    fork_from = str(branch.get("fork_from") or "").strip()
+    if not fork_from:
+        return None
+    resolved = _resolve_readable_version(fork_from, str(_base_path()))
+    if resolved is None:
+        return None
+    _version_id, version = resolved
+    snapshot = version.get("snapshot") if isinstance(version.get("snapshot"), dict) else {}
+    parent_id = str(version.get("branch_def_id") or snapshot.get("branch_def_id") or "")
+    parent_author = str(snapshot.get("author") or "")
+    parent_name = ""
+    if parent_id:
+        parent_resolved = _resolve_readable_branch(parent_id, str(_base_path()))
+        if parent_resolved is not None:
+            parent = parent_resolved[1] or {}
+            parent_name = str(parent.get("name") or "")
+            parent_author = parent_author or str(parent.get("author") or "")
+    published = (
+        str(branch.get("visibility") or "private").strip().lower() == "public"
+        and bool(branch.get("published"))
+    )
+    return {
+        "origin": {
+            "kind": "branch_version",
+            "branch_version_id": fork_from,
+            "branch_def_id": parent_id,
+            "name": parent_name,
+            "author": parent_author,
+        },
+        "changes": _branch_changes(snapshot, branch),
+        "credit_author": str(branch.get("author") or "") if published else parent_author,
+    }
+
+
+def _attach_copy_use(branch: dict[str, Any]) -> dict[str, Any] | None:
+    use = _copy_use(branch)
+    if use:
+        branch.update(use)
+    return use
+
+
 def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.market import _gates_enabled
     from tinyassets.daemon_server import list_gate_claims
@@ -671,6 +820,7 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     problems = _source_code_problems(branch.get("node_defs", []))
     branch["source_code_problems"] = problems
     branch["runnable"] = not problems
+    _attach_copy_use(branch)
     return json.dumps(branch, default=str)
 
 
@@ -1619,6 +1769,15 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     }
     if fork_from is not None:
         response["fork_from"] = fork_from
+    shown = dict(source_dict)
+    if fork_from is None:
+        shown.pop("fork_from", None)
+    else:
+        shown["fork_from"] = fork_from
+    use = _copy_use(shown)
+    if use:
+        response.update(use)
+        response["summary"] = summary + "\n\n" + _provenance_text(use)
     return json.dumps(response)
 
 
@@ -3489,6 +3648,10 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         ])
     if verbose:
         payload["branch"] = saved
+    use = _copy_use(persisted.to_dict())
+    if use:
+        payload.update(use)
+        payload["text"] = str(payload.get("text") or text) + "\n\n" + _provenance_text(use)
     return json.dumps(payload, default=str)
 
 

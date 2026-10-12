@@ -13,6 +13,7 @@ from tinyassets.agent_interchange import (
     stage_import,
 )
 from tinyassets.api.helpers import _base_path, _request_universe
+from tinyassets.commons_bundles import publish_portable_copy, stage_portable_copy
 from tinyassets.custom_agents import (
     AgentConflictError,
     AgentNotFoundError,
@@ -20,7 +21,6 @@ from tinyassets.custom_agents import (
     create_binding,
     get_binding,
     get_definition,
-    import_definition,
     list_bindings,
     list_definitions,
     publish_definition,
@@ -203,6 +203,17 @@ def custom_agents(
                     adapter=adapter,
                     idempotency_key=idempotency_key,
                 )
+            if normalized == "publish_stage" and (stage_id or "").startswith("copy_"):
+                agent = publish_portable_copy(
+                    base,
+                    author_id=actor,
+                    copy_id=stage_id,
+                    idempotency_key=idempotency_key,
+                )
+                from tinyassets.publication_completion import completion_for
+
+                return {"status": "published", "agent": agent,
+                        "completion": completion_for(agent, universe_id=universe_id)}
             agent = publish_import_stage(
                 base,
                 actor_id=actor,
@@ -223,19 +234,21 @@ def custom_agents(
                 }
             document = _payload(payload)
             if normalized == "import_agent":
-                agent = import_definition(
+                # A copy is private until the owner publishes it. Staging writes
+                # no commons listing and no bundle credit.
+                stage = stage_portable_copy(
                     base,
                     author_id=actor,
                     portable_definition=document,
                     idempotency_key=idempotency_key,
                 )
-            else:
-                agent = publish_definition(
-                    base,
-                    author_id=actor,
-                    payload=document,
-                    idempotency_key=idempotency_key,
-                )
+                return {"status": "staged", "stage": stage}
+            agent = publish_definition(
+                base,
+                author_id=actor,
+                payload=document,
+                idempotency_key=idempotency_key,
+            )
             from tinyassets.publication_completion import completion_for
 
             return {"status": "published", "agent": agent,
