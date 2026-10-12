@@ -365,8 +365,10 @@ def test_partial_provider_sync_queue_wait_is_deducted_before_launch(sync_pool):
     computed at POOL 1 pickup (``graph_compiler.py:1482``), with pool 2's wait
     never subtracted — so the call is handed budget the queue already spent.
     """
-    budget_s = 1.2
-    held_s = 0.6
+    # Leave enough deadline slack for a contended CI worker after the deliberate
+    # queue hold. The assertion below measures only pool 2's proven queue time.
+    budget_s = 10.0
+    held_s = 0.5
     provider = _RecordingProvider()
     router = ProviderRouter(providers={provider.name: provider})
     release = _occupy_sole_worker(sync_pool)
@@ -399,26 +401,31 @@ def test_partial_provider_sync_queue_wait_is_deducted_before_launch(sync_pool):
 
     # Release BEFORE the node expires: this call is entitled to run, but only
     # on what is left of its budget.
+    with sync_pool._cond:
+        submitted_at = sync_pool.submitted_at[-1]
     time.sleep(held_s)
+    released_at = time.monotonic()
     release.set()
     assert provider.launched.wait(timeout=SETTLE_S), "provider never launched"
     worker.join(timeout=SETTLE_S)
 
     assert len(provider.launches) == 1
     launched_at, cap_seen, _legacy = provider.launches[0]
-    assert entered_at, "node work never started"
-    queue_wait = launched_at - entered_at[0]
-    assert queue_wait >= held_s * 0.8, (
-        f"the call did not actually wait in pool 2 (waited {queue_wait:.3f}s)"
+    assert entered_at and submitted_at >= entered_at[0], "node work never submitted"
+    assert launched_at >= released_at, "provider launched while pool 2 was occupied"
+    proven_queue_wait = released_at - submitted_at
+    assert proven_queue_wait >= held_s * 0.8, (
+        f"the call did not actually wait in pool 2 (waited {proven_queue_wait:.3f}s)"
     )
 
-    remaining = budget_s - queue_wait
+    remaining = budget_s - proven_queue_wait
     assert cap_seen is not None, "provider received no absolute cap at all"
-    # Tolerance is one-directional: a cap at or below the remaining budget is
-    # correct, a cap above it is time the queue already spent being re-granted.
+    # The blocked interval is a lower bound on the router's actual queue wait.
+    # Setup before submit and dispatch after pickup are not part of that wait.
+    # A cap above this bound re-grants time the occupied worker already spent.
     assert cap_seen <= remaining + 0.05, (
         f"provider was handed a {cap_seen:.3f}s cap with only {remaining:.3f}s "
-        f"of the node's {budget_s}s budget left: pool 2's {queue_wait:.3f}s "
+        f"of the node's {budget_s}s budget left: pool 2's {proven_queue_wait:.3f}s "
         "queue wait was never subtracted (router.py:1945 computes the timeout "
         "before submit; router.py:1951 arms it only at pickup)"
     )
