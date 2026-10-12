@@ -357,19 +357,10 @@ def _resolve_serving_source(
     open_grant: tuple[str, str, str] | None = None
     if selected not in _PROVIDER_SERVICE:
         provider_name, grant_id, connection_id, credential_ref = _open_serving_context(
-            base, uid, owner, selected
+            base, uid, owner, selected.removeprefix("api_key_http:")
         )
         selected = provider_name
         open_grant = (grant_id, connection_id, credential_ref)
-    if selected == "claude-code":
-        # A connected subscription can serve if it covers every granted role.
-        uncovered = [role for role in _SERVING_ROLES if role != "writer"]
-        if uncovered:
-            raise ServingProviderHeld(
-                "claude-code serving is held until every live role is covered; "
-                f"uncovered role(s): {', '.join(uncovered)}",
-                reason="role_not_supported",
-            )
     return _ServingSource(selected, open_grant, access)
 
 
@@ -414,6 +405,53 @@ def _source_custody(
     if custody is None:
         raise PermissionError("credential custody changed during assignment")
     return custody
+
+
+def current_connected_source_custody(conn, *, base: Path, universe: Path,
+                                     owner: str, provider: str) -> LLMCredentialCustodyReference:
+    """Resolve the principal's live source without reading a saved assignment."""
+    from tinyassets.providers.served_model_plan import connected_sources
+
+    if provider not in connected_sources(base, universe, owner, conn=conn):
+        raise PermissionError(f"source {provider!r} is not connected for this owner")
+    source = _resolve_serving_source(
+        base, universe.name, owner, provider, ModelAccess(model_scope="discovered"),
+    )
+    if source.open_grant is not None:
+        # An HTTP connection is usable as soon as its owned grant has model_use.
+        # It need not have been selected by the old assignment writer first.
+        import hashlib
+
+        from tinyassets.credential_vault import (
+            _connection_custody_service,
+            _connection_grant_record_digest,
+            _custody_reference_digest,
+        )
+
+        grant_id, connection_id, credential_ref = source.open_grant
+        record_digest = _connection_grant_record_digest(
+            grant_id=grant_id, connection_id=connection_id,
+            credential_ref=credential_ref, owner_user_id=owner,
+            universe_id=universe.name,
+        )
+        reference_id = "llm_credential_" + hashlib.sha256(
+            f"{owner}:{universe.name}:{connection_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        service = _connection_custody_service(connection_id)
+        return LLMCredentialCustodyReference(
+            reference_id=reference_id, owner_user_id=owner,
+            universe_id=universe.name, service=service, generation=1,
+            reference_digest=_custody_reference_digest(
+                reference_id=reference_id, owner_user_id=owner,
+                universe_id=universe.name, service=service, generation=1,
+                record_digest=record_digest,
+            ),
+            _record_digest=record_digest,
+        )
+    return _source_custody(
+        conn, source, base=base, universe=universe, owner=owner,
+        uid=universe.name, adopt=False,
+    )
 
 
 def _member(
@@ -791,72 +829,6 @@ def bind_serving_provider(
     return response
 
 
-def _current_serving_authority(
-    conn,
-    *,
-    store: SQLiteProviderWorkAuthorityStore,
-    universe_dir: Path,
-    base_path: Path | None = None,
-    owner_user_id: str,
-    universe_id: str,
-    agent: dict[str, object],
-) -> tuple[ProviderAssignment, object, LLMCredentialCustodyReference]:
-    """Re-read the complete server-owned serving chain in one SQLite fence."""
-
-    # Dispatch supplies its explicit storage root; readiness callers already
-    # validate the canonical universe path. Do not change either lookup root.
-    authority_root = Path(base_path) if base_path is not None else Path(universe_dir).parent
-
-    assignment = load_provider_assignment_in_transaction(
-        conn,
-        universe_id=universe_id,
-    )
-    if assignment is not None and assignment.manifest_digest:
-        # The storage seam may be built before per-attempt model/cost validation.
-        # Never reinterpret a new manifest as legacy single-provider authority.
-        raise PermissionError("model selection authority is not active")
-    provider_ref = agent["configuration"].get("provider_ref")
-    if (
-        assignment is None
-        or assignment.state != "ready"
-        or assignment.owner_user_id != owner_user_id
-        or not isinstance(provider_ref, str)
-        or provider_ref != assignment.binding_id
-    ):
-        raise PermissionError("connect your provider before enabling serving")
-    return _current_bound_member_authority(
-        conn,
-        store=store,
-        universe_dir=universe_dir,
-        base_path=authority_root,
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        assignment=assignment,
-    )
-
-
-def _current_selected_member_authority(
-    conn, *, store: SQLiteProviderWorkAuthorityStore, universe_dir: Path,
-    base_path: Path, owner_user_id: str, universe_id: str,
-    agent: dict[str, object], provider: str,
-) -> tuple[ProviderAssignment, object, LLMCredentialCustodyReference]:
-    """Current accepted member, still requiring selected-model validation."""
-    assignment = load_provider_assignment_in_transaction(conn, universe_id=universe_id)
-    if (
-        assignment is None or not assignment.manifest_digest
-        or agent["configuration"].get("provider_ref") != assignment.binding_id
-    ):
-        raise PermissionError("model selection requires the current accepted assignment")
-    member = next((m for m in assignment.candidates if m.provider == provider), None)
-    if member is None:
-        raise PermissionError("provider is not in the current assignment")
-    return _current_bound_member_authority(
-        conn, store=store, universe_dir=universe_dir, base_path=base_path,
-        owner_user_id=owner_user_id, universe_id=universe_id,
-        assignment=assignment, member=member,
-    )
-
-
 def _current_bound_member_authority(
     conn,
     *,
@@ -995,17 +967,16 @@ def set_serving(
             assignment.assignment_digest if assignment is not None else ""
         ):
             raise PermissionError("provider assignment changed since approval")
-        if assignment is not None and assignment.manifest_digest:
-            if existing["created_by"] != owner or int(existing["revision"]) != expected_revision:
-                raise PermissionError("agent binding is not current owner authority")
-            from tinyassets.config import load_universe_config
-            from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+        if existing["created_by"] != owner or int(existing["revision"]) != expected_revision:
+            raise PermissionError("agent binding is not current owner authority")
+        from tinyassets.config import load_universe_config
+        from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 
-            # Remote discovery must finish before exclusive admission/SQL mutation.
-            prepared = prepare_owned_model_plan(
-                base=Path(base_path), universe=universe, owner=owner,
-                agent=existing, config=load_universe_config(universe),
-            )
+        # Discovery finishes before the exclusive admission/SQL mutation.
+        prepared = prepare_owned_model_plan(
+            base=Path(base_path), universe=universe, owner=owner,
+            agent=existing, config=load_universe_config(universe), needs_tools=False,
+        )
     with provider_assignment_admission().exclusive(universe):
         current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
         if current is None:
@@ -1032,44 +1003,10 @@ def set_serving(
                 ):
                     raise PermissionError("provider assignment changed since approval")
             if enabled:
-                if prepared is not None:
-                    prepared.recheck(
-                        conn, store=store, base=Path(base_path), universe=universe,
-                        owner=owner, agent=current, check_preferences=True,
-                    )
-                    assignment = prepared.assignment
-                else:
-                    from tinyassets.storage.current_home import check_current_home
-                    from tinyassets.storage.model_preferences import _read
-
-                    # Home-only preferences must agree with legacy readiness.
-                    # Read under this same write transaction, so a concurrent
-                    # save cannot slip between validation and enabling serving.
-                    # Non-home bindings retain their existing independent path.
-                    # Standalone legacy installations may not have initialized
-                    # onboarding/home storage at all. Do not bootstrap it here.
-                    has_home_storage = conn.execute(
-                        "SELECT 1 FROM sqlite_master "
-                        "WHERE type = 'table' AND name = 'founder_home'",
-                    ).fetchone() is not None
-                    home = None if not has_home_storage else conn.execute(
-                        "SELECT universe_id FROM founder_home WHERE founder_sub = ?", (owner,),
-                    ).fetchone()
-                    if home is not None and home[0] == uid:
-                        check_current_home(conn, owner, uid)
-                        preferences = _read(conn, owner, uid)
-                        if preferences.policy is not None and preferences.policy.mode == "explicit":
-                            raise PermissionError(
-                                "model choice requires an accepted model assignment"
-                            )
-                    assignment, _provider_binding, _custody = _current_serving_authority(
-                        conn,
-                        store=store,
-                        universe_dir=universe,
-                        owner_user_id=owner,
-                        universe_id=uid,
-                        agent=current,
-                    )
+                prepared.recheck(
+                    conn, store=store, base=Path(base_path), universe=universe,
+                    owner=owner, agent=current, check_preferences=True,
+                )
             updated = set_binding_serving_in_transaction(
                 conn,
                 universe_id=uid,
@@ -1087,11 +1024,10 @@ def set_serving(
         from tinyassets.engine_mcp_http import notify_engine_serving_changed
 
         notify_engine_serving_changed(actor_id=owner, graph_id=uid, root=Path(base_path))
-        response["provider"] = (
-            assignment.provider if prepared is None
-            else prepared.plan.next_candidate(owner, uid).connection_id
+        response["provider"] = prepared.plan.next_candidate(owner, uid).connection_id
+        response["assignment_generation"] = (
+            assignment.generation if assignment is not None else 0
         )
-        response["assignment_generation"] = assignment.generation
     return response
 
 
@@ -1127,49 +1063,26 @@ def serving_connection_is_current(
     universe_id: str,
     owner_user_id: str,
 ) -> bool:
-    """Local connection readiness only, never model or execution authority.
+    """Report whether a serving agent has an owned live connected source."""
+    from tinyassets.providers.served_model_plan import connected_sources
 
-    A manifest needs at least one current accepted member, not a healthy anchor.
-    Polling must not discover models, check remote quota, or enable an executor.
-    Actual work still selects and authorizes its model at launch.
-    """
     base = Path(base_path)
     uid, owner = universe_id.strip(), owner_user_id.strip()
     if not uid or not owner:
         return False
     universe = _canonical_universe(base, universe_dir, uid)
-    store = SQLiteProviderWorkAuthorityStore(base)
     with provider_assignment_admission().shared(universe):
         matches = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
-        if len(matches) != 1:
+        if not matches:
             return False
-        agent = get_binding(base, universe_id=uid,
-                            binding_id=str(matches[0]["agent_binding_id"]))
-        if agent is None or agent["status"] != "serving":
+        if not any(
+            (agent := get_binding(base, universe_id=uid,
+                                  binding_id=str(row["agent_binding_id"]))) is not None
+            and agent["status"] == "serving"
+            for row in matches
+        ):
             return False
-        with store.connection() as conn:
-            conn.execute("BEGIN")
-            try:
-                assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
-                if assignment is not None and assignment.manifest_digest:
-                    for member in assignment.candidates:
-                        try:
-                            _current_selected_member_authority(
-                                conn, store=store, universe_dir=universe, base_path=base,
-                                owner_user_id=owner, universe_id=uid, agent=agent,
-                                provider=member.provider,
-                            )
-                        except (PermissionError, UnknownServingProvider):
-                            continue
-                        return True
-                    return False
-                _current_serving_authority(
-                    conn, store=store, universe_dir=universe, base_path=base,
-                    owner_user_id=owner, universe_id=uid, agent=agent,
-                )
-                return True
-            finally:
-                conn.rollback()
+        return bool(connected_sources(base, universe, owner))
 
 
 def resolve_current_serving_provider_authority(
@@ -1179,7 +1092,7 @@ def resolve_current_serving_provider_authority(
     universe_id: str,
     owner_user_id: str,
 ) -> CurrentServingProviderAuthority:
-    """Resolve exactly the provider serving one founder, with live custody checks.
+    """Resolve the owner's live default source for legacy capability metadata.
 
     The returned projection is deliberately credential-free. Open HTTP providers
     include only the exact connection/grant ids needed by server-internal
@@ -1192,42 +1105,38 @@ def resolve_current_serving_provider_authority(
     if not uid or not owner:
         raise ValueError("owner and command center are required")
     universe = _canonical_universe(base, universe_dir, uid)
-    store = SQLiteProviderWorkAuthorityStore(base)
+    from tinyassets.providers.served_model_plan import connected_sources
+
     with provider_assignment_admission().shared(universe):
         matches = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
         if not matches:
             raise NoServingProvider("connect your provider before enabling serving")
-        if len(matches) != 1:
-            raise PermissionError(
-                "connect your provider: exactly one founder serving binding is required"
-            )
-        binding_id = str(matches[0]["agent_binding_id"])
-        agent = get_binding(base, universe_id=uid, binding_id=binding_id)
-        if agent is None or agent["status"] != "serving":
+        if not any(
+            (agent := get_binding(base, universe_id=uid,
+                                  binding_id=str(row["agent_binding_id"]))) is not None
+            and agent["status"] == "serving"
+            for row in matches
+        ):
             raise PermissionError("connect your provider before enabling serving")
-        with store.connection() as conn:
-            conn.execute("BEGIN")
-            assignment, _provider_binding, _custody = _current_serving_authority(
-                conn,
-                store=store,
-                universe_dir=universe,
-                owner_user_id=owner,
-                universe_id=uid,
-                agent=agent,
-            )
-            conn.rollback()
+        sources = connected_sources(base, universe, owner)
+        if not sources:
+            raise NoServingProvider("connect your provider before enabling serving")
+        with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+            assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+        provider = (assignment.provider if assignment is not None
+                    and assignment.provider in sources else sorted(sources)[0])
 
-    if not _is_open_provider(assignment.provider):
+    if not _is_open_provider(provider):
         return CurrentServingProviderAuthority(
-            provider=assignment.provider,
+            provider=provider,
             access_method="subscription_cli",
         )
-    definition_id = assignment.provider.split("api_key_http:", 1)[-1]
+    definition_id = provider.split("api_key_http:", 1)[-1]
     _provider_name, grant_id, connection_id, _credential_ref = _open_serving_context(
         base, uid, owner, definition_id
     )
     return CurrentServingProviderAuthority(
-        provider=assignment.provider,
+        provider=provider,
         access_method="api_key_http",
         connection_id=connection_id,
         grant_id=grant_id,
@@ -1267,8 +1176,9 @@ def list_serving_universes(base_path: str | Path) -> list[str]:
     for row in rows:
         grouped[str(row["universe_id"])].append(row)
 
+    from tinyassets.providers.served_model_plan import connected_sources
+
     valid: list[str] = []
-    store = SQLiteProviderWorkAuthorityStore(base)
     for uid, candidates in grouped.items():
         universe = base / uid
         for row in candidates:
@@ -1281,43 +1191,13 @@ def list_serving_universes(base_path: str | Path) -> list[str]:
                 continue
             try:
                 with provider_assignment_admission().shared(universe):
-                    with store.connection() as authority_conn:
-                        authority_conn.execute("BEGIN")
-                        # Re-read after taking admission: a pause/rebind must not
-                        # be evaluated using the pre-lock enrollment projection.
-                        current_agent = get_binding(
-                            base, universe_id=uid,
-                            binding_id=str(row["agent_binding_id"]),
-                        )
-                        if current_agent is None or current_agent["status"] != "serving":
-                            continue
-                        assignment = load_provider_assignment_in_transaction(
-                            authority_conn, universe_id=uid,
-                        )
-                        if assignment is not None and assignment.manifest_digest:
-                            for member in assignment.candidates:
-                                try:
-                                    _current_selected_member_authority(
-                                        authority_conn, store=store, universe_dir=universe,
-                                        base_path=base, owner_user_id=str(row["created_by"]),
-                                        universe_id=uid, agent=current_agent,
-                                        provider=member.provider,
-                                    )
-                                except (PermissionError, UnknownServingProvider):
-                                    continue
-                                break
-                            else:
-                                continue
-                        else:
-                            _current_serving_authority(
-                                authority_conn,
-                                store=store,
-                                universe_dir=universe,
-                                owner_user_id=str(row["created_by"]),
-                                universe_id=uid,
-                                agent=current_agent,
-                            )
-                        authority_conn.rollback()
+                    current_agent = get_binding(
+                        base, universe_id=uid, binding_id=str(row["agent_binding_id"]),
+                    )
+                    if current_agent is None or current_agent["status"] != "serving":
+                        continue
+                    if not connected_sources(base, universe, str(row["created_by"])):
+                        continue
             except (PermissionError, RuntimeError, ValueError, sqlite3.Error):
                 continue
             valid.append(uid)

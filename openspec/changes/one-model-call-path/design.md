@@ -81,10 +81,39 @@ from `served_model_plan`. `require_owner_bound_dispatch` changes from
 "the provider the binding names" to "a member of `connected_sources`, with
 owner credentials" (ADR-006 is unchanged: no host or platform credential ever
 serves). The serving binding row stays as the owner's durable default
-preference, so there is no schema change. Its exactly-one-provider checks, and
-the `default` versus `manifest` scopes in foreground, background and cloud
-continuation admission, collapse into this one membership check. Callers carry
-no provider names.
+preference only. Callers carry no provider names.
+
+**Run admission snapshots the live set (decided 2026-10-11, task 2.4).** The
+stored provider assignment and its candidate manifest stop being an authority
+input. Admission of a run (foreground, background, cloud continuation) reads
+`connected_sources(owner, command_center)` once and writes the sorted set into
+the run's receipt as `admitted_sources`, with its digest in the existing
+`manifest_digest` column. Every attempt is then allowed only for a source in
+both `admitted_sources` and the live `connected_sources`, checked at
+reservation and again at launch. Consequences:
+
+- A newly connected source is usable by every run admitted after it connects.
+  A running run keeps the set it was admitted with, so its resolution order
+  and allowance do not shift underneath it.
+- Revocation: a disconnected source leaves the live set at once, so no new
+  admission includes it, and the next attempt of a running run on that source
+  is refused before reservation. Automatic moves to its next admitted source
+  that is still live; an explicit choice with no declared fallback fails
+  visibly, naming the source. An attempt already dispatched settles as it
+  ends (`succeeded`, `failed` or `unknown`); nothing is cut mid-flight.
+- Cross-owner: the snapshot is built only from the principal's own custody,
+  grants and definitions for that command center, and the per-attempt check
+  matches the receipt's principal and command center to the carrier's.
+- Money: the run's invocation, token and cost limits come from its durable
+  allocation (D4), not from the minimum over per-source work bindings.
+
+Rejected: (a) rewriting the stored assignment on every connect and disconnect
+adds writers to every connect path, and each write bumps the assignment
+generation, which stales every in-flight receipt, including runs that never
+touch the changed source. (b) a third "connected" receipt scope keeps the
+default and manifest scopes alive beside it and needs a receipt-table rebuild.
+Option (c) deletes both scopes and the assignment as an authority input, with
+no table-shape change.
 
 ### D3. Resolution
 
@@ -230,6 +259,7 @@ definitions; their deletion size is measured from each PR's actual numstat.
 | Caller-built allocations and `request_budget_scope` / `current_request_budget` | `agent_turn_coordinator.py:464`, `universe_intelligence.py:699, 1522`, `router.py:801`, `request_budget.py:347-365` | -80 |
 | The in-memory allocation branch | `request_budget.py` `TurnRequestBudget` | -120 |
 | The exactly-one-provider serving checks | `provider_serving_binding.py` | -150 |
+| The assignment as run authority: `_admit_manifest`, the provider-scope child binding mint, `_current_work_manifest`, `_current_work_member`, `_issue_manifest_receipt`, `manifest_bindings`, `_current_selected_member_authority`, the assignment rewrite on disconnect, `_ensure_manifest_receipt_schema` | `foreground_run_provider.py`, `background_served_provider.py`, `storage/provider_work_authority.py`, `provider_serving_binding.py`, `providers/connection_lifecycle.py` | measured in the 2.4 PR |
 | `WriterExecutionReceipt` | `providers/execution_receipt.py:149-195` | 47 measured |
 | The MCP-sampling reviewer | `ta_capabilities.py:410-445`, `agent_review.py` bound callback | -50 |
 | The prompt band-aid; the old refusal text | `engine_mcp_server.py:1745-1763`, `agent_request_usage.py:126-136` | -25 |
@@ -253,9 +283,18 @@ M1 (with writers stopped, after a full backup): rewrite every stored workflow
 node whose `llm_policy` has `difficulty_override` so that the key is removed,
 and record the count and branch IDs in the deploy log. Nothing else changes in
 storage: serving binding rows and usage store rows keep their shape.
-In-flight runs admitted under a `manifest` receipt finish under the new
-membership check. It is a superset of the old exact-provider check, so no
-admitted call becomes forbidden.
+
+M2 (task 2.4, same window, writers stopped, after the backup): set every
+`provider_work_receipts` row in state `active` to `fenced` and close its claim,
+and record the count and run IDs in the deploy log. Those runs show as
+interrupted and the owner reruns them; they are admitted under the snapshot.
+No table changes shape: new receipts use the existing `manifest` row shape
+(`binding_id` null, `manifest_digest` set), and the `provider` shape is no
+longer written. The validator refuses any active receipt without
+`admitted_sources`, so a missed legacy row fails loudly instead of running
+under the old check. M2 also asserts the receipt table already has
+`authority_scope`, so the online `_ensure_manifest_receipt_schema` rebuild is
+deleted.
 
 ## Risks / Trade-offs
 

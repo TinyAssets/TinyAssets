@@ -9,7 +9,7 @@ import os
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -24,14 +24,8 @@ from tinyassets.platform_runtime_provenance import (
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationSelection,
-    ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
-    ProviderWorkAuthorityWriteOutcome,
-    ProviderWorkBindingFence,
-    ProviderWorkBindingRoot,
-    ProviderWorkBindingSeed,
-    ProviderWorkBindingService,
     ProviderWorkExecutionClaim,
     ProviderWorkReceiptState,
     provider_work_receipt_id,
@@ -121,36 +115,6 @@ def _work_invocation_allowance(snapshot, *, minimum: int, ceiling: int) -> int:
     return ceiling if shared_self_requested(snapshot) else minimum
 
 
-def _binding_matches_seed(binding: Any, seed: ProviderWorkBindingSeed) -> bool:
-    """Whether an existing run-class binding already expresses ``seed``.
-
-    Binding ids are deterministic per owner/universe/provider/operation class,
-    so a past serving assignment leaves the same row the next assignment must
-    use.  Creation replay is generation-sensitive and therefore reports that
-    healthy existing row as a conflict after its first rebind.  Compare every
-    authority-bearing seed field before reusing it; any mismatch is repaired
-    through the binding service's fenced rebind path below.
-    """
-    return all(
-        (
-            getattr(getattr(binding, "state", None), "value", None) == "active",
-            binding.revocation_generation == 0,
-            binding.owner_user_id == seed.owner_user_id,
-            binding.universe_id == seed.universe_id,
-            binding.provider == seed.provider,
-            binding.credential_reference_digest == seed.credential_reference_digest,
-            binding.allowed_operations == seed.allowed_operations,
-            binding.allowed_roles == seed.allowed_roles,
-            binding.assignment_generation == seed.assignment_generation,
-            binding.assignment_digest == seed.assignment_digest,
-            binding.max_invocations == seed.max_invocations,
-            binding.max_tokens == seed.max_tokens,
-            binding.max_cost_microunits == seed.max_cost_microunits,
-            binding.expires_at == seed.expires_at,
-        )
-    )
-
-
 def _held_attempt_error(role: str, selected: Any, exc: BaseException):
     """The held class carrying the failed attempt's redacted evidence.
 
@@ -208,28 +172,6 @@ def _held_attempt_error(role: str, selected: Any, exc: BaseException):
     return ProviderAuthorityHeldError(message, attempts=attempts, chain_state=chain_state)
 
 
-class _SeedResolver:
-    def __init__(self, seed: ProviderWorkBindingSeed) -> None:
-        self.seed = seed
-
-    def resolve(self, root: ProviderWorkBindingRoot) -> ProviderWorkBindingSeed | None:
-        return self.seed if self._matches(root) else None
-
-    def resolve_current_in_transaction(
-        self,
-        _connection: object,
-        root: ProviderWorkBindingRoot,
-    ) -> ProviderWorkBindingSeed | None:
-        return self.resolve(root)
-
-    def _matches(self, root: ProviderWorkBindingRoot) -> bool:
-        return (
-            root.owner_user_id == self.seed.owner_user_id
-            and root.universe_id == self.seed.universe_id
-            and root.provider == self.seed.provider
-        )
-
-
 class _ForegroundRunProviderSession:
     def __init__(
         self,
@@ -255,7 +197,10 @@ class _ForegroundRunProviderSession:
         self._request_budget = request_budget
         self._owns_request_budget = self._request_budget is None
         if self._request_budget is None:
-            self._request_budget = open_allocation(self._principal_id, self._universe_dir)
+            self._request_budget = open_allocation(
+                self._principal_id, self._universe_dir,
+                max_cost_microunits=25_000_000,
+            )
         self._request_budget.check_scope(self._principal_id, self._universe_id)
         self._request_budget.persist(self._base_path)
         if request_allocation is not None and (
@@ -290,7 +235,7 @@ class _ForegroundRunProviderSession:
         # running-receipts.md.
         self._sign_ins_refreshed = False
 
-    def _capture_choices(self) -> None:
+    def _capture_choices(self, admitted_sources: tuple[str, ...]) -> None:
         """Build this run's advisory order at ADMISSION, not construction.
 
         Building it in `__init__` moved a node-time refusal to request time:
@@ -302,13 +247,15 @@ class _ForegroundRunProviderSession:
         fully eligible still REFUSES rather than being quietly replaced by the
         legacy serving binding.
         """
-        if self._model_preference_data is None or self._work_candidates is not None:
+        if self._work_candidates is not None:
             return
         from tinyassets.providers.work_candidate_data import prepare_captured_choices
 
         self._work_candidates = prepare_captured_choices(
             self._base_path, owner=self._principal_id, universe=self._universe_id,
-            document=self._model_preference_data,
+            document=self._model_preference_data or {
+                "version": 1, "saved": None, "observed_generation": 0, "current": None,
+            }, sources=admitted_sources,
         )
 
     def _validate_founder_home(self) -> None:
@@ -428,14 +375,6 @@ class _ForegroundRunProviderSession:
 
     def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
-        from tinyassets.provider_assignment import (
-            load_provider_assignment_in_transaction,
-            provider_assignment_admission,
-        )
-        from tinyassets.provider_serving_binding import (
-            _current_serving_authority,
-            resolve_serving_agent_binding,
-        )
         from tinyassets.storage.provider_work_authority import (
             SQLiteProviderWorkAuthorityStore,
         )
@@ -486,7 +425,7 @@ class _ForegroundRunProviderSession:
                 raise PermissionError("foreground provider attempt has no prompt node")
             self._validate_run(allowed_statuses={"running"})
             # AFTER every refusal this lane can decide from stored state, and
-            # before `_admit_manifest` fits the order. Capturing the order is
+            # before the connected model plan fits the order. Capturing it is
             # credential-bearing outbound IO (a catalogue read on the owner's own
             # grant), so it must not happen for a run `_admit` was going to
             # refuse anyway. It sat above the author check, and running another
@@ -494,256 +433,90 @@ class _ForegroundRunProviderSession:
             # requester's source before the refusal -- the same shape as the
             # sign-in refresh Codex found on #4082 and the same fix (Codex
             # refutation of this change, C2, 2026-09-29).
-            self._capture_choices()
+            from tinyassets.providers.served_model_plan import connected_sources
 
-            agent = resolve_serving_agent_binding(
-                self._base_path,
-                universe_id=self._universe_id,
-                owner_user_id=self._principal_id,
+            admitted = tuple(sorted(connected_sources(
+                self._base_path, self._universe_dir, self._principal_id,
+            )))
+            if not admitted:
+                raise PermissionError("no connected model source for this owner")
+            self._capture_choices(admitted)
+            default_provider = (
+                self._work_candidates.order[0].connection_id
+                if self._work_candidates is not None else admitted[0]
             )
+            if default_provider not in admitted:
+                raise PermissionError(f"source {default_provider!r} is not connected")
+            allocation = self._request_budget
+            allocation_record = allocation.receipt()
+            if allocation_record["closed"]:
+                raise PermissionError("run allocation is closed")
+            limits = allocation_record["limits"]
+            max_invocations = self._work_candidates.fit(
+                snapshot, ceiling=limits["max_requests"] or 1000,
+                retry_multiplier=1, review_attempts=review_slots,
+            )
+            max_invocations = _work_invocation_allowance(
+                snapshot, minimum=max_invocations,
+                ceiling=limits["max_requests"] or 1000,
+            )
+            max_tokens = limits["max_tokens"]
+            max_cost = limits["max_cost_microunits"]
+            if max_tokens < 1 or max_cost < 1:
+                raise PermissionError("run allocation has no model allowance")
+            subject_ref = self._branch_version_id or (
+                f"{self._branch_def_id}@definition:{int(snapshot.get('version') or 1)}"
+            )
+            root = ProviderUniverseWorkRoot(work_item_kind="run", work_item_id=self._run_id)
+            digest = _content_digest(admitted)
             store = SQLiteProviderWorkAuthorityStore(self._base_path)
-            with provider_assignment_admission().shared(self._universe_dir):
-                with store.connection() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        observed = load_provider_assignment_in_transaction(
-                            conn, universe_id=self._universe_id,
-                        )
-                        if observed is not None and observed.manifest_digest:
-                            receipt, claim, default_provider = self._admit_manifest(
-                                conn, store, agent, observed, nodes, roles,
-                            )
-                            self._validate_run(allowed_statuses={"running"})
-                            conn.commit()
-                            self._provider, self._receipt, self._claim = (
-                                default_provider, receipt, claim,
-                            )
-                            return
-                        assignment, parent_binding, _custody = _current_serving_authority(
-                            conn,
-                            store=store,
-                            universe_dir=self._universe_dir,
-                            owner_user_id=self._principal_id,
-                            universe_id=self._universe_id,
-                            agent=agent,
-                        )
-                        if (
-                            len(nodes) + review_slots > parent_binding.max_invocations
-                            or not set(roles).issubset(parent_binding.allowed_roles)
-                            or parent_binding.max_tokens < 1
-                            or parent_binding.max_cost_microunits < 1
-                        ):
-                            raise PermissionError(
-                                "foreground Branch exceeds active serving authority"
-                            )
-                        seed = ProviderWorkBindingSeed(
-                            owner_user_id=self._principal_id,
-                            universe_id=self._universe_id,
-                            provider=assignment.provider,
-                            credential_reference_digest=(
-                                parent_binding.credential_reference_digest
-                            ),
-                            allowed_operations=(RUN_GRAPH_OPERATION,),
-                            allowed_roles=parent_binding.allowed_roles,
-                            assignment_generation=assignment.generation,
-                            assignment_digest=assignment.assignment_digest,
-                            max_invocations=parent_binding.max_invocations,
-                            max_tokens=parent_binding.max_tokens,
-                            max_cost_microunits=parent_binding.max_cost_microunits,
-                            expires_at=parent_binding.expires_at,
-                        )
-                        root = ProviderWorkBindingRoot(
-                            owner_user_id=seed.owner_user_id,
-                            universe_id=seed.universe_id,
-                            provider=seed.provider,
-                        )
-                        child_binding = None
-                        service = ProviderWorkBindingService(store, _SeedResolver(seed))
-                        issued = service.issue_in_transaction(conn, root)
-                        if (
-                            issued.outcome is ProviderWorkAuthorityWriteOutcome.CONFLICT
-                            and issued.record is not None
-                        ):
-                            if _binding_matches_seed(issued.record, seed):
-                                child_binding = issued.record
-                            else:
-                                issued = service.rebind_in_transaction(
-                                    conn,
-                                    ProviderWorkBindingFence(issued.record),
-                                    root,
-                                )
-                        if child_binding is None:
-                            if (
-                                issued.outcome
-                                not in {
-                                    ProviderWorkAuthorityWriteOutcome.APPLIED,
-                                    ProviderWorkAuthorityWriteOutcome.REPLAYED,
-                                }
-                                or issued.record is None
-                            ):
-                                raise PermissionError(
-                                    "run child provider binding is unavailable"
-                                )
-                            child_binding = issued.record
-                        subject_ref = self._branch_version_id or (
-                            f"{self._branch_def_id}@definition:"
-                            f"{int(snapshot.get('version') or 1)}"
-                        )
-                        authority = ProviderUniverseWorkAuthority(
-                            root=ProviderUniverseWorkRoot(
-                                work_item_kind="run",
-                                work_item_id=self._run_id,
-                            ),
-                            binding=child_binding,
-                            principal_id=self._principal_id,
-                            actor_id=f"universe:{self._universe_id}",
-                            operation=RUN_GRAPH_OPERATION,
-                            role=roles[0],
-                            allowed_roles=roles,
-                            # Cached-only: a peek, never a resolve, so no socket
-                            # opens under the write lock this block holds. The
-                            # class below is stamped `cloud` as a literal, so the
-                            # value has to be true rather than asserted.
-                            executor_class=_admitted_cloud_class(),
-                            max_invocations=_work_invocation_allowance(
-                                snapshot, minimum=len(nodes) + review_slots,
-                                ceiling=child_binding.max_invocations,
-                            ),
-                            max_tokens=child_binding.max_tokens,
-                            max_cost_microunits=child_binding.max_cost_microunits,
-                            expires_at=child_binding.expires_at,
-                            execution_subject=ExecutionSubject(
-                                kind=ExecutionSubjectKind.BRANCH_VERSION,
-                                ref=subject_ref,
-                                digest=self._branch_digest,
-                            ),
-                            branch_def_id=self._branch_def_id,
-                            branch_version_id=subject_ref,
-                            parent_binding_id=parent_binding.binding_id,
-                            parent_binding_generation=parent_binding.generation,
-                            parent_binding_digest=parent_binding.binding_digest,
-                            parent_binding_revocation_generation=(
-                                parent_binding.revocation_generation
-                            ),
-                        )
-                        nonce = _content_digest(
-                            [
-                                self._run_id,
-                                self._principal_id,
-                                self._universe_id,
-                                self._branch_digest,
-                                os.getpid(),
-                            ]
-                        )
-                        receipt, claim = store._admit_run_in_transaction(
-                            conn,
-                            authority=authority,
-                            worker_id=f"foreground-run:{os.getpid()}",
-                            runtime_id=f"run:{self._run_id}",
-                            claim_nonce_digest=nonce,
-                            lease_seconds=3600,
-                        )
-                        self._validate_run(allowed_statuses={"running"})
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
-            self._provider = assignment.provider
-            self._receipt = receipt
-            self._claim = claim
+            candidate = ProviderUniverseWorkReceipt(
+                schema_version=5, authority_scope="manifest", admitted_sources=admitted,
+                manifest_digest=digest,
+                receipt_id=provider_work_receipt_id(universe_id=self._universe_id, root=root),
+                receipt_digest="sha256:" + "0" * 64, generation=1,
+                state=ProviderWorkReceiptState.ACTIVE, work_item_kind="run",
+                work_item_id=self._run_id, binding_id=None, binding_generation=None,
+                binding_digest=None, binding_revocation_generation=None,
+                principal_id=self._principal_id, actor_id=f"universe:{self._universe_id}",
+                universe_id=self._universe_id, branch_def_id=self._branch_def_id,
+                branch_version_id=subject_ref, provider=None,
+                credential_reference_digest=None, assignment_generation=1,
+                assignment_digest=digest, executor_class=_admitted_cloud_class(),
+                allowed_operations=(RUN_GRAPH_OPERATION,), allowed_roles=roles,
+                max_invocations=max_invocations, max_tokens=max_tokens,
+                max_cost_microunits=max_cost,
+                expires_at=(datetime.now(timezone.utc) + timedelta(hours=1))
+                .isoformat().replace("+00:00", "Z"),
+                created_at=store.timestamp(),
+                execution_subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.BRANCH_VERSION, ref=subject_ref,
+                    digest=self._branch_digest,
+                ),
+            )
+            candidate = replace(candidate, receipt_digest=candidate.expected_digest())
+            with store.connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    receipt, claim = store._admit_run_in_transaction(
+                        conn, authority=candidate,
+                        worker_id=f"foreground-run:{os.getpid()}",
+                        runtime_id=f"run:{self._run_id}",
+                        claim_nonce_digest=_content_digest([
+                            self._run_id, self._principal_id, self._universe_id,
+                            self._branch_digest, os.getpid(),
+                        ]), lease_seconds=3600,
+                    )
+                    self._validate_run(allowed_statuses={"running"})
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            self._provider, self._receipt, self._claim = default_provider, receipt, claim
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
             raise _held_authority_error(exc) from exc
-
-    def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
-        """One aggregate receipt for all nodes, not one full allowance per source."""
-        from tinyassets.provider_serving_binding import _current_selected_member_authority
-
-        bindings = []
-        for member in assignment.candidates:
-            try:
-                _assignment, binding, _custody = _current_selected_member_authority(
-                    conn, store=store, universe_dir=self._universe_dir, base_path=self._base_path,
-                    owner_user_id=self._principal_id, universe_id=self._universe_id,
-                    agent=agent, provider=member.provider,
-                )
-            except PermissionError:
-                continue
-            if set(roles) <= set(binding.allowed_roles):
-                bindings.append(binding)
-        if not bindings:
-            raise PermissionError("workflow requests an unavailable accepted provider")
-        policies = [
-            node.get("llm_policy") or self._branch_snapshot.get("default_llm_policy")
-            for node in nodes
-        ]
-        # Reserve only for explicitly declared model attempts.
-        max_invocations = sum(
-            1 + len(policy.get("fallback_chain", [])) if policy else 1
-            for policy in policies
-        ) + _review_allowance(self._branch_snapshot)
-        if getattr(self, "_work_candidates", None) is not None:
-            max_invocations = self._work_candidates.fit(
-                self._branch_snapshot,
-                ceiling=min(binding.max_invocations for binding in bindings),
-                retry_multiplier=1,
-                review_attempts=_review_allowance(self._branch_snapshot),
-            )
-        max_invocations = _work_invocation_allowance(
-            self._branch_snapshot, minimum=max_invocations,
-            ceiling=min(binding.max_invocations for binding in bindings),
-        )
-        subject_ref = self._branch_version_id or (
-            f"{self._branch_def_id}@definition:{int(self._branch_snapshot.get('version') or 1)}"
-        )
-        root = ProviderUniverseWorkRoot(work_item_kind="run", work_item_id=self._run_id)
-        candidate = ProviderUniverseWorkReceipt(
-            schema_version=4, authority_scope="manifest",
-            manifest_digest=assignment.manifest_digest,
-            receipt_id=provider_work_receipt_id(universe_id=self._universe_id, root=root),
-            receipt_digest="sha256:" + "0" * 64, generation=1,
-            state=ProviderWorkReceiptState.ACTIVE, work_item_kind="run", work_item_id=self._run_id,
-            binding_id=None, binding_generation=None, binding_digest=None,
-            binding_revocation_generation=None, provider=None, credential_reference_digest=None,
-            principal_id=self._principal_id, actor_id=f"universe:{self._universe_id}",
-            universe_id=self._universe_id, branch_def_id=self._branch_def_id,
-            branch_version_id=subject_ref, assignment_generation=assignment.generation,
-            assignment_digest=assignment.assignment_digest,
-            # Manifest path: same in-transaction cached-only admission as the
-            # non-manifest branch. A manifest run mints one aggregate receipt
-            # over several member bindings and would otherwise be the way around
-            # the check above.
-            executor_class=_admitted_cloud_class(),
-            allowed_operations=(RUN_GRAPH_OPERATION,), allowed_roles=roles,
-            max_invocations=max_invocations,
-            max_tokens=min(binding.max_tokens for binding in bindings),
-            max_cost_microunits=min(binding.max_cost_microunits for binding in bindings),
-            expires_at=min(
-                bindings, key=lambda binding: datetime.fromisoformat(
-                    binding.expires_at.replace("Z", "+00:00"),
-                ),
-            ).expires_at,
-            created_at=store.timestamp(),
-            execution_subject=ExecutionSubject(
-                kind=ExecutionSubjectKind.BRANCH_VERSION, ref=subject_ref,
-                digest=self._branch_digest,
-            ),
-        )
-        candidate = replace(candidate, receipt_digest=candidate.expected_digest())
-        receipt, claim = store._admit_run_in_transaction(
-            conn, authority=candidate, manifest_bindings=tuple(bindings),
-            worker_id=f"foreground-run:{os.getpid()}", runtime_id=f"run:{self._run_id}",
-            claim_nonce_digest=_content_digest([
-                self._run_id, self._principal_id, self._universe_id,
-                self._branch_digest, os.getpid(),
-            ]), lease_seconds=3600,
-        )
-        default = next(
-            (binding.provider for binding in bindings if binding.provider == assignment.provider),
-            bindings[0].provider,
-        )
-        return receipt, claim, default
 
     def _ensure_admitted(self) -> None:
         if self._receipt is not None:
@@ -785,11 +558,10 @@ class _ForegroundRunProviderSession:
             universe_id=self._universe_id,
         )
 
-    def _validate_receipt_parent(self, parent_binding: Any, assignment: Any) -> None:
+    def _validate_receipt_scope(self) -> None:
         receipt = self._receipt
-        if receipt is None:
-            raise PermissionError("foreground run receipt is unavailable")
-        common = (
+        if receipt is None or not all((
+            receipt.schema_version == 5,
             receipt.principal_id == self._principal_id,
             receipt.actor_id == f"universe:{self._universe_id}",
             receipt.universe_id == self._universe_id,
@@ -798,43 +570,22 @@ class _ForegroundRunProviderSession:
             receipt.execution_subject is not None,
             receipt.execution_subject is not None
             and receipt.execution_subject.digest == self._branch_digest,
-            receipt.assignment_generation == assignment.generation,
-            receipt.assignment_digest == assignment.assignment_digest,
-        )
-        exact = (
-            receipt.manifest_digest == assignment.manifest_digest,
-        ) if receipt.authority_scope == "manifest" else (
-            receipt.provider == assignment.provider == self._provider,
-            receipt.credential_reference_digest
-            == assignment.credential_reference_digest,
-            receipt.parent_binding_id == parent_binding.binding_id,
-            receipt.parent_binding_generation == parent_binding.generation,
-            receipt.parent_binding_digest == parent_binding.binding_digest,
-            receipt.parent_binding_revocation_generation
-            == parent_binding.revocation_generation,
-        )
-        if not all((*common, *exact)):
-            raise PermissionError("foreground run provider authority is stale")
+            receipt.admitted_sources is not None,
+        )):
+            raise PermissionError("foreground run connected admission is stale")
 
     def _check_agent_authority(self, carrier: ProviderInvocationCarrier) -> str:
-        """Fresh fence between agent steps or after a review; never rearm a call."""
+        """Recheck the active run and live source after a model response."""
         import hmac
 
-        from tinyassets.provider_assignment import provider_assignment_admission
-        from tinyassets.provider_serving_binding import (
-            _current_selected_member_authority,
-            _current_serving_authority,
-            resolve_serving_agent_binding,
-        )
         from tinyassets.provider_work_authority import _provider_invocation_carrier_seal
         from tinyassets.shared_self import shared_self_requested
         from tinyassets.storage.current_home import check_current_home
         from tinyassets.storage.provider_work_authority import (
             SQLiteProviderWorkAuthorityStore,
             _claim_record,
-            _current_work_member,
+            _current_connected_member,
             _receipt_record,
-            _record,
             _reservation_record,
         )
 
@@ -842,7 +593,7 @@ class _ForegroundRunProviderSession:
                 or type(carrier) is not ProviderInvocationCarrier
                 or carrier._issuer_pid != os.getpid()
                 or not hmac.compare_digest(
-                    carrier._seal, _provider_invocation_carrier_seal(carrier),
+                    carrier._seal, _provider_invocation_carrier_seal(carrier)
                 )
                 or carrier._receipt != self._receipt or carrier._claim != self._claim):
             raise PermissionError("work agent carrier does not match its active run")
@@ -853,93 +604,56 @@ class _ForegroundRunProviderSession:
             raise PermissionError("work agent immutable subject changed")
         self._validate_founder_home()
         self._validate_run(allowed_statuses={"running"})
+        self._validate_receipt_scope()
         store = SQLiteProviderWorkAuthorityStore(self._base_path)
-        agent = resolve_serving_agent_binding(
-            self._base_path, universe_id=self._universe_id, owner_user_id=self._principal_id,
-        )
-        with provider_assignment_admission().shared(self._universe_dir):
-            with store.connection() as conn:
-                conn.execute("BEGIN")
-                check_current_home(conn, self._principal_id, self._universe_id)
-                receipt_row = conn.execute(
-                    "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
-                    (carrier.work_receipt_id,),
-                ).fetchone()
-                claim_row = conn.execute(
-                    "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
-                    (self._claim.claim_id,),
-                ).fetchone()
-                reservation_row = conn.execute(
-                    "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
-                    (carrier.reservation_id,),
-                ).fetchone()
-                if receipt_row is None or claim_row is None or reservation_row is None:
-                    raise PermissionError("work agent progress authority is unavailable")
-                receipt, claim = _receipt_record(receipt_row), _claim_record(claim_row)
-                reservation = _reservation_record(reservation_row)
-                now = store._now()
-                completed_states = {"launch_started", "succeeded"}
-                if self._review_purpose() is not None:
-                    # _call_once enters this fence only after a successful text
-                    # response. Missing usage consumes the FULL reservation as
-                    # indeterminate; it is not a free call or renewed budget.
-                    completed_states.add("indeterminate")
-                if not all((
-                    receipt == self._receipt, claim == self._claim,
-                    receipt.state is ProviderWorkReceiptState.ACTIVE,
-                    claim.state.value == "active",
-                    datetime.fromisoformat(receipt.expires_at.replace("Z", "+00:00")) > now,
-                    datetime.fromisoformat(claim.lease_expires_at.replace("Z", "+00:00")) > now,
-                    reservation.receipt_id == receipt.receipt_id,
-                    reservation.receipt_digest == receipt.receipt_digest,
-                    reservation.claim_id == claim.claim_id,
-                    reservation.claim_digest == claim.claim_digest,
-                    reservation.claim_generation == claim.generation,
-                    reservation.selection == carrier._reservation.selection,
-                    reservation.operation == carrier.operation == RUN_GRAPH_OPERATION,
-                    reservation.role == carrier.role == "writer",
-                    reservation.state.value in completed_states,
-                )):
-                    raise PermissionError("work agent receipt, claim or invocation changed")
-                if receipt.authority_scope == "manifest":
-                    assignment, binding, _ = _current_selected_member_authority(
-                        conn, store=store, universe_dir=self._universe_dir,
-                        base_path=self._base_path, owner_user_id=self._principal_id,
-                        universe_id=self._universe_id, agent=agent, provider=carrier.provider,
-                    )
-                    _current_work_member(conn, receipt, reservation.selection, now)
-                else:
-                    child_row = conn.execute(
-                        "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
-                        (receipt.binding_id,),
-                    ).fetchone()
-                    child = _record(child_row) if child_row is not None else None
-                    if child is None or not all((
-                        child.state.value == "active",
-                        child.generation == receipt.binding_generation,
-                        child.binding_digest == receipt.binding_digest,
-                        child.revocation_generation == receipt.binding_revocation_generation,
-                        datetime.fromisoformat(child.expires_at.replace("Z", "+00:00")) > now,
-                        reservation.operation in child.allowed_operations,
-                        reservation.role in child.allowed_roles,
-                    )):
-                        raise PermissionError("work agent child binding changed")
-                    assignment, binding, _ = _current_serving_authority(
-                        conn, store=store, universe_dir=self._universe_dir,
-                        owner_user_id=self._principal_id, universe_id=self._universe_id,
-                        agent=agent,
-                    )
-                self._validate_receipt_parent(binding, assignment)
+        with store.connection() as conn:
+            conn.execute("BEGIN")
+            check_current_home(conn, self._principal_id, self._universe_id)
+            receipt_row = conn.execute(
+                "SELECT * FROM provider_work_receipts WHERE receipt_id=?",
+                (carrier.work_receipt_id,),
+            ).fetchone()
+            claim_row = conn.execute(
+                "SELECT * FROM provider_work_execution_claims WHERE claim_id=?",
+                (self._claim.claim_id,),
+            ).fetchone()
+            reservation_row = conn.execute(
+                "SELECT * FROM provider_invocation_reservations WHERE reservation_id=?",
+                (carrier.reservation_id,),
+            ).fetchone()
+            if receipt_row is None or claim_row is None or reservation_row is None:
+                raise PermissionError("work agent progress authority is unavailable")
+            receipt, claim = _receipt_record(receipt_row), _claim_record(claim_row)
+            reservation = _reservation_record(reservation_row)
+            completed_states = {"launch_started", "succeeded"}
+            if self._review_purpose() is not None:
+                completed_states.add("indeterminate")
+            if not all((
+                receipt == self._receipt, claim == self._claim,
+                receipt.state is ProviderWorkReceiptState.ACTIVE,
+                claim.state.value == "active",
+                datetime.fromisoformat(receipt.expires_at.replace("Z", "+00:00")) > store._now(),
+                datetime.fromisoformat(
+                    claim.lease_expires_at.replace("Z", "+00:00")
+                ) > store._now(),
+                reservation.receipt_id == receipt.receipt_id,
+                reservation.receipt_digest == receipt.receipt_digest,
+                reservation.claim_id == claim.claim_id,
+                reservation.claim_digest == claim.claim_digest,
+                reservation.claim_generation == claim.generation,
+                reservation.selection == carrier._reservation.selection,
+                reservation.operation == carrier.operation == RUN_GRAPH_OPERATION,
+                reservation.role == carrier.role == "writer",
+                reservation.state.value in completed_states,
+            )):
+                raise PermissionError("work agent receipt, claim or invocation changed")
+            _current_connected_member(conn, self._base_path, receipt, reservation.selection)
         self._validate_run(allowed_statuses={"running"})
         return self._principal_id
 
     @contextmanager
     def _authorize_attempt(
-        self,
-        *,
-        role: str,
-        prompt: str,
-        system: str,
+        self, *, role: str, prompt: str, system: str,
         policy: dict[str, Any] | None,
     ) -> Iterator[tuple[ProviderInvocationCarrier, Path | None, str]]:
         from tinyassets.credential_vault import (
@@ -947,20 +661,11 @@ class _ForegroundRunProviderSession:
             snapshot_llm_subscription_credential,
         )
         from tinyassets.exceptions import ProviderAuthorityHeldError
-        from tinyassets.provider_assignment import provider_assignment_admission
-        from tinyassets.provider_serving_binding import (
-            _current_selected_member_authority,
-            _current_serving_authority,
-            _is_open_provider,
-            resolve_serving_agent_binding,
-        )
+        from tinyassets.provider_serving_binding import _is_open_provider
+        from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
         from tinyassets.shared_self import shared_self_requested
-        from tinyassets.storage.provider_work_authority import (
-            SQLiteProviderWorkAuthorityStore,
-        )
+        from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
-        # Agent tool rounds can enter directly, without going through _call.
-        # A retained receipt is not process admission. This check is cached-only.
         _admitted_cloud_class()
         snapshot = None
         carrier = None
@@ -977,22 +682,11 @@ class _ForegroundRunProviderSession:
             if role not in self._receipt.allowed_roles:
                 raise PermissionError("foreground run provider role is not authorized")
             self._validate_founder_home()
-            if self._branch_snapshot is None or (
-                _content_digest(self._branch_snapshot) != self._branch_digest
-            ):
+            self._validate_receipt_scope()
+            if (self._branch_snapshot is None
+                    or _content_digest(self._branch_snapshot) != self._branch_digest):
                 raise PermissionError("foreground immutable Branch subject changed")
             self._validate_run(allowed_statuses={"running"})
-            # NO pre-launch credential refresh here, deliberately. This lane's
-            # receipt is already minted by the time `_authorize_attempt` runs, and
-            # it PINS `assignment_generation` + `credential_reference_digest`
-            # (:683 and :689 below). A refresh renews the accepted source, which
-            # advances the assignment generation -- so refreshing here failed the
-            # receipt check it was meant to help, and the resulting PermissionError
-            # was swallowed into ProviderAuthorityHeldError at :985, which cannot
-            # fall back either. Codex refute-review P1 #3 reproduced both halves.
-            #
-            # The refresh belongs where nothing is pinned yet: for this lane that
-            # is `_refresh_sign_ins`, run once before the receipt mint.
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index
@@ -1003,110 +697,53 @@ class _ForegroundRunProviderSession:
             invocation_key = (
                 f"run:{self._run_id}:{invocation_index}:{prompt_digest.removeprefix('sha256:')}"
             )
-            agent = resolve_serving_agent_binding(
-                self._base_path,
-                universe_id=self._universe_id,
-                owner_user_id=self._principal_id,
+            preferred = (policy or {}).get("preferred", {})
+            if not isinstance(preferred, dict):
+                raise PermissionError("workflow model preference is invalid")
+            provider = preferred.get("provider") or self._provider
+            model_id = preferred.get("model_id", preferred.get("model", ""))
+            if ("model_id" in preferred and "model" in preferred
+                    and preferred["model_id"] != preferred["model"]):
+                raise PermissionError("workflow model preference is conflicting")
+            if provider not in self._receipt.admitted_sources:
+                raise PermissionError(f"source {provider!r} was not admitted for this run")
+            model_snapshot = prepare_work_model_snapshot(
+                base_path=self._base_path, universe_id=self._universe_id,
+                owner_user_id=self._principal_id, provider=provider, model_id=model_id,
             )
+            selection = ProviderInvocationSelection.connected(provider, model_id)
             store = SQLiteProviderWorkAuthorityStore(self._base_path)
-            model_snapshot = None
-            if self._receipt.authority_scope == "manifest":
-                from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
+            with store.connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    from tinyassets.storage.provider_work_authority import _current_connected_member
 
-                preferred = (policy or {}).get("preferred", {})
-                if not isinstance(preferred, dict):
-                    raise PermissionError("workflow model preference is invalid")
-                model_snapshot = prepare_work_model_snapshot(
-                    base_path=self._base_path, universe_id=self._universe_id,
-                    provider=preferred.get("provider") or self._provider,
-                    model_id=preferred.get("model_id", preferred.get("model", "")),
-                )
-            with provider_assignment_admission().shared(self._universe_dir):
-                with store.connection() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        selection = None
-                        if self._receipt.authority_scope == "manifest":
-                            preferred = (policy or {}).get("preferred", {})
-                            if not isinstance(preferred, dict):
-                                raise PermissionError("workflow model preference is invalid")
-                            provider = preferred.get("provider") or self._provider
-                            model_id = preferred.get("model_id", preferred.get("model", ""))
-                            if ("model_id" in preferred and "model" in preferred
-                                    and preferred["model_id"] != preferred["model"]):
-                                raise PermissionError("workflow model preference is conflicting")
-                            current = _current_selected_member_authority(
-                                conn, store=store, universe_dir=self._universe_dir,
-                                base_path=self._base_path, owner_user_id=self._principal_id,
-                                universe_id=self._universe_id, agent=agent, provider=provider,
-                            )
-                            assignment, parent_binding, custody = current
-                            member = next(
-                                m for m in assignment.candidates if m.provider == provider
-                            )
-                            selection = ProviderInvocationSelection(
-                                provider=provider, binding_id=parent_binding.binding_id,
-                                binding_generation=parent_binding.generation,
-                                binding_digest=parent_binding.binding_digest,
-                                binding_revocation_generation=parent_binding.revocation_generation,
-                                credential_reference_id=custody.reference_id,
-                                credential_reference_generation=custody.generation,
-                                credential_reference_digest=custody.reference_digest,
-                                assignment_generation=assignment.generation,
-                                assignment_digest=assignment.assignment_digest,
-                                manifest_digest=assignment.manifest_digest,
-                                member_digest=member.digest(
-                                    self._universe_id, assignment.generation,
-                                ),
-                                model_id=model_id, executor_id=provider,
-                            )
-                        else:
-                            assignment, parent_binding, custody = _current_serving_authority(
-                                conn, store=store, universe_dir=self._universe_dir,
-                                owner_user_id=self._principal_id, universe_id=self._universe_id,
-                                agent=agent,
-                            )
-                            provider = assignment.provider
-                        self._validate_receipt_parent(parent_binding, assignment)
-                        shares = (len(_prompt_nodes(self._branch_snapshot))
-                                  + _review_allowance(self._branch_snapshot))
-                        token_share = max(
-                            1,
-                            self._receipt.max_tokens // shares,
+                    custody = _current_connected_member(
+                        conn, self._base_path, self._receipt, selection,
+                    )
+                    shares = len(_prompt_nodes(self._branch_snapshot)) + _review_allowance(
+                        self._branch_snapshot,
+                    )
+                    token_share = max(1, self._receipt.max_tokens // shares)
+                    cost_share = max(1, self._receipt.max_cost_microunits // shares)
+                    carrier = store._reserve_and_arm_run_carrier_in_transaction(
+                        conn, receipt=self._receipt, claim=self._claim,
+                        invocation_key=invocation_key, role=role,
+                        max_tokens=token_share, max_cost_microunits=cost_share,
+                        selection=selection, model_snapshot=model_snapshot,
+                        needs_tools=(review is None
+                                     and shared_self_requested(self._branch_snapshot)),
+                    )
+                    if not _is_open_provider(provider):
+                        snapshot = snapshot_llm_subscription_credential(
+                            universe_dir=self._universe_dir, custody=custody,
                         )
-                        cost_share = max(
-                            1,
-                            self._receipt.max_cost_microunits
-                            // shares,
-                        )
-                        carrier = store._reserve_and_arm_run_carrier_in_transaction(
-                            conn,
-                            receipt=self._receipt,
-                            claim=self._claim,
-                            invocation_key=invocation_key,
-                            role=role,
-                            max_tokens=token_share,
-                            max_cost_microunits=cost_share,
-                            selection=selection,
-                            model_snapshot=model_snapshot,
-                            needs_tools=(review is None
-                                         and shared_self_requested(self._branch_snapshot)),
-                        )
-                        if not _is_open_provider(provider):
-                            snapshot = snapshot_llm_subscription_credential(
-                                universe_dir=self._universe_dir,
-                                custody=custody,
-                            )
-                        self._validate_run(allowed_statuses={"running"})
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
-            yield (
-                carrier,
-                snapshot.directory if snapshot is not None else None,
-                provider,
-            )
+                    self._validate_run(allowed_statuses={"running"})
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            yield carrier, snapshot.directory if snapshot is not None else None, provider
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:

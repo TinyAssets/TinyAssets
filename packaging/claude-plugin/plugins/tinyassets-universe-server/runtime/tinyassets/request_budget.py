@@ -60,14 +60,18 @@ class TurnRequestBudget:
     def __init__(self, owner, universe, *, max_requests=None,
                  free_limit=FREE_TURN_ATTEMPTS, failure_limit=FREE_CONSECUTIVE_FAILURES,
                  free_pool_limit=FREE_TURN_ATTEMPTS,
-                 deadline=None, clock=time.monotonic, source_limits=None, wall_clock=None):
-        for limit in (max_requests, free_limit, failure_limit, free_pool_limit):
+                 deadline=None, clock=time.monotonic, source_limits=None, wall_clock=None,
+                 max_tokens=1_000_000, max_cost_microunits=25_000_000):
+        for limit in (max_requests, free_limit, failure_limit, free_pool_limit,
+                      max_tokens, max_cost_microunits):
             if limit is not None and (type(limit) is not int or limit < 1):
                 raise ValueError("request limits must be positive integers")
         if not owner or not universe:
             raise ValueError("parent turn owner and command center required")
         self.owner, self.universe = owner, universe
         self.max_requests, self.free_limit = max_requests, free_limit
+        self.max_tokens = max_tokens
+        self.max_cost_microunits = max_cost_microunits
         self.free_pool_limit = free_pool_limit
         self.failure_limit, self.deadline, self.clock = failure_limit, deadline, clock
         self.wall_clock = wall_clock or _now
@@ -286,6 +290,11 @@ class _RequestLedger(TurnRequestBudget):
             "attempts": [asdict(a) for a in self._attempts],
             "quota_authoritative": False,
             "count_basis": "local_provider_dispatch",
+            "limits": {
+                "max_requests": self.max_requests,
+                "max_tokens": self.max_tokens,
+                "max_cost_microunits": self.max_cost_microunits,
+            },
         }
 
 

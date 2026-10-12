@@ -5,20 +5,12 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from tests.test_provider_work_authority import NOW, _armed_carrier_result
 from tinyassets.provider_work_authority import (
     ProviderInvocationReservation,
     ProviderInvocationReservationRequest,
-    ProviderInvocationReservationState,
     ProviderInvocationSelection,
-    ProviderInvocationSettlementOwner,
     _canonical_json,
-    _mint_provider_invocation_carrier,
     _reservation_from_request,
-)
-from tinyassets.storage.provider_work_authority import (
-    SQLiteProviderWorkAuthorityStore,
-    _provider_invocation_store_mint_proof,
 )
 
 DIGEST = "sha256:" + "a" * 64
@@ -158,56 +150,13 @@ def test_selected_model_rejects_unrecognized_or_noncanonical_evidence():
         replace(chosen, executor_id="different_executor")
 
 
-def test_selection_cannot_activate_through_legacy_reservation(tmp_path):
-    receipt, claim, _armed = _armed_carrier_result(tmp_path)
-    store = SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW, allow_test_fixtures=True)
-    before = store.list_reservations(receipt.receipt_id)
-    with pytest.raises(PermissionError, match="manifest invocation admission"):
-        store.reserve(request(
-            receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
-            claim_id=claim.claim_id, claim_digest=claim.claim_digest,
-            claim_generation=claim.generation, selection=selection(),
-        ))
-    assert store.list_reservations(receipt.receipt_id) == before
+def test_connected_selection_has_no_assignment_or_binding_authority():
+    chosen = ProviderInvocationSelection.connected("codex", "")
+    assert chosen.binding_id is None
+    assert chosen.assignment_digest is None
+    assert chosen.manifest_digest is None
+    assert ProviderInvocationSelection.from_dict(chosen.to_dict()) == chosen
+    with pytest.raises(ValueError, match="assignment authority"):
+        replace(chosen, binding_digest=DIGEST)
 
 
-def test_selection_cannot_mint_a_carrier_without_manifest_admission(tmp_path):
-    receipt, claim, armed = _armed_carrier_result(tmp_path)
-    selected = replace(armed.record, schema_version=3, selection=selection())
-    selected = replace(selected, reservation_digest=selected.expected_digest())
-    with pytest.raises(PermissionError, match="stale or inconsistent"):
-        _mint_provider_invocation_carrier(
-            receipt, claim, selected, _provider_invocation_store_mint_proof(selected),
-            settlement_owner=ProviderInvocationSettlementOwner.CONSUMER,
-        )
-
-
-@pytest.mark.parametrize("state", [
-    ProviderInvocationReservationState.SUCCEEDED,
-    ProviderInvocationReservationState.FAILED,
-    ProviderInvocationReservationState.INDETERMINATE,
-])
-def test_version3_settlement_preserves_exact_selection(tmp_path, state):
-    _receipt, _claim, armed = _armed_carrier_result(tmp_path)
-    store = SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW, allow_test_fixtures=True)
-    record = replace(armed.record, schema_version=3, selection=http_selection())
-    record = replace(record, reservation_digest=record.expected_digest())
-    # A fixture substitutes a version3 record solely to exercise durable terminal
-    # accounting. Neither this write nor the inert document can admit a launch.
-    with store.connection() as conn:
-        conn.execute(
-            "UPDATE provider_invocation_reservations SET reservation_digest=?, record_json=? "
-            "WHERE reservation_id=?",
-            (record.reservation_digest, json.dumps(record.to_dict()), record.reservation_id),
-        )
-        conn.commit()
-    usage = (None, None, None) if state.value == "indeterminate" else (3, 4, 5)
-    store._settle_carrier(record, state, *usage)
-    settled = store.get_reservation(record.reservation_id)
-    assert settled.schema_version == 3
-    assert settled.selection == record.selection
-    assert settled.state is state
-    assert settled.reservation_digest == settled.expected_digest()
-    with pytest.raises(PermissionError, match="settlement conflicted"):
-        store._settle_carrier(record, state, *usage)
-    assert store.get_reservation(record.reservation_id) == settled

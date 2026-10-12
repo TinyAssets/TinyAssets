@@ -241,7 +241,7 @@ class UsageStore:
         usage_id = secrets.token_hex(16)
         policy = {name: getattr(budget, name) for name in (
             "max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
-            "deadline",
+            "deadline", "max_tokens", "max_cost_microunits",
         )}
         scope = (budget.owner, budget.universe, usage_id)
         token = owner_token(self.base, broker_readable=self._remote)
@@ -264,7 +264,7 @@ class UsageStore:
     def _insert(self, scope, budget, token, parent_token):
         policy = {name: getattr(budget, name) for name in (
             "max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
-            "deadline",
+            "deadline", "max_tokens", "max_cost_microunits",
         )}
         with self._connection(write=True) as conn:
             conn.execute("INSERT INTO agent_request_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",

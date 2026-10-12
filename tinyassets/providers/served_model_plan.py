@@ -20,8 +20,8 @@ from tinyassets.provider_assignment import (
 from tinyassets.provider_serving_binding import (
     _PROVIDER_SERVICE,
     ServingProviderHeld,
-    _current_selected_member_authority,
     _resolve_serving_source,
+    current_connected_source_custody,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
@@ -59,7 +59,8 @@ PUBLIC_LISTED_BASIS = "publicly_listed"
 _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
-def connected_sources(base: str | Path, universe: str | Path, owner: str) -> frozenset[str]:
+def connected_sources(base: str | Path, universe: str | Path, owner: str,
+                      *, conn=None) -> frozenset[str]:
     """Return this owner's live model sources for one command center.
 
     The set is rebuilt from custody and broker grants on each launch. A saved
@@ -76,15 +77,20 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
             or not owner):
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
-    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
-        conn.execute("BEGIN")
+    def subscriptions(db):
         for provider, service in _PROVIDER_SERVICE.items():
             if current_llm_subscription_custody(
-                conn, universe_dir=universe, owner_user_id=owner,
+                db, universe_dir=universe, owner_user_id=owner,
                 universe_id=universe.name, service=service,
             ) is not None:
                 sources.add(provider)
-        conn.rollback()
+    if conn is None:
+        with SQLiteProviderWorkAuthorityStore(base).connection() as db:
+            db.execute("BEGIN")
+            subscriptions(db)
+            db.rollback()
+    else:
+        subscriptions(conn)
     for definition in list_definitions(universe.name):
         if definition.owner_user_id != owner or definition.access_method != "api_key_http":
             continue
@@ -105,7 +111,7 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
 
 #: Prefix of the refusal when no accepted model can run. The served turn's
 #: notice reads the held sources after ``HELD_SOURCES`` (universe_server).
-NO_ELIGIBLE_MODEL = "no eligible model in the accepted assignment"
+NO_ELIGIBLE_MODEL = "no eligible model in the connected sources"
 HELD_SOURCES = "not usable now: "
 
 def _assert_plan_snapshot(snapshot, *, display_only=False):
@@ -144,24 +150,21 @@ class PreparedPlan:
         self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
                            check_preferences=check_preferences)
         for provider, expected in self.chains:
-            actual = _current_selected_member_authority(
-                conn, store=store, universe_dir=universe, base_path=base,
-                owner_user_id=owner, universe_id=universe.name, agent=agent, provider=provider,
+            actual = current_connected_source_custody(
+                conn, base=base, universe=universe, owner=owner, provider=provider,
             )
-            if actual != expected:
-                raise PermissionError("model member changed during discovery")
+            if actual != expected[1]:
+                raise PermissionError("model source changed during discovery")
         for snapshot in self.snapshots:
             _assert_plan_snapshot(snapshot)
 
     def recheck_scope(self, conn, *, universe, owner, agent, check_preferences=False):
-        """A changed home/agent/assignment invalidates the entire display too."""
+        """A changed home or agent invalidates the captured plan."""
         from tinyassets.storage.model_preferences import _read
 
         check_current_home(conn, owner, universe.name)
-        if agent != self.agent or load_provider_assignment_in_transaction(
-            conn, universe_id=universe.name,
-        ) != self.assignment:
-            raise PermissionError("model assignment changed during discovery")
+        if agent != self.agent:
+            raise PermissionError("model agent changed during discovery")
         if check_preferences and _read(conn, owner, universe.name) != self.preferences:
             raise PermissionError("model preferences changed during activation")
     def recheck_display(self, conn, *, store, base, universe, owner, agent):
@@ -171,11 +174,10 @@ class PreparedPlan:
         failed = {}
         for provider, expected in self.chains:
             try:
-                actual = _current_selected_member_authority(
-                    conn, store=store, universe_dir=universe, base_path=base,
-                    owner_user_id=owner, universe_id=universe.name, agent=agent, provider=provider,
+                actual = current_connected_source_custody(
+                    conn, base=base, universe=universe, owner=owner, provider=provider,
                 )
-                if actual != expected:
+                if actual != expected[1]:
                     failed[provider] = "source_revoked"
             except PermissionError:
                 failed[provider] = "source_revoked"
@@ -407,7 +409,7 @@ def _reconnect_sources(base, owner, uid, chains):
     return tuple(
         provider for provider, chain in chains
         if SOURCE_HEALTH.needs_reconnect(source_key(
-            base, owner, uid, next(m for m in chain[0].candidates if m.provider == provider),
+            base, owner, uid, chain[0],
         ))
     )
 
@@ -431,9 +433,8 @@ def prepare_owned_model_plan(
     """Private composition for authenticated ingress and serving readiness.
 
     Caller must verify its principal and exact agent first. No principal is
-    inferred from preferences. A manifest is the explicit opt-in to discovery;
-    absent preferences on an existing legacy assignment leave its path unchanged.
-    allow_empty permits advisory display, never invocation without a candidate.
+    inferred from preferences. The plan is advisory; dispatch checks live
+    connected custody again. allow_empty permits advisory display.
     """
     if type(needs_tools) is not bool:
         raise ValueError("invalid conversation tool mode")
@@ -462,33 +463,27 @@ def prepare_owned_model_plan(
             conn.execute("BEGIN")
             check_current_home(conn, owner, universe.name)
             assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
-            if assignment is None or not assignment.manifest_digest:
-                if captured is None or (
-                    current is None and preferences.policy is not None
-                    and preferences.policy.mode == "automatic"
-                ):
-                    # Saving an unpowered preference cannot brick an existing
-                    # native binding. Without model-access opt-in, saved auto
-                    # retains that provider's own default and grants nothing.
-                    # Explicit saved/current choices still require a manifest.
-                    return None
-                raise PermissionError("model choice requires an accepted model assignment")
-            if (assignment.owner_user_id != owner or assignment.universe_id != universe.name
-                    or agent["configuration"].get("provider_ref") != assignment.binding_id):
-                raise PermissionError("model assignment does not match the current owned agent")
+            from types import SimpleNamespace
+
+            from tinyassets.provider_assignment_manifest import ModelAccess
+
             chains, rejected = [], []
-            for member in assignment.candidates:
+            for provider in sorted(connected_sources(base, universe, owner, conn=conn)):
                 try:
-                    chain = _current_selected_member_authority(
-                        conn, store=store, universe_dir=universe, base_path=base,
-                        owner_user_id=owner, universe_id=universe.name,
-                        agent=agent, provider=member.provider,
+                    custody = current_connected_source_custody(
+                        conn, base=base, universe=universe, owner=owner, provider=provider,
                     )
                 except PermissionError:
-                    rejected.append(Ineligible(ModelRef(member.provider, ""), "source_revoked",
+                    rejected.append(Ineligible(ModelRef(provider, ""), "source_revoked",
                                                scope="source"))
                 else:
-                    chains.append((member.provider, chain))
+                    member = SimpleNamespace(
+                        provider=provider, access=ModelAccess(model_scope="discovered"),
+                        credential_reference_id=custody.reference_id,
+                        credential_reference_generation=custody.generation,
+                        credential_reference_digest=custody.reference_digest,
+                    )
+                    chains.append((provider, (member, custody)))
     if captured is None:
         captured = ModelPolicy(0, "automatic", ()), "automatic"
     policy, source = captured
@@ -500,7 +495,7 @@ def prepare_owned_model_plan(
     config = current_authority(universe, config)
     allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
-        member = next(m for m in chain[0].candidates if m.provider == provider)
+        member = chain[0]
         try:
             if provider in _PROVIDER_SERVICE:
                 native_snapshot = None
@@ -589,6 +584,12 @@ def prepare_owned_model_plan(
                 # authority, pricing or the agent's contract excludes execution.
                 all_models.append(snapshot.models)
                 snapshots.append(snapshot)
+                member.access = ModelAccess(
+                    model_scope="discovered",
+                    cost_caps=tuple(
+                        (name, 25_000_000) for name in sorted(snapshot.contract().price_components)
+                    ),
+                )
                 snapshot, filtered, required, caps, denied = _http_models(
                     owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
                 )

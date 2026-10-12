@@ -73,6 +73,7 @@ def _calls(spies: dict[str, _SpyProvider]) -> dict[str, int]:
 def _carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
     carrier._receipt = MagicMock(principal_id="owner", universe_id="u1")
+    carrier._receipt.admitted_sources = (provider,)
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation
@@ -266,14 +267,20 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     source = f"api_key_http:{definition.id}"
     authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
     carrier = SimpleNamespace(
-        _receipt=SimpleNamespace(principal_id="owner-1", universe_id=universe.name),
+        _receipt=SimpleNamespace(
+            principal_id="owner-1", universe_id=universe.name,
+            admitted_sources=(source,),
+        ),
         provider=source,
     )
     assert source in connected_sources(tmp_path, universe, "owner-1")
     require_owner_bound_dispatch(source, universe_dir=universe, served_authority=authority)
     require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
     foreign_carrier = SimpleNamespace(
-        _receipt=SimpleNamespace(principal_id="owner-2", universe_id=universe.name),
+        _receipt=SimpleNamespace(
+            principal_id="owner-2", universe_id=universe.name,
+            admitted_sources=(source,),
+        ),
         provider=source,
     )
     with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
@@ -290,7 +297,7 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     other_ledger.create_connection(
         connection_id=other_connection, owner_user_id="owner-2",
         connection_class="http", connection_type="http", auth_scheme="bearer",
-        scopes=("http",), provider="http", destination="compute:other",
+        scopes=("POST",), provider="http", destination="compute:other",
         credential_ref="vault://http/other",
         allowed_endpoints=[{"host": "api.example.com",
                             "path_template": "/v1/chat/completions", "methods": ["POST"]}],
@@ -305,9 +312,19 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
         access_method="api_key_http", protocol="openai_chat",
         model="other/model", ref=other_grant,
     )
+    other_ledger.configure_capability(
+        connection_id=other_connection, capability_kind="model_use", enabled=True,
+        descriptor={
+            "wire": "openai_chat", "billing": "free",
+            "models": [{"id": "other/model", "tools": True, "context": 8192}],
+        },
+    )
+    other_source = f"api_key_http:{other_definition.id}"
+    assert other_source in connected_sources(tmp_path, universe, "owner-2")
+    assert other_source not in connected_sources(tmp_path, universe, "owner-1")
     with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
         require_owner_bound_dispatch(
-            f"api_key_http:{other_definition.id}", universe_dir=universe,
+            other_source, universe_dir=universe,
             served_authority=authority,
         )
 
