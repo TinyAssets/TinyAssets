@@ -30,7 +30,8 @@ and the spec is synced.
       on nothing; runs beside C3.
       - **Builds:**
         - `tinyassets/broker/policy.py`: `OwnerPolicy`, a generation and a
-          digest, in `.platform/accounts/<id>/policy.db` (broker uid, 0600).
+          digest, in `.broker/accounts/<sha>/policy.db` (broker-created 0700/0600;
+          the broker never reads or traverses daemon-owned trees).
         - `/app/api/policy`, which carries the interactive owner-session
           token. The broker verifies the token itself.
         - Broker enforcement on today's connector, HTTP and spend paths:
@@ -38,12 +39,10 @@ and the spec is synced.
         - The read-only projection, and `ta policy show` and
           `ta policy propose` (the proposal becomes an owner request).
         - The guard `policy-writers`.
-      - **Migration:** the privileged deploy step drains and stops the old
-        daemon, freezes each safe center's `rules.db` and sidecars, then copies
-        its rules and grants into the owner's
-        `policy.db` at broker bootstrap or center admission, verified
-        by count and digest; refuse and report unfrozen sources.
-        Old files stay read-only until P6.
+      - **Migration:** none (founder, 2026-10-11). Every account starts with
+        `DEFAULT_RULES`; the agent asks and the owner re-grants once. Legacy
+        `rules.db` files stay untouched until P6. The deploy is the ordinary
+        image swap.
       - **Deletes:** `agent_rules.py`, `approval_scopes.py`,
         `broker/http_policy.py`, and the rule routes in
         `onboarding/__init__.py` that it replaces.
