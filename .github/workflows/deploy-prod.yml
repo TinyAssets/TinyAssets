@@ -935,16 +935,78 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo bash /tmp/retire_platform_llm_logins.sh /tmp/install-tinyassets-env.sh"
 
+      # One open deploy-failed incident, same module as the uptime canary.
+      # A failure comments on the newest open issue with this label (skipping
+      # owner-content-repair, which shares the label) or opens one when none
+      # exists. A later green deploy closes that one issue. The historical
+      # pile is not closed here.
       - name: Open deploy-failed issue
+        id: deploy_failed
         if: ${{ failure() }}
+        continue-on-error: true
+        uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --repo "${{ github.repository }}" \
-            --title "deploy-failed: run ${{ github.run_id }}" \
-            --label "deploy-failed" \
-            --body "Fail-safe deploy did not fully succeed. deploy rc=${{ steps.deploy.outputs.rc }}, result=${{ steps.deploy.outputs.result }}, deployed_image=${{ steps.deploy.outputs.deployed_image }}. Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. Prod is NOT left at zero (the script restores the previous image), but the target release did not become healthy — investigate before retrying." 2>&1 | tail -2 || true
+          DEPLOY_RC: ${{ steps.deploy.outputs.rc }}
+          DEPLOY_RESULT: ${{ steps.deploy.outputs.result }}
+          DEPLOYED_IMAGE: ${{ steps.deploy.outputs.deployed_image }}
+          DEPLOY_COMMIT: ${{ steps.tag.outputs.revision || github.sha }}
+        with:
+          script: |
+            const incidentRoot = process.env.GITHUB_WORKSPACE;
+            if (!incidentRoot) throw new Error('incident_issue: GITHUB_WORKSPACE is unset');
+            const {recordFailure} = require(`${incidentRoot}/scripts/incident_issue.js`);
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const result = process.env.DEPLOY_RESULT || '';
+            const commit = process.env.DEPLOY_COMMIT || '';
+            const body = [
+              '**deploy-failed**',
+              '',
+              `- result: \`${result}\``,
+              `- rc: \`${process.env.DEPLOY_RC || ''}\``,
+              `- deployed_image: \`${process.env.DEPLOYED_IMAGE || ''}\``,
+              `- commit: \`${commit}\``,
+              '',
+              `Run: ${runUrl}`,
+              '',
+              'Prod is NOT left at zero (the script restores the previous image), but the target release did not become healthy — investigate before retrying.',
+            ].join('\n');
+            const recorded = await recordFailure(github, context, {
+              label: 'deploy-failed',
+              excludeTitlePrefixes: ['owner-content-repair:'],
+              title: `deploy-failed: run ${process.env.GITHUB_RUN_ID}`,
+              body,
+            });
+            core.info(`deploy-failed incident ${recorded.action} #${recorded.number}`);
+
+      - name: Close deploy-failed issue
+        id: deploy_recovered
+        if: ${{ success() }}
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_RESULT: ${{ steps.deploy.outputs.result }}
+          DEPLOY_COMMIT: ${{ steps.tag.outputs.revision || github.sha }}
+        with:
+          script: |
+            const incidentRoot = process.env.GITHUB_WORKSPACE;
+            if (!incidentRoot) throw new Error('incident_issue: GITHUB_WORKSPACE is unset');
+            const {recordRecovery} = require(`${incidentRoot}/scripts/incident_issue.js`);
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const body = [
+              '**recovered**',
+              '',
+              'Production deploy succeeded. Closing the open deploy-failed incident.',
+              `- result: \`${process.env.DEPLOY_RESULT || ''}\``,
+              `- commit: \`${process.env.DEPLOY_COMMIT || ''}\``,
+              '',
+              `Run: ${runUrl}`,
+            ].join('\n');
+            const recorded = await recordRecovery(github, context, {
+              label: 'deploy-failed',
+              excludeTitlePrefixes: ['owner-content-repair:'],
+              body,
+            });
+            core.info(`deploy-failed incident ${recorded.action} #${recorded.number}`);
 
       # After every rollback and bookkeeping step, so the artifact is written
       # once the deploy has finished moving. Gated on the capture SUCCEEDING,
