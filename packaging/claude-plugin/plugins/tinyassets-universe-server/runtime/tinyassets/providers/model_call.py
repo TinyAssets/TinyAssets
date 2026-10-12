@@ -159,6 +159,13 @@ def _policy_models(policy: dict[str, Any] | None) -> tuple[ModelRef | None, tupl
     return primary, fallbacks
 
 
+def require_supported_policy(policy: dict[str, Any] | None) -> None:
+    if policy and policy.get("difficulty_override"):
+        raise ProviderAuthorityHeldError(
+            "llm_policy.difficulty_override is unsupported; choose a model explicitly"
+        )
+
+
 def text_sync(
     prompt: str,
     system: str = "",
@@ -185,6 +192,7 @@ def text_sync(
         raise ProviderAuthorityHeldError(
             "Connect your provider: an owner-bound command center is required"
         )
+    require_supported_policy(policy)
     preferred, fallbacks = _policy_models(policy)
     model = universe_context.model_selection or preferred
     authority = universe_context.served_provider

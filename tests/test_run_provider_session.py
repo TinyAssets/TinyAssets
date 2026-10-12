@@ -499,6 +499,14 @@ def _run_branch(
         operation=None,
         **_kwargs,
     ):
+        from dataclasses import replace
+
+        from tinyassets.providers.model_call import _policy_models
+
+        preferred, _ = _policy_models(_kwargs.get("policy"))
+        if (universe_context is not None and universe_context.model_selection is None
+                and preferred is not None):
+            universe_context = replace(universe_context, model_selection=preferred)
         if open_router_resolution_refusal and getattr(
             universe_context, "provider_invocation", None
         ) is not None:
@@ -1103,15 +1111,19 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     assert captured["effects"] == []
 
 
+@pytest.mark.parametrize("policy", [
+    {"preferred": {"provider": "claude-code"}},
+    {"preferred": {"provider": "codex", "model": "gpt-x"}},
+    {"difficulty_override": [{"if_difficulty": "hard", "use": {"provider": "claude-code"}}]},
+])
 def test_foreground_run_rejects_policy_outside_active_provider_before_effects(
     tmp_path: Path,
     monkeypatch,
     authenticate_request,
+    policy,
 ) -> None:
     branch = _branch(node_count=1)
-    branch.node_defs[0].llm_policy = {
-        "preferred": {"provider": "claude-code"},
-    }
+    branch.node_defs[0].llm_policy = policy
     response, provider, captured = _run_branch(
         tmp_path,
         monkeypatch,

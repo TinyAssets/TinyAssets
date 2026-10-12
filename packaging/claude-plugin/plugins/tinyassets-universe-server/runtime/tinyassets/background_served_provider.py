@@ -807,6 +807,9 @@ class _BackgroundAssignedProviderSession:
                 raise PermissionError("background parent request budget cannot be substituted")
             config = replace(config, request_budget=self._request_budget,
                              request_purpose="helper")
+        from tinyassets.providers.model_call import require_supported_policy
+
+        require_supported_policy(policy)
         declared_providers = self._declared_policy_providers(policy)
         # Enforcement site (C), served half (design.md § Enforcement sites).
         # Every prompt step reaches this gate before the shared-self branch.
@@ -888,6 +891,7 @@ class _BackgroundAssignedProviderSession:
                     call_config = replace(call_config, workflow_node=True)
                 call_kwargs.update(
                     operation=BACKGROUND_BRANCH_RUN_OPERATION,
+                    policy=policy,
                     universe_context=UniverseContext(
                         universe_dir=universe_dir,
                         config=load_universe_config(universe_dir),
@@ -1238,12 +1242,6 @@ class _BackgroundAssignedProviderSession:
                         )
                         if assignment is None or assignment.state != "ready":
                             raise PermissionError("assigned provider is unavailable")
-                        if not assignment.manifest_digest and declared_providers - {
-                            assignment.provider
-                        }:
-                            raise PermissionError(
-                                "background policy provider is outside assigned authority"
-                            )
                         agent = resolve_serving_agent_binding(
                             self._base_path,
                             universe_id=self._task.universe_id,
