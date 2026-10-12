@@ -334,3 +334,25 @@ def test_invalid_required_runner_refuses_before_any_docker_or_output_effect(monk
 def test_default_mode_is_still_pytest():
     assert _pytest_argv(_command("-q"))[:4] == ["python", "-m", "pytest", "-p"]
     assert "ci_required_tests" not in _user_script(_command("-q"))
+
+
+def test_ci_oracle_selection_matches_workflow_selector_for_fixture_diff(tmp_path):
+    """The oracle and workflow CLI publish identical bytes and digests."""
+    import subprocess
+    import sys
+
+    from scripts.ci_required_tests import selection_digest, selection_entries
+
+    changed = ["tests/test_linux_oracle.py"]
+    oracle = tmp_path / "oracle"
+    oracle.mkdir()
+    selections = linux_oracle._ci_selections(changed, oracle)
+    for tier, _, name, scope, digest in selections:
+        workflow = tmp_path / f"workflow-{tier}.txt"
+        subprocess.run([
+            sys.executable, "scripts/ci_required_tests.py", "--ci-select", tier,
+            "--changed", *changed, "--out", str(workflow),
+        ], cwd=Path(__file__).resolve().parents[1], check=True)
+        assert (oracle / name).read_bytes() == workflow.read_bytes()
+        assert digest == selection_digest(selection_entries(workflow))
+        assert scope == ("ALL" if workflow.read_text().strip() == "ALL" else "affected")

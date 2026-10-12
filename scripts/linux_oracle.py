@@ -72,6 +72,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 
@@ -236,6 +237,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"run {REQUIRED_RUNNER} with the arguments after -- instead of pytest "
              "(needs --out and a --junit under /out)",
     )
+    parser.add_argument("--ci", action="store_true",
+                        help="run this branch's PR and merge-queue CI selections and shards")
     parser.add_argument(
         "pytest_args", nargs="*",
         help="passed to pytest (put them after --); default: the whole suite, quiet",
@@ -246,6 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.ci and (args.required_runner or args.shell or args.no_bwrap
+                    or args.as_root or args.out or args.pytest_args):
+        raise SystemExit("[oracle] --ci takes no runner, shell, venue, output or pytest arguments")
     if args.required_runner:
         _required_runner_command(args)  # refuse before Docker or filesystem effects
 
@@ -266,12 +272,75 @@ def main(argv: list[str] | None = None) -> int:
     if args.build or not _image_exists(tag):
         _build(root, tag)
 
+    if args.ci:
+        return _run_ci(args, root, tag)
     if args.out:
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
         if os.name != "nt":
             out.chmod(0o777)  # the suite runs as uid 1001, not the caller
     return subprocess.run(docker_command(args, root, tag)).returncode
+
+
+def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
+    """Run both workflow tiers with the same selector and required runner."""
+    subprocess.run(["git", "fetch", "origin", "main"], cwd=root, check=True)
+    base = subprocess.run(["git", "merge-base", "origin/main", "HEAD"],
+                          cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+    changed = set(subprocess.run(["git", "diff", "--name-only", base], cwd=root,
+                                 check=True, capture_output=True, text=True).stdout.splitlines())
+    changed.update(subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
+                                  cwd=root, check=True, capture_output=True,
+                                  text=True).stdout.splitlines())
+    with tempfile.TemporaryDirectory(prefix="ta-oracle-ci-") as directory:
+        output = Path(directory)
+        selections = _ci_selections(sorted(changed), output)
+        guards = argparse.Namespace(**vars(args))
+        guards.ci = False
+        guards.ci_structural = True
+        if subprocess.run(docker_command(guards, root, tag)).returncode:
+            print("[oracle] ci structural guards failed")
+            return 1
+        for tier, count, name, scope, digest in selections:
+            for shard in range(1, count + 1):
+                runner = argparse.Namespace(**vars(args))
+                runner.ci = False
+                runner.required_runner = True
+                runner.out = str(output)
+                runner.env = ["TINYASSETS_DATA_DIR=/tmp/ta-data", "CI=true",
+                              "GITHUB_ACTIONS=true"]
+                runner.pytest_args = [
+                    "--junit", f"/out/junit-{tier}-{shard}.xml",
+                    "--exclude-from", ".github/heavy-test-files.txt",
+                ]
+                if scope == "ALL" and tier == "gate":
+                    runner.pytest_args += ["--shard", f"{shard}/{count}",
+                                           "--profile", "shard"]
+                else:
+                    runner.pytest_args += ["--affected", f"/out/{name}",
+                                           "--shard", f"{shard}/{count}",
+                                           "--profile", "affected"]
+                    if tier == "gate":
+                        runner.pytest_args += ["--selection", digest]
+                result = subprocess.run(docker_command(runner, root, tag))
+                if result.returncode:
+                    print(f"[oracle] ci {tier} shard {shard}/{count} failed ({result.returncode})")
+                    return result.returncode
+        print("[oracle] ci PASS | " + " | ".join(
+            f"{tier} {scope} digest {digest}" for tier, _, _, scope, digest in selections))
+    return 0
+
+
+def _ci_selections(changed: list[str], output: Path) -> list[tuple[str, int, str, str, str]]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.ci_required_tests import ci_select
+
+    selections = []
+    for tier, count in (("pr", 4), ("gate", 6)):
+        name = f"{tier}-selection.txt"
+        scope, digest = ci_select(tier, output / name, changed=changed)
+        selections.append((tier, count, name, scope, digest))
+    return selections
 
 
 def _required_runner_command(args: argparse.Namespace) -> str:
@@ -301,7 +370,9 @@ def _required_runner_command(args: argparse.Namespace) -> str:
 
 def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     """The ``docker run`` argv for parsed ``args``."""
-    if getattr(args, "required_runner", False):
+    if getattr(args, "ci_structural", False):
+        command = "python -m scripts.ci_structural_guards"
+    elif getattr(args, "required_runner", False):
         command = _required_runner_command(args)
     elif args.shell:
         command = "bash"
