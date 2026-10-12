@@ -62,7 +62,7 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/providers/router.py", r"\bTurnRequestBudget\("),
             ("tinyassets/universe_intelligence.py", r"\bTurnRequestBudget\("),
         ),
-        ceiling=27,
+        ceiling=5,
     ),
     "S2": Shape(
         ("tinyassets/control_plane/**",),
