@@ -193,6 +193,16 @@ def _job_failure_reason(error, turn, outcome) -> str:
         if "did not complete with text and usage" in str(error):
             return "job_failed:incomplete"
         if "refused" in str(error):
+            detail = str(error).removeprefix("external agent refused ")
+            if detail != str(error) and detail.count(":") == 1:
+                method, category = detail.split(":")
+                if (turn is not None and method == turn.phase
+                        and method in {turn.job["start"]["method"],
+                                       turn.job["resume"]["method"],
+                                       turn.job["input"]["method"]}
+                        and category in {"model_unavailable", "permission_denied",
+                                         "rate_limited", "invalid_request", "unknown"}):
+                    return f"job_failed:refused:{method}:{category}"
             return "job_failed:refused"
         if "exited" in str(error):
             return "job_failed:exited"
@@ -333,6 +343,20 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                 if error is None:
                     error = exc
         reason = _job_failure_reason(error, turn, outcome)
+        if (model and reason.endswith(":model_unavailable")
+                and turn is not None and turn.phase in {
+                    job["start"]["method"], job["input"]["method"]}):
+            from tinyassets.storage.refused_models import record_refused_model
+
+            record_refused_model(
+                universe.parent, owner_user_id=custody.owner_user_id,
+                connection_id=agent, model_id=model,
+                failure_class="provider_refused", detail=reason,
+            )
+            from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+
+            SHORTLIST_CACHE.schedule(base=universe.parent, owner=custody.owner_user_id,
+                                     universe_id=universe.name, provider=agent)
         evidence = outcome or (turn.outcome if turn is not None else None)
         receipts.finish_job(
             universe.parent, receipt_id,
