@@ -203,6 +203,39 @@ describe('worker handler — retired /mcp-directory routing', () => {
     }
 });
 
+describe('worker handler — apex OAuth discovery', () => {
+    const documents = [
+        '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-protected-resource/mcp',
+        '/.well-known/oauth-authorization-server',
+    ];
+
+    for (const path of documents) {
+        it(`proxies GET and OPTIONS ${path} to the tunnel`, async () => {
+            for (const method of ['GET', 'OPTIONS']) {
+                lastUpstreamRequest = null;
+                const response = await worker.fetch(
+                    new Request(`https://tinyassets.io${path}`, { method }),
+                    {},
+                );
+                assert.ok(lastUpstreamRequest, path);
+                assert.equal(lastUpstreamRequest.method, method);
+                assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}${path}`);
+                assert.equal(response.status, 200);
+            }
+        });
+    }
+
+    it('does not proxy the website well-known challenge', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/.well-known/openai-apps-challenge'),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null);
+        assert.equal(response.status, 404);
+    });
+});
+
 describe('worker handler — canonical /mcp routing', () => {
     for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
         it(`continues to proxy ${method} /mcp`, async () => {
