@@ -459,8 +459,8 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     model_url = route_with_session(
         route.url, session_of(config), turn_of(),
         grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config),
-        model_reference=issue_model_reference(config.request_budget,
-                                               config.model_launch_parent),
+        model_reference=issue_model_reference(getattr(config, "request_budget", None),
+                                               getattr(config, "model_launch_parent", None)),
         context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
     )
     model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"

@@ -599,7 +599,8 @@ async def _served_engine_tools(stack: contextlib.AsyncExitStack, config: ModelCo
         return await stack.enter_async_context(open_engine_tools(
             actor_id=actor_id, graph_id=graph_id, enabled_tools=enabled,
             capability_grant=granted_tools(config), timeout=timeout,
-            model_budget=config.request_budget, model_parent=config.model_launch_parent,
+            model_budget=getattr(config, "request_budget", None),
+            model_parent=getattr(config, "model_launch_parent", None),
             session_key=session_of(config), turn=turn_of(),
             context_tokens=getattr(getattr(config, "selected_model", None), "context_tokens", None),
         ))

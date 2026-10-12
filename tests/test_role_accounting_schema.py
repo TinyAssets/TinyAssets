@@ -1,4 +1,4 @@
-"""Privileged migration schema stays identical to the runtime's four tables."""
+"""Privileged migration schema stays identical to the runtime's accounting tables."""
 import runpy
 import sqlite3
 from pathlib import Path
