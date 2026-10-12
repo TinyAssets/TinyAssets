@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,9 +80,6 @@ def _select_tool_names(
 
     allowed = {tool.name for tool in tools}
     defaults = _default_tool_names(phase, state, tools)
-    if _provider_stub.is_force_mock():
-        return defaults
-
     plan_output = state.get("plan_output") or {}
     orient_result = state.get("orient_result") or {}
     scene_id = plan_output.get("scene_id") or orient_result.get("scene_id") or "unknown"
@@ -111,12 +107,10 @@ def _select_tool_names(
         f"{tool_lines}\n\n"
         "Choose only tools likely to materially improve this phase."
     )
-    fallback = json.dumps(defaults)
-    raw = _provider_stub.call_provider(
+    raw = _provider_stub.text_sync(
         prompt,
         system,
         role="extract",
-        fallback_response=fallback,
     )
     parsed = _parse_tool_selection(raw, allowed)
     return parsed or defaults

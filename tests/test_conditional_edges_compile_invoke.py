@@ -53,7 +53,7 @@ def _scripted_provider(
     This is the minimum scaffolding needed to drive a conditional-edge
     graph deterministically — no LLM, no subprocess, just a pure
     callable that seeds the gate's output_key from state via
-    ``call_provider``.
+    ``text_sync``.
     """
     def _call(prompt: str, system: str = "", *, role: str = "writer") -> str:
         if gate_marker in prompt:

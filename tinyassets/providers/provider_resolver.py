@@ -36,6 +36,17 @@ _CLI_PROVIDER_CLASSES: dict[str, str] = {
 }
 
 
+def register_subscription_adapters(router: "ProviderRouter") -> None:
+    """Make installed CLI transports addressable; owner authority is checked per call."""
+    for ref in _CLI_PROVIDER_CLASSES:
+        try:
+            provider = _cli_provider(ref)
+        except ImportError:
+            continue
+        if provider.is_available():
+            router.register(provider)
+
+
 def _cli_provider(ref: str) -> BaseProvider:
     if ref == "codex":
         from tinyassets.providers.codex_provider import CodexProvider

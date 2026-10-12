@@ -7,7 +7,7 @@ no longer applies an opinionated formula; instead it dispatches a
 that consumes signal data and emits ranked entries.
 
 **Retired by AGENTS.md Hard Rule 15 (the platform has no LLM, 2026-09-24).**
-A selector run was a platform model call: it ran on the raw ``call_provider``
+A selector run was a platform model call: it ran on the raw ``text_sync``
 with no universe, which the router served from the host's own CLI login, for
 whoever happened to read the leaderboard. Ranking is platform operation, so
 :func:`dispatch_selector` now fails closed with ``selector_retired`` and runs

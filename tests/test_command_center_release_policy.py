@@ -485,7 +485,6 @@ def test_policy_replay_and_opt_out_do_not_write_ui_or_run_models(published, monk
         raise AssertionError("policy/eligibility cannot call a model")
 
     monkeypatch.setattr(ProviderRouter, "call_sync", forbidden)
-    monkeypatch.setattr(ProviderRouter, "call_with_policy_sync", forbidden)
     before = get_app_ui(
         published["base"], owner_user_id=published["owner"], universe_id=published["uid"]
     )

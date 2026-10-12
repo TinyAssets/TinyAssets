@@ -16,7 +16,7 @@ from tinyassets import activity_runner, agent_activities, engine_mcp_server, sha
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-from tinyassets.providers.base import ModelConfig, UniverseContext
+from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.model_policy import ModelRef
 from tinyassets.storage.provider_work_authority import db_path
 from tinyassets.workflow_agent import WorkAgentAdapter
@@ -179,7 +179,7 @@ class _LaunchRecorder:
 
     async def call(self, role, prompt, system, config, **kwargs):
         self.launches.append((role, kwargs.get("_agent_execution_kind")))
-        return SimpleNamespace(text="launched", provider="owned-http")
+        return ProviderResponse("launched", "owned-http", "some-model", "test", 0)
 
 
 #: The native candidate the owner's order offers mid-turn.
@@ -356,7 +356,7 @@ def test_a_native_call_that_finished_as_its_activity_stopped_keeps_its_answer(tm
     class AnswersThenYields:
         async def call(self, role, prompt, system, config, **kwargs):
             agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
-            return SimpleNamespace(text="final words", provider="owned-http")
+            return ProviderResponse("final words", "owned-http", "some-model", "test", 0)
 
     response = asyncio.run(adapter.infer(
         router=AnswersThenYields(), prompt="p", system="", config=config, context=context,

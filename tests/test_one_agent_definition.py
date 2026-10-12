@@ -52,12 +52,8 @@ def definition():
 
 def _registered_kinds() -> list[str]:
     """Every provider kind the platform can execute, from its registries."""
-    from tinyassets.providers import call
-
     kinds = [f"cli:{name}" for name in provider_resolver._CLI_PROVIDER_CLASSES]
     kinds += [f"http:{protocol}" for protocol in _HTTP_PROTOCOLS]
-    source = Path(call.__file__).read_text(encoding="utf-8")
-    kinds += ["local:ollama"] if "OllamaProvider()" in source else []
     return kinds
 
 
@@ -400,8 +396,16 @@ def _render(kind, definition, tmp_path, monkeypatch):
 
 def test_the_guard_covers_every_registered_provider_kind():
     kinds = _registered_kinds()
-    assert {"cli:codex", "cli:claude-code", "local:ollama"} <= set(kinds)
-    assert {f"http:{p}" for p in _HTTP_PROTOCOLS} <= set(kinds)
+    assert set(kinds) == (
+        {f"cli:{name}" for name in provider_resolver._CLI_PROVIDER_CLASSES}
+        | {f"http:{protocol}" for protocol in _HTTP_PROTOCOLS}
+    )
+    assert {"cli:codex", "cli:claude-code"} <= set(kinds)
+
+
+def test_unregistered_local_provider_cannot_execute_an_agent_turn():
+    assert "local:ollama" not in _registered_kinds()
+    _assert_refused_for_agent_turns("local:ollama")
 
 
 @pytest.mark.parametrize("kind", _registered_kinds())

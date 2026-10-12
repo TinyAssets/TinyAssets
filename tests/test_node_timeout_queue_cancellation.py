@@ -231,12 +231,10 @@ def _cap_after_queue_wait(pool, *, route: str, node_timeout: float, wait_s: floa
     class _RecordingRouter:
         available_providers = ["claude"]
 
-        def call_with_policy_sync(
-            self, role, prompt, system, policy, config=None, **kwargs,
-        ):
+        def __call__(self, prompt, system, *, policy=None, config=None, **kwargs):
             captured["config"] = config
             captured["entered_at"] = time.monotonic()
-            return ("done", "claude", {})
+            return "done"
 
     if route == "policy":
         fn = _build_prompt_template_node(

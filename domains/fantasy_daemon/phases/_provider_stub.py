@@ -1,28 +1,13 @@
-"""Fantasy-domain prompt assembly + provider calls for graph nodes.
-
-The general, domain-agnostic LLM-call primitive (``call_provider``, the router,
-force-mock, ``last_provider``) now lives in :mod:`tinyassets.providers.call` — the
-engine's shared bridge. This module keeps the *fantasy-specific* prompt builders
-and deterministic mock fixtures, and routes its LLM calls through that general
-primitive.
-
-``call_provider`` is re-exported here (it is imported for this module's own
-``call_for_*`` helpers) so existing fantasy-domain callers that do
-``from ..._provider_stub import call_provider`` keep working. Engine code must
-import from :mod:`tinyassets.providers.call` directly (de-fantasy import boundary).
-Read force-mock via ``is_force_mock()`` rather than a module global.
-"""
+"""Fantasy prompt builders using the owner-bound model call service."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from tinyassets.providers.call import call_provider, is_force_mock
+from tinyassets.providers.model_call import text_sync
 
 __all__ = [
-    "call_provider",
-    "is_force_mock",
+    "text_sync",
     "call_for_plan",
     "call_for_draft",
     "call_for_extraction",
@@ -178,115 +163,7 @@ def _format_memory_context(memory_ctx: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Deterministic mock fixtures (used when force-mock is on)
-# ---------------------------------------------------------------------------
-
-
-def _mock_plan_response(orient_result: dict[str, Any]) -> str:
-    """Generate a deterministic mock plan response.
-
-    Returns a JSON string with beat alternatives.
-    """
-    warnings = orient_result.get("overdue_promises", [])
-
-    warn_ids = (
-        [w.get("id", "") for w in warnings[:1]] if warnings else []
-    )
-    beats = [
-        {
-            "beat_number": 1,
-            "description": (
-                "Opening -- establish setting and POV character."
-            ),
-            "tension": 0.3,
-            "addresses_warnings": [],
-        },
-        {
-            "beat_number": 2,
-            "description": (
-                "Rising -- character encounters a complication."
-            ),
-            "tension": 0.6,
-            "addresses_warnings": warn_ids,
-        },
-        {
-            "beat_number": 3,
-            "description": (
-                "Climax -- scene turning point, character acts."
-            ),
-            "tension": 0.9,
-            "addresses_warnings": [],
-        },
-        {
-            "beat_number": 4,
-            "description": (
-                "Resolution -- consequences; transition to next."
-            ),
-            "tension": 0.5,
-            "addresses_warnings": [],
-        },
-    ]
-
-    alternatives = [
-        {
-            "alternative_id": 0,
-            "beats": beats,
-            "done_when": "The character has faced the scene conflict and made a choice.",
-            "promise_resolutions": [],
-            "estimated_word_count": 1200,
-        },
-    ]
-
-    return json.dumps({"alternatives": alternatives})
-
-
-def _mock_draft_response(plan_output: dict[str, Any]) -> str:
-    """Generate deterministic mock prose from a beat sheet."""
-    beats = plan_output.get("beats", [])
-
-    paragraphs = []
-    for beat in beats:
-        desc = beat.get("description", "A scene unfolds.")
-        paragraphs.append(
-            f"The moment stretched taut as wire. {desc} "
-            f"Ryn felt the weight of every choice she had ever made pressing "
-            f"down on her shoulders. The Northern Gate loomed ahead, ancient "
-            f"stones rising from the mist like the bones of a forgotten giant. "
-            f"She drew a slow breath of cold mountain air and pressed forward."
-        )
-
-    prose = "\n\n".join(paragraphs)
-    return prose
-
-
-def _mock_extraction_response(prose: str) -> str:
-    """Generate deterministic mock fact extraction response."""
-    facts = []
-
-    # Extract simple character names
-    import re
-
-    names = set(re.findall(r"\b([A-Z][a-z]{2,})\b", prose))
-    # Filter common non-name words
-    stopwords = {"The", "She", "Her", "His", "They", "This", "That", "But", "And", "Not"}
-    names -= stopwords
-
-    for i, name in enumerate(sorted(names)[:5]):
-        facts.append({
-            "text": f"{name} is present in the scene.",
-            "source_type": "narrator_claim",
-            "language_type": "literal",
-            "narrative_function": "world_fact",
-            "importance": 0.4,
-            "confidence": 0.6,
-            "access_tier": 0,
-        })
-
-    return json.dumps(facts)
-
-
-# ---------------------------------------------------------------------------
-# Fantasy-domain provider calls (route through tinyassets.providers.call)
+# Owner-bound creative prompt builders
 # ---------------------------------------------------------------------------
 
 
@@ -297,7 +174,7 @@ def call_for_plan(
 ) -> str:
     """Call provider to generate a scene plan.
 
-    Falls back to deterministic mock if no provider is available.
+    Raises if no owner-bound model is available.
     """
     system = (
         "You are a fiction planning assistant. Generate a beat sheet for a scene. "
@@ -354,12 +231,10 @@ def call_for_plan(
         "Generate 3-5 alternative beat sheets for this scene."
     )
 
-    fallback = _mock_plan_response(orient_result) if is_force_mock() else None
-    result = call_provider(
+    result = text_sync(
         prompt,
         system,
         role="writer",
-        fallback_response=fallback,
     )
     return result
 
@@ -374,7 +249,7 @@ def call_for_draft(
 ) -> str:
     """Call provider to generate prose from a beat sheet.
 
-    Falls back to deterministic mock if no provider is available.
+    Raises if no owner-bound model is available.
     """
     system = (
         "You are a skilled fantasy author. Write vivid, immersive prose for the "
@@ -396,12 +271,10 @@ def call_for_draft(
     if writer_context:
         prompt += writer_context
         prompt += "Write the scene prose now."
-        fallback = _mock_draft_response(plan_output) if is_force_mock() else None
-        result = call_provider(
+        result = text_sync(
             prompt,
             system,
             role="writer",
-            fallback_response=fallback,
         )
         return result
 
@@ -474,12 +347,10 @@ def call_for_draft(
 
     prompt += "Write the scene prose now."
 
-    fallback = _mock_draft_response(plan_output) if is_force_mock() else None
-    result = call_provider(
+    result = text_sync(
         prompt,
         system,
         role="writer",
-        fallback_response=fallback,
     )
     return result
 
@@ -487,7 +358,7 @@ def call_for_draft(
 def call_for_extraction(prose: str, pov_character: str | None = None) -> str:
     """Call provider to extract facts from prose.
 
-    Falls back to deterministic mock if no provider is available.
+    Raises if no owner-bound model is available.
     """
     from domains.fantasy_daemon.phases.fact_extraction import (
         FACT_EXTRACTION_SYSTEM,
@@ -496,11 +367,9 @@ def call_for_extraction(prose: str, pov_character: str | None = None) -> str:
 
     prompt = build_extraction_prompt(prose, pov_character)
 
-    fallback = _mock_extraction_response(prose) if is_force_mock() else None
-    result = call_provider(
+    result = text_sync(
         prompt,
         FACT_EXTRACTION_SYSTEM,
         role="extract",
-        fallback_response=fallback,
     )
     return result

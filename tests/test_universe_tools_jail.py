@@ -754,7 +754,7 @@ def _turn(monkeypatch, world: _World, message: str, model) -> str:
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-alpha")
     monkeypatch.setattr(ui, "_universe_dir", lambda _uid: world.universe_a)
-    monkeypatch.setattr(ui, "call_provider", model)
+    monkeypatch.setattr(ui, "text_sync", model)
     monkeypatch.setattr(ui, "_build_persona_system_prompt", lambda *a, **k: "I am Alpha.")
     monkeypatch.setattr(ui, "extract_learning", lambda *a, **k: None)
     monkeypatch.setattr(ui, "commit_learning", lambda *a, **k: None)

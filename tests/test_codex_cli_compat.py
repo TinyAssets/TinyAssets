@@ -192,7 +192,10 @@ async def test_recorded_stream_carries_the_request_never_a_reported_model(
     """
     from tests.support.codex_app_server_recording import recorded_turn
     from tests.support.fake_codex_app_server import ScriptedAppServer
-    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+    from tinyassets.providers.execution_receipt import (
+        normalize_execution_receipt,
+        receipt_from_response,
+    )
 
     run, _launch, _state, config, _ = served
     script, _call = recorded_turn()
@@ -200,21 +203,17 @@ async def test_recorded_stream_carries_the_request_never_a_reported_model(
                                cfg=config(native_model_id=requested))
     assert result.text == "notes.md says hello." and result.input_tokens == 240
     assert result.reported_model == ""
-    receipt = WriterExecutionReceipt()
-    receipt.observe(result)
+    receipt = normalize_execution_receipt(receipt_from_response(result))
     params = server.requests("thread/start")[0]["params"]
     if requested:
         assert params["model"] == requested
         assert result.requested_model == requested
-        assert receipt.projection() == {
-            "provider": "codex", "model": "", "model_status": "unknown",
-            "requested_model": requested, "configured_model": requested,
-        }
+        assert receipt["requested_model"] == requested
+        assert receipt["configured_model"] == requested
     else:
         # The source's own default is named as configuration, not requested.
         assert "model" not in params
         assert result.requested_model == ""
-        assert receipt.projection() == {
-            "provider": "codex", "model": "", "model_status": "unknown",
-            "configured_model": "cli-selected",
-        }
+        assert "requested_model" not in receipt
+        assert receipt["configured_model"] == "cli-selected"
+    assert receipt["model_status"] == "unknown"

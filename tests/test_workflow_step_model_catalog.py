@@ -3,20 +3,26 @@
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tests.test_llm_policy_override import _compile_with_capture, _make_branch, _make_node
+from tests.test_llm_policy_override import _make_branch, _make_node
 from tests.test_work_candidate_data import data
 from tinyassets.graph_compiler import CompilerError
 from tinyassets.providers.model_pins import ModelPinError
 from tinyassets.providers.model_policy import Exhaustion, ModelRef
 
 
-def test_step_model_cannot_fall_through_a_policy_incapable_bridge():
+def test_step_model_reaches_the_single_prompt_call():
+    from tinyassets.graph_compiler import compile_branch
+
     node = _make_node({"preferred": {"provider": "codex", "model": "gpt-6-astra"}})
-    app, events, prompts = _compile_with_capture(_make_branch(node))
-    with pytest.raises(CompilerError, match="gpt-6-astra.*codex.*policy"):
-        app.invoke({"topic": "review"})
-    assert prompts == []
-    assert not any(event.get("phase") == "ran" for event in events)
+    seen = []
+
+    def chosen(_prompt, _system, **kwargs):
+        seen.append(kwargs["policy"])
+        return "reviewed"
+
+    app = compile_branch(_make_branch(node), provider_call=chosen).graph.compile()
+    assert app.invoke({"topic": "review"})["out"] == "reviewed"
+    assert seen == [node.llm_policy]
 
 
 def test_step_model_without_a_bound_provider_cannot_return_mock_success():
@@ -24,7 +30,7 @@ def test_step_model_without_a_bound_provider_cannot_return_mock_success():
 
     node = _make_node({"preferred": {"provider": "codex", "model": "gpt-6-astra"}})
     app = compile_branch(_make_branch(node)).graph.compile()
-    with pytest.raises(CompilerError, match="gpt-6-astra.*codex.*no bound provider"):
+    with pytest.raises(CompilerError, match="no bound model call"):
         app.invoke({"topic": "review"})
 
 

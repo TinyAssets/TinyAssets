@@ -110,12 +110,12 @@ def p4_env(tmp_path, monkeypatch, authenticate_request):
     )
 
     from tinyassets import universe_server as us
-    provider_calls = importlib.import_module("tinyassets.providers.call")
+    provider_calls = importlib.import_module("tinyassets.providers.model_call")
 
     importlib.reload(us)
     monkeypatch.setattr(
         provider_calls,
-        "call_provider",
+        "text_sync",
         lambda prompt, _system="", **_kwargs: f"fixture:{prompt}",
     )
     yield us, base

@@ -166,35 +166,75 @@ at `graph_compiler.py:1741` and `call_provider`'s `_force_mock` path are
 deleted. A node with no runnable model raises a `CompilerError` that names
 what is missing.
 
-## Deletions (same release) and estimated net
+## Base inventory (task 2.1)
 
-| Delete | Where | Approx. lines |
+Measured on `fcc071f1240` (2026-10-11) with `git grep` and Python AST spans;
+the checked-out tree was clean and identical to that base. The 75 matching
+`git grep` lines include imports, comments, definitions and call sites, so they
+are not 75 model calls. There are **7 direct `call_provider` calls** and
+additional callable handoffs in `api/runs.py`, `automations.py`,
+`consumer_runtime.py`, `delivery_runtime.py`, `evaluation/editorial.py`,
+`ingestion/extractors.py`, `run_input_direct.py` and `runs.py`. The graph prompt
+path calls `call_with_policy_sync` through its callable and has three concrete
+session implementations (foreground, background, cloud). `TurnRequestBudget`
+has **7 constructors**: 5 caller/router roots (`agent_turn_coordinator`,
+`background_served_provider`, `foreground_run_provider`,
+`universe_intelligence`, `providers/router`) and 2 broker/storage
+reconstitutions (`broker/usage.py`, `storage/agent_request_usage.py`).
+
+The read-only production copy in Docker volume `regress3-copy-data` has 265
+current `branch_definitions` rows. Parsing `node_defs_json` and
+`default_llm_policy_json` found **0 nodes and 0 branch defaults** with
+`difficulty_override` (0 branch IDs). Historical run/version snapshots can
+contain the key and are not current editable workflow definitions. M1 must
+still inspect the deployment's fresh backup before cutover.
+
+| Existing deletion target | Measured AST span on base |
+|---|---:|
+| `UniverseBoundProviderCall`, `bind_universe_provider_call` | 64 + 13 = 77 |
+| `_build_fallback_router` | 51 |
+| `_call_router_with_retry` | 75 |
+| `call_provider` | 95 |
+| `ProviderRouter.call_with_policy(_sync)` | 35 + 83 = 118 |
+| `graph_compiler._call_policy_router_with_retry` | 60 |
+| Foreground policy helpers and `call_with_policy_sync` | 12 + 13 + 18 = 43 |
+| Background/cloud `call_with_policy_sync` | 13 + 25 = 38 |
+| `WriterExecutionReceipt` | 47 |
+| `current_request_budget`, `request_budget_scope` | 2 + 14 = 16 |
+
+These are inclusive definition spans, not net diff numbers. The broader
+admission, allocation, mock and policy branches below do not form complete
+definitions; their deletion size is measured from each PR's actual numstat.
+
+## Deletions (same release)
+
+| Delete | Where | Measured span or remaining estimate |
 |---|---|---|
 | `call_with_policy`, `call_with_policy_sync` | `providers/router.py:1879-1999` | -118 |
 | `FALLBACK_CHAINS` and its two consumers | `router.py:243`, `api/status.py:1767`, `provider_serving_binding.py:392` | -30 |
-| `call_provider`, `_call_router_with_retry`, `UniverseBoundProviderCall`, `bind_universe_provider_call`, `_build_fallback_router` (registers Claude, Codex and Ollama by name), `_force_mock` | `providers/call.py` | -300 |
-| `_call_policy_router_with_retry`, the mock branch, the duplicate policy branch | `graph_compiler.py:545-604, 1735-1800` | -140 |
-| `_declared_policy_providers`, `_declared_policy_pins`, the default/manifest split in `_admit_manifest` and default admission, `call_with_policy_sync`, caller reservation in `_call_captured_prompt` and `_call_once` | `foreground_run_provider.py` | -270 |
+| `call_provider`, `_call_router_with_retry`, `UniverseBoundProviderCall`, `bind_universe_provider_call`, `_build_fallback_router` (registers Claude, Codex and Ollama by name), `_force_mock` | `providers/call.py` | 298 measured; `_force_mock` branch separate |
+| `_call_policy_router_with_retry`, the mock branch, the duplicate policy branch | `graph_compiler.py:545-604, 1735-1800` | 60 measured; branches separate |
+| `_declared_policy_providers`, `_declared_policy_pins`, the default/manifest split in `_admit_manifest` and default admission, `call_with_policy_sync`, caller reservation in `_call_captured_prompt` and `_call_once` | `foreground_run_provider.py` | 43 measured; branches separate |
 | The same policy, scope and allocation code | `background_served_provider.py:748-954` | -200 |
 | Policy authority re-check | `cloud_automation_continuation.py` | -80 |
 | The `_call_work_agent` allocation and policy plumbing | `workflow_agent.py:321-423` | -60 |
 | Caller-built allocations and `request_budget_scope` / `current_request_budget` | `agent_turn_coordinator.py:464`, `universe_intelligence.py:699, 1522`, `router.py:801`, `request_budget.py:347-365` | -80 |
 | The in-memory allocation branch | `request_budget.py` `TurnRequestBudget` | -120 |
 | The exactly-one-provider serving checks | `provider_serving_binding.py` | -150 |
-| `WriterExecutionReceipt` | `providers/execution_receipt.py:149-195` | -47 |
+| `WriterExecutionReceipt` | `providers/execution_receipt.py:149-195` | 47 measured |
 | The MCP-sampling reviewer | `ta_capabilities.py:410-445`, `agent_review.py` bound callback | -50 |
 | The prompt band-aid; the old refusal text | `engine_mcp_server.py:1745-1763`, `agent_request_usage.py:126-136` | -25 |
-| **Deleted** | | **about -1,670** |
+| **Deleted** | | **Net measured per PR** |
 | `model_call.py` (contract, resolution, allocation, receipt) | new | +320 |
 | `connected_sources` and the membership check | `served_model_plan.py`, `owner_binding.py` | +80 |
 | The receipt fields | `execution_receipt.py` | +40 |
 | The `ta` `model` capability | `ta_capabilities.py` | +60 |
 | M1 migration | `deploy/` | +40 |
-| **Estimated net** | | **about -1,130** |
+| **Net** | | **Measured per PR** |
 
-The 25 `call_provider` call sites and about ten router call sites move to
-`call` at roughly zero net. These figures are estimates from function spans on
-`e603aafd618`. Task 1 measures the real ones. The gate is
+The baseline has 7 direct `call_provider` call expressions plus callable
+handoffs, not 25 direct calls. Entries without a measured span remain planning
+estimates until their exact branch deletion is in a PR diff. The gate is
 `git diff --numstat origin/main -- tinyassets deploy ':!**/tests/**'`, with
 total added minus total deleted below zero for each PR.
 

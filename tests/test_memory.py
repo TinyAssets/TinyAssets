@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinyassets.memory.core import CoreMemory
 from tinyassets.memory.episodic import EpisodicMemory
 from tinyassets.memory.manager import DRAFT, EVALUATE, ORIENT, PLAN, MemoryManager
 from tinyassets.memory.promotion import PromotionGates
 from tinyassets.memory.reflexion import ReflexionEngine, ReflexionResult
+
+pytestmark = pytest.mark.usefixtures("connected_fantasy_model")
 
 # =====================================================================
 # CoreMemory

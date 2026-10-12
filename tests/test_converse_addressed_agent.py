@@ -121,7 +121,7 @@ def world(tmp_path, monkeypatch):
     _universe(tmp_path, "u-other")
     _become(tmp_path, OWNER, "u-home")
     provider = _Provider()
-    monkeypatch.setattr(ui, "call_provider", provider)
+    monkeypatch.setattr(ui, "text_sync", provider)
     weaver = _agent(tmp_path, "u-home", OWNER, "Evidence Weaver")
     return {"base": tmp_path, "udir": udir, "provider": provider, "weaver": weaver}
 
@@ -408,7 +408,7 @@ def test_an_addressed_turn_registers_under_that_agent_so_stop_can_reach_it(world
         seen["still_running"] = live is not None and not live.requested()
         return provider(prompt, system=system, **kwargs)
 
-    monkeypatch.setattr(ui, "call_provider", capture)
+    monkeypatch.setattr(ui, "text_sync", capture)
     out = _converse(message="hello", agent_id=world["weaver"])
 
     assert seen["registered_agent"] == world["weaver"], (
@@ -434,7 +434,7 @@ def test_a_stop_addressed_to_the_agent_interrupts_its_live_turn(world, monkeypat
         live.check()  # raises TurnInterrupted at this boundary
         raise AssertionError("the stop did not take effect")
 
-    monkeypatch.setattr(ui, "call_provider", capture)
+    monkeypatch.setattr(ui, "text_sync", capture)
     out = _converse(message="stop me", agent_id=world["weaver"])
 
     assert stopped["matched"] == 1, "the addressed Stop did not match the agent's live turn"
@@ -456,7 +456,7 @@ def test_a_main_turn_still_registers_as_main(world, monkeypatch):
         seen["weaver_stop"] = ti.request_interrupt(OWNER, "u-home", agent_id=world["weaver"])
         return provider(prompt, system=system, **kwargs)
 
-    monkeypatch.setattr(ui, "call_provider", capture)
+    monkeypatch.setattr(ui, "text_sync", capture)
     _converse(message="hello")
 
     assert seen["registered_agent"] == "main"
@@ -479,7 +479,7 @@ def test_ingress_puts_the_addressed_agent_on_the_context(world, monkeypatch):
         seen.append(None if context is None else context.agent_id)
         return provider(prompt, system=system, **kwargs)
 
-    monkeypatch.setattr(ui, "call_provider", capture)
+    monkeypatch.setattr(ui, "text_sync", capture)
 
     _converse(message="as the weaver", agent_id=world["weaver"])
     assert seen and seen[0] == world["weaver"], (

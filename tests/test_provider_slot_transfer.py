@@ -110,7 +110,7 @@ def test_stale_or_foreign_process_handle_cannot_transfer(monkeypatch):
             assert other.parent is None
             assert pa.admission_snapshot()["live"] == 2
 
-@pytest.mark.parametrize("entry", ["call_sync", "call_with_policy_sync", "call"])
+@pytest.mark.parametrize("entry", ["call_sync", "call"])
 def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
     from unittest.mock import MagicMock
 
@@ -162,8 +162,6 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
                 if entry == "call":
                     with pa.blocking_provider_child():
                         await router.call(*args, config, **kw)
-                elif entry == "call_with_policy_sync":
-                    await asyncio.to_thread(router.call_with_policy_sync, *args, {}, config, **kw)
                 else:
                     await asyncio.to_thread(router.call_sync, *args, config, **kw)
             return ProviderResponse(text="finished", provider="codex", model="fake",

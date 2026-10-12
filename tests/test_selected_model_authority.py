@@ -166,7 +166,7 @@ def _authorize(served, selection=None):
     )
 
 
-def test_selected_model_flows_through_real_router_and_http_encoder(served):
+def test_selected_model_flows_through_router_and_http_encoder(served):
     before = load_provider_assignment(served.rig.base, universe_id="u-models")
     injected = SelectedModel("other", "injected", "invalid", (), "fake", 1)
     response = _call(served, config=ModelConfig(selected_model=injected))

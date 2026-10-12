@@ -33,6 +33,8 @@ from tinyassets.checkpointing.sqlite_saver import (
     verify_wal_mode,
 )
 
+pytestmark = pytest.mark.usefixtures("connected_fantasy_model")
+
 # -----------------------------------------------------------------------
 # Fixtures
 # -----------------------------------------------------------------------
