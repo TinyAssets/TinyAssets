@@ -54,6 +54,68 @@ def test_job_receipt_distinguishes_resolved_and_unreported_model(tmp_path):
     assert row == ("gpt-6.1-sol", "gpt-6.1-sol", "", "unknown", "cli_reported")
 
 
+def test_package_turn_has_native_receipt_and_no_subscription_call_price(tmp_path, monkeypatch):
+    from tinyassets.external_agents import runner
+    from tinyassets.external_agents.jsonrpc_job import TurnOutcome
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.execution_receipt import receipt_from_response
+
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    executable = tmp_path / "cli"
+    executable.write_text("fixture", encoding="utf-8")
+    package = SimpleNamespace(executable=executable, digest="package", row={
+        "family": "openai",
+        "auth": {"service": "codex", "home_dir": "codex", "home_env": "CODEX_HOME"},
+        "job": {"transport": "jsonrpc", "argv": ["app-server"],
+                "events": {"done": {"success": "completed"}}},
+    })
+    monkeypatch.setattr(runner.registry, "resolve", lambda _: package)
+    monkeypatch.setattr(runner, "materialize", lambda *_: {"auth.json": b"token"})
+
+    async def no_tools(*_):
+        return None
+
+    monkeypatch.setattr(runner, "_engine_tools", no_tools)
+
+    class Job:
+        def __init__(self, *_args, **_kwargs):
+            self.outcome = TurnOutcome()
+
+        async def run(self, **_kwargs):
+            self.outcome = TurnOutcome(
+                thread_id="session", configured_model="gpt-6.1-sol",
+                messages=["done"], input_tokens=100, output_tokens=50,
+                usage_seen=True, status="completed")
+            return self.outcome
+
+    monkeypatch.setattr("tinyassets.external_agents.jsonrpc_job.JsonRpcJob", Job)
+
+    class Launch:
+        async def spawn(self, *_args, **_kwargs):
+            return object()
+
+        async def close(self, _proc):
+            return {}
+
+    custody = SimpleNamespace(universe_dir=center, owner_user_id="owner",
+                              reference=SimpleNamespace(service="codex",
+                                                        reference_digest="custody"),
+                              current=lambda: True)
+    response = asyncio.run(runner._run_job_locked(
+        "codex", Launch(), custody, prompt="hello", system="system",
+        config=ModelConfig(invocation_owner_user_id="owner",
+                           native_model_id="gpt-6.1-sol")))
+    receipt = receipt_from_response(response)
+    assert receipt.execution == "native_agent"
+    assert receipt.cost_microunits == 0
+    assert (receipt.input_tokens, receipt.output_tokens) == (100, 50)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        row = conn.execute(
+            "SELECT execution, outcome, reason FROM external_agent_job_receipts").fetchone()
+    assert row == ("native_agent", "succeeded", "")
+
+
 def test_job_stream_does_not_report_thread_configuration_as_answering_model():
     from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
     from tinyassets.external_agents.registry import resolve

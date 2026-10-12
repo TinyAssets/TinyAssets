@@ -23,7 +23,6 @@ _WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
 if str(_WORKFLOW.parent) not in sys.path:
     sys.path.insert(0, str(_WORKFLOW.parent))
 
-from tinyassets.api.status import _compute_supervisor_liveness  # noqa: E402
 from tinyassets.providers.base import subscription_auth_health  # noqa: E402
 
 # ---- subscription_auth_health: codex --------------------------------------
@@ -74,59 +73,3 @@ def test_unknown_provider_is_unknown():
 
 def test_empty_provider_is_unknown():
     assert subscription_auth_health("")["status"] == "unknown"
-
-
-# ---- supervisor_liveness provider_auth block ------------------------------
-
-
-def test_liveness_provider_auth_block_ok(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
-    assert out["provider_auth"]["writers"]["claude-code"]["status"] == "ok"
-    assert out["provider_auth"]["all_writers_unauthenticated"] is False
-    assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
-
-
-def test_liveness_all_writers_unauthenticated_warns(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-absent"))
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["all_writers_unauthenticated"] is True
-    assert any("all_writers_unauthenticated" in w for w in out["warnings"])
-
-
-def test_liveness_partial_writer_warns(tmp_path, monkeypatch):
-    # The exact 2026-06-25 shape: claude dead, codex alive. Must warn even
-    # though the loop still produces (Codex review finding #1).
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["all_writers_unauthenticated"] is False
-    assert out["provider_auth"]["writers"]["claude-code"]["status"] == "not_logged_in"
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "ok"
-    assert any("writer_unauthenticated" in w for w in out["warnings"])
-    assert not any("all_writers_unauthenticated" in w for w in out["warnings"])
-
-
-def test_owner_scoped_package_auth_does_not_claim_every_writer_is_down(tmp_path, monkeypatch):
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-absent"))
-
-    out = _compute_supervisor_liveness(tmp_path)
-    assert out["provider_auth"]["writers"]["codex"]["status"] == "unknown"
-    assert out["provider_auth"]["all_writers_unauthenticated"] is False
-

@@ -52,7 +52,10 @@ def definition():
 
 def _registered_kinds() -> list[str]:
     """Every provider kind the platform can execute, from its registries."""
+    from tinyassets.external_agents.registry import PACKAGES
+
     kinds = [f"cli:{name}" for name in provider_resolver._CLI_PROVIDER_CLASSES]
+    kinds += [f"cli:{name}" for name in PACKAGES]
     kinds += [f"http:{protocol}" for protocol in _HTTP_PROTOCOLS]
     return kinds
 
@@ -307,6 +310,60 @@ def _claude(definition, tmp_path, monkeypatch):
                                         kind="native_agent", provider_call=hanging_call)
 
 
+def _codex(definition, tmp_path, monkeypatch):
+    import contextlib
+    from types import SimpleNamespace
+
+    from tinyassets.agent_definition import agent_definition
+    from tinyassets.external_agents import provider as agent_provider
+    from tinyassets.external_agents import runner
+    from tinyassets.external_agents.jsonrpc_job import dynamic_tools, method_params
+    from tinyassets.external_agents.registry import resolve
+
+    system, config, _ = _coordinator_round("native_agent", tmp_path, monkeypatch)
+    opened = []
+    monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools",
+                        _recording_engine_tools(opened))
+
+    async def render():
+        async with contextlib.AsyncExitStack() as stack:
+            return await runner._engine_tools(stack, config)
+
+    tools = asyncio.run(render())
+    route = _asked_the_route_for_model_tools(opened, config)
+    native = agent_definition(tools.tools if tools else (), system)
+    job = resolve("codex").row["job"]
+    params = method_params(job["start"], {
+        "model": "gpt-6.1-sol", "workdir": "/agent-home/jobs/guard", "system": system,
+    })
+    visible = tuple(AgentTool(t["name"], t["description"], t["inputSchema"])
+                    for t in dynamic_tools(native))
+    instructions = params["baseInstructions"]
+
+    killed = []
+
+    async def run_job(*_args, **_kwargs):
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            killed.append(True)
+            raise
+
+    monkeypatch.setattr(runner, "run_job", run_job)
+    monkeypatch.setattr(agent_provider, "_custody", lambda *_: SimpleNamespace(
+        service="codex", reference_digest="guard"))
+
+    def hanging_call():
+        call = agent_provider.ExternalAgentProvider("codex").complete(
+            "Reply OK.", system,
+            _served_config(invocation_owner_user_id=_OWNER), universe_dir=tmp_path)
+        return call, lambda: bool(killed)
+
+    return visible if route else (), instructions, _capabilities(
+        route_tools=route and job["tools"]["mode"] == "dynamic_rpc",
+        kind="native_agent", provider_call=hanging_call)
+
+
 def _listed_for(url, monkeypatch):
     """The tools the engine route lists to a client that dialled ``url``."""
     from types import SimpleNamespace
@@ -330,6 +387,8 @@ def _render(kind, definition, tmp_path, monkeypatch):
         return _http(name, definition, tmp_path, monkeypatch)
     if kind == "cli:claude-code":
         return _claude(definition, tmp_path, monkeypatch)
+    if kind == "cli:codex":
+        return _codex(definition, tmp_path, monkeypatch)
     if kind == "local:ollama":
         return None
     raise AssertionError(f"registered provider kind {kind} has no renderer in this guard")
@@ -338,15 +397,16 @@ def _render(kind, definition, tmp_path, monkeypatch):
 # --- the guard -------------------------------------------------------------------
 
 def test_the_guard_covers_every_registered_provider_kind():
+    from tinyassets.external_agents.registry import PACKAGES
+
     kinds = _registered_kinds()
     assert set(kinds) == (
         {f"cli:{name}" for name in provider_resolver._CLI_PROVIDER_CLASSES}
+        | {f"cli:{name}" for name in PACKAGES}
         | {f"http:{protocol}" for protocol in _HTTP_PROTOCOLS}
     )
     assert "cli:claude-code" in kinds
-    from tinyassets.external_agents.registry import PACKAGES
-
-    assert "codex" in PACKAGES
+    assert "cli:codex" in kinds
 
 
 def test_unregistered_local_provider_cannot_execute_an_agent_turn():

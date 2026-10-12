@@ -119,6 +119,25 @@ def test_a_learned_id_is_visible_but_not_admitted_until_access_is_granted(config
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_package_codex_does_not_offer_claude_subscription_ids(configured, monkeypatch):
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+    from tinyassets.providers import call as provider_calls
+
+    _learn(monkeypatch, configured, "claude-opus-5-5")
+    OwnModelHistory(configured.rig.base).record(
+        source_kind="subscription", model_id="claude-haiku-5-5", owner_user_id="owner")
+    package = ExternalAgentProvider.__new__(ExternalAgentProvider)
+    package.name = "codex"
+    provider_calls.get_provider_router()._providers["codex"] = package
+
+    document = _document(configured)
+    codex = [row["reference"]["model_id"] for row in document["options"]
+             if row["reference"]["provider_ref"] == "codex"]
+    assert "claude-opus-5-5" not in codex
+    assert "claude-haiku-5-5" not in codex
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
 def test_granting_access_makes_a_listed_id_selectable_and_runnable(
         configured, monkeypatch):
     """The other half: after the grant it is a real choice, and a turn runs on it.
@@ -342,5 +361,4 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
     from tinyassets.providers.public_model_lists import read_list
 
     assert SOLO_ID not in read_list("subscription")
-
 

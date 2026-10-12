@@ -1156,8 +1156,7 @@ class _BackgroundAssignedProviderSession:
         # The refresh belongs where nothing is pinned yet: for this lane that is
         # `_refresh_sign_ins`, once, at the attempt's first node call. A finished
         # sign-in still surfaces from the launch itself, now typed as a sign-in
-        # failure rather than an outage
-        # (providers/codex_provider._terminal_auth_failure).
+        # failure rather than an outage.
         snapshot = None
         carrier = None
         try:

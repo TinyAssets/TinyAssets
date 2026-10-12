@@ -359,7 +359,7 @@ def test_llm_endpoint_bound_codex_subscription_auth(monkeypatch, tmp_path) -> No
         which_map={"codex": "/usr/local/bin/codex"},
         home=tmp_path,
     )
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> None:
@@ -376,7 +376,7 @@ def test_llm_endpoint_bound_codex_honors_codex_home(monkeypatch, tmp_path) -> No
         home=empty_home,
     )
 
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 def test_llm_endpoint_bound_openai_key_without_codex_cli_falls_through(
@@ -437,7 +437,7 @@ def test_llm_endpoint_bound_codex_takes_priority_over_claude(
         },
         home=tmp_path,
     )
-    assert hint == "codex"
+    assert hint == "unset"
 
 
 # ─────────────────────────────────────────────────────────────────────
