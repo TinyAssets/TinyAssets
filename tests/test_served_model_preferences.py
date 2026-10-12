@@ -324,10 +324,9 @@ def test_revocation_after_capture_still_prevents_inference(agent, monkeypatch):
     assert agent.wires == [] and agent.tools == []
 
 
-def test_http_enable_refuses_when_agent_executor_is_disabled(configured, monkeypatch):
+def test_http_enable_allows_text_when_agent_executor_is_disabled(configured, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
-    with pytest.raises(PermissionError, match="no eligible model"):
-        enable(configured)
+    assert enable(configured)["status"] == "serving"
 
 
 def test_public_enable_accepts_the_owned_model_assignment(configured):
@@ -426,7 +425,7 @@ def test_refresh_selects_new_best_model_without_saved_policy_change(agent, monke
     assert ModelPreferenceStore(agent.served.rig.base).get("owner", "u-models").generation == 0
 
 
-def test_paid_new_best_model_is_not_a_free_fallback(agent, monkeypatch):
+def test_paid_new_best_model_uses_observed_price_ceiling(agent, monkeypatch):
     original = discovery_snapshot.read_http_discovery_document
     paid_id = "new-vendor/paid-model"
 
@@ -445,7 +444,9 @@ def test_paid_new_best_model_is_not_a_free_fallback(agent, monkeypatch):
 
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", paid_model)
     assert _converse(agent, monkeypatch) == "finished exact answer"
-    assert all(wire[1]["body"]["model"] == authority.MODEL for wire in agent.wires)
+    assert all(wire[1]["body"]["model"] == paid_id for wire in agent.wires)
+    assert all(wire[1]["body"]["provider"]["max_price"]["prompt"] == "1"
+               for wire in agent.wires)
 
 
 @pytest.mark.parametrize("choice", [{}, {"version": 2}, {"owner_user_id": "other"}])
@@ -472,7 +473,7 @@ def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch):
         auth.revoke_provider_request(capability)
 
 
-def test_legacy_home_without_preferences_is_unchanged(tmp_path):
+def test_connected_home_without_preferences_builds_automatic_plan(tmp_path):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
     universe, binding, capability, context = _served_context(tmp_path)
@@ -480,11 +481,14 @@ def test_legacy_home_without_preferences_is_unchanged(tmp_path):
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
         )
-        assert apply_served_model_preferences(context) is context
-        with pytest.raises(ProviderAuthorityHeldError, match="accepted model assignment"):
-            apply_served_model_preferences(
-                context, model_choice=ModelPreferences("automatic", None, ()).document(),
-            )
+        prepared = apply_served_model_preferences(context)
+        assert prepared is not context
+        assert prepared.agent_model_plan is not None
+        assert prepared.model_selection == ModelRef("codex", "")
+        explicit_auto = apply_served_model_preferences(
+            context, model_choice=ModelPreferences("automatic", None, ()).document(),
+        )
+        assert explicit_auto.model_selection == prepared.model_selection
     finally:
         auth.revoke_provider_request(capability)
 
@@ -545,7 +549,9 @@ def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode):
         auth.revoke_provider_request(capability)
 
 
-def test_legacy_nonhome_readiness_does_not_consume_home_preferences(tmp_path):
+def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path):
+    from tinyassets.storage.current_home import CurrentHomeChanged
+
     universe, binding, capability, context = _served_context(tmp_path)
     try:
         daemon_server.set_founder_home(
@@ -557,11 +563,14 @@ def test_legacy_nonhome_readiness_does_not_consume_home_preferences(tmp_path):
             policy=ModelPreferences("explicit", ModelRef("missing", "model"), ()),
             require_current_home=True,
         )
-        assert set_serving(
-            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
-            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
-            expected_revision=binding["revision"], enabled=True,
-        )["status"] == "serving"
+        with pytest.raises(CurrentHomeChanged):
+            set_serving(
+                base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+                universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+                expected_revision=binding["revision"], enabled=True,
+            )
+        assert get_binding(tmp_path, universe_id=universe.name,
+                           binding_id=binding["agent_binding_id"]) == binding
         assert store.get("owner-1", "other-home", require_current_home=True) == saved
     finally:
         auth.revoke_provider_request(capability)
@@ -577,7 +586,7 @@ def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch)
 
 
 @pytest.mark.parametrize("explicit", [False, True])
-def test_saved_policy_on_legacy_preserves_auto_but_never_ignores_explicit(tmp_path, explicit):
+def test_saved_policy_on_connected_source_preserves_auto_and_explicit(tmp_path, explicit):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
     universe, binding, capability, context = _served_context(tmp_path)
@@ -591,15 +600,16 @@ def test_saved_policy_on_legacy_preserves_auto_but_never_ignores_explicit(tmp_pa
         saved = store.save("owner-1", universe.name, expected_generation=0, policy=preference,
                            require_current_home=True)
         if explicit:
-            with pytest.raises(ProviderAuthorityHeldError, match="accepted model assignment"):
+            with pytest.raises(ProviderAuthorityHeldError, match="absent from catalogue"):
                 apply_served_model_preferences(context)
         else:
             prepared = apply_served_model_preferences(context)
-            assert prepared is context
-            with pytest.raises(ProviderAuthorityHeldError, match="accepted model assignment"):
-                apply_served_model_preferences(
-                    context, model_choice=ModelPreferences("automatic", None, ()).document(),
-                )
+            assert prepared is not context
+            assert prepared.model_selection == ModelRef("codex", "")
+            auto = apply_served_model_preferences(
+                context, model_choice=ModelPreferences("automatic", None, ()).document(),
+            )
+            assert auto.model_selection == prepared.model_selection
             native = _RecordingProvider("codex")
             from tinyassets.providers.base import ModelConfig
             from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
