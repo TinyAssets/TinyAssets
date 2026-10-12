@@ -85,8 +85,10 @@ def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch)
         allow_empty=True)
     document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
     rows = {row["reference"]["model_id"]: row for row in document["options"]}
+    assert len(rows) == len(document["options"])
     assert "private-other-owner-model" not in rows
     assert rows["previously-verified-model"]["in_candidate_catalog"] is False
+    assert rows["previously-verified-model"]["reasons"]
     assert "future-native-model" not in rows
 
 
