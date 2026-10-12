@@ -28,12 +28,12 @@
       Floor: one cross-family `peer-agents` round. Verify: a two-owner test
       shows owner B's source refused for owner A, and a revoked grant is
       refused on the next attempt. Net below 0.
-- [ ] 2.5 Explicit choice (D3): resolution order, declared fallbacks only,
+- [x] 2.5 Explicit choice (D3): resolution order, declared fallbacks only,
       the first runtime caller of `SettingsSnapshot.model_choice()`, and M1
       (backup first, writers stopped). Verify: a node that pins a connected
       non-default model runs on it; a pinned model that is unavailable fails
       naming it; nothing substitutes without a declared fallback. Net below 0.
-- [ ] 2.6 Allocation (D4): `call` opens or joins the durable broker
+- [x] 2.6 Allocation (D4): `call` opens or joins the durable broker
       allocation; delete the caller-built allocations,
       `request_budget_scope`, `current_request_budget` and the in-memory
       branch. Floor (money): cross-family round, plus a mutation table for

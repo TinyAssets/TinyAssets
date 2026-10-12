@@ -148,7 +148,7 @@ def test_validate_rejects_difficulty_override_without_use():
         {"difficulty_override": [{"if_difficulty": "hard"}]},
         context="test",
     )
-    assert any("use" in e for e in errors)
+    assert any("difficulty_override" in e for e in errors)
 
 
 def test_validate_accepts_valid_policy():
@@ -158,13 +158,20 @@ def test_validate_accepts_valid_policy():
             "fallback_chain": [
                 {"provider": "ollama-local", "trigger": "unavailable"},
             ],
-            "difficulty_override": [
-                {"if_difficulty": "hard", "use": {"provider": "claude-code"}},
-            ],
         },
         context="test",
     )
     assert not errors
+
+
+def test_validate_rejects_retired_difficulty_override_even_when_well_formed():
+    errors = _validate_llm_policy_shape(
+        {"difficulty_override": [
+            {"if_difficulty": "hard", "use": {"provider": "claude-code"}},
+        ]},
+        context="test",
+    )
+    assert any("retired" in error for error in errors)
 
 
 def test_branch_validate_catches_malformed_node_policy():

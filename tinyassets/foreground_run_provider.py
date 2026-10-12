@@ -247,17 +247,17 @@ class _ForegroundRunProviderSession:
         self._universe_dir = self._base_path / self._universe_id
         self._principal_id = principal_id.strip()
         self._provider_call = provider_call
+        from tinyassets.providers.model_call import open_allocation
         from tinyassets.request_budget import (
             RunRequestAllocation,
-            TurnRequestBudget,
-            current_request_budget,
         )
 
-        self._request_budget = request_budget or current_request_budget()
+        self._request_budget = request_budget
         self._owns_request_budget = self._request_budget is None
         if self._request_budget is None:
-            self._request_budget = TurnRequestBudget(self._principal_id, self._universe_id)
+            self._request_budget = open_allocation(self._principal_id, self._universe_dir)
         self._request_budget.check_scope(self._principal_id, self._universe_id)
+        self._request_budget.persist(self._base_path)
         if request_allocation is not None and (
             type(request_allocation) is not RunRequestAllocation
             or request_allocation.budget is not self._request_budget
@@ -420,7 +420,6 @@ class _ForegroundRunProviderSession:
             self._branch_snapshot = snapshot
             self._branch_digest = _content_digest(snapshot)
             self._validate_run(allowed_statuses=allowed_statuses)
-            self._request_budget.persist(self._base_path)
             self._request_budget.link("run", self._run_id)
         except ProviderAuthorityHeldError:
             raise
@@ -1508,20 +1507,18 @@ class _ForegroundRunProviderSession:
             from tinyassets.config import load_universe_config
             from tinyassets.providers.base import UniverseContext
 
-            call_config = config
-            if snapshot_dir is not None:
-                if call_config is None:
-                    call_config = ModelConfig()
-                if not isinstance(call_config, ModelConfig):
-                    raise TypeError("foreground provider config must be a ModelConfig")
-                call_config = replace(
-                    call_config,
-                    credential_snapshot_dir=snapshot_dir,
-                )
-            if isinstance(call_config, ModelConfig):
-                # A workflow node call: each provider confines it to the
-                # owner's universe in its own way (ModelConfig.workflow_node).
-                call_config = replace(call_config, workflow_node=True)
+            call_config = config or ModelConfig()
+            if not isinstance(call_config, ModelConfig):
+                raise TypeError("foreground provider config must be a ModelConfig")
+            if call_config.request_budget not in (None, self._request_budget):
+                raise PermissionError("foreground parent request budget cannot be substituted")
+            # Agent preparation may return a fresh config. Rejoin the run's
+            # durable allocation at the last boundary before transport.
+            call_config = replace(
+                call_config, request_budget=self._request_budget,
+                credential_snapshot_dir=snapshot_dir or call_config.credential_snapshot_dir,
+                workflow_node=True,
+            )
             result = self._provider_call(
                 prompt,
                 system,

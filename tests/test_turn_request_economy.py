@@ -1,6 +1,7 @@
 """Resident orientation and greeting continuation after prod turn bdec018e."""
 
 from contextlib import contextmanager
+from dataclasses import replace
 from time import monotonic
 
 import pytest
@@ -17,13 +18,19 @@ def run(agent, *args, free_requests=None, **kwargs):
     """Explicit owner allocation for long-work tests; ordinary defaults stay real."""
     if free_requests is None:
         return http.run(agent, *args, **kwargs)
-    from tinyassets.request_budget import TurnRequestBudget, request_budget_scope
+    from tinyassets.providers.model_call import open_allocation
 
-    with request_budget_scope(TurnRequestBudget(
-        "owner", agent.served.context.universe_dir.name,
+    budget = open_allocation(
+        "owner", agent.served.context.universe_dir,
         free_limit=free_requests, free_pool_limit=free_requests,
-    )):
+    )
+    original = agent.config
+    agent.config = replace(original, request_budget=budget)
+    try:
         return http.run(agent, *args, **kwargs)
+    finally:
+        agent.config = original
+        budget.close()
 
 
 HEADING = "## What is in my folder now"

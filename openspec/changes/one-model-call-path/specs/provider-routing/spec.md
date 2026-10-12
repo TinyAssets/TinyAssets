@@ -117,6 +117,13 @@ path SHALL return placeholder or mock text as a model response.
 
 ## REMOVED Requirements
 
+### Requirement: Judge ensemble fans out to all healthy judges in parallel
+**Reason**: `call_judge_ensemble` was a second model-call entry with provider
+fan-out and no returned per-call receipt. Review uses an owner-bound `model_call`
+with a settled attempt instead.
+**Migration**: Review requests use the caller's selected model and declared
+fallbacks through the same call boundary as a reply.
+
 ### Requirement: Every role chain terminates at the local model
 **Reason**: Fixed role chains ending at a host-local model contradict ADR-006,
 and `FALLBACK_CHAINS` is deleted. Sources are the owner's connected set.

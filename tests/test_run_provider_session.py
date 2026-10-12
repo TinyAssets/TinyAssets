@@ -1114,7 +1114,6 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
 @pytest.mark.parametrize("policy", [
     {"preferred": {"provider": "claude-code"}},
     {"preferred": {"provider": "codex", "model": "gpt-x"}},
-    {"difficulty_override": [{"if_difficulty": "hard", "use": {"provider": "claude-code"}}]},
 ])
 def test_foreground_run_rejects_policy_outside_active_provider_before_effects(
     tmp_path: Path,

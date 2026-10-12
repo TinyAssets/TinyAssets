@@ -197,6 +197,7 @@ class _SpawningProvider(BaseProvider):
 
 def test_router_binds_the_owning_universe_around_the_provider_call(tmp_path):
     from tests.support.owner_bound import owner_carrier
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
     from tinyassets.providers.router import ProviderRouter
 
     universe = _universe(tmp_path)
@@ -214,10 +215,12 @@ def test_router_binds_the_owning_universe_around_the_provider_call(tmp_path):
         "tinyassets.providers.served_model_plan.connected_sources",
         return_value=frozenset({"codex"}),
     ):
-        asyncio.run(router.call(
-            "writer", "p", "", ModelConfig(max_tokens=10),
-            operation="run_graph", universe_context=context,
-        ))
+        asyncio.run(call(ModelCall(
+            model=None, fallbacks=(), context=ModelContext(
+                role="writer", prompt="p", config=ModelConfig(max_tokens=10),
+                operation="run_graph", universe_context=context, router=router,
+            ),
+        ), Parent(owner="owner", command_center=universe.name)))
 
     assert len(recorder.scopes) == 1
     assert recorder.scopes[0].universe_dir == universe

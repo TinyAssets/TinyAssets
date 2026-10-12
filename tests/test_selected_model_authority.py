@@ -153,8 +153,10 @@ def served(rig, reader, monkeypatch):
 
 
 def _call(served, *, config=None, context=None):
+    from tests.support.model_call import call as model_call
+
     return asyncio.run(
-        served.router.call(
+        model_call(served.router,
             "writer",
             "hello",
             "be terse",
@@ -490,6 +492,7 @@ def test_revoked_primary_does_not_prevent_independent_accepted_member(served, mo
 
 
 def test_without_selected_authority_router_discards_configuration_override(tmp_path):
+    from tests.support.model_call import call as model_call
     from tests.test_provider_served_router import _RecordingProvider, _served_context
 
     _, _, capability, context = _served_context(tmp_path)
@@ -502,7 +505,7 @@ def test_without_selected_authority_router_discards_configuration_override(tmp_p
 
     try:
         asyncio.run(
-            ProviderRouter({"codex": Recording("codex")}).call(
+            model_call(ProviderRouter({"codex": Recording("codex")}),
                 "writer",
                 "hello",
                 "system",
@@ -542,7 +545,9 @@ def blocked_discovery(served, reader, monkeypatch):
 
 
 def _async_call(served):
-    return served.router.call(
+    from tests.support.model_call import call as model_call
+
+    return model_call(served.router,
         "writer", "hello", "system", operation="converse", universe_context=served.context
     )
 

@@ -988,27 +988,8 @@ def _validate_llm_policy_shape(
                         f"must be one of {sorted(_VALID_POLICY_TRIGGERS)}."
                     )
 
-    difficulty_override = policy.get("difficulty_override")
-    if difficulty_override is not None:
-        if not isinstance(difficulty_override, list):
-            errors.append(f"{context}: 'difficulty_override' must be a list.")
-        else:
-            for i, entry in enumerate(difficulty_override):
-                if not isinstance(entry, dict):
-                    errors.append(
-                        f"{context}: difficulty_override[{i}] must be a dict."
-                    )
-                    continue
-                if "if_difficulty" not in entry:
-                    errors.append(
-                        f"{context}: difficulty_override[{i}] must have 'if_difficulty'."
-                    )
-                use = entry.get("use")
-                if use is None or not isinstance(use, dict) or "provider" not in use:
-                    errors.append(
-                        f"{context}: difficulty_override[{i}] 'use' must be a "
-                        f"dict with a 'provider' key."
-                    )
+    if "difficulty_override" in policy:
+        errors.append(f"{context}: 'difficulty_override' is retired; choose a model explicitly.")
 
     return errors
 

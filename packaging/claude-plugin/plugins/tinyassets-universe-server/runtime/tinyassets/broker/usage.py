@@ -79,7 +79,7 @@ def mutation_document(operation, args, kwargs):
 
 def local_operation(ledger, *, principal, command_center, usage_id, document):
     from tinyassets.process_liveness import ALIVE, owner_state
-    from tinyassets.request_budget import RequestAttempt, TurnRequestBudget
+    from tinyassets.request_budget import RequestAttempt, _RequestLedger
     from tinyassets.storage.agent_request_usage import UsageStore
 
     validate(document)
@@ -101,7 +101,7 @@ def local_operation(ledger, *, principal, command_center, usage_id, document):
         if (parent != "request_" + usage_id or owner_state(store.base, token) != ALIVE
                 or owner_state(store.base, parent) != ALIVE):
             raise ValueError("accounting owner is unavailable")
-        budget = TurnRequestBudget(principal, command_center, **fields["policy"])
+        budget = _RequestLedger(principal, command_center, **fields["policy"])
         budget._attempts = [RequestAttempt(**a) for a in fields["attempts"]]
         if any(a.ordinal != i for i, a in enumerate(budget._attempts, 1)):
             raise ValueError("invalid accounting attempt order")

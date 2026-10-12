@@ -743,11 +743,9 @@ class _BackgroundAssignedProviderSession:
         self._sign_ins_refreshed = False
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
-        from tinyassets.request_budget import TurnRequestBudget, current_request_budget
+        from tinyassets.providers.model_call import open_allocation
 
-        self._request_budget = current_request_budget() or TurnRequestBudget(
-            task.actor_id, task.universe_id,
-        )
+        self._request_budget = open_allocation(task.actor_id, self._universe_dir)
         self._request_budget.check_scope(task.actor_id, task.universe_id)
         self._call_index = 0
         self._lock = threading.Lock()

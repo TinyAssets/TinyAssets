@@ -275,13 +275,13 @@ class UsageStore:
 
     def _load(self, conn, scope, *, clock=time.monotonic, wall_clock=None):
         from tinyassets.process_liveness import ALIVE, owner_state
-        from tinyassets.request_budget import RequestAttempt, TurnRequestBudget
+        from tinyassets.request_budget import RequestAttempt, _RequestLedger
 
         row = conn.execute(f"SELECT * FROM agent_request_usage WHERE {_SCOPE}", scope).fetchone()
         if row is None:
             raise ProviderAuthorityHeldError("inference usage scope is unavailable")
-        budget = TurnRequestBudget(scope[0], scope[1], clock=clock, wall_clock=wall_clock,
-                                   **json.loads(row["policy_json"]))
+        budget = _RequestLedger(scope[0], scope[1], clock=clock, wall_clock=wall_clock,
+                                **json.loads(row["policy_json"]))
         budget._closed = bool(row["closed"])
         budget._failures = json.loads(row["failures_json"])
         budget._attempts = [RequestAttempt(**json.loads(a[0])) for a in conn.execute(

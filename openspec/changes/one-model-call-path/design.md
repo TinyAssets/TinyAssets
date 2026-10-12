@@ -122,6 +122,15 @@ removed by migration M1, and the validator refuses it afterwards.
 - Native CLI attempts use the same reserve, dispatched and settle cycle. Their
   usage provenance is `cli_reported` or `unknown`.
 
+#### Allocation mutation table
+
+| Mutation | Test that must fail |
+| --- | --- |
+| Settle an already settled child attempt again | `test_joined_child_attempt_settles_once_on_parent` |
+| Join by usage ID without checking owner and command center | `test_join_rejects_another_owner_or_center_before_reservation`; `test_model_call_cannot_join_another_owners_root` |
+| Ignore a parent stop when a child dispatches | `test_parent_stop_fences_a_joined_child` |
+| Close a shared root when one child releases | `test_admitted_run_children_keep_one_budget_until_final_release` |
+
 ### D5. The receipt
 
 The receipt extends `ExecutionReceipt` with these fields:

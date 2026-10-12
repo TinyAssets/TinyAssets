@@ -442,6 +442,7 @@ def test_spent_free_candidates_do_not_consume_review_attempts_before_paid_fallba
 
     session = rig["session"]
     budget = TurnRequestBudget("acct_alice", "universe_alice", free_pool_limit=2)
+    budget.persist(rig["tmp_path"])
     session._request_budget = budget
     spent = [ModelRef("synthetic-free-a", "m"), ModelRef("synthetic-free-b", "m")]
     for ref in spent:
