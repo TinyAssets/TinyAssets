@@ -34,8 +34,7 @@ you become a tester, install from Play afterwards so the app can update.
 During the closed test only invited accounts can join. Write to
 [info@tinyassets.io](mailto:info@tinyassets.io) to be added, and say which
 Google account email should be on the tester list. The public start page
-still names `ops@tinyassets.io`. An `ops@` alias may be added later; until
-then use `info@tinyassets.io`.
+names that same address.
 
 What this page does not know, and will not invent: how many testers are
 on the list, which build Play is serving today, or when a public listing
