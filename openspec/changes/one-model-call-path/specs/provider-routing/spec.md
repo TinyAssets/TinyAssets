@@ -26,7 +26,10 @@ capability, verified owner-owned open provider definitions, and subscription
 sources with adopted custody. Membership SHALL be checked again for every
 attempt. No platform, host or other owner's credential SHALL ever serve a call.
 The serving binding SHALL act as the owner's default preference, not as a
-limit to one provider.
+limit to one provider. Run admission SHALL record the owner's connected set at
+that moment, and an attempt in that run SHALL be admitted only for a source in
+both the recorded set and the live connected set. A stored provider assignment
+SHALL NOT be an authority input.
 
 #### Scenario: a second connected source is usable
 - **GIVEN** an owner who connected a Claude subscription and an OpenRouter API key
@@ -41,6 +44,16 @@ limit to one provider.
 - **WHEN** a source's grant is revoked after the first attempt
 - **THEN** the next attempt on that source is refused, and no broader
   credential is substituted
+
+#### Scenario: a source connected after a run was admitted
+- **GIVEN** a run admitted with the owner's connected set at that moment
+- **WHEN** the owner connects another source
+- **THEN** the running run cannot use it, and the next run admitted can,
+  with no stored assignment rewritten
+
+#### Scenario: a run admitted before the migration
+- **WHEN** an active receipt has no recorded admitted set
+- **THEN** every attempt under it is refused, naming the stale admission
 
 ### Requirement: An explicit model choice is honoured with declared fallbacks only
 The call SHALL resolve its model from the first of these that applies: the

@@ -21,13 +21,30 @@
       `call_with_policy_sync`, `_call_policy_router_with_retry` and both
       mocks. Verify: `git grep` finds no removed name, and a node with no model
       raises `CompilerError`. Net below 0.
-- [ ] 2.4 Authority is the connected set (D2): add `connected_sources`; make
-      `require_owner_bound_dispatch` check membership; collapse the
-      default/manifest scopes in foreground, background and cloud continuation
-      admission; delete the exactly-one-provider checks and `FALLBACK_CHAINS`.
-      Floor: one cross-family `peer-agents` round. Verify: a two-owner test
-      shows owner B's source refused for owner A, and a revoked grant is
-      refused on the next attempt. Net below 0.
+- [ ] 2.4 Authority is the connected set (D2, decided: admission snapshots
+      the live set). Build: admission in foreground, background and cloud
+      continuation reads `connected_sources` once and writes the sorted set
+      into the receipt as `admitted_sources` (its digest in `manifest_digest`);
+      reservation and launch allow a source only in both `admitted_sources`
+      and the live set; receipt limits come from the run's allocation (D4).
+      Delete: the default/provider scope and its child work-binding mint,
+      `_admit_manifest`, `_current_work_manifest`, `_current_work_member`,
+      `_issue_manifest_receipt`, the `manifest_bindings` plumbing,
+      `_current_selected_member_authority`, the assignment and parent-binding
+      fields checked in `_validate_receipt_parent`, the assignment rewrite on
+      disconnect in `connection_lifecycle`, `_ensure_manifest_receipt_schema`,
+      the exactly-one-provider serving checks and `FALLBACK_CHAINS`; delete
+      `provider_assignment_manifest.py` if `git grep` finds no reader left.
+      Migration M2 (window, writers stopped, after the backup): fence every
+      active receipt and close its claim, log the count and run IDs; no table
+      changes shape. Floor (cross-owner, revocation): one cross-family
+      `peer-agents` round. Verify: a two-owner test shows owner B's source
+      refused for owner A; a source connected after the owner's last
+      admission runs on the next run without any assignment write; a running
+      run never gains a source connected after its admission; a disconnected
+      source is refused on the next attempt of a running run and in every new
+      admission; an active receipt without `admitted_sources` is refused. Net
+      below 0.
 - [x] 2.5 Explicit choice (D3): resolution order, declared fallbacks only,
       the first runtime caller of `SettingsSnapshot.model_choice()`, and M1
       (backup first, writers stopped). Verify: a node that pins a connected
