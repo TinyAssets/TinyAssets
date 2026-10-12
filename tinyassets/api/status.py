@@ -452,14 +452,23 @@ def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
-    """Return host-wide provider evidence without a command center."""
+    """Return host-wide provider evidence, not the selected model.
+
+    A command center's selected source belongs to model_options; this hint
+    reports only which installed and authenticated host endpoint is available.
+    """
     import shutil as _shutil
 
     api_key_enabled = api_key_providers_enabled()
     api_key_vars_present = [
         name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
     ]
+    from tinyassets.external_agents.registry import PACKAGES
     from tinyassets.providers.base import subscription_auth_health as _auth_health
+
+    package_bound = next((name for name, package in PACKAGES.items()
+                          if _shutil.which(package.row["install"]["bin"])
+                          and _auth_health(name, allow_probe=False)["status"] == "ok"), None)
 
     claude_authed = (
         _shutil.which("claude")
@@ -470,6 +479,8 @@ def _active_host_snapshot(
         endpoint_hint = "ollama"
     elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
         endpoint_hint = "anthropic"
+    elif package_bound:
+        endpoint_hint = package_bound
     elif claude_authed:
         endpoint_hint = "claude"
     else:
@@ -683,7 +694,7 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         writers[name] = {"status": status, "detail": detail}
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
-    all_down = bool(known_states) and all(
+    all_down = len(known_states) == len(_SUBSCRIPTION_WRITERS) and all(
         s == "not_logged_in" for s in known_states
     )
     return {"writers": writers, "all_writers_unauthenticated": all_down}

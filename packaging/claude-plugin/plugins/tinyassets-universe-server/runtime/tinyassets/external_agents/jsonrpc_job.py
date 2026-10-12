@@ -346,6 +346,17 @@ class JsonRpcJob:
                         waiter.cancel()
                         await asyncio.wait({waiter}, timeout=1)
                 if "error" in reply:
+                    detail = reply["error"]
+                    message = (detail.get("message", "") if isinstance(detail, dict)
+                               else str(detail)).lower()
+                    if any(marker in message for marker in (
+                        "invalid_grant", "unauthorized", "not logged in",
+                        "authentication required", "refresh token rejected",
+                    )):
+                        from tinyassets.exceptions import ProviderAuthenticationError
+
+                        raise ProviderAuthenticationError(
+                            "external agent needs a fresh sign-in")
                     raise ProviderError(f"external agent refused {method}")
                 return reply.get("result") or {}
 

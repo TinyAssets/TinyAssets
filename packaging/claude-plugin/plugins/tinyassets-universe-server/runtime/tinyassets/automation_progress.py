@@ -14,7 +14,9 @@ def commit_artifact(previous, *, work_id, artifact):
     """Append one immutable artifact; reject completed IDs and duplicate content."""
     if not isinstance(previous, dict):
         raise ValueError("progress_checkpoint_invalid")
-    if not isinstance(work_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}", work_id):
+    if not isinstance(work_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}", work_id
+    ):
         raise ValueError("progress_work_id_invalid")
     if not isinstance(artifact, str) or not artifact.strip():
         raise ValueError("progress_artifact_empty")

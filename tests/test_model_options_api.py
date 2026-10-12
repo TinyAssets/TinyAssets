@@ -362,7 +362,9 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(
             "access_method": "subscription_cli",
         }
         assert native.calls == 0
-        assert result["sources"][0]["enumeration"] == ("supported" if metadata else "unknown")
+        # The shipped package declares catalogue support even when the legacy
+        # executor exposes no discovery metadata of its own.
+        assert result["sources"][0]["enumeration"] == "supported"
     finally:
         auth.revoke_provider_request(capability)
 

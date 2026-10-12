@@ -9,7 +9,13 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from tinyassets.exceptions import ExternalAgentUnavailable, ProviderError, ProviderTimeoutError
+from tinyassets.credential_refresh import RefreshRejected
+from tinyassets.exceptions import (
+    ExternalAgentUnavailable,
+    ProviderAuthenticationError,
+    ProviderError,
+    ProviderTimeoutError,
+)
 from tinyassets.external_agents import receipts, registry
 from tinyassets.external_agents.home import (
     Custody,
@@ -61,7 +67,15 @@ async def run_catalogue(agent: str, launch, custody: Custody) -> NativeDiscovery
     """One receipted package operation under exact owner custody."""
     try:
         async with exclusive_refresh(custody):
-            return await _run_catalogue_locked(agent, launch, custody)
+            try:
+                result = await _run_catalogue_locked(agent, launch, custody)
+            except (RefreshRejected, ProviderAuthenticationError):
+                _record_auth_rejection(custody)
+                raise ProviderAuthenticationError(
+                    f"{agent} needs you to sign in again"
+                ) from None
+            _clear_auth_rejection(custody)
+            return result
     except RefreshBusyError:
         raise ProviderError('external-agent credential refresh busy') from None
 
@@ -136,6 +150,8 @@ async def _run_catalogue_locked(agent, launch, custody):
     if error is not None:
         if not isinstance(error, Exception):
             raise error
+        if isinstance(error, (ProviderAuthenticationError, RefreshRejected)):
+            raise error
         raise ProviderError("external-agent catalogue failed: " + reason) from None
     return result
 
@@ -187,11 +203,35 @@ async def run_job(agent: str, launch, custody: Custody, *, prompt: str,
     """Execute one native turn and settle its custody and job receipt."""
     try:
         async with exclusive_refresh(custody):
-            return await _run_job_locked(agent, launch, custody, prompt=prompt,
-                                         system=system, config=config)
+            try:
+                result = await _run_job_locked(agent, launch, custody, prompt=prompt,
+                                               system=system, config=config)
+            except (RefreshRejected, ProviderAuthenticationError):
+                _record_auth_rejection(custody)
+                raise ProviderAuthenticationError(
+                    f"{agent} needs you to sign in again"
+                ) from None
+            _clear_auth_rejection(custody)
+            return result
     except RefreshBusyError:
         raise ExternalAgentUnavailable(agent, config.native_model_id or '',
                                        'job_failed:refresh_busy') from None
+
+
+def _record_auth_rejection(custody: Custody) -> None:
+    from tinyassets.credential_vault import record_refresh_rejected
+
+    universe = custody.universe_dir.resolve(strict=True)
+    record_refresh_rejected(universe.parent, universe_id=universe.name,
+                            service=custody.reference.service)
+
+
+def _clear_auth_rejection(custody: Custody) -> None:
+    from tinyassets.credential_vault import clear_refresh_rejected
+
+    universe = custody.universe_dir.resolve(strict=True)
+    clear_refresh_rejected(universe.parent, universe_id=universe.name,
+                           service=custody.reference.service)
 
 
 async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
@@ -305,7 +345,8 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
     if error is not None:
         if not isinstance(error, Exception):
             raise error
-        if isinstance(error, ExternalAgentUnavailable):
+        if isinstance(error, (ExternalAgentUnavailable, ProviderAuthenticationError,
+                              RefreshRejected)):
             raise error
         raise ExternalAgentUnavailable(agent, model, reason) from None
     return ProviderResponse(

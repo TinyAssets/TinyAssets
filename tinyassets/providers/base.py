@@ -963,7 +963,6 @@ def subprocess_env_for_provider(
     return env
 
 
-# Subscription authentication health remains on the legacy Claude path.
 def subscription_auth_health(
     provider_name: str, *, allow_probe: bool = True,
 ) -> dict[str, str]:
@@ -973,6 +972,24 @@ def subscription_auth_health(
     spawns the live-probe subprocess; serves fast paths + cached verdicts.
     """
     name = (provider_name or "").strip()
+    from tinyassets.external_agents.registry import PACKAGES
+
+    package = PACKAGES.get(name)
+    if package is not None:
+        auth = package.row["auth"]
+        configured_home = os.environ.get(auth["home_env"], "").strip()
+        if not configured_home:
+            return {"provider": name, "status": "unknown",
+                    "detail": "package auth is owner-scoped"}
+        home = Path(configured_home)
+        files = [home / filename for filename in auth["files"]]
+        try:
+            available = all(path.is_file() and path.stat().st_size > 0 for path in files)
+        except OSError:
+            available = False
+        return {"provider": name,
+                "status": "ok" if available else "not_logged_in",
+                "detail": "package auth available" if available else "package auth unavailable"}
     if name == "claude-code":
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
             return {"provider": name, "status": "ok",

@@ -28,7 +28,6 @@ from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _module_local_cloud_admission  # noqa: F401
 from tests.test_subscription_credential_refresh import (
     ID_TOKEN,
-    _endpoint_from_the_credential,
 )
 from tinyassets.storage.provider_work_authority import db_path as authority_db_path
 
@@ -70,20 +69,40 @@ def _redeposit_stale(base_path) -> None:
     assert renewed["status"] == "serving", renewed
 
 
-def _rotating_spend(monkeypatch) -> list[str]:
-    from tinyassets import subscription_refresh
+def _rotating_package(monkeypatch) -> tuple[list[str], object]:
+    """Stand in for a CLI job that rotates auth and returns it through CAS."""
+    from tinyassets.external_agents.home import Custody, compare_and_swap, materialize
+    from tinyassets.external_agents.registry import resolve
+    from tinyassets.providers.native_discovery import _custody
 
-    _endpoint_from_the_credential(monkeypatch)
     spent: list[str] = []
 
-    def spend(document, **_):
-        spent.append(document.refresh_token)
-        return subscription_refresh._rebuild(
-            document, access_token="a-2", refresh_token="r-2", id_token="",
-        )
+    def rotate(universe_dir):
+        reference = _custody(universe_dir.parent, universe_dir, OWNER, "codex")
+        custody = Custody(universe_dir, OWNER, reference)
+        auth = resolve("codex").row["auth"]
+        document = json.loads(materialize(custody, auth)["auth.json"])
+        token = document["tokens"]["refresh_token"]
+        if token != "r-1":
+            return
+        spent.append(token)
+        document["tokens"].update(access_token="a-2", refresh_token="r-2")
+        document["last_refresh"] = datetime.now(timezone.utc).isoformat()
+        assert compare_and_swap(custody, auth, {
+            "auth.json": json.dumps(document).encode("utf-8"),
+        })
 
-    monkeypatch.setattr(subscription_refresh, "_spend", spend)
-    return spent
+    for provider_class in (foreground._CountingProvider, background._CountingProvider):
+        original = provider_class.complete
+
+        async def complete(self, prompt, system, config, *, universe_dir=None,
+                           _original=original):
+            rotate(universe_dir)
+            return await _original(self, prompt, system, config, universe_dir=universe_dir)
+
+        monkeypatch.setattr(provider_class, "complete", complete)
+
+    return spent, rotate
 
 
 def _custody_matches_the_vault(base_path) -> bool:
@@ -117,14 +136,14 @@ def test_a_foreground_run_refreshes_before_its_receipt_and_still_completes(
         _redeposit_stale(base_path)
 
     monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
-    spent = _rotating_spend(monkeypatch)
+    spent, _ = _rotating_package(monkeypatch)
 
     response, provider, _ = foreground._run_branch(
         tmp_path, monkeypatch, authenticate_request, foreground._branch(node_count=2),
     )
 
     assert response["terminal_status"] == "completed", response["terminal_error"]
-    # Once for the run, before its one receipt -- not once per node.
+    # The first package job rotates once; its CAS carries custody for node 2.
     assert spent == ["r-1"]
     assert len(provider.calls) == 2
     assert _stored_refresh_token(tmp_path) == "r-2"
@@ -158,7 +177,7 @@ def test_another_users_public_branch_never_refreshes_the_requesters_sign_in(
         _redeposit_stale(base_path)
 
     monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
-    spent = _rotating_spend(monkeypatch)
+    spent, _ = _rotating_package(monkeypatch)
     calls = _counting_refresh(monkeypatch)
     branch = foreground._branch(node_count=1, author="acct_bob")
     branch.visibility = "public"
@@ -197,7 +216,7 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
         _redeposit_stale(base_path)
 
     monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
-    spent = _rotating_spend(monkeypatch)
+    spent, rotate = _rotating_package(monkeypatch)
     calls = _counting_refresh(monkeypatch)
     child_checks = []
 
@@ -232,6 +251,8 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
             child._refresh_sign_ins()
 
             assert calls == [OWNER]
+            assert spent == []
+            rotate(tmp_path / UID)  # the child's first package job
             assert spent == ["r-1"]
             assert _stored_refresh_token(tmp_path) == "r-2"
             assert _custody_matches_the_vault(tmp_path)
@@ -301,7 +322,7 @@ def run_automation_once(tmp_path, monkeypatch, *, policy=None, agent=False,
 def test_a_background_automation_refreshes_before_its_receipt_and_still_succeeds(
     tmp_path, monkeypatch,
 ):
-    spent = _rotating_spend(monkeypatch)
+    spent, _ = _rotating_package(monkeypatch)
 
     reason, fake, run = run_automation_once(
         tmp_path, monkeypatch, setup_serving=lambda: _redeposit_stale(tmp_path),
@@ -321,13 +342,12 @@ def test_a_background_agent_node_on_native_codex_refreshes_and_completes(
     from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
     from tinyassets.providers.base import ProviderResponse
 
-    spent = _rotating_spend(monkeypatch)
+    spent, rotate = _rotating_package(monkeypatch)
     launched: list[str] = []
 
     async def native(self, prompt, system, config, *, universe_dir=None):
-        # The launch ARTEFACT: the sealed copy the CLI actually reads.
-        document = json.loads((config.credential_snapshot_dir / "auth.json").read_bytes())
-        launched.append(document["tokens"]["refresh_token"])
+        rotate(universe_dir)
+        launched.append(_stored_refresh_token(tmp_path))
         self.calls.append(config)
         return ProviderResponse(
             text="background native work completed", provider="codex", model="native-default",
@@ -359,7 +379,7 @@ def test_a_multi_node_background_automation_refreshes_once_and_keeps_its_receipt
     voided node 1's (Codex refute-review on #4082: two spends, one call, pending)."""
     from tinyassets import subscription_refresh
 
-    spent = _rotating_spend(monkeypatch)
+    spent, _ = _rotating_package(monkeypatch)
     # Stale again the moment it is rotated: the worst case, a document entering
     # its window between the two nodes.
     monkeypatch.setattr(subscription_refresh, "document_is_stale", lambda *_a: True)
