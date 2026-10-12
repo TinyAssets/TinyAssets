@@ -1077,6 +1077,9 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     secrets_removed = forget_credential(
         _universe_dir(uid), credential_type="http", destination=destination
     )
+    from tinyassets.credential_vault import latest_revocation_notice
+
+    notice = latest_revocation_notice(base, universe_id=uid)
     rows_removed = disconnect(base, principal=actor, command_center=uid,
                               destination=destination, action="erase",
                               incarnation=incarnation)["removed"]
@@ -1099,8 +1102,10 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
         "in_flight": "Already dispatched requests may finish; their outcomes are unchanged.",
-        "upstream": ("Disconnected from TinyAssets; your provider account "
-                     "and independent key are unchanged."),
+        "upstream": notice or (
+            "Disconnected from TinyAssets; your provider account "
+            "and independent key are unchanged."
+        ),
         # What the removal took back, so a ROTATION can re-ask for exactly
         # these and the owner is never asked to remember them. Inheriting them
         # silently was the alternative, and it also survives a removal the

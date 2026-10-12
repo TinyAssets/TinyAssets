@@ -532,6 +532,51 @@ is $1/key-month, plus $1/month for each of the first two yearly rotations.
 Requests cost $0.03 per 10k beyond 20k free a month, and this usage stays
 inside the free tier. Expect about **$1-3/month**.
 
+**Cutover, before the deploy that drops `tinyassets-browser-keys`.** Deploy
+copies `compose.yml` and would recreate the daemon. `restart_stack` in
+`deploy/deploy_fail_safe.sh` now refuses, before `docker compose up`, when
+`/etc/tinyassets/vault-kms.env` is missing or a symlink, and leaves the running
+stack alone. Install that file first, then migrate, then deploy.
+
+1. Install the broker KMS file (mode 0400, uid 1002). Three stdin lines: key
+   ARN, access key id, secret.
+   `deploy/install-tinyassets-env.sh install-vault-kms`
+2. Copy the browser keys to a directory uid 1002 can read, while the old
+   container or volume still has them. They live at
+   `/var/lib/ta-broker/browser-vault` inside the old container, or under
+   `browser-vault/` on
+   `docker volume inspect -f '{{.Mountpoint}}' tinyassets-browser-keys`.
+   `chown -R 1002:1002` the copy. The new compose does not mount
+   `tinyassets-browser-keys`.
+3. Confirm one legacy snapshot and its sidecar, the `sha256sum` line
+   `deploy/backup.sh` writes:
+   `/var/backups/tinyassets/<name>.tar.gz` and `<name>.tar.gz.sha256`.
+4. Dry-run as uid 1002. `TINYASSETS_BROKER_PROCESS` is ignored when
+   `TINYASSETS_ENV=production`. The command refuses unless the KMS probe is
+   green and the sidecar matches, and it deletes nothing.
+
+```
+sudo -u \#1002 python3 scripts/vault_cutover.py \
+  --data-root /data \
+  --archive-dir /var/backups/tinyassets \
+  --legacy-backup /var/backups/tinyassets/<name>.tar.gz \
+  --browser-key-root /var/lib/ta-broker/browser-vault \
+  --dry-run
+```
+
+5. Run the same command without `--dry-run`. It reseals browser sessions into
+   the broker vault (so existing sessions stay signed in), seals every
+   `.credential-vault.json`, then rewrites `/var/backups/tinyassets`. The
+   newest legacy archive is the canary: the original is kept, a
+   `.sealed.tar.gz` sibling is written, and the manifest marks the canary
+   done. Older snapshots are replaced only after they verify. The
+   `--legacy-backup` file itself is never deleted. A record that does not
+   re-seal is counted, the original tar is kept, and the sweep stops. Archive
+   rows are written to a key database inside the extract, not the live vault.
+6. Deploy. Then `python scripts/deployed_sha.py --assert-contains <sha>`.
+   The DR drill's `scripts/vault_dr_open.py` fails when the restored browser
+   session cannot be checked. It does not skip that check.
+
 
 ---
 

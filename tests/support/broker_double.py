@@ -23,6 +23,7 @@ Linux-only: the broker classifies peers with ``SO_PEERCRED``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import socket
@@ -126,6 +127,7 @@ class _InProcessBroker:
         if failure:
             raise failure[0]
         self._pair = self._fence.barrier(1, _PROOF)
+        self._publish_for_children()
 
     # ---- the supervisor surface (tinyassets.broker.supervisor.BrokerSupervisor)
     def fence(self) -> tuple[int, str]:
@@ -142,6 +144,45 @@ class _InProcessBroker:
 
         if _peer_uid(sock) != os.getuid():
             raise BrokerUidSplitRequired("broker peer does not have the broker identity")
+
+    def _publish_for_children(self) -> None:
+        """Hand this socket to a test child. Production never reads the variable."""
+        if os.environ.get("TINYASSETS_ENV") == "production":
+            return
+        if os.environ.get("TINYASSETS_VAULT_TEST_DOUBLE") != "1":
+            return
+        generation, token = self._pair
+        current: dict[str, object] = {}
+        raw = os.environ.get("TINYASSETS_VAULT_TEST_BROKER")
+        if raw:
+            try:
+                loaded = json.loads(raw)
+            except json.JSONDecodeError:
+                loaded = None
+            if isinstance(loaded, dict):
+                current = loaded
+        current[str(self.data_root)] = {
+            "socket": str(self.socket_path),
+            "generation": generation,
+            "token": token,
+        }
+        os.environ["TINYASSETS_VAULT_TEST_BROKER"] = json.dumps(current)
+
+    def _unpublish(self) -> None:
+        raw = os.environ.get("TINYASSETS_VAULT_TEST_BROKER")
+        if not raw:
+            return
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            os.environ.pop("TINYASSETS_VAULT_TEST_BROKER", None)
+            return
+        if isinstance(loaded, dict):
+            loaded.pop(str(self.data_root), None)
+            if loaded:
+                os.environ["TINYASSETS_VAULT_TEST_BROKER"] = json.dumps(loaded)
+                return
+        os.environ.pop("TINYASSETS_VAULT_TEST_BROKER", None)
 
     def close(self) -> None:
         """Stop accepting, let in-flight connections unwind, then stop the loop.
@@ -168,6 +209,7 @@ class _InProcessBroker:
 
             asyncio.run_coroutine_threadsafe(shutdown(), self._loop)
             done.wait(6)
+        self._unpublish()
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
         if self._thread.is_alive():

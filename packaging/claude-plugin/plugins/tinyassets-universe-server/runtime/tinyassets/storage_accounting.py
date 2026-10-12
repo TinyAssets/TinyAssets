@@ -690,6 +690,10 @@ ROOT_ENTRIES: dict[str, str] = {
     "ledger.json": "platform: legacy ledger",
     "outbound.db": "platform: outbound connection ledger -- credential-adjacent, "
                    "never gated (a per-universe copy is counted by universe_files)",
+    "vault-keys.db": (
+        "platform: broker credential key database under .broker; wrapped keys "
+        "only, never gated"
+    ),
 }
 
 #: Names that live INSIDE a universe directory: every byte there is counted by

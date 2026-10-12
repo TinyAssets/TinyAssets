@@ -132,7 +132,11 @@ def _readers(name: str) -> set[str]:
 
 
 #: Reads a forbidden name but is never imported by the daemon (asserted below).
-_UNIMPORTED_READERS = {"tinyassets/host_pool/client.py"}
+_UNIMPORTED_READERS = {
+    "tinyassets/host_pool/client.py",
+    # Broker process only. The daemon withholds the three vault names.
+    "tinyassets/broker/vault_kms_file.py",
+}
 
 
 @pytest.mark.parametrize("name", sorted(DAEMON_FORBIDDEN_ENV))
@@ -140,6 +144,23 @@ def test_no_daemon_code_reads_a_forbidden_name(name):
     """Removing a name from the daemon is safe only while nothing reads it."""
     assert _readers(name) - _UNIMPORTED_READERS == set(), (
         f"{name} is now read by daemon code; it cannot be withheld from the daemon"
+    )
+
+
+def test_vault_kms_file_is_imported_only_by_the_broker():
+    importers = {
+        path.relative_to(REPO).as_posix()
+        for path in PACKAGE.rglob("*.py")
+        if "vault_kms_file" not in path.parts
+        and re.search(
+            r"^\s*(?:from|import)\s+[\w.]*vault_kms_file\b|import_module\([^)]*vault_kms_file",
+            path.read_text(encoding="utf-8", errors="replace"),
+            re.M,
+        )
+    }
+    assert importers == {"tinyassets/broker/key_service.py"}, (
+        "vault KMS credentials are broker-only; a daemon import would put the "
+        "withheld names back in the daemon process"
     )
 
 

@@ -792,6 +792,7 @@ class Box:
             "FAKE_INSTALL_FAIL_MATCH": "",
             "FAKE_INSTALL_FAIL_STATE": str(self.root / "install-refused.flag"),
             "FAKE_RM_FAIL_MATCH": "",
+            "TINYASSETS_VAULT_KMS_FILE": str(self.env_file.parent / "vault-kms.env"),
         }
         env.update(overrides)
         return env
@@ -834,6 +835,7 @@ def box(tmp_path: Path) -> Box:
         "agent-interchange.env",
         "request-idempotency.env",
         "app-ingress.env",
+        "vault-kms.env",
     ):
         (fake.env_file.parent / extra).write_text("", encoding="utf-8")
 

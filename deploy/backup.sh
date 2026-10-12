@@ -55,9 +55,8 @@
 set -euo pipefail
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
-# Browser owner keys live on a separate broker-only volume, deliberately without
-# an offsite copy. Losing it requires signing in again. Legacy keys are excluded
-# below while the broker migrates them on first use.
+# Sealed records and wrapped keys are the only credential material a backup
+# may carry. The scan below refuses a legacy vault file or a raw browser key.
 if [[ "${BACKUP_VOLUME}" == "tinyassets-browser-keys" ]]; then
     echo "ERROR: browser key material must never enter the data backup destination" >&2
     exit 2
@@ -146,6 +145,28 @@ then
     exit 2
 fi
 
+# A backup may carry sealed records and wrapped keys only. A legacy vault
+# file or a raw browser key fails the run before any archive is written.
+if ! python3 - "${VOLUME_DIR}" <<'VAULT_SCAN_PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+for path in root.rglob("*"):
+    if not path.is_file():
+        continue
+    relative = path.relative_to(root).as_posix()
+    if path.name == ".credential-vault.json" or (
+        path.name.endswith(".key") and "browser-vault" in relative
+    ):
+        sys.exit(1)
+sys.exit(0)
+VAULT_SCAN_PY
+then
+    log "ERROR: backup refused: an unencrypted vault or a raw browser key is still in the data volume"
+    exit 2
+fi
+
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 # ----- 2b. cutover snapshot (BACKUP_MODE=snapshot) ----------------------
@@ -165,7 +186,7 @@ if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
     chmod 0700 "${SNAPSHOT_DIR}"
     log "creating cutover snapshot ${SNAPSHOT_PATH}..."
     if ! tar -czf "${SNAPSHOT_PATH}" --numeric-owner --acls --xattrs \
-            --exclude='./.broker/browser-vault' -C "${VOLUME_DIR}" .; then
+            -C "${VOLUME_DIR}" .; then
         log "ERROR: snapshot tar failed"
         rm -f "${SNAPSHOT_PATH}"
         exit 2
@@ -186,8 +207,6 @@ expected = []
 def fail_walk(error):
     raise error
 for parent, directories, files in os.walk(root, onerror=fail_walk):
-    if os.path.relpath(parent, root) == '.broker':
-        directories[:] = [name for name in directories if name != 'browser-vault']
     for name in directories + files:
         path = os.path.join(parent, name)
         relative = os.path.relpath(path, root)
@@ -337,7 +356,6 @@ set +e
 # Owner split: owners are numeric (300001+ have no host name) and roots carry
 # ACLs, so both survive a restore only with these flags.
 tar -czf "${TAR_PATH}" --warning=no-file-changed --numeric-owner --acls --xattrs \
-    --exclude="$(basename "${VOLUME_DIR}")/.broker/browser-vault" \
     -C "$(dirname "${VOLUME_DIR}")" "$(basename "${VOLUME_DIR}")"
 tar_rc=$?
 set -e

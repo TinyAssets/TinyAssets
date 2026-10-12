@@ -230,14 +230,21 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
             "destination": "fixture", "incarnation": removal.incarnation,
             "secret": "synthetic-new"})
         assert result["status"] == "rotated", result
-        vault = (removal.root / "cc-alice/.credential-vault.json").read_bytes()
-        assert vault
+        from tinyassets.credential_vault import load_credential_vault
+
+        vault_path = removal.root / "cc-alice/.credential-vault.json"
+        sealed = load_credential_vault(removal.root / "cc-alice")
+        assert [record.get("token") for record in sealed] == ["synthetic-new"]
+        assert not vault_path.exists()
+        db = removal.root / ".broker" / "vault-keys.db"
+        sealed_bytes = db.read_bytes()
         assert removal.ledger._get_connection_resource(removal.connection) == before
         monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
         with pytest.raises(ProxyRequestError):
             rotate_http(universe_id="cc-alice", payload={
                 "destination": "fixture", "secret": "must-not-replace"})
-        assert (removal.root / "cc-alice/.credential-vault.json").read_bytes() == vault
+        assert db.read_bytes() == sealed_bytes
+        assert not vault_path.exists()
     assert not (removal.root / "outbound.db").exists()
 
 

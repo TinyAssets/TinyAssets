@@ -123,6 +123,10 @@ GUARDS = {
         "remove obsolete entries from the guard's grandfathered pin when their raw I/O "
         'disappears. '
     ),
+    "test_credential_custody": (
+        "Keep credential custody on the broker key hierarchy: no cleartext vault writer, "
+        "no raw browser key file, and the KMS credential names forbidden to the daemon. "
+    ),
     "test_engine_secret_inventory": (
         'Classify the reported compose credential and its required engine reason in '
         'tinyassets/platform_secrets.py; keep daemon-only credentials out of engine launch. '

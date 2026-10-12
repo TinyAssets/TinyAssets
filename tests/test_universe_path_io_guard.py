@@ -187,7 +187,6 @@ PINNED: dict[str, list[str]] = {
         "_write_exclusive_snapshot_file: os.open()",
         "ensure_codex_home_from_vault: .write_bytes()",
         "ensure_codex_home_from_vault: .write_text()",
-        "load_credential_vault: .read_text()",
     ],
     "tinyassets/daemon_brain.py": [
         "_promote_daemon_memory_to_wiki: .open()",

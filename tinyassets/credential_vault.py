@@ -120,33 +120,37 @@ _LLM_API_KEY_ENV_BY_SERVICE: dict[str, str] = {
     "grok": "XAI_API_KEY",
 }
 
-_SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE: dict[
-    str, tuple[frozenset[str], ...]
-] = {
+_SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE: dict[str, tuple[frozenset[str], ...]] = {
     "claude": (
-        frozenset({
-            "claude_config_dir",
-            "config_dir",
-            "path",
-            "claude_home",
-            "home",
-            "auth_home",
-        }),
-        frozenset({
-            "oauth_token",
-            "claude_code_oauth_token",
-            "token_b64",
-            "secret_b64",
-        }),
+        frozenset(
+            {
+                "claude_config_dir",
+                "config_dir",
+                "path",
+                "claude_home",
+                "home",
+                "auth_home",
+            }
+        ),
+        frozenset(
+            {
+                "oauth_token",
+                "claude_code_oauth_token",
+                "token_b64",
+                "secret_b64",
+            }
+        ),
     ),
     "codex": (
-        frozenset({
-            "codex_home",
-            "home",
-            "auth_home",
-            "path",
-            "auth_json_path",
-        }),
+        frozenset(
+            {
+                "codex_home",
+                "home",
+                "auth_home",
+                "path",
+                "auth_json_path",
+            }
+        ),
     ),
 }
 
@@ -178,10 +182,10 @@ def _as_path(value: Any, universe_dir: Path) -> Path | None:
 
 
 def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
-    service_part = "".join(
-        ch if ch.isalnum() or ch in {"-", "_"} else "-"
-        for ch in service.strip().lower()
-    ) or "credential"
+    service_part = (
+        "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in service.strip().lower())
+        or "credential"
+    )
     target = universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part
     target.mkdir(parents=True, exist_ok=True)
     _chmod_best_effort(target.parent, 0o700)
@@ -191,16 +195,12 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
 
 def _decode_codex_auth_json(value: Any) -> bytes:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(
-            "credential auth_json_b64 must be a non-empty base64 string"
-        )
+        raise ValueError("credential auth_json_b64 must be a non-empty base64 string")
     normalized = value.translate(str.maketrans("", "", " \t\r\n"))
     try:
         decoded = base64.b64decode(normalized, validate=True)
     except ValueError:
-        raise ValueError(
-            "credential auth_json_b64 base64 decode failed"
-        ) from None
+        raise ValueError("credential auth_json_b64 base64 decode failed") from None
     if not decoded:
         raise ValueError("credential auth_json_b64 decoded content is empty")
     if decoded.startswith(b"\xef\xbb\xbf"):
@@ -239,16 +239,60 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
             record[key] = record[key].strip()
     if (
         normalized_type == "llm_subscription"
-        and str(record.get("service") or record.get("provider") or "").lower()
-        == "codex"
+        and str(record.get("service") or record.get("provider") or "").lower() == "codex"
         and "auth_json_b64" in record
     ):
         _decode_codex_auth_json(record["auth_json_b64"])
+    _refuse_password_material(record)
     return record
 
 
+_FORBIDDEN_SECRET_FIELDS = frozenset(
+    {
+        "password",
+        "passwd",
+        "site_password",
+        "website_password",
+        "totp",
+        "totp_seed",
+        "totp_secret",
+        "otp_secret",
+        "mfa_seed",
+        "recovery_code",
+        "recovery_codes",
+        "backup_code",
+        "backup_codes",
+        "passkey",
+        "passkey_private_key",
+    }
+)
+
+
+def _refuse_password_material(record: dict[str, Any]) -> None:
+    """Delegations only. A website password, TOTP seed or recovery code is refused."""
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized = str(key).strip().lower().replace("-", "_")
+                if normalized in _FORBIDDEN_SECRET_FIELDS:
+                    raise ValueError(
+                        "vault refuses a website password, TOTP seed or recovery code; "
+                        "sign in through the browser instead"
+                    )
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(record)
+
+
 def http_deposit_refusal(
-    universe_dir: str | Path, *, destination: str, owner_user_id: str,
+    universe_dir: str | Path,
+    *,
+    destination: str,
+    owner_user_id: str,
 ) -> str:
     """Why an owned http write for ``destination`` would be refused, or ``""``.
 
@@ -343,11 +387,7 @@ def _vcs_purposes(record: dict[str, Any]) -> frozenset[str]:
         return frozenset({purpose.strip()})
     purposes = record.get("purposes")
     if isinstance(purposes, list):
-        return frozenset(
-            str(item).strip()
-            for item in purposes
-            if str(item).strip()
-        )
+        return frozenset(str(item).strip() for item in purposes if str(item).strip())
     return frozenset({"write"})
 
 
@@ -407,9 +447,7 @@ def _merge_subscription_records(
     replacement: dict[str, Any] = {}
     for record in reversed(existing):
         replacement.update(record)
-    for slot in _SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE.get(
-        _service(incoming), ()
-    ):
+    for slot in _SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE.get(_service(incoming), ()):
         if not slot.isdisjoint(incoming):
             for field in slot:
                 replacement.pop(field, None)
@@ -422,9 +460,7 @@ def _merge_single_record(
     incoming: dict[str, Any],
 ) -> list[dict[str, Any]]:
     matching_indexes = [
-        index
-        for index, record in enumerate(existing)
-        if _credentials_match(record, incoming)
+        index for index, record in enumerate(existing) if _credentials_match(record, incoming)
     ]
     if not matching_indexes:
         return [*existing, incoming]
@@ -446,33 +482,28 @@ def _merge_single_record(
 
 
 def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
-    """Load and validate the per-universe vault.
+    """Open sealed records for one command center through the broker key service.
 
-    Missing vaults are treated as empty. Malformed vaults raise ValueError so a
-    daemon cannot silently grant or lose authority due to a bad secret file.
+    Missing stores are empty. An unreachable key service raises, so a caller
+    cannot mistake an outage for an empty vault. One unopenable record is
+    omitted and raises a reconnect ask; the others still open. A legacy
+    cleartext file is not read.
     """
-    path = credential_vault_path(universe_dir)
-    if not path.is_file():
-        return []
-    payload = None
-    malformed = ""
+    from tinyassets.broker.credential_store import load_center
+    from tinyassets.broker.root_key import KeyServiceUnavailable
+
+    universe = Path(universe_dir)
+    legacy = credential_vault_path(universe)
+    if legacy.is_file():
+        raise ValueError(
+            "legacy credential vault is still present; run the vault cutover "
+            f"before reading {universe.name}"
+        )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
-        # `UnicodeDecodeError.object` is the whole file too — a second channel
-        # with the same consequence as JSONDecodeError.doc, found only because
-        # a reviewer tried invalid UTF-8 rather than invalid JSON.
-        malformed = "an undecodable byte"
-    except json.JSONDecodeError as exc:
-        # `exc.doc` is the ENTIRE vault file — every token for every service.
-        # Chaining it, or interpolating `exc`, hands the whole thing to any
-        # traceback, log, or error collector. Keep only the position, and raise
-        # after this handler exits so no chain survives (`from None` clears
-        # __cause__ but leaves __context__).
-        malformed = f"line {exc.lineno} column {exc.colno}"
-    if malformed:
-        raise ValueError(f"credential vault is not valid JSON at {malformed}")
-    return _records_from_payload(payload)
+        records = load_center(universe)
+    except KeyServiceUnavailable as exc:
+        raise ValueError("key service unavailable") from exc
+    return _records_from_payload(records)
 
 
 def _prepare_credential_write(
@@ -495,34 +526,36 @@ def _prepare_credential_write(
     single-record upsert; nothing is written. The summary is non-secret and
     suitable for logs/status surfaces.
     """
+    from tinyassets.broker.credential_store import has_center
+
     universe = Path(universe_dir)
     records = _records_from_payload(credentials)
-    path = credential_vault_path(universe)
+    legacy = credential_vault_path(universe)
+    if legacy.is_file():
+        raise ValueError(
+            "legacy credential vault is still present; run the vault cutover "
+            f"before writing {universe.name}"
+        )
     collapsed_credential_count = 0
     dropped_credential_slots: list[dict[str, Any]] = []
-    if len(records) == 1 and path.is_file():
+    if len(records) == 1 and has_center(universe):
         incoming = records[0]
         existing = load_credential_vault(universe)
-        matching = [
-            record
-            for record in existing
-            if _credentials_match(record, incoming)
-        ]
+        matching = [record for record in existing if _credentials_match(record, incoming)]
         collapsed_credential_count = max(0, len(matching) - 1)
         if incoming["credential_type"] == "vcs":
-            dropped_purposes = (
-                frozenset().union(*(_vcs_purposes(record) for record in matching))
-                - _vcs_purposes(incoming)
-            )
+            dropped_purposes = frozenset().union(
+                *(_vcs_purposes(record) for record in matching)
+            ) - _vcs_purposes(incoming)
             if dropped_purposes:
-                dropped_credential_slots.append({
-                    "credential_type": "vcs",
-                    "service": _service(incoming),
-                    "destination": str(
-                        incoming.get("destination") or ""
-                    ).strip(),
-                    "purposes": sorted(dropped_purposes),
-                })
+                dropped_credential_slots.append(
+                    {
+                        "credential_type": "vcs",
+                        "service": _service(incoming),
+                        "destination": str(incoming.get("destination") or "").strip(),
+                        "purposes": sorted(dropped_purposes),
+                    }
+                )
         records = _merge_single_record(existing, incoming)
     credential_types = sorted({str(r["credential_type"]) for r in records})
     # Sanitised, not echoed. This summary is explicitly "suitable for logs and
@@ -538,7 +571,7 @@ def _prepare_credential_write(
         }
     )
     summary = {
-        "path": str(path),
+        "path": f"broker-sealed/{universe.name}",
         "credential_count": len(records),
         "credential_types": credential_types,
         "services": services,
@@ -585,59 +618,36 @@ def _post_commit_durability(vault_file: Path, universe: Path) -> None:
 def _persist_credential_vault_file(
     universe_dir: str | Path,
     records: list[dict[str, Any]],
+    *,
+    owner: str = "",
 ) -> None:
-    """Atomically replace the vault file with *records*.
+    """Seal *records* in the broker store. Nothing cleartext is written.
 
     This is the LAST mutation of a deposit — the owner-row DB commit has already
-    landed — so a concurrent unlocked reader never observes a credential before
-    its ownership row exists.
-
-    The publication inside :func:`_persist_role_vault` is the COMMIT POINT.
-    Everything before it may raise, and such a pre-commit failure leaves the
-    prior file intact so the caller compensates the owner rows.
+    landed. A failure before the sealed replace commits leaves the previous
+    sealed records in place so the caller can compensate the owner rows.
     """
+    from tinyassets.broker.credential_store import replace_center
+    from tinyassets.broker.root_key import KeyServiceUnavailable, ReconnectRequired, RootKeyError
+
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
-    path = credential_vault_path(universe)
-    data = (
-        json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
-        + "\n"
-    )
-    _persist_role_vault(path, data)
+    if not owner:
+        from tinyassets.broker.credential_store import owner_for_center
 
-
-def _persist_role_vault(path: Path, data: str) -> None:
-    """Assign the read-only broker group before publishing a replacement inode."""
-    import tempfile
-
-    from tinyassets.role_modes import BROKER_READ_GID, VAULT_FILE_MODE
-
-    fd, name = tempfile.mkstemp(prefix=".vault-", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)
+        owner = owner_for_center(universe)
+    if not owner:
+        # A deposit with no server principal still gets its own KEK, scoped to
+        # this command center, so it never shares key material with an account.
+        owner = f"unowned:{universe.name}"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
-            os.fchmod(handle.fileno(), VAULT_FILE_MODE)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except BaseException:
-        from tinyassets.universe_files import unlink_universe_file
-
-        try:
-            unlink_universe_file(
-                temporary.anchor, temporary.relative_to(temporary.anchor).as_posix())
-        except FileNotFoundError:
-            pass
-        raise
-    # Publication is the existing vault commit point. Never compensate owner
-    # rows after it, even if a subsequent durability flush reports a failure.
-    try:
-        _post_commit_durability(path, path.parent)
-    except Exception as exc:  # noqa: BLE001 - committed deposit must not be compensated
-        logger.warning("credential vault durability flush failed after commit (%s); "
-                       "deposit already took effect", type(exc).__name__)
+        replace_center(universe, records, owner=owner)
+    except KeyServiceUnavailable as exc:
+        raise ValueError("key service unavailable") from exc
+    except ReconnectRequired as exc:
+        raise ValueError("reconnect_required") from exc
+    except RootKeyError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _restore_owner_rows(
@@ -711,9 +721,23 @@ def forget_credential(
                 and str(record.get("destination") or "").strip() == wanted_destination
             )
         ]
-        removed = len(records) - len(kept)
+        removed_records = [
+            record
+            for record in records
+            if (
+                str(record.get("credential_type") or "").strip().lower() == wanted_type
+                and str(record.get("destination") or "").strip() == wanted_destination
+            )
+        ]
+        removed = len(removed_records)
         if removed:
-            _persist_credential_vault_file(universe, kept)
+            from tinyassets.broker.token_revocation import notice_for
+
+            notices = [notice_for(record) for record in removed_records]
+            notice = next((item for item in notices if item), "")
+            if notice:
+                _record_revocation_notice(universe.parent, universe.name, notice)
+            _persist_credential_vault_file(universe, kept, owner="")
     return removed
 
 
@@ -774,15 +798,19 @@ def _warm_after_deposit(universe: Path, owner: str, uid: str) -> None:
 
         SHORTLIST_CACHE.forget(base=universe.parent, owner=owner, universe_id=uid)
         warm_connected_shortlists(
-            base_path=universe.parent, universe_dir=universe,
-            owner_user_id=owner, universe_id=uid,
+            base_path=universe.parent,
+            universe_dir=universe,
+            owner_user_id=owner,
+            universe_id=uid,
         )
     except Exception as exc:  # noqa: BLE001 - never the depositor's error
         logger.warning("shortlist warm after deposit skipped: %s", type(exc).__name__)
 
 
 def _write_identity(
-    universe: Path, owner_user_id: str | None, universe_id: str | None,
+    universe: Path,
+    owner_user_id: str | None,
+    universe_id: str | None,
 ) -> tuple[str, str]:
     owner = (owner_user_id or "").strip()
     uid = (universe_id or universe.name).strip()
@@ -806,6 +834,7 @@ def exclusive_credential_vault(universe_dir: str | Path) -> Iterator[Callable[..
 
     universe = Path(universe_dir).resolve(strict=False)
     with provider_assignment_admission().exclusive(universe):
+
         def write(credentials, *, owner_user_id=None, universe_id=None) -> dict:
             owner, uid = _write_identity(universe, owner_user_id, universe_id)
             _records_from_payload(credentials)
@@ -815,7 +844,10 @@ def exclusive_credential_vault(universe_dir: str | Path) -> Iterator[Callable[..
 
 
 def _write_credential_vault_locked(
-    universe: Path, credentials: list[dict[str, Any]] | dict[str, Any], owner: str, uid: str,
+    universe: Path,
+    credentials: list[dict[str, Any]] | dict[str, Any],
+    owner: str,
+    uid: str,
 ) -> dict[str, Any]:
     """The write itself; the caller holds the exclusive admission."""
     from tinyassets.storage import db_path
@@ -837,9 +869,7 @@ def _write_credential_vault_locked(
                 (uid,),
             ).fetchall()
             if any(str(row[1]) != owner for row in existing):
-                raise PermissionError(
-                    "credential ownership transfer requires a dedicated flow"
-                )
+                raise PermissionError("credential ownership transfer requires a dedicated flow")
             # Fail-closed for LEGACY unowned http credentials. An http record
             # deposited before http ownership was tracked (or via an owner-less
             # path) has a vault record but NO owner row, so the universe-wide
@@ -854,22 +884,17 @@ def _write_credential_vault_locked(
             incoming_http_services = {
                 service
                 for record in incoming_records
-                if record.get("credential_type") == "http"
-                and (service := _service(record))
+                if record.get("credential_type") == "http" and (service := _service(record))
             }
             if incoming_http_services:
                 owned_keys = {str(row[0]) for row in existing}
                 on_disk_http = {
                     service
                     for record in load_credential_vault(universe)
-                    if record.get("credential_type") == "http"
-                    and (service := _service(record))
+                    if record.get("credential_type") == "http" and (service := _service(record))
                 }
                 for service in incoming_http_services:
-                    if (
-                        service in on_disk_http
-                        and f"http:{service}" not in owned_keys
-                    ):
+                    if service in on_disk_http and f"http:{service}" not in owned_keys:
                         raise PermissionError(
                             "credential ownership transfer requires a dedicated flow"
                         )
@@ -938,7 +963,7 @@ def _write_credential_vault_locked(
         #    (the vault file was NOT replaced — Path.replace is atomic — so the
         #    prior file is intact); it never raises once the file is visible.
         try:
-            _persist_credential_vault_file(universe, final_records)
+            _persist_credential_vault_file(universe, final_records, owner=owner)
         except BaseException as persist_error:
             # 3. Pre-commit failure: the file did not change. Compensate by
             #    restoring the prior owner rows so no committed-but-ineffective
@@ -1021,8 +1046,61 @@ def _ensure_refresh_state_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _record_revocation_notice(base_path: Path, universe_id: str, notice: str) -> None:
+    from tinyassets.storage import db_path
+
+    try:
+        conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS credential_revocation_notices (
+                universe_id TEXT PRIMARY KEY,
+                notice TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO credential_revocation_notices (universe_id, notice)
+            VALUES (?, ?)
+            ON CONFLICT (universe_id) DO UPDATE SET notice = excluded.notice
+            """,
+            (universe_id, notice),
+        )
+    except sqlite3.Error:
+        logger.warning("could not record a revocation notice")
+    finally:
+        conn.close()
+
+
+def latest_revocation_notice(base_path: str | Path, *, universe_id: str) -> str:
+    from tinyassets.storage import db_path
+
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        return ""
+    try:
+        row = conn.execute(
+            "SELECT notice FROM credential_revocation_notices WHERE universe_id = ?",
+            (universe_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    return str(row[0]) if row and row[0] else ""
+
+
 def record_refresh_rejected(
-    base_path: str | Path, *, universe_id: str, service: str, when: str = "",
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    service: str,
+    when: str = "",
 ) -> None:
     """Remember that this source's stored sign-in was refused, across restarts.
 
@@ -1166,10 +1244,12 @@ def _subscription_record_digest(
     service: str,
     record: dict[str, Any],
 ) -> str:
-    return _canonical_digest({
-        "material_digest": _subscription_material_digest(universe_dir, service, record),
-        "record": record,
-    })
+    return _canonical_digest(
+        {
+            "material_digest": _subscription_material_digest(universe_dir, service, record),
+            "record": record,
+        }
+    )
 
 
 def _contained_path(universe_dir: Path, raw: object) -> Path | None:
@@ -1211,7 +1291,9 @@ def _usable_subscription_record(
     service: str,
 ) -> dict[str, Any]:
     vault_path = credential_vault_path(universe_dir)
-    if vault_path.is_symlink() or not vault_path.is_file():
+    # A missing cleartext file is the sealed-store case. A symlink or a leftover
+    # regular file is still the legacy vault and must not be treated as usable.
+    if vault_path.is_symlink() or vault_path.is_file():
         raise PermissionError("exactly one usable subscription credential is required")
     records = _llm_records(universe_dir, service)
     if len(records) != 1:
@@ -1246,9 +1328,7 @@ def _usable_subscription_record(
             return record
         config_dir = _claude_config_dir_from_record(record, universe_dir)
         contained_dir = (
-            _contained_path(universe_dir, str(config_dir))
-            if config_dir is not None
-            else None
+            _contained_path(universe_dir, str(config_dir)) if config_dir is not None else None
         )
         if contained_dir is None or not contained_dir.is_dir():
             raise PermissionError("exactly one usable subscription credential is required")
@@ -1265,19 +1345,26 @@ def _custody_reference_digest(
     generation: int,
     record_digest: str,
 ) -> str:
-    return _canonical_digest({
-        "generation": generation,
-        "owner_user_id": owner_user_id,
-        "record_digest": record_digest,
-        "reference_id": reference_id,
-        "schema_version": 1,
-        "service": service,
-        "universe_id": universe_id,
-    })
+    return _canonical_digest(
+        {
+            "generation": generation,
+            "owner_user_id": owner_user_id,
+            "record_digest": record_digest,
+            "reference_id": reference_id,
+            "schema_version": 1,
+            "service": service,
+            "universe_id": universe_id,
+        }
+    )
 
 
 def _subscription_reference_digest(
-    *, reference_id: str, owner_user_id: str, universe_id: str, service: str, generation: int,
+    *,
+    reference_id: str,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+    generation: int,
 ) -> str:
     """Schema 2: the owner's CONSENT, not the bytes.
 
@@ -1287,24 +1374,35 @@ def _subscription_reference_digest(
     republish all of them and void every receipt in flight. The bytes stay pinned
     by the custody row's ``record_digest``, checked on every read and snapshot.
     """
-    return _canonical_digest({
-        "generation": generation,
-        "owner_user_id": owner_user_id,
-        "reference_id": reference_id,
-        "schema_version": 2,
-        "service": service,
-        "universe_id": universe_id,
-    })
+    return _canonical_digest(
+        {
+            "generation": generation,
+            "owner_user_id": owner_user_id,
+            "reference_id": reference_id,
+            "schema_version": 2,
+            "service": service,
+            "universe_id": universe_id,
+        }
+    )
 
 
 def _subscription_reference_matches(
-    *, reference_id: str, owner_user_id: str, universe_id: str, service: str,
-    generation: int, record_digest: str, reference_digest: str,
+    *,
+    reference_id: str,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+    generation: int,
+    record_digest: str,
+    reference_digest: str,
 ) -> bool:
     """The stored reference, recomputed under either formula, for this exact row."""
     identity = dict(
-        reference_id=reference_id, owner_user_id=owner_user_id,
-        universe_id=universe_id, service=service, generation=generation,
+        reference_id=reference_id,
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        service=service,
+        generation=generation,
     )
     return reference_digest in (
         _subscription_reference_digest(**identity),
@@ -1313,13 +1411,19 @@ def _subscription_reference_matches(
 
 
 def _owned_subscription_record(
-    conn: sqlite3.Connection, *, universe_dir: Path, owner: str, uid: str, service: str,
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: Path,
+    owner: str,
+    uid: str,
+    service: str,
 ) -> dict[str, Any]:
     """Validate a current deposit, including rotation, without adopting custody."""
     record = _usable_subscription_record(universe_dir, service)
     depositor = conn.execute(
         "SELECT owner_user_id FROM llm_credential_deposit_owners "
-        "WHERE universe_id = ? AND service = ?", (uid, service),
+        "WHERE universe_id = ? AND service = ?",
+        (uid, service),
     ).fetchone()
     if depositor is None or str(depositor[0]) != owner:
         raise PermissionError("caller is not the server-recorded credential owner")
@@ -1327,13 +1431,22 @@ def _owned_subscription_record(
 
 
 def validate_llm_subscription_deposit(
-    conn: sqlite3.Connection, *, universe_dir: Path, owner: str, uid: str, service: str,
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: Path,
+    owner: str,
+    uid: str,
+    service: str,
 ) -> None:
     """Read-only renewal preflight; never returns credentials or execution authority."""
     if not conn.in_transaction:
         raise ValueError("subscription deposit preflight requires an active transaction")
     record = _owned_subscription_record(
-        conn, universe_dir=universe_dir, owner=owner, uid=uid, service=service,
+        conn,
+        universe_dir=universe_dir,
+        owner=owner,
+        uid=uid,
+        service=service,
     )
     _subscription_record_digest(universe_dir, service, record)
 
@@ -1358,7 +1471,11 @@ def adopt_llm_subscription_custody(
     universe = Path(universe_dir)
     _ensure_llm_deposit_owner_schema(conn)
     record = _owned_subscription_record(
-        conn, universe_dir=universe, owner=owner, uid=uid, service=canonical_service,
+        conn,
+        universe_dir=universe,
+        owner=owner,
+        uid=uid,
+        service=canonical_service,
     )
     record_digest = _subscription_record_digest(universe, canonical_service, record)
     conn.execute(
@@ -1467,15 +1584,17 @@ def _connection_grant_record_digest(
 ) -> str:
     """Secret-free grant-identity record digest. Binds custody to the exact grant +
     connection + credential reference; NEVER digests the credential material."""
-    return _canonical_digest({
-        "connection_id": connection_id,
-        "credential_ref": credential_ref,
-        "grant_id": grant_id,
-        "owner_user_id": owner_user_id,
-        "schema_version": 1,
-        "service": _connection_custody_service(connection_id),
-        "universe_id": universe_id,
-    })
+    return _canonical_digest(
+        {
+            "connection_id": connection_id,
+            "credential_ref": credential_ref,
+            "grant_id": grant_id,
+            "owner_user_id": owner_user_id,
+            "schema_version": 1,
+            "service": _connection_custody_service(connection_id),
+            "universe_id": universe_id,
+        }
+    )
 
 
 def _ensure_custody_schema(conn: sqlite3.Connection) -> None:
@@ -1514,9 +1633,7 @@ def adopt_connection_grant_custody(
     not revoked; this function records custody, it is not the ownership gate.
     """
     if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
-        raise ValueError(
-            "connection-grant custody adoption requires an active SQLite transaction"
-        )
+        raise ValueError("connection-grant custody adoption requires an active SQLite transaction")
     owner = owner_user_id.strip()
     uid = universe_id.strip()
     gid = grant_id.strip()
@@ -1674,7 +1791,9 @@ def current_llm_subscription_custody(
     except (PermissionError, ValueError, OSError):
         return None
     record_digest = _subscription_record_digest(
-        Path(universe_dir), service.strip().lower(), record,
+        Path(universe_dir),
+        service.strip().lower(),
+        record,
     )
     if record_digest != str(row[2]) or not _subscription_reference_matches(
         reference_id=str(row[0]),
@@ -1742,8 +1861,11 @@ def carry_llm_subscription_custody(
     if row is None or str(row[2]) != expected_record_digest:
         return False
     if str(row[3]) != _subscription_reference_digest(
-        reference_id=str(row[0]), owner_user_id=owner, universe_id=uid,
-        service=key, generation=int(row[1]),
+        reference_id=str(row[0]),
+        owner_user_id=owner,
+        universe_id=uid,
+        service=key,
+        generation=int(row[1]),
     ):
         return False
     try:
@@ -1758,8 +1880,16 @@ def carry_llm_subscription_custody(
            AND service = ? AND generation = ? AND reference_digest = ?
            AND record_digest = ?
         """,
-        (new_digest, str(row[0]), owner, uid, key, int(row[1]), str(row[3]),
-         expected_record_digest),
+        (
+            new_digest,
+            str(row[0]),
+            owner,
+            uid,
+            key,
+            int(row[1]),
+            str(row[3]),
+            expected_record_digest,
+        ),
     )
     return moved.rowcount == 1
 
@@ -1800,8 +1930,7 @@ def _plain_snapshot_directory(path: Path) -> tuple[int, int]:
     if (
         _is_snapshot_reparse_point(file_stat)
         or not stat.S_ISDIR(file_stat.st_mode)
-        or os.path.normcase(os.path.abspath(path))
-        != os.path.normcase(os.path.abspath(resolved))
+        or os.path.normcase(os.path.abspath(path)) != os.path.normcase(os.path.abspath(resolved))
     ):
         raise PermissionError("credential snapshot directory must be a plain directory")
     identity = _snapshot_file_identity(file_stat)
@@ -1837,16 +1966,23 @@ def _set_snapshot_directory_mode(path: Path, identity: tuple[int, int]) -> None:
     descriptor = open_dir_nofollow(path)
     try:
         opened = os.fstat(descriptor)
-        if (_snapshot_file_identity(opened) != identity or opened.st_uid != os.geteuid()
-                or not stat.S_ISDIR(opened.st_mode)):
+        if (
+            _snapshot_file_identity(opened) != identity
+            or opened.st_uid != os.geteuid()
+            or not stat.S_ISDIR(opened.st_mode)
+        ):
             raise PermissionError("credential snapshot directory identity changed")
         from tinyassets.role_snapshot import owner_uid, seal
 
-        runtime = next((p for p in (path, *path.parents) if p.name == '.runtime'), None)
+        runtime = next((p for p in (path, *path.parents) if p.name == ".runtime"), None)
         if runtime is None:
             raise PermissionError("credential snapshot directory is outside a center runtime")
-        seal(descriptor, owner_uid(runtime.parent), directory=True,
-             traverse_only=path.name in {'.runtime', 'provider-launch-credentials'})
+        seal(
+            descriptor,
+            owner_uid(runtime.parent),
+            directory=True,
+            traverse_only=path.name in {".runtime", "provider-launch-credentials"},
+        )
         if _plain_snapshot_directory(path) != identity:
             raise PermissionError("credential snapshot directory identity changed")
     finally:
@@ -1948,14 +2084,9 @@ def _locate_tracked_snapshot(snapshot: LLMCredentialSnapshot) -> Path | None:
     ):
         return snapshot.directory
 
-    logger.warning(
-        "credential snapshot path identity changed; locating tracked directory"
-    )
+    logger.warning("credential snapshot path identity changed; locating tracked directory")
     try:
-        if (
-            _plain_snapshot_directory(snapshot._root_directory)
-            != snapshot._root_identity
-        ):
+        if _plain_snapshot_directory(snapshot._root_directory) != snapshot._root_identity:
             return None
         with os.scandir(snapshot._root_directory) as entries:
             for entry in entries:
@@ -1966,10 +2097,7 @@ def _locate_tracked_snapshot(snapshot: LLMCredentialSnapshot) -> Path | None:
                     continue
                 if identity != snapshot._directory_identity:
                     continue
-                if (
-                    _is_snapshot_reparse_point(entry_stat)
-                    or not stat.S_ISDIR(entry_stat.st_mode)
-                ):
+                if _is_snapshot_reparse_point(entry_stat) or not stat.S_ISDIR(entry_stat.st_mode):
                     return None
                 return Path(entry.path)
     except (OSError, PermissionError):
@@ -2049,9 +2177,7 @@ def scavenge_orphaned_launch_credentials(
         if callable(get_uid) and file_stat.st_uid != get_uid():
             continue  # not ours — never touch another owner's directory
         try:
-            _remove_snapshot_tree(
-                directory, expected_identity=_snapshot_file_identity(file_stat)
-            )
+            _remove_snapshot_tree(directory, expected_identity=_snapshot_file_identity(file_stat))
             removed += 1
         except Exception:  # noqa: BLE001 - reclamation is best-effort, never raises
             logger.warning("could not scavenge orphaned launch-credential directory")
@@ -2074,26 +2200,25 @@ def snapshot_llm_subscription_credential(
     dedicated = owner_uid(universe)
     expected = owner_identity(universe.parent, principal=custody.owner_user_id)
     if expected.uid != dedicated or expected.gid != dedicated:
-        raise PermissionError('snapshot custody does not match the dedicated owner')
+        raise PermissionError("snapshot custody does not match the dedicated owner")
     record = _usable_subscription_record(universe, custody.service)
     material = _subscription_material(universe, custody.service, record)
     material_digest = "sha256:" + hashlib.sha256(material).hexdigest()
-    snapshot_record_digest = _canonical_digest({
-        "material_digest": material_digest,
-        "record": record,
-    })
+    snapshot_record_digest = _canonical_digest(
+        {
+            "material_digest": material_digest,
+            "record": record,
+        }
+    )
     snapshot_reference_digest = custody.reference_digest
-    if (
-        snapshot_record_digest != custody._record_digest
-        or not _subscription_reference_matches(
-            reference_id=custody.reference_id,
-            owner_user_id=custody.owner_user_id,
-            universe_id=custody.universe_id,
-            service=custody.service,
-            generation=custody.generation,
-            record_digest=snapshot_record_digest,
-            reference_digest=custody.reference_digest,
-        )
+    if snapshot_record_digest != custody._record_digest or not _subscription_reference_matches(
+        reference_id=custody.reference_id,
+        owner_user_id=custody.owner_user_id,
+        universe_id=custody.universe_id,
+        service=custody.service,
+        generation=custody.generation,
+        record_digest=snapshot_record_digest,
+        reference_digest=custody.reference_digest,
     ):
         raise PermissionError("credential changed before launch snapshot")
 
@@ -2124,12 +2249,12 @@ def snapshot_llm_subscription_credential(
         lock_file = directory / ".lock"
         _write_exclusive_snapshot_file(lock_file, b"")
         copied_material = _read_credential_material(auth_file)
-        copied_record_digest = _canonical_digest({
-            "material_digest": (
-                "sha256:" + hashlib.sha256(copied_material).hexdigest()
-            ),
-            "record": record,
-        })
+        copied_record_digest = _canonical_digest(
+            {
+                "material_digest": ("sha256:" + hashlib.sha256(copied_material).hexdigest()),
+                "record": record,
+            }
+        )
         # The copied BYTES against the pin, directly: a v2 reference does not
         # cover the bytes, so comparing references alone would pass a bad copy.
         if copied_record_digest != custody._record_digest:
@@ -2275,8 +2400,7 @@ def _llm_records(universe_dir: str | Path | None, service: str) -> list[dict[str
     return [
         record
         for record in load_credential_vault(universe_dir)
-        if record.get("credential_type") == "llm_subscription"
-        and _service(record) == service_key
+        if record.get("credential_type") == "llm_subscription" and _service(record) == service_key
     ]
 
 
@@ -2332,7 +2456,9 @@ def _document_stamp(document: Any) -> float | None:
 
 
 def _on_disk_document_is_newer(
-    auth_file: Path, record: dict[str, Any], vault_document: bytes,
+    auth_file: Path,
+    record: dict[str, Any],
+    vault_document: bytes,
 ) -> bool:
     """Whether the materialized document must be kept over the vault's."""
     try:
@@ -2487,9 +2613,7 @@ def supported_llm_api_key_services() -> frozenset[str]:
     return frozenset(_LLM_API_KEY_ENV_BY_SERVICE)
 
 
-def resolve_llm_api_key(
-    universe_dir: str | Path | None, env_var: str
-) -> str:
+def resolve_llm_api_key(universe_dir: str | Path | None, env_var: str) -> str:
     """Return a deposited BYO API key whose ``service`` maps to *env_var*, or ''.
 
     Scans ``llm_api_key`` vault records; a record matches when its ``service``
@@ -2562,9 +2686,7 @@ def apply_provider_auth_env(
 ) -> dict[str, str]:
     """Overlay per-universe subscription auth settings onto *env*."""
     resolved_universe = (
-        Path(universe_dir)
-        if universe_dir is not None
-        else resolve_universe_from_env(env)
+        Path(universe_dir) if universe_dir is not None else resolve_universe_from_env(env)
     )
     if resolved_universe is None:
         return env

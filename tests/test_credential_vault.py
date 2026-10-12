@@ -137,7 +137,7 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
         ],
     )
 
-    assert summary["path"].endswith(VAULT_FILENAME)
+    assert summary["path"] == f"broker-sealed/{tmp_path.name}"
     assert summary["credential_count"] == 3
     assert summary["credential_types"] == ["llm_subscription", "social", "vcs"]
     assert "ghs_secret" not in str(summary)
@@ -507,14 +507,7 @@ def test_codex_subscription_auth_rotation_replaces_materialized_auth(tmp_path):
     )
 
 
-@pytest.mark.parametrize(
-    "malformed_auth_b64",
-    ["!!!!", "e30=!!!!", "e30=\u00a0", ""],
-)
-def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
-    tmp_path,
-    malformed_auth_b64,
-):
+def test_codex_materialization_refuses_a_legacy_file_and_preserves_auth(tmp_path):
     configured = tmp_path / "codex-home"
     write_credential_vault(tmp_path, [{
         "credential_type": "llm_subscription",
@@ -525,14 +518,9 @@ def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
     assert ensure_codex_home_from_vault(tmp_path) == configured
     working_auth = (configured / "auth.json").read_bytes()
 
-    (tmp_path / VAULT_FILENAME).write_text(
-        '{"schema_version":1,"credentials":[{"credential_type":'
-        '"llm_subscription","service":"codex","codex_home":"codex-home",'
-        f'"auth_json_b64":"{malformed_auth_b64}"}}]}}',
-        encoding="utf-8",
-    )
+    (tmp_path / VAULT_FILENAME).write_text("not the sealed store", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="auth_json_b64"):
+    with pytest.raises(ValueError, match="legacy credential vault"):
         ensure_codex_home_from_vault(tmp_path)
 
     assert (configured / "auth.json").read_bytes() == working_auth

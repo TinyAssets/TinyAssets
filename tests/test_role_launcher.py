@@ -32,6 +32,7 @@ def test_bootstrap_failure_is_actionable_bounded_and_secret_free(monkeypatch, ca
 def test_broker_allowlist_withholds_unknown_and_forbidden_environment(monkeypatch):
     for name in (*CHILD_FORBIDDEN_ENV, "UNENUMERATED_SECRET", "PYTHONPATH", "LD_PRELOAD"):
         monkeypatch.setenv(name, "must-not-cross")
+    monkeypatch.delenv("TINYASSETS_VAULT_TEST_DOUBLE", raising=False)
     monkeypatch.setenv("TZ", "UTC")
     result = LAUNCHER["broker_environment"]("/data")
     assert set(result) == {"PATH", "LANG", "HOME", "PYTHONDONTWRITEBYTECODE",
@@ -53,6 +54,17 @@ def test_broker_receives_only_canonical_http_deployment_opt_in(monkeypatch, valu
     name = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
     monkeypatch.setenv(name, value)
     assert LAUNCHER["broker_environment"]("/data")[name] == expected
+
+
+def test_broker_receives_the_vault_test_double_only_outside_production(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_VAULT_TEST_DOUBLE", "1")
+    monkeypatch.delenv("TINYASSETS_ENV", raising=False)
+    assert LAUNCHER["broker_environment"]("/data")["TINYASSETS_VAULT_TEST_DOUBLE"] == "1"
+    monkeypatch.setenv("TINYASSETS_ENV", "production")
+    assert "TINYASSETS_VAULT_TEST_DOUBLE" not in LAUNCHER["broker_environment"]("/data")
+    monkeypatch.delenv("TINYASSETS_ENV", raising=False)
+    monkeypatch.setenv("TINYASSETS_VAULT_TEST_DOUBLE", "yes")
+    assert "TINYASSETS_VAULT_TEST_DOUBLE" not in LAUNCHER["broker_environment"]("/data")
 
 
 def test_broker_http_remains_disabled_without_startup_opt_in(monkeypatch):

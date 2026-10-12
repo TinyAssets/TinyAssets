@@ -46,73 +46,48 @@ def test_short_storage_values_preserve_untrusted_page_text():
     assert result['text'] == '$1,234 English undefined [private]'
 
 
-def test_vault_key_is_outside_data_and_legacy_key_migrates(vault):
-    from tinyassets.broker.browser_vault import key_path
-
+def test_browser_state_is_sealed_under_the_center_dek_with_no_key_file(vault, tmp_path):
     ledger, call = vault
     row = call('create', url='https://example.com/')
     state = {'cookies': [{'value': 'secret-123456789'}]}
     call('save', id=row['id'], revision=1, state=state)
-    path = key_path(ledger, 'alice')
-    assert not path.is_relative_to(ledger._db_path.parent.parent)
-    legacy = ledger._db_path.parent / 'browser-vault' / path.name
-    legacy.parent.mkdir(exist_ok=True)
-    original = path.read_bytes()
-    path.replace(legacy)
     assert call('read', id=row['id'])['state'] == state
-    assert path.read_bytes() == original
-    assert not legacy.exists()
-    assert call('read', id=row['id'])['state'] == state
+    assert not list(tmp_path.rglob('*.key'))
+    with ledger._connect() as conn:
+        stored = conn.execute(
+            'SELECT sealed FROM browser_vault WHERE id=?', (row['id'],),
+        ).fetchone()[0]
+    assert b'secret-123456789' not in stored
 
 
-def test_vault_refuses_secret_root_inside_data(vault, monkeypatch):
-    ledger, call = vault
-    monkeypatch.setattr('tinyassets.broker.browser_vault.SECRET_ROOT',
-                        ledger._db_path.parent / 'keys', raising=False)
-    with pytest.raises(ValueError, match='outside'):
-        call('create', url='https://example.com/')
-
-
-@pytest.mark.parametrize('conflict', [False, True])
-def test_interrupted_legacy_migration_preserves_keys(vault, conflict):
-    from tinyassets.broker.browser_vault import key_path
-
-    ledger, call = vault
+def test_browser_ciphertext_does_not_open_for_another_center(vault):
+    _ledger, call = vault
     row = call('create', url='https://example.com/')
-    path = key_path(ledger, 'alice')
-    legacy = ledger._db_path.parent / 'browser-vault' / path.name
-    legacy.parent.mkdir()
-    legacy.write_bytes(b'x' * 32 if conflict else path.read_bytes())
-    if conflict:
-        with pytest.raises(ValueError, match='conflicting'):
-            call('read', id=row['id'])
-        assert legacy.read_bytes() == b'x' * 32
-        assert path.read_bytes() != legacy.read_bytes()
-    else:
-        assert call('read', id=row['id'])['state'] == {}
-        assert not legacy.exists()
+    state = {'cookies': [{'value': 'secret-123456789'}]}
+    saved = call('save', id=row['id'], revision=1, state=state)
+    with pytest.raises(PermissionError):
+        call('read', home='home-b', id=saved['id'])
 
 
-def test_migration_syncs_new_directory_before_unlink(vault, monkeypatch):
-    from tinyassets.broker import browser_vault
+def test_account_erasure_removes_only_owners_ciphertext_and_key(vault):
+    from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase
+    from tinyassets.broker.key_service import account_id, broker_service
 
     ledger, call = vault
-    row = call('create', url='https://example.com/')
-    path = browser_vault.key_path(ledger, 'alice')
-    legacy = ledger._db_path.parent / 'browser-vault' / path.name
-    legacy.parent.mkdir()
-    path.replace(legacy)
-    synced = []
-
-    def sync(directory):
-        if directory == path.parent.parent:
-            assert legacy.exists()
-        synced.append(directory)
-
-    monkeypatch.setattr(browser_vault, '_sync_directory', sync)
-    call('read', id=row['id'])
-    assert synced == [path.parent, path.parent.parent, legacy.parent]
-    assert not legacy.exists()
+    own = call('create', url='https://example.com/')
+    foreign = call('create', owner='bob', home='home-b', url='https://example.com/')
+    call('save', id=own['id'], revision=1, state={'cookies': [{'value': 'secret-123456789'}]})
+    erased = local_erase(ledger, principal='alice', command_center=ACCOUNT_SCOPE)
+    assert erased['browser_vault'] == 1
+    service = broker_service(ledger._data_root)
+    with service._connect() as conn:
+        assert conn.execute(
+            'SELECT 1 FROM tombstones WHERE account=?', (account_id('alice'),),
+        ).fetchone()
+    assert not list(ledger._data_root.rglob('*.key'))
+    with pytest.raises(PermissionError):
+        call('read', id=own['id'])
+    assert call('read', owner='bob', home='home-b', id=foreign['id'])['id'] == foreign['id']
 
 
 def test_concurrent_steps_reuse_rotated_cookie(vault, tmp_path, monkeypatch):
@@ -216,8 +191,6 @@ def test_capture_fences_old_save_without_losing_state(vault):
 
 
 def test_ciphertext_cannot_be_transplanted(vault):
-    from cryptography.exceptions import InvalidTag
-
     ledger, call = vault
     a = call('create', url='https://example.com/')
     b = call('create', url='https://example.com/', account='Second')
@@ -225,7 +198,7 @@ def test_ciphertext_cannot_be_transplanted(vault):
     with ledger._connect() as conn:
         conn.execute('UPDATE browser_vault SET sealed=(SELECT sealed FROM browser_vault '
                      'WHERE id=?),revision=2 WHERE id=?', (a['id'], b['id']))
-    with pytest.raises(InvalidTag):
+    with pytest.raises(PermissionError, match='browser connection unavailable'):
         call('read', id=b['id'])
 
 
@@ -281,23 +254,6 @@ def test_agent_cannot_request_capture_or_export(tmp_path, monkeypatch):
     for action in ('frame', 'input', 'evaluate', 'cookies', 'storage', 'export'):
         with pytest.raises(ValueError):
             browser_sessions.agent(tmp_path, context, {'action': action, 'id': 'x'})
-
-
-def test_account_erasure_removes_only_owners_ciphertext_and_key(vault):
-    from tinyassets.broker.account_erasure import ACCOUNT_SCOPE, local_erase
-    from tinyassets.broker.browser_vault import key_path
-
-    ledger, call = vault
-    own = call('create', url='https://example.com/')
-    foreign = call('create', owner='bob', home='home-b', url='https://example.com/')
-    own_key = key_path(ledger, 'alice')
-    assert own_key.exists()
-    erased = local_erase(ledger, principal='alice', command_center=ACCOUNT_SCOPE)
-    assert erased['browser_vault'] == 1
-    assert not own_key.exists()
-    with pytest.raises(PermissionError):
-        call('read', id=own['id'])
-    assert call('read', owner='bob', home='home-b', id=foreign['id'])['id'] == foreign['id']
 
 
 def test_capture_state_values_include_previous_cookie_but_not_metadata():
@@ -368,22 +324,8 @@ def test_abandoned_capture_revalidates_retained_session(vault, tmp_path, monkeyp
     assert call('read', id=row['id'])['state'] == state
 
 
-def test_interrupted_key_write_never_publishes_partial_key(vault, monkeypatch):
-    import os
-
-    from tinyassets.broker.browser_vault import key_path
-
-    ledger, call = vault
-    real_fsync = os.fsync
-
-    def crash(_):
-        raise OSError('interrupted write')
-
-    monkeypatch.setattr(os, 'fsync', crash)
-    with pytest.raises(OSError):
-        call('create', url='https://example.com/')
-    assert not key_path(ledger, 'alice').exists()
-    monkeypatch.setattr(os, 'fsync', real_fsync)
+def test_create_does_not_publish_a_raw_browser_key(vault, tmp_path):
+    _ledger, call = vault
     row = call('create', url='https://example.com/')
-    assert len(key_path(ledger, 'alice').read_bytes()) == 32
-    assert call('read', id=row['id'])['status'] == 'needs_login'
+    assert row['status'] == 'needs_login'
+    assert not list(tmp_path.rglob('*.key'))
