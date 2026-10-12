@@ -1,0 +1,14 @@
+{
+  "_comment": "Browser origins allowed to call /mcp: our own site plus MCP client web apps. Data, not code (channel-agnostic substrate).",
+  "origins": [
+    "https://tinyassets.io",
+    "https://www.tinyassets.io",
+    "https://claude.ai",
+    "https://www.claude.ai",
+    "https://claude.com",
+    "https://www.claude.com",
+    "https://chatgpt.com",
+    "https://www.chatgpt.com",
+    "https://chat.openai.com"
+  ]
+}
