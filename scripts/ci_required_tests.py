@@ -814,6 +814,33 @@ def _read_selection(args: argparse.Namespace) -> list[str] | None:
     return [rel for rel in gating if shard_of(rel, args.shard[1]) == args.shard[0]]
 
 
+def ci_select(tier: str, out: Path, *, base: str | None = None,
+              changed: list[str] | None = None) -> tuple[str, str]:
+    """The workflow and local oracle's one PR/queue selection entry point."""
+    if tier == "all":
+        out.write_text("ALL\n", encoding="utf-8")
+    else:
+        if (base is None) == (changed is None):
+            raise SystemExit("--ci-select needs exactly one of --base or --changed")
+        cmd = [sys.executable, "scripts/affected_tests.py", f"--{tier}",
+               "--out", str(out)]
+        cmd += ["--base", base] if base is not None else ["--changed", *changed]
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+        if tier == "gate":
+            entries = selection_entries(out)
+            if entries is not None:
+                runnable, _ = collectible_under_gate(gating_selection(
+                    entries, ".github/heavy-test-files.txt"))
+                out.write_text("".join(f"{rel}\n" for rel in runnable) if runnable
+                               else "ALL\n", encoding="utf-8")
+    entries = selection_entries(out)
+    scope = "ALL" if entries is None else "affected"
+    digest = selection_digest(entries)
+    count = len(entries) if entries is not None else "ALL"
+    print(f"selection: {tier} {scope} | {count} files | digest {digest}", flush=True)
+    return scope, digest
+
+
 def run_oracle_venues(cmd, *, args, selection, env, junit):
     """Run one selection in two identities and publish one fail-closed receipt."""
     if os.name != "posix" or os.geteuid() != 0:
@@ -1017,6 +1044,11 @@ def main() -> int:
             "cannot disagree about what the selection is."
         ),
     )
+    ap.add_argument("--ci-select", choices=("pr", "gate", "all"),
+                    help="write the exact workflow selection and print its digest")
+    ap.add_argument("--base", help="base ref for --ci-select")
+    ap.add_argument("--changed", nargs="*", help="changed paths for --ci-select")
+    ap.add_argument("--out", help="selection file for --ci-select")
     ap.add_argument(
         "--prune-to-collectible",
         metavar="FILE",
@@ -1040,6 +1072,11 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    if args.ci_select:
+        if not args.out:
+            raise SystemExit("--ci-select needs --out")
+        ci_select(args.ci_select, Path(args.out), base=args.base, changed=args.changed)
+        return 0
     if args.print_selection_digest:
         print(selection_digest(selection_entries(Path(args.print_selection_digest))))
         return 0

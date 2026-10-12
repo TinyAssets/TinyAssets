@@ -70,3 +70,71 @@ Live proof on customized tiny, without naming skills: teach/recall a benign fact
 ## Open Questions
 
 No owner decision gates this plan. Keep "Welcome, commander" as editable starter copy. Failed technical prerequisites remain visible engineering work; an unanswered customization offer has the safe default above.
+
+## C2 folded obligations
+
+The following unfinished source tasks retain their acceptance detail; the one target change owns them.
+
+### starter-seed-lifecycle
+
+Implementation absorbed into K2, `feat/four-tool-starter-cutover`, draft PR #4517,
+at the founder's explicit continuation request. This remains the sole D10 seed
+mechanism. API and consumer wiring are implemented and tested. Native tool exclusion and
+live acceptance remain pending; see the parent implementation evidence.
+
+## 1. Define and install
+
+- [x] 1.1 Implement immutable manifests and exact predecessor hashes with path validation; verify stock, unknown and legacy missing-path classification.
+- [x] 1.2 Implement design schema v1 at the canonical center sidecar starter-seeds.sqlite3 path, including binding, scoped composite keys, journal/byte blobs, tombstones and notice outbox; provision in one recoverable transaction and distinguish deletion from never-installed paths.
+- [x] 1.3 Implement exclusive creation and conditional automatic replacement of seed-identical files, preserving custom/empty/linked/unreadable/deleted paths without traversal.
+
+## 2. Recover and expose
+
+- [ ] 2.1 Implement turn-boundary index/receipt visibility and crash recovery with concurrent-edit preservation; verify data-loss and cross-user/center mutation matrices for create, replace, race, retry, forged binding/transaction/blob IDs, tombstones, candidates, notices and Undo.
+- [x] 2.2 Add one durable version-keyed notice with condition-specific legacy empty/linked/unreadable-AGENTS former-defaults diagnostics and actual hook/skill outcomes, plus optional hash-bound adoption/reinstall; verify missing responses never hold activation and notices deduplicate.
+- [x] 2.3 Add one-click conditional file Undo and durable owner-choice/tombstone handling; verify changed files survive and no legacy runtime or extraction is restarted.
+
+## 3. Expose and prove the mechanism
+
+- [x] 3.1 Expose and contract-test the provisioning/upgrade/resume API and per-path outcomes using stock/custom/deleted fixtures, including new hooks beside unchanged AGENTS.md. Consumer/renderer wiring and all-center/dormant-center cutover proof depend exclusively on starter-agent-out-of-plumbing task 2.3; do not duplicate them here.
+- [ ] 3.2 Run affected tests/heavy files and ruff; assert deployed SHA and prove stock auto-upgrade, customized preservation, visible notice and file Undo through the real app.
+- [ ] 3.3 Sync starter-seed-lifecycle and confirm the parent D10 references this sole mechanism; archive only after live acceptance.
+
+
+### starter-muse-package
+
+## 1. Package
+
+- [x] 1.1 Publish editable settings, personal files and six on-demand skills.
+- [x] 1.2 Supply goals, monitor and reminder check-in scripts and workflow recipes with dial-aware notifications.
+- [x] 1.3 Supply editable app_ui component for chat, feed, ideas, goals and files.
+
+## 2. Verification and delivery
+
+- [x] 2.1 Verify materialized bundle discovery, workflow helper/notify, dial and real browser layout on Linux; keep prompt budgets.
+- [x] 2.2 Build plugin mirror, ruff and hygiene; commit verified slices and open draft PR #4520.
+- [x] 2.3 Run Claude review (ADAPT, findings fixed), record verdict/dispositions, merge origin/main, push final slice.
+- [ ] 2.4 Verify fresh-account seeding and existing-account preservation through D10 consumer after prerequisite lands.
+- [ ] 2.5 Assert deployed SHA and complete a real-user app pass after merge/deployment (package-content spec synced; delivery still blocked).
+
+
+### clean-agent-start
+
+Implementation backlog only; proposal work does not complete these boxes. Depends on D10's existing transaction mechanism and coordinated starter consumer cutover; D7 owns the editor.
+
+## 1. Define and consume the clean profile
+
+- [ ] 1.1 Add the three plain personal templates as a revision of the existing seed manifest; verify exact fresh baseline, empty memory, verbatim supplied values and no eager companions/AGENTS.md.
+- [ ] 1.2 Replace the file-presence home sentinel with authenticated center state across first_contact, home rebind and scheduling; verify deleted Soul keeps the same home, plus sparse UniverseSoul/branch/Loop-branch reads without rewriting files.
+- [ ] 1.3 Preserve owner-selected soul.edit behavior and lazily materialize D10's editable default policy/history on first permitted use; verify deletion overrides and use D7's replacement operation after handle retirement.
+
+## 2. Preserve existing homes
+
+- [ ] 2.1 Supply conservative personal-file classification to D10; prove all legacy companions and unreceipted/custom/empty/deleted/linked/unreadable paths survive, including case collisions.
+- [ ] 2.2 Integrate the profile with D10 notices and conditional Undo; verify data-loss/cross-user mutations, concurrent edits, crashes, retries, dormant wake and recorded owner choices without implementing a second journal.
+- [ ] 2.3 Coordinate MEMORY.md and harness-path classification with command-center-cutover and D7's three-file editor; prove preservation on both sides of cutover.
+
+## 3. Verify and close
+
+- [ ] 3.1 Keep existing test names; run affected tests/heavy files on Windows and Linux 3.11 oracle, ruff on touched Python, plugin mirror if tinyassets changes, and hygiene gate with 0 removed / 0 tampering.
+- [ ] 3.2 Assert deployed implementation SHA and complete a real-user fresh-account/edit/Undo pass plus an existing-account preservation pass; sync starter-seed-lifecycle after its prerequisite without replacing its other requirements.

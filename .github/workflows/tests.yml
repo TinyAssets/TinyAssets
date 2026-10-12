@@ -280,15 +280,9 @@ jobs:
           if [ "${{ github.event_name }}" = "merge_group" ] && [ -n "${BASE:-}" ]; then
             # --gate, not the advisory PR-time selection: ALL unless the diff
             # shape carries a completeness argument (affected_tests.provable_shape).
-            python scripts/affected_tests.py --gate --base "$BASE" --out affected.txt
-            # Drop files that collect nothing under this gate's -m "not slow",
-            # BEFORE the digest, so a slow-only file neither fails coverage nor
-            # makes its shard exit 5.
-            python scripts/ci_required_tests.py \
-              --exclude-from .github/heavy-test-files.txt \
-              --prune-to-collectible affected.txt
+            python scripts/ci_required_tests.py --ci-select gate --base "$BASE" --out affected.txt
           else
-            echo ALL > affected.txt
+            python scripts/ci_required_tests.py --ci-select all --out affected.txt
           fi
           DIGEST="$(python scripts/ci_required_tests.py --print-selection-digest affected.txt)"
           if [ "$(cat affected.txt)" = "ALL" ]; then SCOPE=ALL; else SCOPE=affected; fi
@@ -333,6 +327,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # test_shape_registry diffs against main. The shard runs in the linux
+          # oracle, which bind-mounts this checkout at /src and re-inits a
+          # one-commit repo at /work. Depth 1 leaves /src with no parent and no
+          # origin/main (merge_group run 38208790984, shard 2/6). 0 fetches
+          # main. The guard prefers github.event.merge_group.base_sha, passed
+          # into the oracle below, because HEAD~1 is the previous queue entry
+          # when a group holds more than one PR.
+          fetch-depth: 0
 
       # This host only plans the shard; dependencies live in the oracle image.
       # Enabling pip caching here fails cleanup on a cold host with no pip cache.
@@ -422,6 +425,7 @@ jobs:
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \
+            --env MERGE_GROUP_BASE_SHA=${{ github.event.merge_group.base_sha }} \
             --env "GITHUB_STEP_SUMMARY=/out/summary-shard-${{ matrix.shard }}.md" \
             -- \
             --junit "/out/junit-shard-${{ matrix.shard }}.xml" \
@@ -443,6 +447,7 @@ jobs:
             --apparmor ta-jail-userns \
             --env TINYASSETS_DATA_DIR=/tmp/ta-data \
             --env CI=true --env GITHUB_ACTIONS=true \
+            --env MERGE_GROUP_BASE_SHA=${{ github.event.merge_group.base_sha }} \
             --env "GITHUB_STEP_SUMMARY=/out/summary-shard-${{ matrix.shard }}.md" \
             -- \
             --junit "/out/junit-shard-${{ matrix.shard }}.xml" \
@@ -508,7 +513,8 @@ jobs:
 
       - name: Select the tests this change can affect
         run: |
-          python scripts/affected_tests.py --pr --base HEAD^1 --out affected.txt
+          python scripts/ci_required_tests.py --ci-select pr --base HEAD^1 --out affected.txt
+          python scripts/ci_required_tests.py --print-selection-digest affected.txt
           { echo "### Selection"; echo; echo '```'; head -c 60000 affected.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       # Preview rendering requires a bubblewrap PID namespace as well as

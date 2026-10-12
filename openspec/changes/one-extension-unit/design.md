@@ -267,3 +267,161 @@ cleanup fails. The sandboxed frame owns no bearer; its parent verifies the live
 projection before each bridge action, retaining the existing owner/session/frame
 checks. Activation validates renderability before committing. A failed projection
 write is reported; reactivation with the read-back generation repairs projection.
+
+## C2 folded obligations
+
+The following unfinished source tasks retain their acceptance detail; the one target change owns them.
+
+### command-center-harness-control
+
+Implementation backlog for general primitives only. T1-T10 is a capability checklist for user-built command-center projects, never a platform setup delivery requirement. D7 owns editor/history, D8/D9 own package/main selection, and starter-agent-out-of-plumbing owns renderer replacement; extend those paths rather than duplicating them.
+
+## 1. Runtime settings
+
+- [x] 1.1 Implement v1 settings validation, sparse/default and legacy-model behavior with revision snapshots; verify malformed/duplicate/unknown fields fail visibly and package bindings remain local.
+- [ ] 1.2 Wire one resolver into foreground/background turns, tool/skill selection, starter hooks and model/loop controls; verify next-turn changes, current revocation and no platform LLM fallback.
+
+## 2. Extension mechanism
+
+- [ ] 2.1 Extend existing manifests to v2 hooks with v1 tool-only support, pinned code revisions and jail execution; verify deterministic order, owner/center confinement, exact-revision third-party activation and manual/automatic recipient updates for hooks, extensions, agents and channel-template code with author/ceiling grants. Prove silent unchanged-scope updates cannot read recipient data and activated hooks cannot inspect a raw-key stdio server's isolated process/environment/files; verify mediated stdout/stderr uses broker scanning before any output sink.
+- [ ] 2.2 Wire all six lifecycle events, tool replacement and owner-supplied loop calls through ta; verify failure/cancellation, no recursive hook dispatch and no uncertain-effect retry.
+- [ ] 2.3 Add extension commands/cards with owner-content provenance and existing protected request references; verify no counterfeit decisions or receipts. Prove package/template/agent classifications remain inert until exact-revision owner approval through the protected owner-authenticated rule-write surface, including send_payment mislabeled read under a standing read grant; reject bearer-only writes and stale approval reuse.
+
+## 3. UI parity and primitive verification
+
+- [ ] 3.0 Add permission-bound subscribe/unsubscribe, snapshot/cursor replay and live activity/tool/approval/task/process events; verify dedupe, resync after retention/backpressure, account switching and revocation.
+
+- [ ] 3.1 Expose shared ta search/describe/call through the existing bridge and installation permission binding; verify connections, memory, harness/history, rules and model/extension capabilities.
+- [ ] 3.2 Implement revision-checked edits and exact-revision permission/frame invalidation, including recipient updates and explicit author/ceiling auto-update grants; prove cross-user mutations, unchanged-scope hostile updates, guessed IDs, link escapes, copied bundles, account switching, stale responses and revocation cannot cross bindings.
+- [ ] 3.3 Coordinate D7/D8/D9 and starter acceptance: prove owner-controlled main replacement, hook disablement and model-independent recovery without duplicate installation or editor paths; verify broker-only credential isolation with synthetic hostile-skill probes and recipient-local bindings at the primitive level.
+- [ ] 3.4 Keep test names; run affected/heavy tests on Windows and Linux 3.11 oracle, touched-Python ruff, plugin mirror for tinyassets edits and hygiene gate with 0 removed / 0 tampering.
+- [ ] 3.5 Assert deployed implementation SHA, public canary and a real-user custom-UI settings/memory/tool/main-agent pass; sync only this capability and reconcile the parent delegation links.
+- [ ] 3.6 Expose general ta spawn, ta message and revisioned task-board operations through existing launch/mailbox/collection records; verify scoped model/delegation grants, child Stop/revocation, message identity/delivery, concurrent claims and existing budget pause. No templates or specific setups.
+
+
+### saved-agent-connectors
+
+Implementation backlog only; dependent work starts after the prerequisites in design.md.
+
+## 1. Delivery
+
+- [ ] 1.1 Consume MCP-lane credential slots, egress and connection lifecycle without implementing another card.
+- [ ] 1.2 Save exact extension revision, declared slots, local bindings and test receipts using existing extension storage.
+- [ ] 1.3 Run safe self-tests or owner-authorized effectful tests; keep failed and changed revisions visibly untested.
+- [ ] 1.4 Expose source/version, saved status and revoke/disconnect in existing connections controls.
+- [ ] 1.5 Apply exact-revision activation and author/ceiling auto-updates; fence revocation and require retesting updates.
+- [ ] 1.6 Publish credential-free connector requirements and prove second-account local binding with no source private data.
+- [ ] 1.7 Run affected/heavy tests, Linux oracle where sandbox work is touched, ruff and hygiene (0 removed / 0 tampering).
+- [ ] 1.8 Assert deployed SHA and real-user author/test/save/reuse/revoke proof; sync the capability.
+
+
+### connect-anything-ladder
+
+Implementation backlog only. Card ownership belongs to inline-connect-and-approve; browser and saved extensions have separate changes.
+
+## 1. MCP attach, secret entry and OAuth
+
+- [ ] 1.1 Verify generic OAuth, streaming broker and existing request/card prerequisites; add typed MCP metadata preserving HTTP rows and rollback cleanup.
+- [x] 1.2 Add MCP OAuth metadata discovery, PKCE/resource binding and DCR/CIMD/static registration without per-platform code; retain the optional provider directory.
+- [x] 1.3 Extend the remote adapter to MCP 2026-07-28 and legacy negotiation, JSON/SSE, scanned auth challenges, HTTP cancellation and host-bound URL MRTR continuation; prove local standards-server traffic through broker IPC and uncertain-call non-replay. Live host callback/durable wake wiring remains 1.6 (see docs/concerns/mcp-current-protocol-host-wiring.md).
+- [ ] 1.4 Implement exact-revision jailed stdio and scoped proxy auth; support warned named-own-key opt-in in a separate process/user/filesystem sandbox, with grant/revision isolation and no host fallback. Verify agent/other-author code cannot read server /proc, environment, arguments or files; reuse broker scanning on stdout/stderr and prove split-chunk key bytes never reach model context, logs or transcript. Verify the warning names only that server's code and author as key readers.
+- [ ] 1.5 Implement protected secret entry and allowlisted egress slots with owner/incarnation checks and credential-free output/export.
+- [ ] 1.6 Wire ta catalog/dispatch and existing inline coordinator; verify stale catalogs, Stop, account switching, callback replay and crash recovery.
+- [ ] 1.7 Fence revocation before durable cleanup; preserve independent backing HTTP connections and prevent old-incarnation reuse.
+- [ ] 1.8 Connect an unknown MCP server through the existing card with multiple accounts and model-independent controls; prove owner-classified and unknown-effect editable defaults.
+- [ ] 1.9 Run affected/heavy tests, Linux oracle, ruff and hygiene (0 removed / 0 tampering).
+- [ ] 1.10 Assert deployed SHA, public canary and real-user MCP connect/cancel/revoke pass; sync capability and delegations.
+
+
+### command-center-agent-templates
+
+## 1. Public copy contract
+- [x] 1.1 Add selected public instruction-template export and source validation.
+- [x] 1.2 Add private idempotent recipient binding installation and explicit UI reference remapping.
+- [x] 1.3 Refuse unsupported nested workflow dependencies before copy and describe absent templates.
+## 2. Verification and delivery
+- [x] 2.1 Prove isolation, unsupported-source refusal, no-provider execution and crash replay with meaningful tests.
+- [x] 2.2 Integrate frontend agent aliases, independent exact-head floor review and hosted browser proof.
+- [ ] 2.3 Complete protected merge/deployment, real-user functional acceptance and spec sync.
+
+Delivery evidence (2026-10-05, draft PR #4515): frontend `whoami().agent_refs`
+and `openChat` integration was already on main. Commit `73b3ddc9e4` adds the
+authenticated installed-directory handoff and extends the real Chromium proof
+to file-package copies as well as screen-only copies. Linux oracle: 246 passed,
+including static prompt budgets; ruff and plugin rebuild/import probe passed;
+hygiene: 0 removed, 0 tampering. Claude reviewed that exact implementation head:
+APPROVE, no floor/correctness findings; lead AGREE.
+
+Hosted browser cases and the no-skip assertion passed in
+[run 37406639881](https://github.com/TinyAssets/TinyAssets/actions/runs/37406639881).
+The PR records the review receipt and final evidence. Directory provenance does
+not authorize hooks: harness control still owns activation and safe file reads.
+Task 2.3 remains deliberately unchecked; this is not a deployment claim.
+
+CI repair (2026-10-05, PR #4515): merged `origin/main` before repair and
+rechecked before push. Job `112088492334` shows the request-continuations thread
+calling the test's process-wide fake `time.sleep(5)` and raising `StopLoop`.
+The extracted maintenance loop now receives a private import scope for its
+clock and update-maintenance dependency. All prior assertions remain; update
+failure isolation, update call counts and unchanged process sleep are asserted.
+No runtime or static prompt changes; Playwright imports remain test/fixture-local.
+Linux oracle: 118 passed, zero skips (delivery account deletion/reservations,
+update maintenance, static prompt budgets, agent templates and system Chromium
+browser). Ruff and plugin rebuild/import probe passed. Claude cross-family
+review: APPROVE, no floor/correctness findings; lead AGREE. Hygiene: 0 removed,
+0 tampering. Reuse the existing draft PR; task 2.3 remains unchecked.
+
+
+### agent-box-git-credentials
+
+## 1. Diagnosis and non-authority tools
+
+- [x] 1.1 Inspect served/box paths and reproduce public clone, small pytest,
+  large exact edit, branch/merge/conflict/rebase, and persistence in Linux.
+- [x] 1.2 Install pytest on the production jail's Python, separately from the
+  daemon venv; preserve existing isolation and resource limits.
+- [x] 1.3 Complete synthetic authentication failure proof, Windows/Linux checks,
+  ruff, hygiene and draft review; record evidence in the PR body.
+
+## 2. Proposed credential route (not authorized for implementation in this lane)
+
+- [ ] 2.1 Reconcile UID-split broker interfaces and specify binary streaming IPC
+  with exact owner/agent/grant/host/repository/method bindings.
+- [ ] 2.2 Implement the route and surrogate lifecycle with current-grant checks,
+  revocation, pinned HTTPS, bounded secret scanning and unknown-push handling.
+- [ ] 2.3 Prove synthetic authenticated clone/fetch/push, wrong-owner/host/repo,
+  revoked grants, redirects, token non-exposure and binary pack integrity.
+- [ ] 2.4 Integrate with an isolating `/cc` provider, pass a real-user flow,
+  assert deployment SHA and sync the as-built spec before claiming completion.
+
+
+### outside-agent-grants
+
+Docs-only round 2; all boxes describe future implementation and acceptance. No code, deployment or live-proof completion is claimed. Tasks are split by independently verifiable surface; each section stays at or below the owner's requested 12 tasks.
+
+## 1. Identity and authority foundation
+
+- [ ] 1.1 Reconcile adjacent changes and prove AuthKit verified client claims/lookup, metadata and reconnect candidates (`auth_time` preserved on refresh; `sid` across fresh auth); specify and test protected re-consent/credential-family fallback so recovery never clears old fences.
+- [ ] 1.2 Bind verified client classification on every bearer request; configure the exact first-party issuer/client-id allowlist for web/phone/desktop; test spoofing, missing identity, CIMD/DCR, same-owner independent clients and stolen-bearer attribution semantics.
+- [ ] 1.3 Implement OutsideClientAuthority at the named platform-root SQLite path with a single transactional authority service shared by all workers, owner defaults, per-universe grants, owner/client fences and secret-free audit; test concurrency, store outage, no replica fallback and cross-universe visibility; register platform storage/backup ownership.
+- [ ] 1.4 Implement owner-editable starter agents/levels/message mode, atomic grant revisions/expiry, first-converse bootstrap and no-home status; test concurrent snapshots and preservation of existing/revoked grants.
+
+## 2. Admission and owner controls
+
+- [ ] 2.1 Enforce read grants on get_status/read_graph/read_page, including aliases, mixed collections and shared pages; verify filtering before serialization and uniform cross-user refusals.
+- [ ] 2.2 Enforce message/control/costly on converse/write_graph/run_graph/write_page and batch/alias operations; verify all affected agents/resources and missing-grant errors without effects.
+- [ ] 2.3 Apply and test every route/method disposition in bearer-surfaces.md, including all app HTTP routes, pulse and private bearer services; unknown bearer routes fail closed; first-party authorized calls still work.
+- [ ] 2.4 Propagate outside origin through existing turn/run/nested/scheduled carriers; test both owner-selected message modes, direct-call limits, mode narrowing on resume, and continuing trusted owner/universe automations and queued runs.
+- [ ] 2.5 Complete the protected owner-session integration with inline-connect-and-approve and Connected apps inventory, widening/narrowing, starter/message settings, revoke/recovery and last-used; extend scoped access readback and audit; prove bearer self-elevation cannot work. Working owner controls are a hard prerequisite to enforcement.
+- [ ] 2.6 Implement transactional local revoke and effect-admission fencing across universes/workers, open sessions, refresh and queued/pending work; test race boundaries and honest receipts for already committed effects, independently of provider revocation success.
+- [ ] 2.7 Implement fresh-generation reconnect and provider revocation attempts; test protected owner re-consent when AuthKit generation evidence is insufficient, keeping pre-revoke credentials invalid without permanent owner lockout.
+- [ ] 2.8 Integrate client provenance and current message-mode/grant revalidation with protected sensitive-action sheets and standing decisions; prove bearer approval/retry refusal and that effect approval alone cannot widen grants.
+- [ ] 2.9 Implement the NEW durable outside-only kill switch and deny-only process override; test next-admission refusal on every worker, outage fail-closed behavior, and exemptions for verified first-party and trusted owner/universe work before rollback use.
+
+## 3. Verification and live acceptance
+
+- [ ] 3.1 Rehearse cutover only after working owner controls: grandfather existing primary connectors or obtain visible owner choices, reconcile unknown legacy identity with notice before cutover, and hold only unreconciled outside-origin work. Rehearse kill-switch activation and retained/backported admission on rollback; first-party read/write/run and owner controls continue.
+- [ ] 3.2 Run focused and affected heavy tests plus ruff, cross-user mutation cases and one cross-family floor/correctness implementation review with AGREE/DISAGREE_EVIDENCE dispositions; strictly validate OpenSpec, assert deployed implementation SHA and run `python scripts/mcp_public_canary.py --assert-handles` with no added handles.
+- [ ] 3.3 Mandatory rendered live pass with two clients on one owner account (claude.ai + ChatGPT, or OpenClaw): independently edit grants, prove a missing-grant refusal, revoke one and prove refusal on its next call while the other works, then prove first-party app read/write/run and protected grant widening after cutover. Record sanitized receipts; no Muse blocker can waive this task.
+- [ ] 3.4 Additional rendered Muse proof at `https://tinyassets.io/mcp`: verify CIMD/DCR callback acceptance for `https://agent.meta.ai/api/hatch/oauth/callback`, starter grant, owner widening/message mode, sensitive sheet, audit and revoke; record sanitized receipts or the exact callback/configuration blocker, without representing a blocker as a live pass.
+- [ ] 3.5 After implementation and mandatory live proof, sync canonical specs and archive with validation/review/deployment/live receipts, explicitly recording any additional Muse blocker; keep live/outbox, A2A and outbound attach in their later changes.

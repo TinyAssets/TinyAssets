@@ -31,7 +31,7 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
 | Who has what | branches and open PRs |
 | Narrative | git log: your commit message |
 
-Orient: Direction, § Shape registry, `scripts/openspec_flow.py audit`.
+Orient: Direction, § Shape registry, "Shape reconciliation" issue.
 Converge a shape; add no second path. Write durable state before replying.
 
 ## The loop

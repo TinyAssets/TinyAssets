@@ -184,3 +184,5 @@ model and stays as the record of intent; it is not built here.
 - Split: **PR 1 = seats + queue + tier table**; **PR 2 = meter deletion**;
   storage its own change after its own storage-shape review. PR 2 rebases onto #4107 so the `app_events` emit meter is
   deleted rather than merged around.
+
+C2 folds `usage-limits-replace-caps`, `remove-non-usage-limits`, `account-storage-quota`, `consolidate-platform-resource-policy` into this single active change.

@@ -171,6 +171,7 @@ def test_both_shard_paths_hand_the_runner_its_unchanged_command_in_one_venue():
         "--out", "shard-out", "--apparmor", "ta-jail-userns",
         "--env", "TINYASSETS_DATA_DIR=/tmp/ta-data",
         "--env", "CI=true", "--env", "GITHUB_ACTIONS=true",
+        "--env", "MERGE_GROUP_BASE_SHA=<github.event.merge_group.base_sha>",
         "--env", "GITHUB_STEP_SUMMARY=/out/summary-shard-<matrix.shard>.md",
     ]
     # The runner's own command lines: what ran on the bare runner, with the
@@ -735,6 +736,49 @@ def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:
     assert "--min-ran" not in run, "the per-shard floor comes from --profile shard"
 
 
+def test_merge_group_shape_guard_checkouts_fetch_main_history() -> None:
+    """The shape guard needs main, and the shard sees it through the oracle mount.
+
+    structural-guards runs the guard on the host. required-tests-shard runs it
+    inside the linux oracle, which reads this checkout at /src. A depth-1
+    merge_group checkout has neither origin/main nor HEAD~1, so the guard
+    raises. pull_request jobs are not this checkout: affected-tests keeps
+    depth 2 so HEAD^1 is the PR base.
+    """
+    wf = _load()
+    assert "merge_group" in _triggers(wf)
+
+    def runs_shape_guard(job: dict) -> bool:
+        text = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+        return any(
+            needle in text
+            for needle in (
+                "ci_structural_guards",
+                "test_shape_registry",
+                "linux_oracle.py --required-runner",
+            )
+        )
+
+    guarded = []
+    for name, job in wf["jobs"].items():
+        if not runs_shape_guard(job):
+            continue
+        if _expr(job.get("if", "")) == "github.event_name == 'pull_request'":
+            continue
+        checkout = next(
+            step for step in job["steps"] if "actions/checkout" in str(step.get("uses", ""))
+        )
+        assert checkout.get("with", {}).get("fetch-depth") == 0, name
+        guarded.append(name)
+    assert guarded == ["structural-guards", "required-tests-shard"]
+    # slow-tests is queue-eligible and runs pytest on the host, but only the
+    # slow marker. The shape test is unmarked, so a shallow checkout there is
+    # not the failure in run 38208790984.
+    slow = "\n".join(step.get("run", "") for step in wf["jobs"]["slow-tests"]["steps"])
+    assert "pytest -m slow" in slow
+    assert "test_shape_registry" not in slow
+
+
 # ---- PR-time affected tests ----------------------------------------------------
 
 
@@ -752,7 +796,7 @@ def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> 
 def test_affected_tests_select_then_run_their_slice_through_the_gate_script() -> None:
     job = _load()["jobs"]["affected-tests"]
     run = "\n".join(s.get("run", "") for s in job["steps"])
-    assert "scripts/affected_tests.py --pr --base HEAD^1 --out affected.txt" in run
+    assert "ci_required_tests.py --ci-select pr --base HEAD^1 --out affected.txt" in run
     assert "--affected affected.txt" in run
     assert "--profile affected" in run
     # Same exclusion as the required shards: the heavy list is red at baseline.
@@ -770,7 +814,7 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
 def test_pr_tiers_use_fast_units_and_require_the_real_production_image():
     jobs = _load()["jobs"]
     unit = "\n".join(s.get("run", "") for s in jobs["affected-tests"]["steps"])
-    assert "--pr --base HEAD^1" in unit
+    assert "--ci-select pr --base HEAD^1" in unit
     assert "linux_oracle.py --required-runner" in unit
     assert "--apparmor ta-jail-userns" in unit
     image = jobs["core-capabilities"]
@@ -797,7 +841,7 @@ def test_select_installs_before_it_selects() -> None:
         i for i, s in enumerate(steps) if "pip install -e" in s.get("run", "")
     )
     pick = next(
-        i for i, s in enumerate(steps) if "affected_tests.py" in s.get("run", "")
+        i for i, s in enumerate(steps) if "--ci-select gate" in s.get("run", "")
     )
     assert install < pick
     assert "if" not in steps[install]
@@ -813,10 +857,10 @@ def test_the_gate_asks_for_the_conservative_selection() -> None:
     """
     run = next(
         s["run"] for s in _load()["jobs"]["select"]["steps"]
-        if "affected_tests.py" in s.get("run", "")
+        if "--ci-select gate" in s.get("run", "")
     )
-    assert "--gate" in run
-    assert re.search(r"affected_tests\.py\s+--gate\s+--base", run), run
+    assert "ci_required_tests.py --ci-select gate --base" in run
+    assert 'f"--{tier}"' in _SCRIPT.read_text(encoding="utf-8")
 
 
 def test_the_selection_is_pruned_before_it_is_digested() -> None:
@@ -827,10 +871,12 @@ def test_the_selection_is_pruned_before_it_is_digested() -> None:
     """
     run = next(
         s["run"] for s in _load()["jobs"]["select"]["steps"]
-        if "affected_tests.py" in s.get("run", "")
+        if "--ci-select gate" in s.get("run", "")
     )
-    assert "--prune-to-collectible affected.txt" in run
-    assert run.index("--prune-to-collectible") < run.index("--print-selection-digest"), run
+    assert run.index("--ci-select gate") < run.index("--print-selection-digest"), run
+    selector = _SCRIPT.read_text(encoding="utf-8").split("def ci_select(", 1)[1].split(
+        "\ndef run_oracle_venues", 1)[0]
+    assert selector.index("collectible_under_gate") < selector.index("selection_digest")
 
 
 def test_a_selective_run_still_refuses_a_skipped_browser_proof() -> None:
