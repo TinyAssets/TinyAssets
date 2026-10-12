@@ -63,9 +63,12 @@ class _Dispatchers:
     def ledger_for(self, principal: str):
         from tinyassets.storage.outbound_connections import ConnectionLedger
 
-        return ConnectionLedger(self._ledger_root / "outbound.db", data_root=self._data_root,
-                                allow_test_fixtures=self._allow_test_fixtures,
-                                verify_authenticated_principal=lambda: principal)
+        return ConnectionLedger(
+            self._ledger_root / "outbound.db",
+            data_root=self._data_root,
+            allow_test_fixtures=self._allow_test_fixtures,
+            verify_authenticated_principal=lambda: principal,
+        )
 
     def dispatch_for(self, principal: str, command_center: str, grant_id: str, resource: Any):
         from tinyassets.storage.outbound_connections import _build_credential_broker_dispatch
@@ -75,8 +78,10 @@ class _Dispatchers:
             dispatch = self._cache.get(key)
             if dispatch is None:
                 config = self.ledger_for(principal).broker_dispatch_config(
-                    grant_id=grant_id, universe_id=command_center,
-                    provider=resource.provider, destination=resource.destination,
+                    grant_id=grant_id,
+                    universe_id=command_center,
+                    provider=resource.provider,
+                    destination=resource.destination,
                     owner_user_id=resource.owner_user_id,
                     connection_type=resource.connection_type,
                 )
@@ -91,13 +96,16 @@ async def serve(args: argparse.Namespace) -> None:
     from tinyassets.storage.outbound_connections import _sanitize_child_environment
 
     _sanitize_child_environment()  # no TLS key logging, no ambient proxies
-    fields = dict(line.split(":", 1) for line in Path(
-        "/proc/self/status").read_text().splitlines())
-    if (os.getresuid() != (1002, 1002, 1002)
-            or os.getresgid() != (1002, 1002, 1002) or os.getgroups() != [1102]
-            or any(int(fields[key], 16) != 0 for key in
-                   ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
-            or int(fields["NoNewPrivs"]) != 1):
+    fields = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+    if (
+        os.getresuid() != (1002, 1002, 1002)
+        or os.getresgid() != (1002, 1002, 1002)
+        or os.getgroups() != [1102]
+        or any(
+            int(fields[key], 16) != 0 for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
+        )
+        or int(fields["NoNewPrivs"]) != 1
+    ):
         raise RuntimeError("broker role identity is not retired")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:
@@ -105,8 +113,7 @@ async def serve(args: argparse.Namespace) -> None:
     os.umask(0o077)  # private SQLite journals and proxy runtime files
     state = Path(args.state)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    dispatchers = _Dispatchers(Path(args.data_root),
-                               allow_test_fixtures=args.allow_test_fixtures)
+    dispatchers = _Dispatchers(Path(args.data_root), allow_test_fixtures=args.allow_test_fixtures)
     # Initialization belongs to the privileged, fenced volume migration. A
     # missing map must never silently restart allocation at the first UID.
     from tinyassets.broker.owner_identities import OwnerIdentities
@@ -121,11 +128,14 @@ async def serve(args: argparse.Namespace) -> None:
             raise RuntimeError("mapper channel requires the bootstrap's mapper pid")
         mapper_channel.start(args.mapper_channel, args.mapper_pid, identities)
     server = BrokerServer(
-        ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
+        ledger_for=dispatchers.ledger_for,
+        dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
-        fence=Fence(state / "fence.json",
-                    verify_lease_proof=lease_verifier(args.proof_sha256),
-                    lease_sha256=args.proof_sha256),
+        fence=Fence(
+            state / "fence.json",
+            verify_lease_proof=lease_verifier(args.proof_sha256),
+            lease_sha256=args.proof_sha256,
+        ),
         roles={int(args.owner_uid): OWNER},
         owner_identities=identities,
     )
@@ -140,11 +150,56 @@ async def serve(args: argparse.Namespace) -> None:
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
+    probe = asyncio.create_task(_key_service_probe(Path(args.data_root), stop))
     async with listener:
         await stop.wait()
+    probe.cancel()
+
+
+async def _key_service_probe(data_root: Path, stop: asyncio.Event) -> None:
+    """Sustained KMS failure raises the uptime alarm. A green probe clears it."""
+    from tinyassets.broker.key_service import KeyServiceUnavailable, broker_service
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
+            return
+        except TimeoutError:
+            pass
+        service = broker_service(data_root)
+        try:
+            await asyncio.to_thread(service.probe)
+            _key_service_alarm(False)
+        except KeyServiceUnavailable:
+            if service.health_snapshot().get("alarm"):
+                _key_service_alarm(True)
+
+
+def _key_service_alarm(active: bool) -> None:
+    from datetime import datetime, timezone
+
+    path = Path(
+        os.environ.get(
+            "TINYASSETS_UPTIME_ALARM_LOG",
+            "/var/log/tinyassets-uptime-alarms.log",
+        )
+    )
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    line = (
+        f"{stamp} ALARM KEY_SERVICE reason=key_service\n"
+        if active
+        else f"{stamp} RECOVERED KEY_SERVICE\n"
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError:
+        return
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.environ["TINYASSETS_BROKER_PROCESS"] = "1"
     parser = argparse.ArgumentParser(prog="tinyassets.broker.process")
     parser.add_argument("--socket", required=True)
     parser.add_argument("--state", required=True)

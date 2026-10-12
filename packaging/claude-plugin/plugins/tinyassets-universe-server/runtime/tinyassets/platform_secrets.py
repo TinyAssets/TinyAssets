@@ -48,6 +48,11 @@ DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
     # Template placeholders no code reads (``host_pool`` is never imported).
     "SUPABASE_DB_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
+    # Vault root credential. The broker reads the 0400 file; the daemon and
+    # engine children must not see the names.
+    "TINYASSETS_VAULT_KMS_KEY_ARN",
+    "TINYASSETS_VAULT_AWS_ACCESS_KEY_ID",
+    "TINYASSETS_VAULT_AWS_SECRET_ACCESS_KEY",
 })
 # This list is a DENY list filtered out of daemon.env
 # (`install-tinyassets-env.sh render-daemon-env`), so de-listing a key that is

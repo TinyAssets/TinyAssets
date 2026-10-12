@@ -16,6 +16,9 @@ from typing import Any, Callable
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+# The vault's KMS root is an in-memory double in tests. Production refuses it.
+os.environ.setdefault("TINYASSETS_VAULT_TEST_DOUBLE", "1")
+
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.providers import call as _provider_call
