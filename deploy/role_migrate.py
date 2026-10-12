@@ -39,6 +39,7 @@ import pickle
 import re
 import runpy
 import secrets
+import shutil
 import sqlite3
 import stat
 import struct
@@ -671,22 +672,48 @@ def check(root, modes):
             actual = _live_label(root, path)
             if actual != wanted:
                 diffs.append(f"label: {path} {_show(actual)} -> {_show(wanted)}")
-    policy = Path(f'/proc/self/fd/{root}')
-    for name in ('.platform', '.platform/accounts', '.platform/accounts/.legacy-policy'):
-        if not (policy / name).exists():
-            diffs.append(f'create: {name}')
-    legacy = policy / '.agent-sessions'
-    if legacy.is_dir():
-        for center in legacy.iterdir():
-            if CENTER.fullmatch(center.name) and (center / 'rules.db').is_file():
-                frozen = policy / '.platform/accounts/.legacy-policy' / f'{center.name}.db'
-                if not frozen.is_file():
-                    diffs.append(f'freeze: {center.name}/rules.db')
+    diffs += check_policy(root)
     if _label(root) != (DAEMON, DAEMON, 0o755, None, None):
         diffs.append("label: data root")
     if document is None or document.get("split") != SPLIT:
         diffs.append("marker: missing owner-split")
     return plan, diffs
+
+
+def check_policy(root):
+    """Read-only policy custody check, safe while the old daemon is serving."""
+    data = Path(f'/proc/self/fd/{root}')
+    diffs = []
+    for name, uid, gid, mode in (
+            ('.platform', DAEMON, 1102, 0o710),
+            ('.platform/accounts', BROKER, BROKER, 0o700),
+            ('.platform/accounts/.legacy-policy', 0, BROKER, 0o750)):
+        path = data / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            diffs.append(f'create: {name}')
+            continue
+        if (not stat.S_ISDIR(info.st_mode) or
+                (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
+                (uid, gid, mode)):
+            diffs.append(f'freeze: {name}')
+    legacy = data / '.agent-sessions'
+    if legacy.is_dir():
+        for center in legacy.iterdir():
+            if not CENTER.fullmatch(center.name) or not (center / 'rules.db').is_file():
+                continue
+            frozen = data / '.platform/accounts/.legacy-policy' / f'{center.name}.db'
+            try:
+                info = frozen.lstat()
+            except FileNotFoundError:
+                diffs.append(f'freeze: {center.name}/rules.db')
+                continue
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                    (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
+                    (0, BROKER, 0o440)):
+                diffs.append(f'freeze: {center.name}/rules.db')
+    return diffs
 
 
 @contextmanager
@@ -958,58 +985,134 @@ def step_labels(root, bindings, modes):
 
 
 def step_policy(root):
-    """Freeze legacy rules in broker custody during the offline privileged cutover."""
-    data = Path(f'/proc/self/fd/{root}')
+    """Freeze legacy rules in broker custody (offline or online under root)."""
     changed = 0
-    for name, uid, gid, mode in (
-            ('.platform', DAEMON, 1102, 0o710),
-            ('.platform/accounts', BROKER, BROKER, 0o700),
-            ('.platform/accounts/.legacy-policy', 0, BROKER, 0o750)):
-        path = data / name
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            path.mkdir(mode=mode)
-            info = path.lstat()
-            changed += 1
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, DAEMON, BROKER):
-            raise MigrationRefused(f'unsafe policy directory: {name}')
-        if (info.st_uid, info.st_gid) != (uid, gid):
-            os.chown(path, uid, gid)
-            changed += 1
-        if stat.S_IMODE(path.lstat().st_mode) != mode:
-            os.chmod(path, mode)
-            changed += 1
-    legacy = data / '.agent-sessions'
-    if not legacy.exists():
-        return changed
-    frozen = data / '.platform/accounts/.legacy-policy'
-    for center in legacy.iterdir():
-        if not CENTER.fullmatch(center.name):
-            continue
-        source = center / 'rules.db'
-        if not source.exists():
-            continue
-        target = frozen / f'{center.name}.db'
-        if target.exists():
-            continue
-        info = source.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0:
-            raise MigrationRefused(f'unsafe legacy rules: {center.name}')
-        temporary = frozen / f'{center.name}.db.tmp'
-        temporary.unlink(missing_ok=True)
-        # SQLite backup includes committed WAL rows without trusting the daemon's
-        # replaceable source path after the service starts.
-        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as db:
-            with closing(sqlite3.connect(temporary)) as snapshot:
-                db.backup(snapshot)
-        os.chown(temporary, 0, BROKER)
-        os.chmod(temporary, 0o440)
-        with temporary.open('rb') as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-        changed += 1
+    with ExitStack() as stack:
+        staging = stack.enter_context(_directory(root, BROKER_DIR))
+        broker_info = os.fstat(staging)
+        if (broker_info.st_uid != BROKER or broker_info.st_gid != BROKER_GROUP
+                or not stat.S_ISDIR(broker_info.st_mode)):
+            raise MigrationRefused('unsafe broker staging directory')
+        for temporary in os.listdir(staging):
+            if re.fullmatch(r'\.policy-stage-[0-9a-f]{24}', temporary):
+                with _directory(staging, temporary) as abandoned:
+                    if os.listdir(abandoned):
+                        raise MigrationRefused('nonempty abandoned policy stage')
+                os.rmdir(temporary, dir_fd=staging)
+                changed += 1
+        parent = root
+        for name, uid, gid, mode in (
+                ('.platform', DAEMON, 1102, 0o710),
+                ('accounts', BROKER, BROKER, 0o700),
+                ('.legacy-policy', 0, BROKER, 0o750)):
+            if _stat(parent, name) is None:
+                # Prepare labels under broker custody, then publish in one
+                # rename. The live daemon can rename entries in /data; never
+                # chown an inode looked up through that mutable namespace.
+                temporary = '.policy-stage-' + secrets.token_hex(12)
+                os.mkdir(temporary, 0o700, dir_fd=staging)
+                try:
+                    with _directory(staging, temporary) as prepared:
+                        os.fchown(prepared, uid, gid)
+                        os.fchmod(prepared, mode)
+                        os.fsync(prepared)
+                    os.rename(temporary, name, src_dir_fd=staging,
+                              dst_dir_fd=parent)
+                finally:
+                    if _stat(staging, temporary) is not None:
+                        os.rmdir(temporary, dir_fd=staging)
+                os.fsync(parent)
+                changed += 1
+            directory = stack.enter_context(_directory(parent, name))
+            info = os.fstat(directory)
+            if (not stat.S_ISDIR(info.st_mode) or
+                    (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) !=
+                    (uid, gid, mode)):
+                raise MigrationRefused(f'unsafe policy directory: {name}')
+            parent = directory
+        frozen = parent
+        if _stat(root, '.agent-sessions') is None:
+            return changed
+        legacy = stack.enter_context(_directory(root, '.agent-sessions'))
+        for center_name in os.listdir(legacy):
+            if not CENTER.fullmatch(center_name):
+                continue
+            with _directory(legacy, center_name) as center:
+                if _stat(center, 'rules.db') is None:
+                    continue
+                target = f'{center_name}.db'
+                if _stat(frozen, target) is not None:
+                    continue
+                source_fd = os.open('rules.db', _LEAF, dir_fd=center)
+                try:
+                    info = os.fstat(source_fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or info.st_uid != 0):
+                        raise MigrationRefused(f'unsafe legacy rules: {center_name}')
+                    # Copy pinned descriptors to a private root-only directory.
+                    # SQLite then sees committed WAL rows without following a
+                    # replaceable daemon-owned center path as root.
+                    with tempfile.TemporaryDirectory(prefix='ta-policy-') as private:
+                        for suffix in ('', '-wal', '-journal'):
+                            fd = source_fd if not suffix else None
+                            if suffix:
+                                if _stat(center, 'rules.db' + suffix) is None:
+                                    continue
+                                fd = os.open('rules.db' + suffix, _LEAF, dir_fd=center)
+                            try:
+                                side = os.fstat(fd)
+                                if (not stat.S_ISREG(side.st_mode) or side.st_nlink != 1
+                                        or side.st_uid != 0 or side.st_mode & 0o222):
+                                    raise MigrationRefused(
+                                        f'unsafe legacy rules sidecar: {center_name}')
+                                os.lseek(fd, 0, os.SEEK_SET)
+                                with os.fdopen(os.dup(fd), 'rb') as source, open(
+                                        Path(private) / ('rules.db' + suffix), 'xb') as copy:
+                                    shutil.copyfileobj(source, copy)
+                            finally:
+                                if suffix:
+                                    os.close(fd)
+                        temporary = target + '.tmp'
+                        if _stat(frozen, temporary) is not None:
+                            os.unlink(temporary, dir_fd=frozen)
+                        with closing(sqlite3.connect(
+                                (Path(private) / 'rules.db').as_uri() + '?mode=ro',
+                                uri=True)) as db:
+                            with closing(sqlite3.connect(
+                                    f'/proc/self/fd/{frozen}/{temporary}')) as snapshot:
+                                db.backup(snapshot)
+                        temp_fd = os.open(temporary, _LEAF, dir_fd=frozen)
+                        try:
+                            os.fchown(temp_fd, 0, BROKER)
+                            os.fchmod(temp_fd, 0o440)
+                            os.fsync(temp_fd)
+                        finally:
+                            os.close(temp_fd)
+                        os.replace(temporary, target, src_dir_fd=frozen,
+                                   dst_dir_fd=frozen)
+                        os.fsync(frozen)
+                        changed += 1
+                finally:
+                    os.close(source_fd)
     return changed
+
+
+def policy_online(data_root, *, apply):
+    """Converge only policy custody while the old daemon keeps serving."""
+    if os.geteuid() != 0:
+        raise MigrationRefused('online policy freeze requires root in the operator container')
+    with _root(data_root) as root:
+        marker = _marker(root)
+        if (not marker or marker.get('split') != SPLIT or marker.get('layout') != LAYOUT
+                or marker.get('state') != 'stable'):
+            raise MigrationRefused('online policy freeze requires completed owner split')
+        if apply:
+            step_policy(root)
+        diffs = check_policy(root)
+        for diff in diffs:
+            print(diff)
+        print(f'policy check: {len(diffs)} diffs', file=sys.stderr)
+        return 1 if diffs else 0
 
 
 # --------------------------------------------------------------------------
@@ -1263,15 +1366,27 @@ def main(argv=None):
     mode.add_argument("--manifest", action="store_true")
     mode.add_argument("--snapshot")
     mode.add_argument('--repair-content-online', action='store_true')
+    mode.add_argument('--policy-online', action='store_true',
+                      help='online policy-only freeze/check for deploy')
+    parser.add_argument('--policy-only', action='store_true',
+                        help='with --check, inspect policy custody without the offline lock')
     parser.add_argument('--backup', help='verified full backup for online repair')
     parser.add_argument('--apply', action='store_true',
                         help='apply online repair (default: inspect)')
     parser.add_argument("--snapshot-bytes", type=int)
     args = parser.parse_args(argv)
-    if (args.apply or args.backup) and not args.repair_content_online:
-        parser.error('--apply and --backup belong to --repair-content-online')
+    if args.apply and not (args.repair_content_online or args.policy_online):
+        parser.error('--apply needs an online mode')
+    if args.backup and not args.repair_content_online:
+        parser.error('--backup belongs to --repair-content-online')
+    if args.policy_only and not args.check:
+        parser.error('--policy-only requires --check')
     modes = load_modes(args.app)
     try:
+        if args.policy_online:
+            return policy_online(args.data_root, apply=args.apply)
+        if args.policy_only:
+            return policy_online(args.data_root, apply=False)
         if args.repair_content_online:
             report = repair_content_online(args.data_root, snapshot=args.backup, apply=args.apply)
             print(json.dumps(report, sort_keys=True))

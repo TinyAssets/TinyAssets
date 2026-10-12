@@ -612,14 +612,15 @@ class _Connection:
             answer = {"op": "OWNER_POLICY_RESULT", "result": result}
             rf.control(rf.CONNECTION, answer)
             return answer
-        except (PolicyRefused, ValueError, TypeError, sqlite3.Error):
+        except (PolicyRefused, ValueError, TypeError, sqlite3.Error, OSError) as exc:
             if action in {"write", "issue_once"}:
                 try:
                     self._server._policy_store.receipt_refusal(
                         owner, action, {k: v for k, v in doc.items() if k != "cookie"})
                 except Exception:  # noqa: BLE001 - refuse regardless of receipt failure
                     _LOG.exception("policy refusal receipt unavailable")
-            return {"op": "OWNER_POLICY_REFUSED"}
+            reason = str(exc) if isinstance(exc, PolicyRefused) else "policy unavailable"
+            return {"op": "OWNER_POLICY_REFUSED", "reason": reason}
 
     def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import local_operation, validate

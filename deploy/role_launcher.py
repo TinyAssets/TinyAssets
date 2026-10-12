@@ -307,8 +307,10 @@ def boot(launch):
         raise Refused("startup requires the root entry identity")
     _assert_caps(ENTRY_CAPS)
     verify_chain()
-    initialize_empty_volume()
+    fresh = initialize_empty_volume()
     require_split()
+    if fresh and _load("migrate")["policy_online"](DATA_ROOT, apply=True):
+        raise Refused("fresh volume policy custody could not be prepared")
     contract = _load("admission-contract")
     bindings, generation = admissions(contract["broker_log"](DATA_ROOT, launch), DATA_ROOT)
     services = _load("owner-launch")["bootstrap_services"](

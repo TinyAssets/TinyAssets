@@ -109,6 +109,17 @@ migrate --snapshot <id> --snapshot-bytes <bytes>  # the apply
 migrate --check                                   # must print nothing; exit 0
 ```
 
+After the owner-split marker exists, each normal `deploy_fail_safe.sh` run
+automatically runs the candidate image's privileged `ta-migrate --policy-online
+--apply` against the live volume before changing the runtime bundle or image.
+It then runs `ta-migrate --check --policy-only`; any remaining `create:` or
+`freeze:` diff refuses the deploy while the old daemon keeps serving. This
+online step only creates and labels `.platform` policy custody and copies frozen
+legacy rules through SQLite backup. It is idempotent and needs no host action.
+If it refuses, inspect the logged reason and use the same two commands from
+section 4 in an operator container as the manual fallback. Do not rerun the
+full offline `--snapshot` on a serving volume.
+
 - The apply refuses before its first write if any precondition fails:
   - a process still holds `/data/.layout.lock`;
   - the volume is not ext4 or has no POSIX ACLs;

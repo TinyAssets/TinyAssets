@@ -339,6 +339,10 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if "--policy-online" in argv:
+            return 0 if state.get("policy_freeze_ok", True) else 1
+        if "--policy-only" in argv:
+            return 0 if state.get("policy_check_ok", True) else 1
         if "KNOWN_LAYOUTS" in argv[-1]:
             if not state.get("layout_probe_ok", True):
                 return 1
@@ -1389,6 +1393,25 @@ def test_forward_deploy_uses_the_candidate_layout_declaration(box: Box, supporte
     probe = next(line for line in box.docker_calls_text().splitlines() if "KNOWN_LAYOUTS" in line)
     assert f"--entrypoint python {NEW_IMAGE} -c" in probe
     assert "--network=none" in probe and "--volume" not in probe and "--mount" not in probe
+
+
+@pytest.mark.parametrize("failure", ["policy_freeze_ok", "policy_check_ok"])
+def test_policy_freeze_gate_keeps_old_version_serving(box: Box, failure):
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text(
+        '{"layout": 2, "state": "stable", "split": "owner-split"}', encoding="utf-8")
+    box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]}, **{failure: False})
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+
+    assert completed.returncode == 1
+    assert _result(completed) == "policy_freeze_refused"
+    assert box.env_image() == OLD_IMAGE and box.live() == before
+    assert "compose up" not in box.docker_calls_text()
+    assert box.docker_state_json()["containers"]["tinyassets-daemon"]["image_ref"] == OLD_IMAGE
 
 
 @pytest.mark.parametrize("probe_state", [

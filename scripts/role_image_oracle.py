@@ -1070,6 +1070,13 @@ def extra(data):
     for universe, actor, permission in ACL:
         grant_universe_access(data, universe_id=universe, actor_id=actor,
                               permission=permission, granted_by=actor)
+    # The synthetic core-capability owner has an explicit app.write grant.
+    # An incomplete legacy row otherwise makes every uncovered class ask-first.
+    with sqlite3.connect(Path(data) / '.agent-sessions/u-alice/rules.db') as db:
+        for column in ('action_class', 'agent', 'connection', 'operation', 'record_kind'):
+            db.execute('ALTER TABLE rules ADD COLUMN ' + column + ' TEXT')
+        db.execute("UPDATE rules SET behaviour='do', action_class='app.write', "
+                   "agent='main', connection='', operation='', record_kind='behavior'")
     expected = Path(data) / 'platform-expected-instance.json'
     expected.write_text(json.dumps({{'schema': 'platform_expected_instance', 'version': 1,
                                     'expected_instance_id': {instance!r}}}))
@@ -1498,10 +1505,93 @@ print(json.dumps(dict(actual=actual, replay=replay)))
     return dict(serving=serving, proof=proof)
 
 
+def stage_policy_deploy(args):
+    """Rehearse the live deploy gate on an owner-split production copy."""
+    migrated = stage_migrate(args)
+
+    def operator(*flags, user='0', caps=MIGRATION_CAPS):
+        command = _posture(f'{args.prefix}-migrate', args.image, args.volume,
+                           user=user, caps=caps, entrypoint='/opt/venv/bin/python',
+                           extra=['--rm', '--network', 'none'])
+        return subprocess.run(command + ['-I', '-B', '/usr/local/libexec/ta-migrate.py',
+                                         *flags], capture_output=True, text=True,
+                              encoding='utf-8')
+
+    # Only remove the policy custody generated on this disposable migrated copy.
+    # Leave all other production-copy content intact.
+    reset = _posture(f'{args.prefix}-migrate', args.image, args.volume, user='0',
+                     caps=MIGRATION_CAPS, entrypoint='/opt/venv/bin/python',
+                     extra=['--rm', '--network', 'none'])
+    script = '''from pathlib import Path
+root = Path('/data/.platform/accounts/.legacy-policy')
+assert root.is_dir()
+files = list(root.iterdir())
+assert files and all(p.is_file() and p.suffix == '.db' for p in files)
+for path in files:
+    path.unlink()
+root.rmdir()
+accounts = root.parent
+if not list(accounts.iterdir()):
+    accounts.rmdir()
+    platform = accounts.parent
+    if not list(platform.iterdir()):
+        platform.rmdir()
+'''
+    cleared = subprocess.run(reset + ['-I', '-B', '-c', script],
+                             capture_output=True, text=True, encoding='utf-8')
+    expect(cleared.returncode == 0, 'disposable clone policy custody reset: '
+           + cleared.stderr[-1200:])
+    before = operator('--check', '--policy-only')
+    expect(before.returncode == 1 and 'freeze:' in before.stdout,
+           'migrated production copy has unfrozen policy before deploy')
+    serving = stage_serve(args, keep=True)
+    def broker_label():
+        probe = subprocess.run(reset + ['-I', '-B', '-c',
+            "import os,stat; s=os.stat('/data/.broker'); "
+            "print((s.st_uid,s.st_gid,stat.S_IMODE(s.st_mode)))"],
+            capture_output=True, text=True, encoding='utf-8')
+        expect(probe.returncode == 0, 'broker custody label readable on clone')
+        return probe.stdout.strip()
+
+    label = broker_label()
+    alias = subprocess.run(reset + ['-I', '-B', '-c',
+        "import os; os.symlink('.broker', '/data/.platform')"],
+        capture_output=True, text=True, encoding='utf-8')
+    expect(alias.returncode == 0, 'disposable clone plants policy alias')
+    blocked_alias = operator('--policy-online', '--apply')
+    expect(blocked_alias.returncode != 0 and broker_label() == label,
+           'privileged freeze refuses policy alias without relabeling broker')
+    removed = subprocess.run(reset + ['-I', '-B', '-c',
+        "import os; os.unlink('/data/.platform')"],
+        capture_output=True, text=True, encoding='utf-8')
+    expect(removed.returncode == 0, 'disposable clone policy alias removed')
+    failed = operator('--policy-online', '--apply', user='1002', caps=())
+    expect(failed.returncode != 0, 'unprivileged policy step is refused')
+    pulse = docker('exec', f'{args.prefix}-serve', '/usr/local/libexec/ta-op',
+                   'pulse', check=False)
+    expect(pulse.returncode == 0, 'failed policy step leaves old version serving')
+    applied = operator('--policy-online', '--apply')
+    expect(applied.returncode == 0, 'privileged online policy freeze: '
+           + applied.stderr[-1200:])
+    checked = operator('--check', '--policy-only')
+    expect(checked.returncode == 0 and not checked.stdout,
+           'ta-migrate --check has zero create/freeze policy diffs: '
+           + checked.stdout[-1200:] + checked.stderr[-1200:])
+    pulse = docker('exec', f'{args.prefix}-serve', '/usr/local/libexec/ta-op',
+                   'pulse', check=False)
+    expect(pulse.returncode == 0, 'old version serves throughout policy freeze')
+    docker('rm', '-f', f'{args.prefix}-serve')
+    restarted = stage_serve(args)
+    return dict(migration=migrated, before=before.stdout.splitlines(),
+                forced_failure=failed.returncode, alias_refusal=blocked_alias.returncode,
+                serving=serving['pulse'],
+                after=checked.stderr.strip(), broker=restarted['pulse'])
+
+
 STAGES = {"restore": stage_restore, "repair": stage_repair,
           "migrate": stage_migrate, "serve": stage_serve, "cells": stage_cells,
           "providers": stage_providers, "chat": stage_chat, "runs": stage_runs,
-          "writers": stage_writers}
+          "writers": stage_writers, "policy_deploy": stage_policy_deploy}
 
 
 def main(argv=None):

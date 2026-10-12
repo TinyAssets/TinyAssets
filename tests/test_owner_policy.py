@@ -61,6 +61,15 @@ def _legacy(root, center, behaviour):
         (frozen / f"{center}.db").chmod(0o440)
 
 
+def _empty_policy_custody(root):
+    platform = root / ".platform" / "accounts" / ".legacy-policy"
+    platform.mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        (root / ".platform").chmod(0o710)
+        platform.parent.chmod(0o700)
+        platform.chmod(0o750)
+
+
 def _session(root, owner, cookie):
     folder = root / ".runtime"
     folder.mkdir(parents=True, exist_ok=True)
@@ -136,6 +145,7 @@ def test_daemon_replaces_rules_after_migration_without_changing_policy(tmp_path)
 
 
 def test_new_center_unfrozen_legacy_is_refused_and_reported(tmp_path):
+    _empty_policy_custody(tmp_path)
     rows = [Admission("alpha", "alice")]
     admissions = SimpleNamespace(admissions_after=lambda _generation: rows)
     store = PolicyStore(tmp_path, admissions)
@@ -149,7 +159,7 @@ def test_new_center_unfrozen_legacy_is_refused_and_reported(tmp_path):
     assert not store.migrate_center("alice", "new")
     assert store.migration_report("alice")["refused"] == [{
         "center": "new", "reason": "legacy rules are not frozen in broker custody"}]
-    with pytest.raises(PolicyRefused, match="not been migrated"):
+    with pytest.raises(PolicyRefused, match="legacy rules are not frozen"):
         store.decide("alice", center="new", action_class="money.move", amount=1,
                      request_id="attempt")
 
@@ -160,15 +170,46 @@ def test_frozen_source_with_writable_mode_is_refused(tmp_path):
     (tmp_path / ".platform" / "accounts" / ".legacy-policy" / "alpha.db").chmod(0o660)
     store = PolicyStore(tmp_path, Admissions())
     store.bootstrap()
-    assert store.migration_report("alice")["refused"] == [
-        {"center": "alpha", "reason": "unsafe frozen legacy rules"}]
-    with pytest.raises(PolicyRefused, match="not been migrated"):
+    with pytest.raises(PolicyRefused, match="unsafe frozen legacy rules"):
         store.decide("alice", center="alpha", action_class="app.write")
+
+
+def test_bootstrap_isolates_missing_snapshot_to_its_owner(tmp_path, caplog):
+    _legacy(tmp_path, "alpha", "do")
+    _legacy(tmp_path, "gamma", "hand_off")
+    (tmp_path / ".platform/accounts/.legacy-policy/alpha.db").unlink()
+    store = PolicyStore(tmp_path, Admissions())
+    store.bootstrap()
+    with pytest.raises(PolicyRefused, match="legacy rules are not frozen"):
+        store.read("alice")
+    assert store.read("bob").document["entries"][0]["scope"] == "gamma"
+    assert "ALARM: owner policy refused for alice" in caplog.text
+
+
+def test_removed_snapshot_fences_only_affected_owner_after_boot(tmp_path):
+    _legacy(tmp_path, "alpha", "do")
+    _legacy(tmp_path, "gamma", "hand_off")
+    store = PolicyStore(tmp_path, Admissions())
+    store.bootstrap()
+    (tmp_path / ".platform/accounts/.legacy-policy/alpha.db").unlink()
+    with pytest.raises(PolicyRefused, match="legacy rules are not frozen"):
+        store.decide("alice", center="alpha", action_class="app.write")
+    assert store.read("bob").document["entries"][0]["scope"] == "gamma"
+
+
+def test_bootstrap_does_not_create_daemon_owned_platform(tmp_path, caplog):
+    store = PolicyStore(tmp_path, Admissions())
+    store.bootstrap()
+    assert not (tmp_path / ".platform").exists()
+    with pytest.raises(PolicyRefused, match="privileged policy freeze is missing"):
+        store.read("alice")
+    assert "ALARM: owner policy refused for alice" in caplog.text
 
 
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker owner policy uses Unix peer credentials")
 def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  # noqa: F811
+    _empty_policy_custody(tmp_path)
     cookie = "interactive-cookie-" + "g" * 32
     _session(tmp_path, "alice", cookie)
     broker.server._policy_store = PolicyStore(tmp_path, Admissions())
@@ -206,6 +247,7 @@ def test_owner_policy_actions_cross_the_real_broker_socket(broker, tmp_path):  #
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
                     reason="broker stream uses Unix peer credentials")
 def test_unpriced_model_call_with_a_spend_cap_is_denied_at_broker(broker, tmp_path):  # noqa: F811
+    _empty_policy_custody(tmp_path)
     cookie = "interactive-cookie-" + "h" * 32
     _session(tmp_path, "alice", cookie)
     admissions = SimpleNamespace(admissions_after=lambda _generation: [
@@ -266,7 +308,7 @@ def test_broker_refuses_agent_injection_api_key_and_other_owner(tmp_path):
     )
     for cookie in attempts:
         assert peer._owner_policy({**request, "cookie": cookie}) == {
-            "op": "OWNER_POLICY_REFUSED"}
+            "op": "OWNER_POLICY_REFUSED", "reason": "interactive owner session required"}
         assert store.read("alice").generation == current.generation
     injected = tmp_path / "alpha" / "policy" / "policy.json"
     injected.parent.mkdir(parents=True)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinyassets.broker.owner_identities import validate_principal
+
+_LOG = logging.getLogger(__name__)
 
 BEHAVIOURS = ("do", "do_if_preapproved", "ask_first", "hand_off")
 EGRESS_MODES = ("open", "allowlist", "ask")
@@ -66,6 +69,7 @@ class PolicyStore:
     def __init__(self, data_root: Path, admissions) -> None:
         self._root = Path(data_root)
         self._admissions = admissions
+        self._unavailable: dict[str, str] = {}
 
     def _path(self, owner: str) -> Path:
         validate_principal(owner)
@@ -73,9 +77,21 @@ class PolicyStore:
         return self._root / ".platform" / "accounts" / account / "policy.db"
 
     def _connect(self, owner: str, *, allow_deleted: bool = False) -> sqlite3.Connection:
+        if owner in self._unavailable:
+            raise PolicyRefused(self._unavailable[owner])
         path = self._path(owner)
         platform = path.parent.parent.parent
-        platform.mkdir(mode=0o700, exist_ok=True)
+        try:
+            platform_info = platform.lstat()
+        except OSError as exc:
+            raise PolicyRefused("privileged policy freeze is missing") from exc
+        allowed_platform_uids = ((0, 1001) if os.name == "posix" and os.geteuid() == 1002
+                                 else (0, 1001, os.geteuid()) if os.name == "posix" else ())
+        if os.name == "posix" and (
+                not stat.S_ISDIR(platform_info.st_mode)
+                or platform_info.st_uid not in allowed_platform_uids
+                or stat.S_IMODE(platform_info.st_mode) & 0o027):
+            raise PolicyRefused("unsafe policy platform parent")
         path.parent.parent.mkdir(mode=0o700, exist_ok=True)
         path.parent.mkdir(mode=0o700, exist_ok=True)
         if (path.parent / ".deleted").exists() and not allow_deleted:
@@ -86,11 +102,6 @@ class PolicyStore:
                 if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
                         or stat.S_IMODE(info.st_mode) & 0o077):
                     raise PermissionError("policy parent is not broker-private")
-            platform_info = platform.lstat()
-            if (not stat.S_ISDIR(platform_info.st_mode)
-                    or platform_info.st_uid not in (0, 1001, os.geteuid())
-                    or stat.S_IMODE(platform_info.st_mode) & 0o027):
-                raise PermissionError("unsafe policy platform parent")
             if path.exists():
                 info = path.lstat()
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
@@ -231,8 +242,30 @@ class PolicyStore:
         return document, {"centers": sources, "conflicts": conflicts,
                           "refused": refused}
 
+    def _assert_frozen(self, owner: str) -> None:
+        """A removed or replaced snapshot must fence decisions after bootstrap."""
+        for center in self._centers(owner):
+            source = self._root / ".agent-sessions" / center / "rules.db"
+            if not source.is_file():
+                continue
+            frozen = (self._root / ".platform/accounts/.legacy-policy" /
+                      f"{center}.db")
+            try:
+                info = frozen.lstat()
+            except FileNotFoundError:
+                raise PolicyRefused("legacy rules are not frozen in broker custody") from None
+            parent = frozen.parent.lstat()
+            if os.name == "posix" and (
+                    not stat.S_ISDIR(parent.st_mode) or parent.st_uid != _LEGACY_UID
+                    or stat.S_IMODE(parent.st_mode) & 0o022
+                    or not stat.S_ISREG(info.st_mode) or info.st_uid != _LEGACY_UID
+                    or stat.S_IMODE(info.st_mode) != 0o440 or info.st_nlink != 1):
+                raise PolicyRefused("unsafe frozen legacy rules")
+
     def _migrate(self, db: sqlite3.Connection, owner: str) -> dict:
         document, report = self._legacy_snapshot(owner)
+        if report["refused"]:
+            raise PolicyRefused("legacy rules are not frozen in broker custody")
         for source in report["centers"]:
             entries = document["entries"]
             copied = [entry for entry in entries if entry["scope"] == source["center"]]
@@ -260,7 +293,7 @@ class PolicyStore:
                               (center,)).fetchone() is not None
 
     def bootstrap(self) -> None:
-        """Import admitted centers once, before accepting broker requests."""
+        """Import each owner independently; unavailable policy refuses that owner."""
         if self._admissions is None:
             return
         owners = {row.principal for row in self._admissions.admissions_after(0)
@@ -268,13 +301,22 @@ class PolicyStore:
         for owner in sorted(owners):
             if (self._path(owner).parent / ".deleted").exists():
                 continue
-            with closing(self._connect(owner)) as db, db:
-                if db.execute("SELECT 1 FROM policy WHERE singleton=1").fetchone() is None:
-                    db.execute("BEGIN IMMEDIATE")
-                    self._migrate(db, owner)
-                    db.commit()
-            for center in self._centers(owner):
-                self.migrate_center(owner, center)
+            try:
+                for center in self._centers(owner):
+                    self._legacy(center)
+                with closing(self._connect(owner)) as db, db:
+                    if db.execute("SELECT 1 FROM policy WHERE singleton=1").fetchone() is None:
+                        db.execute("BEGIN IMMEDIATE")
+                        self._migrate(db, owner)
+                        db.commit()
+                for center in self._centers(owner):
+                    if not self.migrate_center(owner, center):
+                        raise PolicyRefused("legacy rules are not frozen in broker custody")
+            except (PolicyRefused, OSError, sqlite3.Error, RuntimeError) as exc:
+                reason = (str(exc) if isinstance(exc, PolicyRefused)
+                          else "policy storage unavailable")
+                self._unavailable[owner] = reason
+                _LOG.error("ALARM: owner policy refused for %s: %s", owner, reason)
 
     def migrate_center(self, owner: str, center: str) -> bool:
         """Import a newly admitted center or record why it cannot be trusted."""
@@ -321,6 +363,7 @@ class PolicyStore:
         return [dict(row) for row in rows]
 
     def read(self, owner: str) -> OwnerPolicy:
+        self._assert_frozen(owner)
         with closing(self._connect(owner)) as db:
             row = db.execute("SELECT generation,digest,document FROM policy WHERE singleton=1"
                              ).fetchone()
@@ -541,6 +584,7 @@ class PolicyStore:
         Amounts are minor currency units; a nonzero amount is reserved only
         after all rules permit the request.
         """
+        self._assert_frozen(owner)
         if center not in self._centers(owner, active=True):
             raise PolicyRefused("center is not admitted to this owner")
         if not self._migrated(owner, center):

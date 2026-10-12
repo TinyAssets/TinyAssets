@@ -180,7 +180,9 @@ class BrokerClient:
             except (OSError, rf.FrameError):
                 raise ProxyRequestError("owner policy outcome unavailable") from None
         if answer.get("op") == "OWNER_POLICY_REFUSED":
-            raise BrokerRefused("owner policy request refused")
+            reason = answer.get("reason")
+            raise BrokerRefused(reason if isinstance(reason, str) and reason
+                                else "owner policy request refused")
         if answer.get("op") != "OWNER_POLICY_RESULT" or not isinstance(
                 answer.get("result"), dict):
             raise ProxyRequestError("invalid owner policy response")

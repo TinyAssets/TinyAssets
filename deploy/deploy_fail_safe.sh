@@ -1520,6 +1520,30 @@ if [ -z "$LAYOUT_MARKER" ] || ! {
   exit 1
 fi
 
+# The old daemon is still serving here. Converge only policy custody in the
+# candidate's privileged migration container, then prove the same online-safe
+# subset of ta-migrate --check is clean before any bundle or image swap.
+if [ "$RESTORE_BUNDLE" = "0" ] && [ -e "$LAYOUT_MARKER" ]; then
+  policy_migrate() {
+    timeout 180 docker run --rm --user 0 --cap-drop ALL \
+      --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
+      --security-opt no-new-privileges=true --network none \
+      -v tinyassets-data:/data \
+      --entrypoint /opt/venv/bin/python "$NEW_IMAGE" \
+      -I -B /usr/local/libexec/ta-migrate.py "$@"
+  }
+  if ! policy_migrate --policy-online --apply; then
+    err "privileged online policy freeze failed; old image remains serving"
+    echo "deploy_result=policy_freeze_refused"
+    exit 1
+  fi
+  if ! policy_migrate --check --policy-only; then
+    err "ta-migrate --check still reports policy create/freeze diffs; old image remains serving"
+    echo "deploy_result=policy_freeze_refused"
+    exit 1
+  fi
+fi
+
 # --- 3b. the runtime bundle: validate -> snapshot -> install ---------------
 if ! ensure_state_dir; then
   err "cannot prepare ${BUNDLE_STATE_DIR}; refusing (prod untouched)"
