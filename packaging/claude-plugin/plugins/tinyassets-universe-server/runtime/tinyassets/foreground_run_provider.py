@@ -111,20 +111,6 @@ def _review_allowance(snapshot: dict[str, Any]) -> int:
     )
 
 
-def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
-    providers: set[str] = set()
-    if not policy:
-        return providers
-    for value in policy.values():
-        entries = value if isinstance(value, list) else [value]
-        for entry in entries:
-            use = entry.get("use") if isinstance(entry, dict) else None
-            candidate = use if isinstance(use, dict) else entry
-            if isinstance(candidate, dict) and candidate.get("provider"):
-                providers.add(str(candidate["provider"]).strip())
-    return {provider for provider in providers if provider}
-
-
 def _work_invocation_allowance(snapshot, *, minimum: int, ceiling: int) -> int:
     """Reuse accepted finite authority for agent rounds, never mint per-round caps."""
     from tinyassets.shared_self import shared_self_requested
@@ -991,9 +977,6 @@ class _ForegroundRunProviderSession:
                 raise PermissionError("foreground run provider session is not active")
             if role not in self._receipt.allowed_roles:
                 raise PermissionError("foreground run provider role is not authorized")
-            if (self._receipt.authority_scope != "manifest"
-                    and _declared_policy_providers(policy) - {self._provider}):
-                raise PermissionError("foreground policy is outside the active provider")
             self._validate_founder_home()
             if self._branch_snapshot is None or (
                 _content_digest(self._branch_snapshot) != self._branch_digest
@@ -1210,6 +1193,9 @@ class _ForegroundRunProviderSession:
                 )
             )
 
+        from tinyassets.providers.model_call import require_supported_policy
+
+        require_supported_policy(policy)
         self._ensure_admitted()
         from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
@@ -1542,6 +1528,7 @@ class _ForegroundRunProviderSession:
                 role=role,
                 config=call_config,
                 operation=RUN_GRAPH_OPERATION,
+                policy=policy,
                 universe_context=UniverseContext(
                     universe_dir=self._universe_dir,
                     config=load_universe_config(self._universe_dir),

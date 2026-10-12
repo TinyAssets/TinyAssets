@@ -2308,27 +2308,6 @@ class _ClaimedCloudProviderSession:
         self._revalidate_in_transaction = revalidate_in_transaction
         self._lock = threading.Lock()
 
-    @staticmethod
-    def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
-        providers: set[str] = set()
-        if not policy:
-            return providers
-        preferred = policy.get("preferred")
-        if isinstance(preferred, dict) and preferred.get("provider"):
-            providers.add(str(preferred["provider"]))
-        fallback_chain = policy.get("fallback_chain")
-        if isinstance(fallback_chain, list):
-            for entry in fallback_chain:
-                if isinstance(entry, dict) and entry.get("provider"):
-                    providers.add(str(entry["provider"]))
-        difficulty_overrides = policy.get("difficulty_override")
-        if isinstance(difficulty_overrides, list):
-            for entry in difficulty_overrides:
-                use = entry.get("use") if isinstance(entry, dict) else None
-                if isinstance(use, dict) and use.get("provider"):
-                    providers.add(str(use["provider"]))
-        return providers
-
     def __call__(
         self,
         prompt: str,
@@ -2341,8 +2320,9 @@ class _ClaimedCloudProviderSession:
         from tinyassets.providers.base import UniverseContext
 
         policy = kwargs.pop("policy", None)
-        if self._declared_policy_providers(policy) - {self._receipt.provider}:
-            raise PermissionError("cloud policy provider is outside prepared authority")
+        from tinyassets.providers.model_call import require_supported_policy
+
+        require_supported_policy(policy)
         if role not in self._receipt.allowed_roles:
             raise PermissionError("cloud provider role is outside prepared authority")
         with self._lock:
@@ -2409,6 +2389,7 @@ class _ClaimedCloudProviderSession:
             prompt,
             system,
             role=role,
+            policy=policy,
             **call_kwargs,
         )
 
