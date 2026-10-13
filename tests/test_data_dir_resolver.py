@@ -154,29 +154,6 @@ def test_universe_server_base_path_uses_data_dir(clean_env, tmp_path):
     assert _base_path() == target.resolve()
 
 
-def test_mcp_server_universe_dir_uses_data_dir(clean_env, tmp_path):
-    """tinyassets.mcp_server._universe_dir() roots at data_dir() / default-universe."""
-    from tinyassets.mcp_server import _universe_dir
-
-    target = tmp_path / "mcp-root"
-    clean_env.setenv("TINYASSETS_DATA_DIR", str(target))
-    # TINYASSETS_UNIVERSE must be unset so we hit the default branch.
-    clean_env.delenv("TINYASSETS_UNIVERSE", raising=False)
-
-    assert _universe_dir() == (target / "default-universe").resolve()
-
-
-def test_mcp_server_workflow_universe_overrides(clean_env, tmp_path):
-    """TINYASSETS_UNIVERSE env override still works (per-universe explicit path)."""
-    from tinyassets.mcp_server import _universe_dir
-
-    override = tmp_path / "explicit-universe"
-    clean_env.setenv("TINYASSETS_UNIVERSE", str(override))
-    clean_env.setenv("TINYASSETS_DATA_DIR", "/should/be/ignored")
-
-    assert _universe_dir() == override.resolve()
-
-
 # ---- regression guards ---------------------------------------------------
 
 

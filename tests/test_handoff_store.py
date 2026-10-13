@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -12,14 +11,6 @@ from tinyassets.handoffs.models import (
 )
 from tinyassets.handoffs.store import HandoffStore
 from tinyassets.outcomes.schema import OUTCOME_EVIDENCE_LEVELS, migrate_outcome_schema
-
-MIGRATION = (
-    Path(__file__).parents[1]
-    / "prototype"
-    / "full-platform-v0"
-    / "migrations"
-    / "014_real_world_handoffs.sql"
-)
 
 
 def _record(**overrides: str) -> HandoffRecord:
@@ -195,23 +186,3 @@ def test_handoff_store_appends_compare_and_swap_transitions(tmp_path) -> None:
             to_state="submitted",
             evidence_source="stale_writer",
         )
-
-
-def test_platform_migration_extends_the_same_outcome_registry() -> None:
-    sql = MIGRATION.read_text(encoding="utf-8")
-
-    base = sql.index("CREATE TABLE IF NOT EXISTS public.outcome_event")
-    evidence = sql.index("CREATE TABLE IF NOT EXISTS public.outcome_evidence")
-    assert base < evidence
-    for level in (
-        "user_attested",
-        "submitted",
-        "accepted",
-        "externally_verified",
-        "disputed",
-        "rejected",
-        "orphaned",
-        "retracted",
-    ):
-        assert f"'{level}'" in sql
-    assert "provider_submitted" not in sql

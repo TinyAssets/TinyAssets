@@ -735,10 +735,7 @@ def universe_input() -> dict[str, Any]:
 # asserts the refusal, never a stand-in.
 os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")
 
-# pystray picks its tray backend at import and, off Windows/macOS, opens an X
-# display to do it -- so on a headless Linux runner `import tinyassets_tray`
-# died at COLLECTION and the tray tests never ran in CI at all (they sat in
-# known-failing-tests.txt as collection errors for two months). Its own dummy
-# backend is the headless choice; a real desktop keeps whatever it has.
+# The still shipped domain CLI imports the tray helper. pystray's dummy backend
+# keeps those imports available to the Linux suite without a display.
 if not sys.platform.startswith(("win", "darwin")) and not os.environ.get("DISPLAY"):
     os.environ.setdefault("PYSTRAY_BACKEND", "dummy")

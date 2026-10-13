@@ -51,6 +51,73 @@ def test_recursive_file_probe_works_on_python_311(tmp_path: Path):
     assert check_shapes.old_count(shape, tmp_path) == 1
 
 
+def test_c5_host_domain_and_spawn_guards(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "fixture"\n'
+        '[project.scripts]\n'
+        + "\n".join(f'{name} = "{target}"' for name, target in check_shapes.LIVE_SCRIPTS.items())
+        + '\n[project.entry-points."tinyassets.domains"]\n'
+        + "\n".join(
+            f'{name} = "{target}"'
+            for name, target in check_shapes.LIVE_DOMAIN_ENTRY_POINTS.items()
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert check_shapes.dead_entry_problems(tmp_path) == []
+    host = tmp_path / "tinyassets" / "host_pool"
+    host.mkdir(parents=True)
+    assert "host-paths: tinyassets/host_pool" in check_shapes.dead_entry_problems(tmp_path)
+    host.rmdir()
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8")
+        + 'new_domain = "third_party.entry:Domain"\n',
+        encoding="utf-8",
+    )
+    assert any(
+        p.startswith("domain-entry-points:")
+        for p in check_shapes.dead_entry_problems(tmp_path)
+    )
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8")
+        + '[project.gui-scripts]\nlegacy = "tinyassets.desktop.launcher:main"\n',
+        encoding="utf-8",
+    )
+    assert any(p.startswith("spawn-entry:") for p in check_shapes.dead_entry_problems(tmp_path))
+
+
+def test_c5_retired_prototype_compose_and_local_mcp_guards(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "fixture"\n[project.scripts]\n'
+        + "\n".join(f'{name} = "{target}"' for name, target in check_shapes.LIVE_SCRIPTS.items())
+        + '\n[project.entry-points."tinyassets.domains"]\n'
+        + "\n".join(
+            f'{name} = "{target}"'
+            for name, target in check_shapes.LIVE_DOMAIN_ENTRY_POINTS.items()
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "prototype").mkdir()
+    assert (
+        "host-paths: prototype/ fixture tree returned"
+        in check_shapes.dead_entry_problems(tmp_path)
+    )
+    (tmp_path / "prototype").rmdir()
+
+    compose = tmp_path / "deploy/compose.yml"
+    compose.parent.mkdir()
+    compose.write_text("services:\n  slack-agent:\n    image: retired\n", encoding="utf-8")
+    assert "host-paths: compose slack-agent returned" in check_shapes.dead_entry_problems(tmp_path)
+    compose.unlink()
+
+    runner = tmp_path / "fantasy_daemon/__main__.py"
+    runner.parent.mkdir()
+    runner.write_text('if "--mcp" in argv:\n    pass\n', encoding="utf-8")
+    assert "spawn-entry: local MCP runner returned" in check_shapes.dead_entry_problems(tmp_path)
+
+
 def test_public_route_and_opt_in_flag_on_existing_file():
     changes = {
         "tinyassets/universe_server.py": 'app.mount("/other", other)\n'

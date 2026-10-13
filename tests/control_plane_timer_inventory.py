@@ -272,18 +272,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "K1 binary upload credit wait; broker deadline, cancellation and grant rechecked",
     ),
     # -- should not exist in the target shape ----------------------------------
-    "tinyassets/host_pool/bid_poller.py::BidPoller.run": (
-        DELETE, "host-pool fleet client; no production importer (dark code)",
-    ),
-    "tinyassets/host_pool/heartbeat.py::HeartbeatLoop.run": (
-        DELETE, "host-pool fleet heartbeat; no production importer (dark code)",
-    ),
     "tinyassets/runtime/claimed_branch_execution.py::_continuous_heartbeat.beat": (
         DELETE, "fantasy_daemon claimed-task heartbeat; host-run daemon only",
     ),
-    # -- the owner's own device -------------------------------------------------
     "tinyassets/desktop/tray.py::TrayApp._throttled_menu_refresh [Timer]": (
-        CLIENT, "desktop tray menu refresh",
+        CLIENT, "desktop tray menu refresh still used by the domain CLI",
     ),
 }
 

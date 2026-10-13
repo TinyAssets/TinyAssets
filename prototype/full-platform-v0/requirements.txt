@@ -1,6 +1,0 @@
-psycopg[binary]==3.2.3
-pytest==8.3.4
-fastmcp==2.3.4
-# FastMCP 2.3.4 crashes at gateway import with Pydantic 2.13.x.
-pydantic==2.11.10
-pgvector==0.3.6
