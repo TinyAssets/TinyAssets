@@ -242,7 +242,7 @@ The trial exports the already deployed daemon image as a read-only rootfs,
 uses disposable owner trees, and deletes them after measuring. G4 creates a
 disposable quota tree under `tinyassets-data/.box-preflight-scratch/`. It reports a
 failure if project quotas are unavailable and does not remount the volume.
-The harness has a 35-minute deadline and cleans its sandboxes, `/var/tmp/box-preflight-*`
+The harness has a 30-minute deadline and cleans its sandboxes, `/var/tmp/box-preflight-*`
 rootfs and owner tree, and scratch quota on timeout. At 40 minutes, boxhostd
 kills the harness process group and runs the same cleanup pass before reporting
 failure. Inspect those paths if a host failure interrupted cleanup.

@@ -34,7 +34,7 @@ def test_gate_exception_is_a_failure() -> None:
 
 
 def test_harness_deadline_escapes_gate_for_outer_cleanup() -> None:
-    with pytest.raises(TimeoutError, match="35-minute"):
+    with pytest.raises(TimeoutError, match="30-minute"):
         box_preflight.gate(lambda: box_preflight._deadline(0, None))
 
 

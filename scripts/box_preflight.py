@@ -30,7 +30,7 @@ RUNSC = ROOT / "current" / "runsc"
 RUNSC_RELEASE = "release-20260928.0"
 RUNSC_SHA256 = "88a87d5d6d06160d4c144f51f95ec6dd6fe0fc6b02697eb877876683c5b57a91"
 CANARY = "http://127.0.0.1:8001/app"
-HARNESS_DEADLINE = 2100
+HARNESS_DEADLINE = 1800
 QUOTA_SCRATCH = ".box-preflight-scratch"
 
 
@@ -252,8 +252,8 @@ class Boxes:
     def stop(self, name: str) -> None:
         if name not in self.names:
             return
-        self.command("kill", name, "KILL", check=False)
-        self.command("delete", "--force", name, check=False)
+        self.command("kill", name, "KILL", check=False, timeout=10)
+        self.command("delete", "--force", name, check=False, timeout=10)
         self.names.remove(name)
 
 
@@ -610,7 +610,7 @@ def cleanup_scratch(work: Path) -> None:
 
 
 def _deadline(_signum: int, _frame: object) -> None:
-    raise TimeoutError("preflight exceeded its 35-minute deadline")
+    raise TimeoutError("preflight exceeded its 30-minute deadline")
 
 
 def main() -> int:
