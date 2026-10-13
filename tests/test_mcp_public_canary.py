@@ -741,3 +741,120 @@ def test_the_healthcheck_invocation_does_not_authenticate_its_anonymous_probe(mo
     canary.probe_result("https://example/mcp", 5.0, bearer=_TOKEN)
 
     assert [auth for _, auth in sent] == [None, f"Bearer {_TOKEN}"], sent
+
+
+class _EdgeResponse:
+    def __init__(self, status, headers, body):
+        self.status = status
+        self.headers = headers
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _edge_success_headers(origin, policy):
+    return {
+        "access-control-allow-origin": origin,
+        "access-control-allow-methods": policy["allow_methods"],
+        "access-control-allow-headers": policy["allow_headers"],
+        "access-control-expose-headers": policy["expose_headers"],
+        "access-control-max-age": str(policy["max_age"]),
+    }
+
+
+def _install_edge(monkeypatch, policy, *, allow_headers=None):
+    import urllib.error
+    import urllib.request
+
+    seen = []
+
+    def _urlopen(request, timeout=None, context=None):
+        origin = request.get_header("Origin")
+        seen.append((
+            request.get_method(),
+            request.full_url,
+            origin,
+            request.get_header("Access-control-request-method"),
+            request.get_header("Access-control-request-headers"),
+        ))
+        if origin == canary._EDGE_DENIED_ORIGIN:
+            raise urllib.error.HTTPError(
+                request.full_url, 403, "Forbidden",
+                {"Content-Type": "application/json"},
+                io.BytesIO(b'{"error":"origin_not_allowed"}'),
+            )
+        headers = _edge_success_headers(origin, policy)
+        if allow_headers is not None:
+            headers["access-control-allow-headers"] = allow_headers
+        return _EdgeResponse(204, headers, b"")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    return seen
+
+
+def test_edge_preflight_uses_the_worker_origin_policy(monkeypatch):
+    policy = canary.edge_cors_policy()
+    worker = (
+        Path(__file__).resolve().parents[1] / "deploy" / "cloudflare-worker" / "worker.js"
+    ).read_text(encoding="utf-8")
+    assert "tinyassets/mcp_browser_origins.json" in worker
+    assert "https://claude.ai" not in worker
+    assert "https://chatgpt.com" not in worker
+    for origin in canary._EDGE_ALLOWED_ORIGINS:
+        assert origin in policy["origins"]
+    assert canary._EDGE_DENIED_ORIGIN not in policy["origins"]
+
+    seen = _install_edge(monkeypatch, policy)
+    canary.assert_edge_preflight("https://tinyassets.io/mcp", 5.0)
+
+    assert [call[0] for call in seen] == ["OPTIONS", "OPTIONS", "OPTIONS"]
+    assert [call[1] for call in seen] == ["https://tinyassets.io/mcp"] * 3
+    assert [call[2] for call in seen] == [
+        "https://claude.ai", "https://chatgpt.com", "https://evil.example",
+    ]
+    assert {call[3] for call in seen} == {"POST"}
+    assert {call[4] for call in seen} == {canary._EDGE_REQUEST_HEADERS}
+
+
+def test_edge_preflight_rejects_headers_that_drift_from_the_policy(monkeypatch):
+    policy = canary.edge_cors_policy()
+    _install_edge(monkeypatch, policy, allow_headers="authorization")
+    with pytest.raises(canary.CanaryError) as caught:
+        canary.assert_edge_preflight("https://tinyassets.io/mcp", 5.0)
+    assert caught.value.code == 6
+    assert "resource_metadata" not in caught.value.msg
+
+
+def test_edge_preflight_rejects_an_access_403_for_an_allowed_origin(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def _urlopen(request, timeout=None, context=None):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden",
+            {"Content-Type": "text/html"},
+            io.BytesIO(b"<html>cloudflare</html>"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    with pytest.raises(canary.CanaryError) as caught:
+        canary.assert_edge_preflight("https://tinyassets.io/mcp", 5.0)
+    assert caught.value.code == 2
+    assert "HTTP 403" in caught.value.msg
+    assert "resource_metadata" not in caught.value.msg
+
+
+def test_edge_preflight_cli_does_not_need_the_canary_token(monkeypatch):
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    policy = canary.edge_cors_policy()
+    _install_edge(monkeypatch, policy)
+    assert canary.main([
+        "--edge-preflight", "--url", "https://tinyassets.io/mcp",
+    ]) == 0

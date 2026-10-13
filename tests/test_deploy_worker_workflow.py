@@ -290,8 +290,12 @@ def test_live_deploy_probes_run_in_safety_order_under_the_same_condition():
         assert steps[names.index(name)].get("if") == live_condition
 
     canonical_probe = steps[names.index("Probe canonical URL after deploy")]
-    assert "--url https://tinyassets.io/mcp" in canonical_probe.get("run", "")
-    assert "--assert-name" not in canonical_probe.get("run", "")
+    script = canonical_probe.get("run", "")
+    assert "--edge-preflight" in script
+    assert "--url https://tinyassets.io/mcp" in script
+    assert "--assert-name" not in script
+    assert ">/dev/null" not in script
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" not in (canonical_probe.get("env") or {})
 
 
 # ---------------------------------------------------------------------------

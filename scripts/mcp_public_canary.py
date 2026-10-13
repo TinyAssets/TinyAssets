@@ -2,6 +2,11 @@
 
 What it asserts:
 
+* ``--edge-preflight`` checks the Worker answers browser OPTIONS itself
+  (allowed origin 204, disallowed origin 403) from
+  ``tinyassets/mcp_browser_origins.json``. That is the post-Worker-deploy
+  gate. It does not require the daemon's ``resource_metadata`` URL, which
+  changes only when the daemon image rolls;
 * anonymous ``initialize`` gets the canonical Bearer challenge;
 * every MCP read runs as the scoped canary service principal;
 * authenticated initialize, tools/list, and get_status remain healthy; and
@@ -89,6 +94,131 @@ def resource_metadata_urls(resource_url: str) -> tuple[str, str]:
     ))
     legacy = f"{resource}/.well-known/oauth-protected-resource"
     return advertised, legacy
+
+
+def edge_cors_policy() -> dict[str, Any]:
+    """The origin list and CORS headers the Worker and the daemon both read."""
+    path = Path(__file__).resolve().parents[1] / "tinyassets" / "mcp_browser_origins.json"
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CanaryError(6, f"browser origin policy unreadable: {exc}") from exc
+    if not isinstance(policy, dict):
+        raise CanaryError(6, "browser origin policy is not an object")
+    missing = [
+        key for key in (
+            "origins", "allow_methods", "allow_headers", "expose_headers", "max_age",
+        )
+        if key not in policy
+    ]
+    if missing:
+        raise CanaryError(6, f"browser origin policy missing {missing}")
+    return policy
+
+
+# Origins the Worker must answer at the edge. They have to stay in the shared
+# policy; the probe does not keep a second copy of the allow-* header values.
+_EDGE_ALLOWED_ORIGINS = ("https://claude.ai", "https://chatgpt.com")
+_EDGE_DENIED_ORIGIN = "https://evil.example"
+_EDGE_REQUEST_HEADERS = "authorization, content-type, mcp-protocol-version"
+
+
+def _options(
+    url: str,
+    timeout: float,
+    origin: str,
+    accepted_http_statuses: frozenset[int],
+) -> tuple[int, dict[str, str], bytes]:
+    """One browser OPTIONS preflight. 204 is success; 403 is an accepted refusal."""
+    request = urllib.request.Request(
+        url,
+        method="OPTIONS",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": _EDGE_REQUEST_HEADERS,
+            "User-Agent": "tinyassets-mcp-canary/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        ) as response:
+            return (
+                response.status,
+                {key.lower(): value for key, value in response.headers.items()},
+                response.read(),
+            )
+    except urllib.error.HTTPError as exc:
+        if exc.code in accepted_http_statuses:
+            return (
+                exc.code,
+                {key.lower(): value for key, value in exc.headers.items()},
+                exc.read(),
+            )
+        raise CanaryError(2, f"HTTP {exc.code} from OPTIONS {url}: {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise CanaryError(2, f"unreachable OPTIONS {url}: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise CanaryError(2, f"timeout after {timeout}s: OPTIONS {url}") from exc
+    except ssl.SSLError as exc:
+        raise CanaryError(2, f"TLS error OPTIONS {url}: {exc}") from exc
+    except OSError as exc:
+        raise CanaryError(2, f"socket error OPTIONS {url}: {exc}") from exc
+
+
+def assert_edge_preflight(url: str, timeout: float) -> None:
+    """The Worker answers OPTIONS itself, using the shared origin policy.
+
+    A proxied preflight dies in Cloudflare Access as a plain 403, with no
+    ``Access-Control-Allow-Origin``. This check fails on that, and it does
+    not look at ``WWW-Authenticate``: that header is the daemon's, and the
+    daemon image can still be the previous release when this Worker deploys.
+    """
+    policy = edge_cors_policy()
+    origins = policy["origins"]
+    for origin in _EDGE_ALLOWED_ORIGINS:
+        if origin not in origins:
+            raise CanaryError(6, f"{origin} is missing from the shared browser origin list")
+    if _EDGE_DENIED_ORIGIN in origins:
+        raise CanaryError(6, f"{_EDGE_DENIED_ORIGIN} must not be an allowed browser origin")
+
+    for origin in _EDGE_ALLOWED_ORIGINS:
+        status, headers, _body = _options(url, timeout, origin, frozenset({204}))
+        allow_origin = headers.get("access-control-allow-origin", "")
+        if (
+            status != 204
+            or allow_origin != origin
+            or headers.get("access-control-allow-methods") != policy["allow_methods"]
+            or headers.get("access-control-allow-headers") != policy["allow_headers"]
+            or headers.get("access-control-expose-headers") != policy["expose_headers"]
+            or headers.get("access-control-max-age") != str(policy["max_age"])
+        ):
+            raise CanaryError(
+                6,
+                f"edge preflight for {origin} on {url} was not answered from the "
+                f"shared origin policy: HTTP {status} allow-origin={allow_origin!r}",
+            )
+
+    status, headers, body = _options(
+        url, timeout, _EDGE_DENIED_ORIGIN, frozenset({403}),
+    )
+    if headers.get("access-control-allow-origin") or status != 403:
+        raise CanaryError(
+            6,
+            f"disallowed origin {_EDGE_DENIED_ORIGIN} was reflected on {url}: HTTP {status}",
+        )
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    if not isinstance(payload, dict) or payload.get("error") != "origin_not_allowed":
+        raise CanaryError(
+            6,
+            f"disallowed origin {_EDGE_DENIED_ORIGIN} on {url} was not refused at the edge",
+        )
 
 
 def _anonymous_challenge_body(payload: Any) -> bool:
@@ -735,10 +865,27 @@ def main(argv: list[str]) -> int:
                          "(default 5) — absorbs transient post-deploy blips")
     ap.add_argument("--assert-handles-retry-delay", type=float, default=3.0,
                     help="seconds between handle-assertion retries (default 3)")
+    ap.add_argument(
+        "--edge-preflight", action="store_true",
+        help=(
+            "probe browser OPTIONS on <url> and nothing else. Allowed origins "
+            "from tinyassets/mcp_browser_origins.json must get 204 with those "
+            "CORS headers; a disallowed origin must get 403 and not be "
+            "reflected. Does not check the daemon challenge URL."
+        ),
+    )
     args = ap.parse_args(argv)
 
     if args.pulse_only:
         return _pulse_only(args.url, args.timeout, verbose=args.verbose)
+    if args.edge_preflight:
+        try:
+            assert_edge_preflight(args.url, args.timeout)
+        except CanaryError as exc:
+            _die(exc.code, exc.msg)
+        if args.verbose:
+            print(f"[canary] edge preflight OK {args.url}")
+        return 0
     bearer = canary_bearer_for(args.url, "canary", args.timeout)
 
     probe(args.url, args.timeout, expected_name=args.assert_name, bearer=bearer)
