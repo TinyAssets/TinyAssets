@@ -114,6 +114,14 @@ describe('shouldProxy', () => {
     // The app moved from /mcp/app to the apex /app on 2026-09-30. The Worker is
     // the only thing standing between that path and the website origin, so the
     // binding is load-bearing: without these the app URL 404s from GitHub Pages.
+    it('accepts the REST API subtree, segment-anchored', () => {
+        assert.equal(shouldProxy('/api'), true);
+        assert.equal(shouldProxy('/api/command-centers'), true);
+        assert.equal(shouldProxy('/api/'), true);
+        assert.equal(shouldProxy('/apix'), false);
+        assert.equal(shouldProxy('/apiary/page'), false);
+    });
+
     it('accepts /app (the app shell)', () => {
         assert.equal(shouldProxy('/app'), true);
     });
@@ -154,6 +162,14 @@ describe('belongsToWebsite', () => {
         assert.equal(belongsToWebsite('/app-ads.txt'), true);
         assert.equal(belongsToWebsite('/apps'), true);
         assert.equal(belongsToWebsite('/appx/deep'), true);
+        assert.equal(belongsToWebsite('/apix'), true);
+        assert.equal(belongsToWebsite('/apiary/page'), true);
+    });
+
+    it('never claims a REST API path', () => {
+        assert.equal(belongsToWebsite('/api'), false);
+        assert.equal(belongsToWebsite('/api/'), false);
+        assert.equal(belongsToWebsite('/api/command-centers'), false);
     });
 
     it('never claims an app path', () => {
@@ -247,10 +263,28 @@ describe('worker handler — apex OAuth discovery', () => {
     });
 });
 
+describe('worker handler — REST API', () => {
+    it('proxies a keyed request under /api with its path, query and bearer', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/api/command-centers?limit=10', {
+                headers: { Authorization: 'Bearer ta_key_example' },
+            }),
+            {},
+        );
+        assert.equal(response.status, 200);
+        assert.equal(
+            lastUpstreamRequest.url,
+            `${TUNNEL_ORIGIN}/api/command-centers?limit=10`,
+        );
+        assert.equal(lastUpstreamRequest.headers.get('Authorization'), 'Bearer ta_key_example');
+    });
+});
+
 describe('worker handler — browser preflight stays at the edge', () => {
     const preflightPaths = [
         '/mcp',
         '/app',
+        '/api',
         '/.well-known/oauth-protected-resource',
         '/.well-known/oauth-protected-resource/mcp',
         '/mcp/.well-known/oauth-protected-resource',

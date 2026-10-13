@@ -481,10 +481,16 @@ def auth_middleware(token: str | None) -> Identity | None:
     provider = _get_provider()
 
     identity: Identity | None = None
+    from tinyassets.api_keys import looks_like_key
+
     if token:
         from tinyassets.observability import observe_bearer
 
         observe_bearer(token)
+
+    # An API key is a REST credential only: it never reaches the OAuth provider
+    # (or its logs), so it can never become an MCP or app session.
+    if token and not looks_like_key(token):
         identity = provider.resolve_token(token)
     _current_identity.set(identity)
     if identity is not None:
@@ -570,6 +576,57 @@ def _is_app_path(path: str) -> bool:
     if path == "/app":
         return True
     return path.startswith("/app") and path[4:5] in _APP_SEGMENT_BOUNDARY
+
+
+def _is_rest_api_path(path: str) -> bool:
+    """Exactly ``/api`` and its sub-paths (segment-anchored)."""
+    return path == "/api" or path.startswith("/api/")
+
+
+async def _serve_rest_api(app: Any, scope: Any, receive: Any, send: Any,
+                          token: str | None) -> None:
+    """The REST door accepts API keys and nothing else.
+
+    OAuth bearers, app sessions and the canary are refused here, and a key is
+    refused everywhere else, so the two doors never share a credential.
+    """
+    from tinyassets.api_keys import ApiKeyRateLimited, looks_like_key, resolve_identity
+
+    identity = None
+    if token and looks_like_key(token):
+        try:
+            # Two SQLite stores are read here; keep that off the event loop so a
+            # busy key store can only slow this request, never /mcp or /app.
+            from starlette.concurrency import run_in_threadpool
+
+            identity = await run_in_threadpool(resolve_identity, token)
+        except ApiKeyRateLimited as exc:
+            body = b'{"error":"rate_limited"}'
+            await send({"type": "http.response.start", "status": 429, "headers": [
+                (b"content-type", b"application/json"),
+                (b"cache-control", b"no-store"),
+                (b"retry-after", str(exc.retry_after).encode()),
+                (b"content-length", str(len(body)).encode()),
+            ]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        except Exception:  # noqa: BLE001 - an unreadable key store refuses
+            logger.exception("api key resolution failed closed")
+            identity = None
+    if identity is None:
+        body = json.dumps({"error": "invalid_api_key" if token else "api_key_required"}).encode()
+        await send({"type": "http.response.start", "status": 401, "headers": [
+            (b"content-type", b"application/json"),
+            (b"cache-control", b"no-store"),
+            (b"www-authenticate", b'Bearer realm="tinyassets-api"'),
+            (b"content-length", str(len(body)).encode()),
+        ]})
+        await send({"type": "http.response.body", "body": body})
+        return
+    _current_identity.set(identity)
+    _current_bearer_present.set(True)
+    _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
+    await app(scope, receive, send)
 
 
 def _auth_challenge_path(path: str) -> bool:
@@ -1114,6 +1171,10 @@ class AuthContextMiddleware:
                 token = auth_header[7:].strip()
             path = scope.get("path", "")
             method = scope.get("method", "").upper()
+
+            if _is_rest_api_path(path):
+                await _serve_rest_api(self.app, scope, receive, send, token)
+                return
 
             canary_authorized = False
             if token and wiki_canary_token_matches(token):

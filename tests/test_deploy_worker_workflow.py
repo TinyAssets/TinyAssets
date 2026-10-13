@@ -161,10 +161,12 @@ def test_wrangler_toml_keeps_load_bearing_broad_route_and_runtime_settings():
     # the query string, so an exact `tinyassets.io/app` route matches only a bare
     # `/app` and the sign-in return `/app?code=…&state=…` plus the Stripe return
     # `/app?subscribed=1` would match no route at all. Narrowing either entry
-    # darks a public surface while the shell still loads.
+    # darks a public surface while the shell still loads. The third region,
+    # `/api*`, is the REST API for programmatic clients (API-key auth).
     assert config["routes"] == [
         {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"},
         {"pattern": "tinyassets.io/app*", "zone_name": "tinyassets.io"},
+        {"pattern": "tinyassets.io/api*", "zone_name": "tinyassets.io"},
         {
             "pattern": "tinyassets.io/.well-known/oauth-protected-resource*",
             "zone_name": "tinyassets.io",
