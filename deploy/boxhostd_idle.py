@@ -16,6 +16,43 @@ from pathlib import Path
 
 RUN_DIR = Path("/run/tinyassets-boxhostd")
 HARNESS = Path("/opt/tinyassets/boxhostd/box_preflight.py")
+STEPS = frozenset(
+    {
+        "cleanup_guard",
+        "cleanup_process",
+        "sandbox_delete",
+        "quota_state",
+        "quota_clear",
+        "quota_tree_remove",
+        "quota_state_remove",
+        "work_remove",
+    }
+)
+REASONS = frozenset(
+    {
+        "invalid_work_dir",
+        "invalid_state",
+        "path_missing",
+        "permission_denied",
+        "timeout",
+        "operation_failed",
+        "runsc_delete_failed",
+        "quota_clear_failed",
+        "missing_tool:xfs_quota",
+        "missing_tool:setquota",
+    }
+)
+
+
+def cleanup_failure(output: str) -> str:
+    try:
+        detail = json.loads(output)
+        step, reason = detail["step"], detail["reason"]
+        if step in STEPS and reason in REASONS:
+            return f"cleanup.{step}:{reason}"
+    except (ValueError, KeyError, TypeError):
+        pass
+    return "cleanup.cleanup_process:operation_failed"
 
 
 def run_preflight(result: Path) -> None:
@@ -30,7 +67,7 @@ def run_preflight(result: Path) -> None:
     try:
         process.wait(timeout=2400)
     except subprocess.TimeoutExpired:
-        failure = "parent watchdog killed preflight after 40 minutes"
+        failure = "watchdog:timeout"
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -43,11 +80,17 @@ def run_preflight(result: Path) -> None:
                 env=env,
                 timeout=180,
                 check=False,
+                capture_output=True,
+                text=True,
             )
             if cleanup.returncode:
-                failure = "preflight cleanup failed"
-        except (OSError, subprocess.TimeoutExpired):
-            failure = "preflight cleanup failed"
+                failure = cleanup_failure(cleanup.stdout)
+        except subprocess.TimeoutExpired:
+            failure = "cleanup.cleanup_process:timeout"
+        except PermissionError:
+            failure = "cleanup.cleanup_process:permission_denied"
+        except OSError:
+            failure = "cleanup.cleanup_process:operation_failed"
     if failure:
         result.write_text(json.dumps({"pass": False, "fatal": failure}) + "\n")
 
