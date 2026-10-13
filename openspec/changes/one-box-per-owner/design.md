@@ -75,7 +75,7 @@ the order. Measured on `origin/main` `13f4ff4459f`, 2026-10-11.
   `boxhostd`. `boxhostd` is a systemd service on the cloud server, separate
   from the daemon container, so a daemon deploy never stops a box.
 - **Rootfs.** It is the read-only harness image. The owner's tree,
-  `/var/lib/boxhostd/owners/<uid>` on the XFS `pquota` image (ADR-022
+  `/var/lib/boxhostd/owners/<uid>` on the XFS `pquota` store (ADR-022
   amendment), mounts at `/home/owner` under the owner's permanent UID/GID.
 - **Inside the box,** `boxd` is the descriptor-safe core of today's
   `boxes/local.py`. It moves; it is not rewritten.
@@ -156,8 +156,8 @@ There are exactly two account limits (S26):
 
 - **Seats:** concurrent top-level sessions in the box.
 - **Storage:** the box disk's hard bound equals the account's storage
-  quota. It is an XFS project quota (`bhard`) on the owner tree in the
-  loop-mounted `pquota` image; ADR-012 D3's logical accounting is kept.
+  quota. It is an XFS project quota (`bhard`, EDQUOT) on the owner tree in
+  the `pquota` store; ADR-012 D3's logical accounting is kept.
 
 The per-box host-protection floor is not an account limit and is the same
 for everyone:
@@ -454,8 +454,9 @@ stopped:
 2. For each owner, it creates the box record in the broker log, rsyncs
    the tree into `/var/lib/boxhostd/owners/<uid>` under the same UID/GID,
    sets the project id and `bhard`, and verifies with `rsync --checksum`.
-   The old trees are removed at the end of the window after the smoke
-   check; the verified backup is the rollback.
+   A post-cutover verified backup that includes the box store is taken and
+   restore-tested on the production copy; only then are the old trees
+   removed (ADR-022 amendment).
 3. It does not touch policy: legacy `rules.db` and `approval_grants` are
    not imported (owners re-grant; P1 decision).
 4. It writes the `owner-box` layout marker last.
@@ -467,8 +468,10 @@ The new image serves only from boxes. There is no flag back to cells.
 **Rollback.**
 
 - Restore the previous image and its pinned runtime bundle.
-- The owner trees are untouched. The window changes only the box registry,
-  quotas and `policy.db`, and the old image ignores all three.
+- Before the old trees are removed they are intact, and the old image
+  ignores the box registry, quotas and `policy.db`. After their removal,
+  rollback is the post-cutover backup (data volume plus box store) and the
+  previous image.
 - The old `rules.db` files are unread since P1; the window deletes them
   and the backup holds them.
 - After the window, rollback means restoring the backup plus the previous image.
@@ -526,9 +529,9 @@ not a pass.
 - **The policy store is the broker's, not the daemon's.** The broker
   already holds credentials and is the only effect executor, so policy
   sits with the enforcement point.
-- **Owner trees move once, into the XFS image.** The data volume cannot
+- **Owner trees move once, into the XFS store.** The data volume cannot
   carry project quotas without a reboot (ADR-022 amendment); the move is
-  verified by checksum and bounded by the pre-window backup.
+  verified by checksum, and a post-cutover backup precedes any deletion.
 
 ## Risks
 
@@ -537,9 +540,9 @@ not a pass.
   it does not get a fallback cell.
 - **gVisor checkpoint of a running browser.** On failure the box
   cold-boots and sessions resume from the journal. Nothing replays.
-- **The image fills.** Per-owner `bhard` bounds first; an image-full write
-  is ENOSPC inside the box only, and `boxhostd` raises growth at 80 %.
-  G4 measures this on the loop-mounted image before P2b.
+- **The store fills.** Per-owner `bhard` bounds first (EDQUOT); a
+  store-full write is ENOSPC inside the box only, and `boxhostd` raises
+  growth at 80 %. G4 measures this on the mounted store before P2b.
 - **The loop moves before C9.** P3 runs whichever loop survives C3. C9 then
   deletes the native loops. P3 does not add a third loop.
 - **Order against C8.** P3 needs `session.start`. If C8 slips, P3 waits; no

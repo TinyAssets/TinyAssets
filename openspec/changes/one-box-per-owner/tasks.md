@@ -41,10 +41,12 @@ and the spec is synced.
         - the deploy workflow's SSH step installs the pinned `runsc` and
           the `boxhostd` systemd unit on the droplet, `--network=none`,
           cgroup v2 per box; both serve nothing until P2b;
-        - the box store: `/var/lib/boxhostd/boxes.img` (8 GiB,
-          `fallocate`), loop-mounted XFS `pquota` at
-          `/var/lib/boxhostd/owners` by a mount unit `boxhostd.service`
-          requires (ADR-022 amendment);
+        - the box store: XFS `pquota,nodiscard` at
+          `/var/lib/boxhostd/owners`, on the backing store the founder
+          picks (ADR-022 amendment: a 20 GiB DO block volume, or the 8 GiB
+          `fallocate` loop image with discard disabled), by a mount unit
+          that `boxhostd.service` `Requires=` and is `After=`; nothing
+          binds it into the daemon container;
         - `scripts/box_preflight.py`: the host and platform gates G1, G3,
           G4 (against the mounted image) and G6 of ADR-022 on raw `runsc`
           sandboxes, pass or fail numbers, run in a quiet window. It needs
@@ -86,8 +88,11 @@ and the spec is synced.
           `apparmor` and `systempaths` unconfined lines leave
           `deploy/compose.yml` and the droplet's copy in the window.
       - **Window runbook:** the design §11 steps, with a verified full
-        backup first; owner trees rsync into the image and are verified
-        by checksum before the old trees go.
+        backup first; owner trees rsync into the store and are verified
+        by checksum; a post-cutover verified backup including the box
+        store (`backup.sh` and `backup-restore.sh` extended in this PR,
+        restore-tested on the production copy) precedes removing the
+        old trees.
       - **Deletes:**
         - all 33 `role_*` modules (design §8), the mapper
           (`deploy/role_owner_launcher.py`), `deploy/role_launcher.py`,

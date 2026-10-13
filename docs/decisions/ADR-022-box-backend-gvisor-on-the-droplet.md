@@ -115,7 +115,7 @@ They need nothing P2b builds.
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
 | G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 700 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
-| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, see the amendment); a write past a project's `bhard` is ENOSPC in that project only; with the image full a write is ENOSPC inside the box and the root filesystem's free space is unchanged; data written with `fsync` survives detach and reattach of the loop device |
+| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is EDQUOT in that project only; with the store full a write is ENOSPC inside the box and the root filesystem's free space is unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
 
 **P2b, acceptance on the cutover build.** `scripts/box_acceptance.py` runs
@@ -188,38 +188,65 @@ path, since its in-box tools are the same `boxd` operations P2b ships.
 P2a run 38476716743 on production (kernel 6.1, `runsc` release-20260928.0,
 16.9 GiB free): **G4 failed**. The data volume is ext4 mounted without
 project quotas. Enabling `prjquota` on the root ext4 needs an offline
-`tune2fs` and a remount, that is a reboot of the only host; a DO block
-volume is new spending.
+`tune2fs` and a remount, that is a reboot of the only host. Revised after
+one cross-family round.
 
-**Decision: box trees live on one XFS image, loop-mounted with `pquota`.**
+**Decision: box trees live on one XFS filesystem mounted `pquota,nodiscard`
+at `/var/lib/boxhostd/owners`.** Two backing stores pass the same G4; the
+founder picks one:
 
-- `/var/lib/boxhostd/boxes.img`, preallocated with `fallocate` (never
-  sparse) at 8 GiB, mounted at `/var/lib/boxhostd/owners` with
-  `pquota,noatime` by a systemd mount unit that `boxhostd.service`
-  requires; `boxhostd` refuses to start if the mount lacks `pquota`. The
-  loop device uses `--direct-io=on`, so pages are cached once.
-- **Durability.** XFS flushes reach the loop device, which fsyncs the
-  backing file: a box `fsync` is as durable as the host's ext4.
-- **Growth.** At 80 % used `boxhostd` raises a `docs/host-actions.md` row.
-  Growth is online (`fallocate` extend, `losetup --set-capacity`,
-  `xfs_growfs`) in 4 GiB steps while the root filesystem keeps ≥ 6 GiB
-  free. Past that, a DO block volume (about $0.10 per GiB-month) formatted
-  XFS `pquota` replaces the image: new spending, raised with the numbers.
-- **Full.** Per-owner `bhard` is the first bound; the image may be
-  oversubscribed. A write with the image full is ENOSPC inside the writing
-  box only. The root filesystem and the daemon's data are elsewhere, so a
-  box can never fill them (today `/data` shares the root disk).
-- **Backup.** `backup.sh` includes the mounted tree, file level per owner,
-  not the raw image. S27 later ships box snapshots on the one snapshot path.
-- **P2b window: owner bytes move.** For each owner the one-shot rsyncs the
-  tree into `owners/<uid>` under the same UID/GID, sets the project id and
-  `bhard`, verifies with `rsync --checksum`, then writes the layout marker.
-  The old trees are removed at the end of the window after the smoke
-  check; the verified full backup is the rollback. Design §11 step 2 and
-  "attached in place" are amended accordingly.
+- **(a) Recommended: a DO block volume, 20 GiB, about $2 a month.** New
+  spending, a founder decision. Formatted XFS once, attached to the
+  droplet, grown online (DO resize, then `xfs_growfs`) with no loop device,
+  no `fallocate` and no discard concern; a volume snapshot is a second
+  backup form.
+- **(b) No spending: a loop image.** `/var/lib/boxhostd/boxes.img`,
+  preallocated with `fallocate` (never sparse) at 8 GiB. That leaves
+  8.9 GiB on the root filesystem, so the first 4 GiB growth would breach
+  the 6 GiB reserve: the block-volume decision is required before the
+  first growth, raised at 80 % used. Discard is off end to end: the mount
+  is `nodiscard`, the mount unit writes 0 to the loop device's
+  `queue/discard_max_bytes` so `fstrim -a` skips it and no hole is ever
+  punched; G4 checks the image's allocated blocks after an `fstrim`. The
+  loop uses `--direct-io=on`; XFS flushes reach the loop device, which
+  fsyncs the backing file, so a box `fsync` is as durable as the host's
+  ext4.
 
-Founder: nothing now (no spending, no reboot). Later: the block volume,
-when growth would breach the 6 GiB rule.
+**Common to both.**
+
+- **Boot order.** `var-lib-boxhostd-owners.mount` is a systemd unit;
+  `boxhostd.service` has `Requires=` and `After=` it and refuses to start
+  if the mount lacks `pquota`. The daemon container is unrelated: after
+  P2b it never touches an owner tree directly. Compose mounts only
+  `/data`; nothing binds `/var/lib/boxhostd` into the daemon, and
+  `test_universe_path_io_guard` at 0 keeps it so. Trees are owned by the
+  owner's permanent UID/GID, mode 0700; `boxhostd` (root) sets ownership
+  and project ids; the unprivileged daemon reaches them only through
+  `BoxProvider` over the `boxhostd` socket.
+- **Full.** Per-owner `bhard` is the first bound (EDQUOT in that project
+  only); the store may be oversubscribed; a write with the store full is
+  ENOSPC inside the writing box only. The root filesystem and the daemon's
+  data are elsewhere, so a box can never fill them (today `/data` shares
+  the root disk).
+- **Backup and restore.** `deploy/backup.sh` today archives only the
+  `tinyassets-data` volume and `backup-restore.sh` restores only that.
+  P2b extends both: a second archive member is the box store, taken under
+  `xfs_freeze -f` / `-u` with `--numeric-owner --acls --xattrs`; restore
+  recreates the trees, then re-applies project ids and `bhard` from the
+  broker's box registry (tar does not carry project ids) and checks
+  `xfs_quota -x -c report`. The restore is tested on the production copy
+  before the window.
+- **P2b window: owner bytes move, deletion last.** For each owner the
+  one-shot rsyncs the tree into `owners/<uid>` under the same UID/GID, sets
+  the project id and `bhard`, and verifies with `rsync --checksum`. Then a
+  **post-cutover verified backup that includes the box store** is taken
+  and restore-tested on the production copy. Only then are the old trees
+  removed. Rollback before that step: the old image, old trees intact;
+  after it: that backup plus the previous image. Design §11 is amended.
+
+Founder: **one decision now**, backing store (a) at about $2 a month or
+(b) with the same decision deferred to the first growth. No reboot either
+way.
 
 ## Consequences
 
