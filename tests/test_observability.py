@@ -567,6 +567,27 @@ def test_db_trace_keeps_failed_and_slow_statements(captured, monkeypatch):
     assert "missing_column" not in json.dumps(events)
 
 
+def test_db_trace_logs_the_verb_during_a_request(captured, monkeypatch):
+    # A statement that is logged on its own (slow here) carries only its verb.
+    monkeypatch.setattr(obs, "DB_SLOW_MS", 0)
+    obs.install_db_trace()
+    active = obs._request_active.set(True)
+    session = obs._session_id.set("s_" + "ef" * 16)
+    try:
+        connection = sqlite3.connect(":memory:")
+        row = connection.execute("select 1").fetchone()
+        assert row == (1,)
+    finally:
+        obs._session_id.reset(session)
+        obs._request_active.reset(active)
+        obs.uninstall_db_trace()
+    calls = [event for event in _events(captured) if event["event"] == "dependency.call"]
+    assert len(calls) == 1
+    assert calls[0]["dependency"]["operation"] == "SELECT"
+    assert calls[0]["dependency"]["target"].startswith("sqlite:")
+    assert "select 1" not in json.dumps(calls[0])
+
+
 def test_tools_list_step_and_client(captured):
     body = json.dumps({
         "jsonrpc": "2.0",
