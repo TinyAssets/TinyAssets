@@ -241,7 +241,7 @@ pytestmark_hook = pytest.mark.skipif(
 
 
 def _init_repo(tmp_path: Path) -> Path:
-    """Minimal git repo with the hook installed + tinyassets/ dirs stubbed."""
+    """Minimal git repo with the hook and its required scripts installed."""
     import os
 
     repo = tmp_path / "repo"
@@ -263,23 +263,27 @@ def _init_repo(tmp_path: Path) -> Path:
     )
 
     (repo / "tinyassets").mkdir()
-    mirror_path = (
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets"
-    )
-    (repo / mirror_path).mkdir(parents=True)
     (repo / "scripts").mkdir(exist_ok=True)
 
-    # Copy the mojibake script into the throwaway repo at the same path
-    # the hook will look for.
-    shutil.copy(SCRIPT_PATH, repo / "scripts" / "fix-mojibake.py")
+    # The hook runs the runtime guard before the mojibake scan. Install the
+    # real scripts so this fixture exercises the same hook path as a repo.
+    for relative in (
+        "scripts/fix-mojibake.py",
+        "scripts/check_mirror_parity.py",
+        "scripts/invariants/__init__.py",
+        "scripts/invariants/mirror_parity.py",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO_ROOT / relative, target)
 
     hooks_dir = repo / ".git" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(HOOK_SOURCE, hooks_dir / "pre-commit")
+    hook = hooks_dir / "pre-commit"
+    hook.write_bytes(HOOK_SOURCE.read_bytes().replace(b"\r\n", b"\n"))
     if sys.platform != "win32":
         import os
-        os.chmod(hooks_dir / "pre-commit", 0o755)
+        os.chmod(hook, 0o755)
 
     (repo / "README.md").write_text("seed\n", encoding="utf-8")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
