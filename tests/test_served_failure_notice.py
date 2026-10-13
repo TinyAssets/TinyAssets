@@ -11,8 +11,21 @@ from __future__ import annotations
 
 import pytest
 
-from tinyassets.exceptions import AllProvidersExhaustedError
-from tinyassets.universe_server import _served_failure_notice
+from tinyassets.conversation_failure import (
+    failure_notice,
+    normalize_turn_failure,
+    read_turn_failure,
+)
+from tinyassets.exceptions import (
+    AllProvidersExhaustedError,
+    PlatformLLMCallRefusedError,
+    ProviderAuthorityHeldError,
+    WorkModelExhaustedError,
+)
+from tinyassets.providers.model_pins import ModelPinError
+from tinyassets.providers.provider_jail import ProviderConfinementError
+from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
+from tinyassets.universe_server import _served_failure_notice, _served_failure_record
 
 
 def _exhausted(failure_class: str | None) -> AllProvidersExhaustedError:
@@ -122,3 +135,46 @@ def test_malformed_attempts_do_not_break_the_unknown_failure_notice():
     exc = _exhausted(None)
     exc.attempts = 123
     assert "could not identify why" in _served_failure_notice(exc)
+
+
+@pytest.mark.parametrize("error,code,advice", [
+    (PermissionError(NO_ELIGIBLE_MODEL + "; not usable now: source (source not accepted); "
+                     "model chosen/missing unavailable: absent from catalogue"),
+     "model_unavailable", "pick another model"),
+    (ModelPinError("model pin provider 'missing' is unavailable"),
+     "model_unavailable", "pick another model"),
+    (ProviderAuthorityHeldError("selected source is not accepted"),
+     "authority_held", "check its connection"),
+    (PlatformLLMCallRefusedError("no owner-connected authority"),
+     "authority_held", "check its connection"),
+    (WorkModelExhaustedError(WorkModelExhaustedError.MESSAGE),
+     "work_model_exhausted", "restore capacity"),
+    (ProviderConfinementError(ProviderConfinementError.MESSAGE),
+     "provider_confinement_unavailable", "report this platform problem"),
+])
+def test_known_pre_request_refusal_has_specific_durable_notice(error, code, advice):
+    import json
+
+    record = _served_failure_record(error)
+    assert (record.code, record.stage, record.effects) == (code, "before_send", "none")
+    stored = json.dumps(normalize_turn_failure(record))
+    assert read_turn_failure("platform", stored) == record
+    notice = failure_notice(record)
+    assert advice in notice
+    assert "Nothing ran." in notice
+    assert "could not identify why" not in notice
+
+
+def test_unrelated_permission_error_still_has_unknown_cause():
+    record = _served_failure_record(PermissionError("unclassified permission failure"))
+    assert record.code == "unknown"
+    assert "could not identify why" in failure_notice(record)
+
+
+def test_a_previous_model_request_does_not_claim_nothing_ran():
+    error = WorkModelExhaustedError(WorkModelExhaustedError.MESSAGE)
+    error.turn_requests = 1
+    record = _served_failure_record(error)
+    assert record.code == "work_model_exhausted"
+    assert record.effects == "unknown"
+    assert "Nothing ran." not in failure_notice(record)

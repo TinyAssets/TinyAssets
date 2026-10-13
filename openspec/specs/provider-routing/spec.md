@@ -772,6 +772,23 @@ the check-progress caution SHALL appear only when `effects` is not `none`. The
 record is returned on `converse` as `turn_failure` and read back through the
 existing conversation read paths.
 
+When planning refuses a pinned model because no eligible model exists in the
+connected sources, the record SHALL use `model_unavailable`. A typed authority
+refusal SHALL use `authority_held`; typed work-model exhaustion SHALL use
+`work_model_exhausted`; and a typed protected-launch refusal SHALL use
+`provider_confinement_unavailable`. Each notice SHALL state the known reason
+and an action the owner can take. A refusal before any model request with no
+turn-journal evidence of prior actions SHALL have `stage=before_send` and
+`effects=none`. `unknown` SHALL remain for failures without classified evidence.
+
+#### Scenario: A selected model is absent before the provider is called
+
+- **WHEN** an explicitly selected model is absent from the catalogue of the
+  owner's connected sources and planning refuses it before a model request
+- **THEN** `turn_failure.code=model_unavailable`, `stage=before_send`, and
+  `effects=none`; the live and retained notices say to pick another model or
+  connect the source that offers it
+
 #### Scenario: A reply the codec cannot read names that, not an unknown cause
 
 - **WHEN** the connected model's reply fails agent-chat decoding before any tool
