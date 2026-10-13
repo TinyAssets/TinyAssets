@@ -3,8 +3,8 @@
 ``enablePullRequestAutoMerge`` admits a PR only for a person. This workflow
 calls ``enqueuePullRequest`` after a Jonnyton approval comment, the required
 checks, and the scope guard's label, using the merge-attribution token. These
-tests are the pre-merge check: the workflow runs on ``pull_request_target``
-and ``workflow_run`` with a secret.
+tests are the pre-merge check: the workflow runs on ``workflow_run`` with a
+secret, after Tests, invariants, or the scope guard succeeds.
 """
 
 from __future__ import annotations
@@ -133,8 +133,8 @@ def test_workflow_enqueues_with_the_attribution_token_and_keeps_the_receipt(sour
     triggers = workflow["on"]
     assert triggers["workflow_run"]["workflows"] == ["Tests", "invariants", "PR scope guard"]
     assert triggers["workflow_run"]["types"] == ["completed"]
-    assert "edited" in triggers["pull_request_target"]["types"]
-    assert "labeled" in triggers["pull_request_target"]["types"]
+    assert "pull_request" not in triggers
+    assert "pull_request_target" not in triggers
     step = next(
         s for s in workflow["jobs"]["enqueue"]["steps"]
         if s.get("name") == "Enqueue when the receipt and required checks have passed"
@@ -169,7 +169,8 @@ def test_merge_group_and_failed_runs_do_not_enqueue(source):
     text = " ".join(workflow_if(source).split())
     assert "workflow_run.conclusion == 'success'" in text
     assert "workflow_run.event == 'pull_request'" in text
-    assert "draft == false" in text
+    assert "workflow_run.event == 'pull_request_target'" in text
+    assert "merge_group" not in text
 
 
 def workflow_if(source: str) -> str:

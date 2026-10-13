@@ -19,21 +19,22 @@ name: Enqueue merge
 # diff carries the infra-change label. The actor is MERGE_ATTRIBUTION_TOKEN.
 # If that token lacks Merge queues: Read and write, the job logs the owner
 # step and exits 0. It never uses GITHUB_TOKEN.
+#
+# A receipt or an infra-change label does not rerun Tests. pr-scope-guard
+# re-reads both, on pull_request_target. This job runs when that guard, Tests,
+# or invariants succeeds for a pull request. It does not listen to edited or
+# labeled itself: those events must not start another copy of the test jobs.
 
 on:
   workflow_run:
     workflows: ["Tests", "invariants", "PR scope guard"]
     types: [completed]
-  # A receipt usually arrives as an edit, after the checks are already green.
-  # workflow_run will not fire again for that.
-  pull_request_target:
-    types: [ready_for_review, edited, labeled]
 
 permissions:
   contents: read
 
 concurrency:
-  group: enqueue-merge-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  group: enqueue-merge-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -41,19 +42,19 @@ jobs:
     name: Enqueue for merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # pull_request_target is the scope guard (receipt and label). pull_request
+    # is Tests and invariants. merge_group is excluded: the queue already has
+    # the pull request, and a success there must not enqueue it again.
     if: >-
-      (github.event_name == 'pull_request_target' &&
-       github.event.pull_request.draft == false &&
-       github.event.pull_request.base.ref == 'main' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'pull_request')
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'pull_request_target')
     steps:
       - name: Check out trusted enqueue policy
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 0
           filter: blob:none
@@ -72,42 +73,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           REPO: ${{ github.repository }}
-          EVENT: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.workflow_run.head_sha }}
           PR_LIST: ${{ toJSON(github.event.workflow_run.pull_requests) }}
         shell: bash
         run: |
           set -euo pipefail
           args=(--repo "$REPO")
-          if [ "$EVENT" = "pull_request_target" ]; then
-            args+=(--pr "$PR_NUMBER")
-          else
-            list="${PR_LIST:-[]}"
-            if [ -z "$list" ] || [ "$list" = "null" ]; then
-              list='[]'
+          list="${PR_LIST:-[]}"
+          if [ -z "$list" ] || [ "$list" = "null" ]; then
+            list='[]'
+          fi
+          numbers="$(jq -r '.[]?.number // empty' <<<"$list")"
+          if [ -z "$numbers" ] && [ -n "${HEAD:-}" ]; then
+            if ! numbers="$(gh api -H "Accept: application/vnd.github+json" \
+                "repos/${REPO}/commits/${HEAD}/pulls" --jq '.[].number')"; then
+              echo "::error::could not list pull requests for ${HEAD}"
+              exit 1
             fi
-            numbers="$(jq -r '.[]?.number // empty' <<<"$list")"
-            if [ -z "$numbers" ] && [ -n "${HEAD:-}" ]; then
-              if ! numbers="$(gh api -H "Accept: application/vnd.github+json" \
-                  "repos/${REPO}/commits/${HEAD}/pulls" --jq '.[].number')"; then
-                echo "::error::could not list pull requests for ${HEAD}"
-                exit 1
-              fi
+          fi
+          found=0
+          while IFS= read -r n; do
+            if [ -n "$n" ]; then
+              args+=(--pr "$n")
+              found=1
             fi
-            found=0
-            while IFS= read -r n; do
-              if [ -n "$n" ]; then
-                args+=(--pr "$n")
-                found=1
-              fi
-            done <<<"$numbers"
-            if [ "$found" -eq 0 ]; then
-              echo "No pull request on this ${EVENT} run."
-              exit 0
-            fi
-            if [ -n "${HEAD:-}" ]; then
-              args+=(--head "$HEAD")
-            fi
+          done <<<"$numbers"
+          if [ "$found" -eq 0 ]; then
+            echo "No pull request on this workflow_run."
+            exit 0
+          fi
+          if [ -n "${HEAD:-}" ]; then
+            args+=(--head "$HEAD")
           fi
           python scripts/enqueue_merge.py "${args[@]}"
