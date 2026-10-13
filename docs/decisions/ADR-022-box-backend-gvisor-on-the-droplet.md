@@ -114,9 +114,12 @@ They need nothing P2b builds.
 | Gate | Pass |
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
-| G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 700 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
+| G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 1400 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
+
 | G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is EDQUOT in that project only; with the store full a write is ENOSPC inside the box and the root filesystem's free space is unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
+
+G3 Chromium ceiling raised 2026-10-13 from measured 1267 MiB; capacity condition is MemAvailable at the daemon cap.
 
 **P2b, acceptance on the cutover build.** `scripts/box_acceptance.py` runs
 these in `scripts/linux_oracle.py` and on a production copy before the

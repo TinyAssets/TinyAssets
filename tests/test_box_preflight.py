@@ -49,11 +49,15 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
     def relative_to(path, other, *args, **kwargs):
         if path == boxes.parent_cgroup and other == "/sys/fs/cgroup":
             return Path("test")
+        if path.parent == boxes.parent_cgroup and other == "/sys/fs/cgroup":
+            return Path("test") / path.name
         return original_relative_to(path, other, *args, **kwargs)
 
     monkeypatch.setattr(Path, "relative_to", relative_to)
 
     def spec(*args, **_kwargs):
+        if args[0] == "state":
+            return subprocess.CompletedProcess(args, 0, stdout='{"pid": 123}')
         bundle = Path(args[args.index("--bundle") + 1])
         (bundle / "config.json").write_text(
             json.dumps({"process": {}, "mounts": [], "linux": {}})
@@ -70,10 +74,19 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(boxes, "command", spec)
+    monkeypatch.setattr(
+        box_preflight, "process_cgroup_path", lambda _pid: f"/test/{boxes.names[-1]}"
+    )
     monkeypatch.setattr(box_preflight.subprocess, "run", detached_run)
     for name in ("g1", "cap0", "cap1", "cap2", "cap3"):
         (boxes.parent_cgroup / name).mkdir()
-        boxes.start(name)
+        boxes.start(name, memory=box_preflight.GIB)
+        config = json.loads((tmp_path / name / "config.json").read_text())
+        assert config["linux"]["cgroupsPath"] == f"/test/{name}"
+        assert config["linux"]["resources"]["memory"] == {
+            "limit": box_preflight.GIB,
+            "swap": box_preflight.GIB,
+        }
     assert starts == ["g1", "cap0", "cap1", "cap2", "cap3"]
 
 
@@ -197,6 +210,7 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(box_preflight.subprocess, "Popen", lambda *_a, **_k: Allocation())
     monkeypatch.setattr(box_preflight, "canary_p95", lambda: 10)
+    monkeypatch.setattr(box_preflight, "rss_bytes", lambda _c: 64 * box_preflight.MIB)
     oom = iter((0, 1))
     events = iter((0, 1))
     monkeypatch.setattr(box_preflight, "host_oom_kills", lambda: next(oom))
@@ -206,6 +220,9 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
         "cgroup_value",
         lambda _p, key: {
             "memory.max": str(box_preflight.GIB),
+            "memory.swap.max": "0",
+            "memory.current": str(64 * box_preflight.MIB),
+            "memory.peak": str(box_preflight.GIB),
             "pids.max": "1024",
             "cpu.weight": "100",
         }[key],
@@ -215,7 +232,22 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
     oom = iter((0, 1))
     events = iter((0, 1))
     sandbox_rc = 0
-    assert box_preflight.g1(Boxes(), 10)["pass"] is True
+    result = box_preflight.g1(Boxes(), 10)
+    assert result["pass"] is True
+    assert result["box_memory_peak_bytes"] == box_preflight.GIB
+    assert result["box_rss_after_bytes"] == 64 * box_preflight.MIB
+
+
+def test_g1_allocation_touches_every_page() -> None:
+    size = 4 * box_preflight.MIB
+    result = subprocess.run(
+        [sys.executable, "-c", box_preflight.allocation_code(size)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert result.stdout == str(size // 4096)
 
 
 def test_ext4_project_inheritance_and_dedicated_scratch(monkeypatch, tmp_path: Path) -> None:

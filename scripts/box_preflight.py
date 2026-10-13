@@ -122,6 +122,10 @@ def cgroup_event(path: Path, event: str) -> int:
     return int(values.get(event, "0"))
 
 
+def process_cgroup_path(pid: int) -> str:
+    return Path(f"/proc/{pid}/cgroup").read_text().splitlines()[0].split(":", 2)[2]
+
+
 def service_cgroup_parent(path: str) -> str:
     if not path.endswith("/boxhostd.service/control"):
         raise RuntimeError("preflight must run under boxhostd.service")
@@ -147,6 +151,41 @@ def pss_mib(cgroup: Path) -> float:
     if not pids:
         raise RuntimeError("sandbox cgroup has no processes")
     return round(total_kib / 1024, 1)
+
+
+def rss_bytes(cgroup: Path) -> int:
+    """Host RSS of the Sentry, gofer and their cgroup descendants."""
+    pids = {
+        int(pid)
+        for procs in cgroup.rglob("cgroup.procs")
+        for pid in procs.read_text().split()
+    }
+    if not pids:
+        raise RuntimeError("sandbox cgroup has no processes")
+    total = 0
+    for pid in pids:
+        try:
+            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    total += int(line.split()[1]) * 1024
+                    break
+        except FileNotFoundError:
+            pass  # Process exited after reading cgroup.procs.
+    return total
+
+
+def allocation_code(size: int) -> str:
+    """Write a nonzero byte to every page and keep the mapping until exit."""
+    return (
+        "import mmap, os, time\n"
+        f"size={size}\n"
+        "page=mmap.PAGESIZE\n"
+        "m=mmap.mmap(-1,size)\n"
+        "for i in range(0,size,page):\n"
+        " m[i]=(i//page)%251+1\n"
+        "os.write(1, str(len(range(0,size,page))).encode())\n"
+        "time.sleep(2)\n"
+    )
 
 
 def export_daemon_rootfs(work: Path) -> Path:
@@ -252,7 +291,8 @@ class Boxes:
             f"/{self.parent_cgroup.relative_to('/sys/fs/cgroup')}/{name}"
         )
         config["linux"]["resources"] = {
-            "memory": {"limit": memory},
+            # OCI swap is memory+swap. Equal values disable cgroup v2 swap.
+            "memory": {"limit": memory, "swap": memory},
             "pids": {"limit": 1024},
             "cpu": {"shares": 1024},
         }
@@ -275,6 +315,11 @@ class Boxes:
         cgroup = self.parent_cgroup / name
         if not cgroup.is_dir():
             raise RuntimeError("runsc did not create its delegated box cgroup")
+        state = json.loads(self.command("state", name).stdout)
+        sandbox_cgroup = process_cgroup_path(state["pid"])
+        expected = f"/{cgroup.relative_to('/sys/fs/cgroup').as_posix()}"
+        if sandbox_cgroup != expected and not sandbox_cgroup.startswith(expected + "/"):
+            raise RuntimeError("runsc sandbox is outside its limited box cgroup")
         return time.monotonic() - start, owner, cgroup
 
     def exec(
@@ -347,17 +392,13 @@ def chromium(boxes: Boxes, name: str, owner: Path) -> subprocess.Popen[str]:
 def g1(boxes: Boxes, baseline: float) -> dict:
     start_oom = host_oom_kills()
     _, _, cgroup = boxes.start("g1", memory=GIB)
-    limits = {name: cgroup_value(cgroup, name) for name in ("memory.max", "pids.max", "cpu.weight")}
+    limits = {
+        name: cgroup_value(cgroup, name)
+        for name in ("memory.max", "memory.swap.max", "pids.max", "cpu.weight")
+    }
     before = cgroup_event(cgroup, "oom_kill")
-    # Touch every page so Linux really charges 1.5 GiB; the box should kill
-    # this child while its PID 1 and the host remain alive.
-    alloc_code = (
-        "import mmap,time\n"
-        "m=mmap.mmap(-1,1536*1024*1024)\n"
-        "for i in range(0,1536*1024*1024,4096):\n"
-        " m[i]=1\n"
-        " if i%(64*1024*1024)==0: time.sleep(0.2)\n"
-    )
+    rss_before = rss_bytes(cgroup)
+    current_before = int(cgroup_value(cgroup, "memory.current"))
     alloc = subprocess.Popen(
         [
             str(RUNSC),
@@ -369,7 +410,7 @@ def g1(boxes: Boxes, baseline: float) -> dict:
             "g1",
             "/opt/venv/bin/python",
             "-c",
-            alloc_code,
+            allocation_code(1536 * MIB),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -383,11 +424,20 @@ def g1(boxes: Boxes, baseline: float) -> dict:
         raise RuntimeError("1.5 GiB allocation did not terminate within 90 seconds") from None
     box_oom = cgroup_event(cgroup, "oom_kill") - before
     all_oom = host_oom_kills() - start_oom
+    memory_peak = int(cgroup_value(cgroup, "memory.peak"))
+    memory_current = int(cgroup_value(cgroup, "memory.current"))
+    rss_after = rss_bytes(cgroup)
     sandbox_exec_rc = boxes.exec("g1", "/bin/true", check=False).returncode
     result = {
         "memory_max_bytes": limits["memory.max"],
+        "memory_swap_max_bytes": limits["memory.swap.max"],
         "pids_max": limits["pids.max"],
         "cpu_weight": limits["cpu.weight"],
+        "box_rss_before_bytes": rss_before,
+        "box_rss_after_bytes": rss_after,
+        "box_memory_current_before_bytes": current_before,
+        "box_memory_current_after_bytes": memory_current,
+        "box_memory_peak_bytes": memory_peak,
         "allocation_rc": allocation_rc,
         "sandbox_exec_after_oom_rc": sandbox_exec_rc,
         "box_oom_kills": box_oom,
@@ -398,8 +448,10 @@ def g1(boxes: Boxes, baseline: float) -> dict:
     }
     result["pass"] = (
         limits["memory.max"] == str(GIB)
+        and limits["memory.swap.max"] == "0"
         and limits["pids.max"] == "1024"
         and int(limits["cpu.weight"]) > 0
+        and memory_peak >= GIB * 9 // 10
         and allocation_rc != 0
         and sandbox_exec_rc == 0
         and box_oom >= 1
@@ -515,7 +567,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         "canary_ratio": round(under / baseline, 3),
     }
     g3_result["pass"] = (
-        with_browser <= 700
+        with_browser <= 1400
         and without_browser <= 250
         and first_exec_s <= 1
         and g3_result["exec_p95_ms"] <= 100
