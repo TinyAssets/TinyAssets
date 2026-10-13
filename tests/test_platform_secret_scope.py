@@ -132,7 +132,7 @@ def _readers(name: str) -> set[str]:
 
 
 #: Reads a forbidden name but is never imported by the daemon (asserted below).
-_UNIMPORTED_READERS = {"tinyassets/host_pool/client.py"}
+_UNIMPORTED_READERS = set()
 
 
 @pytest.mark.parametrize("name", sorted(DAEMON_FORBIDDEN_ENV))
@@ -140,23 +140,6 @@ def test_no_daemon_code_reads_a_forbidden_name(name):
     """Removing a name from the daemon is safe only while nothing reads it."""
     assert _readers(name) - _UNIMPORTED_READERS == set(), (
         f"{name} is now read by daemon code; it cannot be withheld from the daemon"
-    )
-
-
-def test_host_pool_is_not_imported_by_the_daemon():
-    importers = {
-        path.relative_to(REPO).as_posix()
-        for path in PACKAGE.rglob("*.py")
-        if "host_pool" not in path.parts
-        and re.search(
-            r"^\s*(?:from|import)\s+[\w.]*host_pool\b|import_module\([^)]*host_pool",
-            path.read_text(encoding="utf-8", errors="replace"),
-            re.M,
-        )
-    }
-    assert importers == set(), (
-        "host_pool is imported now; it reads SUPABASE_SERVICE_ROLE_KEY, which the "
-        "daemon no longer receives"
     )
 
 

@@ -660,16 +660,12 @@ def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
         # when the host-run fleet was deleted: nothing runs outside a user's
         # universe (ADR-009). No module replaces it -- the served consumer runs
         # inside the daemon, which is covered by tinyassets/__main__.py.
-        "tinyassets/mcp_server.py",
         "tinyassets/universe_server.py",
-        "tinyassets/desktop/launcher.py",
         "fantasy_daemon/__main__.py",
         "fantasy_daemon/api.py",
     ):
         source = (root / relative).read_text(encoding="utf-8")
         assert "prepare_service_writer_barrier" in source, relative
-    tray = (root / "tinyassets_tray.py").read_text(encoding="utf-8")
-    assert "tinyassets.universe_server import main" in tray
 
 
 def test_fault_contract_names_every_recovery_boundary() -> None:
@@ -692,7 +688,6 @@ def test_scoped_reset_is_not_registered_as_public_surface() -> None:
     package_root = Path(__file__).resolve().parents[1] / "tinyassets"
     public_sources = (
         package_root / "universe_server.py",
-        package_root / "mcp_server.py",
         package_root / "api" / "universe.py",
     )
     for source in public_sources:
@@ -716,8 +711,6 @@ def test_packaged_runtime_matches_scoped_reset_writer_sources() -> None:
     )
     for relative in (
         Path("tinyassets/scoped_reset.py"),
-        Path("tinyassets/mcp_server.py"),
-        Path("tinyassets/desktop/launcher.py"),
     ):
         assert (root / relative).read_bytes() == (mirror / relative).read_bytes()
 

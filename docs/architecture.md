@@ -46,8 +46,8 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/serve.py` | Container entry point. Keeps spawn children light, then starts the server. |
 | `tinyassets/universe_server.py` | The remote MCP server: canonical handles, prompts, `/app` mounting. |
 | `tinyassets/engine_mcp_server.py` | The same handles, served locally to the command-center agent's own turn. |
-| `tinyassets/mcp_server.py`, `tinyassets/__main__.py` | Local file-interface server and CLI (`tinyassets-mcp`, `tinyassets-cli`). |
-| `tinyassets/desktop/` | Desktop launcher and tray; `icon_gen.py` owns the mark geometry. |
+| `tinyassets/__main__.py` | The domain CLI (`tinyassets-cli`). |
+| `tinyassets/desktop/` | The mark geometry, plus dashboard and tray helpers still imported by the shipped domain CLI. |
 | `tinyassets/control_plane/__main__.py` | The control plane's owner tick, runnable on its own. |
 
 ### Surfaces
@@ -59,7 +59,7 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/owner_door/` | The app's complete reads of its owner's data (ADR-011). |
 | `WebSite/site-react/` | The public site (Next.js static export). |
 | `mobile/`, `desktop-app/` | Capacitor and desktop shells around the app. |
-| `packaging/` | MCPB, Claude plugin, registry metadata, OS installers. |
+| `packaging/` | MCPB, Claude plugin and registry metadata. |
 
 ### The agent and its tools
 
@@ -148,7 +148,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | B1 | The bubble agent is a product that tracks the frontier (Dir 1) | the starter package: files, skills and packages a user could also write; kept matching and beating Grok Bot, Muse, ChatGPT dots and Claude by the scheduled frontier review | bubble-agent behaviour built as platform code (wake, approval and domain features, provider special cases; see S9, S18) | drifted | starter-only change rule: frontier items edit the starter package, never platform code, unless a missing primitive is approved | frontier review loop; C5, C10 |
 | B2 | The harness is pi.dev-modelled primitives (Dir 1-3) | four tools + `ta`, one model call (S1), one way to start an agent (S2), one loop (S3), one extension unit (S6), packages, a customizable interface | everything in the drifted rows below | drifted | the guards below | C1-C11 |
 | S1 | One model call (Dir 2, ADR-006/007, D6) | `model_call.call(model_ref, context, parent)` -> broker; receipt per call | MCP-sampling reviewer and one-provider authority remain; caller budget roots and the in-memory allocation path are removed | drifted | `check_shapes.py` S1, `test_broker_usage_ipc` | C3 |
-| S2 | One way to start an agent (Dir 2, ADR-014) | `session.start(agent, input, parent)` in the control plane; chat, agent node, child session, wake and automation call it | 32 entry points, 24 live, 4 distinct starters, 9 admission gates (`universe_intelligence._call_writer`, `_ForegroundRunProviderSession`, `background_served_provider`, `cloud_automation_continuation`, `fantasy_daemon`) | drifted | `spawn-entry` (planned) | C3, C5, C7, C8 |
+| S2 | One way to start an agent (Dir 2, ADR-014) | `session.start(agent, input, parent)` in the control plane; chat, agent node, child session, wake and automation call it | chat, foreground run and the shipped domain CLI still start separately; the background served and cloud continuation authority paths remain live | drifted | `spawn-entry` | C3, C5, C7, C8 |
 | S3 | One loop (D6, ADR-012) | `agent_loop/` thin loop (1.5k) | native CLI loop `claude_provider` 1335; thin loop dark behind `TINYASSETS_AGENT_LOOP` | drifted | S3 old-path and line ceilings in `check_shapes.py` | C9 |
 | S4 | No provider-specific code (Dir 2, ADR-007) | connection primitives; vendors are data | 145 files name a vendor; three counted legacy cells remain: Claude provider, `FALLBACK_CHAINS`, `openai_device.py`; CLI installs in `Dockerfile` | drifted | `vendor-names` file ceiling in `check_shapes.py` | C3, C9 |
 | S5 | One agent definition (Dir 2, ADR-014) | `agents/<name>/` files | `custom_agents.py` 2556, `agent_interchange.py` 1793, templates 329, `harness_settings.py` 203 beside `agent_definition.py` 63; `agent_runtime_manifest` literal | drifted | `test_one_agent_definition` (move into structural guards) | C8 |
@@ -158,13 +158,13 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | S9 | Control plane is the only always-on layer (ADR-012) | `control_plane/` (1.4k) | `scheduler.py` thread started unconditionally; `automations` 2651, `cloud_automation_continuation` 3027 (retired, still shipped), `dispatcher`, `producers/`, `branch_tasks.py` beside `branch_tasks_v2.py`; no wake handler registered; three wake/notify mechanisms (`agent_wakes`, `request_continuations`, control-plane wake); scheduler retired #4097, re-added #4276, #4590 | drifted | `test_control_plane_inventory` | C7 |
 | S10 | Platform state outside boxes (ADR-012) | `storage/` stores | `daemon_server.py` 5261, 27 `CREATE TABLE` | drifted | `test_storage_registry(_complete)`, `test_owner_stores` | C6 |
 | S11 | Owner door complete, model door bounded (ADR-011) | `owner_door/`, `/app/api/*` | none | converged | `test_owner_door_import_boundary`, `test_app_reads_use_owner_door` | — |
-| S12 | Canonical public handles (ADR-013) | 7 handles in `universe_server.py` | local `mcp_server.py` 442 still a console script | converged at `/mcp` | `mcp_public_canary.py --assert-handles`, `test_mcp_instruction_surfaces` | C5 |
+| S12 | Canonical public handles (ADR-013) | 7 handles in `universe_server.py` | none | converged | `mcp_public_canary.py --assert-handles`, `test_mcp_instruction_surfaces`, `host-paths` | C5 |
 | S13 | No platform LLM (ADR-006) | owner-bound calls only | platform helpers (`reflexion`, `raptor`, `agentic_search`, `extract_learning`) on `call_provider`; whether each carries owner authority is not checked | unverified | `test_platform_has_no_llm` (move in) | C3 |
 | S14 | Identity follows the account; private by default (ADR-016, ADR-010) | `_current_actor` raises without a subject; every creation path writes `private` | none | converged | `test_private_by_default` (move in) | — |
-| S15 | Cloud only, zero hosts (ADR-008, Dir 8) | the hosted cell | `host_pool/` 734 (dead), tray host `desktop/` 4.4k + `tinyassets_tray.py` 961, `fantasy_daemon/` runner 6.8k, compose `slack-agent` pointing at a missing module | drifted | `host-paths` (planned) | C5 |
+| S15 | Cloud only, zero hosts (ADR-008, Dir 8) | the hosted cell | `fantasy_daemon/` runner and its `tinyassets/desktop/{dashboard,notifications,tray}.py` imports remain reachable through the shipped `tinyassets-cli` | drifted | `host-paths` | C5 |
 | S16 | One app, thin shells (Dir 1, 7) | `onboarding/` at `/app`; `mobile/`, `desktop-app/` load it | none for chat; the tray host is S15 | converged | `test_onboarding_app` routes | — |
 | S17 | Knowledge is files (ADR-017); export (ADR-018) | OKF bundle canonical, indexes derived; one export action | `memory/`, `retrieval/`, `knowledge/`, `daemon_brain.py` (10.7k) canonical; bundle is seed-only; `okf_export.py` unwired | unbuilt | none yet | C12 |
-| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains as entry points, `api/market.py` 4380 goals/escrow, `bid/`, `treasury/` | drifted | `domain-entry-points` (planned) | C5, C10 |
+| S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains remain installed entry points; `api/market.py` goals/escrow, `bid/`, `treasury/` | drifted | `domain-entry-points` | C5, C10 |
 | S19 | Built artifacts are not committed | `build_plugin.py` stages the mirror at package time | `packaging/claude-plugin/.../runtime/` byte copy (737 files, ~336k lines; 6 without a canonical counterpart) | unbuilt | `check_mirror_parity.py`; orphan-only ceiling until C4 removes the mirror | C4 |
 | S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | none; C1 removed retired document trees and root clutter, retaining cited incident repros | converged | `doc-homes`: no new file outside a home | C1 |
 | S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | none; C2 archived completed changes and folded superseded lanes | converged | `superseded-open`; `shape-reconcile.yml` | C2 |

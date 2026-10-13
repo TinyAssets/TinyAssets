@@ -431,7 +431,7 @@ image succeed or fail together:
 1. **validate** — `docker compose config` on the claimed copy with
    `/etc/tinyassets/env` and the candidate image, asserting the production
    invariants: the default service set is exactly `daemon`/`cloudflared`/`logs`
-   (profiles are honoured, so `slack-agent` is absent by construction), the three
+   and the three
    container names, `restart: unless-stopped` on all three, digest-pinned
    `cloudflare/cloudflared:`/`timberio/vector:` sidecar images, the daemon's
    `env_file` containing `/etc/tinyassets/env`, its `tinyassets-data:/data`

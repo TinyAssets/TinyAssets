@@ -1,6 +1,0 @@
-node_modules/
-build-static/
-build-dynamic/
-.svelte-kit/
-.env
-.env.local
