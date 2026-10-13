@@ -264,8 +264,7 @@ class JsonRpcJob:
         if self._tool_tasks:
             allow = min(self.profile.absolute_cap_s, self.tool_wait)
         elif self._in_turn or self._heard:
-            allow = min(self.profile.absolute_cap_s, self.profile.idle_s,
-                        self.turn_wait)
+            allow = min(self.profile.absolute_cap_s, self.turn_wait)
         else:
             allow = self.profile.init_s
         idle_deadline = self._last_progress + allow
