@@ -2773,14 +2773,21 @@ def _context_overflow(exc: BaseException) -> bool:
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
-    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
+    from tinyassets.exceptions import (
+        ProviderAuthorityHeldError,
+        SelectedModelUnavailableError,
+        WorkModelExhaustedError,
+    )
     from tinyassets.providers.model_pins import ModelPinError
     from tinyassets.providers.provider_jail import ProviderConfinementError
     from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
-        if isinstance(exc, PermissionError) and str(exc).startswith(NO_ELIGIBLE_MODEL):
+        if (isinstance(exc, SelectedModelUnavailableError)
+                or isinstance(exc.__cause__, SelectedModelUnavailableError)):
             return "model_unavailable"
+        if isinstance(exc, PermissionError) and str(exc).startswith(NO_ELIGIBLE_MODEL):
+            return "authority_held"
         if isinstance(exc, WorkModelExhaustedError):
             return "work_model_exhausted"
         if isinstance(exc, ProviderConfinementError):

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyassets.custom_agents import get_binding
-from tinyassets.exceptions import ProviderError
+from tinyassets.exceptions import ProviderError, SelectedModelUnavailableError
 from tinyassets.provider_assignment import (
     _served_request_agent,
     accepted_connected_model_access,
@@ -669,15 +669,22 @@ def prepare_owned_model_plan(
             for item in rejected if item.scope == "source"
         ]
         pin_detail = ""
+        missing_on_usable_source = False
         if pinned is not None:
             reason = next((item.reason for item in plan.order(owner, universe.name).ineligible
                            if item.ref == pinned), "not_connected")
+            missing_on_usable_source = (
+                reason == "absent_from_catalogue"
+                and any(connection.connection_id == pinned.connection_id and connection.models
+                        for connection in admitted)
+            )
             pin_detail = (f"; model {pinned.connection_id}/{pinned.model_id} unavailable: "
                           f"{reason.replace('_', ' ')}")
-        raise PermissionError(
-            NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
-            + pin_detail
-        )
+        detail = (NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
+                  + pin_detail)
+        if missing_on_usable_source:
+            raise SelectedModelUnavailableError(detail)
+        raise PermissionError(detail)
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
         assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,
