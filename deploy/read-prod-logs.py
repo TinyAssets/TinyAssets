@@ -175,17 +175,23 @@ def _as_event(value: object) -> dict[str, Any] | None:
     return None
 
 
+#: The only link a trail joins through: the server-signed session cookie.
+#: Other links (MCP session, OAuth state) are request-supplied, so a caller
+#: could name someone else's value; they stay in the event as data only.
+_JOIN_LINKS = ("cookie",)
+
+
 def event_keys(event: dict[str, Any]) -> set[tuple[str, str]]:
-    """Join keys. Empty account ids and client types are not keys."""
+    """Join keys: the event's session, its signed-cookie link, its account."""
     keys: set[tuple[str, str]] = set()
     session = event.get("session_id")
     if isinstance(session, str) and session:
         keys.add(("session", session))
     links = event.get("links")
     if isinstance(links, dict):
-        for value in links.values():
+        for name in _JOIN_LINKS:
+            value = links.get(name)
             if isinstance(value, str) and value:
-                keys.add(("link", value))
                 keys.add(("session", value))
     context = event.get("context")
     account = context.get("account_id") if isinstance(context, dict) else None
@@ -243,8 +249,9 @@ def _expand(
             frontier |= keys
     if not frontier and not trace:
         return [], False
-    if trace and not frontier:
-        # A trace with no session and no links still returns that request.
+    if trace and not (session or account):
+        # A caller chooses its own trace id, so a trace names requests, never
+        # a trail: it returns those requests and does not expand.
         direct = [event for event, _keys in indexed if event.get("trace_id") == trace]
         return direct[:_COMPONENT_CAP], len(direct) > _COMPONENT_CAP
     selected: list[dict[str, Any]] = []

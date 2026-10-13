@@ -734,8 +734,10 @@ def _incoming_session(scope: Mapping[str, Any]) -> tuple[str, bool]:
     cookie = _verified_cookie_session(scope)
     if cookie:
         return cookie, False
+    # The MCP transport's session names a trail only on its own routes.
     mcp = _header(scope, MCP_SESSION_HEADER).strip()
-    if _MCP_SESSION_RE.fullmatch(mcp) and mcp.count(".") < 2:
+    if (str(scope.get("path") or "").startswith("/mcp")
+            and _MCP_SESSION_RE.fullmatch(mcp) and mcp.count(".") < 2):
         return mcp, False
     return "s_" + uuid.uuid4().hex, True
 

@@ -63,8 +63,12 @@ is per process, so cookies turn over on a restart.
 | `oauth_state` | `o_` plus 16 hex of SHA-256. The raw `state` is a CSRF secret and is never stored |
 | `checkout` | `c_` plus 16 hex of SHA-256 of the checkout attempt id |
 
-The reader walks those links inside the requested window. Asking for a trace
-id returns the whole session that contains that request, not the one line.
+A trail joins only through what the server vouches for: the signed `cookie`
+link and the authenticated `account_id`. The other links are request-supplied
+(a caller can name anyone's value), so they are recorded as data and never
+joined. The MCP session id names a trail only on `/mcp` routes. A trace id is
+caller-chosen too, so asking for one returns those requests and does not
+expand into a session.
 
 ## Steps
 

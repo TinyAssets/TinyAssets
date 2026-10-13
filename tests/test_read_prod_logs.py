@@ -64,50 +64,53 @@ def pytest_raises():
     return pytest.raises(reader.QueryError)
 
 
-def test_timeline_joins_cookie_oauth_account_and_checkout():
+def test_timeline_joins_only_through_the_signed_cookie_and_the_account():
     cookie = "s_" + "a" * 32
     oauth = "o_" + "b" * 16
     checkout = "c_" + "c" * 16
     events = [
         _event(START, session_id=cookie, trace_id="trace-page", step="page.load",
                links={"cookie": cookie, "oauth_state": oauth, "checkout": checkout}),
-        _event(START + timedelta(minutes=1), session_id="s_" + "d" * 32, trace_id="trace-back",
-               step="oauth.callback", links={"oauth_state": oauth},
+        # Same cookie after sign-in: the account now joins the MCP client.
+        _event(START + timedelta(minutes=1), session_id=cookie, trace_id="trace-back",
+               step="oauth.callback", links={"cookie": cookie},
                context={"client": "browser", "account_id": "user_1", "signed_in": True}),
         _event(START + timedelta(minutes=2), session_id="mcp-session", trace_id="trace-tools",
                step="mcp.tools_list",
                context={"client": "claude", "account_id": "user_1", "signed_in": True}),
+        # Request-supplied links never join: a caller can name anyone's value.
         _event(START + timedelta(minutes=3), session_id="s_" + "e" * 32, trace_id="trace-hook",
-               step="checkout.paid", links={"checkout": checkout}, commit="b" * 40,
-               error={"type": "HTTP500", "stack": ""}),
+               step="checkout.paid", links={"checkout": checkout, "oauth_state": oauth,
+                                            "mcp_session": "mcp-session"},
+               commit="b" * 40, error={"type": "HTTP500", "stack": ""}),
         _event(
             START + timedelta(days=3), session_id=cookie, trace_id="trace-late", step="page.load",
         ),
         _event(START + timedelta(minutes=4), session_id="s_" + "f" * 32, trace_id="trace-other",
                step="http", context={"client": "other", "account_id": "user_2", "signed_in": True}),
+        # A caller reusing another request's trace id names requests, not a trail.
+        _event(START + timedelta(minutes=5), session_id="s_" + "9" * 32, trace_id="trace-tools",
+               step="http"),
     ]
     chosen, truncated = reader.select_timeline(
         events, since=START, until=END, session=cookie,
     )
     assert truncated is False
     assert [event["trace_id"] for event in chosen] == [
-        "trace-page", "trace-back", "trace-tools", "trace-hook",
+        "trace-page", "trace-back", "trace-tools",
     ]
     by_trace, _ = reader.select_timeline(
         events, since=START, until=END, trace="trace-tools",
     )
-    assert {event["trace_id"] for event in by_trace} == {
-        "trace-page", "trace-back", "trace-tools", "trace-hook",
-    }
+    assert [event["step"] for event in by_trace] == ["mcp.tools_list", "http"]
     by_account, _ = reader.select_timeline(
         events, since=START, until=END, account="user_1",
     )
-    assert "trace-other" not in {event["trace_id"] for event in by_account}
-    assert "trace-late" not in {event["trace_id"] for event in by_account}
+    assert {event["trace_id"] for event in by_account} == {
+        "trace-page", "trace-back", "trace-tools",
+    }
     window, _ = reader.select_timeline(events, since=START, until=END)
-    assert [event["trace_id"] for event in window] == [
-        "trace-page", "trace-back", "trace-tools", "trace-hook", "trace-other",
-    ]
+    assert len(window) == 6
 
 
 def test_grep_runs_after_the_trail_is_joined_and_summary_counts_by_commit():
@@ -115,9 +118,10 @@ def test_grep_runs_after_the_trail_is_joined_and_summary_counts_by_commit():
     checkout = "c_" + "c" * 16
     events = [
         _event(START, session_id=cookie, trace_id="trace-page", step="checkout.open",
-               links={"checkout": checkout}),
+               links={"checkout": checkout}, context={"account_id": "user_1"}),
         _event(START + timedelta(minutes=1), session_id="s_" + "e" * 32,
                trace_id="trace-hook", step="checkout.paid", links={"checkout": checkout},
+               context={"account_id": "user_1"},
                commit="b" * 40, error={"type": "StripeError", "stack": "needle-only-here"}),
     ]
     chosen, _ = reader.select_timeline(
