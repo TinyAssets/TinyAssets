@@ -8,41 +8,60 @@ are GraphQL type ``User`` (``cursor[bot]``), so a typename check cannot tell
 them from a person, and enabling auto-merge does not emit
 ``pull_request_target``, so nothing comes back to replace the enrollment.
 
-Measured 2026-10-12 on TinyAssets/TinyAssets: #4658, armed by the user PAT,
-entered the queue two seconds after ``required-tests`` passed. #4649 was
-re-armed by ``cursor[bot]`` and never entered the queue.
-
 This calls ``enqueuePullRequest`` with the merge-attribution token after the
-same review receipt ``auto-enroll-merge.yml`` requires, and only when the
-required checks on that head have passed. No receipt, no enqueue.
+same receipt ``pr-scope-guard.yml`` requires: a comment by Jonnyton that opens
+with ``Drain-Review-Verdict: APPROVE`` and ``Drain-Review-Head`` for this
+change, cited at the top of the body. Release-critical diffs also need the
+``infra-change`` label, using that workflow's path list and cap. No receipt,
+no label, no enqueue.
+
+A token that cannot call the mutation (missing ``Merge queues: Read and
+write``) logs that sentence and returns success. The job stays green so the
+missing permission is not mistaken for a bad pull request.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.drain_review_gate import (  # noqa: E402
+    _TRUSTED_ASSOCIATIONS,
+    binding_head,
+    diff_key,
+    published_approval_urls,
+    review_allows_merge,
+    same_change_as,
+)
+
 REQUIRED_CHECKS = (
     "Diff scope declared",
     "required-tests",
     "invariants",
     "slow-tests",
 )
-# A skipped required check satisfies a ruleset. On a pull_request the shard
-# jobs and slow-tests are skipped on purpose; the queue re-runs them.
+# slow-tests is skipped on pull_request and re-run by the queue. The other
+# three run on the pull request; a skip there means the gate did not run.
+_SKIPPABLE = frozenset({"slow-tests"})
 _PASSING = frozenset({"SUCCESS", "SKIPPED"})
+REQUIRED_LABEL = "infra-change"
+TRUSTED_LOGIN = "jonnyton"
+_SCOPE_GUARD = REPO_ROOT / ".github" / "workflows" / "pr-scope-guard.yml"
 
 _PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){
 repository(owner:$owner,name:$name){pullRequest(number:$number){
-id state isDraft baseRefName headRefOid
+id state isDraft baseRefName baseRefOid headRefOid
 headRepository { nameWithOwner }
 body
+labels(first:100){pageInfo{hasNextPage} nodes{name}}
 mergeQueueEntry { state }
 commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
 __typename
@@ -56,12 +75,16 @@ enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$oid}){
 mergeQueueEntry { state }
 }}"""
 
-OWNER_STEP = (
-    "MERGE_ATTRIBUTION_TOKEN cannot call enqueuePullRequest. On that "
-    "fine-grained PAT (resource owner TinyAssets) add permission "
-    "Merge queues: Read and write. Leave Contents and Pull requests at "
-    "read/write. Do not point the secret at GITHUB_TOKEN: an auto-merge "
-    "that token arms never enters the queue."
+_COMMENT_JQ = (
+    '.[] | {url: .html_url, association: .author_association, '
+    'login: (.user.login // ""), body: (.body // "")}'
+)
+
+PERMISSION_LOG = (
+    'MERGE_ATTRIBUTION_TOKEN lacks permission "Merge queues: Read and write". '
+    "Not enqueued. Add that repository permission on the fine-grained PAT "
+    "(resource owner TinyAssets). Leave Contents and Pull requests at "
+    "Read and write. Do not replace the secret with GITHUB_TOKEN."
 )
 
 
@@ -83,7 +106,43 @@ def latest_conclusions(nodes: list[dict] | None) -> dict[str, str]:
 
 
 def checks_green(conclusions: dict[str, str]) -> bool:
-    return all(conclusions.get(name) in _PASSING for name in REQUIRED_CHECKS)
+    for name in REQUIRED_CHECKS:
+        allowed = _PASSING if name in _SKIPPABLE else frozenset({"SUCCESS"})
+        if conclusions.get(name) not in allowed:
+            return False
+    return True
+
+
+def load_scope_policy(text: str) -> tuple[re.Pattern[str], int]:
+    """The scope guard's release-critical pattern and hard cap.
+
+    Read from the workflow text so enqueue cannot grow a second list.
+    """
+    sensitive = re.search(r"^\s*SENSITIVE_RE='([^']+)'", text, re.M)
+    cap = re.search(r"^\s*MAX_SENSITIVE=(\d+)", text, re.M)
+    if sensitive is None or cap is None:
+        raise RuntimeError(
+            "pr-scope-guard.yml has no SENSITIVE_RE or MAX_SENSITIVE"
+        )
+    return re.compile(sensitive.group(1)), int(cap.group(1))
+
+
+def label_block(
+    paths: list[str],
+    labels: set[str],
+    *,
+    pattern: re.Pattern[str],
+    cap: int,
+) -> str | None:
+    """None when the label rule is satisfied."""
+    hits = [path for path in paths if pattern.search(path)]
+    if not hits:
+        return None
+    if len(hits) > cap:
+        return f"release-critical cap ({len(hits)} > {cap})"
+    if REQUIRED_LABEL not in labels:
+        return f"missing {REQUIRED_LABEL} label"
+    return None
 
 
 def skip_reason(
@@ -97,6 +156,7 @@ def skip_reason(
     receipt: bool,
     green: bool,
     head_matches: bool,
+    label_problem: str | None = None,
 ) -> str | None:
     """None means enqueue. Anything else is a quiet skip."""
     if state != "OPEN":
@@ -113,11 +173,99 @@ def skip_reason(
         return "already queued"
     if capped:
         return "queue-attempt cap"
-    if not receipt:
-        return "no review receipt for this head"
     if not green:
         return "required checks are not green"
+    if label_problem:
+        return label_problem
+    if not receipt:
+        return "no review receipt for this head"
     return None
+
+
+def jonnyton_inventory(stream: str) -> str | None:
+    """Comments by Jonnyton whose association the review gate trusts.
+
+    ``None`` means the inventory could not be read. An empty string means it
+    was read and contains no such comment. Other authors are dropped so a
+    body cannot cite them.
+    """
+    decoder = json.JSONDecoder()
+    kept: list[str] = []
+    index = 0
+    length = len(stream)
+    while index < length:
+        while index < length and stream[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        try:
+            obj, end = decoder.raw_decode(stream, index)
+        except ValueError:
+            return None
+        index = end
+        if not isinstance(obj, dict):
+            return None
+        login = obj.get("login")
+        if not isinstance(login, str) or login.lower() != TRUSTED_LOGIN:
+            continue
+        association = obj.get("association")
+        url = obj.get("url")
+        body = obj.get("body")
+        if association not in _TRUSTED_ASSOCIATIONS:
+            continue
+        if not isinstance(url, str) or not isinstance(body, str):
+            return None
+        kept.append(json.dumps(
+            {"url": url, "association": association, "body": body},
+            separators=(",", ":"),
+        ))
+    return "\n".join(kept)
+
+
+def trusted_receipt(
+    *,
+    head: str,
+    body: str,
+    comments: str,
+    repo: str,
+    number: int,
+    diff_key_value: str | None = None,
+    same_change=None,
+) -> bool:
+    """True when the body cites a Jonnyton comment that approves this change."""
+    inventory = jonnyton_inventory(comments)
+    if inventory is None:
+        return False
+    trusted = published_approval_urls(
+        inventory,
+        head=head,
+        diff_key=diff_key_value,
+        same_change=same_change,
+    )
+    if trusted is None:
+        return False
+    return review_allows_merge(
+        head=head,
+        body=body,
+        artifact_must_be_comment_on=(repo, number),
+        trusted_comment_urls=trusted,
+        diff_key=diff_key_value,
+        same_change=same_change,
+    )
+
+
+def lacks_merge_queue_permission(detail: str) -> bool:
+    """True when enqueuePullRequest was refused for the token's permissions."""
+    text = detail.lower()
+    if "resource not accessible" in text:
+        return True
+    if "enqueuepullrequest" in text and "forbidden" in text:
+        return True
+    if "merge queue" in text and any(
+        word in text for word in ("permission", "scope", "accessible")
+    ):
+        return True
+    return "requires" in text and "permission" in text
 
 
 def _gh(args: list[str], *, timeout: float = 60) -> subprocess.CompletedProcess[str]:
@@ -146,45 +294,91 @@ def _graphql(query: str, variables: dict[str, str]) -> dict:
     return payload
 
 
-def _diff_key(base: str, head: str) -> str:
+def _have_commit(sha: str) -> bool:
     proc = subprocess.run(
-        [sys.executable, "scripts/drain_review_gate.py", "--print-diff-key", base, head],
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=15,
+    )
+    return proc.returncode == 0
+
+
+def _fetch_commits(shas: list[str]) -> None:
+    missing = [sha for sha in shas if sha and not _have_commit(sha)]
+    if not missing:
+        return
+    subprocess.run(
+        ["git", "fetch", "--no-tags", "--filter=blob:none", "origin", *missing],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+
+
+def _cited_heads(body: str, comments: str, *, head: str) -> list[str]:
+    found: list[str] = []
+
+    def add(text: str) -> None:
+        cited = binding_head(text)
+        if cited and cited != head and cited not in found:
+            found.append(cited)
+
+    add(body)
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(comments)
+    while index < length:
+        while index < length and comments[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        try:
+            obj, end = decoder.raw_decode(comments, index)
+        except ValueError:
+            break
+        index = end
+        if isinstance(obj, dict) and isinstance(obj.get("body"), str):
+            add(obj["body"])
+    return found
+
+
+def _changed_paths(repo: str, number: int) -> list[str] | None:
+    proc = _gh(
+        [
+            "api",
+            "--paginate",
+            f"repos/{repo}/pulls/{number}/files",
+            "--jq",
+            ".[] | .filename, (.previous_filename // empty)",
+        ],
+        timeout=90,
     )
     if proc.returncode != 0:
-        return ""
-    return proc.stdout.strip()
+        return None
+    return [line for line in proc.stdout.splitlines() if line]
 
 
-def _receipt(head: str, body: str, diff_key: str) -> bool:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-        handle.write(body)
-        path = handle.name
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "scripts/drain_review_gate.py",
-                "--head",
-                head,
-                "--diff-key",
-                diff_key,
-                "--body-file",
-                path,
-            ],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
+def _comments(repo: str, number: int) -> str | None:
+    parts: list[str] = []
+    endpoints = (
+        f"repos/{repo}/issues/{number}/comments",
+        f"repos/{repo}/pulls/{number}/comments",
+        f"repos/{repo}/pulls/{number}/reviews",
+    )
+    for endpoint in endpoints:
+        proc = _gh(
+            ["api", "--paginate", endpoint, "--jq", _COMMENT_JQ],
+            timeout=90,
         )
-    finally:
-        os.unlink(path)
-    return proc.returncode == 0 and proc.stdout.strip() == "allow"
+        if proc.returncode != 0:
+            return None
+        parts.append(proc.stdout)
+    return "".join(parts)
 
 
 def _capped(repo: str, number: int) -> bool:
@@ -216,6 +410,16 @@ def _capped(repo: str, number: int) -> bool:
     return proc.returncode == 3
 
 
+def _change_key(base: str, head: str) -> tuple[str | None, object]:
+    """Diff key and the same-change comparer, or (None, None) when unreadable."""
+    _fetch_commits([base, head])
+    try:
+        key = diff_key(base, head, cwd=REPO_ROOT)
+    except (subprocess.CalledProcessError, ValueError, OSError):
+        return None, None
+    return key, same_change_as(base, key, cwd=REPO_ROOT)
+
+
 def _benign_enqueue_error(detail: str) -> bool:
     text = detail.lower()
     return any(
@@ -228,9 +432,16 @@ def _benign_enqueue_error(detail: str) -> bool:
     )
 
 
-def _permission_error(detail: str) -> bool:
-    text = detail.lower()
-    return "resource not accessible" in text or "requires" in text and "permission" in text
+def _labels(pr: dict) -> set[str] | None:
+    block = pr.get("labels") or {}
+    page = block.get("pageInfo") or {}
+    if page.get("hasNextPage"):
+        return None
+    names = set()
+    for node in block.get("nodes") or []:
+        if isinstance(node, dict) and isinstance(node.get("name"), str):
+            names.add(node["name"])
+    return names
 
 
 def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
@@ -242,14 +453,13 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         )
     except RuntimeError as exc:
         print(f"::error::could not read PR #{number}: {exc}", file=sys.stderr)
-        if _permission_error(str(exc)):
-            print(f"::error::{OWNER_STEP}", file=sys.stderr)
         return 1
     pr = payload["data"]["repository"]["pullRequest"]
     if pr is None:
         print(f"PR #{number} does not exist.")
         return 0
     head = pr["headRefOid"] or ""
+    base_sha = pr.get("baseRefOid") or ""
     head_repo = (pr.get("headRepository") or {}).get("nameWithOwner") or ""
     contexts = []
     commits = (pr.get("commits") or {}).get("nodes") or []
@@ -257,50 +467,58 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") or {}
         contexts = ((rollup.get("contexts") or {}).get("nodes")) or []
     conclusions = latest_conclusions(contexts)
-    in_queue = pr.get("mergeQueueEntry") is not None
+    labels = _labels(pr)
     reason = skip_reason(
         state=pr.get("state") or "",
         draft=bool(pr.get("isDraft")),
         base=pr.get("baseRefName") or "",
         same_repo=head_repo == repo,
-        in_queue=in_queue,
+        in_queue=pr.get("mergeQueueEntry") is not None,
         capped=False,
         receipt=True,
         green=checks_green(conclusions),
         head_matches=not expect_head or expect_head == head,
+        label_problem=None,
     )
-    # Receipt and the cap need local git and another API read. Skip them when
-    # an earlier reason already decides.
+    if reason is None and labels is None:
+        reason = "could not read every label"
+    if reason is None and _capped(repo, number):
+        reason = "queue-attempt cap"
     if reason is None:
-        if _capped(repo, number):
-            reason = "queue-attempt cap"
+        try:
+            pattern, cap = load_scope_policy(_SCOPE_GUARD.read_text(encoding="utf-8"))
+        except (OSError, RuntimeError) as exc:
+            print(f"::error::could not read the scope policy: {exc}", file=sys.stderr)
+            return 1
+        paths = _changed_paths(repo, number)
+        if paths is None:
+            reason = "could not read changed files"
+        else:
+            reason = label_block(paths, labels or set(), pattern=pattern, cap=cap)
     if reason is None:
-        base_sha = ""
-        fetched = subprocess.run(
-            ["git", "fetch", "--no-tags", "--filter=blob:none", "origin",
-             f"+refs/pull/{number}/head:refs/remotes/pr/{number}",
-             "+refs/heads/main:refs/remotes/origin/main"],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
-        if fetched.returncode == 0:
-            rev = subprocess.run(
-                ["git", "rev-parse", "refs/remotes/origin/main"],
-                cwd=REPO_ROOT,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            base_sha = rev.stdout.strip()
-        key = _diff_key(base_sha, head) if base_sha and head else ""
-        if not _receipt(head, pr.get("body") or "", key):
-            reason = "no review receipt for this head"
+        comments = _comments(repo, number)
+        if comments is None:
+            reason = "could not read review comments"
+        else:
+            key, carry = _change_key(base_sha, head)
+            _fetch_commits(_cited_heads(pr.get("body") or "", comments, head=head))
+            if not trusted_receipt(
+                head=head,
+                body=pr.get("body") or "",
+                comments=comments,
+                repo=repo,
+                number=number,
+                diff_key_value=key,
+                same_change=carry,
+            ):
+                reason = "no review receipt for this head"
     if reason is not None:
-        missing = [name for name in REQUIRED_CHECKS if conclusions.get(name) not in _PASSING]
+        missing = [
+            name for name in REQUIRED_CHECKS
+            if conclusions.get(name) not in (
+                _PASSING if name in _SKIPPABLE else frozenset({"SUCCESS"})
+            )
+        ]
         extra = f" (not green: {', '.join(missing)})" if reason.startswith("required") else ""
         print(f"PR #{number}: not enqueued ({reason}){extra}.")
         return 0
@@ -311,9 +529,10 @@ def enqueue(repo: str, number: int, *, expect_head: str = "") -> int:
         if _benign_enqueue_error(detail):
             print(f"PR #{number}: already queued.")
             return 0
+        if lacks_merge_queue_permission(detail):
+            print(f"PR #{number}: {PERMISSION_LOG}")
+            return 0
         print(f"::error::enqueuePullRequest failed for PR #{number}: {detail}", file=sys.stderr)
-        if _permission_error(detail):
-            print(f"::error::{OWNER_STEP}", file=sys.stderr)
         return 1
     print(f"PR #{number} enqueued at {head[:12]}.")
     return 0

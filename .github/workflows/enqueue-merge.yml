@@ -13,11 +13,12 @@ name: Enqueue merge
 # seconds after required-tests passed. #4649 was re-armed by cursor[bot] and
 # never entered the queue.
 #
-# This calls enqueuePullRequest once the review receipt and the required
-# checks have passed. The receipt is still the safety check: no
-# Drain-Review-Verdict for this head, no enqueue. The actor is
-# MERGE_ATTRIBUTION_TOKEN, the same user credential auto-enroll uses, because
-# a queue entry from that identity is what starts merge_group checks.
+# This calls enqueuePullRequest once a Jonnyton comment opens with
+# Drain-Review-Verdict: APPROVE and Drain-Review-Head for this change, the
+# body cites that comment, required checks have passed, and a release-critical
+# diff carries the infra-change label. The actor is MERGE_ATTRIBUTION_TOKEN.
+# If that token lacks Merge queues: Read and write, the job logs the owner
+# step and exits 0. It never uses GITHUB_TOKEN.
 
 on:
   workflow_run:
@@ -26,7 +27,7 @@ on:
   # A receipt usually arrives as an edit, after the checks are already green.
   # workflow_run will not fire again for that.
   pull_request_target:
-    types: [ready_for_review, edited]
+    types: [ready_for_review, edited, labeled]
 
 permissions:
   contents: read
