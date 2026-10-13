@@ -287,20 +287,17 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
     # nothing ever listed it, so a solo user's ARN silently vanished from their own
     # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
     # keeping it.
-    # Package catalogues are provider-specific. A subscription-wide history or
-    # list can carry another CLI's ids and must not be presented as this one.
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-
+    # The reviewed list is keyed by source, including external-agent packages.
+    # The owner's history remains separately scoped by provider_ref.
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
-    candidate_kind = ("agent_" + member.provider.replace("-", "_")
-                      if isinstance(provider, ExternalAgentProvider) else LEARNED_SOURCE_KIND)
     models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, member.provider, owner,
                                           already=models, excluded=withdrawn))
     # ...then the reviewed public list for this kind of source, which is how a newly
     # released model reaches everyone without a patch: a PR adds the id, review is the
     # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(candidate_kind, already=models,
+    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, source_key=member.provider,
+                                     already=models,
                                      excluded=withdrawn))
     if provider is None or not provider.is_available():
         raise ModelSourceUnavailable("executor_unavailable")
@@ -343,7 +340,7 @@ def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
     )
 
 
-def _listed_candidates(source_kind, *, already, excluded=frozenset()):
+def _listed_candidates(source_kind, *, source_key, already, excluded=frozenset()):
     """Newest-per-class ids from the reviewed public list for one source kind.
 
     A UNION, never a filter: an id this universe already has keeps its own row and its
@@ -361,7 +358,7 @@ def _listed_candidates(source_kind, *, already, excluded=frozenset()):
         Model(model_id, True, frozenset({"text"}),
               pricing=Pricing("fresh", unmetered=True),
               availability_basis=PUBLIC_LISTED_BASIS)
-        for model_id in newest_listed_cached(source_kind)
+        for model_id in newest_listed_cached(source_kind, source_key=source_key)
         if model_id and model_id not in have
     )
 
