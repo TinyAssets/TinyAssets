@@ -78,7 +78,8 @@ the order. Measured on `origin/main` `13f4ff4459f`, 2026-10-11.
   `/home/owner` under the owner's existing permanent UID/GID.
 - **Inside the box,** `boxd` is the descriptor-safe core of today's
   `boxes/local.py`. It moves; it is not rewritten.
-- **Firecracker** is permitted behind the same contract (ADR-019). It is not
+- **Firecracker** is permitted behind the same contract only on a host with
+  supported KVM and a measured need gVisor cannot meet (ADR-022). It is not
   built now. The local driver stays as the test reference and is refused in
   the production image.
 

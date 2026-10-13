@@ -26,7 +26,7 @@ and the spec is synced.
 
 ## 1. Pull requests (in order)
 
-- [ ] 1.1 **P1 Owner policy layer.** **Floor:** authority and money. Depends
+- [x] 1.1 **P1 Owner policy layer** (#4630). **Floor:** authority and money. Depends
       on nothing; runs beside C3.
       - **Builds:**
         - `tinyassets/broker/policy.py`: `OwnerPolicy`, a generation and a
@@ -53,6 +53,8 @@ and the spec is synced.
       cross-user and data. Depends on P1. **This PR holds the one
       maintenance window.**
       - **Builds:**
+        - the pinned `runsc` and the `boxhostd` unit installed on the
+          droplet by the deploy workflow's SSH step (ADR-022), in this PR;
         - `boxhostd` as a systemd service and the gVisor driver behind
           `BoxProvider`, re-keyed per owner (`bind(owner)`).
         - `boxd`, moved from the `boxes/local.py` core.
