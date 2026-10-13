@@ -269,7 +269,7 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
     automation_subject_kind TEXT
         CHECK (
             automation_subject_kind IS NULL
-            OR automation_subject_kind IN ('branch_version', 'agent_runtime_manifest')
+            OR automation_subject_kind = 'branch_version'
         ),
     automation_subject_ref TEXT,
     automation_subject_digest TEXT,
@@ -2515,10 +2515,79 @@ class RequestAdmissionStore:
         )
 
 
+def _migrate_branch_task_subject_constraint(conn: sqlite3.Connection) -> None:
+    """Remove the agent subject admitted by the old queue CHECK.
+
+    Agent activations have their own owner; branch task admission has always
+    refused them. Rebuild the populated table in one transaction because SQLite
+    cannot alter a CHECK in place. Child foreign keys keep the original table
+    name throughout the copy and rename.
+    """
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'branch_tasks_v2'"
+    ).fetchone()
+    if row is None or "'agent_runtime_manifest'" not in str(row[0]):
+        return
+    if conn.in_transaction:
+        raise RuntimeError("branch task schema migration needs an idle connection")
+    invalid = conn.execute(
+        "SELECT COUNT(*) FROM branch_tasks_v2 WHERE automation_subject_kind "
+        "IS NOT NULL AND automation_subject_kind != 'branch_version'"
+    ).fetchone()[0]
+    if invalid:
+        raise RuntimeError("non-branch subjects in branch task queue require repair")
+
+    old_sql = str(row[0])
+    new_sql = re.sub(
+        r"^(CREATE TABLE(?: IF NOT EXISTS)?\s+)branch_tasks_v2\b",
+        r"\1branch_tasks_v2_new",
+        old_sql,
+        count=1,
+        flags=re.IGNORECASE,
+    ).replace("'branch_version', 'agent_runtime_manifest'", "'branch_version'")
+    if new_sql == old_sql or "branch_tasks_v2_new" not in new_sql:
+        raise RuntimeError("unrecognized branch task schema")
+    dependents = [
+        str(index[0]) for index in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name = 'branch_tasks_v2' "
+            "AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+        )
+    ]
+    columns = ", ".join(
+        f'"{column[1]}"' for column in conn.execute(
+            "PRAGMA table_info(branch_tasks_v2)"
+        )
+    )
+    foreign_keys = int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(new_sql)
+        conn.execute(
+            f"INSERT INTO branch_tasks_v2_new (rowid, {columns}) "
+            f"SELECT rowid, {columns} FROM branch_tasks_v2"
+        )
+        conn.execute("DROP TABLE branch_tasks_v2")
+        conn.execute("ALTER TABLE branch_tasks_v2_new RENAME TO branch_tasks_v2")
+        for statement in dependents:
+            conn.execute(statement)
+        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError("branch task migration broke a foreign key")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {foreign_keys}")
+
+
 def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
     """Create the epoch-2 schema on the active pre-traffic DB connection."""
 
     conn.executescript(_SCHEMA)
+    _migrate_branch_task_subject_constraint(conn)
     # The shared epoch-2 claim guard (_transaction_allows_epoch2_lifecycle) reads
     # background_branch_authority_owners on THIS connection to avoid double-claiming a
     # task the assigned-queue consumer holds. That table is created LAZILY by the
@@ -2549,7 +2618,7 @@ def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
         (
             "automation_subject_kind",
             "TEXT CHECK (automation_subject_kind IS NULL OR "
-            "automation_subject_kind IN ('branch_version', 'agent_runtime_manifest'))",
+            "automation_subject_kind = 'branch_version')",
         ),
         ("automation_subject_ref", "TEXT"),
         ("automation_subject_digest", "TEXT"),
