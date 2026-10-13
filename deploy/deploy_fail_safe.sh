@@ -546,8 +546,7 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 # compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
 # never depends on the systemd unit being startable; the unit is then asked to
 # track the new state best-effort so `systemctl status` stays truthful. The
-# three production services are named explicitly: the worker fleet is gone
-# (2026-08-29) but `slack-agent` sits behind a profile, and naming them keeps
+# three production services are named explicitly, keeping
 # a future service from starting by accident. `up -d` recreates only the
 # services whose image or config changed (the tunnel keeps running).
 restart_stack() {
@@ -809,9 +808,8 @@ vector_fingerprint() {
 # image, and assert the production invariants. `config --services` only proved
 # the three names existed (Codex: "any syntactically valid file containing three
 # skeletal services named daemon/cloudflared/logs passes"), so this asserts what
-# an incomplete file would actually be missing. Profiles are honoured by
-# `config` itself, so slack-agent is absent here by construction — the check
-# compares SETS, never a literal string.
+# an incomplete file would actually be missing. The check compares SETS,
+# never a literal string.
 validate_bundle() {
   local cfg rc
   cfg="$(mktemp)" || { err "cannot create a temp file for bundle validation"; return 1; }
