@@ -719,6 +719,41 @@ def test_a_pending_publish_survives_a_retry_of_another_failed_row(tmp_path, monk
     assert read_settings(tmp_path / "u", agent_slug="good").agent.id == good
 
 
+def test_a_replanned_row_never_takes_a_pending_agents_directory(tmp_path, monkeypatch):
+    """Two same-named agents: one staged but unpublished, one failed then
+    re-planned. They land in different directories and both survive."""
+    import tinyassets.agent_file_migration as m
+    from tinyassets.consumer_runtime import initialize
+
+    (tmp_path / "u").mkdir()
+    first = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="First.")
+    second = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Second.")
+    real_plan, real_publish = m._plan_agent, m.publish_staged_universe_file
+    fail_second = {"on": True}
+
+    def plan(base, universe_dir, row, *args):
+        if fail_second["on"] and str(row["agent_binding_id"]) == second:
+            raise OSError("transient")
+        return real_plan(base, universe_dir, row, *args)
+
+    def refuse(*args):
+        raise OSError("disk busy")
+
+    monkeypatch.setattr(m, "_plan_agent", plan)
+    monkeypatch.setattr(m, "publish_staged_universe_file", refuse)
+    m._DONE.clear()
+    initialize(tmp_path)          # first staged, not published; second failed
+    fail_second["on"] = False
+    m._DONE.clear()
+    initialize(tmp_path)          # second re-planned while first still pending
+    monkeypatch.setattr(m, "publish_staged_universe_file", real_publish)
+    m._DONE.clear()
+    initialize(tmp_path)
+    ids = {read_settings(tmp_path / "u", agent_slug=d.name).agent.id
+           for d in (tmp_path / "u" / "agents").iterdir() if d.is_dir()}
+    assert {first, second} <= ids
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
 def test_migration_backup_is_private_even_with_umask_022(tmp_path):
     import stat

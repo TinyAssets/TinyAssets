@@ -207,7 +207,8 @@ def _file(path: str, old: bytes | None, new: bytes, *, claimed: bool) -> _File |
 
 
 def _plan_universe(base: Path, universe_id: str, rows: list, conn,
-                   failures: dict[str, str]) -> list[_Placement]:
+                   failures: dict[str, str],
+                   reserved: frozenset[str] = frozenset()) -> list[_Placement]:
     from tinyassets.command_center_packages import slug as slugify
     from tinyassets.commons_catalog import (
         _binding_from_row,
@@ -218,6 +219,9 @@ def _plan_universe(base: Path, universe_id: str, rows: list, conn,
     universe_dir = base / universe_id
     missing = not universe_dir.is_dir()
     taken, claims = _index(universe_dir) if not missing else (set(), {})
+    # Directories an earlier start staged but has not yet published are taken
+    # too: a re-planned row must never be given the same path.
+    taken |= reserved
     placements = []
     for row in rows:
         binding_id = str(row["agent_binding_id"])
@@ -420,7 +424,13 @@ def migrate(base_path: str | Path) -> dict[str, list[str]]:
         for row in rows:
             by_universe.setdefault(str(row["universe_id"]), []).append(row)
         failures: dict[str, str] = {}
-        plan = {uid: _plan_universe(base, uid, rows, conn, failures)
+        reserved: dict[str, set[str]] = {}
+        for item in detail.get("_pending", []):
+            parts = Path(item["path"]).parts
+            if len(parts) >= 2 and parts[0] == "agents":
+                reserved.setdefault(item["universe_id"], set()).add(parts[1])
+        plan = {uid: _plan_universe(base, uid, rows, conn, failures,
+                                    frozenset(reserved.get(uid, ())))
                 for uid, rows in by_universe.items()}
         plan = {uid: placements for uid, placements in plan.items() if placements}
         backup = _write_backup(base, plan) if plan else ""
