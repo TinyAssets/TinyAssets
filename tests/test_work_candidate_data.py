@@ -77,7 +77,7 @@ def test_automatic_health_demotion_is_preserved_but_explicit_primary_is_not_repl
         assert choices.next_candidate(None) == expected
 
 
-def test_explicit_default_does_not_limit_an_accepted_node_pin():
+def test_graph_pin_cannot_replace_explicit_user_primary_or_discard_tail():
     from tinyassets.providers.model_policy import Exhaustion
 
     choices = data()
@@ -87,9 +87,6 @@ def test_explicit_default_does_not_limit_an_accepted_node_pin():
     assert choices.next_candidate(pinned) == ModelRef("b", "B")
     assert choices.order[0] == ModelRef("a", "A")
     assert choices.next_candidate(pinned, (Exhaustion("model", ModelRef("b", "B")),)) is None
-
-
-def test_explicit_graph_cannot_discard_default_fallbacks_without_a_pin():
     with pytest.raises(PermissionError, match="conflicts"):
         data().fit({"node_defs": [{"prompt_template": "hello",
                                    "llm_policy": {"fallback_chain": []}}]},
