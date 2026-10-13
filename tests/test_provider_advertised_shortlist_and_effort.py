@@ -132,7 +132,7 @@ def test_advertised_model_is_a_normal_choice_not_an_opt_in_offer(native, monkeyp
     makes the row appear -- only with the wrong status.
     """
     async def discover():
-        return effortful(["claude-opus-5-5"])
+        return effortful(["gpt-6-astra"])
     install_discovery(native, monkeypatch, discover)
     warm_shortlist(native)
     prepared = prepare_owned_model_plan(
@@ -141,7 +141,7 @@ def test_advertised_model_is_a_normal_choice_not_an_opt_in_offer(native, monkeyp
     )
     document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
     row = next(r for r in document["options"]
-               if r["reference"]["model_id"] == "claude-opus-5-5")
+               if r["reference"]["model_id"] == "gpt-6-astra")
 
     assert row["availability_basis"] == "executor_enumerated"
     assert row["in_candidate_catalog"] is True
@@ -702,7 +702,7 @@ def test_a_withdrawn_id_does_not_return_as_a_learned_candidate(native, monkeypat
     # so this cannot pass by the list contributing nothing at all.
     monkeypatch.setattr(
         "tinyassets.providers.public_model_lists.newest_listed_cached",
-        lambda kind: ("withdrawn-model", "some-other-id"),
+        lambda kind, *, source_key: ("withdrawn-model", "some-other-id"),
     )
     warm_shortlist(native)
     prepared = prepare_owned_model_plan(

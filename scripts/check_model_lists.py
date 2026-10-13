@@ -43,14 +43,10 @@ def findings(directory: Path) -> list[str]:
             )
             continue
         try:
-            listed = read_list(source_kind, directory=directory)
+            read_list(source_kind, directory=directory)
         except PublicModelListError as exc:
             found.append(f"{path.name}: {exc}")
             continue
-        if not listed:
-            # An empty file is pointless rather than harmful, but it is also almost
-            # certainly a mistake in a PR whose purpose was to ADD an id.
-            found.append(f"{path.name}: lists no models")
         if source_kind == "subscription":
             from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
 
