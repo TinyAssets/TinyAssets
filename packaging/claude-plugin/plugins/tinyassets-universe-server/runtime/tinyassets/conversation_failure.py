@@ -76,6 +76,7 @@ _CLASS_WORDS = {
         "something broke on our side; this is not a problem with your account, "
         "your credentials or your usage limits, and sending again may well work"
     ),
+    "platform_busy": "interactive turns are busy right now; try again shortly",
     "quota_or_cooldown": (
         "this model source is in a cooldown window after a provider refusal; "
         "try another connected source or check the provider's limits"
@@ -173,6 +174,7 @@ STAGE_OF_CLASS = {
     "provider_refused": "model_request",
     "provider_reply_timeout": "model_request",
     "platform_fault": "platform",
+    "platform_busy": "before_send",
 }
 
 _CHECK = "Check progress before sending again; sending again repeats the whole request."

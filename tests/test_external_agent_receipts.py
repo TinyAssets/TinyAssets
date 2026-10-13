@@ -116,13 +116,14 @@ def test_package_turn_has_native_receipt_and_no_subscription_call_price(tmp_path
     assert row == ("native_agent", "succeeded", "")
 
 
-@pytest.mark.parametrize("message, category, marked", [
-    ("Unknown model gpt-5.6-sol", "model_unavailable", True),
+@pytest.mark.parametrize("message, category, marked, refresh_fails", [
+    ("Unknown model gpt-5.6-sol", "model_unavailable", True, False),
+    ("Unknown model gpt-5.6-sol", "model_unavailable", True, True),
     ("Model gpt-5.6-sol is temporarily unavailable due to capacity",
-     "transient_capacity", False),
+     "transient_capacity", False, False),
 ])
 def test_package_model_refusal_is_classified_and_remembered(
-    tmp_path, monkeypatch, message, category, marked,
+    tmp_path, monkeypatch, message, category, marked, refresh_fails,
 ):
     from tinyassets.exceptions import ExternalAgentUnavailable, ProviderError
     from tinyassets.external_agents import runner
@@ -141,8 +142,14 @@ def test_package_model_refusal_is_classified_and_remembered(
         executable=executable, digest=package.digest, row=package.row))
     monkeypatch.setattr(runner, "materialize", lambda *_: {})
     refreshes = []
+    def refresh(**kwargs):
+        refreshes.append(kwargs)
+        if refresh_fails:
+            raise RuntimeError("refresh worker unavailable")
+        return True
+
     monkeypatch.setattr(SHORTLIST_CACHE, "schedule",
-                        lambda **kwargs: refreshes.append(kwargs) or True)
+                        refresh)
 
     async def no_tools(*_):
         return None
