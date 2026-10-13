@@ -225,7 +225,7 @@ def _plan_universe(base: Path, universe_id: str, rows: list, conn,
             placement = _plan_agent(base, universe_dir, row, conn, taken, claims, slugify,
                                     _binding_from_row, _definition_from_row,
                                     _read_definition_row, missing)
-        except (ValueError, KeyError, TypeError, OSError, SettingsError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- one bad row never blocks startup
             failures[binding_id] = f"{type(exc).__name__}: {exc}"
             continue
         if placement is not None:
@@ -342,16 +342,30 @@ def _stage(base: Path, plan: dict[str, list[_Placement]]) -> list[dict]:
     return pending
 
 
-def _publish(base: Path, pending: list[dict]) -> None:
+def _publish(base: Path, pending: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Publish each staged file; return (conflicts, still pending). Never raises.
+
+    A file someone else wrote since staging keeps their bytes: it is a conflict,
+    its staged copy stays at ``item["source"]`` for a person to reconcile. Any
+    other error leaves the item pending for the next start. Every other file
+    still lands, so one file cannot hold startup or other agents.
+    """
+    conflicts: list[dict] = []
+    retry: list[dict] = []
     for item in pending:
         target = base / item["universe_id"]
-        current = _read(target, item["path"])
-        if current is not None and hashlib.sha256(current).hexdigest() == item["sha256"]:
-            continue
-        if ((hashlib.sha256(current).hexdigest() if current is not None else None)
-                != item["old_sha256"]):
-            raise ValueError(f"agent file already edited or conflicts: {item['path']}")
-        publish_staged_universe_file(base, item["source"], target, item["path"])
+        try:
+            current = _read(target, item["path"])
+            if current is not None and hashlib.sha256(current).hexdigest() == item["sha256"]:
+                continue
+            if ((hashlib.sha256(current).hexdigest() if current is not None else None)
+                    != item["old_sha256"]):
+                conflicts.append({**item, "reason": "edited_since_staging"})
+                continue
+            publish_staged_universe_file(base, item["source"], target, item["path"])
+        except Exception as exc:  # noqa: BLE001 -- one file never blocks startup
+            retry.append({**item, "last_error": type(exc).__name__})
+    return conflicts, retry
 
 
 def _delete(conn, binding_ids: list[str]) -> None:
@@ -391,8 +405,9 @@ def migrate(base_path: str | Path) -> dict[str, list[str]]:
         detail = json.loads(ledger["detail_json"]) if ledger else {}
         pending = detail.get("_pending", [])
         if pending:
-            _publish(base, pending)
-            detail["_pending"] = []
+            conflicts, pending = _publish(base, pending)
+            detail.setdefault("_conflicts", []).extend(conflicts)
+            detail["_pending"] = pending
             conn.execute("UPDATE agent_file_migration SET detail_json = ? WHERE name = ?",
                          (json.dumps(detail, sort_keys=True), LEDGER_NAME))
         if ledger and not detail.get("_failed"):
@@ -433,8 +448,9 @@ def migrate(base_path: str | Path) -> dict[str, list[str]]:
             fresh = conn.execute("SELECT detail_json FROM agent_file_migration WHERE name = ?",
                                  (LEDGER_NAME,)).fetchone()
             detail = json.loads(fresh["detail_json"])
-            _publish(base, detail.get("_pending", []))
-            detail["_pending"] = []
+            conflicts, retry = _publish(base, detail.get("_pending", []))
+            detail.setdefault("_conflicts", []).extend(conflicts)
+            detail["_pending"] = retry
             conn.execute("UPDATE agent_file_migration SET detail_json = ? WHERE name = ?",
                          (json.dumps(detail, sort_keys=True), LEDGER_NAME))
     if not failures:

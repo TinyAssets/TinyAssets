@@ -18,6 +18,10 @@ from tinyassets.agent_definition import (
 from tinyassets.providers.model_preferences import ModelPreferences
 
 
+class _Crash(BaseException):
+    """A process dying mid-publish: not an error the migration may catch."""
+
+
 def test_absent_sparse_and_empty_are_distinct():
     absent = parse_settings(None)
     sparse = parse_settings(b"schema_version: 1\n")
@@ -435,12 +439,12 @@ def test_an_interrupted_migration_resumes_by_id_with_one_directory_per_agent(tmp
         def crash_publish(*args):
             nonlocal count
             if count == int(step.split(":")[1]):
-                raise OSError("crash during publication")
+                raise _Crash("crash during publication")
             count += 1
             return real(*args)
 
         monkeypatch.setattr(m, "publish_staged_universe_file", crash_publish)
-    with pytest.raises(OSError):
+    with pytest.raises((OSError, _Crash)):
         m.migrate(tmp_path)
     monkeypatch.undo()
     if step.startswith("stage:") or step == "delete":
@@ -472,17 +476,19 @@ def test_a_file_edited_after_an_interrupted_run_refuses_rather_than_overwrites(t
         nonlocal count
         count += 1
         if count == 2:
-            raise OSError("crash after settings")
+            raise _Crash("crash after settings")
         return real(*args)
 
     monkeypatch.setattr(m, "publish_staged_universe_file", crash_second)
-    with pytest.raises(OSError):
+    with pytest.raises(_Crash):
         m.migrate(tmp_path)
     monkeypatch.undo()
-    (tmp_path / "u/agents/scout/settings.yaml").write_text("Edited meanwhile.\n",
-                                                         encoding="utf-8")
-    with pytest.raises(ValueError, match="already edited or conflicts"):
-        m.migrate(tmp_path)
+    settings = tmp_path / "u/agents/scout/settings.yaml"
+    settings.write_text("Edited meanwhile.\n", encoding="utf-8")
+    # A conflict is recorded and skipped: startup is never held, the person's
+    # edit keeps its bytes, and the staged copy waits to be reconciled.
+    m.migrate(tmp_path)
+    assert settings.read_text(encoding="utf-8") == "Edited meanwhile.\n"
     assert get_binding(tmp_path, universe_id="u", binding_id=bid) is None
     assert (tmp_path / "u/agents/scout/settings.yaml").read_text(encoding="utf-8") == (
         "Edited meanwhile.\n")
@@ -649,6 +655,36 @@ def test_bad_rows_are_recorded_without_stopping_startup_and_can_retry(tmp_path):
                                  "missing": ["agents/later"]}
     assert get_binding(tmp_path, universe_id="good", binding_id=malformed) is None
     assert get_binding(tmp_path, universe_id="missing", binding_id=missing) is None
+
+
+def test_any_row_error_is_recorded_not_raised(tmp_path, monkeypatch):
+    """A malformed row raising an unexpected type (AttributeError, sqlite3.Error)
+    is recorded and skipped like any other bad row; startup still serves."""
+    import sqlite3
+
+    import tinyassets.agent_file_migration as m
+    from tinyassets.commons_catalog import db_path
+    from tinyassets.consumer_runtime import initialize
+
+    (tmp_path / "u").mkdir()
+    good = _sql_agent(tmp_path, "alice", "u", "Good", instructions="Good.")
+    bad = _sql_agent(tmp_path, "alice", "u", "Bad", instructions="Bad.")
+    real = m._plan_agent
+
+    def plan(base, universe_dir, row, *args):
+        if str(row["agent_binding_id"]) == bad:
+            raise AttributeError("'list' object has no attribute 'items'")
+        return real(base, universe_dir, row, *args)
+
+    monkeypatch.setattr(m, "_plan_agent", plan)
+    initialize(tmp_path)
+    assert read_settings(tmp_path / "u", agent_slug="good").agent.id == good
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        detail = json.loads(conn.execute("SELECT detail_json FROM agent_file_migration "
+                                         "WHERE name = ?", (m.LEDGER_NAME,)).fetchone()[0])
+        assert conn.execute("SELECT 1 FROM agent_bindings WHERE agent_binding_id = ?",
+                            (bad,)).fetchone() is not None
+    assert detail["_failed"][bad].startswith("AttributeError")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
