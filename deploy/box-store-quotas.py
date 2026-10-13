@@ -10,9 +10,10 @@ import subprocess
 from pathlib import Path
 
 
-def reapply(store: Path, trees: Path, registry: Path) -> None:
+def reapply(store: Path, trees: Path, registry: Path, *, clear: bool = False) -> None:
     owner_dirs = {
-        entry.name for entry in trees.iterdir() if entry.is_dir() and not entry.is_symlink()
+        entry.name for entry in trees.iterdir()
+        if entry.name.isdecimal() and entry.is_dir() and not entry.is_symlink()
     }
     if not owner_dirs:
         return
@@ -35,14 +36,16 @@ def reapply(store: Path, trees: Path, registry: Path) -> None:
         tree = trees / uid
         os.chown(tree, int(uid), gid)
         os.chmod(tree, 0o700)
-        subprocess.run(
-            ["xfs_quota", "-x", "-c", f"project -s -p {tree} {project}", str(store)],
-            check=True,
-        )
-        subprocess.run(
-            ["xfs_quota", "-x", "-c", f"limit -p bhard={limit // 1024}k {project}", str(store)],
-            check=True,
-        )
+        if clear:
+            command = f"project -C -p {tree} {project}"
+        else:
+            command = f"project -s -p {tree} {project}"
+        subprocess.run(["xfs_quota", "-x", "-c", command, str(store)], check=True)
+        if not clear:
+            subprocess.run(
+                ["xfs_quota", "-x", "-c", f"limit -p bhard={limit // 1024}k {project}", str(store)],
+                check=True,
+            )
     subprocess.run(["xfs_quota", "-x", "-c", "report -p -n", str(store)], check=True)
 
 
@@ -51,5 +54,6 @@ if __name__ == "__main__":
     parser.add_argument("store", type=Path)
     parser.add_argument("trees", type=Path)
     parser.add_argument("registry", type=Path)
+    parser.add_argument("--clear", action="store_true")
     args = parser.parse_args()
-    reapply(args.store, args.trees, args.registry)
+    reapply(args.store, args.trees, args.registry, clear=args.clear)

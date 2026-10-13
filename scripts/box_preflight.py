@@ -580,24 +580,38 @@ def g4(store: Path, boxes: Boxes, work: Path) -> dict:
     run(["xfs_quota", "-x", "-c", f"limit -p bhard=8m {project}", str(store)])
     boxes.start("g4quota", owner_root=tree)
     quota_code = (
-        "import errno,json,os; p='/home/owner/limit.bin'; e=0; "
-        "\ntry:\n with open(p,'wb') as f:\n  for _ in range(32): f.write(b'x'*1048576)\n"
-        "except OSError as x: e=x.errno\nprint(json.dumps({'errno':e}))"
+        "import json; p='/home/owner/limit.bin'; e=0; n=0\n"
+        "try:\n with open(p,'wb',buffering=0) as f:\n"
+        "  for _ in range(32): n+=f.write(b'x'*1048576)\n"
+        "except OSError as x: e=x.errno\nprint(json.dumps({'errno':e,'bytes':n}))"
     )
     quota = json.loads(boxes.exec("g4quota", "/opt/venv/bin/python", "-c", quota_code).stdout)
     result["quota_errno"] = quota["errno"]
+    result["quota_written_bytes"] = quota["bytes"]
     boxes.stop("g4quota")
     sibling = scratch_root / "sibling"
     sibling.mkdir()
     boxes.start("g4full", owner_root=sibling)
+    sibling_code = (
+        "import json; p='/home/owner/sibling.bin'; ok=False\n"
+        "try:\n with open(p,'wb') as f: f.write(b'x'*1048576)\n"
+        "except OSError: pass\nelse: ok=True\nprint(json.dumps({'write_ok':ok}))"
+    )
+    sibling_probe = json.loads(boxes.exec(
+        "g4full", "/opt/venv/bin/python", "-c", sibling_code
+    ).stdout)
+    result["sibling_write_ok"] = sibling_probe["write_ok"]
+    (sibling / "sibling.bin").unlink(missing_ok=True)
     # Fill only the disposable store, never the host root. The sandbox sees
     # ENOSPC and remains alive; the allocated backing image cannot grow.
     root_free = shutil.disk_usage("/").free
+    store_size = shutil.disk_usage(store).total
+    result["store_size_bytes"] = store_size
     image_blocks = getattr(BOX_IMAGE.stat(), "st_blocks", None) if BOX_IMAGE.exists() else None
     full_code = (
-        "import errno,json,os; e=0; n=0; p='/home/owner/full.bin'\n"
-        "try:\n with open(p,'wb') as f:\n  while True:\n"
-        "   f.write(b'x'*16777216); n+=16777216\n"
+        "import json; e=0; n=0; p='/home/owner/full.bin'\n"
+        "try:\n with open(p,'wb',buffering=0) as f:\n  while True:\n"
+        "   n+=f.write(b'x'*16777216)\n"
         "except OSError as x: e=x.errno\nprint(json.dumps({'errno':e,'bytes':n}))"
     )
     full = json.loads(boxes.exec(
@@ -613,13 +627,21 @@ def g4(store: Path, boxes: Boxes, work: Path) -> dict:
     result["image_blocks_unchanged"] = (
         image_blocks is None or getattr(BOX_IMAGE.stat(), "st_blocks", None) == image_blocks
     )
-    result["pass"] = (
-        result["quota_errno"] == errno.EDQUOT
+    result["pass"] = quota_limits_pass(result)
+    return result
+
+
+def quota_limits_pass(result: dict) -> bool:
+    """Distinguish a project limit from an exhausted filesystem by bytes and sibling I/O."""
+    return (
+        result["quota_errno"] == errno.ENOSPC
+        and 6 * MIB <= result["quota_written_bytes"] <= 8 * MIB
+        and result["sibling_write_ok"]
         and result["store_errno"] == errno.ENOSPC
+        and result["store_written_bytes"] >= result["store_size_bytes"] * 3 // 4
         and result["root_free_delta_bytes"] >= -MIB
         and result["image_blocks_unchanged"]
     )
-    return result
 
 
 def valid_work_dir(work: Path) -> bool:

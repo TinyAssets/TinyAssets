@@ -16,11 +16,51 @@ if ! command -v mkfs.xfs >/dev/null || ! command -v xfs_quota >/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfsprogs >/dev/null
 fi
 mkdir -p /etc/tinyassets /var/lib/boxhostd/owners
+volume=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store
+image=/var/lib/boxhostd/boxes.img
 if [[ ! -e /etc/tinyassets/box-store.conf ]]; then
-    printf '%s\n' 'BOX_STORE_DEVICE=auto' \
-        > /etc/tinyassets/box-store.conf
+    if [[ -b "$volume" ]]; then
+        selected="$volume"
+    else
+        echo 'box volume missing; set BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img explicitly for a loop store' >&2
+        exit 1
+    fi
+    printf 'BOX_STORE_DEVICE=%s\n' "$selected" > /etc/tinyassets/box-store.conf
     chmod 0600 /etc/tinyassets/box-store.conf
 fi
+config=/etc/tinyassets/box-store.conf
+[[ -f "$config" && ! -L "$config" && "$(stat -c %u "$config")" == 0 ]] || {
+    echo 'root-owned box-store.conf required' >&2; exit 1;
+}
+mode="$(stat -c %a "$config")"
+(( (8#$mode & 8#22) == 0 )) || { echo 'box-store.conf is writable by non-root' >&2; exit 1; }
+source "$config"
+if [[ "${BOX_STORE_DEVICE:-}" == auto ]]; then
+    current="$(readlink /run/boxhostd/box-store-device 2>/dev/null || true)"
+    if [[ "$current" == "$volume" ]]; then
+        selected="$volume"
+    elif [[ "$current" == /dev/loop* ]]; then
+        selected="$image"
+        if [[ -b "$volume" ]]; then
+            [[ -z "$(find /var/lib/boxhostd/owners -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+                echo 'existing loop store contains data; refusing automatic switch' >&2; exit 1;
+            }
+            systemctl stop boxhostd.service var-lib-boxhostd-owners.mount box-store-device.service
+            selected="$volume"
+        fi
+    elif [[ -b "$volume" ]]; then
+        selected="$volume"
+    else
+        echo 'BOX_STORE_DEVICE=auto has no selected device; configure an explicit device' >&2
+        exit 1
+    fi
+    printf 'BOX_STORE_DEVICE=%s\n' "$selected" > /etc/tinyassets/box-store.conf
+    chmod 0600 /etc/tinyassets/box-store.conf
+    BOX_STORE_DEVICE="$selected"
+fi
+[[ -n "${BOX_STORE_DEVICE:-}" && "$BOX_STORE_DEVICE" != auto ]] || {
+    echo 'BOX_STORE_DEVICE must name a pinned device or the explicit loop image' >&2; exit 1;
+}
 archive="$(mktemp /tmp/boxhostd-runsc.XXXXXX)"
 stage="$(mktemp -d "${root}/.stage.XXXXXX")"
 trap 'rm -f -- "$archive"; [[ -n "${stage:-}" ]] && rm -rf -- "$stage"' EXIT
@@ -61,12 +101,20 @@ for name in boxhostd_idle.py box_preflight.py box_store_durability.py box-store-
         changed=1
     fi
 done
-for name in boxhostd.service box-store-device.service var-lib-boxhostd-owners.mount; do
+for name in boxhostd.service var-lib-boxhostd-owners.mount; do
     if ! cmp -s "${source_dir}/${name}" "/etc/systemd/system/${name}"; then
         install -m 0644 "${source_dir}/${name}" "/etc/systemd/system/${name}"
         changed=1
     fi
 done
+unit_stage="$(mktemp /tmp/box-store-device-unit.XXXXXX)"
+bash "${source_dir}/box-store-unit.sh" "$BOX_STORE_DEVICE" \
+    "${source_dir}/box-store-device.service" > "$unit_stage"
+if ! cmp -s "$unit_stage" /etc/systemd/system/box-store-device.service; then
+    install -m 0644 "$unit_stage" /etc/systemd/system/box-store-device.service
+    changed=1
+fi
+rm -f -- "$unit_stage"
 if [[ "$(readlink "${root}/current" 2>/dev/null || true)" != "$release" ]]; then
     ln -s "$release" "${root}/.current.new.$$"
     mv -Tf "${root}/.current.new.$$" "${root}/current"
@@ -74,15 +122,6 @@ if [[ "$(readlink "${root}/current" 2>/dev/null || true)" != "$release" ]]; then
 fi
 if [[ "$changed" -eq 1 ]]; then
     systemctl daemon-reload
-fi
-# An earlier P2a install may already have its empty loop image mounted. Once
-# the approved volume appears, switch the mount before starting boxhostd.
-volume=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store
-if [[ -b "$volume" && "$(readlink /run/boxhostd/box-store-device 2>/dev/null || true)" == /dev/loop* ]]; then
-    [[ -z "$(find /var/lib/boxhostd/owners -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
-        echo 'existing loop store contains data; refusing automatic switch' >&2; exit 1;
-    }
-    systemctl stop boxhostd.service var-lib-boxhostd-owners.mount box-store-device.service
 fi
 systemctl enable --now var-lib-boxhostd-owners.mount
 systemctl is-active --quiet var-lib-boxhostd-owners.mount

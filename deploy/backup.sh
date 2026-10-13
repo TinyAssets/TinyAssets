@@ -363,14 +363,21 @@ fi
 log "  upload OK"
 
 # ----- 4b. box-store member, paired by timestamp with the data archive ---
-# On an installed host this member is mandatory. Always thaw, including when
-# tar fails or the process receives a normal termination signal.
+# On an installed host this member is mandatory. Thaw before validation/upload.
 if [[ -e "${BOX_STORE_DIR}" ]]; then
     if ! "$(dirname "$(realpath "$0")")/box-store-check.sh" "${BOX_STORE_DIR}"; then
         log "ERROR: box store exists but is not mounted with XFS project quota"
         exit 2
     fi
     BOX_NAME="tinyassets-box-store-${TS}.tar.gz"
+    BOX_TAR_PATH="$(mktemp "${TMPDIR:-/tmp}/tinyassets-box-store-${TS}.XXXXXX")"
+    box_root="$(basename "${BOX_STORE_DIR}")"
+    box_members=()
+    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
+        [[ -d "$tree" && ! -L "$tree" ]] || continue
+        name="$(basename "$tree")"
+        [[ "$name" =~ ^[0-9]+$ ]] && box_members+=("${box_root}/${name}")
+    done
     box_frozen=0
     thaw_box() {
         if [[ "$box_frozen" -eq 1 ]]; then
@@ -378,23 +385,36 @@ if [[ -e "${BOX_STORE_DIR}" ]]; then
             box_frozen=0
         fi
     }
-    trap 'thaw_box; rm -rf "${BRAIN_STAGE}"' EXIT
-    trap 'thaw_box; exit 143' TERM
-    trap 'thaw_box; exit 130' INT
+    trap 'thaw_box; rm -rf -- "${BRAIN_STAGE}"; rm -f -- "${BOX_TAR_PATH:-}"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     xfs_freeze -f "${BOX_STORE_DIR}"
     box_frozen=1
     set +e
-    tar -czf - --numeric-owner --acls --xattrs \
-        -C "$(dirname "${BOX_STORE_DIR}")" "$(basename "${BOX_STORE_DIR}")" \
-        | rclone rcat --contimeout 60s --timeout 900s "${BACKUP_DEST}/${BOX_NAME}"
+    tar -czf "${BOX_TAR_PATH}" --numeric-owner --acls --xattrs \
+        -C "$(dirname "${BOX_STORE_DIR}")" \
+        --no-recursion "$box_root" --recursion "${box_members[@]}"
     box_tar_rc=$?
     set -e
     thaw_box
-    trap - TERM INT
     if [[ "$box_tar_rc" -ne 0 ]]; then
-        log "ERROR: box-store archive/upload failed (rc=${box_tar_rc})"
+        log "ERROR: box-store archive failed (rc=${box_tar_rc})"
         exit 2
     fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-archive.py" "${BOX_TAR_PATH}"; then
+        log "ERROR: box-store archive validation failed"
+        exit 2
+    fi
+    if ! rclone copyto --contimeout 60s --timeout 900s \
+            "${BOX_TAR_PATH}" "${BACKUP_DEST}/${BOX_NAME}"; then
+        log "ERROR: box-store upload failed"
+        exit 3
+    fi
+    rm -f -- "${BOX_TAR_PATH}"
+    BOX_TAR_PATH=''
+    trap 'rm -rf -- "${BRAIN_STAGE}"' EXIT
+    trap - HUP INT TERM
     log "  box-store upload OK: ${BOX_NAME}"
 fi
 

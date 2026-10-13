@@ -57,6 +57,26 @@ def test_gate_exception_is_a_failure() -> None:
     }
 
 
+def test_g4_distinguishes_project_limit_from_store_full() -> None:
+    mib = box_preflight.MIB
+    result = {
+        "quota_errno": errno.ENOSPC,
+        "quota_written_bytes": 8 * mib,
+        "sibling_write_ok": True,
+        "store_errno": errno.ENOSPC,
+        "store_written_bytes": 8 * 1024 * mib,
+        "store_size_bytes": 8 * 1024 * mib,
+        "root_free_delta_bytes": 0,
+        "image_blocks_unchanged": True,
+    }
+    assert box_preflight.quota_limits_pass(result)
+    for change in ({"quota_written_bytes": 1024 * mib},
+                   {"sibling_write_ok": False},
+                   {"store_written_bytes": 8 * mib},
+                   {"quota_errno": errno.EDQUOT}):
+        assert not box_preflight.quota_limits_pass({**result, **change})
+
+
 def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path: Path) -> None:
     boxes = box_preflight.Boxes.__new__(box_preflight.Boxes)
     boxes.work = tmp_path
@@ -254,9 +274,14 @@ def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: P
             return None
 
         def exec(self, name, *_args, **_kwargs):
-            code = errno.EDQUOT if name == "g4quota" else errno.ENOSPC
+            if "write_ok" in _args[-1]:
+                payload = {"write_ok": True}
+            elif name == "g4quota":
+                payload = {"errno": errno.ENOSPC, "bytes": 8 * box_preflight.MIB}
+            else:
+                payload = {"errno": errno.ENOSPC, "bytes": 8 * box_preflight.GIB}
             return subprocess.CompletedProcess(
-                [], 0, stdout=json.dumps({"errno": code, "bytes": 1})
+                [], 0, stdout=json.dumps(payload)
             )
 
         def stop(self, _name):
@@ -271,9 +296,15 @@ def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: P
     monkeypatch.setattr(box_preflight, "BOX_IMAGE", image)
     monkeypatch.setattr(box_preflight, "run", fake_run)
     monkeypatch.setattr(box_preflight.shutil, "which", lambda _tool: "/usr/bin/xfs_quota")
+    usage = shutil.disk_usage(tmp_path)._replace(
+        total=8 * box_preflight.GIB, free=8 * box_preflight.GIB
+    )
+    monkeypatch.setattr(box_preflight.shutil, "disk_usage", lambda _path: usage)
     result = box_preflight.g4(store, Boxes(), work)
     assert result["pass"] is True
-    assert result["quota_errno"] == errno.EDQUOT
+    assert result["quota_errno"] == errno.ENOSPC
+    assert result["quota_written_bytes"] == 8 * box_preflight.MIB
+    assert result["sibling_write_ok"]
     assert result["store_errno"] == errno.ENOSPC
     assert ["fstrim", "-a"] in commands
     assert (work / "quota-state.json").exists()

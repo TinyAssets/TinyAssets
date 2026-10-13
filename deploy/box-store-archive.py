@@ -26,6 +26,8 @@ def validate(source: str) -> None:
             raise ValueError("unsafe box-store archive member")
         if len(path.parts) > 1 and not path.parts[1].isdecimal():
             raise ValueError("box-store archive has a non-owner top-level member")
+        if len(path.parts) <= 2 and not member.isdir():
+            raise ValueError("box-store archive owner roots must be directories")
         if any(str(parent) in symlinks for parent in path.parents):
             raise ValueError("box-store archive traverses a symlink")
         if member.issym():

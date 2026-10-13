@@ -34,6 +34,7 @@ set -euo pipefail
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
 BACKUP_FILE="${BACKUP_FILE:-}"
 BOX_BACKUP_FILE="${BOX_BACKUP_FILE:-}"
+ALLOW_PRE_STORE_BACKUP="${ALLOW_PRE_STORE_BACKUP:-0}"
 BOX_STORE_DIR="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
 DRY_RUN="${DRY_RUN:-0}"
 BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
@@ -44,6 +45,10 @@ DOWNLOAD_DIR=""
 STAGE_DIR=""
 BOX_STAGE=""
 VOLUME_PARENT=""
+BOX_OLD=""
+BOX_SWAP_ACTIVE=0
+box_old_names=()
+box_new_names=()
 
 for arg in "$@"; do
     case "${arg}" in
@@ -62,7 +67,33 @@ log() {
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }
 
+rollback_box() {
+    [[ "$BOX_SWAP_ACTIVE" -eq 1 ]] || return 0
+    log "rolling back box-store swap"
+    mkdir -p -- "$BOX_STAGE"
+    for name in "${box_new_names[@]}"; do
+        if [[ -e "${BOX_STORE_DIR}/${name}" ]]; then
+            mv -- "${BOX_STORE_DIR}/${name}" "${BOX_STAGE}/" || \
+                log "CRITICAL: failed to retain restored box tree ${name}"
+        fi
+    done
+    for name in "${box_old_names[@]}"; do
+        if [[ -e "${BOX_OLD}/${name}" ]]; then
+            mv -- "${BOX_OLD}/${name}" "${BOX_STORE_DIR}/" || \
+                log "CRITICAL: failed to restore original box tree ${name}"
+        fi
+    done
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
+            "${VOLUME_DIR}/.broker/box-registry.json"; then
+        log "CRITICAL: failed to restore original box quota limits"
+    fi
+    rmdir -- "$BOX_OLD" 2>/dev/null || true
+    BOX_SWAP_ACTIVE=0
+}
+
 cleanup() {
+    rollback_box
     if [[ -n "${BOX_STAGE}" && -d "${BOX_STAGE}" ]]; then
         case "${BOX_STAGE}" in
             "${BOX_STORE_DIR}"/.tinyassets-box-restore-stage.*) rm -rf -- "${BOX_STAGE}" ;;
@@ -197,14 +228,26 @@ if [[ -e "${BOX_STORE_DIR}" ]]; then
     if [[ -n "${BACKUP_FILE}" ]]; then
         BOX_TAR_PATH="${BOX_BACKUP_FILE:-$(dirname "${BACKUP_FILE}")/${BOX_NAME}}"
         if [[ "${BOX_TAR_PATH}" != /* || -L "${BOX_TAR_PATH}" || ! -f "${BOX_TAR_PATH}" ]]; then
-            log "ERROR: paired box-store archive missing"
-            exit 2
+            if [[ "$ALLOW_PRE_STORE_BACKUP" == 1 && -z "$BOX_BACKUP_FILE" && ! -e "$BOX_TAR_PATH" ]]; then
+                log "ALLOW_PRE_STORE_BACKUP=1: pre-store data archive has no box member; retaining current box trees"
+                BOX_NAME=''
+                BOX_TAR_PATH=''
+            else
+                log "ERROR: paired box-store archive missing"
+                exit 2
+            fi
         fi
     else
         BOX_REMOTE="${BACKUP_DEST}/${BOX_NAME}"
         if ! rclone ls "${BOX_REMOTE}" > /dev/null 2>&1; then
-            log "ERROR: paired box-store archive missing"
-            exit 2
+            if [[ "$ALLOW_PRE_STORE_BACKUP" == 1 ]]; then
+                log "ALLOW_PRE_STORE_BACKUP=1: pre-store data archive has no box member; retaining current box trees"
+                BOX_NAME=''
+                BOX_REMOTE=''
+            else
+                log "ERROR: paired box-store archive missing"
+                exit 2
+            fi
         fi
     fi
 fi
@@ -327,11 +370,6 @@ if [[ -n "${BOX_NAME:-}" ]]; then
         fi
     fi
     REGISTRY="${BOX_REGISTRY_FILE:-${STAGE_DIR}/.broker/box-registry.json}"
-    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
-            "${BOX_STORE_DIR}" "${BOX_STAGE}" "${REGISTRY}"; then
-        log "ERROR: box-store quota restoration failed"
-        exit 4
-    fi
 fi
 
 # ----- 4. stop every consumer, then swap with automatic rollback -------
@@ -347,21 +385,6 @@ if [[ -n "${CONTAINER_OUTPUT}" ]]; then
     mapfile -t containers <<< "${CONTAINER_OUTPUT}"
 fi
 
-if [[ -n "${BOX_STAGE}" ]]; then
-    # Retain old owner trees on the same XFS store until the caller verifies.
-    systemctl stop boxhostd.service
-    BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
-    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
-        [[ -e "$tree" ]] || continue
-        mv -- "$tree" "${BOX_OLD}/"
-    done
-    for tree in "${BOX_STAGE}"/[0-9]*; do
-        [[ -e "$tree" ]] || continue
-        mv -- "$tree" "${BOX_STORE_DIR}/"
-    done
-    rmdir "${BOX_STAGE}"
-    BOX_STAGE=""
-fi
 if [[ "${#containers[@]}" -gt 0 ]]; then
     log "stopping ${#containers[@]} container(s) mounting ${BACKUP_VOLUME}..."
     if ! docker stop "${containers[@]}"; then
@@ -379,6 +402,39 @@ if [[ -n "${CONTAINER_OUTPUT}" ]]; then
     log "ERROR: running volume consumers remain after stop"
     exit 4
 fi
+if [[ -n "${BOX_STAGE}" ]]; then
+    if ! systemctl stop boxhostd.service; then
+        log "ERROR: failed to stop boxhostd before box-store swap"
+        exit 4
+    fi
+    BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
+    BOX_SWAP_ACTIVE=1
+    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
+        [[ -d "$tree" && ! -L "$tree" ]] || continue
+        name="$(basename "$tree")"
+        [[ "$name" =~ ^[0-9]+$ ]] || continue
+        mv -- "$tree" "${BOX_OLD}/"
+        box_old_names+=("$name")
+    done
+    quota_script="$(dirname "$(realpath "$0")")/box-store-quotas.py"
+    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
+            "${VOLUME_DIR}/.broker/box-registry.json" --clear; then
+        log "ERROR: failed to clear retained box project IDs"
+        exit 4
+    fi
+    for tree in "${BOX_STAGE}"/[0-9]*; do
+        [[ -d "$tree" && ! -L "$tree" ]] || continue
+        name="$(basename "$tree")"
+        [[ "$name" =~ ^[0-9]+$ ]] || continue
+        mv -- "$tree" "${BOX_STORE_DIR}/"
+        box_new_names+=("$name")
+    done
+    if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" "$REGISTRY"; then
+        log "ERROR: box-store quota restoration failed"
+        exit 4
+    fi
+    rmdir -- "$BOX_STAGE"
+fi
 
 OLD_DIR="$(mktemp -d "${VOLUME_PARENT}/.tinyassets-restore-old.XXXXXX")"
 rmdir -- "${OLD_DIR}"
@@ -394,6 +450,8 @@ if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
     exit 4
 fi
 STAGE_DIR=""
+BOX_SWAP_ACTIVE=0
+BOX_STAGE=''
 
 # ----- 5. done — caller verifies, starts, and later removes old data ----
 

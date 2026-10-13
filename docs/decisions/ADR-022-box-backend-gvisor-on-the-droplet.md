@@ -115,7 +115,7 @@ They need nothing P2b builds.
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
 | G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 700 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
-| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is EDQUOT in that project only; with the store full a write is ENOSPC inside the box and the root filesystem's free space is unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
+| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a project-quota write fails with ENOSPC after about `bhard` bytes while a sibling owner tree can still write; filling the store also yields ENOSPC, after writing about the store's capacity, and the root filesystem's free space is unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
 
 **P2b, acceptance on the cutover build.** `scripts/box_acceptance.py` runs
@@ -193,7 +193,7 @@ one cross-family round.
 
 **Decision: box trees live on one XFS filesystem mounted `pquota,nodiscard`
 at `/var/lib/boxhostd/owners`.** The founder chose (a) for production;
-(b) remains the fallback when the volume is absent:
+(b) is available only when configured explicitly:
 
 - **(a) Chosen: a DO block volume, 20 GiB, about $2 a month.** Approved
   spending. Formatted XFS once, attached to the
@@ -215,6 +215,9 @@ at `/var/lib/boxhostd/owners`.** The founder chose (a) for production;
 **Common to both.**
 
 - **Boot order.** `var-lib-boxhostd-owners.mount` is a systemd unit;
+  the selected block volume is pinned in `box-store.conf`, and its device
+  service requires the escaped `.device` unit. A missing selected volume
+  fails startup without creating a loop image.
   `boxhostd.service` has `Requires=` and `After=` it and refuses to start
   if the mount lacks `pquota`. The daemon container is unrelated: after
   P2b it never touches an owner tree directly. Compose mounts only
@@ -223,16 +226,16 @@ at `/var/lib/boxhostd/owners`.** The founder chose (a) for production;
   owner's permanent UID/GID, mode 0700; `boxhostd` (root) sets ownership
   and project ids; the unprivileged daemon reaches them only through
   `BoxProvider` over the `boxhostd` socket.
-- **Full.** Per-owner `bhard` is the first bound (EDQUOT in that project
-  only); the store may be oversubscribed; a write with the store full is
-  ENOSPC inside the writing box only. The root filesystem and the daemon's
+- **Full.** Per-owner `bhard` is the first bound (ENOSPC in that project
+  after about `bhard` bytes, while a sibling can still write); the store may be oversubscribed; a write with the store full is
+  also ENOSPC inside the writing box. The root filesystem and the daemon's
   data are elsewhere, so a box can never fill them (today `/data` shares
   the root disk).
-- **Backup and restore.** `deploy/backup.sh` today archives only the
-  `tinyassets-data` volume and `backup-restore.sh` restores only that.
-  P2b extends both: a second archive member is the box store, taken under
-  `xfs_freeze -f` / `-u` with `--numeric-owner --acls --xattrs`; restore
-  recreates the trees, then re-applies project ids and `bhard` from the
+- **Backup and restore.** A second archive member contains numeric box owner
+  trees, taken under `xfs_freeze -f` / `-u` with
+  `--numeric-owner --acls --xattrs`, validated locally after thaw and before
+  upload. Restore recreates the trees, clears retained old project IDs,
+  then re-applies project ids and `bhard` from the
   broker's box registry (tar does not carry project ids) and checks
   `xfs_quota -x -c report`. The restore is tested on the production copy
   before the window.

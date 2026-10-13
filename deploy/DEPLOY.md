@@ -269,12 +269,15 @@ Rollback P2a without touching the daemon image or owner data:
 
 The box store is provisioned by `var-lib-boxhostd-owners.mount` through
 `box-store-device.service`. `/etc/tinyassets/box-store.conf` contains
-`BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img` for the preallocated 8 GiB
-loop image. Installation refuses to allocate it unless at least 6 GiB of
-root free space remains, and never reformats an existing image. To use a
-formatted block volume later, stop `boxhostd.service` and the mount, set
-`BOX_STORE_DEVICE=/dev/<device>` in the root-owned config, stop the device
-service, then start the mount and boxhostd. The same mount options and boxhostd
+the selected device path: the attached volume's stable `/dev/disk/by-id/` path.
+To use the loop image, set `BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img`
+explicitly before installation. The selection is pinned; a missing volume fails boot
+instead of selecting a new image. Installation refuses to allocate an image
+unless at least 6 GiB of root free space remains, and never reformats an
+existing image. To change the selected device later, stop `boxhostd.service`
+and the mount, set `BOX_STORE_DEVICE=/dev/<device>` in the root-owned config,
+stop the device service, rerun the installer to regenerate its `.device`
+dependency, then start the mount and boxhostd. The same mount options and boxhostd
 code apply. Confirm `findmnt /var/lib/boxhostd/owners` shows XFS with
 `pquota,noatime,nodiscard`. Never bind this path into the daemon container.
 
