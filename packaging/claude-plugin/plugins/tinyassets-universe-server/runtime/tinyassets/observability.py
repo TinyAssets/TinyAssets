@@ -62,6 +62,19 @@ _PAIR = re.compile(
     r"(?i)\b(code|token|access_token|refresh_token|id_token|state|"
     r"client_secret|password|authorization)=([^\s&]+)"
 )
+_COOKIE_HEADER = re.compile(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*[^\r\n]*")
+_COOKIE_PAIR = re.compile(
+    r"(?i)\b([A-Za-z0-9_.-]*(?:session|sess|sid|cookie|csrf|xsrf|auth|secret|key|jwt)"
+    r"[A-Za-z0-9_.-]*)=([^\s;&,)\"']+)"
+)
+_LONG_PAIR = re.compile(r"\b([A-Za-z_][A-Za-z0-9_.-]*)=([A-Za-z0-9_+/=.~%-]{16,})")
+_CARD = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
+_STRIPE_ID = re.compile(
+    r"\b(?:cus|pi|pm|sub|in|ch|py|re|prod|price|acct|evt|cs|seti|si|txn|ba|card|src|"
+    r"tok|whsec|sk|pk|rk)_(?=[A-Za-z0-9_]*[0-9A-Z])[A-Za-z0-9_]{8,}\b"
+)
+_FRAME = re.compile(r"^\s*at\s\S|^\S+@\S+:\d+")
+_ERROR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,79}$")
 
 _SQL_VERBS = frozenset({
     "SELECT", "INSERT", "UPDATE", "DELETE", "BEGIN", "COMMIT", "ROLLBACK",
@@ -70,6 +83,7 @@ _SQL_VERBS = frozenset({
 })
 _BODY_PATHS = frozenset({"/mcp", "/mcp/", "/oauth/token", "/app/token"})
 _BODY_CAP = 65_536
+_REPORT_CAP = 4096
 
 _MISSING = object()
 _request_active: ContextVar[bool] = ContextVar("ta_obs_active", default=False)
@@ -162,13 +176,29 @@ def redact(text: str) -> str:
     if not text:
         return ""
     cleaned = _QUERY.sub(r"\1", text)
+    cleaned = _COOKIE_HEADER.sub(lambda match: f"{match.group(1)}: [redacted]", cleaned)
     cleaned = _PAIR.sub(lambda match: f"{match.group(1)}=[redacted]", cleaned)
+    cleaned = _COOKIE_PAIR.sub(lambda match: f"{match.group(1)}=[redacted]", cleaned)
+    cleaned = _LONG_PAIR.sub(lambda match: f"{match.group(1)}=[redacted]", cleaned)
     cleaned = _EMAIL.sub("[redacted]", cleaned)
     cleaned = _BEARER.sub(lambda match: f"{match.group(1)} [redacted]", cleaned)
     cleaned = _JWT.sub("[redacted]", cleaned)
     cleaned = _SECRET_PREFIX.sub("[redacted]", cleaned)
+    cleaned = _STRIPE_ID.sub("[redacted]", cleaned)
+    cleaned = _CARD.sub("[redacted]", cleaned)
     cleaned = _LONG_TOKEN.sub("[redacted]", cleaned)
     return cleaned
+
+
+def top_frames(text: str, *, limit: int = 10) -> str:
+    """Keep only stack-frame lines of a browser stack; the message line is dropped."""
+    kept: list[str] = []
+    for line in text.splitlines():
+        if _FRAME.match(line):
+            kept.append(redact(line.strip())[:300])
+            if len(kept) >= limit:
+                break
+    return "\n".join(kept)
 
 
 def _jsonable(value: Any, *, depth: int = 0) -> Any:
@@ -548,7 +578,12 @@ class StashExceptionMiddleware:
 
 
 class RequestLogMiddleware:
-    """Outermost ASGI wrapper. Records the trail and sets ``X-Trace-Id``."""
+    """Records the trail and sets ``X-Trace-Id``.
+
+    Sits directly inside ``PlatformOriginAdmission``: an unadmitted origin is
+    refused before this reads a byte of the body, and everything admitted is
+    recorded.
+    """
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -895,18 +930,18 @@ def _remember_client(
     return kind
 
 
-def _client_report_allowed(session: str) -> bool:
+def _client_report_allowed(caller: str) -> bool:
     now = time.monotonic()
     with _report_lock:
-        start, count = _report_buckets.get(session, (now, 0))
+        start, count = _report_buckets.get(caller, (now, 0))
         if now - start > 60:
             start, count = now, 0
         if count >= 30:
-            _report_buckets[session] = (start, count)
-            _report_buckets.move_to_end(session)
+            _report_buckets[caller] = (start, count)
+            _report_buckets.move_to_end(caller)
             return False
-        _report_buckets[session] = (start, count + 1)
-        _report_buckets.move_to_end(session)
+        _report_buckets[caller] = (start, count + 1)
+        _report_buckets.move_to_end(caller)
         while len(_report_buckets) > 5000:
             _report_buckets.popitem(last=False)
     return True
@@ -915,22 +950,34 @@ def _client_report_allowed(session: str) -> bool:
 async def client_error(request: Any) -> Any:
     """Browser reports: uncaught errors and page loads, on the same trail.
 
-    Public on purpose. The marketing site has no bearer. The body is small,
-    the rate limit is per session, and every string is redacted before it is
-    written. This does not echo the report back.
+    Public on purpose. The marketing site has no bearer. The session is the
+    caller's own ``ta_session`` cookie (or the one the middleware minted for
+    this request); a ``session_id`` in the body is ignored. The rate limit is
+    per client address. The body is read with a running cap, and a report
+    keeps the error type and its top frames only: the free-text message is
+    dropped rather than redacted. This does not echo the report back.
     """
     from starlette.responses import Response
+
+    from tinyassets.onboarding.native_sign_in import client_ip
 
     length = request.headers.get("content-length")
     if length is not None:
         try:
-            if int(length) > 4096:
+            if int(length) > _REPORT_CAP:
                 return Response(status_code=413)
         except ValueError:
             return Response(status_code=400)
-    raw = await request.body()
-    if len(raw) > 4096:
-        return Response(status_code=413)
+    if not _client_report_allowed(client_ip(request)):
+        return Response(status_code=429)
+    chunks: list[bytes] = []
+    total = 0
+    async for piece in request.stream():
+        total += len(piece)
+        if total > _REPORT_CAP:
+            return Response(status_code=413)
+        chunks.append(piece)
+    raw = b"".join(chunks)
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError):
@@ -940,43 +987,36 @@ async def client_error(request: Any) -> Any:
     kind = str(data.get("kind") or "")
     if kind not in {"page.load", "window.error", "unhandledrejection", "react"}:
         return Response(status_code=400)
-    session = str(data.get("session_id") or "")
+    scope = getattr(request, "scope", None) or {}
+    session = _cookie(scope, SESSION_COOKIE)
     if not _SESSION_RE.fullmatch(session):
+        # No cookie: the middleware minted a session for this request and sets
+        # it on the response, so the next report lands on the same trail. A
+        # session named only by a header is not a browser's.
         session = _session_id.get() or ""
-    if not _SESSION_RE.fullmatch(session):
-        return Response(status_code=400)
-    if not _client_report_allowed(session):
-        return Response(status_code=429)
+        if not _SESSION_RE.fullmatch(session) or not _incoming_session(scope)[1]:
+            return Response(status_code=400)
     page = str(data.get("path") or "/")
     if not page.startswith("/") or "?" in page or "\\" in page or len(page) > 200:
         page = "/"
     page = route_for(page)
-    current = _session_id.get() or ""
-    links = {"cookie": current} if _SESSION_RE.fullmatch(current) and current != session else None
     browser = {
         "client": "browser", "account_id": None, "signed_in": False,
         "token_age_s": None, "token_exp": None, "token_iss": None,
     }
     if kind == "page.load":
-        emit(
-            "session.step",
-            session_id=session,
-            step="page.load",
-            page=page,
-            links=links,
-            context=browser,
-        )
+        emit("session.step", session_id=session, step="page.load", page=page, context=browser)
     else:
-        name = redact(str(data.get("name") or "Error"))[:80]
-        text = redact(str(data.get("text") or ""))[:500]
-        frames = redact(str(data.get("frames") or ""))[:4000]
+        name = str(data.get("name") or "Error")
+        if not _ERROR_NAME.fullmatch(name):
+            name = "Error"
+        frames = top_frames(str(data.get("frames") or ""))[:2000]
         emit(
             "client.error",
             session_id=session,
             step="client.error",
             page=page,
-            links=links,
-            error={"type": name or "Error", "message": text, "stack": frames},
+            error={"type": name, "stack": frames},
             context=browser,
         )
     return Response(status_code=204)

@@ -7,10 +7,13 @@ import base64
 import json
 import logging
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from tinyassets import observability as obs
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Capture(logging.Handler):
@@ -227,49 +230,182 @@ def test_startup_and_checkout_link(captured):
     assert link["links"]["checkout"] == obs.link_token("c_", "attempt-secret-value")
 
 
-def test_client_report_validates_and_rate_limits(captured):
-    session = "s_" + "cd" * 16
+def _report(
+    body: dict | bytes,
+    *,
+    cookie: str = "",
+    host: str = "203.0.113.5",
+    headers: list | None = None,
+    content_length: str | None = "auto",
+    chunks: list[bytes] | None = None,
+):
+    """A Starlette-shaped request for the beacon: headers, scope, client, stream."""
+    raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+    scope_headers = list(headers or [])
+    if cookie:
+        scope_headers.append((b"cookie", f"ta_session={cookie}".encode()))
+    pieces = chunks if chunks is not None else [raw]
 
-    async def post(body: dict | bytes):
-        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+    class Request:
+        scope = {"type": "http", "method": "POST", "path": "/app/client-error",
+                 "headers": scope_headers}
+        client = type("Client", (), {"host": host})()
+        served = 0
 
-        class Request:
-            headers = {"content-length": str(len(raw))}
+        def __init__(self) -> None:
+            self.headers = {}
+            if content_length == "auto":
+                self.headers["content-length"] = str(len(raw))
+            elif content_length is not None:
+                self.headers["content-length"] = content_length
 
-            async def body(self):
-                return raw
+        async def stream(self):
+            for piece in pieces:
+                Request.served += 1
+                yield piece
+            yield b""
 
-        return await obs.client_error(Request())
+    return Request()
 
-    denied = asyncio.run(post({"kind": "nope", "session_id": session}))
-    assert denied.status_code == 400
-    ok = asyncio.run(post({
-        "kind": "page.load", "session_id": session, "path": "/pricing?x=1",
-    }))
+
+def _post(request):
+    return asyncio.run(obs.client_error(request))
+
+
+def test_client_report_binds_the_session_to_the_cookie(captured):
+    mine = "s_" + "cd" * 16
+    theirs = "s_" + "ef" * 16
+    ok = _post(_report({"kind": "page.load", "session_id": theirs, "path": "/pricing?x=1"},
+                       cookie=mine))
     assert ok.status_code == 204
     page = _events(captured)[-1]
     assert page["event"] == "session.step"
-    assert page["session_id"] == session
+    assert page["session_id"] == mine
     assert page["page"] == "/"
-    leaked = asyncio.run(post({
-        "kind": "window.error",
-        "session_id": session,
-        "path": "/app",
-        "name": "Error",
-        "text": "user@example.com bearer " + "q" * 12,
-        "frames": "sk_test_" + "m" * 12,
-    }))
-    assert leaked.status_code == 204
-    report = _events(captured)[-1]
-    rendered = json.dumps(report)
-    assert "user@example.com" not in rendered
-    assert "qqqq" not in rendered
-    assert "sk_test_" not in rendered
-    for _ in range(28):
-        assert asyncio.run(post({"kind": "page.load", "session_id": session})).status_code == 204
-    assert asyncio.run(post({"kind": "page.load", "session_id": session})).status_code == 429
+    assert theirs not in json.dumps(page)
+    # No cookie and no middleware: nothing to bind to.
+    assert _post(_report({"kind": "page.load", "session_id": theirs})).status_code == 400
+    # No cookie, but the middleware minted one for this request.
+    minted = "s_" + "ab" * 16
+    token = obs._session_id.set(minted)
+    try:
+        assert _post(_report({"kind": "page.load", "session_id": theirs})).status_code == 204
+        assert _events(captured)[-1]["session_id"] == minted
+        # A session named only by a header is not a browser's.
+        spoofed = _report({"kind": "page.load"}, headers=[(b"x-session-id", theirs.encode())])
+        assert _post(spoofed).status_code == 400
+    finally:
+        obs._session_id.reset(token)
+    assert _post(_report({"kind": "nope"}, cookie=mine)).status_code == 400
+
+
+def test_client_report_rate_limits_per_client_address(captured):
+    for index in range(30):
+        cookie = "s_" + f"{index:032x}"
+        assert _post(_report({"kind": "page.load"}, cookie=cookie)).status_code == 204
+    assert _post(_report({"kind": "page.load"}, cookie="s_" + "9" * 32)).status_code == 429
+    elsewhere = _report({"kind": "page.load"}, cookie="s_" + "9" * 32, host="198.51.100.7")
+    assert _post(elsewhere).status_code == 204
+
+
+def test_client_report_caps_the_body_while_streaming(captured):
+    cookie = "s_" + "cd" * 16
     huge = b'{"kind":"page.load"}' + b" " * 5000
-    assert asyncio.run(post(huge)).status_code == 413
+    assert _post(_report(huge, cookie=cookie)).status_code == 413
+    pieces = [b" " * 1000] * 10
+    unsized = _report(huge, cookie=cookie, content_length=None, chunks=pieces)
+    assert _post(unsized).status_code == 413
+    assert type(unsized).served == 5
+    lying = _report(huge, cookie=cookie, content_length="10", chunks=pieces)
+    assert _post(lying).status_code == 413
+    assert type(lying).served == 5
+    assert _post(_report(huge, cookie=cookie, content_length="x")).status_code == 400
+
+
+def test_client_report_keeps_type_and_frames_not_the_message(captured):
+    cookie = "s_" + "cd" * 16
+    stack = (
+        "TypeError: Cookie: workos_session=abc123xyz ('4111111111111111', 'cus_123456789')\n"
+        "    at render (https://tinyassets.io/_next/app.js:1:2)\n"
+        "    at run (https://tinyassets.io/_next/app.js:3:4)\n"
+        "    at load (https://tinyassets.io/_next/app.js?token=abc:5:6)"
+    )
+    ok = _post(_report({
+        "kind": "window.error",
+        "path": "/app",
+        "name": "TypeError",
+        "text": "user@example.com bearer " + "q" * 12,
+        "frames": stack,
+    }, cookie=cookie))
+    assert ok.status_code == 204
+    report = _events(captured)[-1]
+    assert report["event"] == "client.error"
+    assert report["error"]["type"] == "TypeError"
+    assert "message" not in report["error"]
+    assert report["error"]["stack"].startswith(
+        "at render (https://tinyassets.io/_next/app.js:1:2)\n"
+        "at run (https://tinyassets.io/_next/app.js:3:4)\n"
+        "at load (https://tinyassets.io/_next/app.js"
+    )
+    rendered = json.dumps(report)
+    for leaked in (
+        "user@example.com", "qqqq", "abc123xyz", "4111111111111111", "cus_123456789", "token=abc",
+    ):
+        assert leaked not in rendered
+    odd = _post(_report({"kind": "react", "name": "Cookie: workos_session=abc123xyz"},
+                        cookie=cookie))
+    assert odd.status_code == 204
+    assert _events(captured)[-1]["error"] == {"type": "Error", "stack": ""}
+
+
+def test_redaction_covers_cookies_cards_and_stripe_ids():
+    cookie = obs.redact("Cookie: workos_session=abc123xyz")
+    assert "abc123xyz" not in cookie
+    assert cookie.startswith("Cookie: [redacted]")
+    assert "abc123xyz" not in obs.redact("Set-Cookie: workos_session=abc123xyz; Path=/")
+    assert "abc123xyz" not in obs.redact("workos_session=abc123xyz")
+    pair = obs.redact("('4111111111111111', 'cus_123456789')")
+    assert pair == "('[redacted]', '[redacted]')"
+    assert "4111 1111 1111 1111" not in obs.redact("card 4111 1111 1111 1111 declined")
+    assert "pi_3Nx" not in obs.redact("charge pi_3NxQ2bLkdIwHu7ix0Z5Q1a2b failed")
+    assert "s_" + "a" * 32 not in obs.redact("ta_session=s_" + "a" * 32 + "; Path=/")
+    assert "secret-value-here-1234" not in obs.redact("x_api_key=secret-value-here-1234")
+    assert obs.redact("user@example.com") == "[redacted]"
+    assert obs.redact("Bearer " + "t" * 20) == "Bearer [redacted]"
+    assert "eyJ" not in obs.redact("eyJ" + "a" * 10 + "." + "b" * 10 + "." + "c" * 10)
+    assert obs.redact("trace-0001 HTTP500 at /app in_progress") == (
+        "trace-0001 HTTP500 at /app in_progress"
+    )
+
+
+def test_admission_refuses_before_the_trail_reads_a_body(captured, monkeypatch):
+    from tinyassets import origin_admission
+
+    monkeypatch.setattr(origin_admission, "cached_process_is_cloud_admitted", lambda: False)
+
+    async def inner(scope, receive, send):
+        raise AssertionError("an unadmitted request reached the app")
+
+    app = origin_admission.PlatformOriginAdmission(obs.RequestLogMiddleware(inner))
+    scope = _scope("/mcp", method="POST", headers=[
+        (b"content-length", b"20"), (b"content-type", b"application/json"),
+    ])
+    sent: list[dict] = []
+
+    async def receive():
+        raise AssertionError("the body was read before admission")
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == origin_admission.PLATFORM_NOT_CLOUD_STATUS
+    assert captured == []
+    source = (ROOT / "tinyassets" / "universe_server.py").read_text(encoding="utf-8")
+    assert source.index("app = RequestLogMiddleware(app)") < source.index(
+        "app = PlatformOriginAdmission(app)"
+    )
 
 
 def test_db_trace_logs_the_verb_during_a_request(captured):

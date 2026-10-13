@@ -24,7 +24,7 @@ unwraps that.
 | `step` | Where the person is in the journey |
 | `http` | `method`, `route`, `status`, `duration_ms`, `user_agent` |
 | `dependency` | `kind` (`workos`, `stripe`, `db`, `other`), `target`, `status`, `duration_ms`, `error`, and `operation` for SQL |
-| `error` | `type` and `stack`. A browser report also has `message` |
+| `error` | `type` and `stack`. A browser report keeps the error type and its top frames; the free-text message is dropped, not redacted |
 | `links` | Other ids seen on this request |
 | `tool` | MCP tool name, when it is a slug |
 | `page` | Browser path, query stripped |
@@ -69,9 +69,12 @@ is an OPTIONS request. Anything else on the daemon is `http`.
 
 The marketing site is static, so the daemon never sees its HTML GET. The site
 beacons `page.load` to `POST /app/client-error`, and the same endpoint accepts
-`window.error`, `unhandledrejection`, and `react` reports. That path is public,
-body at most 4 KiB, 30 reports per session per minute, and the response is
-empty. It does not replace `/app/trace`.
+`window.error`, `unhandledrejection`, and `react` reports. That path is public.
+The body is at most 4 KiB, enforced while it streams. The session is the
+caller's own `ta_session` cookie, or the one minted for that request; a
+`session_id` in the body is ignored. The rate limit is 30 reports per client
+address per minute, and the response is empty. It does not replace
+`/app/trace`.
 
 ## Dependencies
 
@@ -83,8 +86,10 @@ any failed statement is recorded even in the background.
 
 ## Redaction
 
-Emails, `Authorization` values, bearer and basic credentials, JWTs, Stripe
-secret prefixes, 80-character tokens, URL query strings, and
+Emails, `Authorization` values, bearer and basic credentials, JWTs, `Cookie`
+and `Set-Cookie` values, cookie-shaped `name=value` tokens, Stripe keys and
+object ids (`cus_`, `pi_`, `sub_`, ...), card-number-shaped digit runs,
+80-character tokens, URL query strings, and
 `code` / `token` / `state` / `client_secret` / `password` parameters are
 removed before the line is written and again before a fetched line is printed.
 A 40-hex commit is kept. Stack traces are capped at 8000 characters. Routes

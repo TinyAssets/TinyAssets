@@ -171,6 +171,28 @@ Better Stack free tier retains 3 GB / month — sufficient for a single daemon r
 
 ---
 
+## Fetch a session trail from GitHub Actions
+
+`Fetch production logs` (`.github/workflows/fetch-prod-logs.yml`) reads the
+journal over the deploy key and uploads one artifact, `production-log-timeline`,
+holding `production-log-timeline.enc`: the ordered, redacted JSONL trail sealed
+to `mobile/review-evidence-recipient.pub`. This repo, its artifacts and its job
+logs are public, so the plaintext never leaves the runner, and the job log and
+step summary print aggregates only (line count, truncation, error types by
+commit). Name a `session_id`, `account_id` or `trace_id` for a window of up to
+7 days; a window with no filter must be within 1 hour.
+
+Decrypt on the founder's machine, where the private key lives at
+`~/.tinyassets/review-evidence.key`. It is never in CI and never in the repo.
+
+```bash
+gh run download <run-id> -n production-log-timeline
+python mobile/scripts/review_evidence.py decrypt production-log-timeline.enc ./timeline
+# ./timeline/prod-logs.jsonl is the trail; ./timeline must not exist or be empty
+```
+
+---
+
 ## Pull a Date Range from Offsite Archives
 
 Archives are named `tinyassets-logs-YYYY-MM-DDTHH-MM-SS.tar.gz` and stored at `LOG_DEST`.

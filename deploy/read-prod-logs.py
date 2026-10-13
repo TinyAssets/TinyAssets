@@ -40,8 +40,20 @@ _PAIR = re.compile(
     r"(?i)\b(code|token|access_token|refresh_token|id_token|state|"
     r"client_secret|password|authorization)=([^\s&]+)"
 )
+_COOKIE_HEADER = re.compile(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*[^\r\n]*")
+_COOKIE_PAIR = re.compile(
+    r"(?i)\b([A-Za-z0-9_.-]*(?:session|sess|sid|cookie|csrf|xsrf|auth|secret|key|jwt)"
+    r"[A-Za-z0-9_.-]*)=([^\s;&,)\"']+)"
+)
+_LONG_PAIR = re.compile(r"\b([A-Za-z_][A-Za-z0-9_.-]*)=([A-Za-z0-9_+/=.~%-]{16,})")
+_CARD = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
+_STRIPE_ID = re.compile(
+    r"\b(?:cus|pi|pm|sub|in|ch|py|re|prod|price|acct|evt|cs|seti|si|txn|ba|card|src|"
+    r"tok|whsec|sk|pk|rk)_(?=[A-Za-z0-9_]*[0-9A-Z])[A-Za-z0-9_]{8,}\b"
+)
 _READ_BYTES = 8_000_000
 _READ_EVENTS = 4000
+_LINE_BYTES = 1_000_000
 _COMPONENT_CAP = 5000
 
 
@@ -54,11 +66,16 @@ def redact(text: str) -> str:
     if not text:
         return ""
     cleaned = _QUERY.sub(r"\1", text)
+    cleaned = _COOKIE_HEADER.sub(lambda match: f"{match.group(1)}: [redacted]", cleaned)
     cleaned = _PAIR.sub(lambda match: f"{match.group(1)}=[redacted]", cleaned)
+    cleaned = _COOKIE_PAIR.sub(lambda match: f"{match.group(1)}=[redacted]", cleaned)
+    cleaned = _LONG_PAIR.sub(lambda match: f"{match.group(1)}=[redacted]", cleaned)
     cleaned = _EMAIL.sub("[redacted]", cleaned)
     cleaned = _BEARER.sub(lambda match: f"{match.group(1)} [redacted]", cleaned)
     cleaned = _JWT.sub("[redacted]", cleaned)
     cleaned = _SECRET_PREFIX.sub("[redacted]", cleaned)
+    cleaned = _STRIPE_ID.sub("[redacted]", cleaned)
+    cleaned = _CARD.sub("[redacted]", cleaned)
     return _LONG_TOKEN.sub("[redacted]", cleaned)
 
 
@@ -316,35 +333,59 @@ def journal_argv(since: datetime, until: datetime) -> list[str]:
 
 
 def read_journal(since: datetime, until: datetime) -> tuple[list[dict[str, Any]], bool]:
+    """Stream journalctl line by line and stop the process at the byte or event cap."""
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             journal_argv(since, until),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            check=False,
         )
     except OSError as exc:
         raise QueryError("journalctl failed") from exc
-    if result.returncode != 0:
-        raise QueryError("journalctl failed")
-    blob = result.stdout
-    truncated = False
-    if len(blob) > _READ_BYTES:
-        blob = blob[:_READ_BYTES]
-        truncated = True
-        cut = blob.rfind(b"\n")
-        if cut >= 0:
-            blob = blob[:cut]
+    assert process.stdout is not None
     events: list[dict[str, Any]] = []
-    for line in blob.decode("utf-8", "replace").splitlines():
-        event = unwrap_line(line)
-        if event is None:
-            continue
-        events.append(event)
-        if len(events) >= _READ_EVENTS:
-            truncated = True
-            break
+    truncated = False
+    consumed = 0
+    skipping = False
+    try:
+        while True:
+            line = process.stdout.readline(_LINE_BYTES)
+            if not line:
+                break
+            consumed += len(line)
+            if consumed > _READ_BYTES:
+                truncated = True
+                break
+            complete = line.endswith(b"\n")
+            if skipping or not complete:
+                # One line past _LINE_BYTES is never a journal event; drop
+                # every chunk of it rather than hold it in memory.
+                skipping = not complete
+                continue
+            event = unwrap_line(line.decode("utf-8", "replace").rstrip("\r\n"))
+            if event is None:
+                continue
+            events.append(event)
+            if len(events) >= _READ_EVENTS:
+                truncated = True
+                break
+    finally:
+        _stop(process)
+    if not truncated and process.returncode != 0:
+        raise QueryError("journalctl failed")
     return events, truncated
+
+
+def _stop(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    if process.stdout is not None:
+        process.stdout.close()
 
 
 def command_from_environment(argv: list[str]) -> list[str]:

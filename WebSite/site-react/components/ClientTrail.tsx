@@ -2,6 +2,8 @@
 
 import { Component, useEffect, type ReactNode } from "react";
 
+import { topFrames } from "../lib/trail-frames";
+
 const COOKIE = "ta_session";
 
 function readSession(): string {
@@ -13,13 +15,15 @@ function readSession(): string {
   return id;
 }
 
-function send(kind: string, fields: { name?: string; text?: string; frames?: string }) {
+// The session is the ta_session cookie the request carries; the server binds
+// the report to it. Only the error name and its top frames are sent: an error
+// message is free text and may hold anything the page held.
+function send(kind: string, fields: { name?: string; frames?: string }) {
+  readSession();
   const body = JSON.stringify({
     kind,
-    session_id: readSession(),
     path: window.location.pathname,
     name: fields.name || "",
-    text: fields.text || "",
     frames: fields.frames || "",
   });
   fetch("/app/client-error", {
@@ -38,16 +42,14 @@ function Beacon() {
       const fault = event.error instanceof Error ? event.error : null;
       send("window.error", {
         name: fault?.name || "Error",
-        text: String(event.message || "").slice(0, 500),
-        frames: typeof fault?.stack === "string" ? fault.stack.slice(0, 4000) : "",
+        frames: topFrames(fault?.stack),
       });
     };
     const onRejection = (event: PromiseRejectionEvent) => {
       const fault = event.reason instanceof Error ? event.reason : null;
       send("unhandledrejection", {
         name: fault?.name || "UnhandledRejection",
-        text: String(fault ? fault.message : event.reason || "").slice(0, 500),
-        frames: typeof fault?.stack === "string" ? fault.stack.slice(0, 4000) : "",
+        frames: topFrames(fault?.stack),
       });
     };
     window.addEventListener("error", onError);
@@ -71,8 +73,7 @@ class PageBoundary extends Component<{ children: ReactNode }, { failed: boolean 
     const fault = caught instanceof Error ? caught : null;
     send("react", {
       name: fault?.name || "Error",
-      text: fault ? fault.message.slice(0, 500) : "",
-      frames: typeof fault?.stack === "string" ? fault.stack.slice(0, 4000) : "",
+      frames: topFrames(fault?.stack),
     });
   }
 

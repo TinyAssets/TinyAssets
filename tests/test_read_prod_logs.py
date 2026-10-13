@@ -146,3 +146,93 @@ def test_journal_argv_is_fixed_and_not_a_shell():
     assert argv[-2:] == ["-o", "cat"]
     assert "CONTAINER_NAME=tinyassets-logs" in argv
     assert any(part.startswith("2026-10-12 17:00:00") for part in argv)
+
+
+def test_redaction_covers_cookies_cards_and_stripe_ids():
+    cookie = reader.redact("Cookie: workos_session=abc123xyz")
+    assert "abc123xyz" not in cookie
+    assert cookie.startswith("Cookie: [redacted]")
+    pair = reader.redact("('4111111111111111', 'cus_123456789')")
+    assert "4111111111111111" not in pair
+    assert "cus_123456789" not in pair
+    assert pair == "('[redacted]', '[redacted]')"
+    assert "s_" + "a" * 32 not in reader.redact("ta_session=s_" + "a" * 32 + "; Path=/")
+    assert "trace-0001 HTTP500 at /app" == reader.redact("trace-0001 HTTP500 at /app")
+
+
+def _fake_popen(line: bytes, *, lines: int | None = None, returncode: int = 0):
+    """A Popen stand-in whose stdout never ends unless ``lines`` is set."""
+
+    class Stdout:
+        def __init__(self) -> None:
+            self.served = 0
+            self.closed = False
+
+        def readline(self, limit: int = -1) -> bytes:
+            if lines is not None and self.served >= lines:
+                return b""
+            self.served += 1
+            return line
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Process:
+        instances: list = []
+
+        def __init__(self, argv, **kwargs) -> None:
+            assert argv[-2:] == ["-o", "cat"]
+            self.stdout = Stdout()
+            self.returncode = None if lines is None else returncode
+            self.terminated = False
+            Process.instances.append(self)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    return Process
+
+
+def test_journal_is_streamed_and_stopped_at_the_byte_cap(monkeypatch):
+    line = (json.dumps(_event(START, session_id="s_" + "a" * 32)) + "\n").encode()
+    process_type = _fake_popen(line)
+    monkeypatch.setattr(reader.subprocess, "Popen", process_type)
+    monkeypatch.setattr(reader, "_READ_BYTES", len(line) * 50)
+    events, truncated = reader.read_journal(START, END)
+    process = process_type.instances[-1]
+    assert truncated is True
+    assert len(events) == 50
+    assert process.stdout.served == 51
+    assert process.terminated is True
+    assert process.stdout.closed is True
+
+
+def test_journal_stops_at_the_event_cap_and_reports_a_failed_read(monkeypatch):
+    line = (json.dumps(_event(START, session_id="s_" + "a" * 32)) + "\n").encode()
+    process_type = _fake_popen(line)
+    monkeypatch.setattr(reader.subprocess, "Popen", process_type)
+    monkeypatch.setattr(reader, "_READ_EVENTS", 7)
+    events, truncated = reader.read_journal(START, END)
+    assert (len(events), truncated) == (7, True)
+    assert process_type.instances[-1].stdout.served == 7
+
+    finite = _fake_popen(line, lines=3)
+    monkeypatch.setattr(reader.subprocess, "Popen", finite)
+    events, truncated = reader.read_journal(START, END)
+    assert (len(events), truncated) == (3, False)
+    assert finite.instances[-1].terminated is False
+
+    failed = _fake_popen(line, lines=3, returncode=1)
+    monkeypatch.setattr(reader.subprocess, "Popen", failed)
+    with pytest_raises():
+        reader.read_journal(START, END)

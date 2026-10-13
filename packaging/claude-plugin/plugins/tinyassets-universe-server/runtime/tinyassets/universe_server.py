@@ -4190,10 +4190,13 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.mcp_browser_cors import McpBrowserCors
 
     app = McpBrowserCors(app)
-    # Origin-ingress backstop (enforcement site D) -- outermost admission wrapper, so an
+    # The session trail records every admitted request. It sits directly
+    # inside admission so no request body is buffered before the origin is
+    # admitted; a refused origin leaves no event.
+    app = RequestLogMiddleware(app)
+    # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
-    # every route handler. Request logging sits outside this wrapper and
-    # only records. Cached-only: it reads the non-mutating peek, so no
+    # every route handler. Cached-only: it reads the non-mutating peek, so no
     # request ever triggers a resolve, and "nothing observed" refuses like
     # not_cloud. It removes reachability only -- authentication, principal
     # resolution and the canary-only pulse diagnostic are unchanged for an
@@ -4202,7 +4205,6 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.origin_admission import PlatformOriginAdmission
 
     app = PlatformOriginAdmission(app)
-    app = RequestLogMiddleware(app)
     return app
 
 
