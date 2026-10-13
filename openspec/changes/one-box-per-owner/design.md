@@ -417,8 +417,10 @@ Each PR ships alone and deletes in the same PR (ADR-022).
 **Why this order.**
 
 - **P2a before the window.** The production host, not a throwaway
-  droplet, proves the limits, the cross-user floor, capacity and the C9
-  workloads, with numbers, while serving nothing.
+  droplet, proves the limits, capacity, quotas and the C9 workloads, with
+  numbers, while serving nothing. The cross-user checks (G2) and usage and
+  restart journaling (G5) run on the P2b cutover build; the floor completes
+  at P3.
 - **P2b is one cutover (Direction 5).** After it every owner-space
   execution runs in its owner's box, and no cell or mapper remains to fall
   back to. Splitting it would leave a mixed period in which two execution
