@@ -73,6 +73,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "lives only while one stop-aware call is awaited; polls the turn's stop flag "
         "so a Stop or retirement cancels a native provider call; ends with the call",
     ),
+    "tinyassets/universe_server.py::_register_structured_tool._owned_tool": (
+        CALL_SCOPED,
+        "MCP progress notifications while one caller waits; the admitted worker "
+        "continues independently if that caller disconnects",
+    ),
     "tinyassets/engine_mcp_http.py::start_engine_mcp_http_servers._supervise": (
         CONTROL_PLANE, "per-command-center engine MCP server supervision",
     ),

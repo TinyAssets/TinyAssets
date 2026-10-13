@@ -624,6 +624,18 @@ def record_failure(
                         client_send_id=client_send_id, founder_turn=founder_turn) is not None
 
 
+def terminal_exists(universe_dir: "str | Path", session_id: str, founder_turn: int) -> bool:
+    """Whether the admitted request already has its single terminal."""
+    try:
+        with _connect(_db_path(universe_dir)) as conn:
+            return conn.execute(
+                "SELECT 1 FROM conversation_turns WHERE session_id=? AND ext_id=?",
+                (session_id, f"reply-to:{founder_turn}"),
+            ).fetchone() is not None
+    except Exception:
+        return False
+
+
 def _record_pair(
     universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
     execution=None, failure=None, interjections=(), client_send_id="", founder_turn=None,

@@ -473,6 +473,8 @@ def test_the_recorder_is_actually_WIRED_into_the_failure_path():
     # recording BEFORE the reply is built.
     pattern = (
         r"_record_served_failure\(uid, exc, ref=record\.ref\)\s*\n\s*"
+        # Telemetry may be guarded so its outage cannot hide the notice.
+        r"(?:except Exception:\s*\n\s*logger\.warning\([^\n]*\n\s*)?"
         r"return json\.dumps\(\s*\{\s*\"error\":\s*"
         r"_served_failure_notice\(exc, record\)"
     )
