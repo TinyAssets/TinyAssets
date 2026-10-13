@@ -40,7 +40,6 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 SCHEMA = "tinyassets.event.v1"
 SESSION_COOKIE = "ta_session"
-SESSION_HEADER = "x-session-id"
 TRACE_HEADER = "x-trace-id"
 MCP_SESSION_HEADER = "mcp-session-id"
 
@@ -735,9 +734,6 @@ def _incoming_session(scope: Mapping[str, Any]) -> tuple[str, bool]:
     cookie = _verified_cookie_session(scope)
     if cookie:
         return cookie, False
-    header = _header(scope, SESSION_HEADER).strip()
-    if _SESSION_RE.fullmatch(header):
-        return header, False
     mcp = _header(scope, MCP_SESSION_HEADER).strip()
     if _MCP_SESSION_RE.fullmatch(mcp) and mcp.count(".") < 2:
         return mcp, False
@@ -759,9 +755,6 @@ def _incoming_links(scope: Mapping[str, Any], session: str) -> dict[str, str]:
     cookie = _verified_cookie_session(scope)
     if cookie:
         links["cookie"] = cookie
-    header = _header(scope, SESSION_HEADER).strip()
-    if _SESSION_RE.fullmatch(header) and header != session:
-        links["header_session"] = header
     mcp = _header(scope, MCP_SESSION_HEADER).strip()
     if _MCP_SESSION_RE.fullmatch(mcp) and mcp.count(".") < 2:
         links["mcp_session"] = mcp
@@ -1034,7 +1027,7 @@ async def client_error(request: Any) -> Any:
         # No signed cookie: the middleware minted a session for this request
         # and sets it on the response, so the next report lands on the same
         # trail. A forged cookie lands here too, never on the trail it names.
-        # A session named only by a header is not a browser's.
+        # No request header can name a session.
         session = _session_id.get() or ""
         if not _SESSION_RE.fullmatch(session) or not _incoming_session(scope)[1]:
             return Response(status_code=400)

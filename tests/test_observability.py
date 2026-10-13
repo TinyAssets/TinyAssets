@@ -97,6 +97,24 @@ def test_trace_is_echoed_or_minted(captured):
     assert obs._TRACE_RE.fullmatch(minted.decode())
 
 
+def test_a_header_never_names_or_joins_a_trail(captured):
+    async def ok(scope, receive, send):
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    app = obs.RequestLogMiddleware(ok)
+    theirs = "s_" + "ef" * 16
+    mine = "s_" + "ab" * 16
+    signed = obs.sign_session(mine).encode()
+    for cookie in (b"ta_session=" + theirs.encode(), b"ta_session=" + signed):
+        asyncio.run(_drive(app, _scope(
+            "/app", headers=[(b"cookie", cookie), (b"x-session-id", theirs.encode())],
+        )))
+        event = _events(captured)[-1]
+        assert event["session_id"] != theirs
+        assert theirs not in json.dumps(event.get("links") or {})
+
+
 def test_session_cookie_is_minted_once_and_then_reused(captured):
     async def ok(scope, receive, send):
         await send({"type": "http.response.start", "status": 200, "headers": []})
@@ -320,9 +338,11 @@ def test_client_report_binds_the_session_to_the_cookie(captured):
     try:
         assert _post(_report({"kind": "page.load", "session_id": theirs})).status_code == 204
         assert _events(captured)[-1]["session_id"] == minted
-        # A session named only by a header is not a browser's.
+        # A header naming another trail is ignored: the report lands on the
+        # session minted for this request, never on the one the header names.
         spoofed = _report({"kind": "page.load"}, headers=[(b"x-session-id", theirs.encode())])
-        assert _post(spoofed).status_code == 400
+        assert _post(spoofed).status_code == 204
+        assert _events(captured)[-1]["session_id"] == minted
     finally:
         obs._session_id.reset(token)
     assert _post(_report({"kind": "nope"}, cookie=mine)).status_code == 400
