@@ -27,6 +27,8 @@ delegate to plain callables in those submodules (Pattern A2).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -84,6 +86,7 @@ logger = logging.getLogger("universe_server")
 # ---------------------------------------------------------------------------
 
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
+_CONVERSE_PROGRESS_INTERVAL_S = 20
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
 #: Seconds uvicorn keeps waiting on connections and tracked request tasks after
@@ -425,14 +428,40 @@ def _register_structured_tool(fn, *, tags, name=None):
             if capability is not None:
                 revoke_provider_request(capability)
 
-    _tool.__name__ = f"_mcp_{fn.__name__}"
+    if wire_name == "converse":
+        @wraps(fn)
+        async def _owned_tool(*args, **kwargs):
+            # The admitted turn belongs to the server, not the HTTP/SSE task.
+            # A disconnected client stops waiting but must not stop its worker.
+            worker = asyncio.create_task(asyncio.to_thread(_tool, *args, **kwargs))
+            def finished(task):
+                if not task.cancelled() and task.exception() is not None:
+                    logger.error("converse: detached worker failed: %r", task.exception())
+
+            worker.add_done_callback(finished)
+            progress = 0
+            while True:
+                progress += 1
+                with contextlib.suppress(Exception):
+                    from fastmcp.server.dependencies import get_context
+
+                    await get_context().report_progress(progress, message="Turn is running")
+                done, _ = await asyncio.wait(
+                    {worker}, timeout=_CONVERSE_PROGRESS_INTERVAL_S)
+                if done:
+                    return worker.result()
+
+        registered = _owned_tool
+    else:
+        registered = _tool
+    registered.__name__ = f"_mcp_{fn.__name__}"
     # Inject docstring-derived parameter descriptions so the advertised
     # tool contract is labelled identically on every FastMCP version
     # (3.2.0 ships no docstring extraction; 3.4.x does). See
     # tinyassets.mcp_schema_utils.
-    _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
+    registered.__signature__, registered.__annotations__ = describe_signature(fn)
     tool = _OAuthFunctionTool.from_function(
-        _tool,
+        registered,
         name=wire_name,
         title=annotations.title,
         description=_advertised_tool_description(fn),
@@ -3342,7 +3371,11 @@ def converse(
         # outage and still surfaces verbatim.
         from tinyassets.api.universe import engine_setup_required_payload
 
-        held = engine_setup_required_payload(uid, exc) or _unpowered_setup_payload(uid, exc)
+        try:
+            held = engine_setup_required_payload(uid, exc) or _unpowered_setup_payload(uid, exc)
+        except Exception:
+            logger.warning("converse: setup diagnosis failed", exc_info=True)
+            held = None
         from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 
@@ -3365,22 +3398,29 @@ def converse(
         if held is not None:
             from tinyassets.api.pending_requests import _connect_llm_request
 
-            held["needs_connection"] = _connect_llm_request()
+            try:
+                held["needs_connection"] = _connect_llm_request()
+            except Exception:
+                logger.warning("converse: connect request unavailable", exc_info=True)
             return json.dumps(_with_unsettled_steering(
                 {**held, **history}, memory_universe_dir, memory_session, live_id,
             ))
-        _record_served_failure(uid, exc, ref=record.ref)
+        try:
+            _record_served_failure(uid, exc, ref=record.ref)
+        except Exception:
+            logger.warning("converse: failure telemetry unavailable", exc_info=True)
         return json.dumps({
             "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
             **_unsettled_steering(memory_universe_dir, memory_session, live_id),
         })
-    execution = execution_receipts[0] if execution_receipts else None
-    if execution is not None and learning_failures:
-        execution = {**execution, "learning_failure": learning_failures[0]}
-    delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
+        execution = execution_receipts[0] if execution_receipts else None
+        if execution is not None and learning_failures:
+            execution = {**execution, "learning_failure": learning_failures[0]}
+        delivered, undelivered = _settle_steering(
+            memory_universe_dir, memory_session, live_id)
         from tinyassets.conversation_store import record_exchange_turns
 
         # Attach the terminal to the admitted row without inserting the request twice.
@@ -3390,20 +3430,38 @@ def converse(
             client_send_id=client_send_id,
             founder_turn=founder_turn,
         )
+        if recorded is None:
+            raise RuntimeError("converse reply could not be recorded")
         # Only now can the cursor name this turn -- by the exact rows it wrote, never
         # "the latest row", which with two turns in flight can be another turn's
         # unlearned exchange. Settled -> the lesson is done; unsettled (a failed
         # extraction, or an exchange that is not next after the cursor) -> it stays
         # owed, which is the retry state the deferred path will drain.
         if recorded is not None and lesson_settled and lesson_settled[0]:
-            from tinyassets.conversation_store import settle_learned_cursor
+            try:
+                from tinyassets.conversation_store import settle_learned_cursor
 
-            settle_learned_cursor(
-                memory_universe_dir, memory_session, from_turn=turn_began_at,
-                first_turn=recorded[0], through_turn=recorded[1],
-            )
-    except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
-        logger.warning("converse: conversation memory could not record the turn", exc_info=True)
+                settle_learned_cursor(
+                    memory_universe_dir, memory_session, from_turn=turn_began_at,
+                    first_turn=recorded[0], through_turn=recorded[1],
+                )
+            except Exception:
+                logger.warning("converse: learned cursor could not settle", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - every admitted turn needs a terminal
+        logger.warning("converse: reply terminal failed", exc_info=True)
+        from tinyassets.conversation_failure import failure_notice, turn_failure
+        from tinyassets.conversation_store import record_failure
+
+        failure = turn_failure("unknown", ref=uuid.uuid4().hex[:16])
+        saved = record_failure(
+            memory_universe_dir, memory_session, typed, failure,
+            client_send_id=client_send_id, founder_turn=founder_turn,
+        )
+        if not saved:
+            raise RuntimeError("converse terminal could not be recorded") from exc
+        return json.dumps({"error": failure_notice(failure),
+                           "failure_notice": failure_notice(failure),
+                           "history_saved": True, "universe_id": uid})
     payload = {"reply": reply, "universe_id": uid}
     if addressed is not None:
         payload["agent"] = {"agent_id": addressed.agent_id, "name": addressed.name}

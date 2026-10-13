@@ -127,7 +127,6 @@ class JsonRpcJob:
         self._tool_tasks: set[asyncio.Task] = set()
         self._other_tasks: set[asyncio.Task] = set()
         self._last_progress = start
-        self._last_liveness = start
         self._heard = False
         self._in_turn = False
         self._done = asyncio.Event()
@@ -265,10 +264,11 @@ class JsonRpcJob:
         if self._tool_tasks:
             allow = min(self.profile.absolute_cap_s, self.tool_wait)
         elif self._in_turn or self._heard:
-            allow = min(self.profile.absolute_cap_s, self.turn_wait)
+            allow = min(self.profile.absolute_cap_s, self.profile.idle_s,
+                        self.turn_wait)
         else:
             allow = self.profile.init_s
-        idle_deadline = max(self._last_progress, self._last_liveness) + allow
+        idle_deadline = self._last_progress + allow
         absolute = self.start + self.profile.absolute_cap_s
         return min(idle_deadline, absolute) - now, absolute <= idle_deadline
 
@@ -302,11 +302,6 @@ class JsonRpcJob:
                     raise self._tool_failure()
                 budget, absolute = self._allowance()
                 if budget <= 0:
-                    from tinyassets.providers.owned_process import cell_heartbeat
-
-                    if not absolute and self._in_turn and await cell_heartbeat(self.proc):
-                        self._last_liveness = time.monotonic()
-                        continue
                     self._timeout(absolute)
                 if line_task is None:
                     line_task = asyncio.ensure_future(self.proc.stdout.readline())
