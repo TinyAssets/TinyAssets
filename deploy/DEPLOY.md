@@ -222,7 +222,40 @@ Look for:
 - `daemon-1 | Starting TinyAssets Server on 0.0.0.0:8001 (transport=streamable-http)` — daemon bound.
 - `cloudflared | Registered tunnel connection connIndex=0` — tunnel up.
 
+## C6 P2a idle box host and production gates
+
+The production deploy workflow installs the pinned gVisor
+`release-20260928.0` archive (SHA-256
+`f3ed9131bc252259df150e270154180188f9df56b73a2312940325e1f522a2d6`)
+and enables `boxhostd.service` after the public checks pass. The service has
+no listener and no daemon caller. Its only P2a operation is a root-only
+`SIGUSR1` that starts the preflight in its delegated cgroup. Every raw `runsc`
+sandbox uses `--network=none`. P2b replaces this idle entry point.
+
+After that deploy, dispatch **Box preflight on production** in a quiet window
+from the Actions tab (`gh workflow run box-preflight.yml --ref main`). It shares
+the production host mutation concurrency group. The run records G1, G3, G4
+and G6 pass/fail numbers in its summary and `box-preflight-<run id>` artifact.
+Only aggregate host and sandbox numbers leave the droplet. Any failed gate
+blocks P2b; the thresholds in ADR-022 are not adjusted by the harness.
+The trial exports the already deployed daemon image as a read-only rootfs,
+uses disposable owner trees, and deletes them after measuring. G4 creates a
+disposable quota tree on the actual `tinyassets-data` volume. It reports a
+failure if project quotas are unavailable and does not remount the volume.
+
+Rollback P2a without touching the daemon image or owner data:
+
+1. Revert the P2a deploy change so the next deploy cannot re-enable it.
+2. On the droplet, run `sudo systemctl disable --now boxhostd.service` and
+   `sudo systemctl daemon-reload`. Confirm `systemctl is-active boxhostd.service`
+   is inactive and the public canary remains green.
+3. After that confirmation, remove `/etc/systemd/system/boxhostd.service` and
+   `/opt/tinyassets/boxhostd/` if the install must be fully undone. These paths
+   contain only P2a runtime files; the harness uses `/var/tmp` scratch and
+   cleans it on exit. Do not delete the `tinyassets-data` volume.
+
 ## Step 5 — Verify canary green (~10 sec)
+
 
 From the Hetzner box (container-internal):
 

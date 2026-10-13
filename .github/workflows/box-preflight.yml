@@ -1,0 +1,75 @@
+name: Box preflight on production
+
+# Manual quiet-window host measurement. Uses the existing deploy SSH secret,
+# creates no cloud resource, and publishes aggregate gate numbers only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-host-mutation
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${DO_DROPLET_HOST:?}"
+          : "${DO_SSH_USER:?}"
+          : "${SSH_KEY:?}"
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run G1 G3 G4 G6 inside boxhostd
+        id: gates
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo systemctl is-active --quiet boxhostd.service && sudo rm -f /run/tinyassets-boxhostd/preflight.json && sudo systemctl kill --kill-who=main -s USR1 boxhostd.service'
+          ready=0
+          for _ in $(seq 1 240); do
+            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                'sudo test -s /run/tinyassets-boxhostd/preflight.json'; then
+              ready=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ready" -ne 1 ]; then
+            printf '%s\n' '{"pass":false,"reason":"boxhostd produced no result within 40 minutes"}' > box-preflight-results.json
+            exit 1
+          fi
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo cat /run/tinyassets-boxhostd/preflight.json' > box-preflight-results.json
+          python3 -m json.tool box-preflight-results.json >/dev/null
+          python3 -c 'import json; assert json.load(open("box-preflight-results.json"))["pass"] is True'
+
+      - name: Gate summary
+        if: always()
+        run: |
+          python3 scripts/box_preflight_summary.py box-preflight-results.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload aggregate numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: box-preflight-results.json
+          if-no-files-found: warn
+          retention-days: 30
