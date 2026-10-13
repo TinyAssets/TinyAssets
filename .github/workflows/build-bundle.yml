@@ -88,7 +88,7 @@ jobs:
           python -m pytest tests/test_packaging_build.py -v
 
   pack-mcpb:
-    name: Pack .mcpb on tagged release
+    name: Pack release artifacts
     needs: stage-and-probe
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
@@ -122,9 +122,14 @@ jobs:
       - name: Build + pack MCPB bundle
         run: python packaging/mcpb/build_bundle.py --validate --pack
 
-      - name: Upload .mcpb as release asset
+      - name: Build + pack Claude plugin
+        run: python packaging/claude-plugin/build_plugin.py --pack
+
+      - name: Upload packaging as release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: packaging/dist/tinyassets-universe-server.mcpb
+          files: |
+            packaging/dist/tinyassets-universe-server.mcpb
+            packaging/dist/tinyassets-claude-plugin.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

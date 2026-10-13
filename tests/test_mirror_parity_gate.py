@@ -22,5 +22,7 @@ def test_no_plugin_runtime_files_tracked() -> None:
 def test_hook_and_ci_run_the_same_guard() -> None:
     hook = (ROOT / "scripts/git-hooks/pre-commit").read_text()
     workflow = (ROOT / ".github/workflows/build-bundle.yml").read_text()
-    assert "python scripts/check_mirror_parity.py" in hook
+    assert "${MIRROR_PYTHON} scripts/check_mirror_parity.py" in hook
     assert "python scripts/check_mirror_parity.py" in workflow
+    assert "command -v python3" in hook
+    assert "python is required to check tracked plugin runtime files" in hook

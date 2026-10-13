@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -303,6 +304,42 @@ def test_build_plugin_stages_tinyassets_package(tmp_path):
         assert (runtime / name).read_bytes() == (PLUGIN_SOURCE / name).read_bytes()
     assert _entries(runtime) == sorted([*_SCAFFOLDING, "models", "tinyassets"])
     assert "probe-ok" in result.stdout
+
+
+def test_plugin_archive_contains_the_built_runtime(tmp_path):
+    build = _load_module("tinyassets_plugin_archive_test", PLUGIN_BUILD)
+    plugin = tmp_path / "plugin"
+    runtime = plugin / "runtime"
+    runtime.mkdir(parents=True)
+    (plugin / ".claude-plugin").mkdir()
+    (plugin / ".claude-plugin/plugin.json").write_text('{"name":"test"}')
+    build._stage_runtime(runtime)
+    output = tmp_path / "plugin.zip"
+    build._pack_plugin(plugin, output)
+    with zipfile.ZipFile(output) as archive:
+        names = set(archive.namelist())
+        assert ".claude-plugin/plugin.json" in names
+        assert "runtime/bootstrap.py" in names
+        assert "runtime/tinyassets/universe_server.py" in names
+        assert "runtime/models/subscription.json" in names
+        assert "runtime/.build.lock" not in names
+
+
+def test_marketplace_downloads_the_release_plugin_archive():
+    marketplace = json.loads((
+        REPO_ROOT / "packaging/claude-plugin/.claude-plugin/marketplace.json"
+    ).read_text(encoding="utf-8"))
+    source = marketplace["plugins"][0]["source"]
+    assert source == {
+        "source": "archive",
+        "url": (
+            "https://github.com/TinyAssets/TinyAssets/releases/latest/download/"
+            "tinyassets-claude-plugin.zip"
+        ),
+    }
+    workflow = (REPO_ROOT / ".github/workflows/build-bundle.yml").read_text()
+    assert "python packaging/claude-plugin/build_plugin.py --pack" in workflow
+    assert "packaging/dist/tinyassets-claude-plugin.zip" in workflow
 
 
 def test_build_plugin_purges_legacy_fantasy_author_snapshot(tmp_path):

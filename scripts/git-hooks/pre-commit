@@ -91,7 +91,18 @@ fi
 
 # --- 2. No tracked plugin runtime -----------------------------------
 
-if ! python scripts/check_mirror_parity.py; then
+if command -v python >/dev/null 2>&1; then
+  MIRROR_PYTHON=python
+elif command -v python3 >/dev/null 2>&1; then
+  MIRROR_PYTHON=python3
+elif command -v py >/dev/null 2>&1; then
+  MIRROR_PYTHON='py -3'
+else
+  echo "${RED}pre-commit: python is required to check tracked plugin runtime files.${RESET}" >&2
+  exit 1
+fi
+
+if ! ${MIRROR_PYTHON} scripts/check_mirror_parity.py; then
   echo "${RED}pre-commit: plugin runtime must be built, not committed.${RESET}" >&2
   exit 1
 fi

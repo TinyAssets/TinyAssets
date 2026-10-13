@@ -15,7 +15,10 @@
       "author": {
         "name": "Jonathan Farnsworth"
       },
-      "source": "./plugins/tinyassets-universe-server"
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/TinyAssets/TinyAssets/releases/latest/download/tinyassets-claude-plugin.zip"
+      }
     }
   ]
 }

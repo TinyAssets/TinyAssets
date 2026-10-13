@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -225,6 +226,22 @@ def _probe_import(runtime_root: Path = RUNTIME_ROOT) -> None:
     print(f"Import probe: {result.stdout.strip() or 'ok'}")
 
 
+def _pack_plugin(plugin_root: Path, output: Path) -> None:
+    """Archive the built plugin that the marketplace downloads on install."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(plugin_root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            rel = path.relative_to(plugin_root)
+            if any(part in {".venv", "__pycache__"} for part in rel.parts):
+                continue
+            if path.name == LOCK_NAME or path.suffix == ".pyc":
+                continue
+            archive.write(path, rel.as_posix())
+    print(f"Packed Claude plugin: {output}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -250,6 +267,7 @@ def main() -> None:
             "runtime. Tests use it to isolate builds."
         ),
     )
+    parser.add_argument("--pack", action="store_true", help="Pack the built plugin for release")
     args = parser.parse_args()
     runtime_root = args.runtime_root.resolve()
 
@@ -261,6 +279,10 @@ def main() -> None:
 
     if not args.skip_probe:
         _probe_import(runtime_root)
+    if args.pack:
+        if runtime_root != RUNTIME_ROOT.resolve():
+            parser.error("--pack requires the default runtime root")
+        _pack_plugin(PLUGIN_ROOT, REPO_ROOT / "packaging/dist/tinyassets-claude-plugin.zip")
 
 
 if __name__ == "__main__":
