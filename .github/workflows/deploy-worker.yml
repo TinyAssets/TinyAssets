@@ -1,7 +1,10 @@
 name: Deploy Cloudflare Worker
 
-# Fires whenever deploy/cloudflare-worker/** changes on main (live deploy)
-# or on a pull request touching those files (dry-run only).
+# Fires whenever deploy/cloudflare-worker/** or the shared browser-origin
+# list changes on main (live deploy) or on a pull request touching those
+# files (dry-run only). worker.js imports tinyassets/mcp_browser_origins.json,
+# so an origin-list edit must redeploy this Worker or the edge drifts from
+# the daemon.
 #
 # Why a separate workflow from deploy-prod.yml:
 #   Worker deploy is instant + idempotent via Wrangler. Hetzner daemon deploy
@@ -27,11 +30,13 @@ on:
     branches: [main]
     paths:
       - 'deploy/cloudflare-worker/**'
+      - 'tinyassets/mcp_browser_origins.json'
       - '.github/workflows/deploy-worker.yml'
   pull_request:
     branches: [main]
     paths:
       - 'deploy/cloudflare-worker/**'
+      - 'tinyassets/mcp_browser_origins.json'
       - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
     inputs:

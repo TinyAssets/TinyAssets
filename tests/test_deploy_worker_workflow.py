@@ -89,6 +89,11 @@ def test_workflow_path_filter_covers_worker_dir():
         "push trigger must path-filter on deploy/cloudflare-worker/**"
     assert "deploy/cloudflare-worker/**" in pr_paths, \
         "pull_request trigger must path-filter on deploy/cloudflare-worker/**"
+    shared = "tinyassets/mcp_browser_origins.json"
+    assert shared in push_paths, \
+        "push trigger must redeploy when the shared browser-origin list changes"
+    assert shared in pr_paths, \
+        "pull_request trigger must dry-run when the shared browser-origin list changes"
 
 
 def test_workflow_path_filter_covers_workflow_itself():
