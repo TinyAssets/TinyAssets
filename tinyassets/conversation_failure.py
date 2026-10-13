@@ -92,6 +92,22 @@ _CLASS_WORDS = {
         "reconnect one that stopped working, from the request under “Waiting on "
         "you”, then send your request again"
     ),
+    "model_unavailable": (
+        "the model you picked is not available from your connected sources; "
+        "pick another model or connect the source that offers it"
+    ),
+    "authority_held": (
+        "this command center cannot use the selected model source right now; "
+        "check its connection or choose another available model"
+    ),
+    "work_model_exhausted": (
+        "no eligible work model remains in the selected sources; "
+        "choose another available model or restore capacity at a connected source"
+    ),
+    "provider_confinement_unavailable": (
+        "the model could not be started in this command center's protected environment; "
+        "try another available model or report this platform problem"
+    ),
     "provider_protocol_error": (
         "the connected model replied in a format this command center could not read; "
         "try again, or choose another model"
@@ -153,6 +169,10 @@ FAILURE_CODES = frozenset(_CLASS_WORDS)
 #: ``unknown`` has no position; the turn's own ledger may still supply one.
 STAGE_OF_CLASS = {
     "setup_required": "before_send",
+    "model_unavailable": "before_send",
+    "authority_held": "before_send",
+    "work_model_exhausted": "before_send",
+    "provider_confinement_unavailable": "before_send",
     # Measured by us, against the selected model's own published window, before
     # anything was sent -- so it is a before_send fact, not a provider verdict.
     "context_window_exceeded": "before_send",

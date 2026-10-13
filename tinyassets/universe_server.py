@@ -2773,8 +2773,22 @@ def _context_overflow(exc: BaseException) -> bool:
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
+    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
+    from tinyassets.providers.model_pins import ModelPinError
+    from tinyassets.providers.provider_jail import ProviderConfinementError
+    from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
+        if isinstance(exc, PermissionError) and str(exc).startswith(NO_ELIGIBLE_MODEL):
+            return "model_unavailable"
+        if isinstance(exc, WorkModelExhaustedError):
+            return "work_model_exhausted"
+        if isinstance(exc, ProviderConfinementError):
+            return "provider_confinement_unavailable"
+        if isinstance(exc, ModelPinError):
+            return "model_unavailable"
+        if isinstance(exc, ProviderAuthorityHeldError):
+            return "authority_held"
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
         # Before the taxonomies: this refusal is ours and carries no attempt for
@@ -2881,10 +2895,19 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
         if evidence is not None:
             effects, ledger_stage, ref = evidence
         else:
-            never_sent = code == "setup_required" or (bool(attempts) and not invoked)
+            never_sent = (
+                (code in {"setup_required", "model_unavailable", "authority_held",
+                          "work_model_exhausted", "provider_confinement_unavailable"}
+                 or bool(attempts))
+                and not invoked
+                and _chain_attribute(exc, "turn_requests") in (None, 0)
+            )
             effects, ledger_stage, ref = ("none" if never_sent else "unknown"), None, None
         stage = ledger_stage or STAGE_OF_CLASS.get(code)
-        if code == "setup_required" or (attempts and not invoked):
+        if invoked and code in {"model_unavailable", "authority_held",
+                                "work_model_exhausted", "provider_confinement_unavailable"}:
+            stage = ledger_stage or "model_request"
+        elif code == "setup_required" or (attempts and not invoked):
             stage = "before_send"
         return turn_failure(
             code, stage=stage, effects=effects,
