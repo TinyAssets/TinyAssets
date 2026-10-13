@@ -122,6 +122,8 @@ OWNER_ONLY_TABLES = MappingProxyType({
     "outside_grants": "owner",
     "outside_audit": "owner",
     "outside_revocations": "owner",
+    "api_keys": "owner",
+    "api_key_request_counts": "owner",
     "pins": "owner_id",
     "universe_app_ui": "owner_user_id",
     "owner_view_receipts": "owner_user_id",
@@ -704,13 +706,11 @@ def _root_databases(root: Path) -> list[Path]:
     from tinyassets.storage import DB_FILENAME
 
     stores = [
-        p for p in root.glob("*.db") if p.is_file() and p.name != DB_FILENAME
+        p for pattern in ("*.db", "*.sqlite3") for p in root.glob(pattern)
+        if p.is_file() and p.name != DB_FILENAME
     ]
     if database_path(root).is_file():
         stores.append(database_path(root))
-    outside = root / ".outside-client-authority.sqlite3"
-    if outside.is_file():
-        stores.append(outside)
     return sorted(stores)
 
 

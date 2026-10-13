@@ -56,6 +56,11 @@ compatibility_flags = []
 #                       take the site's paths away. Do not narrow this route
 #                       without re-proving the callback URLs.
 #
+#   tinyassets.io/api*  the REST API (API-key auth) for programmatic
+#                       clients. worker.js proxies exactly /api and
+#                       /api/...; any other path this wildcard catches (one
+#                       that merely starts with "api", e.g. /apiary) is handed
+#                       back to the website origin by `belongsToWebsite`.
 # OAuth discovery documents are not under /mcp or /app. RFC 9728 path
 # insertion for resource https://tinyassets.io/mcp is
 # /.well-known/oauth-protected-resource/mcp. A Cloudflare route matches the
@@ -73,6 +78,7 @@ compatibility_flags = []
 routes = [
     { pattern = "tinyassets.io/mcp*", zone_name = "tinyassets.io" },
     { pattern = "tinyassets.io/app*", zone_name = "tinyassets.io" },
+    { pattern = "tinyassets.io/api*", zone_name = "tinyassets.io" },
     { pattern = "tinyassets.io/.well-known/oauth-protected-resource*", zone_name = "tinyassets.io" },
     { pattern = "tinyassets.io/.well-known/oauth-authorization-server*", zone_name = "tinyassets.io" },
 ]

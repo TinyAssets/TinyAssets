@@ -78,7 +78,8 @@ the order. Measured on `origin/main` `13f4ff4459f`, 2026-10-11.
   `/home/owner` under the owner's existing permanent UID/GID.
 - **Inside the box,** `boxd` is the descriptor-safe core of today's
   `boxes/local.py`. It moves; it is not rewritten.
-- **Firecracker** is permitted behind the same contract (ADR-019). It is not
+- **Firecracker** is permitted behind the same contract only on a host with
+  supported KVM and a measured need gVisor cannot meet (ADR-022). It is not
   built now. The local driver stays as the test reference and is refused in
   the production image.
 
@@ -111,8 +112,7 @@ session.start(agent_ref, input, parent)          # control plane (C8; until then
   - the provider-cell launch gate.
 
   The structural guard `role-cells` counts modules matching `role_*` and
-  call sites of `owner_launcher_client`. P2 lowers its ceiling and P6 brings
-  it to zero.
+  call sites of `owner_launcher_client`. P2b brings it to zero.
 
 ## 4. Lifecycle
 
@@ -125,6 +125,10 @@ checkpoint or restore failure --> cold boot; sessions resume from the turn journ
 any --destroy(owner)--> absent (account deletion)
 ```
 
+- **Until P6, stop and start.** P2b stops a box after `idle_s` and
+  cold-starts it on the next exec; its files persist. Checkpoint and
+  restore, and the states `checkpointing`, `suspended` and `restoring`
+  above, arrive in P6 with the loop and the browser inside to measure.
 - **Awake while working.** A box stays awake while a session, a resident
   process or an open owner view is live. This replaces ADR-012's 60-second
   rule for busy boxes. An idle box checkpoints after `idle_s` (30 s
@@ -313,39 +317,39 @@ platform mail domain. Inbound mail is N1's.
 
 | # | Module | Lines | Kind | Replaced by | PR |
 |---|---|---|---|---|---|
-| 1 | `tinyassets/role_tools.py` | 420 | A | `bash` exec in the box; seat replaces tool slots | P2 |
-| 2 | `tinyassets/role_tool_files.py` | 117 | A | `boxd` file ops | P2 |
-| 3 | `tinyassets/role_node.py` | 229 | A | code nodes run as box exec | P2 |
-| 4 | `tinyassets/role_git.py` | 34 | A | `git` in the box | P2 |
-| 5 | `deploy/role_git.py` | 266 | A | `git` in the box | P2 |
-| 6 | `tinyassets/role_decoder.py` | 40 | A | decoding in the box | P2 |
-| 7 | `deploy/role_decoder.py` | 687 | A | decoding in the box | P2 |
-| 8 | `tinyassets/role_video.py` | 55 | A | `ffprobe` in the box | P2 |
-| 9 | `tinyassets/role_video_codec.py` | 65 | A | `ffmpeg` in the box | P2 |
-| 10 | `tinyassets/role_storage.py` | 132 | A | `BoxProvider.usage` | P2 |
-| 11 | `tinyassets/role_content.py` | 373 | A | `BoxProvider.write` | P2 |
-| 12 | `tinyassets/role_center_admission.py` | 358 | D | a center is a directory in the box; admission once (§3) | P2 |
-| 13 | `tinyassets/role_scope.py` | 28 | D | the box handle | P2 |
-| 14 | `tinyassets/role_provider_cell.py` | 224 | A | CLI packages in the box | P3 |
-| 15 | `tinyassets/role_provider_discovery.py` | 184 | A | CLI packages in the box | P3 |
-| 16 | `tinyassets/role_provider_execution.py` | 189 | D | `session.start` plus `model_call` | P3 |
-| 17 | `tinyassets/role_snapshot.py` | 62 | D | no launch snapshots: credentials stay in the broker | P3 |
-| 18 | `tinyassets/role_packages.py` | 139 | A | packages run in the box; credentials via the gate | P3 |
-| 19 | `tinyassets/role_package_cell.py` | 90 | A | packages run in the box | P3 |
-| 20 | `tinyassets/role_package_manifest.py` | 47 | D | `extension_manifest.py` (S6) | P3 |
-| 21 | `tinyassets/role_preview.py` | 61 | A | Chromium in the box | P4 |
-| 22 | `tinyassets/role_preview_cell.py` | 173 | A | Chromium in the box, plus `BoxProvider.view` | P4 |
-| 23 | `tinyassets/role_relays.py` | 143 | B | the per-box egress gate | P5 |
-| 24 | `tinyassets/role_remote_git.py` | 123 | A | `git` in the box over the gate; credentials via `broker/git_http` | P5 |
-| 25 | `tinyassets/role_owner_delete.py` | 216 | D | `BoxProvider.destroy` | P6 |
-| 26 | `tinyassets/role_owner_delete_cell.py` | 91 | D | `BoxProvider.destroy` | P6 |
-| 27 | `tinyassets/role_owner_tree_deletion.py` | 362 | D | `BoxProvider.destroy` | P6 |
-| 28 | `tinyassets/role_modes.py` | 18 | D | nothing: no mapper | P6 |
-| 29 | `deploy/role_launcher.py` | 339 | D | an unprivileged daemon container; `boxhostd` holds box privilege | P6 |
-| 30 | `deploy/role_owner_launcher.py` | 1,202 | D | `boxhostd` | P6 |
-| 31 | `deploy/role_provision.py` | 66 | D | `BoxProvider.create` | P6 |
-| 32 | `deploy/role_admission_contract.py` | 183 | B | the box registry row in the broker log, kept by the broker | P6 |
-| 33 | `deploy/role_migrate.py` | 1,222 | D | the one-shot box cutover (P2), itself deleted in P6 | P6 |
+| 1 | `tinyassets/role_tools.py` | 420 | A | `bash` exec in the box; seat replaces tool slots | P2b |
+| 2 | `tinyassets/role_tool_files.py` | 117 | A | `boxd` file ops | P2b |
+| 3 | `tinyassets/role_node.py` | 229 | A | code nodes run as box exec | P2b |
+| 4 | `tinyassets/role_git.py` | 34 | A | `git` in the box | P2b |
+| 5 | `deploy/role_git.py` | 266 | A | `git` in the box | P2b |
+| 6 | `tinyassets/role_decoder.py` | 40 | A | decoding in the box | P2b |
+| 7 | `deploy/role_decoder.py` | 687 | A | decoding in the box | P2b |
+| 8 | `tinyassets/role_video.py` | 55 | A | `ffprobe` in the box | P2b |
+| 9 | `tinyassets/role_video_codec.py` | 65 | A | `ffmpeg` in the box | P2b |
+| 10 | `tinyassets/role_storage.py` | 132 | A | `BoxProvider.usage` | P2b |
+| 11 | `tinyassets/role_content.py` | 373 | A | `BoxProvider.write` | P2b |
+| 12 | `tinyassets/role_center_admission.py` | 358 | D | a center is a directory in the box; admission once (§3) | P2b |
+| 13 | `tinyassets/role_scope.py` | 28 | D | the box handle | P2b |
+| 14 | `tinyassets/role_provider_cell.py` | 224 | A | CLI packages in the box | P2b |
+| 15 | `tinyassets/role_provider_discovery.py` | 184 | A | CLI packages in the box | P2b |
+| 16 | `tinyassets/role_provider_execution.py` | 189 | D | CLI package exec in the box; `session.start` in P3 | P2b |
+| 17 | `tinyassets/role_snapshot.py` | 62 | D | no launch snapshots: a one-run token lease (ADR-012 D5), then the broker endpoint (P3) | P2b |
+| 18 | `tinyassets/role_packages.py` | 139 | A | packages run in the box; credentials via the gate | P2b |
+| 19 | `tinyassets/role_package_cell.py` | 90 | A | packages run in the box | P2b |
+| 20 | `tinyassets/role_package_manifest.py` | 47 | D | `extension_manifest.py` (S6) | P2b |
+| 21 | `tinyassets/role_preview.py` | 61 | A | Chromium in the box | P2b |
+| 22 | `tinyassets/role_preview_cell.py` | 173 | A | Chromium in the box, plus `BoxProvider.view` | P2b |
+| 23 | `tinyassets/role_relays.py` | 143 | B | the per-box egress gate | P2b |
+| 24 | `tinyassets/role_remote_git.py` | 123 | A | `git` in the box over the gate; credentials via `broker/git_http` | P2b |
+| 25 | `tinyassets/role_owner_delete.py` | 216 | D | `BoxProvider.destroy` | P2b |
+| 26 | `tinyassets/role_owner_delete_cell.py` | 91 | D | `BoxProvider.destroy` | P2b |
+| 27 | `tinyassets/role_owner_tree_deletion.py` | 362 | D | `BoxProvider.destroy` | P2b |
+| 28 | `tinyassets/role_modes.py` | 18 | D | nothing: no mapper | P2b |
+| 29 | `deploy/role_launcher.py` | 339 | D | an unprivileged daemon container; `boxhostd` holds box privilege | P2b |
+| 30 | `deploy/role_owner_launcher.py` | 1,202 | D | `boxhostd` | P2b |
+| 31 | `deploy/role_provision.py` | 66 | D | `BoxProvider.create` | P2b |
+| 32 | `deploy/role_admission_contract.py` | 183 | B | the box registry row in the broker log, kept by the broker | P2b |
+| 33 | `deploy/role_migrate.py` | 1,222 | D | the one-shot box cutover (P2b), itself deleted in P9 | P2b |
 
 **Counts.** 18 absorbed (A, 3,412 lines), 2 moved to the broker (B, 326
 lines), 13 deleted (D, 4,200 lines). All 33 modules go, 7,938 lines.
@@ -354,23 +358,23 @@ lines), 13 deleted (D, 4,200 lines). All 33 modules go, 7,938 lines.
 
 | Module | Lines | PR |
 |---|---|---|
-| `universe_tools.py` jail path (the box tools are `agent_loop/box_tools.py`) | ~1,100 | P2 |
-| `node_sandbox.py` bwrap launcher | ~1,500 | P2 |
-| `jail_disk.py` | 259 | P2 |
-| `sandbox/` | 210 | P2 |
-| `providers/provider_jail.py` | 605 | P3 |
-| `browser_cell.py` | 348 | P4 |
-| `browser_egress.py` | 69 | P4 |
-| `universe_egress.py` | 490 | P5 |
-| `git_egress.py` | 238 | P5 |
-| `owner_launcher_client.py` | 554 | P6 |
-| `owner_socket.py` | 40 | P6 |
-| `broker/mapper_channel.py` | 120 | P6 |
-| `cell_diagnostics.py` | 46 | P6 |
+| `universe_tools.py` jail path (the box tools are `agent_loop/box_tools.py`) | ~1,100 | P2b |
+| `node_sandbox.py` bwrap launcher | ~1,500 | P2b |
+| `jail_disk.py` | 259 | P2b |
+| `sandbox/` | 210 | P2b |
+| `providers/provider_jail.py` | 605 | P2b |
+| `browser_cell.py` | 348 | P2b |
+| `browser_egress.py` | 69 | P2b |
+| `universe_egress.py` | 490 | P2b |
+| `git_egress.py` | 238 | P2b |
+| `owner_launcher_client.py` | 554 | P2b |
+| `owner_socket.py` | 40 | P2b |
+| `broker/mapper_channel.py` | 120 | P2b |
+| `cell_diagnostics.py` | 46 | P2b |
 | `agent_rules.py` | 581 | P1 |
 | `approval_scopes.py` | 240 | P1 |
 | `broker/http_policy.py` | 134 | P1 |
-| `scripts/role_*.py` (8 probes), replaced by one box acceptance probe of about 300 lines | 3,493 | P2-P6 |
+| `scripts/role_*.py` (8 probes), replaced by one box acceptance probe of about 300 lines | 3,493 | P2b |
 
 **Kept:** `broker/owner_identities.py`. Its permanent UIDs become the
 boxes' host UIDs, so no identity is reissued.
@@ -379,12 +383,13 @@ boxes' host UIDs, so no identity is reissued.
 
 | PR | Adds (core) | Deletes (core) | Net |
 |---|---|---|---|
-| P1 Owner policy layer | ~550 | ~1,100 | about −550 |
-| P2 Box, admission once, tool family (window) | ~1,700 | ~5,870 | about −4.2k |
-| P3 Sessions, children and CLI packages in the box | ~300 | ~1,540 | about −1.2k |
-| P4 Browser and view hook | ~250 | ~650 | about −400 |
-| P5 Egress gate | ~300 | ~990 | about −700 |
-| P6 Lifecycle, snapshot hook, mapper retired | ~400 | ~4,460 | about −4.1k |
+| P1 Owner policy layer (#4630) | ~550 | ~1,100 | about −550 |
+| P2a Preflight | `box_preflight.py` | `box_bench/`, the KVM workflow | ≤ 0 |
+| P2b The cutover (window) | ~2,300 | ~11,800 | about −9.5k |
+| P3 Loop in the box | ~300 | the daemon-side loop placement | ≤ 0 |
+| P4 N4 view hook | ~150 | `role_image_oracle.py` | ≤ 0 |
+| P5 Owner egress policy at the relay | ~200 | `role_http_fixture.py` | ≤ 0 |
+| P6 Suspend, restore, snapshot hook | ~300 | the stop-and-start branch | ≤ 0 |
 | P7 Platform tables into `storage/` (S10) | moves | duplicate helpers | ≤ 0 |
 | P8 Off-region backup from the snapshot path (S27) | ~250 | `backup.sh` and `backup-restore.sh` paths | ≤ 0 |
 
@@ -394,30 +399,41 @@ too. A PR whose measured net is positive does not merge.
 
 ## 10. Order
 
-Each PR ships alone and deletes in the same PR.
+Each PR ships alone and deletes in the same PR (ADR-022).
 
 | PR | Depends on | Floor | Ships |
 |---|---|---|---|
-| P1 Owner policy layer | — (start now, beside C3) | yes: authority, money | the policy store, the owner-door write, broker enforcement on today's broker paths, the projection, `ta policy` |
-| P2 Box driver, admission once, tool family | P1 | yes: cross-user, data (window) | `boxhostd` plus the gVisor driver; tools, files, git, node and media run in the box; the one maintenance window |
-| P3 Sessions in the box | P2, C3, C8 | yes: credential custody | the loop, child sessions, resident processes and CLI packages run in the box; survives app close and deploys |
-| P4 Browser and N4 view hook | P2 | yes: cross-user view | Chromium in the box; `BoxProvider.view` |
-| P5 Egress gate (N5 point) | P1, P2 | yes: exfiltration | one per-box relay at the broker under the owner policy |
-| P6 Lifecycle, snapshot hook, mapper retired | P3, P4, P5 | yes: data loss | suspend and resume, checkpoint across host restarts, `snapshot`/`restore`, `destroy`; the mapper and launcher deleted |
-| P7 Platform tables (S10) | P2 | no | the `daemon_server.py` tables move into `storage/` |
+| P1 Owner policy layer | — | yes: authority, money | shipped (#4630) |
+| P2a Preflight | P1 | no (serves nothing) | `runsc` and `boxhostd` on the droplet; gates G1-G6 measured |
+| P2b The cutover | P2a, every gate passed | yes: cross-user, data, credential custody, exfiltration (window) | every owner-space execution in the box; all 33 cells, the mapper, the jails and the privileged container settings deleted |
+| P3 Loop in the box | P2b, C3, C8 | yes: credential custody | the loop, children and residents run inside the box; broker in-box endpoint; survives app close and deploys |
+| P4 N4 view hook | P2b | yes: cross-user view | `BoxProvider.view` |
+| P5 Owner egress policy at the relay | P1, P2b | yes: exfiltration | `open`, `allowlist`, `ask` on the one relay |
+| P6 Suspend, restore, snapshot hook | P3, P4, P5 | yes: data loss | checkpoint and restore; `snapshot`/`restore` |
+| P7 Platform tables (S10) | P2b | no | the `daemon_server.py` tables move into `storage/` |
 | P8 Off-region backup and DR drill (S27) | P6; founder spend for the bucket | yes: data loss | box snapshots and platform state off-region; weekly drill |
-| P9 Close | P1-P8 | no | `role-cells` = 0; acceptance (§12); delete `target-architecture` and `box-provider-foundation`; sync specs; S8, S10 and S27 read converged |
+| P9 Close | P1-P8 | no | acceptance (§12); delete `target-architecture`, `box-provider-foundation` and the one-shot cutover; sync specs; S8, S10 and S27 read converged |
 
 **Why this order.**
 
-- **P1 goes first.** It has no box dependency. It also closes the open hole
-  now: rules in a store the agent's process space can reach.
-- **P2 is the earliest PR that can delete a cell family.** It is also when
-  the maintenance window happens.
-- **P3 waits for C3.** Model calls must already leave through the broker
-  before the loop moves into an untrusted box.
-- **P6 is last among the code PRs.** The mapper can only go when no cell
-  remains.
+- **P2a before the window.** The production host, not a throwaway
+  droplet, proves the limits, capacity, quotas and the C9 workloads, with
+  numbers, while serving nothing. The cross-user checks (G2) and usage and
+  restart journaling (G5) run on the P2b cutover build; the floor completes
+  at P3.
+- **P2b is one cutover (Direction 5).** After it every owner-space
+  execution runs in its owner's box, and no cell or mapper remains to fall
+  back to. Splitting it would leave a mixed period in which two execution
+  paths carry the floor.
+- **P3 waits for C3.** Model credentials must already leave through the
+  broker before the loop moves into an untrusted box. Until then the loop
+  is daemon code that reaches the box only through `BoxProvider`, and the
+  owner-session table stays daemon-writable (ADR-022 names both residuals
+  and their bounds). The cross-user floor is complete at P3, and S8 reads
+  converged at P3.
+- **P6 measures suspend with the real workload.** Checkpoint size and
+  time with the loop and the browser inside are unknown until they are
+  inside.
 
 ## 11. Migration and rollback (live users)
 
@@ -426,9 +442,10 @@ Each PR ships alone and deletes in the same PR.
 - Freeze deploys.
 - Take a full verified backup with the existing `backup.sh`, check its
   digest, and copy it off the droplet.
-- `boxhostd` and gVisor are installed but serve nothing.
+- `boxhostd` and gVisor are installed and every P2a gate has passed; they
+  serve nothing.
 
-**The window (P2, short).** One forward-only one-shot runs with every writer
+**The window (P2b, short).** One forward-only one-shot runs with every writer
 stopped:
 
 1. It refuses unless the volume carries the `owner-split` marker, a backup
@@ -449,15 +466,16 @@ The new image serves only from boxes. There is no flag back to cells.
 - Restore the previous image and its pinned runtime bundle.
 - The owner trees are untouched. The window changes only the box registry,
   quotas and `policy.db`, and the old image ignores all three.
-- The old `rules.db` files stay read-only, with no deletion, until P6.
-- After P6, rollback means restoring the backup plus the previous image.
+- The old `rules.db` files are unread since P1; the window deletes them
+  and the backup holds them.
+- After the window, rollback means restoring the backup plus the previous image.
   There is no reverse migration (the `runtime-process-roles` rule, kept).
 
-**Non-window PRs.** P3-P6 are ordinary zero-impact deploys:
+**Non-window PRs.** P3-P8 are ordinary zero-impact deploys:
 
 - P3 drains running turns at the boundary (`wait_for_turns.sh`).
-- P6's `destroy` runs only on account deletion, under the existing
-  owner-wide fence.
+- `destroy` runs only on account deletion, under the existing owner-wide
+  fence.
 
 ## 12. Acceptance
 
@@ -500,8 +518,8 @@ not a pass.
 - **The loop runs in the box.** Long work, child sessions and the browser
   share one lifecycle. The control plane stays small. The boundary, not the
   loop, carries every guarantee.
-- **gVisor now.** It needs no KVM validation spend and runs on today's
-  droplet. Firecracker is a driver, not a path.
+- **gVisor now (ADR-022).** S0 proved the mechanism; P2a proves the
+  production host. Firecracker is a driver, not a path.
 - **The policy store is the broker's, not the daemon's.** The broker
   already holds credentials and is the only effect executor, so policy
   sits with the enforcement point.
@@ -510,12 +528,12 @@ not a pass.
 
 ## Risks
 
-- **gVisor compatibility for Chromium and CLIs.** P2 and P4 each prove
-  their workload in the Linux oracle on `runsc` before merge. A failing
-  workload blocks its PR; it does not get a fallback cell.
+- **gVisor compatibility for Chromium and CLIs.** P2a's gate G6 proves
+  both on the production kernel before P2b. A failing workload blocks P2b;
+  it does not get a fallback cell.
 - **gVisor checkpoint of a running browser.** On failure the box
   cold-boots and sessions resume from the journal. Nothing replays.
-- **Project quota on the current filesystem.** P2's preflight refuses
+- **Project quota on the current filesystem.** P2a's gate G4 refuses
   unless project quotas work on the data volume. Enabling them is part of
   the window.
 - **The loop moves before C9.** P3 runs whichever loop survives C3. C9 then
