@@ -666,6 +666,7 @@ def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
     ):
         source = (root / relative).read_text(encoding="utf-8")
         assert "prepare_service_writer_barrier" in source, relative
+    assert not (root / "tinyassets_tray.py").exists()
 
 
 def test_fault_contract_names_every_recovery_boundary() -> None:
