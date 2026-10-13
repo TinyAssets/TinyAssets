@@ -120,16 +120,22 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Guard: `test_control_plane_inventory`, `limit-names`, and
       `opt-in-flags` for `TINYASSETS_ASSIGNED_QUEUE_CONSUMER`. Net about
       −3k. Depends on C3, C6.
-- **C8 Agents are files; one starter.** `agents/<name>/` holds
-      instructions and settings. `session.start(agent_ref, input, parent)`
-      is the only starter for chat, agent nodes, addressed agents and
-      `ta agent run`.
-      **Deletes:** the `custom_agents.py` definitions, most of
-      `agent_interchange.py`, the templates, `agent_review.py` as a platform
-      feature, and the `agent_runtime_manifest` literal (with a migration
-      for its CHECK constraint).
-      Guard: `spawn-entry` = 1, `test_one_agent_definition`. Net about −4k.
-      Depends on C3.
+- **C8 Agents are files; one starter.** (#4744, done) `agents/<name>/`
+      holds `AGENTS.md` and `settings.yaml` (the same layout a package lands;
+      `settings.agent` keeps a migrated binding's id and name).
+      `control_plane/session.py` `start(agent_ref, input, parent)` is the
+      only starter for chat, agent nodes, queued runs and `ta agent run`;
+      it resolves the agent from its files once. `scripts/migrate_agent_files.py`
+      moves each command center's agent bindings into directories and
+      deletes the rows in the same transaction.
+      **Deleted:** the SQL agent definitions as agents (the catalogue of
+      published systems stays as `commons_catalog.py`), all of
+      `agent_interchange.py`, the agent templates, portable copies, binding
+      retire/restore, `agent_review.py`, `harness_settings.py` (folded into
+      `agent_definition.py`) and the `agent_runtime_manifest` kind (with a
+      CHECK rebuild for `automation_activations`).
+      Guard: `test_spawn_entry` (spawn-entry = 1), S5 converged,
+      `test_one_agent_definition`. S2's executor duplication is C9's.
 - **C9 One loop.** The thin loop becomes the only loop.
       **Deletes:** `TINYASSETS_AGENT_LOOP`, `TINYASSETS_ALLOW_CLAUDE_SERVING`,
       `claude_provider.py`, `codex_provider.py`, `codex_app_server.py`,

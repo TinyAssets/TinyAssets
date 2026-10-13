@@ -55,7 +55,7 @@ let me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
 let binding=null, definitions={}, calls=[], allCalls=[], sends=[], conversation=[];
 let appUi=null, raceNext=false;
 const clone=v=>JSON.parse(JSON.stringify(v));
-// What the store hands back: canonical JSON (custom_agents._canonical_json,
+// What the store hands back: canonical JSON (commons_catalog._canonical_json,
 // sort_keys=True) parsed again, so every object comes back with SORTED keys.
 // A double that echoed the client's own key order hid a live bug: the app
 // compared its save by JSON.stringify and called its own saved choice a
@@ -109,6 +109,14 @@ const MCP={
    return {status:'saved',app_ui:clone(appUi)};
   }
   if(tool==='read_graph'&&args.target==='agent_bindings')return {bindings:binding?[binding]:[]};
+  if(tool==='read_graph'&&args.target==='agents'){
+   // The server lists agents/<name>/ directories; a binding row that is an
+   // installation (role app_experience) is not one of them.
+   const own=binding&&binding.configuration&&binding.configuration.role!=='app_experience'
+     &&!('turn_consumer' in binding.configuration)
+     ?[{agent_id:binding.agent_binding_id,name:binding.configuration.name||'Unnamed agent'}]:[];
+   return {agents:[{agent_id:'main',name:'Your agent'},...own]};
+  }
   if(tool==='read_graph'&&args.target==='agent_binding')return {binding};
   if(tool==='read_graph'&&args.target==='agent')return {agent:definitions[args.agent_definition_id]||{agent_definition_id:args.agent_definition_id,components:{}}};
   if(tool==='get_status'){
@@ -272,7 +280,7 @@ delete AppUI.active.agent_refs;
 // ---- a bundle cannot name a universe: the argument is pinned -------------
 calls=[];
 const agents=(await ask('list_agents',{graph_id:'u-bob',universe_id:'u-bob',limit:9999})).result;
-const listed=calls.filter(c=>c.tool==='read_graph'&&c.args.target==='agent_bindings');
+const listed=calls.filter(c=>c.tool==='read_graph'&&c.args.target==='agents');
 assert.equal(listed.length,1);
 assert.equal(listed[0].args.graph_id,HOME,'graph_id came from the viewer, not the bundle');
 assert(!('universe_id' in listed[0].args));
@@ -324,8 +332,9 @@ const elsewhere={...weaver,agent_binding_id:'e1',universe_id:'u-bob',configurati
 const rows=[designRow,weaver,planted,elsewhere];
 const realCallTool=MCP.callTool;
 MCP.callTool=async function(tool,args){
- if(tool==='read_graph'&&args.target==='agent_bindings'){
-  calls.push({tool,args:clone(args)}); return {bindings:clone(rows)};
+ if(tool==='read_graph'&&args.target==='agents'){
+  calls.push({tool,args:clone(args)});
+  return {agents:[{agent_id:'main',name:'Your agent'},{agent_id:'w1',name:'Evidence Weaver'}]};
  }
  return realCallTool.call(this,tool,args);
 };
@@ -411,7 +420,7 @@ emit({source:bobFrame,data:{ta_ui:1,type:'ready'}});
 calls=[];
 emit({source:bobFrame,data:{ta_ui:1,type:'call',id:'z',action:'list_agents',params:{graph_id:'u-bob'}}});
 for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
-const remixCalls=calls.filter(c=>c.tool==='read_graph'&&c.args.target==='agent_bindings');
+const remixCalls=calls.filter(c=>c.tool==='read_graph'&&c.args.target==='agents');
 assert.equal(remixCalls.length,1);
 assert.equal(remixCalls[0].args.graph_id,HOME,'a remix reaches the remixer, never the author');
 const remixWho=await (async()=>{const before=bobFrame.posts.length;

@@ -294,7 +294,7 @@ def test_a_malformed_event_stores_nothing(home: Path, payload) -> None:
 
 
 def _library(base: Path) -> None:
-    from tinyassets.custom_agents import save_app_ui
+    from tinyassets.app_ui_store import save_app_ui
 
     save_app_ui(base, owner_user_id=OWNER, universe_id=UNIVERSE, expected_revision=0,
                 changes={"ui_library": [UI]})
@@ -395,7 +395,7 @@ def test_an_automation_driving_an_unlisted_workflow_is_refused(home: Path) -> No
 
 
 def test_confirming_publishes_exactly_one_bundle_and_no_inputs(home: Path) -> None:
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     _library(home)
     beat, follow = _automations(home)
@@ -426,7 +426,7 @@ def test_confirming_publishes_exactly_one_bundle_and_no_inputs(home: Path) -> No
 
 def test_work_changed_after_the_tab_was_shown_publishes_nothing(home: Path) -> None:
     from tinyassets.api.extensions import _extensions_impl
-    from tinyassets.custom_agents import list_definitions
+    from tinyassets.commons_catalog import list_definitions
 
     _library(home)
     before = len(list_definitions(home, author_id=OWNER))
@@ -469,7 +469,7 @@ def test_an_edit_racing_the_confirm_cannot_go_public(home: Path, monkeypatch) ->
     against the snapshot in its own transaction, so it refuses by itself."""
     from tinyassets import branch_versions
     from tinyassets.api.extensions import _extensions_impl
-    from tinyassets.custom_agents import list_definitions
+    from tinyassets.commons_catalog import list_definitions
 
     _library(home)
     before = len(list_definitions(home, author_id=OWNER))
@@ -567,7 +567,7 @@ def test_publishing_exposes_the_confirmed_version_never_the_history(home: Path) 
     private edit history readable, including a credential the owner had since
     removed. Only the version the owner confirmed is marked published."""
     from tinyassets.api.extensions import _extensions_impl
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     token = "sk-" + "live" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6"
     _library(home)
@@ -661,11 +661,11 @@ def test_a_bundle_that_fails_to_publish_leaves_nothing_public(home: Path, monkey
     """Astra round 2, P2: branches went public before the bundle was validated.
     The bundle is now validated before any write, and a storage failure after
     the flip flips the branches back."""
-    import tinyassets.api.custom_agents as api_custom_agents
+    import tinyassets.api.commons_catalog as api_commons_catalog
 
     _library(home)
     ask = _ask_publish(home)
-    monkeypatch.setattr(api_custom_agents, "custom_agents",
+    monkeypatch.setattr(api_commons_catalog, "commons_catalog",
                         lambda **_kw: {"error": "agent_storage_unavailable"})
     out = _answer(ask["request_id"])
     assert out.get("error") == "publish_refused", out
@@ -689,7 +689,7 @@ def test_a_failed_publish_does_not_withdraw_an_earlier_publication(
     failed bundle cleared every version mark and made every branch private,
     including a branch and version that were public BEFORE this request. It now
     takes back only what this request did."""
-    import tinyassets.api.custom_agents as api_custom_agents
+    import tinyassets.api.commons_catalog as api_commons_catalog
     from tinyassets import branch_versions
     from tinyassets.api.publish_requests import _flipped
     from tinyassets.daemon_server import get_branch_definition, update_branch_definition
@@ -710,7 +710,7 @@ def test_a_failed_publish_does_not_withdraw_an_earlier_publication(
         return version
 
     monkeypatch.setattr(branch_versions, "publish_branch_version", recording_mint)
-    monkeypatch.setattr(api_custom_agents, "custom_agents",
+    monkeypatch.setattr(api_commons_catalog, "commons_catalog",
                         lambda **_kw: {"error": "agent_storage_unavailable"})
     out = _answer(ask["request_id"])
     assert out.get("error") == "publish_refused", out
@@ -729,7 +729,7 @@ def test_a_failed_publish_does_not_undo_a_privacy_change_made_meanwhile(
 ) -> None:
     """Astra round 3: compensation restored the pre-flip "public" even after the
     owner made the branch private while the bundle write was pending."""
-    import tinyassets.api.custom_agents as api_custom_agents
+    import tinyassets.api.commons_catalog as api_commons_catalog
     from tinyassets.daemon_server import update_branch_definition
 
     _library(home)
@@ -741,7 +741,7 @@ def test_a_failed_publish_does_not_undo_a_privacy_change_made_meanwhile(
         update_branch_definition(home, branch_def_id=SCOUT, updates={"visibility": "private"})
         return {"error": "agent_storage_unavailable"}
 
-    monkeypatch.setattr(api_custom_agents, "custom_agents", owner_withdraws_then_storage_fails)
+    monkeypatch.setattr(api_commons_catalog, "commons_catalog", owner_withdraws_then_storage_fails)
     out = _answer(ask["request_id"])
     assert out.get("error") == "publish_refused", out
     assert _visibility(home, SCOUT) == "private", "the owner's later withdrawal stands"
@@ -750,7 +750,8 @@ def test_a_failed_publish_does_not_undo_a_privacy_change_made_meanwhile(
 def test_only_the_portable_ui_fields_are_published(home: Path) -> None:
     """Codex refute 2026-09-29 P1: a stored component carrying `inputs` rode
     into the public definition. Only the seven fields the app renders go."""
-    from tinyassets.custom_agents import get_definition, save_app_ui
+    from tinyassets.app_ui_store import save_app_ui
+    from tinyassets.commons_catalog import get_definition
 
     save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE, expected_revision=0,
                 changes={"ui_library": [{**UI, "inputs": {"customer_note": "PRIVATE INPUT"}}]})
@@ -785,7 +786,8 @@ def test_the_served_surface_has_no_way_to_answer_its_own_ask(monkeypatch) -> Non
 
 
 def test_a_second_user_installs_private_copies(home: Path) -> None:
-    from tinyassets.custom_agents import get_app_ui, get_definition, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
+    from tinyassets.commons_catalog import get_definition
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.universe_server import write_graph
 

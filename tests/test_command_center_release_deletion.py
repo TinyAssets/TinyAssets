@@ -17,7 +17,7 @@ from tinyassets import account_deletion
 from tinyassets import command_center_packages as packages
 from tinyassets import command_center_release_series as releases
 from tinyassets.command_center_updates import digest
-from tinyassets.custom_agents import _agent_connect
+from tinyassets.commons_catalog import _agent_connect
 from tinyassets.storage import db_path
 from tinyassets.storage.current_home import CurrentHomeChanged
 

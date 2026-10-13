@@ -8,8 +8,8 @@ from pathlib import Path
 
 def render(spec, wall_seconds):
     from tinyassets import role_decoder
+    from tinyassets.app_ui_store import read_app_ui_asset
     from tinyassets.broker.owner_identities import owner_identity
-    from tinyassets.custom_agents import read_app_ui_asset
     from tinyassets.role_scope import owner_principal
     from tinyassets.storage import data_dir
     from tinyassets.ui_preview import MAX_CHILD_OUTPUT

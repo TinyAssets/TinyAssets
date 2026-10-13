@@ -23,6 +23,7 @@ from tests.test_command_center_packages import home as home
 from tests.test_command_center_system_copy import _legacy
 from tinyassets.api.graph_reads import read_graph
 from tinyassets.api.pending_requests import try_package
+from tinyassets.app_ui_store import get_app_ui
 from tinyassets.automations import (
     STATE_PAUSED,
     AutomationStore,
@@ -31,7 +32,7 @@ from tinyassets.automations import (
     register_automation,
 )
 from tinyassets.command_center_preview import read_preview
-from tinyassets.custom_agents import get_app_ui, get_definition
+from tinyassets.commons_catalog import get_definition
 from tinyassets.daemon_server import db_path
 from tinyassets.provider_assignment import load_provider_assignment
 from tinyassets.storage.pending_requests import list_pending
@@ -144,7 +145,7 @@ def test_preview_assets_come_only_from_verified_public_package(home, monkeypatch
 
     from tests.test_command_center_packages import _hostile_package
     from tests.test_in_platform_agent_systems import UI
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     data = b"p { color: blue; }"
     path = "notes/style.css"
@@ -162,7 +163,7 @@ def test_preview_assets_come_only_from_verified_public_package(home, monkeypatch
         reads.append(args)
         raise AssertionError("preview may not read a private owner asset")
 
-    monkeypatch.setattr("tinyassets.custom_agents.read_app_ui_asset", private_asset_read)
+    monkeypatch.setattr("tinyassets.app_ui_store.read_app_ui_asset", private_asset_read)
     with _as(BOB):
         out = read_preview(universe_id=BOB_UNIVERSE,
                            definition_id=source["agent_definition_id"])
@@ -179,7 +180,7 @@ def test_malformed_public_workflow_reference_refuses_preview(home, version):
     from tests.test_command_center_packages import _hostile_package
     from tests.test_in_platform_agent_systems import UI
     from tinyassets.api.publish_requests import BRANCH_REF_KIND
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     original = get_definition(home, _hostile_package(home, {}))
     definition = publish_definition(home, author_id=original["author_id"], payload={

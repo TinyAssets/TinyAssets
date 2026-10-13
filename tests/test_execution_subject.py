@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import pytest
 
 from tinyassets.execution_subject import (
     ExecutionSubject,
     ExecutionSubjectKind,
-    agent_binding_automation_id,
 )
 
 
@@ -50,16 +47,3 @@ def test_execution_subject_rejects_untyped_or_noncanonical_fields(
         ExecutionSubject(**values)  # type: ignore[arg-type]
 
 
-def test_agent_binding_automation_id_is_reserved_stable_and_alias_free() -> None:
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        identifiers = tuple(
-            pool.map(
-                lambda _index: agent_binding_automation_id("agent_binding_alice"),
-                range(8),
-            )
-        )
-
-    assert len(set(identifiers)) == 1
-    assert identifiers[0].startswith("automation_agent_")
-    assert "agent_binding_alice" not in identifiers[0]
-    assert agent_binding_automation_id("agent_binding_bob") != identifiers[0]

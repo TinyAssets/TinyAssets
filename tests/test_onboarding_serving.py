@@ -72,7 +72,7 @@ def _manifest_setup(tmp_path, monkeypatch, *, custom=False, http=False):
     ]
     write_credential_vault(universe, credentials, owner_user_id="owner-1", universe_id="u-owner")
     if custom:
-        from tinyassets.custom_agents import create_binding, publish_definition
+        from tinyassets.commons_catalog import create_binding, publish_definition
 
         definition = publish_definition(
             tmp_path, author_id="owner-1",
@@ -137,8 +137,8 @@ def _manifest_setup(tmp_path, monkeypatch, *, custom=False, http=False):
 @pytest.mark.parametrize("service", ["codex", "claude"])
 @pytest.mark.parametrize("rotate", [False, True])
 def test_reconnect_preserves_accepted_models_and_root(tmp_path, monkeypatch, service, rotate):
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import get_binding
     from tinyassets.provider_assignment import load_provider_assignment
 
     universe, credentials, first, before = _manifest_setup(tmp_path, monkeypatch)
@@ -177,8 +177,13 @@ def test_reconnect_preserves_accepted_models_and_root(tmp_path, monkeypatch, ser
     "last_writer_changed",
 ])
 def test_manifest_reconnect_holds_without_mutation(tmp_path, monkeypatch, failure):
+    from tinyassets.commons_catalog import (
+        create_binding,
+        get_binding,
+        list_bindings,
+        update_binding,
+    )
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, get_binding, list_bindings, update_binding
     from tinyassets.daemon_server import revoke_universe_access, set_founder_home
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
@@ -242,8 +247,8 @@ def test_manifest_reconnect_holds_without_mutation(tmp_path, monkeypatch, failur
 def test_reconnect_preserves_custom_agent_preferences_and_full_membership(
     tmp_path, monkeypatch, http, configured,
 ):
+    from tinyassets.commons_catalog import create_binding, get_binding
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, get_binding
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.providers.model_preferences import ModelPreferences
     from tinyassets.storage.model_preferences import ModelPreferenceStore
@@ -305,7 +310,7 @@ def test_fresh_universe_gets_definition_binding_and_serving(tmp_path):
 
 
 def test_idempotent_and_reuses_the_founders_binding(tmp_path):
-    from tinyassets.custom_agents import list_bindings, list_definitions
+    from tinyassets.commons_catalog import list_bindings, list_definitions
 
     udir = _seed(tmp_path)
     first = sv.ensure_founder_serving(
@@ -479,7 +484,7 @@ def test_claude_serving_uses_the_owned_deposit(tmp_path, monkeypatch):
 def test_other_users_binding_is_not_hijacked(tmp_path):
     """A collaborator's binding in the same universe is never re-pointed; the
     founder gets their own."""
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
 
     udir = _seed(tmp_path)
     d = publish_definition(
@@ -513,7 +518,7 @@ def test_other_users_binding_is_not_hijacked(tmp_path):
 def test_no_current_admin_acl_means_zero_mutation(tmp_path):
     """Codex #1: a valid bearer with a stale home mapping but no CURRENT admin
     ACL must not create or enable anything."""
-    from tinyassets.custom_agents import list_bindings, list_definitions
+    from tinyassets.commons_catalog import list_bindings, list_definitions
 
     udir = _seed(tmp_path, admin=False)
     out = sv.ensure_founder_serving(
@@ -533,7 +538,7 @@ def test_collaborator_tampered_binding_is_reset_not_adopted(tmp_path):
     platform binding; connect must NOT bind the founder's credential under the
     collaborator's content. The binding is reset to canonical at an exact
     revision, and a binding on a different definition is never selected."""
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         get_binding,
         list_bindings,
         publish_definition,
@@ -597,7 +602,7 @@ def test_collaborator_tampered_binding_is_reset_not_adopted(tmp_path):
 
 
 def test_drifted_config_on_platform_definition_is_reset_at_exact_revision(tmp_path):
-    from tinyassets.custom_agents import get_binding, update_binding
+    from tinyassets.commons_catalog import get_binding, update_binding
 
     udir = _seed(tmp_path)
     first = sv.ensure_founder_serving(
@@ -634,7 +639,7 @@ def test_a_binding_on_the_retired_default_definition_is_used_as_is(tmp_path):
     immutable). A pre-rename binding is still the founder's platform binding:
     used untouched, provider_ref intact, never silently replaced by a second
     binding; the cutover migration re-points it (gpt-6-astra, C1)."""
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
 
     _seed(tmp_path)
     retired = publish_definition(

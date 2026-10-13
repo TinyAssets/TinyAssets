@@ -73,19 +73,19 @@ class LiveTurn:
         self._requested = threading.Event()
         self.reason = "the owner stopped this turn"
         self.base_path = None
-        self.retirement_revision = 0
         self._lock = threading.Lock()
         self._wakers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
 
     def requested(self) -> bool:
         if not self._requested.is_set() and self.base_path is not None and self.agent_id != "main":
-            from tinyassets.custom_agents import get_binding
+            from tinyassets.addressed_agents import AgentNotAddressable, resolve
 
-            binding = get_binding(self.base_path, universe_id=self.universe_id,
-                                  binding_id=self.agent_id)
-            if (binding is None or binding.get("retired")
-                    or binding["created_by"] != self.actor_id
-                    or binding["retirement_revision"] != self.retirement_revision):
+            # The agent's files are its existence: a directory removed or marked
+            # retired mid-turn stops the turn at its next boundary.
+            try:
+                resolve(self.base_path, universe_id=self.universe_id, owner=self.actor_id,
+                        agent_id=self.agent_id)
+            except AgentNotAddressable:
                 self.request("agent retired")
         if not self._requested.is_set() and self.approval_task and len(self.approval_task) == 3:
             from tinyassets import bound_requests
@@ -210,13 +210,11 @@ def _key(actor_id: str, universe_id: str) -> tuple[str, str]:
 
 
 @contextmanager
-def interactive_turn(actor_id: str, universe_id: str, *, agent_id: str = "main", base_path=None,
-                     retirement_revision: int = 0):
+def interactive_turn(actor_id: str, universe_id: str, *, agent_id: str = "main", base_path=None):
     """Register the served turn running in this context until it returns."""
     key = _key(actor_id, universe_id)
     live = LiveTurn(*key, agent_id=agent_id)
     live.base_path = base_path
-    live.retirement_revision = retirement_revision
     with _LOCK:
         _LIVE.setdefault(key, set()).add(live)
     token = _CURRENT.set(live)

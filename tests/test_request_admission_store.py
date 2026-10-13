@@ -369,35 +369,6 @@ def test_commit_persists_only_the_exact_current_automation_activation(
     assert _table_count(tmp_path, "branch_tasks_v2") == 1
 
 
-def test_branch_task_admission_rejects_agent_manifest_activation(
-    tmp_path: Path,
-) -> None:
-    initialize_author_server(tmp_path)
-    activations = AutomationActivationStore(tmp_path)
-    stopped = activations.create_stopped_for_agent_binding(
-        universe_id="universe-a",
-        agent_binding_id="agent-binding-a",
-    )
-    active = activations.activate(
-        expected=stopped,
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=ExecutionSubject(
-            kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
-            ref="agent-manifest-a",
-            digest=f"sha256:{'c' * 64}",
-        ),
-        lease_id="activation-lease-a",
-    )
-    assert active is not None
-
-    with pytest.raises(ValueError, match="requires a branch_version subject"):
-        RequestAdmissionStore(tmp_path).commit_admission(
-            **_commit_kwargs(automation_activation=active),
-        )
-
-    assert _table_count(tmp_path, "request_admissions") == 0
-    assert _table_count(tmp_path, "branch_tasks_v2") == 0
-
 def test_commit_preserves_incentive_and_directed_instruction_privately(
     tmp_path,
 ):

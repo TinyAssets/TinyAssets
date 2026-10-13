@@ -38,7 +38,7 @@ async def handle_public_run(request):
     from starlette.responses import FileResponse, HTMLResponse, Response
 
     from tinyassets.api.helpers import _base_path
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
     from tinyassets.onboarding import onboarding_enabled
 
     headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}

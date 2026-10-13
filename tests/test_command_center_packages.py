@@ -86,8 +86,8 @@ MEMORY = "# Memory\n- [m_pub] Prefers short summaries\n- [m_priv] Alice's bank i
 
 def _seed_bob_serving(base: Path) -> None:
     """Bob's OWN connected model: his installed copies run on it, never Alice's."""
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
     folder = base / BOB_UNIVERSE
@@ -126,7 +126,7 @@ def home(tmp_path: Path, monkeypatch) -> Path:
         _write(alice, rel, data)
     bob = tmp_path / BOB_UNIVERSE
     _write(bob, "AGENTS.md", "# Bob's own agent\n")
-    from tinyassets.custom_agents import save_app_ui
+    from tinyassets.app_ui_store import save_app_ui
 
     save_app_ui(tmp_path, owner_user_id=OWNER, universe_id=UNIVERSE, expected_revision=0,
                 changes={"ui_library": [UI]})
@@ -180,7 +180,7 @@ def _published(home: Path, **package) -> dict:
 
 
 def _blob_files(home: Path, definition_id: str) -> dict[str, bytes]:
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     component = get_definition(home, definition_id)["components"]["package"]
     _, files = ccp.check_blob(ccp.read_blob(home, component["blob_sha256"]))
@@ -305,7 +305,7 @@ def test_the_rail_shows_the_pinned_tab_whatever_the_row_says(home: Path):
 
 
 def test_a_rewritten_action_executes_the_pinned_one(home: Path):
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     forged = dict(ask["action"])
@@ -344,7 +344,7 @@ def test_a_publish_row_with_no_pin_cannot_be_confirmed(home: Path):
 
 def test_an_over_quota_package_is_refused_with_its_size_and_nothing_goes_public(
         home: Path, monkeypatch):
-    from tinyassets.custom_agents import list_definitions
+    from tinyassets.commons_catalog import list_definitions
     from tinyassets.daemon_server import get_branch_definition
 
     _write(home / UNIVERSE, "notes/big.md", "word " * 60000)
@@ -403,8 +403,8 @@ def _bobs_branches(home: Path) -> list[dict]:
 def test_bob_finds_installs_and_runs_alices_village(home: Path):
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets.api.package_requests import list_packages
+    from tinyassets.app_ui_store import get_app_ui
     from tinyassets.automations import run_due_automation
-    from tinyassets.custom_agents import get_app_ui
     from tinyassets.runs import get_run, wait_for
 
     published = _published(home, memory_items=["m_pub"])
@@ -528,7 +528,7 @@ def test_only_the_owner_can_confirm_an_install(home: Path):
 
 def _hostile_package(home: Path, files: dict[str, bytes], *, listed=None) -> str:
     """A definition carrying a package whose blob was written by hand."""
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     manifest = ccp.build_manifest(profile=ccp.PROFILE_PUBLISH, name="Hostile",
                                   description="", files={}, workflows=[], ui="",
@@ -580,7 +580,7 @@ def test_content_that_does_not_match_its_listing_is_refused(home: Path):
 
 def test_a_tampered_blob_is_refused(home: Path):
     published = _published(home)
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     sha = get_definition(home, published["done"]["agent_definition_id"])[
         "components"]["package"]["blob_sha256"]
@@ -778,7 +778,7 @@ def test_protected_names_are_protected_in_any_case(rel):
 
 def test_a_resumed_ui_add_never_duplicates_the_screen(home: Path):
     from tinyassets.api.package_requests import _add_ui
-    from tinyassets.custom_agents import get_app_ui
+    from tinyassets.app_ui_store import get_app_ui
 
     with _as(BOB):
         _add_ui(BOB_UNIVERSE, UI, "village")
@@ -893,7 +893,7 @@ def test_a_blob_write_that_fails_records_no_ownership(tmp_path: Path, monkeypatc
 
 def test_an_unrelated_screen_at_the_intended_id_is_never_adopted(home: Path):
     from tinyassets.api.package_requests import _add_ui
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     bobs = {**UI, "name": "Bob's own", "markup": "<p>mine</p>"}
     save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE, expected_revision=0,
@@ -1354,7 +1354,7 @@ def _tab_plan(**overrides):
     plan = {
         "name": "village", "version": 3, "size": "12 KB", "author": "alice",
         "placement": {"land": [], "keep": [], "agent_slug": "village"},
-        "workflows": [], "automations": [], "ui": None, "agent_templates": [],
+        "workflows": [], "automations": [], "ui": None,
         "model": "", "connections": [], "safety": [],
     }
     plan.update(overrides)

@@ -14,7 +14,7 @@ class HeldReads:
         self.conn, self.base = conn, base
 
     def definition(self, definition_id):
-        from tinyassets.custom_agents import _definition_from_row, _read_definition_row
+        from tinyassets.commons_catalog import _definition_from_row, _read_definition_row
 
         row = _read_definition_row(self.conn, definition_id)
         return _definition_from_row(self.conn, row) if row is not None else None

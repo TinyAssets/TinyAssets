@@ -64,7 +64,7 @@ def _offer_pool_access(*, base, uid, owner, preset, definition_id, models):
     Caller holds the gesture lock and has checked the founder home.
     """
     from tinyassets.api.pending_requests import request_from_user
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
     from tinyassets.onboarding.model_bootstrap_binding import ensure_bootstrap_binding
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_assignment_manifest import ModelAccess

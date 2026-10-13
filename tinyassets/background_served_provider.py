@@ -817,7 +817,7 @@ class _BackgroundAssignedProviderSession:
             )
         with self._lock:
             from tinyassets.exceptions import ProviderAuthorityHeldError
-            from tinyassets.shared_self import agent_node, prepare_shared_self_turn
+            from tinyassets.shared_self import agent_node
 
             self._refresh_sign_ins()
             try:
@@ -840,15 +840,12 @@ class _BackgroundAssignedProviderSession:
                 if role != "writer" or kwargs:
                     raise PermissionError("workflow agent cannot substitute execution context")
                 load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
-                prompt, system, config = prepare_shared_self_turn(
-                    self._base_path, self._task.universe_id, self._task.actor_id, prompt, config,
-                    node,
-                )
-                from tinyassets.workflow_agent import call_background_work_agent
+                from tinyassets.control_plane import session
 
-                return call_background_work_agent(
-                    self, prompt=prompt, system=system, config=config, policy=policy,
-                )
+                # The one starter (S2): a queued run's agent node is the main agent.
+                return session.start("main", prompt, session.BackgroundStep(
+                    session=self, prompt_config=config, policy=policy, node=node,
+                ))
             invocation_index = self._call_index + 1
             with self._authorize_launch(
                 role=role,

@@ -10,18 +10,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from tinyassets.api.custom_agents import (
+from tinyassets.api.commons_catalog import (
     _authenticated_actor,
     _binding_access,
     _binding_universe,
     _payload,
 )
 from tinyassets.api.helpers import _base_path
-from tinyassets.custom_agents import (
+from tinyassets.app_ui_store import (
     APP_UI_ENTRY_OPERATIONS,
-    AgentConflictError,
-    AgentNotFoundError,
-    AgentValidationError,
     app_ui_etag,
     app_ui_index,
     app_ui_renderability,
@@ -31,6 +28,7 @@ from tinyassets.custom_agents import (
     read_app_ui_asset,
     save_app_ui,
 )
+from tinyassets.commons_catalog import AgentConflictError, AgentNotFoundError, AgentValidationError
 from tinyassets.storage_accounting import StorageRefused
 
 #: ``read_app_ui(ui_id=INDEX)`` is the row without any UI body.
@@ -277,7 +275,7 @@ def _preview_publication(uid: str, actor: str, definition_id: str) -> dict[str, 
 
     from tinyassets import ui_preview
     from tinyassets.api.helpers import _universe_dir
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     definition = get_definition(_base_path(), definition_id)
     if definition is None or definition["author_id"] != actor:

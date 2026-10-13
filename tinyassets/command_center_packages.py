@@ -607,7 +607,7 @@ def classify(rel: str, data: bytes, *, exclude: list[str],
     if fold(rel) == "settings.yaml" or (
         len(parts) == 3 and fold(parts[0]) == "agents" and fold(parts[2]) == "settings.yaml"
     ):
-        from tinyassets.harness_settings import SettingsError, package_settings
+        from tinyassets.agent_definition import SettingsError, package_settings
 
         try:
             data = package_settings(data)
@@ -1537,7 +1537,7 @@ def check_blob(blob: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
         if fold(path) == "settings.yaml" or (
             len(parts) == 3 and fold(parts[0]) == "agents" and fold(parts[2]) == "settings.yaml"
         ):
-            from tinyassets.harness_settings import SettingsError, parse_settings
+            from tinyassets.agent_definition import SettingsError, parse_settings
 
             try:
                 settings = parse_settings(data)

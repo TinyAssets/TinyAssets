@@ -705,6 +705,7 @@ def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, 
                     ui:own,assets:[]};
                 if(args.target==='app_ui')return {app_ui:structuredClone(window.testRow)};
                 if(args.target==='agent_bindings')return {bindings:[]};
+                if(args.target==='agents')return {agents:[{agent_id:'main',name:'Your agent'}]};
                 throw Error('unexpected read '+args.target);
             };
             MCP.callTool=async(tool,args)=>{

@@ -272,7 +272,7 @@ def select_model_if_unpowered(
 
 def _accept_additional_model_source(*, base, uid, actor, definition_id, model):
     """Complete the owner's model-use confirmation without replacing their root."""
-    from tinyassets.custom_agents import serving_binding_candidates
+    from tinyassets.commons_catalog import serving_binding_candidates
     from tinyassets.exceptions import ProviderError
     from tinyassets.onboarding.serving import _gesture_lock, _require_current_admin
     from tinyassets.provider_assignment import load_provider_assignment

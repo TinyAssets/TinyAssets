@@ -14,8 +14,8 @@ from tests.test_authenticated_external_call_effector import (
     _Loopback,
     _setup,
 )
-from tinyassets import agent_review, ta_cli
 from tinyassets import policy_rules as agent_rules
+from tinyassets import ta_cli
 from tinyassets.ta_capabilities import Capabilities, ExecutionContext
 
 
@@ -44,56 +44,6 @@ def test_response_header_values_never_cross_into_jail(tmp_path, monkeypatch):
     assert response["headers"] == headers  # leave the worker's own result intact
     for value in headers.values():
         assert value not in json.dumps(result)
-
-
-@pytest.mark.parametrize("enabled,sampling", [
-    (False, False), (False, True), (True, False), (True, True),
-])
-def test_engine_never_uses_client_sampling_for_review(
-    tmp_path, monkeypatch, enabled, sampling,
-):
-    from fastmcp import Client
-
-    from tinyassets.ta_capabilities import engine_dispatch
-
-    _, root, db = _setup(tmp_path)
-    server = engine(root, monkeypatch)
-    _policy_stub(monkeypatch, review=enabled)
-    loop = _Loopback()
-    _install_loopback_driver(monkeypatch, loop.port)
-    _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=root,
-                             grant_id="grant-http", provider="http", destination="api.example.com",
-                             runtime_root=tmp_path / "runtime")
-    reviews = []
-
-    async def sample(messages, params, context):
-        reviews.append((messages, params))
-        return json.dumps({"verdict": "proceed", "reason": "sampled"})
-
-    @server.mcp.tool(name="bash")
-    async def turn():
-        dispatch = await engine_dispatch(server)
-        return await asyncio.to_thread(dispatch, {
-            "op": "call", "name": "connection:conn-http:POST",
-            "arguments": {"request": {"path": "/v1/messages"}},
-        })
-
-    async def run():
-        async with Client(server.mcp, sampling_handler=sample if sampling else None) as client:
-            return await client.call_tool("bash", {})
-
-    try:
-        answer = asyncio.run(run())
-        result = json.loads(answer.content[0].text)["result"]
-        if enabled:
-            assert result["error_kind"] == "auto_review_unavailable"
-            assert loop.recorded == []
-        else:
-            assert result.get("delivered") is True, result
-            assert len(loop.recorded) == 1
-        assert reviews == []
-    finally:
-        loop.stop()
 
 
 @pytest.mark.parametrize("kind", ["refusal", "validation", "large_refusal"])
@@ -173,13 +123,12 @@ def call(service, **request):
                   arguments={"request": {"path": "/v1/messages", **request}})
 
 
-def _policy_stub(monkeypatch, behaviour=agent_rules.DO, *, review=False):
+def _policy_stub(monkeypatch, behaviour=agent_rules.DO):
     """These transport tests leave the policy decision to the broker policy suite."""
     monkeypatch.setattr(agent_rules, "configured_agents", lambda _home: set())
     monkeypatch.setattr(agent_rules, "classify", lambda *_: ("app.write", "POST"))
     monkeypatch.setattr(agent_rules, "decide", lambda *_a, **_kw:
                         agent_rules.Decision(behaviour, None, "test_policy"))
-    monkeypatch.setattr(agent_review, "switched_on", lambda *_a: {"app.write"} if review else set())
 
 
 def test_platform_search_describe_and_call_share_the_catalog(monkeypatch, tmp_path):
@@ -457,7 +406,8 @@ def test_unrestricted_launch_keeps_every_served_capability_and_connections(
                                      platform_call("write_graph"), platform_call("run_graph"))
     assert [item["name"] for item in catalog["capabilities"]] == [
         t for t in BACKEND_ENGINE_CAPABILITIES if t not in FILE_TOOLS
-    ] + ["wake:register", "wake:list", "wake:cancel", "browser", "connection:conn-http:POST"]
+    ] + ["wake:register", "wake:list", "wake:cancel", "agent:run", "browser",
+         "connection:conn-http:POST"]
     assert wrote == {"result": {"called": "write_graph"}}
     assert ran == {"result": {"called": "run_graph"}} and calls == ["write_graph", "run_graph"]
 

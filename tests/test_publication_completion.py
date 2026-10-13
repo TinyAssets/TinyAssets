@@ -107,7 +107,7 @@ def test_real_publish_and_update_reach_owner_answer(home, renderer):  # noqa: F8
 
 def test_preview_uses_public_definition_even_if_private_screen_changes(home, renderer, monkeypatch):  # noqa: F811
     from tinyassets.api import publish_requests
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     real_publish = publish_requests._publish_snapshot
 
@@ -186,19 +186,19 @@ def test_finished_publish_retries_resolution_without_republishing(home, monkeypa
 
 
 def test_direct_idempotent_replay_retains_original_listing_kind(home):  # noqa: F811
-    from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.api.commons_catalog import commons_catalog
 
     doc = {"schema_version": 1, "name": "Public identity", "description": "",
            "tags": [], "components": {"identity": {"kind": "soul", "config": {}}}}
     with _as(OWNER):
-        first = custom_agents(action="publish_agent", payload=doc, idempotency_key="same")
-        replay = custom_agents(action="publish_agent", payload=doc, idempotency_key="same")
+        first = commons_catalog(action="publish_agent", payload=doc, idempotency_key="same")
+        replay = commons_catalog(action="publish_agent", payload=doc, idempotency_key="same")
     assert first["completion"] == replay["completion"]
     assert replay["completion"]["change_kind"] == "new"
 
 
 def test_direct_publication_returns_completion_and_respects_owner_context(home):  # noqa: F811
-    from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.api.commons_catalog import commons_catalog
     from tinyassets.api.publish_requests import build_snapshot, validate_action
     from tinyassets.universe_server import write_graph
 
@@ -212,7 +212,7 @@ def test_direct_publication_returns_completion_and_respects_owner_context(home):
         # snapshot older than the bundle's current version, so the wrong-owner
         # attempt uses a fresh snapshot taken after the first publication.
         doc = build_snapshot(UNIVERSE, validate_action(_publish_action()))["definition"]
-        denied = custom_agents(action="publish_agent", universe_id=BOB_UNIVERSE, payload=doc)
+        denied = commons_catalog(action="publish_agent", universe_id=BOB_UNIVERSE, payload=doc)
         assert denied["completion"]["preview_status"] == "owner_context_required"
         assert denied["completion"]["preview_image_path"] is None
 
@@ -276,7 +276,7 @@ def test_publication_preview_selector_is_owner_scoped(home, monkeypatch):  # noq
 def test_real_publish_completion_contains_rendered_public_screen(home, monkeypatch):  # noqa: F811
     from tests.test_in_platform_agent_systems import UI
     from tests.test_ui_preview import _pixel
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     row = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
     screen = {**UI, "markup": "<div>Published village</div>", "script": "",

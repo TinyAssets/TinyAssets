@@ -20,12 +20,12 @@ import pytest
 from tests import test_discovery_snapshot as snapshot_tests
 from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.auth import middleware as auth
-from tinyassets.config import load_universe_config
-from tinyassets.custom_agents import (
+from tinyassets.commons_catalog import (
     create_binding,
     publish_definition,
     set_binding_serving_in_transaction,
 )
+from tinyassets.config import load_universe_config
 from tinyassets.exceptions import ProviderAuthorityHeldError, ProviderUnavailableError
 from tinyassets.provider_assignment import (
     authorize_served_provider_call,

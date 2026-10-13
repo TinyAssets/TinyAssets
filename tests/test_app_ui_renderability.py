@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.custom_agents import (
+from tinyassets.app_ui_store import (
     APP_UI_COMPONENT_FIELDS,
     APP_UI_FORMAT_VERSION,
     APP_UI_KIND,
@@ -150,7 +150,8 @@ def test_replace_ui_refuses_the_founders_component_with_the_fix_text(tmp_path) -
     and told them the UI was intact -- while the app refused to render it. The
     write and the read now share one definition.
     """
-    from tinyassets.custom_agents import AgentValidationError, change_app_ui_entry
+    from tinyassets.app_ui_store import change_app_ui_entry
+    from tinyassets.commons_catalog import AgentValidationError
 
     save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
                 expected_revision=0, changes={"ui_library": [_bundle(ui_id="furry-house")]})
@@ -171,7 +172,8 @@ def test_replace_ui_refuses_the_founders_component_with_the_fix_text(tmp_path) -
 
 
 def test_add_ui_refuses_it_too_and_names_the_operation(tmp_path) -> None:
-    from tinyassets.custom_agents import AgentValidationError, change_app_ui_entry
+    from tinyassets.app_ui_store import change_app_ui_entry
+    from tinyassets.commons_catalog import AgentValidationError
 
     with pytest.raises(AgentValidationError, match="FORMAT version"):
         change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME,
@@ -195,7 +197,8 @@ def test_save_still_accepts_a_library_holding_an_unrenderable_entry(tmp_path) ->
 
 def test_edit_ui_may_not_break_a_working_ui_but_may_edit_a_broken_one(tmp_path) -> None:
     """An edit is refused for a fault it INTRODUCES, never one it inherited."""
-    from tinyassets.custom_agents import AgentValidationError, change_app_ui_entry
+    from tinyassets.app_ui_store import change_app_ui_entry
+    from tinyassets.commons_catalog import AgentValidationError
 
     save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME, expected_revision=0,
                 changes={"ui_library": [_bundle(ui_id="office"),

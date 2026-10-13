@@ -98,7 +98,7 @@ SHAPES: dict[str, Shape] = {
             ("tinyassets/agent_interchange.py", ""),
             ("tinyassets/harness_settings.py", ""),
         ),
-        ceiling=3,
+        ceiling=0,
     ),
     "S6": Shape(
         ("tinyassets/extension_manifest.py", "tinyassets/extension_state.py"),
@@ -238,7 +238,7 @@ ENTRY_SYMBOLS: dict[str, str] = {
 }
 # Genuinely old file probes also have a line ratchet: growing an existing file
 # cannot hide behind an unchanged file count.
-LINE_CEILINGS = {"S3": 1335, "S5": 4552, "S9": 4638, "S15": 7547}
+LINE_CEILINGS = {"S3": 1335, "S5": 0, "S9": 4638, "S15": 7547}
 FLOOR_RAISE_SHAPES = frozenset({"S3", "S5", "S9", "S15"})
 FLOOR_REASON = re.compile(r"\b(?:security|data[ -]loss|outage)\b", re.I)
 VENDOR_FILE_CEILING = 145

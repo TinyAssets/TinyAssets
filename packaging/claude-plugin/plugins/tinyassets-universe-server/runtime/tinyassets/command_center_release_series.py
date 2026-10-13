@@ -13,7 +13,7 @@ import uuid
 from tinyassets import command_center_update_registry as registry
 from tinyassets.api.command_center_updates import _scope
 from tinyassets.command_center_updates import digest
-from tinyassets.custom_agents import _check_secret_fields, _normalize_definition_payload
+from tinyassets.commons_catalog import _check_secret_fields, _normalize_definition_payload
 
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS command_center_release_series (

@@ -27,6 +27,11 @@ GUARDS = {
         "Local runs without a PR event fail closed. "
     ),
     "test_one_agent_definition": "Keep every provider on the one agent definition. ",
+    "test_spawn_entry": (
+        "Start every agent through tinyassets/control_plane/session.py start(agent_ref, "
+        "input, parent); never call the writer turn, the workflow agent turn or the "
+        "agent loader from another module. "
+    ),
     "test_one_extension_unit": "Keep extensions on the v2 revision and authority boundary. ",
     "test_platform_has_no_llm": "Bind every model call to its owner; platform calls fail closed. ",
     "test_private_by_default": "Creation must declare private visibility. ",

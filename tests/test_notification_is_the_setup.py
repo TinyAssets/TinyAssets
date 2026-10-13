@@ -110,7 +110,7 @@ def no_llm(monkeypatch):
 
 
 def _assert_serves_on_its_own_connection(base):
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import resolve_serving_agent_binding
     from tinyassets.providers.definition import get_definition

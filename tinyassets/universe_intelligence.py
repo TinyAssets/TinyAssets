@@ -447,11 +447,11 @@ def _addressed_agent_section(agent: AddressedAgent) -> str:
         "Its identity files describe the main agent, not me, so I never rewrite "
         "them as myself.",
     ]
-    for key, kind, text in agent.instructions:
-        label = f"{kind} `{key}`" if kind else f"`{key}`"
-        lines.append(f"## My {label}\n{text}")
-    if not agent.instructions:
-        lines.append("My definition gives me no instructions of my own yet.")
+    instructions = agent.instructions.strip()
+    if instructions:
+        lines.append(f"## My instructions (`{agent.agent_slug}/AGENTS.md`)\n{instructions}")
+    else:
+        lines.append("My AGENTS.md gives me no instructions of my own yet.")
     return "\n\n".join(lines) + "\n\n"
 
 
@@ -1394,7 +1394,7 @@ def converse(
     capability = provider_request_capability()
     request_carrier = None
     if capability is not None:
-        from tinyassets.custom_agents import get_binding
+        from tinyassets.commons_catalog import get_binding
         from tinyassets.provider_serving_binding import resolve_serving_agent_binding
 
         if agent_binding_id:

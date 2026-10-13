@@ -89,7 +89,7 @@ def test_read_commons_shape_returns_the_untrusted_envelope(monkeypatch, tmp_path
     """Another user's shape arrives marked, sourced, and noticed; the founder's
     own shape comes back bare (the notice must be TRUE -- Codex shape review)."""
     import tinyassets.api.branches as branches
-    import tinyassets.custom_agents as agents
+    import tinyassets.commons_catalog as agents
     import tinyassets.universe_server as us
 
     _seed(tmp_path)

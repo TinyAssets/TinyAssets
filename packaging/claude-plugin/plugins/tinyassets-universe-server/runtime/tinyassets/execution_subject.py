@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -14,7 +12,6 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 class ExecutionSubjectKind(str, Enum):
     BRANCH_VERSION = "branch_version"
-    AGENT_RUNTIME_MANIFEST = "agent_runtime_manifest"
 
 
 def _required(value: object, name: str) -> str:
@@ -64,20 +61,7 @@ class ExecutionSubject:
         }
 
 
-def agent_binding_automation_id(agent_binding_id: str) -> str:
-    """Derive the sole reserved activation key for one private agent binding."""
-
-    clean_binding_id = _required(agent_binding_id, "agent_binding_id")
-    encoded = json.dumps(
-        ["agent_binding", clean_binding_id],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"automation_agent_{hashlib.sha256(encoded).hexdigest()[:32]}"
-
-
 __all__ = [
     "ExecutionSubject",
     "ExecutionSubjectKind",
-    "agent_binding_automation_id",
 ]

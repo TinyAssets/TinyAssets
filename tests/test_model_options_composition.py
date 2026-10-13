@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests import test_served_model_preferences as integration
-from tinyassets.custom_agents import get_binding
+from tinyassets.commons_catalog import get_binding
 from tinyassets.providers.model_options import model_options_document
 from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 

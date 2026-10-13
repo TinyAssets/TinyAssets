@@ -6,7 +6,7 @@ import pytest
 from starlette.requests import Request
 
 from tests.test_custom_agents import _definition
-from tinyassets.custom_agents import publish_definition
+from tinyassets.commons_catalog import publish_definition
 from tinyassets.onboarding.public_run import (
     handle_public_run,
     preview_path,

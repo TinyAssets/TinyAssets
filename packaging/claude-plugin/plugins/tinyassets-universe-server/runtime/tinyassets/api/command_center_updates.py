@@ -14,19 +14,18 @@ import uuid
 
 from tinyassets import command_center_update_registry as registry
 from tinyassets.api.helpers import _base_path
-from tinyassets.command_center_updates import digest, legacy_provenance
-from tinyassets.custom_agents import (
+from tinyassets.app_ui_store import (
     _app_ui_document,
-    _canonical_json,
     _check_app_ui_fields,
     _check_assets_held,
     app_ui_renderability,
-    get_definition,
 )
+from tinyassets.command_center_updates import digest, legacy_provenance
+from tinyassets.commons_catalog import _canonical_json, get_definition
 
 
 def _scope(universe_id):
-    from tinyassets.api.custom_agents import _authenticated_actor
+    from tinyassets.api.commons_catalog import _authenticated_actor
     from tinyassets.api.pending_requests import _owner_gate
 
     uid, _, denial = _owner_gate(universe_id)
@@ -53,9 +52,9 @@ def _pin(base, uid, request_id, *, readers=None):
 
 def _mapped_ui(plan, progress):
     ui = {**plan["ui"], "ui_id": progress["ui"]}
-    for field, group in (("workflow_refs", "workflows"), ("agent_refs", "agents")):
-        if field in ui:
-            ui[field] = {alias: progress[group][key] for alias, key in ui[field].items()}
+    if "workflow_refs" in ui:
+        ui["workflow_refs"] = {alias: progress["workflows"][key]
+                               for alias, key in ui["workflow_refs"].items()}
     if app_ui_renderability(ui):
         raise ValueError("replacement UI is not renderable")
     _check_app_ui_fields({"ui_library": [ui]})
@@ -92,20 +91,6 @@ def _dependencies(conn, owner, uid, source_plan, progress):
             )
         result["workflow:" + item["key"]] = digest(
             {k: row[k] for k in row.keys() if k not in {"stats_json", "created_at", "updated_at"}}
-        )
-    for item in source_plan.get("agent_templates", []):
-        target = progress["agents"][item["key"]]
-        row = conn.execute(
-            "SELECT * FROM agent_bindings WHERE agent_binding_id=? AND universe_id=?", (target, uid)
-        ).fetchone()
-        if (
-            row is None
-            or row["created_by"] != owner
-            or row["agent_definition_id"] != item["agent_definition_id"]
-        ):
-            raise ValueError("an installed agent dependency is missing or has different provenance")
-        result["agent:" + item["key"]] = digest(
-            {k: row[k] for k in row.keys() if k not in {"created_at", "updated_at"}}
         )
     if source_plan["automations"]:
         attached = {row[1] for row in conn.execute("PRAGMA database_list")}
@@ -226,7 +211,7 @@ def _prepare(conn, base, owner, uid, adoption_id, definition_id, *, readers=None
     if proposed["author"] != original["author"]:
         raise ValueError("replacement must name an exact public definition by the same author")
     # Whole-system dependency changes cannot be disguised as a safe UI-only patch.
-    for field in ("workflows", "automations", "agent_templates"):
+    for field in ("workflows", "automations"):
         if proposed.get(field, []) != original.get(field, []):
             raise ValueError(
                 f"replacement changes {field}; this manual adapter updates existing UI only"

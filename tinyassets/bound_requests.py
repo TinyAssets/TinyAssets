@@ -150,7 +150,7 @@ def validate_action(raw):
 def _authority(home, packet, owner, agent):
     from tinyassets import addressed_agents
     from tinyassets.broker.ledger_queries import authorized_connection
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.effectors import authenticated_external_call as effector
     from tinyassets.storage.effector_consents import list_consents
     from tinyassets.storage.outbound_connections import GrantResolutionError

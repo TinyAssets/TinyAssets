@@ -14,7 +14,7 @@ import zlib
 
 import pytest
 
-from tinyassets import custom_agents as ca
+from tinyassets import app_ui_store as ca
 from tinyassets import ui_preview
 
 # `api.app_ui` is imported HERE, before any test can patch what it binds: it

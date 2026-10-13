@@ -43,7 +43,7 @@ def test_projects_count_every_run_of_this_command_center(tmp_path):
 
 
 def test_activities_and_agent_states_show_who_waits_on_the_owner(tmp_path):
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
 
     universe = tmp_path / "u-alpha"
     universe.mkdir()

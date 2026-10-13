@@ -137,7 +137,7 @@ def test_preference_home_change_between_validation_and_commit_is_refused(home, m
 
 def test_binding_read_uses_real_universe_scoped_storage(home):
     from tests.test_custom_agents import _binding, _definition
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
 
     definition = publish_definition(
         home, author_id="owner-setup", payload=_definition("Setup fixture"),

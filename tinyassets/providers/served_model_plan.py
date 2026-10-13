@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tinyassets.custom_agents import get_binding
+from tinyassets.commons_catalog import get_binding
 from tinyassets.exceptions import ProviderError, SelectedModelUnavailableError
 from tinyassets.provider_assignment import (
     _served_request_agent,
@@ -709,9 +709,9 @@ def prepare_owned_model_plan(
 def apply_served_model_preferences(context, *, model_choice=None, needs_tools=True):
     """Capture preferences only from a genuine current owned conversation."""
     from tinyassets.addressed_agents import MAIN_AGENT, resolve
+    from tinyassets.agent_definition import read_settings
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.harness_settings import read_settings
 
     try:
         if context.provider_request is None:

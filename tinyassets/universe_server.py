@@ -52,7 +52,7 @@ from starlette.applications import Starlette
 from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.branches import _branch_design_guide_prompt
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
-from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
+from tinyassets.api.commons_catalog import commons_catalog as _commons_catalog_impl
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.prompts import _CONTROL_STATION_PROMPT, _MEET_UNIVERSE_PROMPT  # noqa: F401
@@ -822,7 +822,9 @@ def read_graph(
     Args:
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
-            branch, automations, automation, connections, compute, agents, agent, agent_bindings,
+            branch, automations, automation, connections, compute, agents (your own
+            agents: main and every agents/<name>/ directory), catalog (the commons
+            catalogue of published systems and packages), agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
             command_center_packages (working public packages to try in your own command center),
             command_center_preview (public visual bytes only; no copy or consent),
@@ -870,7 +872,7 @@ def read_graph(
         output_offset: Unicode code-point offset within a selected output field or
             conversation message, or field index when reading the catalog (for a
             conversation catalogue, the returned before-message-id key). Continue
-            using next_offset. For agents, a filtered definition index; for an agent
+            using next_offset. For catalog, a filtered definition index; for an agent
             catalog, a component index; for a selected component, Unicode JSON
             character offset. Concatenate chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
@@ -899,9 +901,11 @@ def read_graph(
         "file_id": file_id, "file_offset": file_offset,
         "file_max_bytes": file_max_bytes,
     }
-    if normalized in {"agents", "agent"} and not agent_stage_id:
-        from tinyassets.api.custom_agents import _base_path, _tags
-        from tinyassets.custom_agents import get_definition, list_definitions
+    if normalized in {"catalog", "agent"}:
+        # The commons catalogue (published systems and packages), projected for
+        # a model's context. An owner's agents are ``target="agents"``.
+        from tinyassets.api.commons_catalog import _base_path, _tags
+        from tinyassets.commons_catalog import get_definition, list_definitions
         from tinyassets.engine_read_views import project_agent, project_agents
         from tinyassets.engine_result_bounds import resolve_ceiling
 
@@ -1680,10 +1684,6 @@ def write_graph(
         action = {
             "publish": "publish_agent",
             "remix": "publish_agent",
-            "import": "import_agent",
-            "stage_import": "stage_import",
-            "publish_stage": "publish_stage",
-            "convert_export": "convert_export",
         }.get(agent_operation)
         if action is None:
             return json.dumps(
@@ -1694,18 +1694,13 @@ def write_graph(
                     "allowed_operations": [
                         "publish",
                         "remix",
-                        "import",
-                        "stage_import",
-                        "publish_stage",
-                        "convert_export",
                     ],
                 }
             )
         return json.dumps(
-            _custom_agents_impl(
+            _commons_catalog_impl(
                 action=action,
                 definition_id=agent_definition_id,
-                stage_id=agent_stage_id,
                 universe_id=graph_id,
                 payload=payload_json,
                 idempotency_key=idempotency_key,
@@ -1719,8 +1714,6 @@ def write_graph(
             "update": "update_binding",
             "bind_serving_provider": "bind_serving_provider",
             "set_serving": "set_serving",
-            "retire": "retire_binding",
-            "restore": "restore_binding",
         }.get(binding_operation)
         if action is None:
             return json.dumps(
@@ -1733,12 +1726,11 @@ def write_graph(
                         "update",
                         "bind_serving_provider",
                         "set_serving",
-                        "retire", "restore",
                     ],
                 }
             )
         return json.dumps(
-            _custom_agents_impl(
+            _commons_catalog_impl(
                 action=action,
                 universe_id=graph_id,
                 definition_id=agent_definition_id,
@@ -1750,7 +1742,7 @@ def write_graph(
     if normalized == "app_ui":
         app_ui_op = (operation or "save").strip().lower()
         if app_ui_op != "save":
-            # One UI or only the choice, no revision (custom_agents.change_app_ui_entry).
+            # One UI or only the choice, no revision (commons_catalog.change_app_ui_entry).
             from tinyassets.api.app_ui import change_app_ui
 
             return json.dumps(change_app_ui(
@@ -3307,7 +3299,7 @@ def converse(
     # History only rides into GRANTED (founder) turns — enforced again inside
     # converse — and it is memory, never consent.
     from tinyassets.api.helpers import _universe_dir as _memory_universe_dir
-    from tinyassets.universe_intelligence import converse as _converse_impl
+    from tinyassets.control_plane import session
 
     memory_universe_dir = _memory_universe_dir(uid)
     try:
@@ -3376,9 +3368,7 @@ def converse(
         # checkout, so a reference to it would point at nothing -- Codex refute
         # of this PR, finding D.)
         with interactive_turn(current_actor_id(), uid, agent_id=addressed_id,
-                              base_path=memory_universe_dir.parent,
-                              retirement_revision=(addressed.retirement_revision
-                                                   if addressed else 0)) as live_turn:
+                              base_path=memory_universe_dir.parent) as live_turn:
             live_turn.check()
             live_id = live_turn.live_id
             # This commit is admission, not optional memory. No model or tool may run
@@ -3417,20 +3407,17 @@ def converse(
                 )
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
                            current_actor_id(), typed, client_send_id)
-            reply = _converse_impl(
-                uid,
-                message,
-                actor_id=current_actor_id(),
-                tier=turn.interlocutor.tier,
-                conversation_history=conversation_history,
-                input_method=input_method,
-                response_observer=_observe_execution,
+            # The one starter (S2): the agent is resolved from its files here,
+            # and the executor runs on this turn's admission.
+            reply = session.start(addressed_id, message, session.OwnerTurn(
+                base_path=memory_universe_dir.parent, universe_id=uid,
+                owner=current_actor_id(), tier=turn.interlocutor.tier,
+                session_key=f"thread:{memory_session}",
+                conversation_history=conversation_history, input_method=input_method,
+                model_choice=model_choice, response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,
                 learning_failure_observer=learning_failures.append,
-                session_key=f"thread:{memory_session}",
-                addressed_agent=addressed,
-                **({} if model_choice is None else {"model_choice": model_choice}),
-            )
+            ))
             live_turn.check()
     except TurnInterrupted as exc:
         # An exception name alone is not proof the owner pressed Stop.

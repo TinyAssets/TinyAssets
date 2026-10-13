@@ -340,16 +340,20 @@ responses return before full status assembly and do not include this field.
 - **WHEN** `get_status` returns early for no bound home, denied access, or configuration-load failure
 - **THEN** that early response does not include `sandbox_status`
 
-### Requirement: Custom agents route through canonical graph handles
+### Requirement: Agents are files and the commons routes through canonical graph handles
 
-Custom agents SHALL be read through `read_graph` (`agents`, `agent`,
-`agent_bindings`, `agent_binding`) and written through `write_graph`; the
-public agent commons SHALL be browsable by any authenticated caller, and
-private bindings by their universe's ACL only.
+An owner's agents SHALL be the `agents/<name>/` directories of the command
+center, listed through `read_graph` target `agents` (main first) and edited
+with the four tools; no handle creates, publishes or imports an agent. The
+commons catalogue (published systems and packages) SHALL be read through
+`read_graph` target `agent` and published through `write_graph` target
+`agent`; binding rows (the serving provider, a conversation-design
+installation) SHALL be read through `agent_bindings` and `agent_binding` by
+their universe's ACL only, and are never agents.
 
-#### Scenario: signed-in caller browses the public agent commons
-- **WHEN** an authenticated caller uses `read_graph` with target `agents`
-- **THEN** public agent definitions are listed
+#### Scenario: signed-in owner lists their agents
+- **WHEN** the owner uses `read_graph` with target `agents` on their command center
+- **THEN** `main` and every `agents/<name>/` directory with an `AGENTS.md` or `settings.yaml` that is not retired are listed, with each agent's id and name
 
 ### Requirement: An owner can delete their own branch through write_graph
 

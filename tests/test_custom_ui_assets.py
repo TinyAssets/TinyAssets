@@ -20,7 +20,7 @@ import pytest
 
 from tests import test_owner_door as _owner_door
 from tests.test_owner_door import HOME_A, HOME_B, A, B, _as, _headers
-from tinyassets import custom_agents as ca
+from tinyassets import app_ui_store as ca
 from tinyassets.onboarding import ui_library_set
 
 door = _owner_door.door  # the owner door's real routes and middleware

@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 from tests import test_served_model_preferences as integration
-from tinyassets.api.custom_agents import custom_agents
+from tinyassets.api.commons_catalog import commons_catalog
 from tinyassets.providers import served_model_plan
 from tinyassets.providers.model_options import model_options_document
 from tinyassets.storage.learned_models import OwnModelHistory
@@ -153,7 +153,7 @@ def test_granting_access_makes_a_listed_id_selectable_and_runnable(
 
     # The one-tap grant the access sheet offers, as its payload: add the learned id
     # to this universe's accepted model access for that source.
-    granted = custom_agents(
+    granted = commons_catalog(
         action="bind_serving_provider", universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
         expected_revision=configured.binding["revision"],

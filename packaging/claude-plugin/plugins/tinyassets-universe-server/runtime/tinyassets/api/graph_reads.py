@@ -27,7 +27,7 @@ import json
 
 from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
-from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
+from tinyassets.api.commons_catalog import commons_catalog as _commons_catalog_impl
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.status import get_status as _get_status_impl
@@ -267,26 +267,32 @@ def read_graph(
 
         return json.dumps(read_access(universe_id=graph_id), default=str)
     if normalized == "agents":
-        return json.dumps(
-            _custom_agents_impl(
-                action="list_agents",
-                query=query,
-                tags=tags,
-                author_id=author,
-                limit=limit,
-            )
-        )
+        # The command center's agents (``agents/<name>/`` directories), main
+        # first: what the app's switcher and a connector show. Owner-only.
+        from tinyassets import addressed_agents
+        from tinyassets.api.helpers import _base_path, _request_universe
+        from tinyassets.api.permissions import current_actor_id, is_authenticated_request
+        from tinyassets.shared_self import require_founder_home
+
+        if not is_authenticated_request():
+            return json.dumps({"error": "not_found"})
+        try:
+            base, uid = _base_path(), _request_universe(graph_id)
+            require_founder_home(base, uid, current_actor_id())
+            agents = addressed_agents.roster(base, universe_id=uid, owner=current_actor_id())
+        except (PermissionError, ValueError, LookupError):
+            return json.dumps({"error": "not_found"})
+        return json.dumps({"universe_id": uid, "agents": agents, "count": len(agents)})
     if normalized == "agent":
         return json.dumps(
-            _custom_agents_impl(
-                action=("get_import_stage" if agent_stage_id else "get_agent"),
+            _commons_catalog_impl(
+                action="get_agent",
                 definition_id=(agent_definition_id or graph_id),
-                stage_id=agent_stage_id,
             )
         )
     if normalized == "agent_bindings":
         return json.dumps(
-            _custom_agents_impl(
+            _commons_catalog_impl(
                 action="list_bindings",
                 universe_id=graph_id,
                 limit=limit,
@@ -294,7 +300,7 @@ def read_graph(
         )
     if normalized == "agent_binding":
         return json.dumps(
-            _custom_agents_impl(
+            _commons_catalog_impl(
                 action="get_binding",
                 universe_id=graph_id,
                 binding_id=agent_binding_id,

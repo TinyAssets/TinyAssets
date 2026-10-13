@@ -189,8 +189,8 @@ def test_public_selected_reusable_graph_uses_reserved_run_and_exact_reply_projec
     from tinyassets import universe_server
     from tinyassets.api import branches, helpers, permissions
     from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.consumer_runtime import initialize
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import (
         get_branch_definition,
         save_branch_definition,

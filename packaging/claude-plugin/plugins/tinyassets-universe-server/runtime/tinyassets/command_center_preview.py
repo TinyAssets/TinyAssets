@@ -12,8 +12,9 @@ def read_preview(*, universe_id: str, definition_id: str) -> dict:
     from tinyassets.api import package_requests, system_copy_requests
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.pending_requests import _owner_gate
+    from tinyassets.app_ui_store import app_ui_renderability
     from tinyassets.command_center_packages import PACKAGE_TAG
-    from tinyassets.custom_agents import app_ui_renderability, get_definition
+    from tinyassets.commons_catalog import get_definition
 
     _, _, denial = _owner_gate(universe_id)
     if denial is not None:

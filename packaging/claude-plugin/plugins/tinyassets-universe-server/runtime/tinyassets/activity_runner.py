@@ -170,13 +170,15 @@ def owner_unavailable(base_path: Path, universe_id: str, owner_principal: str) -
 def _check_agent(universe_dir: Path, record: dict) -> None:
     if record.get("agent_id", "main") == "main":
         return
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.addressed_agents import AgentNotAddressable, resolve
     from tinyassets.runs import RunCancelledError
 
-    binding = get_binding(universe_dir.parent, universe_id=universe_dir.name,
-                          binding_id=record["agent_id"])
-    if (binding is None or binding["created_by"] != record["owner_principal"]
-            or binding.get("retired") or record.get("outcome") == "agent retired"):
+    try:
+        resolve(universe_dir.parent, universe_id=universe_dir.name,
+                owner=record["owner_principal"], agent_id=record["agent_id"])
+    except AgentNotAddressable:
+        raise RunCancelledError("agent retired") from None
+    if record.get("outcome") == "agent retired":
         raise RunCancelledError("agent retired")
 
 

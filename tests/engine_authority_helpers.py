@@ -7,7 +7,7 @@ from tinyassets.storage import DB_FILENAME
 
 def seed_engine_authority(root, *, actor="actor-a", graph="u-a"):
     """Seed real public schemas, without replacing any existing serving creator."""
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import grant_universe_access
 
     definition = publish_definition(root, author_id=actor, payload={

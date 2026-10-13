@@ -52,7 +52,7 @@ def answer_request(*, universe_id="", payload=None, cookie=None, origin="https:/
 
 def connect_owner_provider(home, owner, monkeypatch):
     """The owner's own connected, serving model source: what live chat turns ran on."""
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving

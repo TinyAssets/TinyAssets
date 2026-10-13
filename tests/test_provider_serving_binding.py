@@ -28,8 +28,8 @@ def _binding() -> dict[str, object]:
 
 
 def _seed_universe(tmp_path):
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
 
     universe_dir = tmp_path / "u-owner"
@@ -321,7 +321,7 @@ def test_custody_refuses_symlinked_subscription_path_components(tmp_path):
 
 
 def test_bind_serving_provider_derives_authority_and_wires_one_generation(tmp_path):
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import bind_serving_provider
     from tinyassets.storage.provider_work_authority import (
@@ -411,7 +411,7 @@ def test_bind_replays_only_while_custody_is_still_current(tmp_path):
 
 
 def test_generic_binding_writes_cannot_inject_provider_ref(tmp_path):
-    from tinyassets.custom_agents import AgentValidationError, update_binding
+    from tinyassets.commons_catalog import AgentValidationError, update_binding
 
     _, agent = _seed_universe(tmp_path)
     hostile = _binding()
@@ -429,7 +429,7 @@ def test_generic_binding_writes_cannot_inject_provider_ref(tmp_path):
 
 
 def test_set_serving_requires_eligible_connected_source_and_is_reversible(tmp_path):
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.provider_serving_binding import (
         bind_serving_provider,
         set_serving,
@@ -489,7 +489,7 @@ def test_set_serving_requires_eligible_connected_source_and_is_reversible(tmp_pa
 
 
 def test_set_serving_fences_the_exact_approved_assignment(tmp_path):
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
@@ -517,7 +517,11 @@ def test_set_serving_fences_the_exact_approved_assignment(tmp_path):
 
 
 def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
-    from tinyassets.custom_agents import create_binding, get_definition, serving_binding_candidates
+    from tinyassets.commons_catalog import (
+        create_binding,
+        get_definition,
+        serving_binding_candidates,
+    )
     from tinyassets.provider_serving_binding import (
         bind_serving_provider,
         resolve_current_serving_provider_authority,
@@ -620,8 +624,8 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
     monkeypatch,
 ):
     from tinyassets.api import permissions
-    from tinyassets.api.custom_agents import custom_agents
-    from tinyassets.custom_agents import create_binding
+    from tinyassets.api.commons_catalog import commons_catalog
+    from tinyassets.commons_catalog import create_binding
     from tinyassets.daemon_server import grant_universe_access
 
     universe_dir, agent = _seed_universe(tmp_path)
@@ -636,7 +640,7 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
         granted_by="owner-1",
     )
 
-    connected = custom_agents(
+    connected = commons_catalog(
         action="bind_serving_provider",
         universe_id="u-owner",
         binding_id=agent["agent_binding_id"],
@@ -647,7 +651,7 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
     assert connected["provider_binding"]["allowed_operations"] == ["converse"]
     assert "credential_reference_digest" not in connected["provider_binding"]
 
-    enabled = custom_agents(
+    enabled = commons_catalog(
         action="set_serving",
         universe_id="u-owner",
         binding_id=agent["agent_binding_id"],
@@ -657,7 +661,7 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
     assert enabled["status"] == "serving"
     assert enabled["agent_binding"]["status"] == "serving"
 
-    malformed = custom_agents(
+    malformed = commons_catalog(
         action="set_serving",
         universe_id="u-owner",
         binding_id=agent["agent_binding_id"],
@@ -676,7 +680,7 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
         granted_by="owner-1",
     )
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "collaborator-1")
-    denied = custom_agents(
+    denied = commons_catalog(
         action="set_serving",
         universe_id="u-owner",
         binding_id=agent["agent_binding_id"],
@@ -692,7 +696,7 @@ def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(
         created_by="collaborator-1",
         payload=_binding(),
     )
-    forged = custom_agents(
+    forged = commons_catalog(
         action="bind_serving_provider",
         universe_id="u-owner",
         binding_id=collaborator_binding["agent_binding_id"],
@@ -725,7 +729,7 @@ def test_write_graph_routes_first_class_serving_operations(
         seen.update(kwargs)
         return {"status": "ok"}
 
-    monkeypatch.setattr(server, "_custom_agents_impl", _dispatch)
+    monkeypatch.setattr(server, "_commons_catalog_impl", _dispatch)
     response = json.loads(
         server.write_graph(
             target="agent_binding",

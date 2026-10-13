@@ -6,9 +6,9 @@ import binascii
 import contextlib
 import contextvars
 
+from tinyassets.agent_definition import read_settings
 from tinyassets.extension_manifest import KINDS, ExtensionError
 from tinyassets.extension_state import ExtensionStore
-from tinyassets.harness_settings import read_settings
 
 _MOUNTS = contextvars.ContextVar("extension_mounts", default=frozenset())
 #: Revision blobs one remote launch may receive; leaves room in ta's 8 MiB reply.
@@ -298,9 +298,7 @@ class ExtensionCapabilities:
 
             agent = resolve(self.backend.root.parent, universe_id=ctx.universe,
                             owner=ctx.owner, agent_id=ctx.initiating_agent)
-            if agent is None or agent.agent_slug is None:
-                return True  # No installed directory; never guess one from a binding ID.
-            slug = agent.agent_slug
+            slug = agent.agent_slug if agent is not None else None
         settings = read_settings(self.backend.root, agent_slug=slug)
         enabled = settings.extensions
         return enabled is None or name in enabled

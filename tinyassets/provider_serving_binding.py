@@ -7,6 +7,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tinyassets.commons_catalog import (
+    get_binding,
+    serving_binding_candidates,
+    set_binding_provider_ref_in_transaction,
+    set_binding_serving_in_transaction,
+)
 from tinyassets.config import write_provider_assignment_projection
 from tinyassets.credential_vault import (
     LLMCredentialCustodyReference,
@@ -14,12 +20,6 @@ from tinyassets.credential_vault import (
     adopt_llm_subscription_custody,
     current_connection_grant_custody,
     current_llm_subscription_custody,
-)
-from tinyassets.custom_agents import (
-    get_binding,
-    serving_binding_candidates,
-    set_binding_provider_ref_in_transaction,
-    set_binding_serving_in_transaction,
 )
 from tinyassets.provider_assignment import (
     ProviderAssignment,

@@ -52,7 +52,7 @@ def _ready(monkeypatch) -> None:
 def _bindings(base, *statuses: str, created_by: str = "alice") -> None:
     """Exercise the real owner/status-filtered query, not a retired import."""
     from tests.test_open_serving_bind import _agent_definition
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         _agent_connect,
         create_binding,
         publish_definition,

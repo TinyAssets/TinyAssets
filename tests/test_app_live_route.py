@@ -18,7 +18,7 @@ from tinyassets.auth import middleware
 
 @pytest.fixture
 def live(monkeypatch, tmp_path):
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import initialize_author_server
 
     initialize_author_server(tmp_path)

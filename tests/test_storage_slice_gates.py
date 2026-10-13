@@ -238,7 +238,7 @@ class TestUploads:
 def test_a_targeted_ui_change_past_the_quota_is_refused_before_it_lands(base):
     """`change_app_ui_entry` (added on main beside `save_app_ui`) writes the same
     UI library, so it is gated the same way -- not a way around the quota."""
-    from tinyassets.custom_agents import change_app_ui_entry, get_app_ui
+    from tinyassets.app_ui_store import change_app_ui_entry, get_app_ui
 
     _fill(base, "u-a", 95 * KIB)
     with pytest.raises(sa.StorageRefused):

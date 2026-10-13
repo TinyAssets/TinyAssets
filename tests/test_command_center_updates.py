@@ -465,7 +465,7 @@ def test_real_component_install_pin_validates_without_enrolling_updates(tmp_path
     from tests.test_command_center_packages import BOB, BOB_UNIVERSE, _answer, home
     from tests.test_command_center_system_copy import _legacy, _preview
     from tinyassets.command_center_packages import pin_for_request
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     cloud_runtime.__wrapped__(monkeypatch)
@@ -485,29 +485,3 @@ def test_real_component_install_pin_validates_without_enrolling_updates(tmp_path
     )
 
 
-def test_agent_template_pin_uses_coordinated_plan_and_progress_keys():
-    pin, definition = legacy_fixture()
-    action = pin["record"]["action"]
-    plan = action["plan"]
-    plan["agent_templates"] = [
-        {
-            "key": "guide",
-            "kind": AGENT_KIND,
-            "agent_definition_id": "public-guide",
-            "name": "Guide",
-            "content_fingerprint": digest("public-guide"),
-        }
-    ]
-    unhashed = {key: value for key, value in plan.items() if key != "digest"}
-    fingerprint = hashlib.sha256(
-        json.dumps({"definition": definition, "plan": unhashed}, sort_keys=True).encode()
-    ).hexdigest()
-    pin["digest"] = plan["digest"] = action["snapshot_digest"] = fingerprint
-    pin["progress"]["agents"] = {"guide": "recipient-private-guide"}
-    assert (
-        dict(legacy_provenance(pin=pin, definition=definition).targets)["guide"]
-        == "recipient-private-guide"
-    )
-    pin["progress"]["agents"] = {}
-    with pytest.raises(ValueError, match="target mapping is incomplete"):
-        legacy_provenance(pin=pin, definition=definition)

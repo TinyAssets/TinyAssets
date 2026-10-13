@@ -29,7 +29,7 @@ def _definition(
 
 
 def test_publish_is_immutable_extensible_and_idempotent(tmp_path) -> None:
-    from tinyassets.custom_agents import get_definition, publish_definition
+    from tinyassets.commons_catalog import get_definition, publish_definition
 
     first_payload = _definition(
         "Coding partner",
@@ -144,7 +144,7 @@ def test_invalid_definition_is_rejected_without_a_partial_write(
     payload,
     path_fragment,
 ) -> None:
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AgentValidationError,
         list_definitions,
         publish_definition,
@@ -159,7 +159,7 @@ def test_invalid_definition_is_rejected_without_a_partial_write(
 def test_native_definition_rejects_credential_shaped_key_without_echoing_it(
     tmp_path,
 ) -> None:
-    from tinyassets.custom_agents import AgentValidationError, publish_definition
+    from tinyassets.commons_catalog import AgentValidationError, publish_definition
 
     credential_key = "ghp_abcdefghijklmnop"
     payload = _definition(
@@ -182,7 +182,7 @@ def test_native_definition_rejects_credential_shaped_key_without_echoing_it(
 def test_component_remix_records_verified_multi_parent_lineage_atomically(
     tmp_path,
 ) -> None:
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AgentValidationError,
         list_definitions,
         publish_definition,
@@ -260,7 +260,7 @@ def test_component_remix_records_verified_multi_parent_lineage_atomically(
 
 
 def test_missing_parent_component_and_depth_over_50_are_rejected(tmp_path) -> None:
-    from tinyassets.custom_agents import AgentValidationError, publish_definition
+    from tinyassets.commons_catalog import AgentValidationError, publish_definition
 
     missing = _definition(
         "Missing parent",
@@ -320,182 +320,6 @@ def test_missing_parent_component_and_depth_over_50_are_rejected(tmp_path) -> No
         )
 
 
-def test_portable_interchange_verifies_fingerprint_and_excludes_private_state(
-    tmp_path,
-) -> None:
-    from tinyassets.custom_agents import (
-        AgentValidationError,
-        import_definition,
-        publish_definition,
-    )
-
-    published = publish_definition(
-        tmp_path / "source",
-        author_id="alice",
-        payload=_definition("Portable agent"),
-    )
-    portable = published["portable_definition"]
-
-    assert "universe_id" not in portable
-    assert "binding_id" not in portable
-    assert "author_id" not in portable
-
-    imported = import_definition(
-        tmp_path / "destination",
-        author_id="bob",
-        portable_definition=portable,
-    )
-    assert imported["components"] == published["components"]
-    assert imported["agent_definition_id"] != published["agent_definition_id"]
-
-    tampered = copy.deepcopy(portable)
-    tampered["description"] = "tampered after export"
-    with pytest.raises(AgentValidationError, match="fingerprint"):
-        import_definition(
-            tmp_path / "tampered",
-            author_id="mallory",
-            portable_definition=tampered,
-        )
-
-
-def test_multi_user_blend_round_trips_through_an_empty_commons(tmp_path) -> None:
-    from tinyassets.custom_agents import import_definition, publish_definition
-
-    source = tmp_path / "source"
-    parents = []
-    parent_specs = [
-        ("alice", "identity", _component("soul", voice="direct")),
-        ("bob", "workflow", _component("branch_set", refs=["branch-a"])),
-        ("carol", "memory", _component("memory_policy", retention="durable")),
-    ]
-    for author, key, component in parent_specs:
-        parents.append(
-            publish_definition(
-                source,
-                author_id=author,
-                payload=_definition(
-                    f"{key.title()} parent",
-                    components={key: component},
-                ),
-            )
-        )
-
-    child = publish_definition(
-        source,
-        author_id="dave",
-        payload=_definition(
-            "Three-creator blend",
-            components={
-                key: copy.deepcopy(component) for _, key, component in parent_specs
-            }
-            | {"evaluation": _component("rubric", ref="commons:quality")},
-            lineage={
-                key: [
-                    {
-                        "definition_id": parent["agent_definition_id"],
-                        "component_key": key,
-                        "credit_share": 1.0,
-                    }
-                ]
-                for parent, (_, key, _) in zip(parents, parent_specs, strict=True)
-            },
-        ),
-    )
-    portable = child["portable_definition"]
-    for sources in portable["lineage"].values():
-        assert len(sources[0]["definition_fingerprint"]) == 64
-        assert len(sources[0]["component_fingerprint"]) == 64
-
-    imported = import_definition(
-        tmp_path / "empty-destination",
-        author_id="erin",
-        portable_definition=portable,
-    )
-
-    assert imported["content_fingerprint"] == child["content_fingerprint"]
-    assert imported["portable_definition"] == portable
-    assert imported["lineage"] == []
-
-
-def test_portable_lineage_resolves_unique_fingerprint_matched_parents(tmp_path) -> None:
-    from tinyassets.custom_agents import import_definition, publish_definition
-
-    source = tmp_path / "source"
-    parent = publish_definition(
-        source,
-        author_id="alice",
-        payload=_definition(
-            "Portable parent",
-            components={"identity": _component("soul", voice="clear")},
-        ),
-    )
-    child = publish_definition(
-        source,
-        author_id="bob",
-        payload=_definition(
-            "Portable child",
-            lineage={
-                "identity": [
-                    {
-                        "definition_id": parent["agent_definition_id"],
-                        "component_key": "identity",
-                        "credit_share": 1.0,
-                    }
-                ]
-            },
-        ),
-    )
-
-    destination = tmp_path / "destination"
-    local_parent = import_definition(
-        destination,
-        author_id="carol",
-        portable_definition=parent["portable_definition"],
-    )
-    local_child = import_definition(
-        destination,
-        author_id="dana",
-        portable_definition=child["portable_definition"],
-    )
-
-    assert local_child["portable_definition"] == child["portable_definition"]
-    assert len(local_child["lineage"]) == 1
-    assert local_child["lineage"][0]["parent_definition_id"] == (
-        local_parent["agent_definition_id"]
-    )
-
-
-def test_imported_lineage_id_without_fingerprints_stays_informational(tmp_path) -> None:
-    from tinyassets.custom_agents import import_definition, publish_definition
-
-    parent = publish_definition(
-        tmp_path,
-        author_id="alice",
-        payload=_definition("Local parent"),
-    )
-    portable_child = _definition(
-        "Unverified imported child",
-        lineage={
-            "identity": [
-                {
-                    "definition_id": parent["agent_definition_id"],
-                    "component_key": "identity",
-                    "credit_share": 1.0,
-                }
-            ]
-        },
-    )
-
-    imported = import_definition(
-        tmp_path,
-        author_id="mallory",
-        portable_definition=portable_child,
-    )
-
-    assert imported["portable_definition"]["lineage"] == portable_child["lineage"]
-    assert imported["lineage"] == []
-
-
 def _binding(name: str = "My coding agent") -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -518,7 +342,7 @@ def _binding(name: str = "My coding agent") -> dict[str, object]:
 
 
 def test_binding_create_and_revision_guard_are_atomic(tmp_path) -> None:
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AgentConflictError,
         create_binding,
         get_binding,
@@ -575,7 +399,7 @@ def test_binding_create_and_revision_guard_are_atomic(tmp_path) -> None:
 
 
 def test_binding_rejects_raw_credentials_and_cross_universe_reads(tmp_path) -> None:
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AgentValidationError,
         create_binding,
         get_binding,
@@ -635,7 +459,7 @@ def test_binding_rejects_private_operational_content_on_create_and_update(
     field,
     value,
 ) -> None:
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AgentValidationError,
         create_binding,
         get_binding,
@@ -693,8 +517,8 @@ def test_custom_agent_api_hides_private_bindings_without_universe_access(
     monkeypatch,
 ) -> None:
     from tinyassets.api import permissions
-    from tinyassets.api.custom_agents import custom_agents
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.api.commons_catalog import commons_catalog
+    from tinyassets.commons_catalog import create_binding, publish_definition
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     definition = publish_definition(
@@ -710,7 +534,7 @@ def test_custom_agent_api_hides_private_bindings_without_universe_access(
         payload=_binding(),
     )
 
-    public = custom_agents(
+    public = commons_catalog(
         action="get_agent",
         definition_id=definition["agent_definition_id"],
     )
@@ -725,7 +549,7 @@ def test_custom_agent_api_hides_private_bindings_without_universe_access(
         # private agent-binding reads.
         lambda universe_id, *, write=False: True,
     )
-    hidden = custom_agents(
+    hidden = commons_catalog(
         action="get_binding",
         universe_id="universe-a",
         binding_id=binding["agent_binding_id"],
@@ -748,7 +572,7 @@ def test_custom_agent_api_hides_private_bindings_without_universe_access(
         "universe_access_allows",
         lambda universe_id, *, write=False: universe_id == "universe-a",
     )
-    visible = custom_agents(
+    visible = commons_catalog(
         action="get_binding",
         universe_id="universe-a",
         binding_id=binding["agent_binding_id"],
@@ -761,13 +585,13 @@ def test_custom_agent_api_requires_auth_and_write_access_for_mutations(
     monkeypatch,
 ) -> None:
     from tinyassets.api import permissions
-    from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.api.commons_catalog import commons_catalog
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: False)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "anonymous")
 
-    anonymous = custom_agents(
+    anonymous = commons_catalog(
         action="publish_agent",
         payload=_definition("Anonymous agent"),
     )
@@ -775,7 +599,7 @@ def test_custom_agent_api_requires_auth_and_write_access_for_mutations(
 
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "alice")
-    published = custom_agents(
+    published = commons_catalog(
         action="publish_agent",
         payload=_definition("Authorized agent"),
     )
@@ -786,7 +610,7 @@ def test_custom_agent_api_requires_auth_and_write_access_for_mutations(
         "universe_access_allows",
         lambda universe_id, *, write=False: not write,
     )
-    denied = custom_agents(
+    denied = commons_catalog(
         action="create_binding",
         universe_id="universe-a",
         definition_id=definition_id,
@@ -808,7 +632,7 @@ def test_custom_agent_api_requires_auth_and_write_access_for_mutations(
         "universe_access_allows",
         lambda universe_id, *, write=False: universe_id == "universe-a",
     )
-    created = custom_agents(
+    created = commons_catalog(
         action="create_binding",
         universe_id="universe-a",
         definition_id=definition_id,
@@ -818,7 +642,7 @@ def test_custom_agent_api_requires_auth_and_write_access_for_mutations(
 
 
 def test_concurrent_definition_retry_creates_exactly_one_artifact(tmp_path) -> None:
-    from tinyassets.custom_agents import list_definitions, publish_definition
+    from tinyassets.commons_catalog import list_definitions, publish_definition
 
     payload = _definition("Concurrent publish")
 
@@ -839,7 +663,7 @@ def test_concurrent_definition_retry_creates_exactly_one_artifact(tmp_path) -> N
 
 
 def test_concurrent_binding_compare_and_swap_has_one_winner(tmp_path) -> None:
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AgentConflictError,
         create_binding,
         get_binding,

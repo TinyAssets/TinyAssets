@@ -12,10 +12,10 @@ from tests import test_selected_model_authority as authority
 from tests.test_pending_requests_power import _install_native_executor
 from tests.test_provider_served_router import _RecordingProvider, _served_context
 from tinyassets import daemon_server, universe_intelligence
-from tinyassets.api.custom_agents import custom_agents
+from tinyassets.api.commons_catalog import commons_catalog
 from tinyassets.auth import middleware as auth
+from tinyassets.commons_catalog import create_binding, get_binding, publish_definition
 from tinyassets.config import load_universe_config
-from tinyassets.custom_agents import create_binding, get_binding, publish_definition
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import set_serving
@@ -85,7 +85,7 @@ def configured(rig, reader, monkeypatch, request):
         native = NativeRecording("codex")
         monkeypatch.setattr(provider_calls, "_router", ProviderRouter({"codex": native}))
         access["codex"] = ModelAccess("explicit", ("",))
-    connected = custom_agents(
+    connected = commons_catalog(
         action="bind_serving_provider", universe_id="u-models",
         binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
         payload={"provider": rig.definition.id,
@@ -338,7 +338,7 @@ def test_http_enable_allows_text_when_agent_executor_is_disabled(configured, mon
 
 
 def test_public_enable_accepts_the_owned_model_assignment(configured):
-    response = custom_agents(
+    response = commons_catalog(
         action="set_serving", universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
         expected_revision=configured.binding["revision"], payload={"enabled": True},
@@ -389,7 +389,7 @@ def test_canonical_mcp_choice_runs_real_selected_agent(agent, monkeypatch):
     "model_scope": "discovered", "model_ids": [], "cost_caps": {"request_usd": True},
 }}, {"x": {"model_scope": "discovered", "model_ids": [], "cost_caps": None, "extra": 1}}])
 def test_public_invalid_model_access_cannot_republish(configured, access):
-    response = custom_agents(
+    response = commons_catalog(
         action="bind_serving_provider", universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
         expected_revision=configured.binding["revision"],
@@ -404,7 +404,7 @@ def test_public_missing_home_returns_structured_refusal(configured):
     daemon_server.set_founder_home(
         configured.rig.base, founder_sub="owner", universe_id="different", platform_generated=True,
     )
-    response = custom_agents(
+    response = commons_catalog(
         action="set_serving", universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
         expected_revision=configured.binding["revision"], payload={"enabled": True},
@@ -667,7 +667,7 @@ def test_public_enable_discovery_expiry_is_a_structured_refusal(configured, monk
         raise ProviderUnavailableError("model discovery is no longer fresh")
 
     monkeypatch.setattr(discovery_snapshot, "assert_discovery_snapshot_current", expired)
-    response = custom_agents(
+    response = commons_catalog(
         action="set_serving", universe_id="u-models",
         binding_id=configured.binding["agent_binding_id"],
         expected_revision=configured.binding["revision"], payload={"enabled": True},

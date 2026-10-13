@@ -296,7 +296,7 @@ def test_served_http_cancellation_holds_slot_and_budget_until_request_finishes(
     from tests.test_provider_served_router import _fresh_served_request
     from tests.test_run_provider_session import _seed_open_serving_assignment
     from tinyassets.auth import middleware as auth
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
     from tinyassets.daemon_server import set_founder_home
     from tinyassets.providers import router as routing
     from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call

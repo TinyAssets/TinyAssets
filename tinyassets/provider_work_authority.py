@@ -344,7 +344,7 @@ class ProviderInvocationSettlementOwner(str, Enum):
     CONSUMER = "consumer"
 
 
-_WORK_ITEM_KINDS = frozenset({"agent_invocation", "background_attempt", "branch_task", "run"})
+_WORK_ITEM_KINDS = frozenset({"background_attempt", "branch_task", "run"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,15 +368,9 @@ def _validate_work_lineage(
     agent_invocation_command_digest: str | None,
     agent_invocation_generation: int | None,
 ) -> None:
-    if work_item_kind == "agent_invocation":
-        if execution_subject.kind is not ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST:
-            raise ValueError("agent invocation requires an agent runtime manifest subject")
-        if branch_def_id is not None or branch_version_id is not None:
-            raise ValueError("agent invocation cannot carry Branch lineage")
-        _reference(agent_invocation_command_id, "agent_invocation_command_id")
-        _digest(agent_invocation_command_digest, "agent_invocation_command_digest")
-        _integer(agent_invocation_generation, "agent_invocation_generation", minimum=1)
-        return
+    # The agent runtime (and its ``agent_invocation`` receipts) is retired; the
+    # three ``agent_invocation_*`` fields stay in the persisted receipt payload,
+    # always None, so existing receipt digests still verify.
     if execution_subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
         raise ValueError("Branch provider work requires a branch version subject")
     _reference(branch_def_id, "branch_def_id")

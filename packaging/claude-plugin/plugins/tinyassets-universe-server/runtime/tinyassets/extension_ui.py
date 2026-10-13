@@ -5,8 +5,8 @@ import hashlib
 import json
 import logging
 
+from tinyassets import app_ui_store
 from tinyassets import command_center_packages as packages
-from tinyassets import custom_agents
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS extension_ui_projections (
@@ -30,7 +30,7 @@ def component(state, card, content, identity):
     else:
         result = {"kind": "tinyassets.app-ui.v1", "version": 1, "ui_id": "ta-ext-" + tag,
                   "name": card["description"], "markup": raw, "style": "", "script": ""}
-    custom_agents._refuse_unrenderable(result)
+    app_ui_store._refuse_unrenderable(result)
     return result
 
 
@@ -52,13 +52,13 @@ def project(service, state):
                          (owner, universe, agent, state["name"], state["revision"],
                           state["generation"], entry["ui_id"], json.dumps(entry)))
     for entry in components:
-        custom_agents.change_app_ui_entry(base, owner_user_id=owner, universe_id=universe,
+        app_ui_store.change_app_ui_entry(base, owner_user_id=owner, universe_id=universe,
                                           operation="add_ui", payload={"component": entry})
     for ui_id in prior:
         try:
-            custom_agents.change_app_ui_entry(base, owner_user_id=owner, universe_id=universe,
+            app_ui_store.change_app_ui_entry(base, owner_user_id=owner, universe_id=universe,
                                               operation="remove_ui", payload={"ui_id": ui_id})
-        except custom_agents.AgentNotFoundError:
+        except app_ui_store.AgentNotFoundError:
             pass
     return [entry["ui_id"] for entry in components]
 
@@ -95,7 +95,7 @@ def fence(base, owner, universe, document):
 
         ctx = SimpleNamespace(owner=owner, universe=universe, initiating_agent=row["agent_id"])
         service = ExtensionCapabilities(SimpleNamespace(root=base / universe, context=ctx))
-        from tinyassets.harness_settings import SettingsError
+        from tinyassets.agent_definition import SettingsError
 
         try:
             enabled = service._enabled(row["name"])

@@ -5,7 +5,7 @@ import pytest
 from fastmcp import Client
 
 from tests.engine_authority_helpers import mock_engine_admission
-from tinyassets.custom_agents import get_definition, publish_definition
+from tinyassets.commons_catalog import get_definition, publish_definition
 
 TAG = "tinyassets.command-center-package.v1"
 
@@ -83,7 +83,7 @@ def test_invalid_offsets_refuse(published, offset):
     for field in ("", "ui"):
         assert "error" in read(target="agent", agent_definition_id=aid,
                                field_name=field, output_offset=offset)
-    assert "error" in read(target="agents", output_offset=offset)
+    assert "error" in read(target="catalog", output_offset=offset)
 
 
 def test_catalog_and_list_have_no_missing_rows(published, monkeypatch):
@@ -108,7 +108,7 @@ def test_catalog_and_list_have_no_missing_rows(published, monkeypatch):
     publish(name="Other", tags=["other"])
     offset, seen = 0, []
     while True:
-        page = read(target="agents", tags="filter", limit=3, output_offset=offset)
+        page = read(target="catalog", tags="filter", limit=3, output_offset=offset)
         seen += [r["agent_definition_id"] for r in page["agents"]]
         assert all("html" not in json.dumps(r) for r in page["agents"])
         if page["next_offset"] is None:
@@ -117,8 +117,8 @@ def test_catalog_and_list_have_no_missing_rows(published, monkeypatch):
         offset = page["next_offset"]
     assert len(seen) == len(set(seen)) == len(ids)
     assert set(seen) == ids
-    assert read(target="agents", tags="filter", output_offset=len(ids))["agents"] == []
-    assert read(target="agents", tags="filter", output_offset=0)["offset"] == 0
+    assert read(target="catalog", tags="filter", output_offset=len(ids))["agents"] == []
+    assert read(target="catalog", tags="filter", output_offset=0)["offset"] == 0
 
 
 @pytest.mark.asyncio
@@ -160,7 +160,7 @@ def test_package_pages_validate_kind_before_offsets(published):
     seen = {list_packages(limit=1, offset=i)[0]["agent_definition_id"] for i in (0, 1)}
     assert seen == {first, second}
     assert list_packages(offset=2) == []
-    fake = read(target="agents", query="Not a package")["agents"][0]
+    fake = read(target="catalog", query="Not a package")["agents"][0]
     assert fake["publication_kind"] == "system"
 
 
@@ -188,7 +188,7 @@ async def test_served_browse_pages_survive_wrapping(published, monkeypatch):
                                                "file_count": 1, "size_bytes": 30000}})
                 ["agent_definition_id"])
     async with Client(engine.mcp) as client:
-        for kind in ("agents", "packages"):
+        for kind in ("packages",):
             offset, seen = 0, []
             while True:
                 response = await client.call_tool("browse_commons", {
@@ -219,7 +219,7 @@ async def test_served_browse_pages_survive_wrapping(published, monkeypatch):
 @pytest.mark.parametrize("limit", [0, -1, True, "5", 101])
 def test_bad_list_limits_refuse(published, limit):
     published[0]()
-    assert "error" in read(target="agents", limit=limit)
+    assert "error" in read(target="catalog", limit=limit)
 
 
 @pytest.mark.parametrize("size", [0, -1, True, "5", 32769])
@@ -239,7 +239,7 @@ async def test_author_prefix_is_never_confused_with_owner(published, monkeypatch
     monkeypatch.setenv("TINYASSETS_ENGINE_RESULT_CEILING_BYTES", "4096")
     publish(author=owner + "-foreign")
     async with Client(engine.mcp) as client:
-        for kind in ("agents", "packages"):
+        for kind in ("packages",):
             response = await client.call_tool("browse_commons", {"kind": kind})
             result = json.loads(response.content[0].text)
             assert result["untrusted"] is True

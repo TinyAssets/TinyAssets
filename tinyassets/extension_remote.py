@@ -25,23 +25,21 @@ class EffectorTransport:
 
     @asynccontextmanager
     async def stream(self, *, grant_id, connection_id, verb, request, op_id):
-        from tinyassets.agent_review import bound
         from tinyassets.effectors.authenticated_external_call import (
             run_authenticated_external_call_effector,
         )
 
         self.check()
         backend = self.service.backend
-        with bound(backend.review_model, active=backend.model_reference is not None):
-            result = await asyncio.to_thread(
-                run_authenticated_external_call_effector,
-                node_id="extension-mcp", output_keys=["call"], base_path=backend.root,
-                execution_context=backend.context,
-                allow_deferred=False,
-                run_state={"call": {"sink": "authenticated_external_call",
-                                   "connection_id": connection_id, "grant_id": grant_id,
-                                   "verb": verb, "request": request}},
-            )
+        result = await asyncio.to_thread(
+            run_authenticated_external_call_effector,
+            node_id="extension-mcp", output_keys=["call"], base_path=backend.root,
+            execution_context=backend.context,
+            allow_deferred=False,
+            run_state={"call": {"sink": "authenticated_external_call",
+                               "connection_id": connection_id, "grant_id": grant_id,
+                               "verb": verb, "request": request}},
+        )
         response = result.get("response")
         if not result.get("delivered") or not isinstance(response, dict):
             if result.get("error_kind") == "outbound_request_failed":

@@ -43,7 +43,7 @@ def completion_for(agent: dict[str, Any], *, universe_id: str = "",
 
 def _with_preview(result: dict[str, Any], universe_id: str) -> dict[str, Any]:
     from tinyassets.api.app_ui import preview_app_ui
-    from tinyassets.api.custom_agents import _binding_access
+    from tinyassets.api.commons_catalog import _binding_access
 
     if not universe_id or result["preview_status"] in {"no_screen", "ready"}:
         return result
@@ -67,7 +67,7 @@ def receipt_completion(receipt: dict[str, Any], *, universe_id: str,
                        action: dict[str, Any]) -> dict[str, Any]:
     """Enrich only AFTER the publish claim is durably finished, including old pins."""
     from tinyassets.api.helpers import _base_path
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     if receipt.get("completion"):
         result = dict(receipt["completion"])
@@ -79,7 +79,7 @@ def receipt_completion(receipt: dict[str, Any], *, universe_id: str,
             result = completion_for(agent, action=action)
         result["share_url"] = share_url(receipt["agent_definition_id"])
         if result["preview_status"] == "owner_context_required":
-            from tinyassets.api.custom_agents import _binding_access
+            from tinyassets.api.commons_catalog import _binding_access
 
             if universe_id and _binding_access(universe_id, write=True) is None:
                 result["preview_status"] = "pending"
@@ -103,9 +103,9 @@ def start_receipt_preview(completion: dict[str, Any], *, universe_id: str,
     thread; the worker never borrows ambient auth or looks up a private UI.
     """
     from tinyassets import ui_preview
-    from tinyassets.api.custom_agents import _authenticated_actor, _binding_access
+    from tinyassets.api.commons_catalog import _authenticated_actor, _binding_access
     from tinyassets.api.helpers import _base_path, _universe_dir
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
     from tinyassets.storage.pending_requests import update_publication_preview
 
     if completion["preview_status"] != "pending":
