@@ -48,14 +48,14 @@ def test_default_is_absolute(clean_env):
 
 
 def test_default_inherits_data_dir(clean_env, tmp_path):
-    """When only TINYASSETS_DATA_DIR is set, wiki_path returns <data>/wiki."""
+    """When only TINYASSETS_DATA_DIR is set, a fresh volume uses <data>/.wiki."""
     from tinyassets.storage import data_dir, wiki_path
 
     root = tmp_path / "data-root"
     clean_env.setenv("TINYASSETS_DATA_DIR", str(root))
 
     assert data_dir() == root.resolve()
-    assert wiki_path() == (root / "wiki").resolve()
+    assert wiki_path() == (root / ".wiki").resolve()
 
 
 def test_explicit_env_is_absolute(clean_env, tmp_path):
@@ -79,7 +79,7 @@ def test_empty_string_env_treated_as_unset(clean_env, tmp_path):
     clean_env.setenv("TINYASSETS_WIKI_PATH", "")
     clean_env.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
-    assert wiki_path() == (tmp_path / "wiki").resolve()
+    assert wiki_path() == (tmp_path / ".wiki").resolve()
 
 
 def test_whitespace_only_env_treated_as_unset(clean_env, tmp_path):
@@ -88,7 +88,19 @@ def test_whitespace_only_env_treated_as_unset(clean_env, tmp_path):
     clean_env.setenv("TINYASSETS_WIKI_PATH", "   ")
     clean_env.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
-    assert wiki_path() == (tmp_path / "wiki").resolve()
+    assert wiki_path() == (tmp_path / ".wiki").resolve()
+
+
+def test_existing_wiki_directory_stays_the_root(clean_env, tmp_path):
+    """A volume that already has data/wiki keeps those pages."""
+    from tinyassets.storage import wiki_path
+
+    clean_env.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    legacy = tmp_path / "wiki"
+    legacy.mkdir()
+    (legacy / "index.md").write_text("kept", encoding="utf-8")
+
+    assert wiki_path() == legacy.resolve()
 
 
 # ---- integration with universe_server ------------------------------------
@@ -124,7 +136,7 @@ def test_no_cwd_drift_when_env_unset(clean_env, tmp_path, monkeypatch):
 def test_no_hardcoded_jonathan_path_anywhere(clean_env, tmp_path):
     """The pre-cleanup default ``C:\\Users\\Jonathan\\Projects\\Wiki`` is gone.
 
-    Resolver returns the platform-correct default (data_dir/wiki) when
+    Resolver returns the platform-correct default (data_dir/.wiki) when
     no env is set. If this regresses, the class comes back.
     """
     from tinyassets.storage import wiki_path

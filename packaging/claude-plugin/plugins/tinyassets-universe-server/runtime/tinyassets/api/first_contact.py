@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 from pathlib import Path
@@ -9,6 +10,23 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _HOME_MATERIALIZE_LOCK = threading.Lock()
+_HOME_FAILURE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "founder_home_failure", default=""
+)
+
+
+def founder_home_failure() -> str:
+    """Why the last ``ensure_founder_home`` on this context returned ``""``.
+
+    ``scope`` means the caller lacks create capability. Every other token
+    is a home that could not be created or loaded. Empty after a success.
+    """
+    return _HOME_FAILURE.get()
+
+
+def _no_home(reason: str) -> str:
+    _HOME_FAILURE.set(reason)
+    return ""
 
 
 def _home_dir(base: Path, universe_id: str) -> Path | None:
@@ -67,6 +85,7 @@ def ensure_founder_home(base: Path, founder: str) -> str:
         get_founder_home,
     )
 
+    _HOME_FAILURE.set("")
     home = get_founder_home(base, founder)
     if home_is_complete(base, home):
         return home
@@ -81,20 +100,20 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             "first-contact refused: principal %s is tombstoned by account deletion",
             founder,
         )
-        return ""
+        return _no_home("deleted")
 
     from tinyassets.auth.middleware import require_action_scope
 
     try:
         require_action_scope("universe", "create_universe")
     except PermissionError:
-        return ""
+        return _no_home("scope")
 
     from tinyassets.ids import is_universe_serial, new_universe_id
 
     winner = claim_founder_home(base, founder, new_universe_id())
     if not winner:
-        return ""
+        return _no_home("unbound")
     # Provenance gate (universe-creation 5.2): the internal-trust flag may only
     # materialize a value proven to be PLATFORM-GENERATED — not merely one that
     # matches the serial FORMAT. ``claim_founder_home`` runs INSERT ... ON
@@ -122,10 +141,10 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             proven,
             is_universe_serial(winner),
         )
-        return ""
+        return _no_home("provenance")
     universe_dir = _home_dir(base, winner)
     if universe_dir is None:
-        return ""
+        return _no_home("path")
     if home_is_complete(base, winner):
         return winner
 
@@ -136,6 +155,7 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             return winner
         # DA4: an incomplete home keeps its root and grant; _universe_impl
         # resumes admission and seeding in place.
+        refused = False
         try:
             # ``winner`` passed the provenance gate above: its founder_home row
             # carries the platform-generated marker AND it is serial-shaped. Only
@@ -146,8 +166,15 @@ def ensure_founder_home(base: Path, founder: str) -> str:
                 universe_id=winner,
                 allow_named_universe_id=True,
             )
-        except Exception:  # noqa: BLE001 - failed birth degrades honestly
-            pass
+        except Exception as exc:  # noqa: BLE001 - failed birth degrades honestly
+            logger.warning(
+                "first-contact materialize failed for founder %s",
+                founder,
+                exc_info=True,
+            )
+            from tinyassets.role_center_admission import AdmissionRefused
+
+            refused = isinstance(exc, AdmissionRefused)
         if not home_is_complete(base, winner):
-            return ""
+            return _no_home("admission" if refused else "incomplete")
     return winner

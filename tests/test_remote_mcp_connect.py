@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.broker_double import seed_owner_admission
 from tests.test_authenticated_external_call_effector import (
     _install_inprocess_proxy,
     _install_loopback_driver,
@@ -174,6 +175,7 @@ def home(tmp_path, monkeypatch):
 
     base = tmp_path / "data"
     (base / UID).mkdir(parents=True)
+    seed_owner_admission(base, principal=OWNER, center=UID)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     grant_universe_access(base, universe_id=UID, actor_id=OWNER, permission="admin",

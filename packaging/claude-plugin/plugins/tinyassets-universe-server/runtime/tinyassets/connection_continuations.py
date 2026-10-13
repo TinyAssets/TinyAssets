@@ -5,8 +5,8 @@ import time
 from contextlib import closing
 
 from tinyassets import agent_activities, bound_requests, turn_interrupt
-from tinyassets.approval_scopes import task_for
 from tinyassets.owner_control import control
+from tinyassets.policy_grants import task_for
 
 
 def bind(home, request_id):

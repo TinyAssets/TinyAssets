@@ -37,7 +37,12 @@ from tinyassets.api.helpers import (
     _wiki_pages_dir,
     _wiki_root,
 )
-from tinyassets.universe_files import ensure_data_directory, unlink_data_path, write_data_path
+from tinyassets.universe_files import (
+    UniverseFileError,
+    ensure_data_directory,
+    unlink_data_path,
+    write_data_path,
+)
 
 # Wiki category taxonomy. Expanded 2026-04-13 to stop user-intent content
 # (recipes, workflows, personal notes) getting dumped into `research/`
@@ -2764,6 +2769,22 @@ def wiki(
     # (empty /data/wiki) don't error on read/list/search/lint. Idempotent.
     try:
         _ensure_wiki_scaffold(wiki_root)
+    except UniverseFileError as exc:
+        # UniverseFileError is an OSError. A command-center root that
+        # admission has not published is not a permissions failure, and
+        # telling the caller to chmod the volume sends them the wrong way.
+        detail = str(exc)
+        if "created only by admission" in detail:
+            return json.dumps({
+                "error": "These pages have no command center yet.",
+                "hint": (
+                    "A command center root is created only by admission. "
+                    "Scaffolding pages does not create one."
+                ),
+            })
+        return json.dumps({
+            "error": f"Wiki scaffold refused at {wiki_root}: {exc}",
+        })
     except OSError as exc:
         return json.dumps({
             "error": f"Wiki scaffold failed at {wiki_root}: {exc}",

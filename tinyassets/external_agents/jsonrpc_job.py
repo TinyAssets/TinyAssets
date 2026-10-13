@@ -35,6 +35,27 @@ def method_params(operation: dict, values: dict) -> dict:
     return expand_template(operation["params"], values)
 
 
+def refusal_category(detail) -> str:
+    """Classify upstream errors without carrying their text into a receipt."""
+    message = (detail.get("message", "") if isinstance(detail, dict)
+               else str(detail)).lower()
+    if any(word in message for word in ("temporarily unavailable", "capacity",
+                                        "high demand", "high-demand")):
+        return "transient_capacity"
+    if (any(word in message for word in ("model not found", "unknown model",
+                                          "model unavailable", "unsupported model"))
+            or ("model" in message and any(word in message for word in (
+                "not available", "unavailable", "not supported", "does not exist")))):
+        return "model_unavailable"
+    if any(word in message for word in ("permission denied", "access denied", "forbidden")):
+        return "permission_denied"
+    if any(word in message for word in ("rate limit", "too many requests")):
+        return "rate_limited"
+    if "invalid" in message:
+        return "invalid_request"
+    return "unknown"
+
+
 def tool_result_items(result) -> tuple[bool, list[dict]]:
     """An MCP ``CallToolResult`` as ``DynamicToolCallResponse`` content."""
     items: list[dict] = []
@@ -78,6 +99,7 @@ class TurnOutcome:
     output_tokens: int = 0
     usage_seen: bool = False
     status: str = ""
+    auth_rejected: bool = False
     tool_calls: int = 0
 
 
@@ -220,6 +242,10 @@ class JsonRpcJob:
         elif method == events["done"]["method"]:
             event = events["done"]
             self.outcome.status = str(pointer(params, event["status"]) or "")
+            self.outcome.auth_rejected = (
+                "auth_error" in event
+                and pointer(params, event["auth_error"]) == event["auth_code"]
+            )
             if not self.outcome.messages and "items" in event:
                 items = pointer(params, event["items"])
                 if isinstance(items, list):
@@ -357,7 +383,8 @@ class JsonRpcJob:
 
                         raise ProviderAuthenticationError(
                             "external agent needs a fresh sign-in")
-                    raise ProviderError(f"external agent refused {method}")
+                    raise ProviderError(
+                        f"external agent refused {method}:{refusal_category(detail)}")
                 return reply.get("result") or {}
 
             init = self.job["initialize"]

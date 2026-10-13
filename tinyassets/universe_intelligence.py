@@ -203,10 +203,7 @@ _ENGINE_DISALLOWED_TOOLS = (
 # branch is safe. run_graph is NOT author-only (its resolver admits founder-owned
 # or public; foreign-private is refused) — the sanitization, not an author gate,
 # is what keeps that safe.
-# Served engine-MCP allowlist — the SINGLE canonical list from served_tools.py,
-# shared verbatim with the codex surface (codex_provider._ENGINE_MCP_ENABLED_TOOLS)
-# so the two provider surfaces CANNOT drift (founder rule: all surfaces do the same
-# things). To change what the served agent can do, edit served_tools.py once.
+# Served engine-MCP allowlist from the one canonical served_tools.py list.
 _ENGINE_MCP_TOOLS = SERVED_ENGINE_MCP_TOOLS
 _ENGINE_MCP_ALLOWED = tuple(f"mcp__tinyassets__{name}" for name in _ENGINE_MCP_TOOLS)
 # Denylist for an engine-MCP-on turn: identical to the tool-free floor EXCEPT
@@ -882,6 +879,7 @@ def _learn_from_turn(
     reply: str,
     actor_id: str,
     agent_id: str,
+    failure_observer=None,
 ) -> bool:
     """Persist what the founder taught this turn. Returns whether it ran.
 
@@ -902,8 +900,20 @@ def _learn_from_turn(
     Neither writes the shared cooldown (``ModelConfig.secondary_call``), so a
     skipped extraction costs the founder's next turn nothing.
     """
-    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+    from tinyassets.exceptions import (
+        AllProvidersExhaustedError,
+        ExternalAgentUnavailable,
+        ProviderAuthorityHeldError,
+        ProviderError,
+    )
     from tinyassets.turn_interrupt import TurnInterrupted
+
+    def report_failure(reason: str) -> None:
+        if failure_observer is not None:
+            try:
+                failure_observer(reason)
+            except Exception:
+                logger.warning("converse: learning failure could not be reported")
 
     try:
         proposed = extract_learning(founder_message, reply, ctx)
@@ -914,7 +924,22 @@ def _learn_from_turn(
         commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id,
                         agent_id=agent_id)
         return True
-    except (AllProvidersExhaustedError, ProviderAuthorityHeldError, TurnInterrupted) as exc:
+    except (AllProvidersExhaustedError, ExternalAgentUnavailable,
+            ProviderAuthorityHeldError, TurnInterrupted) as exc:
+        if isinstance(exc, AllProvidersExhaustedError):
+            attempts = getattr(exc, "attempts", ())
+            reason = (getattr(attempts[-1], "skip_class", "") if attempts else "")
+            reason = reason if reason in {
+                "auth_invalid", "quota_or_cooldown", "provider_error", "timed_out",
+                "provider_unavailable", "unknown",
+            } else "provider_exhausted"
+        elif isinstance(exc, ExternalAgentUnavailable):
+            reason = exc.reason
+        elif isinstance(exc, TurnInterrupted):
+            reason = "interrupted"
+        else:
+            reason = "authority_held"
+        report_failure(reason)
         # A stop pressed after the reply exists ends only this extraction: the
         # reply is still delivered and the lesson stays owed for the next turn.
         logger.info(
@@ -922,7 +947,12 @@ def _learn_from_turn(
             "(%s: %s)", universe_id, type(exc).__name__, exc,
         )
         return False
+    except ProviderError:
+        report_failure("provider_error")
+        logger.exception("converse: learning provider failed for %s", universe_id)
+        return False
     except Exception:  # persistence must never break the conversation turn
+        report_failure("learning_internal_error")
         logger.exception("converse: learning persistence failed for %s", universe_id)
         return False
 
@@ -1280,6 +1310,7 @@ def converse(
     response_observer=None,
     model_choice: dict | None = None,
     learning_observer=None,
+    learning_failure_observer=None,
     session_key: str = "",
     addressed_agent: AddressedAgent | None = None,
 ) -> str:
@@ -1571,6 +1602,7 @@ def converse(
                     ctx, universe_dir=udir, universe_id=uid,
                     founder_message=founder_message, reply=reply, actor_id=actor_id,
                     agent_id=addressed_agent.agent_id if addressed_agent else MAIN_AGENT,
+                    failure_observer=learning_failure_observer,
                 )
             if learning_observer is not None:
                 try:

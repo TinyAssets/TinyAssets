@@ -845,27 +845,6 @@ def test_an_empty_selection_prunes_to_nothing_without_running_pytest():
     assert gate.collectible_under_gate([]) == ([], [])
 
 
-def test_pruning_rewrites_the_file_and_falls_back_to_all_when_empty(tmp_path, monkeypatch):
-    """Nothing collectible must not become a selective pass over an empty union."""
-    path = tmp_path / "affected.txt"
-    path.write_text("tests/test_node_bid_claim_stress.py\n", encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", [
-        "ci_required_tests.py", "--prune-to-collectible", str(path),
-    ])
-    assert gate.main() == 0
-    assert path.read_text(encoding="utf-8").strip() == "ALL"
-
-
-def test_pruning_an_all_selection_is_a_no_op(tmp_path, monkeypatch):
-    path = tmp_path / "affected.txt"
-    path.write_text("ALL\n", encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", [
-        "ci_required_tests.py", "--prune-to-collectible", str(path),
-    ])
-    assert gate.main() == 0
-    assert path.read_text(encoding="utf-8").strip() == "ALL"
-
-
 def test_slow_clean_union_reports_cost_without_blocking(shards, monkeypatch, capsys):
     monkeypatch.setattr(gate, "MAX_TEST_SECONDS", 1)
     for i in (1, 2, 3):

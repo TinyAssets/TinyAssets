@@ -844,25 +844,15 @@
         <div id="wakes-list"></div>
         <button id="btn-wakes-reload" class="btn btn--link" type="button">Refresh follow-ups</button>
         <div id="wakes-status" class="notice" role="status"></div>
-        <h3>Your agent's rules</h3>
-        <p>What your agent may do on its own. For each kind of action, choose: take action
-        without asking, take action if you asked for exactly that, ask you first, or hand
-        it to you. Your agent can suggest a change; only you can make one.</p>
-        <p id="rules-review-notice" class="muted"></p>
-        <div id="rules-list"></div>
-        <h4>What a connection's operations mean</h4>
-        <p class="muted">Your agent treats any call to a connected app as a change unless you
-        say what it is, so payments, messages and access changes only follow their rules
-        once you name them here.</p>
-        <div id="rules-kinds"></div>
-        <div class="rules-declare">
-          <input id="kind-connection" type="text" placeholder="connection id" autocomplete="off" />
-          <input id="kind-method" type="text" placeholder="method (any)" autocomplete="off" />
-          <input id="kind-path" type="text" placeholder="/path prefix" autocomplete="off" />
-          <select id="kind-kind"></select>
-          <button id="btn-kind-add" class="btn btn--ghost" type="button">Add</button>
-        </div>
+        <h3>Owner policy</h3>
+        <p>Approval rules, egress hosts and spend caps for this account. Only your protected
+        owner session can save changes. Your agent can send a proposal for you to review.</p>
+        <p>A spend cap pauses model requests whose maximum cost is unknown.</p>
+        <textarea id="policy-json" aria-label="Owner policy JSON" spellcheck="false"></textarea>
+        <button id="btn-policy-save" class="btn btn--primary" type="button">Save policy</button>
         <div id="rules-status" class="notice" role="status"></div>
+        <h4>Recent policy activity</h4>
+        <div id="policy-activity" aria-label="Policy activity"></div>
         <h3>Request notifications</h3>
         <p>Get notified when your agent is waiting on you. Turning this off stops notifications on all your devices.</p>
         <button id="btn-notifications" class="btn btn--ghost" type="button" disabled>Loading notifications...</button>
@@ -7974,107 +7964,51 @@
       }catch(e){if(ownsMemory(context)) status.textContent="Follow-ups could not be loaded.";}
     }
     $("btn-wakes-reload").addEventListener("click",()=>loadWakes());
-    // ---- Your agent's rules (harness D1a/D1b) ---------------------------
-    // The owner's Custom Rules, read and written through /app/rules, which only
-    // ever addresses the signed-in owner's own home. Loosening a hand-back is
-    // confirmed against the server's own plain words before it is sent again.
-    async function rulesRequest(body){
-      const init={method:body?"POST":"GET",credentials:"same-origin",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders())};
-      if(body) init.body=JSON.stringify(body);
-      const r=await fetch("/app/rules",init);
-      const doc=await r.json().catch(()=>({}));
-      return {ok:r.ok,status:r.status,doc};
-    }
-    function rulesSay(text){ $("rules-status").textContent=text||""; }
-    function renderRules(doc){
-      $("rules-review-notice").textContent=(doc.review_on||[]).length ? "" :
-        "Checks are now off unless you turn them on";
-      const list=$("rules-list"); list.textContent="";
-      (doc.rules||[]).forEach(rule=>{
-        const row=document.createElement("div"); row.className="rule-row";
-        const what=document.createElement("span");
-        what.textContent=(doc.classes&&doc.classes[rule.action_class]||rule.action_class)+
-          (rule.connection?" \u2014 "+rule.connection:"")+(rule.operation?" "+rule.operation:"");
-        if(rule.kind==='preapproval'){
-          what.textContent=rule.note+' / '+rule.action_class+' / '+
-            (rule.grant?.expires_at?'Until '+new Date(rule.grant.expires_at*1000).toLocaleString():'Until revoked');
-          const revoke=document.createElement('button');revoke.type='button';revoke.className='btn';revoke.textContent='Revoke';
-          revoke.onclick=()=>sendConfirmed({delete:rule.id});row.append(what,revoke);list.appendChild(row);return;
-        }
-        const pick=document.createElement("select");
-        Object.keys(doc.behaviours||{}).forEach(key=>{
-          const opt=document.createElement("option");
-          opt.value=key; opt.textContent=doc.behaviours[key];
-          if(key===rule.behaviour) opt.selected=true;
-          pick.appendChild(opt);
-        });
-        pick.addEventListener("change",()=>saveRule(rule,pick.value,false));
-        row.appendChild(what); row.appendChild(pick);
-        // A check runs only for kinds the owner explicitly enabled.
-        const never=(doc.review_never||[]).indexOf(rule.action_class)>=0;
-        if(!never && !rule.connection && !rule.operation){
-          const on=(doc.review_on||[]).indexOf(rule.action_class)>=0;
-          const check=document.createElement("button");
-          check.type="button"; check.className="btn btn--link";
-          check.textContent=on?"Checks first":"Check is off";
-          check.addEventListener("click",()=>sendConfirmed({review:{
-            action_class:rule.action_class,enabled:!on}}));
-          row.appendChild(check);
-        }
-        list.appendChild(row);
-      });
-      const kinds=$("rules-kinds"); kinds.textContent="";
-      (doc.operation_kinds||[]).forEach(item=>{
-        const row=document.createElement("div"); row.className="rule-row";
-        const what=document.createElement("span");
-        what.textContent=item.connection+" "+(item.method||"any")+" "+item.path_prefix+
-          " \u2192 "+item.kind;
-        const drop=document.createElement("button");
-        drop.className="btn btn--link"; drop.type="button"; drop.textContent="Remove";
-        drop.addEventListener("click",()=>sendConfirmed({undeclare:item.id}));
-        row.appendChild(what); row.appendChild(drop); kinds.appendChild(row);
-      });
-      const kindPick=$("kind-kind"); kindPick.textContent="";
-      Object.keys(doc.kinds||{}).forEach(key=>{
-        const opt=document.createElement("option"); opt.value=key; opt.textContent=key;
-        kindPick.appendChild(opt);
-      });
+    // One account policy, edited as a complete document under the owner cookie.
+    let ownerPolicy=null;
+    function rulesSay(message){ $("rules-status").textContent=message||""; }
+    function renderPolicy(snapshot){
+      ownerPolicy=snapshot;
+      $("policy-json").value=JSON.stringify(snapshot.policy,null,2);
+      const activity=$("policy-activity");activity.replaceChildren();
+      for(const receipt of snapshot.receipts||[]){
+        const line=document.createElement("p");
+        line.textContent=new Date(receipt.at*1000).toLocaleString()+" · "+receipt.kind+
+          " · "+(receipt.decision||receipt.outcome||"")+" · "+(receipt.rule||"policy");
+        activity.appendChild(line);
+      }
+      if(!activity.childNodes.length)activity.textContent="No policy activity yet.";
     }
     async function loadRules(){
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
       rulesSay("");
       try{
-        const res=await rulesRequest(null);
-        if(!res.ok){ rulesSay("Your agent's rules could not be loaded."); return; }
-        renderRules(res.doc);
-      }catch(e){ rulesSay("Your agent's rules could not be loaded."); }
+        const response=await fetch("/app/api/policy",{credentials:"same-origin",
+          headers:authHeaders()});
+        const result=await response.json();
+        if(!current())return;
+        if(!response.ok||!result.policy)throw new Error(result.error||"unavailable");
+        renderPolicy(result);
+      }catch(error){if(current())rulesSay("Policy could not be loaded: "+error.message);}
     }
-    async function saveRule(rule,behaviour,confirmed){
-      const body={action_class:rule.action_class,behaviour,connection:rule.connection,
-        operation:rule.operation,note:rule.note||""};
-      if(confirmed) body.confirm_handback=true;
-      const res=await rulesRequest(body);
-      if(res.status===409&&!confirmed&&res.doc&&res.doc.detail){
-        if(window.confirm(res.doc.detail)) return saveRule(rule,behaviour,true);
-        return loadRules();
-      }
-      if(!res.ok){ rulesSay("That rule was not saved."); return loadRules(); }
-      rulesSay("Saved."); renderRules(res.doc);
-    }
-    // A declaration that loosens what its calls are decided as is confirmed
-    // against the server's own words, like a rule (gpt-6-astra on #4199).
-    async function sendConfirmed(body){
-      let res=await rulesRequest(body);
-      if(res.status===409&&res.doc&&res.doc.detail){
-        if(!window.confirm(res.doc.detail)) return loadRules();
-        res=await rulesRequest(Object.assign({},body,{confirm:true}));
-      }
-      if(!res.ok){ rulesSay((res.doc&&res.doc.detail)||"That was not saved."); return; }
-      rulesSay("Saved."); renderRules(res.doc);
-    }
-    $("btn-kind-add").addEventListener("click",()=>sendConfirmed({declare:{
-      connection:$("kind-connection").value,method:$("kind-method").value,
-      path_prefix:$("kind-path").value||"/",kind:$("kind-kind").value}}));
+    $("btn-policy-save").onclick=async()=>{
+      if(!ownerPolicy){rulesSay("Load the policy before saving.");return;}
+      const owner=queueOwner,home=queueScope,epoch=MCP._loginEpoch;
+      const current=()=>owner===queueOwner&&home===queueScope&&epoch===MCP._loginEpoch;
+      const button=$("btn-policy-save");button.disabled=true;rulesSay("Saving...");
+      try{
+        const policy=JSON.parse($("policy-json").value);
+        const response=await fetch("/app/api/policy",{method:"POST",credentials:"same-origin",
+          headers:{...authHeaders(),"Content-Type":"application/json"},
+          body:JSON.stringify({expected_generation:ownerPolicy.generation,policy})});
+        const result=await response.json();
+        if(!current())return;
+        if(!response.ok)throw new Error(result.error||"policy refused");
+        renderPolicy(result);rulesSay("Saved at generation "+result.generation+".");
+      }catch(error){if(current())rulesSay("Policy was not saved: "+error.message);}
+      finally{if(current())button.disabled=false;}
+    };
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // The phone app has no browser push; its one switch registers the phone.
@@ -9652,10 +9586,49 @@
             expected_revision:preview.revision,action_sha256:preview.action_sha256,
             approval_token:preview.approval_token,scope:preview.scope||'once'
           });
+          if(operation==='decide'&&extra.decision==='approve'&&preview.action?.envelope){
+            const current=await fetch('/app/api/policy',{credentials:'same-origin',
+              headers:{'Authorization':'Bearer '+token()}});
+            if(!current.ok) throw new Error('Owner policy is unavailable.');
+            const policy=await current.json();
+            const env=preview.action.envelope, call=env.arguments;
+            const issue=await fetch('/app/api/policy',{method:'POST',credentials:'same-origin',
+              headers:{'Content-Type':'application/json','Authorization':'Bearer '+token()},
+              body:JSON.stringify({action:'issue_once',expected_generation:policy.generation,
+                center:env.subject.home,grant_id:call.grant_id,
+                connection_id:call.connection_id,verb:call.verb,request:call.request,
+                destination:env.destination})});
+            if(!issue.ok){const err=new Error('Sign in to the protected owner view to approve.');
+              err.signIn=issue.status===403;throw err;}
+            payload.policy_approval=(await issue.json()).token;
+          }
+          const prior=preview;
           const value=await InlineApprovals.post(operation,payload);
+          let standingError='';
+          if(operation==='decide'&&extra.decision==='approve'&&prior.action?.envelope&&
+             prior.scope!=='once'&&!value.error){
+            const headers={'Content-Type':'application/json','Authorization':'Bearer '+token()};
+            const read=await fetch('/app/api/policy',{credentials:'same-origin',headers});
+            if(!read.ok) standingError='The action ran, but its standing grant was not saved.';
+            else{
+              const policy=await read.json(), doc=JSON.parse(JSON.stringify(policy.policy));
+              const grant={...prior.predicate,request_id:prior.request_id,
+                decision_id:prior.request_id+':'+prior.revision};
+              doc.entries.push({scope:prior.action.envelope.subject.home,
+                table:'approval_grants',values:{id:Date.now(),agent:grant.agent,
+                  action_class:grant.action_class,connection:grant.connection,
+                  operation:grant.operation,behaviour:'hand_off',note:grant.scope,
+                  seeded:0,updated_at:Date.now()/1000,record_kind:'preapproval',
+                  decision_id:grant.decision_id,grant_json:JSON.stringify(grant)}});
+              const save=await fetch('/app/api/policy',{method:'POST',credentials:'same-origin',
+                headers,body:JSON.stringify({expected_generation:policy.generation,policy:doc})});
+              if(!save.ok) standingError='The action ran, but its standing grant was not saved.';
+            }
+          }
           if(!box.isConnected) return;
           if(operation==='edit') dirty=false;
           busy=false; scope.disabled=false; signIn.hidden=true; show(value);
+          if(standingError) note.textContent=standingError;
           if(operation==='decide' && typeof refreshRail==='function'){
             if(extra.decision==='defer'){
               railOpen=null;RequestSheets.selected=null;$('request-rail').close();
@@ -9984,6 +9957,13 @@
     if(req.body){
       const why = document.createElement("p");
       why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
+    }
+    if(req.action?.type==='policy_proposal'){
+      const detail=document.createElement('pre');detail.className='rtab-why';
+      detail.style.whiteSpace='pre-wrap';detail.style.overflowWrap='anywhere';
+      detail.textContent='Current generation: '+req.action.expected_generation+'\n'+
+        JSON.stringify(req.action.policy,null,2);
+      box.appendChild(detail);
     }
     const setup = (req.action && req.action.setup) || {};
     // Which source this card is FOR. A reconnect card names it; the setup card does
@@ -10584,9 +10564,19 @@
     buttons.forEach(b=>{ b.disabled = true; });
     note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
-      const r = req.action && req.action.type === "grant_patch_intake"
-        ? await InlineApprovals.post("answer", payload)
-        : await MCP.answerRequest(payload);
+      let r;
+      if(req.action?.type==='policy_proposal'&&mode==='accept'){
+        const response=await fetch('/app/api/policy',{method:'POST',credentials:'same-origin',
+          headers:Object.assign({'Content-Type':'application/json'},authHeaders()),
+          body:JSON.stringify({action:'apply_proposal',center:req.universe_id||queueScope,
+            request_id:req.request_id})});
+        r=await response.json().catch(()=>({error:'policy_response_unavailable'}));
+        if(!response.ok&&!r.error)r.error='policy_apply_failed';
+      }else if(req.action?.type==='policy_proposal'){
+        r=await InlineApprovals.post('answer',payload);
+      }else if(req.action?.type==='grant_patch_intake'){
+        r=await InlineApprovals.post('answer',payload);
+      }else r=await MCP.answerRequest(payload);
       if(installAsk&&(installLogin!==MCP._loginEpoch||installScope!==queueScope))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";

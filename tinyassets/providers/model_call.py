@@ -115,7 +115,7 @@ def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContex
 def _result(response: ProviderResponse, request: ModelCall) -> ModelResult:
     _last_provider.set(response.provider)
     receipt = response.execution_receipt or receipt_from_response(
-        response, requested=request.model, purpose=request.purpose,
+        response, requested=request.model,
     )
     if request.model is not None:
         receipt = replace(receipt, requested_model=request.model.model_id)

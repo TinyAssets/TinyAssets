@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import sqlite3
@@ -38,7 +39,16 @@ def store():
 
     path = _base_path() / ".runtime" / "owner-sessions.db"
     path.parent.mkdir(parents=True, exist_ok=True)
+    broker_group = hasattr(os, "getgroups") and 1102 in os.getgroups()
+    if broker_group:
+        # The broker may traverse the runtime directory and read only this
+        # session table. Its group 1102 has no write bit and no directory list.
+        os.chown(path.parent, -1, 1102)
+        os.chmod(path.parent, 0o710)
     conn = sqlite3.connect(path, timeout=10)
+    if broker_group:
+        os.chown(path, -1, 1102)
+        os.chmod(path, 0o640)
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE IF NOT EXISTS owner_sessions "

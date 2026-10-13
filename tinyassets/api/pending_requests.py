@@ -78,6 +78,7 @@ CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
     "start_activity", "approve_action", "connect_browser",
+    "policy_proposal",
 })
 # System-created approve_action and notify use dedicated branches before the
 # general gate; classify them too so creation paths cannot escape the inventory.
@@ -162,7 +163,7 @@ _FIRST_PARTY_PATHS = frozenset({
     "/connect", "/contribute", "/developers", "/economy", "/fine-print",
     "/goal", "/goals", "/graph", "/host", "/legal", "/loop", "/notebook",
     "/patch-loop", "/patterns", "/proof", "/soul", "/start", "/status",
-    "/wiki", "/mcp", "/app",
+    "/token", "/wiki", "/mcp", "/app",
 })
 _MAX_ANSWER_CHARS = 2000
 #: Every verb the egress layer knows. The owner reads each one on the tab and
@@ -260,6 +261,15 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == "policy_proposal":
+        generation = action.get("expected_generation")
+        policy = action.get("policy")
+        if (set(action) != {"type", "expected_generation", "policy"}
+                or type(generation) is not int or generation < 1
+                or not isinstance(policy, dict)
+                or len(json.dumps(policy, sort_keys=True).encode()) > 12000):
+            raise ValueError("invalid policy proposal")
+        return {"type": kind, "expected_generation": generation, "policy": policy}
     if kind == 'connect_browser':
         ident = action.get('connection_id', '')
         if not isinstance(ident, str) or not re.fullmatch('[a-f0-9]{32}', ident):
@@ -1247,6 +1257,13 @@ def request_from_user(
         return _refused(exc)
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
+    if action.get("type") == "policy_proposal":
+        from tinyassets.broker.client import owner_policy_operation
+        from tinyassets.broker.owner_identities import admitted_owner
+
+        owner = admitted_owner(udir.parent, center=_uid)
+        owner_policy_operation(udir.parent, owner, "proposal", center=_uid,
+                               change=action)
     if action.get("type") == "rotate_http":
         # BEFORE the fields are validated, because the connection's stored auth
         # scheme is what decides how many boxes the card has and what they are
@@ -2861,6 +2878,11 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     # question must not let a bearer reach its pinned executable action.
     pinned = _consent_pin(_uid, request_id)
     action_type = (pinned["record"]["action"] if pinned else row["action"]).get("type")
+    if (action_type == "policy_proposal" and document.get("dismiss") is not True
+            and str(document.get("decision") or "").lower() != "declined"):
+        return {"error": "policy_route_required", "detail":
+                "Apply this proposal in the protected policy card.",
+                "request_pending": row["status"] == "pending"}
     if action_type not in NON_CONSENT_ACTIONS and owner_session is None:
         return {"error": "interactive_approval_required",
                 "detail": CONSENT_REQUIRED_DETAIL,

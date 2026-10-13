@@ -18,7 +18,7 @@ and the spec is synced.
 - [x] 0.1 ADR-019, plus the status line in ADR-012, the proposal, the
       design and the spec deltas. Verify:
       `npx openspec validate one-box-per-owner --strict`.
-- [ ] 0.2 Registry row N10, "Owner-only policy layer", is added by the
+- [x] 0.2 Registry row N10, "Owner-only policy layer", is added by the
       lead in a separate PR. This change is its build path (P1, guard
       `policy-writers`). P9 marks N10 converged together with S8, S10 and
       S27. The registry's figure of 34 `role_*` cells is 33 on main; P9
@@ -30,7 +30,8 @@ and the spec is synced.
       on nothing; runs beside C3.
       - **Builds:**
         - `tinyassets/broker/policy.py`: `OwnerPolicy`, a generation and a
-          digest, in `.platform/accounts/<id>/policy.db` (broker uid, 0600).
+          digest, in `.broker/accounts/<sha>/policy.db` (broker-created 0700/0600;
+          the broker never reads or traverses daemon-owned trees).
         - `/app/api/policy`, which carries the interactive owner-session
           token. The broker verifies the token itself.
         - Broker enforcement on today's connector, HTTP and spend paths:
@@ -38,9 +39,10 @@ and the spec is synced.
         - The read-only projection, and `ta policy show` and
           `ta policy propose` (the proposal becomes an owner request).
         - The guard `policy-writers`.
-      - **Migration:** copy each center's `rules.db` and grants into the
-        owner's `policy.db` on first write, verified by count and digest.
-        Old files stay read-only until P6.
+      - **Migration:** none (founder, 2026-10-11). Every account starts with
+        `DEFAULT_RULES`; the agent asks and the owner re-grants once. Legacy
+        `rules.db` files stay untouched until P6. The deploy is the ordinary
+        image swap.
       - **Deletes:** `agent_rules.py`, `approval_scopes.py`,
         `broker/http_policy.py`, and the rule routes in
         `onboarding/__init__.py` that it replaces.

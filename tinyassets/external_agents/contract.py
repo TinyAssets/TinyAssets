@@ -184,8 +184,10 @@ def validate_agent(row):
     for event in events.values():
         if not isinstance(event, dict) or not isinstance(event.get("method"), str):
             raise ExtensionError("invalid external-agent event")
+        if ("auth_error" in event) != ("auth_code" in event):
+            raise ExtensionError("incomplete external-agent auth event")
         for key, value in event.items():
-            if key in {"method", "agent_type", "success"}:
+            if key in {"method", "agent_type", "success", "auth_code"}:
                 _text(value)
             else:
                 _pointer(value)

@@ -199,6 +199,14 @@ change.
 
 ## 7. The owner-only policy layer (registry N10)
 
+### P1 decisions (2026-10-11)
+
+- The broker checks the opaque owner-session cookie against the existing owner-session table through read-only access. It binds the row's interactive identity to the policy owner, checks expiry, and uses the row's session hash as the receipt identifier. The daemon forwards the cookie on the intended route, but can mint a row in that daemon-owned store in P1; broker-owned session minting in P2/P3 closes this residual. No new signing scheme is introduced.
+- `agent_review.py` proposes rule suggestions through the pending owner-request path. It has no direct `rules.db` write path. The agent and every box process receive only the effective read-only policy projection.
+- There is one policy per account. Legacy `rules.db` rules are not migrated (founder, 2026-10-11): every account starts with the default fail-closed policy and owners re-grant as the agent asks. The broker never reads or traverses daemon-owned directories. Evaluation selects the strictest applicable entry.
+- A once approval creates a broker receipt bound to the exact outbound request digest and current policy generation, under the same interactive owner cookie. Dispatch consumes that receipt once and rechecks the generation. The daemon's pending-request row is a preview and conversation record, never broker authority by itself.
+- A priced spend reserves against caps in the broker by request id. Today's model connector has no trusted pre-dispatch price, so a configured model cap holds that unpriced call and records the refusal until C3 supplies a priced reservation; an unknown amount never bypasses a cap.
+
 **What it holds.** One `OwnerPolicy` per account, versioned by a monotonic
 `generation`:
 
@@ -206,8 +214,9 @@ change.
   `people.message`, `money.move`, `security.change`, `access.grant`), with
   optional connection, operation and agent, one of the four behaviours (do,
   do if pre-approved, ask, hand off). These are today's Custom Rules.
-- **Pre-approval grants:** today's `approval_scopes`, bound to the policy
-  generation.
+- **Pre-approval grants:** today's `approval_scopes`, stored as scoped policy
+  entries. They survive unrelated writes; removal, expiry, or a stricter
+  matching rule revokes their effect. Once approvals bind to a generation.
 - **Egress:** a mode plus an allowlist of hosts.
 - **Spend:** caps per day, per month and per transaction, a threshold above
   which a spend asks, and per-source model-spend ceilings.
@@ -223,8 +232,8 @@ owner cannot loosen it:
 
 **Where it lives.**
 
-- **Store.** `.platform/accounts/<id>/policy.db` in broker-private state
-  (uid 1002, mode 0600). Only the broker opens it. It is not in the box,
+- **Store.** `.broker/accounts/<sha>/policy.db` in broker-private state
+  (mode 0700 directories and 0600 database). Only the broker opens it. It is not in the box,
   not in a command-center directory and not in the daemon's records
   directory.
 - **Projection.** A read-only file, `/policy/policy.json`, carries the
@@ -237,9 +246,11 @@ owner cannot loosen it:
   the owner door. It carries the interactive owner-session token that
   inline-connect-and-approve already defines: issued only to an interactive
   owner session, and never to bearer, MCP or `/api` clients.
-- **The broker verifies the token itself.** It checks the token's
-  signature, account, expiry and nonce, so a compromised daemon path cannot
-  forge a write.
+- **The broker verifies the token itself.** It looks up the opaque cookie's
+  hash in the existing owner-session table through read-only access and checks
+  its interactive identity, account binding and expiry. The daemon forwards
+  the cookie; the P1 daemon-writable session table remains a known residual
+  until P2/P3 move session minting into broker custody.
 - **Tightening is the same act as loosening.** Both need the token.
 - **No write from anywhere else.** The model door, `/mcp`, `/api`, the
   box channel and every `ta` command have no policy-write operation. The
@@ -425,9 +436,8 @@ stopped:
 2. For each owner, it creates the box record in the broker log and sets the
    project quota on the owner tree. **No owner byte moves:** the tree
    attaches in place, under the same UID.
-3. It copies each center's `rules.db` and `approval_grants` into the
-   owner's `policy.db`. P1 already writes there; this step catches stragglers
-   and is a no-op when P1 has run. It verifies row counts and digests.
+3. It does not touch policy: legacy `rules.db` and `approval_grants` are
+   not imported (owners re-grant; P1 decision).
 4. It writes the `owner-box` layout marker last.
 5. It is re-runnable after a crash. A second run changes nothing, and
    `--check` reports zero diffs.

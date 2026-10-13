@@ -1606,7 +1606,8 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     if preview.get("status") == "unchanged":
         return preview
 
-    from tinyassets.broker.http_policy import read_policy, update_policy
+    from tinyassets.broker.connection_authority import read_policy
+    from tinyassets.broker.http_connect import update_operation
 
     full = preview.get("access") == ACCESS_FULL and not redirect_extension
     if full and "policy_snapshot" in document:
@@ -1621,7 +1622,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     try:
-        updated = update_policy(
+        updated = update_operation(
             base, principal=actor, command_center=uid, destination=destination,
             expected=expected, action="full" if full else "extend",
             endpoints=() if full else preview["merged"],
@@ -1672,7 +1673,7 @@ def _extend_preview(
     )
 
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
-    from tinyassets.broker.http_policy import read_policy
+    from tinyassets.broker.connection_authority import read_policy
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
     try:

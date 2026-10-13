@@ -37,6 +37,12 @@ class TestUniverseServerMetadata:
         for name in ("read_graph", "read_page", "get_status"):
             assert tools[name].annotations.readOnlyHint is True, name
         assert "delete" in tools["write_graph"].description
+        for tool in tools.values():
+            assert len(tool.name) <= 64, tool.name
+            assert tool.description
+            assert len(tool.description) <= 2048, (tool.name, len(tool.description))
+            assert "\nArgs:" not in tool.description
+            assert tool.description.rstrip().endswith((".", "?", "!"))
         assert "shared with other users" in tools["write_page"].description
         assert "external services" in tools["converse"].description
         assert "side effects" in tools["run_graph"].description

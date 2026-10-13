@@ -18,7 +18,8 @@ from tests.test_authenticated_external_call_effector import (
 from tests.test_ta_capabilities import signed_launch
 from tests.test_universe_tools_jail import _engine as _bare_engine
 from tests.test_universe_tools_jail import world as world
-from tinyassets import agent_review, agent_rules, universe_tools
+from tinyassets import policy_rules as agent_rules
+from tinyassets import universe_tools
 
 pytestmark = [pytest.mark.real_jail, pytest.mark.skipif(
     sys.platform != "linux" or not shutil.which("bwrap"), reason="requires Linux + bubblewrap")]
@@ -113,7 +114,9 @@ def test_agent_writes_extension_and_runs_it_without_deploy(world, monkeypatch):
 def test_jailed_call_uses_agent_rules_and_never_receives_vault_secret(world, monkeypatch):
     secret = "D6-JAIL-SYNTHETIC-SECRET"
     _, root, db = _setup(world.data_root, universe_id=world.universe_a.name, token=secret)
-    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
+    from tests.test_ta_capabilities import _policy_stub
+
+    _policy_stub(monkeypatch)
     server = _engine(monkeypatch, world, actor="user-1")
     monkeypatch.setattr(server, "_acting_agent", lambda: "worker")
     loop = _Loopback()
@@ -122,11 +125,10 @@ def test_jailed_call_uses_agent_rules_and_never_receives_vault_secret(world, mon
                              grant_id="grant-http", provider="http", destination="api.example.com",
                              runtime_root=world.data_root / "runtime")
     command = 'ta connection:conn-http:POST --json \'{"request":{"path":"/v1/messages"}}\''
-    agent_rules.set_rule(root, "app.write", agent_rules.HAND_OFF, agent="main")
     try:
         for behaviour, expected in ((agent_rules.DO, None), (agent_rules.HAND_OFF, "rule_hand_off"),
                                     (agent_rules.ASK_FIRST, "rule_ask_first")):
-            agent_rules.set_rule(root, "app.write", behaviour, agent="worker")
+            _policy_stub(monkeypatch, behaviour)
             raw = bash(server, command, exit_code=1 if expected else 0)
             assert secret not in raw
             result = json.loads(raw)
