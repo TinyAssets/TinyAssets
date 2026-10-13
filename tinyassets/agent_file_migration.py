@@ -424,7 +424,9 @@ def migrate(base_path: str | Path) -> dict[str, list[str]]:
                 for uid, rows in by_universe.items()}
         plan = {uid: placements for uid, placements in plan.items() if placements}
         backup = _write_backup(base, plan) if plan else ""
-        pending = _stage(base, plan) if plan else []
+        # Items still waiting from an earlier start keep their place: their SQL
+        # rows are already gone, so the ledger is their only record.
+        pending = list(detail.get("_pending", [])) + (_stage(base, plan) if plan else [])
         _delete(conn, [p.binding["agent_binding_id"]
                        for placements in plan.values() for p in placements])
         result = {uid: [p.directory for p in placements] for uid, placements in plan.items()}

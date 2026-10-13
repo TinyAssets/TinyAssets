@@ -687,6 +687,38 @@ def test_any_row_error_is_recorded_not_raised(tmp_path, monkeypatch):
     assert detail["_failed"][bad].startswith("AttributeError")
 
 
+def test_a_pending_publish_survives_a_retry_of_another_failed_row(tmp_path, monkeypatch):
+    """A file that failed to publish stays pending even when a later start
+    re-plans a different failed row; it lands once publishing works again."""
+    import sqlite3
+
+    import tinyassets.agent_file_migration as m
+    from tinyassets.commons_catalog import db_path
+    from tinyassets.consumer_runtime import initialize
+
+    (tmp_path / "u").mkdir()
+    good = _sql_agent(tmp_path, "alice", "u", "Good", instructions="Good.")
+    _sql_agent(tmp_path, "alice", "missing", "Later", instructions="Later.")
+    real = m.publish_staged_universe_file
+
+    def refuse(*args):
+        raise OSError("disk busy")
+
+    monkeypatch.setattr(m, "publish_staged_universe_file", refuse)
+    m._DONE.clear()
+    initialize(tmp_path)
+    m._DONE.clear()
+    initialize(tmp_path)  # re-plans the still-failed "missing" row
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        detail = json.loads(conn.execute("SELECT detail_json FROM agent_file_migration "
+                                         "WHERE name = ?", (m.LEDGER_NAME,)).fetchone()[0])
+    assert detail["_pending"], "the unpublished agent must stay pending"
+    monkeypatch.setattr(m, "publish_staged_universe_file", real)
+    m._DONE.clear()
+    initialize(tmp_path)
+    assert read_settings(tmp_path / "u", agent_slug="good").agent.id == good
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
 def test_migration_backup_is_private_even_with_umask_022(tmp_path):
     import stat
