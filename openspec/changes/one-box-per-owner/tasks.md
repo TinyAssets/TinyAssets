@@ -41,22 +41,23 @@ and the spec is synced.
         - the deploy workflow's SSH step installs the pinned `runsc` and
           the `boxhostd` systemd unit on the droplet, `--network=none`,
           cgroup v2 per box; both serve nothing until P2b;
-        - `scripts/box_preflight.py`: gates G1-G6 of ADR-022 against two
-          synthetic owners, pass or fail numbers, run in a quiet window;
-        - the same gates in `scripts/linux_oracle.py`.
+        - `scripts/box_preflight.py`: the host and platform gates G1, G3,
+          G4 and G6 of ADR-022 on raw `runsc` sandboxes, pass or fail
+          numbers, run in a quiet window. It needs nothing P2b builds.
       - **Deletes:** `.github/workflows/box-kvm-validation.yml` and
         `scripts/box_bench/` (one measurement path).
       - **Verify:** every gate number recorded in the P2b PR description.
-        A failed G3 sets the awake-box count and the daemon cap from the
-        numbers before the window; a larger droplet is a spending decision
-        raised with them.
+        A failed G3 either raises a spending decision to the founder (a
+        larger host) or a threshold change recorded and approved in the
+        P2b PR with a rerun; no threshold moves silently.
       - **Net:** ≤ 0.
 - [ ] 1.3 **P2b The cutover.** **Floor:** cross-user, data, credential
       custody (CLI token lease), exfiltration (the relay). Depends on P2a
       with every gate passed. **This PR holds the one maintenance window.**
-      After it, no owner byte is read, written or executed outside its
-      owner's box, and no cell or mapper remains to fall back to
-      (Direction 5).
+      After it, every owner-space execution runs in its owner's box and no
+      cell or mapper remains to fall back to (Direction 5). The cross-user
+      floor completes at P3 (ADR-022 names the two residuals and their
+      bounds); S8 reads converged at P3.
       - **Builds:**
         - the gVisor driver behind `BoxProvider`, re-keyed per owner
           (`bind(owner)`); `boxd`, moved from the `boxes/local.py` core;
@@ -95,15 +96,18 @@ and the spec is synced.
           `scripts/box_acceptance.py`;
         - the old read-only `rules.db` files.
       - **Guard:** `role-cells` = 0; `test_universe_path_io_guard` = 0.
-      - **Verify:** the cross-user check in design §12 on the production
-        copy and in the Linux oracle; a production-copy turn runs real
-        tools, a CLI package and a preview in the box; a non-owner handle
-        fails at `boxhostd`.
+      - **Acceptance gates, before the window:** G2 (cross-user, handle
+        auth) and G5 (`usage`, daemon-restart journaling) of ADR-022 pass
+        on this build in `scripts/linux_oracle.py` and on a production
+        copy, with a recorded pass in the PR.
+      - **Verify:** a production-copy turn runs real tools, a CLI package
+        and a preview in the box.
       - **Net:** about −9.5k.
 - [ ] 1.4 **P3 Loop in the box.** **Floor:** credential custody. Depends
       on P2b, C3 (`one-model-call-path`) and C8 (`session.start`).
-      Placement, not isolation: the same `boxd` operations, run by a loop
-      process inside the box instead of the daemon.
+      The same `boxd` operations, run by a loop process inside the box
+      instead of the daemon. The cross-user floor is complete here and S8
+      reads converged here.
       - **Builds:**
         - `session.start` runs the loop as a process in the owner's box;
           model calls leave through the broker gate (`model_call`);

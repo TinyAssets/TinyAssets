@@ -419,14 +419,16 @@ Each PR ships alone and deletes in the same PR (ADR-022).
 - **P2a before the window.** The production host, not a throwaway
   droplet, proves the limits, the cross-user floor, capacity and the C9
   workloads, with numbers, while serving nothing.
-- **P2b is one cutover (Direction 5).** After it no owner byte is read,
-  written or executed outside its owner's box, and no cell or mapper
-  remains to fall back to. Splitting it would leave a mixed period in
-  which two execution paths carry the floor.
+- **P2b is one cutover (Direction 5).** After it every owner-space
+  execution runs in its owner's box, and no cell or mapper remains to fall
+  back to. Splitting it would leave a mixed period in which two execution
+  paths carry the floor.
 - **P3 waits for C3.** Model credentials must already leave through the
   broker before the loop moves into an untrusted box. Until then the loop
-  is trusted daemon code that reaches the box only through `BoxProvider`:
-  a placement, not an isolation boundary.
+  is daemon code that reaches the box only through `BoxProvider`, and the
+  owner-session table stays daemon-writable (ADR-022 names both residuals
+  and their bounds). The cross-user floor is complete at P3, and S8 reads
+  converged at P3.
 - **P6 measures suspend with the real workload.** Checkpoint size and
   time with the loop and the browser inside are unknown until they are
   inside.

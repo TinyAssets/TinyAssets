@@ -105,24 +105,34 @@ binds `BoxProvider.bind(owner)`, wakes the box, and every execution of that
 session (tool, node, decoder, git, CLI package, browser) is an exec on that
 handle. Child sessions inherit it. No path binds a box of its own.
 
-## P2a gates (production host, pass or fail)
+## Gates (pass or fail; a skip is a fail)
 
-`scripts/box_preflight.py` runs these on the production droplet against two
-synthetic owners, with `boxhostd` serving nothing. A skip is a fail. P2b
-does not merge until every number is recorded in its PR.
+**P2a, host and platform.** `scripts/box_preflight.py` runs these on the
+production droplet with raw `runsc` sandboxes, `boxhostd` serving nothing.
+They need nothing P2b builds.
 
 | Gate | Pass |
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
-| G2 cross-user | from inside A's box: B's tree, `/data`, `.broker/`, `.platform/`, `.runtime/` are absent (ENOENT, not EACCES); the environment carries no secret; exactly one socket, A's owner-bound UDS; B's handle on A's channel raises `BoxAuthError`; a stale epoch raises `StaleHandle`; a write past A's quota is ENOSPC in A only. Also green in `scripts/linux_oracle.py` |
 | G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 700 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
-| G4 volume | project quotas enabled on the data volume; `BoxProvider.usage` matches `du` within 5 % |
-| G5 deploy independence | a daemon container restart during a 60 s box exec: the exec completes, its result is journaled, no orphaned sandbox |
+| G4 volume | project quotas enabled on the data volume; a write past a tree's quota is ENOSPC in that tree only |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
 
-A failed G3 sets the awake-box count and the daemon cap from the measured
-numbers before the window; a larger droplet is a spending decision raised
-with those numbers, never assumed.
+**P2b, acceptance on the cutover build.** `scripts/box_acceptance.py` runs
+these in `scripts/linux_oracle.py` and on a production copy before the
+window opens; they exercise the driver, `boxhostd` and `boxd` that P2b
+builds.
+
+| Gate | Pass |
+|---|---|
+| G2 cross-user | from inside A's box: B's tree, `/data`, `.broker/`, `.platform/`, `.runtime/` are absent (ENOENT, not EACCES); the environment carries no secret; exactly one socket, A's owner-bound UDS; B's handle on A's channel raises `BoxAuthError`; a stale epoch raises `StaleHandle` |
+| G5 provider and host service | `BoxProvider.usage` matches `du` within 5 %; a daemon container restart during a 60 s box exec: the exec completes, its result is journaled, no orphaned sandbox |
+
+**Failure handling.** P2b merges only with a recorded pass of every gate in
+its PR description. No threshold moves silently: a failed G3 either raises
+a spending decision to the founder (a larger host) or a threshold change
+recorded and approved in the P2b PR, followed by a rerun whose numbers are
+recorded in turn.
 
 ## Slices (Direction 5: one cutover, the isolated path the only path)
 
@@ -131,9 +141,9 @@ deletions in the same PR, measured net ≤ 0. P1 shipped (#4630).
 
 | PR | Ships | Deletes in the same PR |
 |---|---|---|
-| P2a preflight | `runsc` and `boxhostd` installed by the deploy workflow, serving nothing; `box_preflight.py`; the gate numbers | `box-kvm-validation.yml`, `scripts/box_bench/` (one measurement path) |
-| **P2b cutover** (one window, verified backup first) | every owner-space execution in the owner's box: tools, files, git, nodes, decoding, media, CLI packages (token leased for one run, ADR-012 D5), Chromium, one per-box egress relay at the broker under the platform floor, `destroy` for account deletion; admission once; stop on idle; the daemon container unprivileged | all 33 `role_*` modules, the mapper, launcher, provision and migrate, `node_sandbox.py`, `universe_tools.py` jail, `jail_disk.py`, `sandbox/`, `provider_jail.py`, `browser_cell.py`, `browser_egress.py`, `universe_egress.py`, `git_egress.py`, `owner_launcher_client.py`, `owner_socket.py`, `mapper_channel.py`, `cell_diagnostics.py`, the role probes, the old `rules.db` files, the unconfined `security_opt` lines. Guard `role-cells` = 0 |
-| P3 loop in the box (after C3, C8) | the loop process, children, residents run inside the box; broker in-box endpoint; survives app close and deploys | the daemon-side loop placement |
+| P2a preflight | `runsc` and `boxhostd` installed by the deploy workflow, serving nothing; `box_preflight.py`; G1, G3, G4, G6 numbers | `box-kvm-validation.yml`, `scripts/box_bench/` (one measurement path) |
+| **P2b cutover** (one window, verified backup first; G2 and G5 passed on this build) | every owner-space execution in the owner's box: tools, files, git, nodes, decoding, media, CLI packages (token leased for one run, ADR-012 D5), Chromium, one per-box egress relay at the broker under the platform floor, `destroy` for account deletion; admission once; stop on idle; the daemon container unprivileged | all 33 `role_*` modules, the mapper, launcher, provision and migrate, `node_sandbox.py`, `universe_tools.py` jail, `jail_disk.py`, `sandbox/`, `provider_jail.py`, `browser_cell.py`, `browser_egress.py`, `universe_egress.py`, `git_egress.py`, `owner_launcher_client.py`, `owner_socket.py`, `mapper_channel.py`, `cell_diagnostics.py`, the role probes, the old `rules.db` files, the unconfined `security_opt` lines. Guard `role-cells` = 0 |
+| P3 loop in the box (after C3, C8) | the loop process, children, residents run inside the box; broker in-box endpoint; owner-session minting in broker custody; survives app close and deploys. **The cross-user floor is complete here, and S8 reads converged here** | the daemon-side loop placement, the daemon-writable owner-session table |
 | P4 N4 view hook | `BoxProvider.view`, owner door only | |
 | P5 N5 owner egress policy at the one relay | `open`, `allowlist`, `ask` | |
 | P6 suspend, restore, snapshot (N6) | checkpoint and restore replace stop and start; `snapshot`/`restore` | |
@@ -141,16 +151,25 @@ deletions in the same PR, measured net ≤ 0. P1 shipped (#4630).
 | P8 S27 | off-region backup from the one snapshot path; DR drill | `backup.sh`, `backup-restore.sh` |
 | P9 close | S8, S10, S27, N10 converged | `target-architecture`, `box-provider-foundation` |
 
-**Why the loop is the one thing that moves later.** After P2b no owner
-byte is read, written or executed outside its owner's box: the cross-user
-floor is complete in one window, with no cell and no mapper left to fall
-back to. The loop is trusted platform code in the daemon that reaches the
-box only through `BoxProvider` (`test_universe_path_io_guard` at 0). Moving
-it into the untrusted box before C3 would put model credentials in reach
-of untrusted code, which ADR-019 forbids; moving it after C3 changes where
-a process runs, not what it can reach. That is placement, not isolation,
-and it adds no second execution path: P3's in-box tools are the same
-`boxd` operations P2b ships.
+**What P2b completes, and what it does not.** After P2b every owner-space
+execution runs in its owner's box and no cell or mapper remains to fall
+back to. The cross-user floor is not complete until P3, and C6 (S8) reads
+converged only at P3. Two residuals stay outside the box between P2b and
+P3, each with a bound:
+
+- **The owner-steered loop runs in the daemon.** Owner input, including an
+  injected page, steers daemon-resident code. Bound: that code reaches
+  owner space only through `BoxProvider` handles that `boxhostd` checks per
+  operation (`test_universe_path_io_guard` at 0), and model credentials
+  stay in the broker. Moving the loop before C3 would put those credentials
+  in reach of untrusted code, which ADR-019 forbids.
+- **The daemon-writable owner-session table** (ADR-019's P1 residual). A
+  compromised daemon can mint an owner session and write policy. Bound: the
+  box boundary and broker-held credentials are unaffected, and every
+  policy write is receipted with its session id.
+
+P3 moves the loop and the session authority; it adds no second execution
+path, since its in-box tools are the same `boxd` operations P2b ships.
 
 ## Needs the founder
 
@@ -170,4 +189,4 @@ and it adds no second execution path: P3's in-box tools are the same
   production; its status line cites this ADR. ADR-012's "Firecracker first"
   wording is superseded.
 - The `role-cells` guard (`check_shapes.py` S8, ceiling 26) falls to 0 in
-  P2b, not over four PRs.
+  P2b; S8 itself reads converged at P3.
