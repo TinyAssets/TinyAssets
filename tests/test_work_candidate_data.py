@@ -77,12 +77,23 @@ def test_automatic_health_demotion_is_preserved_but_explicit_primary_is_not_repl
         assert choices.next_candidate(None) == expected
 
 
-def test_graph_pin_cannot_replace_explicit_user_primary_or_discard_tail():
-    for policy in ({"preferred": {"provider": "b"}}, {"fallback_chain": []}):
-        choices = data()
-        with pytest.raises(PermissionError, match="conflicts"):
-            choices.fit({"node_defs": [{"prompt_template": "hello", "llm_policy": policy}]},
-                        ceiling=10, retry_multiplier=3)
+def test_explicit_default_does_not_limit_an_accepted_node_pin():
+    from tinyassets.providers.model_policy import Exhaustion
+
+    choices = data()
+    pinned = {"preferred": {"provider": "b", "model_id": "B"}}
+    choices.fit({"node_defs": [{"prompt_template": "hello", "llm_policy": pinned}]},
+                ceiling=10, retry_multiplier=3)
+    assert choices.next_candidate(pinned) == ModelRef("b", "B")
+    assert choices.order[0] == ModelRef("a", "A")
+    assert choices.next_candidate(pinned, (Exhaustion("model", ModelRef("b", "B")),)) is None
+
+
+def test_explicit_graph_cannot_discard_default_fallbacks_without_a_pin():
+    with pytest.raises(PermissionError, match="conflicts"):
+        data().fit({"node_defs": [{"prompt_template": "hello",
+                                   "llm_policy": {"fallback_chain": []}}]},
+                   ceiling=10, retry_multiplier=3)
 
 
 def subscription_data():
@@ -148,6 +159,48 @@ def test_a_graph_pin_outside_the_admitted_catalogue_is_still_refused():
             {"node_defs": [{"prompt_template": "hello", "llm_policy": absent}]},
             ceiling=10, retry_multiplier=1,
         )
+
+
+def test_explicit_pin_to_unaccepted_or_over_cap_model_is_refused():
+    from dataclasses import replace
+
+    from tests.test_model_policy import NEEDS, connection, model
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.model_policy import (
+        Catalog,
+        Charge,
+        ModelPolicy,
+        Pricing,
+        SourceModelPolicy,
+    )
+    from tinyassets.providers.work_candidate_data import WorkCandidateData
+
+    priced = replace(model("priced"), pricing=Pricing("fresh", (
+        Charge("input_million_tokens_usd", 1_000_000, True),
+        Charge("output_million_tokens_usd", 1_000_000, True),
+    )))
+    catalog = Catalog("owner", "universe", (
+        connection("claude-code", models=[model("opus")]),
+        connection("codex", models=[model("gpt-5.6-sol"), priced]),
+    ))
+    free_caps = tuple(Charge(name, 0, True) for name in sorted(
+        ("input_million_tokens_usd", "output_million_tokens_usd")))
+    choices = WorkCandidateData(AgentModelPlan(
+        catalog, ModelPolicy(0, "explicit", (),
+                             saved_default=ModelRef("claude-code", "opus")), NEEDS,
+        source_policies=(SourceModelPolicy("claude-code", NEEDS, free_caps),
+                         SourceModelPolicy("codex", NEEDS, free_caps)),
+    ))
+    for model_id in ("unaccepted", "priced"):
+        pinned = {"preferred": {"provider": "codex", "model_id": model_id}}
+        with pytest.raises(PermissionError, match="conflicts"):
+            choices.fit({"node_defs": [{"prompt_template": "hello",
+                                       "llm_policy": pinned}]},
+                        ceiling=10, retry_multiplier=1)
+    allowed = {"preferred": {"provider": "codex", "model_id": "gpt-5.6-sol"}}
+    choices.fit({"node_defs": [{"prompt_template": "hello", "llm_policy": allowed}]},
+                ceiling=10, retry_multiplier=1)
+    assert choices.next_candidate(allowed) == ModelRef("codex", "gpt-5.6-sol")
 
 
 def test_a_graph_pin_cannot_name_a_connection_outside_the_owners_catalogue():

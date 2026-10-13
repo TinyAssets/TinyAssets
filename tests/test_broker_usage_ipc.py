@@ -245,8 +245,12 @@ def test_ta_model_call_joins_parent_once_and_rejects_supplied_authority(source, 
     monkeypatch.setattr("tinyassets.custom_agents.get_binding", lambda *args, **kwargs: {
         "created_by": "alice", "revision": 1,
     })
+    monkeypatch.setattr("tinyassets.provider_serving_binding.resolve_serving_agent_binding",
+                        lambda *args, **kwargs: {
+                            "agent_binding_id": "serving-a", "revision": 2,
+                        })
     monkeypatch.setattr("tinyassets.providers.served_model_plan.connected_sources",
-                        lambda *args: frozenset({"api_key_http:connected"}))
+                        lambda *args: frozenset({"api_key_http:connected", "codex"}))
     service = Capabilities(
         source.root / "cc-alice", ExecutionContext("cc-alice", "alice", "main"),
         [], None, lambda: None, capability_grant=("bash",), model_reference=reference)
@@ -267,9 +271,68 @@ def test_ta_model_call_joins_parent_once_and_rejects_supplied_authority(source, 
         assert result["receipt"]["parent_usage_id"] == parent.usage_id
         assert len(observed) == 1 and parent.receipt()["reserved"] == 1
         assert parent.receipt()["attempts"][0]["state"] == "succeeded"
+        codex = asyncio.run(service.dispatch({
+            **call, "arguments": {**call["arguments"],
+                                  "model": "codex/gpt-5.6-sol"}}))
+        assert codex["result"]["text"] == "answer"
+        assert observed[-1][1].model.connection_id == "codex"
+        assert observed[-1][1].context.universe_context.provider_request.agent_binding_id == (
+            "serving-a")
     finally:
         parent.close()
     assert "ended" in asyncio.run(service.dispatch(call))["error"]
+
+
+def test_ta_model_call_without_pin_uses_owners_explicit_primary(source, monkeypatch):
+    from tests.test_model_policy import NEEDS, connection, model
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.execution_receipt import ExecutionReceipt
+    from tinyassets.providers.model_policy import Catalog, ModelPolicy, ModelRef
+    from tinyassets.ta_capabilities import Capabilities, ExecutionContext
+
+    parent = make_budget(source)
+    parent.link("turn", "turn-default")
+    reference = parent.issue_launch_reference("turn", "turn-default", "custom-a", 1)
+    monkeypatch.setattr("tinyassets.custom_agents.get_binding", lambda *args, **kwargs: {
+        "created_by": "alice", "revision": 1,
+    })
+    monkeypatch.setattr("tinyassets.provider_serving_binding.resolve_serving_agent_binding",
+                        lambda *args, **kwargs: {
+                            "agent_binding_id": "serving-a", "revision": 2,
+                        })
+    monkeypatch.setattr("tinyassets.providers.served_model_plan.connected_sources",
+                        lambda *args: frozenset({"claude-code", "codex"}))
+    plan = AgentModelPlan(
+        Catalog("alice", "cc-alice", (
+            connection("claude-code", models=[model("opus")]),
+            connection("codex", models=[model("gpt-5.6-sol")]),
+        )),
+        ModelPolicy(0, "explicit", (), saved_default=ModelRef("claude-code", "opus")),
+        NEEDS,
+    )
+    observed = []
+    monkeypatch.setattr("tinyassets.providers.served_model_plan.prepare_owned_model_plan",
+                        lambda **kwargs: SimpleNamespace(plan=plan))
+
+    async def routed(request, authority):
+        observed.append((request, authority))
+        return SimpleNamespace(text="answer", receipt=ExecutionReceipt(
+            provider="claude-code", model="opus", model_status="reported"),
+                               response=SimpleNamespace(agent_reply=None))
+
+    monkeypatch.setattr("tinyassets.providers.model_call.call", routed)
+    service = Capabilities(
+        source.root / "cc-alice", ExecutionContext("cc-alice", "alice", "main"),
+        [], None, lambda: None, capability_grant=("bash",), model_reference=reference)
+    try:
+        result = asyncio.run(service.dispatch({"op": "call", "name": "model", "arguments": {
+            "messages": [{"role": "user", "content": "hello"}]}}))
+        assert result["result"]["text"] == "answer"
+        assert observed[0][0].model == ModelRef("claude-code", "opus")
+        assert observed[0][0].context.universe_context.provider_request.agent_binding_id == (
+            "serving-a")
+    finally:
+        parent.close()
 
 
 def test_run_model_call_enforces_receipt_sources_before_reservation(source, monkeypatch):

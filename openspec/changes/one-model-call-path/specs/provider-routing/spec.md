@@ -51,7 +51,9 @@ capability, verified owner-owned open provider definitions, and subscription
 sources with adopted custody. Membership SHALL be checked again for every
 attempt. No platform, host or other owner's credential SHALL ever serve a call.
 The serving binding SHALL act as the owner's default preference, not as a
-limit to one provider. Run admission SHALL record the owner's connected set at
+limit to one provider. The owner's accepted model access SHALL bound every
+named model and the default order; a connected source alone grants no model
+that the owner has not accepted or that exceeds the owner's cost caps. Run admission SHALL record the owner's connected set at
 that moment, and an attempt in that run SHALL be admitted only for a source in
 both the recorded set and the live connected set. A stored provider assignment
 SHALL NOT be an authority input.
@@ -60,6 +62,11 @@ SHALL NOT be an authority input.
 - **GIVEN** an owner who connected a Claude subscription and an OpenRouter API key
 - **WHEN** a call names a model on the OpenRouter connection
 - **THEN** it is admitted and dispatched on that connection
+
+#### Scenario: a connected source without accepted model access is refused
+- **WHEN** a call names a model on a connected source the owner has not accepted,
+  or a model above the owner's accepted cost caps
+- **THEN** it is refused before transport, without broadening the grant
 
 #### Scenario: another owner's source is refused
 - **WHEN** owner A's call names a connection owned by owner B
@@ -90,11 +97,27 @@ fallback. An explicit choice that is unavailable SHALL fail visibly, naming
 the model and the reason. `llm_policy.difficulty_override` SHALL be refused.
 
 #### Scenario: a node pins a non-default connected model
-- **GIVEN** an owner whose default is Claude, and a node with
-  `llm_policy.preferred` naming a connected GPT model
+- **GIVEN** an owner whose saved explicit primary is Claude, and a node with
+  `llm_policy.preferred` naming an accepted Codex GPT model
 - **WHEN** the node runs
 - **THEN** the call dispatches to the GPT model, and its receipt records it as
   resolved
+
+#### Scenario: a node pin outside accepted access is refused
+- **GIVEN** an owner with an explicit saved primary
+- **WHEN** a node pins an unaccepted model or one over the owner's cost cap
+- **THEN** the run refuses the pin before calling a provider
+
+#### Scenario: a ta call without a model uses the owner's default
+- **GIVEN** an owner whose explicit primary is served by an accepted source
+- **WHEN** the owner's agent calls `ta call model` without `model`
+- **THEN** the call uses the owner's default order and returns a model receipt
+
+#### Scenario: a ta call pins another accepted source
+- **GIVEN** an owner whose default is Claude and whose Codex model is accepted
+- **WHEN** the owner's agent calls `ta call model` naming that Codex model
+- **THEN** the call uses the owner's Codex custody and returns its model receipt
+- **AND** the agent's own binding does not narrow the owner's accepted access
 
 #### Scenario: an unavailable pin does not silently fall back
 - **WHEN** a pinned model is refused by its source and no fallbacks are declared

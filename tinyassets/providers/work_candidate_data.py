@@ -253,15 +253,22 @@ class WorkCandidateData:
         `ModelAccess` does not admit -- and `_authorize_attempt` and
         `_validate_work_selection` revalidate the exact id afterwards regardless.
         """
-        return tuple(
-            ref
-            for connection in self.catalog.connections
-            for ref in (
-                ModelRef(connection.connection_id, model.model_id)
-                for model in connection.models
-            )
-            if _matches(ref, pin)
+        refs = tuple(
+            ModelRef(connection.connection_id, model.model_id)
+            for connection in self.catalog.connections for model in connection.models
+            if _matches(ModelRef(connection.connection_id, model.model_id), pin)
         )
+        if not refs:
+            return ()
+        # Explicit pins may use stale catalogue evidence, as an owner's saved
+        # explicit choice does. Pricing and capability limits still apply.
+        eligible = order_models(
+            self.catalog, ModelPolicy(0, "explicit", refs[1:], saved_default=refs[0]),
+            self.interaction,
+            owner_id=self.owner, universe_id=self.universe,
+            source_policies=self.source_policies,
+        )
+        return tuple(item.ref for item in eligible.candidates)
 
     def resolved_pin(self, pin):
         """``pin`` with its provider resolved to one of this owner's sources.
@@ -298,13 +305,12 @@ class WorkCandidateData:
             raise PermissionError("dynamic graph model overrides conflict with captured selection")
         pin = self.resolved_pin(policy.get("preferred", {}))
         matching = tuple(ref for ref in self.order if _matches(ref, pin))
-        if not matching and self.automatic:
-            # The owner chose nothing, so the captured order ranks, it does not
-            # decide. A graph pin IS an explicit choice and `order_models`
-            # already serves one from the catalogue; honour it rather than
-            # refusing the node for not appearing in an advisory ranking.
+        if not matching:
+            # The captured default order does not exhaust admitted choices. A
+            # graph pin is an explicit choice even when the owner saved a
+            # different primary and this model was absent from that order.
             matching = self._admitted_refs(pin)
-        if not matching or (not self.automatic and matching[0] != self.order[0]):
+        if not matching:
             raise PermissionError(
                 f"Requested model {pin.get('model_id', pin.get('model')) or 'default'} "
                 f"on {pin.get('provider') or 'selected source'} is not eligible: "
@@ -312,7 +318,7 @@ class WorkCandidateData:
             )
         primary = matching[0]
         tail = tuple(ref for ref in self.order if ref != primary)
-        if self.automatic and pin and "fallback_chain" not in policy:
+        if pin and "fallback_chain" not in policy:
             # An exact model pin forbids substitution. A source-only pin
             # retains its other eligible models, but never another source.
             tail = () if pin.get("model_id", pin.get("model")) else matching[1:]
