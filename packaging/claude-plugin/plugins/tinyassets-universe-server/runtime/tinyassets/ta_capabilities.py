@@ -405,7 +405,6 @@ class Capabilities:
         live = connected_sources(self.root.parent, self.root, self.context.owner)
         admitted = live
         if row["authority_kind"] == "run":
-            from tinyassets.provider_serving_binding import resolve_serving_agent_binding
             from tinyassets.provider_work_authority import ProviderWorkReceiptState
             from tinyassets.storage.provider_work_authority import (
                 SQLiteProviderWorkAuthorityStore,
@@ -425,11 +424,6 @@ class Capabilities:
                 if not sources:
                     raise PermissionError("run has no admitted model sources")
                 admitted = live.intersection(sources)
-            binding = resolve_serving_agent_binding(
-                self.root.parent, universe_id=self.context.universe,
-                owner_user_id=self.context.owner)
-            binding_id = str(binding["agent_binding_id"])
-            binding_revision = int(binding["revision"])
         else:
             from tinyassets.custom_agents import get_binding
 
@@ -440,6 +434,16 @@ class Capabilities:
             if (binding is None or binding["created_by"] != self.context.owner
                     or binding["revision"] != binding_revision):
                 raise PermissionError("turn model binding has ended")
+        # The launch reference verifies the invoking agent and its allocation.
+        # Routing a model call uses the owner's serving binding, as chat does;
+        # an arbitrary custom agent binding is not serving authority.
+        from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+
+        binding = resolve_serving_agent_binding(
+            self.root.parent, universe_id=self.context.universe,
+            owner_user_id=self.context.owner)
+        binding_id = str(binding["agent_binding_id"])
+        binding_revision = int(binding["revision"])
         if model is not None and model.connection_id not in admitted:
             raise ModelSourceUnavailable("requested model is not an admitted live source")
         if model is None:

@@ -105,8 +105,14 @@ def test_workflow_dispatches_each_step_to_its_owners_chosen_family(
 ):
     from tests.test_run_provider_session import _branch, _run_branch
     from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers.model_preferences import ModelPreferences
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
 
     _enumerated_native_models(monkeypatch)
+    ModelPreferenceStore(tmp_path).save(
+        "acct_alice", "universe_alice", expected_generation=0,
+        policy=ModelPreferences("explicit", ModelRef("claude-code", "opus"), ()),
+    )
     branch = _branch(node_count=2)
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "claude-code", "model": "opus"}}
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "codex", "model": "gpt-6-astra"}}
