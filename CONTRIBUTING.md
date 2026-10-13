@@ -17,8 +17,7 @@ to expect a first response within 48 hours, with escalation to
 `security@tinyassets.io`. That does not describe this repository:
 
 - There is no `connectors/` tree.
-- `prototype/tinyassets-catalog-v0/` and `prototype/workflow-catalog-v0/` are
-  prototypes in this repo, not a live second project to send pull requests to.
+- The former catalog prototypes are retired; this repository is the contribution target.
 - A `Signed-off-by` trailer is not required.
 - Security reports go to [SECURITY.md](SECURITY.md). A quiet pull request is
   not a security incident.

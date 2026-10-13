@@ -282,6 +282,7 @@ LIVE_SCRIPTS = {
     "tinyassets-probe": "tinyassets.probe:entry_point",
 }
 LIVE_DOMAIN_ENTRY_POINTS = {
+    # tinyassets-cli still loads these domains; remove this pin with its domain-loading follow-up.
     "fantasy_daemon": "domains.fantasy_daemon.skill:FantasyAuthorDomain",
     "research_probe": "domains.research_probe.skill:ResearchProbeDomain",
 }

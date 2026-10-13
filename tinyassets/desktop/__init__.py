@@ -1,4 +1,4 @@
-"""Helpers still used by the domain CLI and the shared brand mark.
+"""Tray, dashboard, notification, and icon helpers used by the domain runner.
 
 Re-exports
 ----------
