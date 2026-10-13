@@ -20,6 +20,7 @@ from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     PlatformLLMCallRefusedError,
     ProviderAuthorityHeldError,
+    SelectedModelUnavailableError,
     WorkModelExhaustedError,
 )
 from tinyassets.providers.model_pins import ModelPinError
@@ -140,8 +141,10 @@ def test_malformed_attempts_do_not_break_the_unknown_failure_notice():
 @pytest.mark.parametrize("error,code,advice", [
     (PermissionError(NO_ELIGIBLE_MODEL + "; not usable now: source (source not accepted); "
                      "model chosen/missing unavailable: absent from catalogue"),
-     "model_unavailable", "pick another model"),
+     "authority_held", "check its connection"),
     (ModelPinError("model pin provider 'missing' is unavailable"),
+     "model_unavailable", "pick another model"),
+    (SelectedModelUnavailableError("model codex/missing unavailable: absent from catalogue"),
      "model_unavailable", "pick another model"),
     (ProviderAuthorityHeldError("selected source is not accepted"),
      "authority_held", "check its connection"),
@@ -169,6 +172,18 @@ def test_unrelated_permission_error_still_has_unknown_cause():
     record = _served_failure_record(PermissionError("unclassified permission failure"))
     assert record.code == "unknown"
     assert "could not identify why" in failure_notice(record)
+
+
+def test_no_eligible_model_from_a_held_source_stays_authority_held():
+    cause = PermissionError(
+        NO_ELIGIBLE_MODEL + "; not usable now: codex (source not accepted)"
+    )
+    try:
+        raise ProviderAuthorityHeldError(str(cause)) from cause
+    except ProviderAuthorityHeldError as error:
+        record = _served_failure_record(error)
+    assert record.code == "authority_held"
+    assert "check its connection" in failure_notice(record)
 
 
 def test_a_previous_model_request_does_not_claim_nothing_ran():

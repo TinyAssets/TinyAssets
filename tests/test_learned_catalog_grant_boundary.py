@@ -61,23 +61,24 @@ def _row(document, model_id):
     return None
 
 
-def _listed(tmp_path, *model_ids):
+def _listed(tmp_path, *model_ids, source_key="codex"):
     """Write a reviewed public list, the way a merged PR would.
 
-    This is the whole sharing mechanism now: a tracked file per source kind. No
-    database, no attestation, no confirmers -- see models/README.md.
+    This is the whole sharing mechanism now: a tracked file per source kind,
+    with ids keyed to the source that serves them. No database, no attestation,
+    no confirmers -- see models/README.md.
     """
     import json
 
     directory = tmp_path / "models"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "subscription.json").write_text(
-        json.dumps({"source_kind": "subscription", "models": sorted(model_ids)}),
+        json.dumps({"source_kind": "subscription", "models": {source_key: sorted(model_ids)}}),
         encoding="utf-8")
     return directory
 
 
-def _learn(monkeypatch, configured, model_id=LEARNED_ID):
+def _learn(monkeypatch, configured, model_id=LEARNED_ID, *, source_key="codex"):
     """Put an id on the shared list for this source kind.
 
     Redirects the loader's directory through monkeypatch so it is UNDONE after the
@@ -86,10 +87,11 @@ def _learn(monkeypatch, configured, model_id=LEARNED_ID):
     """
     import tinyassets.providers.public_model_lists as lists
 
-    directory = _listed(configured.rig.base, model_id)
+    directory = _listed(configured.rig.base, model_id, source_key=source_key)
     monkeypatch.setattr(lists, "lists_directory", lambda: directory)
     # Cleared on the way in so this test sees its own file. No teardown needed: the
-    # cache key is (source kind, mtime), and monkeypatch restores the directory, so a
+    # cache key includes the source and file fingerprint, and monkeypatch restores
+    # the directory, so a
     # later read resolves the real path and misses on a different mtime.
     lists._cached.cache_clear()
 
@@ -123,7 +125,7 @@ def test_package_codex_does_not_offer_claude_subscription_ids(configured, monkey
     from tinyassets.external_agents.provider import ExternalAgentProvider
     from tinyassets.providers import call as provider_calls
 
-    _learn(monkeypatch, configured, "claude-opus-5-5")
+    _learn(monkeypatch, configured, "claude-opus-5-5", source_key="claude-code")
     OwnModelHistory(configured.rig.base).record(
         source_kind="subscription", provider_ref="claude-code",
         model_id="claude-haiku-5-5", owner_user_id="owner")

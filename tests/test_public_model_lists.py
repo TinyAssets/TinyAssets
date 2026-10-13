@@ -43,7 +43,7 @@ def _write(tmp_path, models, source_kind="subscription", raw=None):
     path = directory / f"{source_kind}.json"
     path.write_text(
         raw if raw is not None
-        else json.dumps({"source_kind": source_kind, "models": models}),
+        else json.dumps({"source_kind": source_kind, "models": {"codex": models}}),
         encoding="utf-8")
     return directory
 
@@ -61,6 +61,43 @@ def test_the_shipped_subscription_list_offers_the_newest_of_each_class():
     offered = newest_listed("subscription")
     assert "claude-fable-5-1" in offered, (
         "and it must survive the newest-per-class reduction, or it is still invisible")
+
+
+def test_public_ids_are_attached_only_to_the_source_that_lists_them():
+    from tinyassets.providers.served_model_plan import _listed_candidates
+
+    claude = set(newest_listed("subscription", source_key="claude-code"))
+    codex = set(newest_listed("subscription", source_key="codex"))
+    assert claude == {
+        "claude-fable-5-1", "claude-haiku-4-5-20251001",
+        "claude-opus-5-5", "claude-sonnet-5",
+    }
+    assert codex == {"gpt-5.6-sol", "gpt-6-astra"}
+    assert not claude & codex
+    assert read_list("subscription", source_key="unlisted-provider") == ()
+    assert {row.model_id for row in _listed_candidates(
+        "subscription", source_key="claude-code", already=())} == claude
+    assert {row.model_id for row in _listed_candidates(
+        "subscription", source_key="codex", already=())} == codex
+
+
+def test_codex_package_reads_its_public_subscription_rows(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers import served_model_plan
+
+    package = ExternalAgentProvider("codex")
+    monkeypatch.setattr(served_model_plan, "_resolve_serving_source", lambda *args: None)
+    monkeypatch.setattr(served_model_plan, "_own_verified_candidates", lambda *args, **kw: ())
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: SimpleNamespace(
+        _providers={"codex": package}))
+    member = SimpleNamespace(provider="codex", access=ModelAccess("explicit", ("",)))
+    catalog = served_model_plan._native_models(tmp_path, tmp_path, "owner", member)
+    listed = {model.model_id for model in catalog.models
+              if model.availability_basis == "publicly_listed"}
+    assert listed == {"gpt-5.6-sol", "gpt-6-astra"}
 
 
 def test_the_shipped_list_passes_its_own_ci_check():
@@ -154,11 +191,22 @@ def test_the_check_refuses_an_unknown_source_kind(tmp_path):
     assert len(problems) == 1 and "unknown source kind" in problems[0]
 
 
+def test_the_check_refuses_an_unknown_subscription_source(tmp_path):
+    from scripts.check_model_lists import findings
+
+    directory = tmp_path / "models"
+    directory.mkdir()
+    (directory / "subscription.json").write_text(json.dumps({
+        "source_kind": "subscription", "models": {"wrong-package": ["a-1"]},
+    }), encoding="utf-8")
+    assert "unknown subscription source" in findings(directory)[0]
+
+
 def test_the_check_refuses_an_empty_list(tmp_path):
     """Almost certainly a mistake in a PR whose whole purpose was to add an id."""
     from scripts.check_model_lists import findings
 
-    assert "lists no models" in findings(_write(tmp_path, []))[0]
+    assert "must list models" in findings(_write(tmp_path, []))[0]
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +409,15 @@ def test_a_content_change_at_the_same_mtime_is_not_served_from_cache(tmp_path, m
     path = directory / "subscription.json"
     monkeypatch.setattr(lists, "lists_directory", lambda: directory)
     lists._cached.cache_clear()
-    assert lists.newest_listed_cached("subscription") == ("old-1",)
+    assert lists.newest_listed_cached("subscription", source_key="codex") == ("old-1",)
 
     stat = path.stat()
     # Two DISTINCT classes, so this test is about the cache and not about the
     # newest-per-class reduction (which would keep only one of `new-2`/`new-3`).
     _write(tmp_path, sorted(["alpha-2", "beta-3"]))
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # same mtime, new contents
-    assert sorted(lists.newest_listed_cached("subscription")) == ["alpha-2", "beta-3"]
+    assert sorted(lists.newest_listed_cached("subscription", source_key="codex")) == [
+        "alpha-2", "beta-3"]
 
 
 def test_an_unreadable_list_file_is_not_silently_unlisted(tmp_path, monkeypatch):
@@ -384,7 +433,7 @@ def test_an_unreadable_list_file_is_not_silently_unlisted(tmp_path, monkeypatch)
 
     monkeypatch.setattr("pathlib.Path.stat", denied)
     with pytest.raises(PublicModelListError, match="cannot be read"):
-        lists.newest_listed_cached("subscription")
+        lists.newest_listed_cached("subscription", source_key="codex")
 
 
 def test_listed_rows_survive_the_compact_projection_for_the_served_agent():

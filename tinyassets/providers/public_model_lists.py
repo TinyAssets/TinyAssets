@@ -8,8 +8,9 @@ for the llm"), where the only ids a universe could offer were the ones its owner
 typed by hand, so a newly released model stayed invisible until someone shipped a
 patch.
 
-The list lives in the repo, one file per source kind, and users' agents propose
-additions by ordinary PR. Review is the moderation; `scripts/check_model_lists.py`
+The list lives in the repo, one file per source kind with ids grouped by source.
+Users' agents propose additions by ordinary PR. Review is the moderation;
+`scripts/check_model_lists.py`
 refuses a malformed one in CI. That is the whole mechanism: no shared database, no
 attestation, no confirmers, no pending state. A tracked file plus review is cheaper
 than all of it, and a merged PR is a public claim by construction.
@@ -57,8 +58,9 @@ def lists_directory() -> Path:
     return Path(__file__).resolve().parents[2] / _DIRECTORY_NAME
 
 
-def read_list(source_kind: str, *, directory: Path | None = None) -> tuple[str, ...]:
-    """Every id listed for one source kind, or ``()`` when there is no file.
+def read_list(source_kind: str, *, source_key: str | None = None,
+              directory: Path | None = None) -> tuple[str, ...]:
+    """Ids for one source, or all ids when inspecting the whole file.
 
     An absent file is a source kind nobody has listed for -- normal, and not an
     error. A file that EXISTS but is malformed raises: a corrupted or hand-broken
@@ -70,10 +72,10 @@ def read_list(source_kind: str, *, directory: Path | None = None) -> tuple[str, 
     path = (directory or lists_directory()) / f"{source_kind}.json"
     if not path.is_file():
         return ()
-    return _parse(path, source_kind)
+    return _parse(path, source_kind, source_key)
 
 
-def _parse(path: Path, source_kind: str) -> tuple[str, ...]:
+def _parse(path: Path, source_kind: str, source_key: str | None) -> tuple[str, ...]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -84,23 +86,26 @@ def _parse(path: Path, source_kind: str) -> tuple[str, ...]:
     if document["source_kind"] != source_kind:
         raise PublicModelListError(f"{path.name} names a different source kind")
     models = document["models"]
-    if not isinstance(models, list):
-        raise PublicModelListError(f"{path.name} models must be a list")
-    seen: set[str] = set()
-    for entry in models:
-        if not isinstance(entry, str) or not _MODEL_ID.match(entry):
+    if not isinstance(models, dict) or not models:
+        raise PublicModelListError(f"{path.name} models must be keyed by source")
+    for key, entries in models.items():
+        if not isinstance(key, str) or not _SOURCE_KIND.match(key.replace("-", "_")):
+            raise PublicModelListError(f"{path.name} has an invalid source key")
+        if not isinstance(entries, list) or not entries:
+            raise PublicModelListError(f"{path.name} {key} must list models")
+        if any(not isinstance(entry, str) or not _MODEL_ID.match(entry) for entry in entries):
             raise PublicModelListError(f"{path.name} holds an invalid model id")
-        if entry in seen:
-            raise PublicModelListError(f"{path.name} lists {entry!r} twice")
-        seen.add(entry)
-    if models != sorted(models):
-        # Sorted so a PR's diff is the addition and nothing else, and so two agents
-        # adding ids cannot produce a conflict that is really just ordering.
-        raise PublicModelListError(f"{path.name} must be sorted")
-    return tuple(models)
+        if len(entries) != len(set(entries)):
+            raise PublicModelListError(f"{path.name} lists a model twice")
+        if entries != sorted(entries):
+            raise PublicModelListError(f"{path.name} must be sorted")
+    if source_key is not None:
+        return tuple(models.get(source_key, ()))
+    return tuple(entry for entries in models.values() for entry in entries)
 
 
-def newest_listed(source_kind: str, *, directory: Path | None = None) -> tuple[str, ...]:
+def newest_listed(source_kind: str, *, source_key: str | None = None,
+                  directory: Path | None = None) -> tuple[str, ...]:
     """The newest listed id of each class for one source kind.
 
     Listing both ``some-model-4-6`` and ``4-7`` offers only ``4-7``, by the id's own
@@ -109,7 +114,7 @@ def newest_listed(source_kind: str, *, directory: Path | None = None) -> tuple[s
     """
     from tinyassets.providers.model_class import newest_per_class
 
-    listed = read_list(source_kind, directory=directory)
+    listed = read_list(source_kind, source_key=source_key, directory=directory)
 
     class _Row:
         __slots__ = ("model_id", "first_verified_at")
@@ -125,11 +130,11 @@ def newest_listed(source_kind: str, *, directory: Path | None = None) -> tuple[s
 
 
 @lru_cache(maxsize=8)
-def _cached(source_kind: str, fingerprint: tuple[int, int]) -> tuple[str, ...]:
-    return newest_listed(source_kind)
+def _cached(source_kind: str, source_key: str, fingerprint: tuple[int, int]) -> tuple[str, ...]:
+    return newest_listed(source_kind, source_key=source_key)
 
 
-def newest_listed_cached(source_kind: str) -> tuple[str, ...]:
+def newest_listed_cached(source_kind: str, *, source_key: str) -> tuple[str, ...]:
     """``newest_listed`` keyed on the file's size AND nanosecond mtime.
 
     The read is on the model-options path, which a client polls, and the file changes
@@ -153,4 +158,4 @@ def newest_listed_cached(source_kind: str) -> tuple[str, ...]:
     except OSError as exc:
         raise PublicModelListError(
             f"{path.name} exists but cannot be read: {type(exc).__name__}") from exc
-    return _cached(source_kind, (stat.st_size, stat.st_mtime_ns))
+    return _cached(source_kind, source_key, (stat.st_size, stat.st_mtime_ns))
