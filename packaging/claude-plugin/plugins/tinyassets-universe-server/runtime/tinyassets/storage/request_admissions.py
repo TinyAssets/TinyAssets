@@ -2547,7 +2547,7 @@ def _migrate_branch_task_subject_constraint(conn: sqlite3.Connection) -> None:
         count=1,
         flags=re.IGNORECASE,
     ).replace("'branch_version', 'agent_runtime_manifest'", "'branch_version'")
-    if new_sql == old_sql or "branch_tasks_v2_new" not in new_sql:
+    if "branch_tasks_v2_new" not in new_sql or "'agent_runtime_manifest'" in new_sql:
         raise RuntimeError("unrecognized branch task schema")
     dependents = [
         str(index[0]) for index in conn.execute(
@@ -2564,6 +2564,15 @@ def _migrate_branch_task_subject_constraint(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("BEGIN IMMEDIATE")
+        affected = (
+            "branch_tasks_v2", "request_admissions",
+            "request_admission_events", "branch_tasks_v2_quarantine",
+        )
+        before = {
+            table: sorted(tuple(row) for row in conn.execute(
+                f"PRAGMA foreign_key_check({table})"
+            )) for table in affected
+        }
         conn.execute(new_sql)
         conn.execute(
             f"INSERT INTO branch_tasks_v2_new (rowid, {columns}) "
@@ -2573,8 +2582,12 @@ def _migrate_branch_task_subject_constraint(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE branch_tasks_v2_new RENAME TO branch_tasks_v2")
         for statement in dependents:
             conn.execute(statement)
-        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
-            raise RuntimeError("branch task migration broke a foreign key")
+        for table in affected:
+            after = sorted(tuple(row) for row in conn.execute(
+                f"PRAGMA foreign_key_check({table})"
+            ))
+            if after != before[table]:
+                raise RuntimeError("branch task migration changed foreign keys")
         conn.commit()
     except Exception:
         conn.rollback()

@@ -127,11 +127,20 @@ def test_branch_subject_check_migrates_copy_of_populated_current_schema(
             (committed["branch_task_id"],),
         ).fetchone()[0]
         source.backup(target)
+    with sqlite3.connect(db_path(copy_root)) as conn:
+        conn.executescript(
+            "CREATE TABLE unrelated_parent (id TEXT PRIMARY KEY);"
+            "CREATE TABLE unrelated_child (parent_id TEXT REFERENCES unrelated_parent(id));"
+            "INSERT INTO unrelated_child (parent_id) VALUES ('preexisting-orphan');"
+        )
 
     with _connect(copy_root) as conn:
         migrate_request_admission_schema(conn)
         migrate_request_admission_schema(conn)
-        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("PRAGMA foreign_key_check(unrelated_child)").fetchall()
+        for table in ("branch_tasks_v2", "request_admissions",
+                      "request_admission_events", "branch_tasks_v2_quarantine"):
+            assert conn.execute(f"PRAGMA foreign_key_check({table})").fetchall() == []
         task = conn.execute(
             "SELECT branch_task_id, rowid FROM branch_tasks_v2"
         ).fetchone()
