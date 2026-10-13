@@ -1,0 +1,19 @@
+[Unit]
+Description=TinyAssets box host (P2a idle preflight)
+After=network.target docker.service
+ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd_idle.py
+Restart=on-failure
+RestartSec=5
+Delegate=yes
+RuntimeDirectory=tinyassets-boxhostd
+RuntimeDirectoryMode=0700
+MemoryMax=3G
+CPUQuota=300%
+TasksMax=5120
+
+[Install]
+WantedBy=multi-user.target
