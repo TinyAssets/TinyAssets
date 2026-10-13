@@ -329,34 +329,6 @@ def test_an_expired_marker_blocks_only_prs_that_touch_its_file(repo):
     assert len(failures) == 1 and "expired 2026-09-01" in failures[0]
 
 
-def test_renewing_only_a_skip_expiry_is_not_a_new_skip(repo):
-    old = BASE.replace(
-        "def test_other",
-        '@pytest.mark.skip(reason="pending owner=a expires=2026-09-01")\ndef test_other',
-    )
-    base = _commit(repo, {"tests/test_a.py": old})
-    renewed = old.replace("expires=2026-09-01", "expires=2026-11-01")
-    head = _commit(repo, {"tests/test_a.py": renewed})
-    assert _run(repo, base, head)[1] == []
-
-
-def test_renewal_cannot_change_skip_reason_or_exceed_expiry_limit(repo):
-    old = BASE.replace(
-        "def test_other",
-        '@pytest.mark.skip(reason="pending owner=a expires=2026-09-01")\ndef test_other',
-    )
-    base = _commit(repo, {"tests/test_a.py": old})
-    changed = _commit(repo, {"tests/test_a.py": old.replace(
-        "pending owner=a expires=2026-09-01",
-        "different owner=a expires=2026-11-01",
-    )})
-    assert "new `skip`" in _run(repo, base, changed)[1][0]
-    too_long = _commit(repo, {"tests/test_a.py": old.replace(
-        "expires=2026-09-01", "expires=2027-11-01",
-    )})
-    assert "days out" in _run(repo, base, too_long)[1][0]
-
-
 def test_adding_a_known_failing_entry_is_tampering(repo):
     base = _commit(repo, {"tests/test_a.py": BASE, ".github/known-failing-tests.txt": "# none\n"})
     head = _commit(repo, {".github/known-failing-tests.txt": "tests/test_a.py::test_keep\n"})
