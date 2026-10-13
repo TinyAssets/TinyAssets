@@ -179,9 +179,9 @@ path, since its in-box tools are the same `boxd` operations P2b ships.
   (design §11). Irreversible for the cell layout, not for data.
 - **P8:** the off-region bucket, about $0-5 a month (existing
   `docs/host-actions.md` row). Blocks only P8.
-- **Later, measured:** a larger droplet, a DO volume for box storage, or a
-  bare-metal KVM host (Firecracker's precondition) is each a spending
-  decision raised with the G3 or wake-queue numbers that need it.
+- **Later, measured:** a larger droplet or a bare-metal KVM host
+  (Firecracker's precondition) is a spending decision raised with the G3
+  or wake-queue numbers that need it. The box volume was approved below.
 
 ## Amendment 2026-10-13: where box trees live (G4)
 
@@ -192,15 +192,15 @@ project quotas. Enabling `prjquota` on the root ext4 needs an offline
 one cross-family round.
 
 **Decision: box trees live on one XFS filesystem mounted `pquota,nodiscard`
-at `/var/lib/boxhostd/owners`.** Two backing stores pass the same G4; the
-founder picks one:
+at `/var/lib/boxhostd/owners`.** The founder chose (a) for production;
+(b) remains the fallback when the volume is absent:
 
-- **(a) Recommended: a DO block volume, 20 GiB, about $2 a month.** New
-  spending, a founder decision. Formatted XFS once, attached to the
+- **(a) Chosen: a DO block volume, 20 GiB, about $2 a month.** Approved
+  spending. Formatted XFS once, attached to the
   droplet, grown online (DO resize, then `xfs_growfs`) with no loop device,
   no `fallocate` and no discard concern; a volume snapshot is a second
   backup form.
-- **(b) No spending: a loop image.** `/var/lib/boxhostd/boxes.img`,
+- **(b) Fallback: a loop image.** `/var/lib/boxhostd/boxes.img`,
   preallocated with `fallocate` (never sparse) at 8 GiB. That leaves
   8.9 GiB on the root filesystem, so the first 4 GiB growth would breach
   the 6 GiB reserve: the block-volume decision is required before the
@@ -244,9 +244,12 @@ founder picks one:
   removed. Rollback before that step: the old image, old trees intact;
   after it: that backup plus the previous image. Design §11 is amended.
 
-Founder: **one decision now**, backing store (a) at about $2 a month or
-(b) with the same decision deferred to the first growth. No reboot either
-way.
+Founder decision 2026-10-13: **(a), the 20 GiB DigitalOcean block volume**
+at about $2 a month. Dispatch `box-store-volume.yml` on main before deploying
+the store, then run box preflight. The installer prefers its stable by-id
+device, formats it as XFS only when it has no filesystem, and uses the loop
+image only if the volume is absent. An existing loop store with owner data
+is not switched automatically. No reboot is required.
 
 ## Consequences
 

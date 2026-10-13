@@ -17,7 +17,7 @@ if ! command -v mkfs.xfs >/dev/null || ! command -v xfs_quota >/dev/null; then
 fi
 mkdir -p /etc/tinyassets /var/lib/boxhostd/owners
 if [[ ! -e /etc/tinyassets/box-store.conf ]]; then
-    printf '%s\n' 'BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img' \
+    printf '%s\n' 'BOX_STORE_DEVICE=auto' \
         > /etc/tinyassets/box-store.conf
     chmod 0600 /etc/tinyassets/box-store.conf
 fi
@@ -74,6 +74,15 @@ if [[ "$(readlink "${root}/current" 2>/dev/null || true)" != "$release" ]]; then
 fi
 if [[ "$changed" -eq 1 ]]; then
     systemctl daemon-reload
+fi
+# An earlier P2a install may already have its empty loop image mounted. Once
+# the approved volume appears, switch the mount before starting boxhostd.
+volume=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store
+if [[ -b "$volume" && "$(readlink /run/boxhostd/box-store-device 2>/dev/null || true)" == /dev/loop* ]]; then
+    [[ -z "$(find /var/lib/boxhostd/owners -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+        echo 'existing loop store contains data; refusing automatic switch' >&2; exit 1;
+    }
+    systemctl stop boxhostd.service var-lib-boxhostd-owners.mount box-store-device.service
 fi
 systemctl enable --now var-lib-boxhostd-owners.mount
 systemctl is-active --quiet var-lib-boxhostd-owners.mount

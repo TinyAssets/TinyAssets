@@ -109,11 +109,37 @@ def test_store_unit_contract_and_installer_guards() -> None:
     assert "fallocate -l" in device and "reserve=$((6 * 1024 * 1024 * 1024))" in device
     assert "discard_max_bytes" in device and "--direct-io=on" in device
     assert "mkfs.xfs" in device and "if [[ ! -e \"$device\" ]]" in device
+    assert device.index('blkid -p -s TYPE') < device.index('mkfs.xfs "$device"')
+    assert 'wipefs -n --noheadings --output TYPE' in device
     for name in ("box-store-device.sh", "box-store-device-stop.sh",
                  "box-store-check.sh", "install-boxhostd-preflight.sh", "backup.sh",
                  "backup-restore.sh"):
         result = subprocess.run(["bash", "-n", str(ROOT / "deploy" / name)], check=False)
         assert result.returncode == 0, name
+
+
+@pytest.mark.parametrize(
+    ("configured", "attached", "selected"),
+    [
+        ("auto", True, "/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store"),
+        ("auto", False, "/var/lib/boxhostd/boxes.img"),
+        ("/var/lib/boxhostd/boxes.img", True,
+         "/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store"),
+        ("/dev/custom", True, "/dev/custom"),
+    ],
+)
+def test_box_store_device_selection(configured: str, attached: bool, selected: str) -> None:
+    script = ROOT / "deploy/box-store-device.sh"
+    command = (
+        'source "$1"; box_store_is_block() { '
+        f'{"return 0" if attached else "return 1"}; '
+        '}; select_box_store_device "$2"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", command, "bash", str(script), configured],
+        capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.strip() == selected
 
 
 @pytest.mark.parametrize(

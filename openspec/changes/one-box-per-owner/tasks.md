@@ -41,10 +41,10 @@ and the spec is synced.
         - the deploy workflow's SSH step installs the pinned `runsc` and
           the `boxhostd` systemd unit on the droplet, `--network=none`,
           cgroup v2 per box; both serve nothing until P2b;
-        - the box store: XFS `pquota,nodiscard` at
-          `/var/lib/boxhostd/owners`, on the backing store the founder
-          picks (ADR-022 amendment: a 20 GiB DO block volume, or the 8 GiB
-          `fallocate` loop image with discard disabled), by a mount unit
+        - the box store: XFS `pquota,noatime,nodiscard` at
+          `/var/lib/boxhostd/owners`, on the founder-approved 20 GiB DO
+          block volume (2026-10-13); the 8 GiB `fallocate` loop image
+          remains the fallback if the volume is absent, by a mount unit
           that `boxhostd.service` `Requires=` and is `After=`; nothing
           binds it into the daemon container;
         - `scripts/box_preflight.py`: the host and platform gates G1, G3,

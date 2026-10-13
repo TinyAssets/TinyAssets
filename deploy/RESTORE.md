@@ -151,6 +151,18 @@ daemon, probes through an SSH port forward, destroys a green drill host, and
 keeps a red host by default.
 # Box-store pair
 
+The production box store uses the 20 GiB DigitalOcean volume
+`tinyassets-box-store` at
+`/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store`. Dispatch
+`box-store-volume.yml` on main before the deploy that installs the store.
+The device script formats an unformatted volume as XFS once and mounts it
+through `var-lib-boxhostd-owners.mount` with `pquota,noatime,nodiscard`.
+It never reformats a volume with a filesystem. If no volume is attached,
+the 8 GiB loop image remains the fallback. An installed loop store with
+owner data is never automatically switched to the volume; restore the
+matched backup pair onto the mounted volume during a maintenance window.
+Do not delete or detach the volume during restore or rollback.
+
 An installed box store adds `tinyassets-box-store-<timestamp>.tar.gz` beside
 each full data archive in the rclone destination. `backup.sh` freezes XFS
 while streaming this member to rclone, then thaws it. The box member is not

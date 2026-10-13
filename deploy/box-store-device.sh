@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 # Prepare the device named by the stable box-store mount unit.
+box_store_is_block() { [[ -b "$1" ]]; }
+select_box_store_device() {
+    local configured="${1:-/var/lib/boxhostd/boxes.img}"
+    local volume=/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store
+    if [[ "$configured" == /var/lib/boxhostd/boxes.img || "$configured" == auto ]]; then
+        if box_store_is_block "$volume"; then
+            printf '%s\n' "$volume"
+        else
+            printf '%s\n' /var/lib/boxhostd/boxes.img
+        fi
+    else
+        printf '%s\n' "$configured"
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 set -euo pipefail
 
 config=/etc/tinyassets/box-store.conf
@@ -10,7 +28,7 @@ mode="$(stat -c %a "$config")"
 (( (8#$mode & 8#22) == 0 )) || { echo 'box-store.conf is writable by non-root' >&2; exit 1; }
 # The configuration is root-owned and contains only BOX_STORE_DEVICE.
 source "$config"
-device="${BOX_STORE_DEVICE:-/var/lib/boxhostd/boxes.img}"
+device="$(select_box_store_device "${BOX_STORE_DEVICE:-auto}")"
 mkdir -p /run/boxhostd /var/lib/boxhostd/owners
 if [[ "$device" == /var/lib/boxhostd/boxes.img ]]; then
     if [[ ! -e "$device" ]]; then
@@ -45,6 +63,17 @@ else
     [[ "$device" == /dev/* && -b "$device" ]] || {
         echo 'BOX_STORE_DEVICE must name a block device' >&2; exit 1;
     }
+    # A newly attached raw volume is formatted once. Any existing filesystem,
+    # including an unexpected type, is retained and rejected below.
+    if ! blkid -p -s TYPE -o value "$device" >/dev/null 2>&1; then
+        signatures="$(wipefs -n --noheadings --output TYPE "$device")" || {
+            echo 'could not inspect box volume signatures' >&2; exit 1;
+        }
+        [[ -z "${signatures//[[:space:]]/}" ]] || {
+            echo 'box volume has an existing signature; refusing to format it' >&2; exit 1;
+        }
+        mkfs.xfs "$device"
+    fi
 fi
 [[ "$(blkid -s TYPE -o value "$device")" == xfs ]] || {
     echo 'box store must already be XFS; refusing to format it' >&2; exit 1;
