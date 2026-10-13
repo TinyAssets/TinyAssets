@@ -243,6 +243,10 @@ uses disposable owner trees, and deletes them after measuring. G4 creates a
 disposable quota tree under `/var/lib/boxhostd/owners/.box-preflight-scratch/`.
 It measures EDQUOT in one box, ENOSPC when the XFS store fills, root free
 space, and allocated image blocks after `fstrim -a`.
+After the sandbox run, the workflow stops the idle service, fsyncs a marker,
+stops the mount and device service, remounts (reattaching the loop image when
+used), checks the marker and restarts boxhostd. The combined G4 gate fails if
+this durability check fails. It runs only while the P2a store is empty.
 The harness has a 30-minute deadline and cleans its sandboxes, `/var/tmp/box-preflight-*`
 rootfs and owner tree, and scratch quota on timeout. At 40 minutes, boxhostd
 kills the harness process group and runs the same cleanup pass before reporting

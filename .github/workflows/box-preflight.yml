@@ -58,6 +58,23 @@ jobs:
           fi
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               'sudo cat /run/tinyassets-boxhostd/preflight.json' > box-preflight-results.json
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo python3 /opt/tinyassets/boxhostd/box_store_durability.py' > box-durability-results.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("box-preflight-results.json")
+          report = json.loads(path.read_text())
+          durability = json.loads(Path("box-durability-results.json").read_text())
+          g4 = report["gates"]["G4"]
+          g4["fsync_remount"] = durability.get("fsync_remount", False)
+          g4["pass"] = g4.get("pass") is True and durability.get("pass") is True
+          if not durability.get("pass"):
+              g4["durability_reason"] = durability.get("reason", "failed")
+          report["pass"] = report.get("pass") is True and g4["pass"]
+          path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          PY
           python3 -m json.tool box-preflight-results.json >/dev/null
           python3 -c 'import json; assert json.load(open("box-preflight-results.json"))["pass"] is True'
 

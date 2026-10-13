@@ -13,9 +13,32 @@ from pathlib import Path
 import pytest
 
 from deploy import boxhostd_idle
-from scripts import box_preflight, box_preflight_summary
+from scripts import box_preflight, box_preflight_summary, box_store_durability
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_g4_durability_stops_mount_and_reattaches_loop(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(box_store_durability, "STORE", tmp_path)
+    calls = []
+    monkeypatch.setattr(box_store_durability, "command", lambda *args: calls.append(args))
+    result = box_store_durability.check()
+    assert result == {"pass": True, "fsync_remount": True}
+    assert calls[:4] == [
+        ("systemctl", "stop", box_store_durability.SERVICE),
+        ("systemctl", "stop", box_store_durability.MOUNT),
+        ("systemctl", "stop", box_store_durability.DEVICE),
+        ("systemctl", "start", box_store_durability.MOUNT),
+    ]
+    assert calls[-1] == ("systemctl", "start", box_store_durability.SERVICE)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_g4_durability_refuses_nonempty_store(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(box_store_durability, "STORE", tmp_path)
+    (tmp_path / "1000").mkdir()
+    result = box_store_durability.check()
+    assert result["pass"] is False
 
 
 def test_percentile_and_empty_sample() -> None:
@@ -499,6 +522,8 @@ def test_preflight_workflow_and_idle_service_are_decoupled_from_daemon() -> None
     assert "workflow_dispatch:" in gates
     assert "production-host-mutation" in gates
     assert "--kill-who=main -s USR1 boxhostd.service" in gates
+    assert "box_store_durability.py" in gates
+    assert 'g4["pass"] = g4.get("pass") is True and durability.get("pass") is True' in gates
     assert "Delegate=yes" in unit
     assert "boxhostd_idle.py" in unit
     assert "f3ed9131bc252259df150e270154180188f9df56b73a2312940325e1f522a2d6" in installer
