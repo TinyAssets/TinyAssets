@@ -9,7 +9,10 @@ apex OAuth discovery documents
 `tinyassets.io/.well-known/oauth-authorization-server*` while leaving the
 GitHub Pages landing intact for all other paths. The discovery wildcards are
 the document name only, so `/.well-known/openai-apps-challenge` stays on the
-website.
+website. Path-inserted discovery (`/.well-known/oauth-protected-resource/mcp`
+and `/.well-known/oauth-authorization-server/mcp`) is forwarded to the apex
+document the daemon already serves, so a worker deploy answers those URLs
+before the daemon image that mounts them directly is live.
 
 **After deploy:** the canonical public MCP URL returns to
 `https://tinyassets.io/mcp`. Installed TinyAssets chatbot connectors pointing

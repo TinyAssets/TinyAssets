@@ -98,6 +98,7 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/.well-known/oauth-protected-resource'), true);
         assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp'), true);
         assert.equal(shouldProxy('/.well-known/oauth-authorization-server'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/mcp'), true);
     });
 
     it('does not proxy other well-known paths or a longer discovery suffix', () => {
@@ -208,6 +209,7 @@ describe('worker handler — apex OAuth discovery', () => {
         '/.well-known/oauth-protected-resource',
         '/.well-known/oauth-protected-resource/mcp',
         '/.well-known/oauth-authorization-server',
+        '/.well-known/oauth-authorization-server/mcp',
     ];
 
     for (const path of documents) {
@@ -220,7 +222,16 @@ describe('worker handler — apex OAuth discovery', () => {
                 );
                 assert.ok(lastUpstreamRequest, path);
                 assert.equal(lastUpstreamRequest.method, method);
-                assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}${path}`);
+                const upstreamPath = {
+                    '/.well-known/oauth-protected-resource/mcp':
+                        '/.well-known/oauth-protected-resource',
+                    '/.well-known/oauth-authorization-server/mcp':
+                        '/.well-known/oauth-authorization-server',
+                }[path] || path;
+                assert.equal(
+                    lastUpstreamRequest.url,
+                    `${TUNNEL_ORIGIN}${upstreamPath}`,
+                );
                 assert.equal(response.status, 200);
             }
         });

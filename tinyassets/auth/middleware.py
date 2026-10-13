@@ -530,6 +530,8 @@ _DISCOVERY_PATHS = frozenset({
     "/.well-known/oauth-protected-resource/mcp",
     "/mcp/.well-known/oauth-protected-resource",
     "/.well-known/oauth-authorization-server",
+    # RFC 8414 path insertion when a client treats the MCP URL as the issuer.
+    "/.well-known/oauth-authorization-server/mcp",
     "/mcp/.well-known/oauth-authorization-server",
 })
 
@@ -665,16 +667,45 @@ def _auth_challenge_path(path: str) -> bool:
     return path == "/mcp" or path.startswith("/mcp/") or _is_app_path(path)
 
 
+def _scope_header(scope: dict, name: str) -> str:
+    target = name.lower().encode("ascii")
+    for key, value in scope.get("headers") or []:
+        if key.lower() == target:
+            return value.decode("latin-1")
+    return ""
+
+
+def _browser_connect_page(scope: dict) -> bool:
+    """A person opened ``/mcp`` in a browser.
+
+    The footer links here. ``Accept: text/html`` with no streamable-HTTP
+    signal gets the static connect page. POST, HEAD, a session, a protocol
+    version, or ``text/event-stream`` stay on the bearer challenge so an MCP
+    client still receives ``401`` and ``WWW-Authenticate``.
+    """
+    if scope.get("method", "").upper() != "GET":
+        return False
+    if scope.get("path") not in {"/mcp", "/mcp/"}:
+        return False
+    if _scope_header(scope, "mcp-protocol-version").strip():
+        return False
+    if _scope_header(scope, "mcp-session-id").strip():
+        return False
+    accept = _scope_header(scope, "accept").lower()
+    if "text/event-stream" in accept:
+        return False
+    return "text/html" in accept
+
+
 def _challenge_prm_url() -> str:
     """The ``resource_metadata`` URL to advertise in the 401 challenge.
 
-    It MUST be fetchable by the client, or OAuth discovery never starts. In
-    production only ``/mcp*`` is proxied to the daemon (Cloudflare Worker), so an
-    apex ``/.well-known/oauth-protected-resource`` 404s. When ``WORKOS_MCP_RESOURCE``
-    is set (e.g. ``https://tinyassets.io/mcp``) derive the PRM from it, yielding
-    the routed ``…/mcp/.well-known/oauth-protected-resource`` (the mcp-prefixed
-    variant the server also mounts). Fallback: the server root well-known, which
-    is correct in dev/tunnel where every path routes to the daemon.
+    Clients that follow the header fetch the ``/mcp``-prefixed document. That
+    path sits on the long-standing ``tinyassets.io/mcp*`` route, so it stays
+    reachable if a newer well-known route is not bound yet. RFC 9728 path
+    insertion is the same document at
+    ``/.well-known/oauth-protected-resource/mcp``. When ``WORKOS_MCP_RESOURCE``
+    is unset, the server root well-known is the right URL.
     """
     import os
 
@@ -1129,6 +1160,9 @@ class AuthContextMiddleware:
                         return
                     receive = _replay_receive(messages, receive)
             if not canary_authorized and not is_hook_route and identity is None:
+                if not token and _browser_connect_page(scope):
+                    await self.app(scope, receive, send)
+                    return
                 linking_body = None
                 if method == "POST" and path in ("/mcp", "/mcp/"):
                     request_body, _, disconnected, oversized = await _buffer_request_body(receive)

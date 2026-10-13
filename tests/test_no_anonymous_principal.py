@@ -191,11 +191,14 @@ def test_initialize_without_a_bearer_is_challenged_through_the_app(client):
     assert response.json() == {"error": "authentication_required"}
 
 
-def test_browser_get_of_the_endpoint_is_challenged_too(client):
-    # The discovery HTML used to be served to anybody. It is under /mcp and
-    # carries no named authentication of its own, so it is challenged like
-    # every other /mcp path; the public website is the place for prose.
-    assert client.get("/mcp", headers={"Accept": "text/html"}).status_code == 401
+def test_browser_get_of_the_endpoint_is_a_static_connect_page(client):
+    # A human following the site footer gets the connect page. It is not an
+    # anonymous principal: the body is static instructions, and a transport
+    # request on the same path is still the bearer challenge.
+    page = client.get("/mcp", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "Connect via MCP client" in page.text
+    assert "authentication_required" not in page.text
 
 
 # --------------------------------------------------------------------------
@@ -400,6 +403,7 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
         "/.well-known/oauth-protected-resource",
         "/mcp/.well-known/oauth-protected-resource",
         "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/mcp",
         "/mcp/.well-known/oauth-authorization-server",
     ):
         assert _auth_challenge_path(exempt) is False, exempt

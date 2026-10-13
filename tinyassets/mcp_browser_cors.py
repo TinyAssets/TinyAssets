@@ -57,6 +57,15 @@ _DISCOVERY_PATHS = frozenset({
     "/.well-known/oauth-protected-resource",
     "/.well-known/oauth-protected-resource/mcp",
     "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-authorization-server/mcp",
+})
+
+#: The local authorization server. Production WorkOS clients never call these;
+#: a browser-based client that does needs the same preflight as ``/mcp``.
+_OAUTH_PATHS = frozenset({
+    "/oauth/register",
+    "/oauth/authorize",
+    "/oauth/token",
 })
 
 
@@ -65,6 +74,7 @@ def _mcp_surface(path: str) -> bool:
         path == "/mcp"
         or path.startswith("/mcp/")
         or path in _DISCOVERY_PATHS
+        or path in _OAUTH_PATHS
     )
 
 

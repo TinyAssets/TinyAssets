@@ -114,7 +114,17 @@ function appCookieAllowed(cookie, pathname) {
 async function proxyToTunnel(request, env) {
     const incoming = new URL(request.url);
     const upstream = new URL(TUNNEL_ORIGIN);
-    upstream.pathname = incoming.pathname;
+    // Path insertion is the URL a client computes. The daemon has always
+    // served the same document at the apex path, so map the inserted form
+    // onto that path. A worker deploy then answers correctly even while an
+    // older daemon is still running.
+    const inserted = {
+        '/.well-known/oauth-protected-resource/mcp':
+            '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-authorization-server/mcp':
+            '/.well-known/oauth-authorization-server',
+    };
+    upstream.pathname = inserted[incoming.pathname] || incoming.pathname;
     upstream.search = incoming.search;
 
     const forwardedHeaders = new Headers();
@@ -289,6 +299,10 @@ function shouldProxy(pathname) {
     if (pathname === '/.well-known/oauth-protected-resource') return true;
     if (pathname === '/.well-known/oauth-protected-resource/mcp') return true;
     if (pathname === '/.well-known/oauth-authorization-server') return true;
+    // The authorization-server route is a suffix wildcard, so this path
+    // reaches the Worker. Proxy it; a 404 here would hide it from both
+    // the website and the daemon.
+    if (pathname === '/.well-known/oauth-authorization-server/mcp') return true;
     return false;
 }
 

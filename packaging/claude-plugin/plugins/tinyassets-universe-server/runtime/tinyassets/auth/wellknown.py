@@ -139,6 +139,12 @@ def starlette_discovery_routes() -> list[Any]:
             methods=["GET"],
         ),
         Route(
+            # RFC 8414 path insertion for an issuer whose path is /mcp.
+            "/.well-known/oauth-authorization-server/mcp",
+            _handle_authz_server_metadata,
+            methods=["GET"],
+        ),
+        Route(
             # Mirror the PRM: in production only /mcp* is routed to the daemon,
             # so a client probing the apex AS-metadata path would 404 and lose
             # the AuthKit proxy fallback. Serve the /mcp-prefixed variant too.
@@ -146,6 +152,9 @@ def starlette_discovery_routes() -> list[Any]:
             _handle_authz_server_metadata,
             methods=["GET"],
         ),
+        Route("/oauth/register", _handle_register, methods=["POST"]),
+        Route("/oauth/authorize", _handle_authorize, methods=["GET"]),
+        Route("/oauth/token", _handle_token, methods=["POST"]),
     ]
 
 
@@ -234,6 +243,22 @@ async def _fetch_authkit_as_metadata(issuer: str) -> dict[str, Any] | None:
     return await asyncio.to_thread(_get)
 
 
+def _oauth_provider() -> Any:
+    """The process provider, so a code issued here is the one the transport checks."""
+    from tinyassets.auth.middleware import _get_provider
+
+    return _get_provider()
+
+
+def _oauth_not_here(exc: NotImplementedError) -> Any:
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(
+        {"error": "not_implemented", "error_description": str(exc)},
+        status_code=501,
+    )
+
+
 async def _handle_authz_server_metadata(request: Any) -> Any:
     """Serve authorization server metadata.
 
@@ -271,15 +296,15 @@ async def _handle_register(request: Any) -> Any:
     """Handle Dynamic Client Registration."""
     from starlette.responses import JSONResponse
 
-    from tinyassets.auth.provider import create_provider
-
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid_request"}, status_code=400)
 
-    provider = create_provider()
-    result = provider.register_client(body)
+    try:
+        result = _oauth_provider().register_client(body)
+    except NotImplementedError as exc:
+        return _oauth_not_here(exc)
     return JSONResponse(result, status_code=201)
 
 
@@ -291,8 +316,6 @@ async def _handle_authorize(request: Any) -> Any:
     the tunnel/local context implies trust.
     """
     from starlette.responses import RedirectResponse
-
-    from tinyassets.auth.provider import create_provider
 
     params = dict(request.query_params)
     client_id = params.get("client_id", "")
@@ -309,12 +332,13 @@ async def _handle_authorize(request: Any) -> Any:
             status_code=400,
         )
 
-    provider = create_provider()
     try:
-        code = provider.create_authorization(
+        code = _oauth_provider().create_authorization(
             client_id, redirect_uri, scope, state,
             code_challenge, code_challenge_method,
         )
+    except NotImplementedError as exc:
+        return _oauth_not_here(exc)
     except ValueError as exc:
         from starlette.responses import JSONResponse
         return JSONResponse(
@@ -335,8 +359,6 @@ async def _handle_token(request: Any) -> Any:
     """Handle token exchange."""
     from starlette.responses import JSONResponse
 
-    from tinyassets.auth.provider import create_provider
-
     try:
         body = await request.form()
         body = dict(body)
@@ -353,13 +375,15 @@ async def _handle_token(request: Any) -> Any:
             status_code=400,
         )
 
-    provider = create_provider()
-    result = provider.exchange_code(
-        code=body.get("code", ""),
-        client_id=body.get("client_id", ""),
-        redirect_uri=body.get("redirect_uri", ""),
-        code_verifier=body.get("code_verifier", ""),
-    )
+    try:
+        result = _oauth_provider().exchange_code(
+            code=body.get("code", ""),
+            client_id=body.get("client_id", ""),
+            redirect_uri=body.get("redirect_uri", ""),
+            code_verifier=body.get("code_verifier", ""),
+        )
+    except NotImplementedError as exc:
+        return _oauth_not_here(exc)
 
     if result is None:
         return JSONResponse(
