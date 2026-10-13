@@ -23,7 +23,7 @@ if [[ ! -d "$target" ]]; then
     curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
         "https://github.com/google/gvisor/releases/download/${release}/gvisor-x86_64.tar.bz2" \
         -o "$archive"
-    echo "${archive_sha}  ${archive}" | sha256sum -c -
+    echo "${archive_sha}  ${archive}" | sha256sum --strict -c -
     tar -xjf "$archive" -C "$stage"
     [[ -x "${stage}/runsc" && -d "${stage}/gvisor-bin" ]] \
         || { echo 'gVisor archive missing runtime files' >&2; exit 1; }
@@ -34,13 +34,14 @@ fi
 
 # Recheck the installed binary on every deploy; the archive digest pins the
 # whole release at installation. Refuse an unexpected pre-existing target.
-echo "${runsc_sha}  ${target}/runsc" | sha256sum -c -
-cat <<EOF | sha256sum -c -
+echo "${runsc_sha}  ${target}/runsc" | sha256sum --strict -c -
+# Computed from the pinned archive, whose digest matches the release SHA256SUMS.
+cat <<EOF | sha256sum --strict -c -
 46ff778d9e22c16cd1cb0aed13edd110af5e73533036831f56d9eebd05ec43f5  ${target}/gvisor-bin/checkpointgofer
 3315d7ad7c2d3751d349e4976fa02da1da6fd7e41746c35622304e5fabe4fce0  ${target}/gvisor-bin/gvisor-sentry-prewarmer
 e10e6e8072a0822f5e80dc203d156f0602b15fab90b85fac1d7bffd79477b267  ${target}/gvisor-bin/gvisor_sentry
 03af90d07ea466c10ecc3e3ba839b2a59540959dd3286aea3886917cba850c11  ${target}/gvisor-bin/runsc-fd-parking
-a0dde4d5e75d4f8e4287bc2e631b96536e83c80f574fb4ff62c58c5  ${target}/gvisor-bin/runsc-metric-server
+a0dde4d5e75d4f8e4287bc2e631b96536e83c80f574fb4ff62c58d472d4f58c5  ${target}/gvisor-bin/runsc-metric-server
 EOF
 "${target}/runsc" --version | grep -F "$release" >/dev/null
 changed=0

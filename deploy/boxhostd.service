@@ -11,7 +11,9 @@ RestartSec=5
 Delegate=yes
 RuntimeDirectory=tinyassets-boxhostd
 RuntimeDirectoryMode=0700
-TasksMax=infinity
+MemoryMax=3G
+CPUQuota=300%
+TasksMax=5120
 
 [Install]
 WantedBy=multi-user.target

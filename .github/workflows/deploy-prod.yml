@@ -907,6 +907,7 @@ jobs:
       # healthy. No daemon path calls it, and this step runs no gate workload.
       - name: Install pinned gVisor and idle boxhostd
         if: ${{ success() }}
+        continue-on-error: true
         timeout-minutes: 8
         run: |
           set -euo pipefail

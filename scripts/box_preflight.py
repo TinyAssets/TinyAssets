@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -29,6 +30,8 @@ RUNSC = ROOT / "current" / "runsc"
 RUNSC_RELEASE = "release-20260928.0"
 RUNSC_SHA256 = "88a87d5d6d06160d4c144f51f95ec6dd6fe0fc6b02697eb877876683c5b57a91"
 CANARY = "http://127.0.0.1:8001/app"
+HARNESS_DEADLINE = 2100
+QUOTA_SCRATCH = ".box-preflight-scratch"
 
 
 def run(
@@ -61,6 +64,19 @@ def mem_available_mib() -> int:
         if line.startswith("MemAvailable:"):
             return int(line.split()[1]) // 1024
     raise RuntimeError("MemAvailable absent")
+
+
+def adjusted_available_mib(observed_mib: int, daemon_current: int, daemon_cap: int) -> int:
+    """Reserve the daemon's unused allowance before testing host headroom."""
+    if daemon_current < 0 or daemon_current > daemon_cap:
+        raise RuntimeError("daemon memory.current is outside its configured cap")
+    return (observed_mib * MIB - (daemon_cap - daemon_current)) // MIB
+
+
+def daemon_current_bytes() -> int:
+    pid = int(run(["docker", "inspect", "-f", "{{.State.Pid}}", "tinyassets-daemon"]).stdout)
+    relative = Path(f"/proc/{pid}/cgroup").read_text().splitlines()[0].split(":", 2)[2]
+    return int(cgroup_value(Path("/sys/fs/cgroup") / relative.lstrip("/"), "memory.current"))
 
 
 def host_oom_kills() -> int:
@@ -115,6 +131,7 @@ def export_daemon_rootfs(work: Path) -> Path:
     if not image:
         raise RuntimeError("daemon image unavailable")
     container = run(["docker", "create", "--entrypoint", "/bin/true", image]).stdout.strip()
+    exporter = None
     try:
         exporter = subprocess.Popen(
             ["docker", "export", container], stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -130,6 +147,12 @@ def export_daemon_rootfs(work: Path) -> Path:
         if exporter.wait(timeout=30) or extractor.returncode:
             raise RuntimeError("daemon image rootfs export failed")
     finally:
+        if exporter is not None:
+            if exporter.stdout is not None:
+                exporter.stdout.close()
+            if exporter.poll() is None:
+                exporter.kill()
+                exporter.wait(timeout=10)
         run(["docker", "rm", "-f", container], check=False)
     for binary in (
         "usr/bin/node",
@@ -323,11 +346,13 @@ def g1(boxes: Boxes, baseline: float) -> dict:
         raise RuntimeError("1.5 GiB allocation did not terminate within 90 seconds") from None
     box_oom = cgroup_event(cgroup, "oom_kill") - before
     all_oom = host_oom_kills() - start_oom
+    sandbox_exec_rc = boxes.exec("g1", "/bin/true", check=False).returncode
     result = {
         "memory_max_bytes": limits["memory.max"],
         "pids_max": limits["pids.max"],
         "cpu_weight": limits["cpu.weight"],
         "allocation_rc": allocation_rc,
+        "sandbox_exec_after_oom_rc": sandbox_exec_rc,
         "box_oom_kills": box_oom,
         "host_other_oom_kills": all_oom - box_oom,
         "canary_baseline_p95_ms": baseline,
@@ -339,6 +364,7 @@ def g1(boxes: Boxes, baseline: float) -> dict:
         and limits["pids.max"] == "1024"
         and int(limits["cpu.weight"]) > 0
         and allocation_rc != 0
+        and sandbox_exec_rc == 0
         and box_oom >= 1
         and all_oom == box_oom
         and under <= baseline * 1.2
@@ -414,6 +440,8 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         with_browser = pss_mib(cgroups[0])
         packed_pss = round(sum(pss_mib(cgroup) for cgroup in cgroups), 1)
         available = mem_available_mib()
+        daemon_current = daemon_current_bytes()
+        adjusted_available = adjusted_available_mib(available, daemon_current, daemon_memory)
         under = canary_p95()
     finally:
         (owners[0] / "browser-stop").touch()
@@ -431,6 +459,8 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         "start_to_first_exec_s": round(first_exec_s, 3),
         "exec_p95_ms": percentile(latencies, 0.95),
         "mem_available_mib": available,
+        "daemon_current_bytes": daemon_current,
+        "mem_available_at_daemon_cap_mib": adjusted_available,
         "canary_baseline_p95_ms": baseline,
         "canary_under_p95_ms": under,
         "canary_ratio": round(under / baseline, 3),
@@ -440,7 +470,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         and without_browser <= 250
         and first_exec_s <= 1
         and g3_result["exec_p95_ms"] <= 100
-        and available >= 1024
+        and adjusted_available >= 1024
         and under <= baseline * 1.2
     )
     g6_result = {
@@ -453,7 +483,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
     return g3_result, g6_result
 
 
-def g4(volume: Path) -> dict:
+def g4(volume: Path, work: Path | None = None) -> dict:
     fs = run(["findmnt", "-T", str(volume), "-no", "FSTYPE,OPTIONS"]).stdout.strip()
     filesystem = fs.split()[0]
     options = fs.split()[1] if len(fs.split()) > 1 else ""
@@ -465,7 +495,9 @@ def g4(volume: Path) -> dict:
         return {**result, "pass": False, "reason": "project quotas are not mounted on data volume"}
     # Only a new, disposable tree under the actual Docker data volume is
     # touched. No quota is applied to an owner directory.
-    with tempfile.TemporaryDirectory(prefix=".box-preflight-quota-", dir=volume) as scratch:
+    scratch_root = volume / QUOTA_SCRATCH
+    scratch_root.mkdir(mode=0o700, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="quota-", dir=scratch_root) as scratch:
         tree = Path(scratch)
         mount = run(["findmnt", "-T", str(volume), "-no", "TARGET"]).stdout.strip()
         if filesystem == "xfs":
@@ -479,6 +511,18 @@ def g4(volume: Path) -> dict:
         project = 1_000_000_000 + secrets.randbelow(1_000_000_000)
         if re.search(rf"(?<!\d){project}(?!\d)", existing):
             raise RuntimeError("scratch project id already has a quota")
+        quota_state = work / "quota-state.json" if work is not None else None
+        if quota_state is not None:
+            quota_state.write_text(
+                json.dumps(
+                    {
+                        "filesystem": filesystem,
+                        "mount": mount,
+                        "project": project,
+                        "tree": str(tree),
+                    }
+                )
+            )
         cleanup = None
         try:
             if filesystem == "xfs":
@@ -487,7 +531,7 @@ def g4(volume: Path) -> dict:
                 run(["xfs_quota", "-x", "-c", f"limit -p bhard=8m {project}", mount])
             else:
                 cleanup = ["setquota", "-P", str(project), "0", "0", "0", "0", mount]
-                run(["chattr", "-p", str(project), str(tree)])
+                run(["chattr", "-p", str(project), "+P", str(tree)])
                 run(["setquota", "-P", str(project), "0", "8192", "0", "0", mount])
             try:
                 with (tree / "limit.bin").open("wb") as output:
@@ -513,10 +557,83 @@ def g4(volume: Path) -> dict:
         return result
 
 
+def cleanup_scratch(work: Path) -> None:
+    """Recover resources even when the measurement process was killed."""
+    if not work.exists():
+        return
+    errors = []
+    state = work / "runsc-state"
+    if state.exists():
+        for name in ("cap3", "cap2", "cap1", "cap0", "g1"):
+            for action in (("kill", name, "KILL"), ("delete", "--force", name)):
+                try:
+                    run(
+                        [
+                            str(RUNSC),
+                            "--root",
+                            str(state),
+                            "--network=none",
+                            "--platform=systrap",
+                            *action,
+                        ],
+                        timeout=10,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    errors.append(f"sandbox cleanup: {error}")
+    quota_state = work / "quota-state.json"
+    if quota_state.exists():
+        details = json.loads(quota_state.read_text())
+        project = details["project"]
+        mount = details["mount"]
+        if details["filesystem"] == "xfs":
+            command = ["xfs_quota", "-x", "-c", f"limit -p bhard=0 {project}", mount]
+        elif details["filesystem"] == "ext4":
+            command = ["setquota", "-P", str(project), "0", "0", "0", "0", mount]
+        else:
+            raise RuntimeError("unknown quota filesystem in cleanup state")
+        cleared = run(command, timeout=20, check=False)
+        if cleared.returncode:
+            errors.append("quota cleanup failed")
+        else:
+            tree = Path(details["tree"])
+            if tree.exists():
+                shutil.rmtree(tree)
+            try:
+                tree.parent.rmdir()
+            except OSError:
+                pass  # Another preflight scratch tree may still be present.
+            quota_state.unlink()
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    shutil.rmtree(work)
+
+
+def _deadline(_signum: int, _frame: object) -> None:
+    raise TimeoutError("preflight exceeded its 35-minute deadline")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--result", type=Path, required=True)
+    parser.add_argument("--result", type=Path)
+    parser.add_argument("--work-dir", type=Path)
+    parser.add_argument("--cleanup-only", action="store_true")
     args = parser.parse_args()
+    if args.cleanup_only:
+        if (
+            args.work_dir is None
+            or args.work_dir.parent != Path("/var/tmp")
+            or not args.work_dir.name.startswith("box-preflight-")
+        ):
+            raise RuntimeError("cleanup requires a preflight work directory under /var/tmp")
+        cleanup_scratch(args.work_dir)
+        return 0
+    if args.result is None:
+        parser.error("--result is required")
+    work = args.work_dir or Path(tempfile.mkdtemp(prefix="box-preflight-", dir="/var/tmp"))
+    work.mkdir(mode=0o700, exist_ok=True)
+    signal.signal(signal.SIGALRM, _deadline)
+    signal.alarm(HARNESS_DEADLINE)
     report: dict = {"schema": 1, "gates": {}}
     boxes = None
     try:
@@ -537,7 +654,7 @@ def main() -> int:
                 ["docker", "volume", "inspect", "tinyassets-data", "-f", "{{.Mountpoint}}"]
             ).stdout.strip()
         )
-        report["gates"]["G4"] = gate(lambda: g4(volume))
+        report["gates"]["G4"] = gate(lambda: g4(volume, work))
         # Refuse the extraction if the host cannot safely hold the image and
         # one allocated tree. This is a failed G3 with a concrete headroom fact.
         free = shutil.disk_usage("/var/tmp").free
@@ -560,29 +677,33 @@ def main() -> int:
         report["scratch_required_mib"] = required // MIB
         if free < required:
             raise RuntimeError("insufficient scratch free for rootfs and owner tree")
-        with tempfile.TemporaryDirectory(prefix="box-preflight-", dir="/var/tmp") as scratch:
-            work = Path(scratch)
-            boxes = Boxes(work, export_daemon_rootfs(work))
-            try:
-                report["gates"]["G1"] = gate(lambda: g1(boxes, baseline))
-                boxes.stop("g1")
-                trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
-                if isinstance(trial, tuple):
-                    report["gates"]["G3"], report["gates"]["G6"] = trial
-                else:
-                    report["gates"]["G3"] = trial
-                    report["gates"]["G6"] = {"pass": False, "reason": "workload trial failed"}
-            finally:
-                boxes.stop_all()
-                boxes = None
+        boxes = Boxes(work, export_daemon_rootfs(work))
+        report["gates"]["G1"] = gate(lambda: g1(boxes, baseline))
+        boxes.stop("g1")
+        trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
+        if isinstance(trial, tuple):
+            report["gates"]["G3"], report["gates"]["G6"] = trial
+        else:
+            report["gates"]["G3"] = trial
+            report["gates"]["G6"] = {"pass": False, "reason": "workload trial failed"}
     except Exception as error:  # fail closed while still writing aggregate evidence
         report["fatal"] = f"{type(error).__name__}: {error}"
     finally:
+        signal.alarm(0)
         if boxes is not None:
-            boxes.stop_all()
+            try:
+                boxes.stop_all()
+            except Exception as error:
+                report["fatal"] = f"sandbox cleanup: {type(error).__name__}: {error}"
+        try:
+            cleanup_scratch(work)
+        except Exception as error:
+            report["fatal"] = f"scratch cleanup: {type(error).__name__}: {error}"
         for name in ("G1", "G3", "G4", "G6"):
             report["gates"].setdefault(name, {"pass": False, "reason": "not run"})
-        report["pass"] = all(item.get("pass") is True for item in report["gates"].values())
+        report["pass"] = "fatal" not in report and all(
+            item.get("pass") is True for item in report["gates"].values()
+        )
         args.result.parent.mkdir(parents=True, exist_ok=True)
         temp = args.result.with_suffix(".new")
         temp.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -593,6 +714,8 @@ def main() -> int:
 def gate(fn):
     try:
         return fn()
+    except TimeoutError:
+        raise
     except Exception as error:
         return {"pass": False, "reason": f"{type(error).__name__}: {error}"}
 

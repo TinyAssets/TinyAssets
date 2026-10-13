@@ -240,8 +240,12 @@ Only aggregate host and sandbox numbers leave the droplet. Any failed gate
 blocks P2b; the thresholds in ADR-022 are not adjusted by the harness.
 The trial exports the already deployed daemon image as a read-only rootfs,
 uses disposable owner trees, and deletes them after measuring. G4 creates a
-disposable quota tree on the actual `tinyassets-data` volume. It reports a
+disposable quota tree under `tinyassets-data/.box-preflight-scratch/`. It reports a
 failure if project quotas are unavailable and does not remount the volume.
+The harness has a 35-minute deadline and cleans its sandboxes, `/var/tmp/box-preflight-*`
+rootfs and owner tree, and scratch quota on timeout. At 40 minutes, boxhostd
+kills the harness process group and runs the same cleanup pass before reporting
+failure. Inspect those paths if a host failure interrupted cleanup.
 
 Rollback P2a without touching the daemon image or owner data:
 
@@ -251,8 +255,12 @@ Rollback P2a without touching the daemon image or owner data:
    is inactive and the public canary remains green.
 3. After that confirmation, remove `/etc/systemd/system/boxhostd.service` and
    `/opt/tinyassets/boxhostd/` if the install must be fully undone. These paths
-   contain only P2a runtime files; the harness uses `/var/tmp` scratch and
-   cleans it on exit. Do not delete the `tinyassets-data` volume.
+   contain only P2a runtime files. Inspect and remove leftover
+   `/var/tmp/box-preflight-*` rootfs/owner trees and the dedicated
+   `tinyassets-data/.box-preflight-scratch/` tree; clear any live scratch project
+   quota first using the `quota-state.json` in its `/var/tmp` work directory.
+   Do not delete the `tinyassets-data` volume. Run
+   `sudo systemctl daemon-reload` again after removing the unit file.
 
 ## Step 5 — Verify canary green (~10 sec)
 

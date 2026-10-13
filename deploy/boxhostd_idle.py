@@ -6,14 +6,50 @@ only by the manual gate workflow; the service never accepts network traffic.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
 RUN_DIR = Path("/run/tinyassets-boxhostd")
 HARNESS = Path("/opt/tinyassets/boxhostd/box_preflight.py")
+
+
+def run_preflight(result: Path) -> None:
+    work = Path(tempfile.mkdtemp(prefix="box-preflight-", dir="/var/tmp"))
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+    process = subprocess.Popen(
+        ["/usr/bin/python3", str(HARNESS), "--result", str(result), "--work-dir", str(work)],
+        env=env,
+        start_new_session=True,
+    )
+    failure = None
+    try:
+        process.wait(timeout=2400)
+    except subprocess.TimeoutExpired:
+        failure = "parent watchdog killed preflight after 40 minutes"
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    finally:
+        try:
+            cleanup = subprocess.run(
+                ["/usr/bin/python3", str(HARNESS), "--cleanup-only", "--work-dir", str(work)],
+                env=env,
+                timeout=180,
+                check=False,
+            )
+            if cleanup.returncode:
+                failure = "preflight cleanup failed"
+        except (OSError, subprocess.TimeoutExpired):
+            failure = "preflight cleanup failed"
+    if failure:
+        result.write_text(json.dumps({"pass": False, "fatal": failure}) + "\n")
 
 
 def prepare_delegation() -> None:
@@ -43,12 +79,7 @@ def main() -> None:
         result.unlink(missing_ok=True)
         # The harness records failed gates itself. A crash gets a fail-closed
         # result from the workflow's missing-file check.
-        subprocess.run(
-            ["/usr/bin/python3", str(HARNESS), "--result", str(result)],
-            check=False,
-            timeout=2400,
-            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-        )
+        run_preflight(result)
 
 
 if __name__ == "__main__":
