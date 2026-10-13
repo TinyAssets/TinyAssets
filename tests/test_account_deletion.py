@@ -654,6 +654,28 @@ def test_other_root_stores_lose_the_persons_data_too(two_users: Path):
     assert receipt["rows_deleted"]["authoring_blobs (directories)"] == 1
 
 
+def test_account_deletion_erases_only_its_api_keys(two_users: Path):
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.outside_authority import OutsideClientAuthority
+
+    keys = ApiKeyStore(two_users)
+    authority = OutsideClientAuthority(two_users)
+    authority.set_enabled(True)
+    scope_a = {"universe": HOME_A, "agent": "default", "capability": "read_graph"}
+    scope_b = {"universe": HOME_B, "agent": "default", "capability": "read_graph"}
+    a = keys.mint(A, name="a", scopes=[scope_a], authority=authority)
+    b = keys.mint(B, name="b", scopes=[scope_b], authority=authority)
+    keys.admit_request(a["key_id"], A)
+    keys.admit_request(b["key_id"], B)
+
+    receipt = delete_account(two_users, founder_sub=A, delete_identity=lambda _: "deleted")
+
+    assert receipt["unfinished_phases"] == []
+    assert _rows(keys.path, "SELECT key_id FROM api_keys ORDER BY key_id") == [(b["key_id"],)]
+    assert _rows(keys.path, "SELECT DISTINCT owner FROM api_key_request_counts") == [(B,)]
+    assert receipt["rows_deleted"]["api-keys:api_keys"] == 1
+
+
 def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Path):
     """A stopped daemon B started inside A's universe is nobody's active work,
     so no liveness check catches it — but it is still B's row."""

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import math
 import re
 import secrets
 import sqlite3
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 class ApiKeyRefused(PermissionError):
     pass
+
+
+class ApiKeyRateLimited(PermissionError):
+    def __init__(self, retry_after: int) -> None:
+        self.retry_after = retry_after
+        super().__init__("API key request rate exceeded")
 
 
 def looks_like_key(token: str | None) -> bool:
@@ -75,6 +82,13 @@ class ApiKeyStore:
                       key_id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL,
                       secret_sha256 TEXT NOT NULL, created_at REAL NOT NULL,
                       last_used_at REAL, revoked_at REAL)
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS api_key_request_counts (
+                      kind TEXT NOT NULL, subject TEXT NOT NULL,
+                      owner TEXT NOT NULL, window_start INTEGER NOT NULL,
+                      requests INTEGER NOT NULL,
+                      PRIMARY KEY (kind, subject))
                 """)
                 yield conn
         finally:
@@ -142,7 +156,7 @@ class ApiKeyStore:
             keys.append({**dict(row), "scopes": json.loads(grant["scopes"]) if grant else []})
         return {"keys": keys}
 
-    def resolve(self, token: str) -> tuple[str, dict[str, Any]] | None:
+    def resolve(self, token: str, *, touch: bool = True) -> tuple[str, dict[str, Any]] | None:
         """Return ``(owner, bound)`` for a live key, else None. Never raises on input."""
         match = _KEY_RE.match(token or "")
         if match is None:
@@ -157,9 +171,56 @@ class ApiKeyStore:
         if (row is None or row["revoked_at"] is not None
                 or not hmac.compare_digest(row["secret_sha256"], _digest(secret))):
             return None
-        self._touch(key_id, row["last_used_at"])
+        if touch:
+            self._touch(key_id, row["last_used_at"])
         return row["owner"], {"client": _client(key_id), "family": _family(key_id),
-                              "key_id": key_id}
+                              "key_id": key_id, "last_used_at": row["last_used_at"]}
+
+    def admit_request(self, key_id: str, owner: str, *, now: float | None = None) -> bool:
+        """Atomically bound both the key and all of its owner's keys before grant lookup.
+
+        Fixed windows need two counter rows, not one row per request. A denied
+        request does not consume either allowance. SQLite serializes admission
+        across server workers and restart preserves the current window.
+        """
+        from tinyassets.usage_policy import (
+            API_KEY_RATE_WINDOW_SECONDS,
+            API_KEY_REQUESTS_PER_WINDOW,
+            API_OWNER_REQUESTS_PER_WINDOW,
+        )
+
+        ts = time.time() if now is None else now
+        window = int(ts // API_KEY_RATE_WINDOW_SECONDS) * API_KEY_RATE_WINDOW_SECONDS
+        retry_after = max(1, math.ceil(window + API_KEY_RATE_WINDOW_SECONDS - ts))
+        limits = (("key", key_id, API_KEY_REQUESTS_PER_WINDOW),
+                  ("owner", owner, API_OWNER_REQUESTS_PER_WINDOW))
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            # Account erasure and revocation may have raced the preceding read.
+            # Holding the write lock prevents a deleted owner gaining a new row.
+            if conn.execute(
+                "SELECT 1 FROM api_keys WHERE key_id=? AND owner=? AND revoked_at IS NULL",
+                (key_id, owner),
+            ).fetchone() is None:
+                return False
+            for kind, subject, maximum in limits:
+                row = conn.execute(
+                    "SELECT window_start, requests FROM api_key_request_counts "
+                    "WHERE kind=? AND subject=?", (kind, subject),
+                ).fetchone()
+                if row is not None and row["window_start"] == window and row["requests"] >= maximum:
+                    raise ApiKeyRateLimited(retry_after)
+            for kind, subject, _ in limits:
+                conn.execute(
+                    "INSERT INTO api_key_request_counts "
+                    "(kind, subject, owner, window_start, requests) VALUES (?,?,?,?,1) "
+                    "ON CONFLICT(kind, subject) DO UPDATE SET "
+                    "owner=excluded.owner, window_start=excluded.window_start, "
+                    "requests=CASE WHEN window_start=excluded.window_start "
+                    "THEN requests+1 ELSE 1 END",
+                    (kind, subject, owner, window),
+                )
+        return True
 
     def _touch(self, key_id: str, last_used_at: float | None) -> None:
         """Record use, at most once per ``TOUCH_INTERVAL`` and never at the
@@ -192,11 +253,16 @@ def resolve_identity(token: str):
     from tinyassets.outside_authority import OutsideRefused
     from tinyassets.outside_authority import current_store as outside_store
 
-    resolved = current_store().resolve(token)
+    store = current_store()
+    resolved = store.resolve(token, touch=False)
     if resolved is None:
         return None
     owner, bound = resolved
     key_id = bound.pop("key_id")
+    last_used_at = bound.pop("last_used_at")
+    if not store.admit_request(key_id, owner):
+        return None
+    store._touch(key_id, last_used_at)
     try:
         with outside_store().db() as conn:
             row = conn.execute("SELECT authenticated_at FROM outside_families WHERE owner=? "

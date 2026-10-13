@@ -147,6 +147,38 @@ def test_revocation_and_kill_switch_close_the_door(client, stores):
     assert authority.inspect("alice")["clients"][0]["revoked"] == 1
 
 
+def test_rest_rate_bounds_key_and_owner_and_resets(client, stores, monkeypatch):
+    from tinyassets import api_keys, usage_policy
+
+    monkeypatch.setattr(usage_policy, "API_KEY_REQUESTS_PER_WINDOW", 2)
+    monkeypatch.setattr(usage_policy, "API_OWNER_REQUESTS_PER_WINDOW", 3)
+    clock = [1200.0]
+    monkeypatch.setattr(api_keys.time, "time", lambda: clock[0])
+    http, calls = client
+    keys, authority = stores
+    path = "/api/command-centers/home/status"
+    first = {"authorization": f"Bearer {mint(keys, authority, scope('read_graph'))}"}
+    second = {"authorization": f"Bearer {mint(keys, authority, scope('read_graph'))}"}
+    other = {"authorization": f"Bearer {mint(keys, authority, scope('read_graph'), owner='bob')}"}
+
+    assert http.get(path, headers=first).status_code == 200
+    assert http.get(path, headers=first).status_code == 200
+    count = len(calls)
+    limited = http.get(path, headers=first)
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "60"
+    assert len(calls) == count
+    assert http.get(path, headers=second).status_code == 200
+    count = len(calls)
+    limited = http.get(path, headers=second)
+    assert limited.status_code == 429
+    assert len(calls) == count
+    assert http.get(path, headers=other).status_code == 200
+
+    clock[0] += 60
+    assert http.get(path, headers=first).status_code == 200
+
+
 def test_a_key_never_reaches_the_oauth_provider(stores, monkeypatch):
     from tinyassets.auth import middleware
 

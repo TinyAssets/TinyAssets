@@ -590,7 +590,7 @@ async def _serve_rest_api(app: Any, scope: Any, receive: Any, send: Any,
     OAuth bearers, app sessions and the canary are refused here, and a key is
     refused everywhere else, so the two doors never share a credential.
     """
-    from tinyassets.api_keys import looks_like_key, resolve_identity
+    from tinyassets.api_keys import ApiKeyRateLimited, looks_like_key, resolve_identity
 
     identity = None
     if token and looks_like_key(token):
@@ -600,6 +600,16 @@ async def _serve_rest_api(app: Any, scope: Any, receive: Any, send: Any,
             from starlette.concurrency import run_in_threadpool
 
             identity = await run_in_threadpool(resolve_identity, token)
+        except ApiKeyRateLimited as exc:
+            body = b'{"error":"rate_limited"}'
+            await send({"type": "http.response.start", "status": 429, "headers": [
+                (b"content-type", b"application/json"),
+                (b"cache-control", b"no-store"),
+                (b"retry-after", str(exc.retry_after).encode()),
+                (b"content-length", str(len(body)).encode()),
+            ]})
+            await send({"type": "http.response.body", "body": body})
+            return
         except Exception:  # noqa: BLE001 - an unreadable key store refuses
             logger.exception("api key resolution failed closed")
             identity = None
