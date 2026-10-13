@@ -63,6 +63,7 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST || vars.DO_DROPLET_HOST }}

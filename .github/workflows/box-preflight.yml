@@ -1,7 +1,14 @@
 name: Box preflight on production
 
-# Manual quiet-window host measurement. Uses the existing deploy SSH secret,
-# creates no cloud resource, and publishes aggregate gate numbers only.
+# Manual quiet-window host measurement. Uses the deploy SSH secret from the
+# main-only `production` environment, creates no cloud resource, and publishes
+# aggregate gate numbers only.
+#
+# Host contract: this job only signals the harness that deploy-prod installed
+# (boxhostd.service, which runs the gates from /opt/tinyassets) and reads back
+# its result file. It never copies checkout files to the host, so a dispatch
+# from a branch can execute nothing but what main already shipped.
+# tests/test_workflow_production_environment.py enforces both halves.
 on:
   workflow_dispatch:
 
@@ -16,6 +23,7 @@ jobs:
   measure:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 45
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}

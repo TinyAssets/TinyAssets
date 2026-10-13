@@ -12,6 +12,16 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Production secrets move into a main-only GitHub Environment (2026-10-13)
+
+**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `tests/test_workflow_production_environment.py`); the environment itself must exist and own the secrets, which only the repo admin can do.
+
+| Item | Smallest founder-only action |
+|---|---|
+| GitHub Environment `production` | Repo → Settings → Environments → New environment `production`. Deployment branches and tags: **Selected branches**, add `main` only (optionally add yourself as a required reviewer). Under Environment secrets add `DO_SSH_KEY`, `DO_DROPLET_HOST`, `DO_SSH_USER`, `DIGITALOCEAN_TOKEN`, `DO_API_TOKEN` with their current values. Then delete the five repo-level copies under Settings → Secrets and variables → Actions. Until the repo-level copies are deleted, a branch dispatch of an old or edited workflow can still reach the host; until the environment exists, `environment: production` jobs run with empty secrets and fail fast. |
+
+---
+
 | One-time core-canary setup (2026-10-10) | Founder-only action |
 |---|---|
 | Dedicated synthetic owner | Create a separate owner with normal password sign-in, a connected model, and a bounded HTTP connection whose POST endpoint returns `hmac`: lowercase hex HMAC-SHA256 of the submitted UTF-8 `nonce`, using a dedicated random key the model never receives. Install a private code branch taking `nonce` and returning it as `echo`. Route this owner's synthetic patch requests to an intake that records them without creating production issues. Set GitHub secret `TINYASSETS_CORE_CANARY_CONFIG` to JSON containing `email`, `password`, `universe_id`, `connection_id`, `service_path`, `service_hmac_key`, `intake_receiver_id`, and `branch_id`. Reuse the existing health-canary and Pushover secrets. No founder/user data belongs in this account. Missing setup opens a canary-not-provisioned warning/issue; it never blocks or rolls back a deploy. |
