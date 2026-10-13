@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyassets.custom_agents import get_binding
-from tinyassets.exceptions import ProviderError
+from tinyassets.exceptions import ProviderError, SelectedModelUnavailableError
 from tinyassets.provider_assignment import (
     _served_request_agent,
     accepted_connected_model_access,
@@ -287,20 +287,17 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
     # nothing ever listed it, so a solo user's ARN silently vanished from their own
     # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
     # keeping it.
-    # Package catalogues are provider-specific. A subscription-wide history or
-    # list can carry another CLI's ids and must not be presented as this one.
-    from tinyassets.external_agents.provider import ExternalAgentProvider
-
+    # The reviewed list is keyed by source, including external-agent packages.
+    # The owner's history remains separately scoped by provider_ref.
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
-    candidate_kind = ("agent_" + member.provider.replace("-", "_")
-                      if isinstance(provider, ExternalAgentProvider) else LEARNED_SOURCE_KIND)
     models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, member.provider, owner,
                                           already=models, excluded=withdrawn))
     # ...then the reviewed public list for this kind of source, which is how a newly
     # released model reaches everyone without a patch: a PR adds the id, review is the
     # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(candidate_kind, already=models,
+    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, source_key=member.provider,
+                                     already=models,
                                      excluded=withdrawn))
     if provider is None or not provider.is_available():
         raise ModelSourceUnavailable("executor_unavailable")
@@ -343,7 +340,7 @@ def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
     )
 
 
-def _listed_candidates(source_kind, *, already, excluded=frozenset()):
+def _listed_candidates(source_kind, *, source_key, already, excluded=frozenset()):
     """Newest-per-class ids from the reviewed public list for one source kind.
 
     A UNION, never a filter: an id this universe already has keeps its own row and its
@@ -361,7 +358,7 @@ def _listed_candidates(source_kind, *, already, excluded=frozenset()):
         Model(model_id, True, frozenset({"text"}),
               pricing=Pricing("fresh", unmetered=True),
               availability_basis=PUBLIC_LISTED_BASIS)
-        for model_id in newest_listed_cached(source_kind)
+        for model_id in newest_listed_cached(source_kind, source_key=source_key)
         if model_id and model_id not in have
     )
 
@@ -669,15 +666,22 @@ def prepare_owned_model_plan(
             for item in rejected if item.scope == "source"
         ]
         pin_detail = ""
+        missing_on_usable_source = False
         if pinned is not None:
             reason = next((item.reason for item in plan.order(owner, universe.name).ineligible
                            if item.ref == pinned), "not_connected")
+            missing_on_usable_source = (
+                reason == "absent_from_catalogue"
+                and any(connection.connection_id == pinned.connection_id and connection.models
+                        for connection in admitted)
+            )
             pin_detail = (f"; model {pinned.connection_id}/{pinned.model_id} unavailable: "
                           f"{reason.replace('_', ' ')}")
-        raise PermissionError(
-            NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
-            + pin_detail
-        )
+        detail = (NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
+                  + pin_detail)
+        if missing_on_usable_source:
+            raise SelectedModelUnavailableError(detail)
+        raise PermissionError(detail)
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
         assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,

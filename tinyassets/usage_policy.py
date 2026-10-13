@@ -12,8 +12,8 @@ allowance per person, shared across all of their universes.
   `account-storage-quota`).
 
 Which tier an account is on is `universe_owner.account_type_of`; this module only says what
-each tier permits. An unresolvable tier is FREE, never unlimited. There are no rate
-meters of any kind.
+each tier permits. An unresolvable tier is FREE, never unlimited. The REST API
+also has fixed credential-abuse bounds, independent of account tier.
 """
 
 from __future__ import annotations
@@ -29,6 +29,12 @@ _log = logging.getLogger(__name__)
 
 TIER_FREE = "free"
 TIER_PAID = "paid"
+
+#: REST API ingress bounds for a leaked key. These are credential protection,
+#: shared by every account tier, rather than a usage allowance for agent work.
+API_KEY_RATE_WINDOW_SECONDS = 60
+API_KEY_REQUESTS_PER_WINDOW = 120
+API_OWNER_REQUESTS_PER_WINDOW = 600
 
 
 class AccountType(StrEnum):

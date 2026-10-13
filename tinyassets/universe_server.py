@@ -2773,14 +2773,21 @@ def _context_overflow(exc: BaseException) -> bool:
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
-    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
+    from tinyassets.exceptions import (
+        ProviderAuthorityHeldError,
+        SelectedModelUnavailableError,
+        WorkModelExhaustedError,
+    )
     from tinyassets.providers.model_pins import ModelPinError
     from tinyassets.providers.provider_jail import ProviderConfinementError
     from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
-        if isinstance(exc, PermissionError) and str(exc).startswith(NO_ELIGIBLE_MODEL):
+        if (isinstance(exc, SelectedModelUnavailableError)
+                or isinstance(exc.__cause__, SelectedModelUnavailableError)):
             return "model_unavailable"
+        if isinstance(exc, PermissionError) and str(exc).startswith(NO_ELIGIBLE_MODEL):
+            return "authority_held"
         if isinstance(exc, WorkModelExhaustedError):
             return "work_model_exhausted"
         if isinstance(exc, ProviderConfinementError):
@@ -4201,6 +4208,7 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
 
     from tinyassets.auth.wellknown import starlette_discovery_routes
     from tinyassets.onboarding import onboarding_routes
+    from tinyassets.rest_api import rest_api_routes
     from tinyassets.webhook_inbound import inbound_enabled as _inbound_enabled
 
     async def _hooks_endpoint(request):
@@ -4313,6 +4321,9 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
             # before the MCP transport so the exact path resolves first.
             *onboarding_routes(),
+            # REST door for programmatic clients (API keys only; see the
+            # auth middleware's `_serve_rest_api`).
+            *rest_api_routes(),
             *canonical_app.routes,
         ],
         lifespan=lifespan,

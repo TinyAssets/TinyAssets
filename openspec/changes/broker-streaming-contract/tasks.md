@@ -17,10 +17,10 @@
       checks; box-channel principal derivation.
 - [ ] 2.4 Streaming pinned HTTPS reader (capped collected request bodies): redirects and the OAuth retry
       before `HEAD`; credit-gated reads; idle and absolute deadlines.
-- [ ] 2.5 Incremental secret scan with hold-back; split-secret tests.
+- [x] 2.5 Incremental secret scan with hold-back; split-secret tests.
 - [ ] 2.6 Durable, namespaced `op_id` state machine (reserved, may_have_sent before the first write, terminal), `STATUS`, ULID expiry.
-- [ ] 2.7 Fence: read/write lock around every write, barrier-minted token, monotonic persistence, reload on start.
-- [ ] 2.8 `ScopedConnectionProxy.request` as a one-stream wrapper; delete the
+- [x] 2.7 Fence: read/write lock around every write, barrier-minted token, monotonic persistence, reload on start.
+- [x] 2.8 `ScopedConnectionProxy.request` as a one-stream wrapper; delete the
       spawned worker; every existing caller's tests unchanged.
-- [ ] 2.9 Async client for the thin loop (S7 task 2.3).
+- [x] 2.9 Async client for the thin loop (S7 task 2.3).
 - [ ] 2.10 Measurements (design § Measurement owed); spec sync and archive.

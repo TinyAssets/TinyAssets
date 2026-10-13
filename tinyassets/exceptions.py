@@ -268,6 +268,12 @@ class ProviderAuthorityHeldError(ProviderError):
         self.chain_state = chain_state
 
 
+class SelectedModelUnavailableError(PermissionError):
+    """The requested model is absent from an otherwise usable connected source."""
+
+    failure_class = "model_unavailable"
+
+
 class PlatformLLMCallRefusedError(ProviderAuthorityHeldError):
     """A model call was not bound to one universe's owner-connected credentials.
 

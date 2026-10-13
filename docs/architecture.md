@@ -20,9 +20,9 @@ it when a module boundary moves.
 ## Shape
 
 ```text
-App (web, Android, iOS, desktop)      Any MCP client (Claude, ChatGPT, ...)
-        |  /app/api/* (owner door)              |  /mcp (model door)
-        +-------------------+-------------------+
+App (web, Android, iOS, desktop)   Any MCP client (Claude, ...)   Scripts, agents
+        |  /app/api/* (owner door)          |  /mcp (model door)         |  /api (REST, API key)
+        +-------------------+---------------+----------------------------+
                             |
           https://tinyassets.io  (Cloudflare Worker -> tunnel)
                             |
@@ -33,7 +33,9 @@ App (web, Android, iOS, desktop)      Any MCP client (Claude, ChatGPT, ...)
           provider children jailed to their owner's command center
 ```
 
-`https://tinyassets.io/mcp` is the only public endpoint (`AGENTS.md` fact 11).
+`https://tinyassets.io/mcp` (MCP) and `https://tinyassets.io/api` (REST,
+API keys; `tinyassets/rest_api.py`, keys in `tinyassets/api_keys.py`) are the
+public endpoints (`AGENTS.md` fact 11).
 Production is one container image (`Dockerfile`) run by `deploy/compose.yml`
 beside `cloudflared` and a log shipper.
 
@@ -165,7 +167,7 @@ of #4624 (broker credentials and browser sign-in) is S28.
 | S16 | One app, thin shells (Dir 1, 7) | `onboarding/` at `/app`; `mobile/`, `desktop-app/` load it | none for chat; the tray host is S15 | converged | `test_onboarding_app` routes | — |
 | S17 | Knowledge is files (ADR-017); export (ADR-018) | OKF bundle canonical, indexes derived; one export action | `memory/`, `retrieval/`, `knowledge/`, `daemon_brain.py` (10.7k) canonical; bundle is seed-only; `okf_export.py` unwired | unbuilt | none yet | C12 |
 | S18 | Abilities are files, no pre-built features (Dir 3) | starter package, skills | fantasy and research_probe domains remain installed entry points; `api/market.py` goals/escrow, `bid/`, `treasury/` | drifted | `domain-entry-points` | C5, C10 |
-| S19 | Built artifacts are not committed | `build_plugin.py` stages the mirror at package time | `packaging/claude-plugin/.../runtime/` byte copy (737 files, ~336k lines; 6 without a canonical counterpart) | unbuilt | `check_mirror_parity.py`; orphan-only ceiling until C4 removes the mirror | C4 |
+| S19 | Built artifacts are not committed | Hosted Claude Code plugin uses the repository folder; `.mcpb` stages its own runtime at pack time | none | converged | `check_mirror_parity.py` rejects tracked plugin runtime files | C4 |
 | S20 | One home per fact (ADR-005, Dir 6) | README Direction, AGENTS.md, this file, ADRs, `openspec/specs`, `openspec/changes`, `docs/concerns`, `docs/reference` | none; C1 removed retired document trees and root clutter, retaining cited incident repros | converged | `doc-homes`: no new file outside a home | C1 |
 | S21 | One queue (AGENTS.md) | `openspec/changes/`, reconciled into one tracking issue | none; C2 archived completed changes and folded superseded lanes | converged | `superseded-open`; `shape-reconcile.yml` | C2 |
 | S22 | Command center naming | `command_center` in code and storage | 10 `universe_*` modules outside the two target homes, ~13k mentions | drifted | S22 ceiling on `universe_*` modules + no new `*Universe*` definitions; mentions renamed as each slice touches a file | each slice |

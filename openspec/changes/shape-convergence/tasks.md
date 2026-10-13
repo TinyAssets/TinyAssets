@@ -77,11 +77,11 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Floor (authority, money): its own cross-family rounds.
       Guard: `call-sites` = 0, `budget-roots` ≤ 1, S1 and S13 read
       converged. Net about −1.1k. Depends on C1.
-- **C4 Plugin mirror built, not committed.** `build_plugin.py`
-      stages `runtime/` at package time. Invert
-      `scripts/check_mirror_parity.py` and the pre-commit hook to "no tracked
-      mirror", and delete `packaging/claude-plugin/.../runtime/`.
-      Guard: S19 converged. Net about −336k tracked. Parallel to C3.
+- **C4 Hosted Claude plugin without a runtime.** The repository marketplace
+      points at the hosted-only plugin folder. Remove the plugin runtime,
+      builder, and ZIP release; retain the independent `.mcpb` build.
+      `scripts/check_mirror_parity.py` and the pre-commit hook reject a tracked
+      plugin runtime. Guard: S19 converged. Parallel to C3.
 - **C5 Dead limbs and dead spawn paths.**
       **Deletes:**
       - `cloud_automation_continuation.py` (3027) and

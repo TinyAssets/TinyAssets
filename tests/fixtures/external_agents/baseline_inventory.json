@@ -16,10 +16,6 @@
   "deleted_file_importers": {
     "tinyassets/providers/codex_provider.py": [
       "fantasy_daemon/providers/codex_provider.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/call.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/codex_app_server.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/provider_resolver.py",
       "scripts/role_chat_probe.py",
       "tests/test_codex_app_server.py",
       "tests/test_codex_cli_compat.py",
@@ -48,7 +44,6 @@
       "tinyassets/providers/provider_resolver.py"
     ],
     "tinyassets/providers/codex_app_server.py": [
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/codex_provider.py",
       "tests/test_agent_sessions.py",
       "tests/test_codex_app_server.py",
       "tests/test_codex_cli_compat.py",
@@ -64,8 +59,6 @@
     ],
     "tinyassets/providers/claude_provider.py": [
       "fantasy_daemon/providers/claude_provider.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/call.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/provider_resolver.py",
       "scripts/core_capability_image.py",
       "scripts/peer_agent.py",
       "scripts/role_chat_probe.py",
@@ -93,8 +86,6 @@
       "tinyassets/providers/provider_resolver.py"
     ],
     "tinyassets/role_provider_discovery.py": [
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/native_jsonrpc_discovery.py",
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/role_provider_execution.py",
       "tests/test_native_model_discovery.py",
       "tests/test_role_provider_discovery.py",
       "tests/test_role_provider_execution.py",
@@ -102,7 +93,6 @@
       "tinyassets/role_provider_execution.py"
     ],
     "tinyassets/onboarding/openai_device.py": [
-      "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/__init__.py",
       "tests/test_onboarding_openai_device.py",
       "tinyassets/onboarding/__init__.py"
     ]

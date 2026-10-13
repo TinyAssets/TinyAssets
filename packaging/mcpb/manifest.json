@@ -1,12 +1,12 @@
 {
   "manifest_version": "0.3",
   "name": "tinyassets-universe-server",
-  "display_name": "TinyAssets Server",
+  "display_name": "TinyAssets",
   "version": "0.1.0",
   "description": "TinyAssets — build, run, and steer custom AI agent workflows inside your command center. Also: custom AI builder, command center, agent workflow platform.",
   "long_description": "TinyAssets packages a multi-command-center control plane as a local MCP Bundle. Users design agent workflows as graphs of nodes and run autonomous daemons against them inside named command centers. Tiny is the acting intelligence users talk to; TinyAssets is the platform and distribution brand. Connect by natural phrases such as 'TinyAssets', 'Tiny', 'custom AI builder', 'command center', or 'my AI builder connector'.",
   "author": {
-    "name": "Jonathan Farnsworth"
+    "name": "TinyAssets, a trade name of Simkal Holdings LLC"
   },
   "icon": "assets/icon.png",
   "keywords": [

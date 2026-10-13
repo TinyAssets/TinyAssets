@@ -100,6 +100,7 @@ def _ulid(i: int) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     from tinyassets import rpc_frames as rf
+    from tinyassets.broker.server import MAX_WINDOW
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--streams", type=int, default=500)
@@ -120,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         conn.sendall(rf.control(i, {
             "op": "OPEN", "op_id": _ulid(i), "principal": "p", "command_center": "cc",
             "grant_id": "g", "connection_id": "c", "verb": "POST",
-            "request": {"url": "u", "body": {}}, "credit": 65536,
+            "request": {"url": "u", "body": {}}, "credit": MAX_WINDOW,
             "generation": fence["generation"], "token": fence["token"],
         }))
     heads = 0
