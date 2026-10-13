@@ -9,8 +9,11 @@
 //     404 handler → "Session terminated" in Claude.ai (the 2026-04-19 P0).
 //
 // Fix:
-//   This Worker runs on routes `tinyassets.io/mcp*`, `tinyassets.io/app*` and
-//   `tinyassets.io/api*` (the REST API).
+//   This Worker runs on routes `tinyassets.io/mcp*`, `tinyassets.io/app*`,
+//   `tinyassets.io/api*` (the REST API),
+//   and the apex OAuth discovery documents
+//   `/.well-known/oauth-protected-resource*` and
+//   `/.well-known/oauth-authorization-server*`.
 //   Requests to `/mcp` (the connector endpoint) and `/app` (the web app) are
 //   forwarded to the internal tunnel origin at `mcp.tinyassets.io`,
 //   authenticated via Cloudflare Access service-token headers. The broad
@@ -35,7 +38,8 @@
 //     straight through.
 //   - Accept, Content-Type, Authorization, Mcp-Session-Id, and every
 //     other request header preserved. Upstream decides which to act on.
-//   - POST, GET, OPTIONS all supported (OPTIONS for CORS preflight).
+//   - POST and GET are proxied. OPTIONS is answered here: Access rejects a
+//     preflight with 403 before it checks the service token.
 //   - 5xx from the tunnel becomes 502 Bad Gateway with a clear body —
 //     NOT GoDaddy fallthrough. Ambiguity on failure mode is what caused
 //     the original P0; explicit status here.
@@ -45,7 +49,16 @@
 // Canonical app URL:       https://tinyassets.io/app  (apex + path, user-facing).
 // Tunnel origin:           https://mcp.tinyassets.io  (Access-gated, internal only).
 
+// Same document the daemon's McpBrowserCors reads. One origin list, one
+// header set. The predicate below matches tinyassets/mcp_browser_cors.py.
+import browserCors from '../../tinyassets/mcp_browser_origins.json' with { type: 'json' };
+
 const TUNNEL_ORIGIN = 'https://mcp.tinyassets.io';
+
+const EXACT_ORIGINS = new Set(browserCors.origins.map((origin) => origin.toLowerCase()));
+const LOOPBACK_HOSTS = new Set(
+    browserCors.loopback_hosts.map((host) => host.toLowerCase()),
+);
 
 // Hop-by-hop headers that a proxy MUST NOT forward. Per RFC 7230 §6.1.
 // Cloudflare strips most of these automatically, but being explicit
@@ -113,7 +126,17 @@ function appCookieAllowed(cookie, pathname) {
 async function proxyToTunnel(request, env) {
     const incoming = new URL(request.url);
     const upstream = new URL(TUNNEL_ORIGIN);
-    upstream.pathname = incoming.pathname;
+    // Path insertion is the URL a client computes. The daemon has always
+    // served the same document at the apex path, so map the inserted form
+    // onto that path. A worker deploy then answers correctly even while an
+    // older daemon is still running.
+    const inserted = {
+        '/.well-known/oauth-protected-resource/mcp':
+            '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-authorization-server/mcp':
+            '/.well-known/oauth-authorization-server',
+    };
+    upstream.pathname = inserted[incoming.pathname] || incoming.pathname;
     upstream.search = incoming.search;
 
     const forwardedHeaders = new Headers();
@@ -256,10 +279,65 @@ async function proxyToTunnel(request, env) {
 }
 
 /**
- * CORS preflight — MCP clients in browsers issue OPTIONS before POST.
- * Pass through to the origin (the daemon + FastMCP handle CORS headers
- * themselves); this is purely the method-allow check.
+ * True for a browser Origin the daemon would answer. Mirrors
+ * ``_origin_allowed`` in ``tinyassets/mcp_browser_cors.py``.
  */
+function originAllowed(origin) {
+    if (!origin || origin.includes(',') || origin.toLowerCase() === 'null') return false;
+    let url;
+    try {
+        url = new URL(origin);
+    } catch {
+        return false;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    if (url.username || url.password) return false;
+    if (url.pathname !== '/' && url.pathname !== '') return false;
+    if (url.search || url.hash) return false;
+    const normalized = `${url.protocol}//${url.host}`.toLowerCase();
+    if (EXACT_ORIGINS.has(normalized)) return true;
+    return LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+}
+
+/**
+ * Browser preflight. Cloudflare Access answers OPTIONS on the tunnel origin
+ * with 403 before it looks at the service token, so this Worker must answer
+ * and must not forward the request. Header values come from
+ * ``mcp_browser_origins.json``.
+ */
+function answerPreflight(request) {
+    const origin = (request.headers.get('Origin') || '').trim();
+    if (!origin) {
+        return new Response(null, {
+            status: 204,
+            headers: { 'Cache-Control': 'no-store' },
+        });
+    }
+    if (!originAllowed(origin)) {
+        return new Response('{"error":"origin_not_allowed"}', {
+            status: 403,
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+                'Vary': 'Origin',
+            },
+        });
+    }
+    return new Response(null, {
+        status: 204,
+        headers: {
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Methods': browserCors.allow_methods,
+            'Access-Control-Allow-Headers': browserCors.allow_headers,
+            'Access-Control-Expose-Headers': browserCors.expose_headers,
+            'Access-Control-Max-Age': String(browserCors.max_age),
+            'Vary': 'Origin',
+            'Content-Length': '0',
+            'Cache-Control': 'no-store',
+        },
+    });
+}
+
 function shouldProxy(pathname) {
     // Three path families belong to the tunnel:
     //   /mcp   — the canonical MCP connector endpoint (and its sub-paths).
@@ -283,6 +361,17 @@ function shouldProxy(pathname) {
     if (pathname === '/app' || pathname.startsWith('/app/')) return true;
     //   /api — the REST API for programmatic clients (API-key auth).
     if (pathname === '/api' || pathname.startsWith('/api/')) return true;
+    // Apex OAuth discovery. RFC 9728 inserts the resource path, so
+    // https://tinyassets.io/mcp is fetched at
+    // /.well-known/oauth-protected-resource/mcp. These are exact pathnames:
+    // /.well-known/openai-apps-challenge stays on the website origin.
+    if (pathname === '/.well-known/oauth-protected-resource') return true;
+    if (pathname === '/.well-known/oauth-protected-resource/mcp') return true;
+    if (pathname === '/.well-known/oauth-authorization-server') return true;
+    // The authorization-server route is a suffix wildcard, so this path
+    // reaches the Worker. Proxy it; a 404 here would hide it from both
+    // the website and the daemon.
+    if (pathname === '/.well-known/oauth-authorization-server/mcp') return true;
     return false;
 }
 
@@ -349,14 +438,21 @@ export default {
             return new Response('Not Found', { status: 404 });
         }
 
-        // OPTIONS + POST + GET + everything-else: all proxied identically.
+        // OPTIONS stays here. Forwarding it makes Access answer 403, and the
+        // browser never sees WWW-Authenticate.
+        if (request.method === 'OPTIONS') {
+            return answerPreflight(request);
+        }
+
         return proxyToTunnel(request, env);
     },
 };
 
 // Export internals for unit tests.
 export {
+    answerPreflight,
     belongsToWebsite,
+    originAllowed,
     PASSTHROUGH_MARKER,
     proxyToTunnel,
     shouldProxy,

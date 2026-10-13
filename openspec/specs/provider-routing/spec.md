@@ -226,7 +226,7 @@ A provider call the owner did not ask for -- the platform's own bookkeeping besi
 
 #### Scenario: learning extraction is rate-limited after an answered turn
 - **WHEN** a served reply succeeds and the post-reply learning call on the same source takes a rate-limit refusal
-- **THEN** no cooldown is written, the owner's next turn still finds the source eligible, and the learning failure is logged rather than raised or shown
+- **THEN** no cooldown is written, the owner's next turn still finds the source eligible, and the learning failure is logged and classified in the reply receipt without aborting the reply
 
 #### Scenario: a secondary call meets a credential refusal
 - **WHEN** a secondary call's attempt fails authentication
@@ -304,18 +304,9 @@ The provider layer SHALL expose `subscription_auth_health(provider_name, allow_p
 - **WHEN** `TINYASSETS_AUTH_VIABILITY_PROBE` is explicitly set to a falsy value and Codex `auth.json` exists
 - **THEN** health is presence-only `ok` without reading freshness, consulting cached viability, or running the live probe
 
-#### Scenario: status never launches a live Codex probe
-- **WHEN** the chatbot-facing status path reads writer auth health
-- **THEN** it calls the health function with probing disabled, consumes presence, freshness, and any cached verdict, and reports stale uncached auth as `ok` with deferred-probe detail instead of blocking on a subprocess
-
 #### Scenario: worker gate owns live quarantine
 - **WHEN** a cloud worker is pinned or explicitly assigned to a subscription writer
 - **THEN** it performs the probing health check before runtime registration or queue work and self-quarantines only on `not_logged_in`; a generic worker without a resolvable writer is not gated by this check
-
-#### Scenario: status summarizes subscription-writer loss only
-- **WHEN** supervisor liveness computes auth health for `codex` and `claude-code`
-- **THEN** `provider_auth.writers` contains each status and detail, `all_writers_unauthenticated` is true only when both checked subscription writers are `not_logged_in`, and warnings distinguish that condition from partial subscription-writer loss
-- **AND** the roll-up does not inspect `ollama-local` or opted-in API-key providers and MUST NOT be treated as proof that every possible provider route is unavailable
 
 ### Requirement: The provider call bridge retries only transient full-chain exhaustion
 The shared provider call bridge SHALL retry `AllProvidersExhaustedError` up to three total router attempts with exponential waits bounded from two through eight seconds. It SHALL NOT retry unrelated exceptions. After failure or when no router exists, it SHALL return the caller-supplied fallback response when present and otherwise re-raise the original unrelated error, or raise `AllProvidersExhaustedError` for exhaustion or a missing router, rather than synthesize empty prose.
@@ -339,120 +330,6 @@ The shared provider call bridge SHALL retry `AllProvidersExhaustedError` up to t
 #### Scenario: No router preserves fallback semantics
 - **WHEN** no router is installed
 - **THEN** the bridge returns a supplied fallback immediately or raises `AllProvidersExhaustedError` when no fallback exists
-
-### Requirement: Bubblewrap readiness is a cached two-stage provider probe that selects ordinary Codex mode
-
-`tinyassets.providers.base.probe_sandbox_available` SHALL return a dictionary
-with `bwrap_available` and `reason`. It SHALL report unavailable immediately on
-win32, when `bwrap` is absent from `PATH`, when `bwrap --version` exits
-nonzero, when a minimal `bwrap --ro-bind / / /bin/sh -c true` launch exits
-nonzero, or when either subprocess attempt raises; each subprocess SHALL have
-a five-second timeout. It SHALL report available with a null reason only when
-both subprocesses exit zero.
-
-`get_sandbox_status` SHALL lazily cache and return the first probe dictionary
-for the remainder of the process. It returns that same mutable dictionary,
-does not refresh it, and does not copy it.
-
-For an ordinary `CodexProvider.complete` call made while
-`provider_jail.launch_is_confined()` is true (a launch scope names an owning
-universe, so the shared spawn point OS-jails the process), the adapter SHALL
-select `--dangerously-bypass-approvals-and-sandbox`: the provider jail is the
-sandbox, and codex SHALL NOT nest its own bubblewrap inside it. Its shell
-commands then write the universe the jail binds read-write (hidden root entries
-masked) and reach the network only through the universe's checking egress
-proxy, the same floor as the universe tool jail's `bash`, rather than being
-network-denied as codex's own `workspace-write` mode would. Off the jail,
-`bwrap_available` truthy SHALL select `--sandbox workspace-write`, while falsey
-SHALL select `--dangerously-bypass-approvals-and-sandbox`. Every mode also
-includes `--skip-git-repo-check` and `--ephemeral`. A call with
-`sandbox_workspace=True` SHALL require a universe directory, a directly
-executable CLI, available Bubblewrap, and an auth home inside that universe;
-otherwise it SHALL refuse before starting a subprocess. Accepted served calls
-use `--sandbox workspace-write` inside the outer OS sandbox and SHALL declare a
-nested sandbox to the provider jail, because codex's native `apply_patch` runs
-through a filesystem sandbox helper that needs a nested user namespace; that
-launch SHALL get the jail's permissive seccomp profile, which keeps new user
-namespaces and symlinks open. Every other provider launch SHALL get the full
-deny profile. On the served path a provider can still create a link in its
-universe; the daemon-side link-refusing reader and writer covers that residual
-until per-universe platform state moves out of the universe directory.
-This probe is a CLI-readiness heuristic, not an OS backend or proof that the
-subsequent workload is confined. In particular, an unavailable ordinary call
-bypasses Codex approvals and sandboxing rather than failing closed.
-
-#### Scenario: Successful version and functional probes select workspace-write
-
-- **WHEN** `bwrap` is found and its version and minimal launch subprocesses both exit zero
-- **THEN** the first cached result is `{"bwrap_available": true, "reason": null}`
-- **AND** an ordinary Codex call made outside any confining launch scope includes `--sandbox workspace-write` and omits `--dangerously-bypass-approvals-and-sandbox`
-
-#### Scenario: A confined ordinary call runs codex inside the provider jail without its own sandbox
-
-- **WHEN** an ordinary Codex call is made inside a launch scope that names an owning universe
-- **THEN** it includes `--dangerously-bypass-approvals-and-sandbox` and omits `--sandbox workspace-write`
-- **AND** the provider jail's seccomp filter refuses new user namespaces and symlinks for every process the call starts
-
-#### Scenario: A served call keeps codex's sandbox and gets the permissive jail profile
-
-- **WHEN** a Codex call with `sandbox_workspace=True` is accepted
-- **THEN** it includes `--sandbox workspace-write` and declares a nested sandbox to the provider jail
-- **AND** the jail's seccomp profile for that launch allows new user namespaces and symlinks, so codex's `apply_patch` edit succeeds
-
-#### Scenario: An unavailable probe selects the dangerous bypass
-
-- **WHEN** the cached probe is false because of win32, a missing executable, a nonzero version or launch result, or a probe exception
-- **THEN** an ordinary Codex call includes `--dangerously-bypass-approvals-and-sandbox` and omits `--sandbox workspace-write`
-- **AND** the result carries a reason for the unavailable classification
-
-#### Scenario: Repeated status reads retain the first mutable result
-
-- **WHEN** `get_sandbox_status` is called repeatedly and a caller mutates the returned dictionary
-- **THEN** the underlying probe is invoked once
-- **AND** every read returns the same cached dictionary, including the mutation
-
-#### Scenario: Founder-facing sandbox configuration fails closed when confinement is unavailable
-
-- **WHEN** a Codex call has `sandbox_workspace=True` without a universe directory or available Bubblewrap
-- **THEN** it raises `ProviderError` rather than selecting the dangerous bypass
-- **AND** no Codex subprocess is started
-
-### Requirement: Recognized provider CLI sandbox failures are loud only after earlier quick-exit classification
-
-On non-win32 paths, `tinyassets.providers.base.check_bwrap_failure` SHALL
-case-insensitively recognize:
-`bwrap: No permissions to create a new namespace`,
-`bwrap: No permissions to create new namespace`,
-`bwrap: No such file or directory`, and
-`sandbox initialization failed`. A match SHALL raise the provider-layer
-`SandboxUnavailableError` with at most the first 400 stderr characters and
-three remediation options. Empty or unmatched text SHALL pass. On win32 the
-helper SHALL be a no-op.
-
-Claude text completion, Claude JSON completion, and Codex completion SHALL pass
-stderr through this helper when control reaches their post-communicate sandbox
-check, including an exit-zero invocation that emitted a recognized failure.
-The check does not dominate every error path: each CLI provider's quick
-return-code-1 classification at elapsed time under five seconds occurs first and raises
-`ProviderUnavailableError`, so such a Bubblewrap failure is not guaranteed to
-retain the sandbox-specific type.
-
-#### Scenario: A recognized exit-zero stderr failure raises the provider sandbox error
-
-- **WHEN** a provider invocation reaches the sandbox check with any recognized signature in mixed-case stderr
-- **THEN** it raises `tinyassets.providers.base.SandboxUnavailableError`
-- **AND** the error carries a bounded stderr excerpt and remediation guidance
-
-#### Scenario: Normal output and win32 do not trigger the recognizer
-
-- **WHEN** stderr is empty or unmatched, or the process platform is win32
-- **THEN** `check_bwrap_failure` returns without raising a sandbox error
-
-#### Scenario: A return-code-1 failure under five seconds is classified before sandbox recognition
-
-- **WHEN** a Claude or Codex subprocess exits with return code 1 at elapsed time under five seconds and its stderr also contains a recognized signature
-- **THEN** the provider's earlier quick-exit path raises `ProviderUnavailableError`
-- **AND** the sandbox-specific recognizer is not reached for that invocation
 
 ### Requirement: Background carrier mint authority is store-proven
 The system SHALL mint a background provider carrier only from a one-use,
@@ -498,17 +375,19 @@ A universe owner SHALL be able to register a compute provider definition for any
 - **THEN** they receive the descriptor only, and must supply their own credential through the custody owner — the original owner's credential is never auto-bound
 
 ### Requirement: Access-method executors are selected by provenance with no cross-method fallback
-Execution SHALL select an executor deterministically by the definition's access method: `subscription_cli` selects the vendor CLI adapter (preserving the existing `codex exec` sandbox/auth-health/budget/telemetry behavior and the `codex` identity); `api_key_http` selects an HTTP protocol encoder over the SSRF-hardened outbound proxy (never a vendor SDK pointed at an arbitrary `base_url`). A failed subscription-CLI provider SHALL NOT fall back to an SDK/API using ambient credentials.
+Execution SHALL select an executor deterministically by the definition's protocol kind: an `agent:<package>` protocol selects the generic external-agent runner with that pinned package; `api_key_http` selects an HTTP protocol encoder over the SSRF-hardened outbound proxy (never a vendor SDK pointed at an arbitrary `base_url`). No executor SHALL be chosen by a vendor name. A failed external agent SHALL NOT fall back to an SDK or API using ambient credentials, nor to another source unless the caller declared it as a fallback.
 
 #### Scenario: api_key_http never bypasses the outbound proxy
 - **GIVEN** an `api_key_http` provider with a user-supplied `base_url`
 - **WHEN** a turn executes on it
 - **THEN** the request goes through the credential-blind outbound proxy with full SSRF enforcement (HTTPS-only, private/loopback/metadata blocked, DNS revalidated, redirects/env-proxies disabled), and the credential ref is bound to the registered endpoint so a changed `base_url` cannot redirect the key
 
-#### Scenario: subscription CLI does not silently degrade to an API
-- **GIVEN** a `subscription_cli` provider whose CLI auth is unhealthy
-- **WHEN** routing evaluates it
-- **THEN** it is skipped by the existing auth-health quarantine — never retried as an API/SDK call on an ambient credential
+#### Scenario: an external agent does not silently degrade to an API
+- **GIVEN** an `agent:codex` source whose custody is signed out
+- **WHEN** a call resolves to it
+- **THEN** the call fails with `ExternalAgentUnavailable` naming the agent and `signed_out`, and is never retried as an API or SDK call on an ambient credential
+
+## REMOVED Requirements
 
 ### Requirement: Capability observations and compliance advisories are not authority
 Capability observations and compliance advisories SHALL be advisory only: neither SHALL grant, widen, or veto execution authority, and they MUST only narrow an already-authorized route or inform the UX. Capability observations comprise user-declared capabilities (validated on use), passive health/rate observations from real calls, and at most one bounded same-origin `/models` probe (TTL, per-owner rate/concurrency/cost limited, cache keyed by connection generation). Compliance advisories are freshness-stamped, provenance-carrying "what's allowed" records. Hard prohibitions SHALL be enforced at the access-method/connect boundary, not as a routing-time authority decision.
@@ -892,6 +771,23 @@ notice and the retained history row SHALL be composed from this one record by
 the check-progress caution SHALL appear only when `effects` is not `none`. The
 record is returned on `converse` as `turn_failure` and read back through the
 existing conversation read paths.
+
+When planning refuses a pinned model because no eligible model exists in the
+connected sources, the record SHALL use `model_unavailable`. A typed authority
+refusal SHALL use `authority_held`; typed work-model exhaustion SHALL use
+`work_model_exhausted`; and a typed protected-launch refusal SHALL use
+`provider_confinement_unavailable`. Each notice SHALL state the known reason
+and an action the owner can take. A refusal before any model request with no
+turn-journal evidence of prior actions SHALL have `stage=before_send` and
+`effects=none`. `unknown` SHALL remain for failures without classified evidence.
+
+#### Scenario: A selected model is absent before the provider is called
+
+- **WHEN** an explicitly selected model is absent from the catalogue of the
+  owner's connected sources and planning refuses it before a model request
+- **THEN** `turn_failure.code=model_unavailable`, `stage=before_send`, and
+  `effects=none`; the live and retained notices say to pick another model or
+  connect the source that offers it
 
 #### Scenario: A reply the codec cannot read names that, not an unknown cause
 

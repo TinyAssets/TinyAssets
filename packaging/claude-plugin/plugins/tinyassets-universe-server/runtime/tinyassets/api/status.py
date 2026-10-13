@@ -463,12 +463,7 @@ def _active_host_snapshot(
     api_key_vars_present = [
         name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
     ]
-    from tinyassets.external_agents.registry import PACKAGES
     from tinyassets.providers.base import subscription_auth_health as _auth_health
-
-    package_bound = next((name for name, package in PACKAGES.items()
-                          if _shutil.which(package.row["install"]["bin"])
-                          and _auth_health(name, allow_probe=False)["status"] == "ok"), None)
 
     claude_authed = (
         _shutil.which("claude")
@@ -479,8 +474,6 @@ def _active_host_snapshot(
         endpoint_hint = "ollama"
     elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
         endpoint_hint = "anthropic"
-    elif package_bound:
-        endpoint_hint = package_bound
     elif claude_authed:
         endpoint_hint = "claude"
     else:
@@ -662,44 +655,6 @@ def _compute_auto_ship_health(
     return out
 
 
-# Subscription writers the loop relies on. Probed for auth-health so a dead
-# credential (the 2026-06-25 loop-wedge root cause — a worker whose claude-code
-# auth was missing claimed tasks and failed every one for ~3 weeks undetected)
-# is visible in get_status instead of buried in worker logs.
-_SUBSCRIPTION_WRITERS = ("codex", "claude-code")
-
-
-def _provider_auth_snapshot() -> dict[str, Any]:
-    """Presence-based auth health for the subscription writers + a roll-up.
-
-    Reads the same shared-volume auth paths the workers use (the main daemon
-    and workers share ``/data`` in the cloud deploy), so a writer whose creds
-    are missing surfaces here. ``all_writers_unauthenticated`` is the
-    actionable roll-up: when true the loop cannot produce at all.
-    """
-    from tinyassets.providers.base import subscription_auth_health
-
-    writers: dict[str, Any] = {}
-    known_states: list[str] = []
-    for name in _SUBSCRIPTION_WRITERS:
-        # allow_probe=False: get_status is an MCP request path and must
-        # never block on the codex live-probe subprocess (up to 120s).
-        # Fast paths + cached verdicts only; the worker gate owns probing.
-        health = subscription_auth_health(name, allow_probe=False)
-        status = health["status"]
-        detail = {
-            "ok": "subscription auth available",
-            "not_logged_in": "subscription auth unavailable; reauthentication required",
-        }.get(status, "subscription auth state inconclusive")
-        writers[name] = {"status": status, "detail": detail}
-        if health["status"] in ("ok", "not_logged_in"):
-            known_states.append(health["status"])
-    all_down = len(known_states) == len(_SUBSCRIPTION_WRITERS) and all(
-        s == "not_logged_in" for s in known_states
-    )
-    return {"writers": writers, "all_writers_unauthenticated": all_down}
-
-
 #: Liveness is read far more often than it changes, and computing it is the single
 #: most expensive part of a `get_status` request: measured on the live box
 #: 2026-08-28, it reads ~59 per-worker liveness files per call and was 58% of what
@@ -805,36 +760,6 @@ def _compute_supervisor_liveness_uncached(
         "warnings": [],
         "lease_data_available": True,
     }
-
-    # Provider auth health — surfaced before the queue read so a dead-writer
-    # roll-up is visible even if the queue read fails. Turns the loop_stalled
-    # warning's "provider auth?" suspicion into a concrete signal.
-    out["provider_auth"] = _provider_auth_snapshot()
-    _dead_writers = [
-        name
-        for name, info in out["provider_auth"]["writers"].items()
-        if info["status"] == "not_logged_in"
-    ]
-    if out["provider_auth"]["all_writers_unauthenticated"]:
-        out["warnings"].append(
-            "all_writers_unauthenticated: every subscription writer "
-            "(codex, claude-code) is unauthenticated — the loop cannot "
-            "produce. Re-seed provider auth on the worker volume. "
-            "(2026-06-25 loop-wedge root cause; workers now self-quarantine "
-            "rather than claim-and-poison the queue.)"
-        )
-    elif _dead_writers:
-        # Partial outage is the EXACT 2026-06-25 shape (claude dead, codex
-        # alive). Warn even though the loop still produces, so a degraded
-        # fleet is never silent (Hard Rule #8) — the dead workers
-        # self-quarantine and the loop runs at reduced writer capacity.
-        out["warnings"].append(
-            f"writer_unauthenticated: subscription writer(s) "
-            f"{', '.join(_dead_writers)} not logged in — those workers "
-            "self-quarantine (no claim, no poison) and the loop runs at "
-            "reduced writer capacity until re-seeded. (2026-06-25 partial "
-            "loop-wedge signature.)"
-        )
 
     v1_error = ""
     try:
@@ -1480,14 +1405,8 @@ def get_status(
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
-    # Priority chain mirrors the provider-router's preference order:
-    # local/subscription endpoints beat API-key-only providers. Ollama is
-    # always-local; codex+claude are subprocess-bound CLIs the daemon can drive;
-    # xai/gemini/groq are API-key-backed network providers the platform never
-    # uses: it has no LLM (AGENTS.md Hard Rule 15).
-    # Claude is "bound" only when its binary AND subscription auth are present —
-    # the binary-only check let a dead-auth claude masquerade as bound (the
-    # 2026-06-25 blind spot). Codex already gates on auth.json below; mirror it.
+    # This legacy host snapshot reports only locally bound endpoints. Owner
+    # package connections and model choices belong to model_options.
     active_host, api_key_enabled, api_key_vars_present, endpoint_hint = (
         _active_host_snapshot(served_llm_type)
     )
@@ -1590,7 +1509,7 @@ def get_status(
     if endpoint_hint == "unset":
         caveats.append(
             "No default LLM provider detected on this host (checked: "
-            "OLLAMA_HOST, Codex CLI with subscription auth, and Claude CLI). "
+            "OLLAMA_HOST and Claude CLI). "
             "That is expected: the platform has no LLM of its own. A command center "
             "runs on the provider its owner connects -- see read_graph "
             "target=model_options for that command center."

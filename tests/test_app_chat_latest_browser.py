@@ -175,6 +175,36 @@ def test_native_picker_return_preserves_reader_position(chat_page, event):
     _bottom(page)
 
 
+def test_resume_during_wheel_settle_still_reaches_latest(chat_page):
+    """A wheel-settle timer must not cancel a return that already cleared the gesture.
+
+    The 120ms settle used to copy "not at the bottom" into ``following`` when it
+    fired before the return's animation frame, and the frame then refused to
+    move. Hold that frame until the timer has run. That is the race from
+    merge-queue run 38205591928.
+    """
+    page = chat_page
+    page.evaluate("loadHistory()")
+    _bottom(page)
+    _scroll_up(page)
+    page.evaluate("""() => {
+        const thread=document.getElementById('thread');
+        const state=thread.chatScroll;
+        state.frame=0;
+        const real=window.setTimeout;
+        const realFrame=window.requestAnimationFrame;
+        let held=null;
+        window.requestAnimationFrame=(fn)=>{ held=fn; state.frame=1; return 1; };
+        window.setTimeout=(fn, ms, ...args)=>real(fn, ms===120 ? 0 : ms, ...args);
+        thread.dispatchEvent(new WheelEvent('wheel', {deltaY:-600, bubbles:true, cancelable:true}));
+        document.dispatchEvent(new Event('resume'));
+        window.requestAnimationFrame=realFrame;
+        window.setTimeout=real;
+        real(()=>{ if(held){ state.frame=0; held(); } }, 0);
+    }""")
+    _bottom(page)
+
+
 @pytest.mark.parametrize("return_while_loading", [False, True])
 def test_show_earlier_preserves_visible_message_position(chat_page, return_while_loading):
     page = chat_page

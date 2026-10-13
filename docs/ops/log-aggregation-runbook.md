@@ -143,9 +143,15 @@ the question spans a deploy.
 `/etc/systemd/journald.conf.d/tinyassets.conf` by
 `deploy/install-host-uptime-services.sh`, which runs after every successful
 production deploy and restarts `systemd-journald` only when the bytes changed.
-`Storage=persistent`, `SystemMaxUse=1G`, `MaxRetentionSec=14day`,
-`SystemKeepFree=2G`, rate limiting off — a dropped message during an incident is
-the evidence this exists to keep.
+`Storage=persistent`, `SystemMaxUse=12G`, `MaxRetentionSec=30day`,
+`SystemKeepFree=2G`. Rate limiting stays on at a high ceiling
+(`RateLimitBurst=100000` per 30s). A dropped message during an incident is
+the evidence this exists to keep, and journald records the loss with its own
+suppressed-message line. The age cap is a maximum, not a promise: 12 GiB at a
+sustained 100 KiB/s is about 35 hours, and whichever bound runs out first wins.
+Three days at that rate is about 25 GiB. On the 49 GiB production disk (40%
+used on 2026-10-01) that would pass the 80% `disk_watch` alarm, so the cap
+stays at 12G.
 
 Change it there, not on the box, or the next install reverts it.
 
@@ -162,6 +168,28 @@ cat /etc/systemd/journald.conf.d/tinyassets.conf
 4. Date-range picker selects the archive window.
 
 Better Stack free tier retains 3 GB / month — sufficient for a single daemon running at normal load.
+
+---
+
+## Fetch a session trail from GitHub Actions
+
+`Fetch production logs` (`.github/workflows/fetch-prod-logs.yml`) reads the
+journal over the deploy key and uploads one artifact, `production-log-timeline`,
+holding `production-log-timeline.enc`: the ordered, redacted JSONL trail sealed
+to `mobile/review-evidence-recipient.pub`. This repo, its artifacts and its job
+logs are public, so the plaintext never leaves the runner, and the job log and
+step summary print aggregates only (line count, truncation, error types by
+commit). Name a `session_id`, `account_id` or `trace_id` for a window of up to
+7 days; a window with no filter must be within 1 hour.
+
+Decrypt on the founder's machine, where the private key lives at
+`~/.tinyassets/review-evidence.key`. It is never in CI and never in the repo.
+
+```bash
+gh run download <run-id> -n production-log-timeline
+python mobile/scripts/review_evidence.py decrypt production-log-timeline.enc ./timeline
+# ./timeline/prod-logs.jsonl is the trail; ./timeline must not exist or be empty
+```
 
 ---
 
@@ -225,7 +253,7 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 | No logs in Better Stack | Token not set or wrong | Check `BETTERSTACK_SOURCE_TOKEN` in `/etc/tinyassets/env`; restart `logs` container |
 | Vector container not running | Depends-on daemon unhealthy | Check `docker logs tinyassets-logs`; confirm daemon healthcheck passes. While it is down the fluentd driver buffers in memory and then **drops** — the journal gets nothing, so fix this first |
 | `journalctl CONTAINER_NAME=tinyassets-logs` is empty | The `logs` container is not on the journald driver (compose drift) | `docker inspect -f '{{.HostConfig.LogConfig.Type}}' tinyassets-logs` must print `journald`; if not, the deployed compose.yml is behind `deploy/compose.yml` |
-| Journal history shorter than 14 days | Drop-in missing, or `SystemMaxUse` hit | `cat /etc/systemd/journald.conf.d/tinyassets.conf`; `journalctl --disk-usage`. Absent drop-in means the installer has not run since the change landed |
+| Journal history shorter than 30 days | Drop-in missing, or `SystemMaxUse` hit | `cat /etc/systemd/journald.conf.d/tinyassets.conf`; `journalctl --disk-usage`. Absent drop-in means the installer has not run since the change landed |
 | Journal empties on reboot | `Storage` is not persistent | `/var/log/journal` must exist; the drop-in sets `Storage=persistent` and journald creates it on restart |
 | ship-logs.sh exits 1 | `LOG_DEST` missing, a required container missing, or its logs unreadable | Set `LOG_DEST`; then inspect `docker ps -a` and `docker logs <container>` for every required fleet member |
 | rclone upload fails | Remote misconfigured | Run `rclone lsd "${LOG_DEST}/"` to test connectivity |
@@ -239,7 +267,7 @@ DRY_RUN=1 LOG_DEST="${LOG_DEST}" bash /opt/tinyassets-host-uptime/current/deploy
 | Storage | Retention | Where |
 |---------|-----------|-------|
 | Docker fluentd driver buffer | In-memory; **drops** while Vector is down (`docs/concerns/2026-09-26-fluentd-driver-drops-while-vector-is-down.md`) | Not durable, never evidence |
-| **host journal** | **1 G / 14 days, persistent** (`deploy/journald-tinyassets.conf`) | Droplet local disk, survives container recreates |
+| **host journal** | **12 GiB maximum, 30 days maximum, whichever runs out first** (`deploy/journald-tinyassets.conf`). About 35 hours at a sustained 100 KiB/s | Droplet local disk, survives container recreates |
 | Better Stack | 3 GB/month (free tier) | Better Stack cloud |
 | Offsite archive | 30 days | `LOG_DEST` (Hetzner/DO Spaces) |
 

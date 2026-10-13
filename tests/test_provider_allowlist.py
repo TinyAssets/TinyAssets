@@ -4,22 +4,22 @@ Spec: 2026-04-27-q63-third-party-provider-privacy.md (archived in git) §5
 Dispositions: .claude/agent-memory/navigator/q63_section4_dispositions.md
 
 Hard Rule 15 (the platform has no LLM) removed the platform fallback chain,
-the judge fan-out and the host writer pin this allowlist used to filter. The
-allowlist now bounds the ONE provider an owner's authority names: a carrier
-whose provider the universe does not allow is refused before launch.
+the judge fan-out and the host writer pin this allowlist used to filter. A
+workflow carrier pins one source admitted from the owner's live connections;
+the legacy config allowlist cannot override that admission.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tinyassets import runtime_singletons as runtime
 from tinyassets.config import UniverseConfig
-from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.provider_work_authority import ProviderInvocationCarrier
 from tinyassets.providers.base import (
     BaseProvider,
@@ -27,6 +27,7 @@ from tinyassets.providers.base import (
     ProviderResponse,
     UniverseContext,
 )
+from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 from tinyassets.providers.quota import QuotaTracker
 from tinyassets.providers.router import ProviderRouter
 
@@ -87,7 +88,10 @@ def _router_with_all_providers() -> tuple[
 
 def _bound_call(router, *, provider: str, allowed_providers):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-allowlist")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-allowlist",
+        admitted_sources=frozenset({provider}),
+    )
     carrier.provider = provider
     carrier.role = "writer"
     carrier.operation = "run_graph"
@@ -102,17 +106,23 @@ def _bound_call(router, *, provider: str, allowed_providers):
         carrier.validate_for_call(role=role, operation=operation)
         return carrier
 
-    context = UniverseContext(
-        universe_dir=Path("u-allowlist"),
-        config=UniverseConfig(allowed_providers=allowed_providers),
-        provider_invocation=carrier,
-    )
-    with patch("tinyassets.providers.router._provider_invocation_carrier",
-               side_effect=resolve):
-        return _run(router.call(
-            "writer", "p", "s", ModelConfig(max_tokens=10),
-            operation="run_graph", universe_context=context,
-        ))
+    with TemporaryDirectory() as root:
+        universe = Path(root) / "u-allowlist"
+        universe.mkdir()
+        context = UniverseContext(
+            universe_dir=universe,
+            config=UniverseConfig(allowed_providers=allowed_providers),
+            provider_invocation=carrier,
+        )
+        with patch("tinyassets.providers.router._provider_invocation_carrier",
+                   side_effect=resolve):
+            return _run(call(ModelCall(
+                model=None, fallbacks=(), context=ModelContext(
+                    role="writer", prompt="p", system="s",
+                    config=ModelConfig(max_tokens=10), operation="run_graph",
+                    universe_context=context, router=router,
+                ),
+            ), Parent(owner="owner", command_center="u-allowlist"))).response
 
 
 def test_allowlist_none_serves_only_the_owner_named_provider(isolated_universe_config):
@@ -133,16 +143,13 @@ def test_allowlist_containing_the_owner_provider_serves_it(isolated_universe_con
     assert providers["codex"].call_count == 1
 
 
-def test_allowlist_excluding_the_owner_provider_hard_fails(isolated_universe_config):
+def test_legacy_config_allowlist_cannot_veto_the_connected_source(isolated_universe_config):
     router, providers = _router_with_all_providers()
 
-    with pytest.raises(AllProvidersExhaustedError) as exc_info:
-        _bound_call(router, provider="codex", allowed_providers=["does-not-exist"])
+    response = _bound_call(router, provider="codex", allowed_providers=["does-not-exist"])
 
-    msg = str(exc_info.value)
-    assert "allowed_providers" in msg
-    assert "does-not-exist" in msg
-    assert all(p.call_count == 0 for p in providers.values())
+    assert response.provider == "codex"
+    assert providers["codex"].call_count == 1
 
 @pytest.fixture(autouse=True)
 def _router_test_connected_sources(monkeypatch):

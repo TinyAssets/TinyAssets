@@ -265,7 +265,7 @@ def test_access_equality_matches_readback_for_unsorted_sets():
     assert access == ModelAccess.from_json(json.dumps(access.document()))
 
 
-def test_storage_does_not_activate_unvalidated_model_scope(tmp_path, monkeypatch):
+def test_saved_model_scope_does_not_override_live_connected_source(tmp_path, monkeypatch):
     from tests.test_open_serving_bind import _bound_and_serving
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import resolve_current_serving_provider_authority
@@ -310,10 +310,9 @@ def test_storage_does_not_activate_unvalidated_model_scope(tmp_path, monkeypatch
     )
     with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
         _store(conn, root)
-    with pytest.raises(PermissionError, match="not active"):
-        resolve_current_serving_provider_authority(
-            tmp_path,
-            universe_dir=universe,
-            universe_id="u-owner",
-            owner_user_id="owner-1",
-        )
+    assert resolve_current_serving_provider_authority(
+        tmp_path,
+        universe_dir=universe,
+        universe_id="u-owner",
+        owner_user_id="owner-1",
+    ).provider == root.provider

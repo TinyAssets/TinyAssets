@@ -3,8 +3,16 @@
 **Status:** The canonical proxy shipped after the 2026-04-20 single-entry
 cutover. This repository revision also retires `/mcp-directory*` at the edge;
 that newer behavior is not production truth until deploy and post-deploy proof
-complete. The Worker routes `tinyassets.io/mcp*` and `tinyassets.io/app*` while
-leaving the GitHub Pages landing intact for all other paths.
+complete. The Worker routes `tinyassets.io/mcp*`, `tinyassets.io/app*`, and the
+apex OAuth discovery documents
+`tinyassets.io/.well-known/oauth-protected-resource*` and
+`tinyassets.io/.well-known/oauth-authorization-server*` while leaving the
+GitHub Pages landing intact for all other paths. The discovery wildcards are
+the document name only, so `/.well-known/openai-apps-challenge` stays on the
+website. Path-inserted discovery (`/.well-known/oauth-protected-resource/mcp`
+and `/.well-known/oauth-authorization-server/mcp`) is forwarded to the apex
+document the daemon already serves, so a worker deploy answers those URLs
+before the daemon image that mounts them directly is live.
 
 **After deploy:** the canonical public MCP URL returns to
 `https://tinyassets.io/mcp`. Installed TinyAssets chatbot connectors pointing
@@ -26,9 +34,13 @@ With this Worker revision deployed:
 
 - Same DNS (tinyassets.io still Cloudflare-fronted).
 - Same GitHub Pages origin for apex paths (landing unchanged).
-- NEW: the Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`.
+- NEW: the Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`,
+  plus the apex OAuth discovery documents.
   Canonical `/mcp` and `/app` requests get proxied to `mcp.tinyassets.io`
-  (tunnel origin) as a streaming pass-through. Retired `/mcp-directory*`
+  (tunnel origin) as a streaming pass-through. `OPTIONS` preflights are
+  answered by the Worker (204, the shared browser CORS policy) and are not
+  forwarded: Cloudflare Access would answer them 403 before checking the
+  service token. Retired `/mcp-directory*`
   requests terminate at the edge with an ordinary 404. Apex `/` + every other
   path still hits GitHub Pages.
 

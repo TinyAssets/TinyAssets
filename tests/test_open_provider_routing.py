@@ -96,10 +96,13 @@ def test_register_hook_registers_universe_open_providers(base: Path) -> None:
         protocol="cli:codex", model="gpt-5", ref="codex",
     )
     router = ProviderRouter()
+    # Restore the process router: a None left behind reads as "executor
+    # unavailable" for every later test that plans a native source.
+    saved = call_mod.get_provider_router()
     call_mod.set_provider_router(router)
     try:
         ctx = type("Ctx", (), {"universe_dir": base / "u-x"})()
         call_mod.register_open_providers_for(ctx)
         assert "codex" in router.available_providers
     finally:
-        call_mod.set_provider_router(None)
+        call_mod.set_provider_router(saved)

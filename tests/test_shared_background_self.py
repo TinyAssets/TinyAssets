@@ -234,6 +234,9 @@ class SharedSelfTests(unittest.TestCase):
 
 class ProviderSeamTests(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
         # Standalone unittest also needs explicit simulated process evidence.
         # Preserve the real guard; this fixture grants no production authority.
         from tinyassets import platform_runtime_provenance as provenance
@@ -259,8 +262,9 @@ class ProviderSeamTests(unittest.TestCase):
             received.append((prompt, system, kwargs["config"]))
             return "done"
         provider.__module__ = "tinyassets.providers.call"
-        session = _ForegroundRunProviderSession("/tmp", universe_id="u-own",
+        session = _ForegroundRunProviderSession(self.root, universe_id="u-own",
                                                 principal_id="owner", provider_call=provider)
+        self.addCleanup(session.close)
         session._ensure_admitted = lambda: order.append("admit")
         @contextlib.contextmanager
         def authorize(**kwargs):
@@ -316,8 +320,9 @@ class ProviderSeamTests(unittest.TestCase):
         def provider(*a, **k):
             raise AssertionError("provider must not run")
         provider.__module__ = "tinyassets.providers.call"
-        session = _ForegroundRunProviderSession("/tmp", universe_id="u-own",
+        session = _ForegroundRunProviderSession(self.root, universe_id="u-own",
                                                 principal_id="owner", provider_call=provider)
+        self.addCleanup(session.close)
         def deny():
             raise PermissionError("revoked")
         session._ensure_admitted = deny

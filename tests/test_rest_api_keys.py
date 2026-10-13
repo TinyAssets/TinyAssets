@@ -267,7 +267,10 @@ def test_cancel_runs_the_handle_cancel_under_the_run_graph_grant(client, stores)
     assert calls[-1] == ("run_graph", {"operation": "cancel", "run_id": "r9", "graph_id": "home"})
 
 
-@pytest.mark.parametrize("raw", [b"{not json", b"[1, 2]", b'"text"', b"{" + b" " * 300000 + b"}"])
+@pytest.mark.parametrize(
+    "raw", [b"{not json", b"[1, 2]", b'"text"', b"{" + b" " * 300000 + b"}"],
+    ids=["malformed", "array", "scalar", "oversized"],
+)
 def test_malformed_or_oversized_bodies_are_400_never_500(client, stores, raw):
     http, calls = client
     keys, authority = stores
@@ -399,7 +402,8 @@ def test_listing_finds_a_grant_past_the_first_hundred_command_centers(real):
         ensure_universe_registered(base, universe_id=uid, universe_path=udir)
         grant_universe_access(base, universe_id=uid, actor_id="alice", permission="admin",
                               granted_by="alice")
-    auth = {"authorization": "Bearer " + mint(keys, authority, scope("read_graph", universe="work"))}
+    auth = {"authorization": "Bearer " + mint(
+        keys, authority, scope("read_graph", universe="work"))}
     response = http.get("/api/command-centers?limit=1", headers=auth)
     assert response.status_code == 200, response.text
     assert [row["id"] for row in response.json()["universes"]] == ["work"]

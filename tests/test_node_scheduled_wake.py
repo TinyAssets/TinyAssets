@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -533,6 +534,46 @@ def test_a_database_from_the_previous_build_accepts_a_once_row(tmp_path: Path) -
     assert [row.automation_id for row in store.list(universe_id=UNIVERSE)] == [
         "old", "new",
     ]
+
+
+def test_two_openers_can_add_consecutive_failures_together(tmp_path: Path) -> None:
+    """The consumer and a create can migrate one database at the same time.
+
+    The file already exists in WAL mode with the base table and without
+    ``consecutive_failures``, which is the window ``write_graph`` hit: both
+    openers passed the column probe and the second ``ALTER`` raised
+    ``duplicate column name``.
+    """
+    store = AutomationStore(tmp_path)
+    path = store.db_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    seeded = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    seeded.execute("PRAGMA journal_mode = WAL")
+    seeded.executescript(automations_module._SCHEMA)
+    seeded.close()
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def open_once() -> None:
+        barrier.wait()
+        try:
+            conn = store._connect(create=True)
+            conn.close()
+        except BaseException as exc:  # noqa: BLE001 - the assertion is the list
+            errors.append(exc)
+
+    threads = [threading.Thread(target=open_once) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    conn = store._connect(create=True)
+    try:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(automations)")}
+    finally:
+        conn.close()
+    assert "consecutive_failures" in columns
 
 
 def test_the_verb_result_is_json(home: Path) -> None:

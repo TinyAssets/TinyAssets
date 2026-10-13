@@ -182,9 +182,10 @@ def test_router_ceiling_refreshes_captured_authority(tmp_path, carrier_armed):
     captured = UniverseConfig(allowed_providers=["claude-code"])
     pa.write_record(home, {"allowed_providers": ["codex"]})
     context = UniverseContext(universe_dir=home, config=captured)
-    assert _effective_universe_provider_ceiling(
+    ceiling = _effective_universe_provider_ceiling(
         context, captured, carrier_armed=carrier_armed,
-    ) == ["codex"]
+    )
+    assert ceiling == (None if carrier_armed else ["codex"])
     assert captured.allowed_providers == ["claude-code"]
 
 

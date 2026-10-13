@@ -24,7 +24,14 @@ on:
   pull_request:
     # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
     # gives signal before a PR is marked ready and becomes auto-merge eligible.
-    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
+    #
+    # Not `edited`, `labeled`, `unlabeled`, or `issue_comment`. Those events do
+    # not change the head SHA, so the check already reported for that SHA stays
+    # in force. Starting a new run here cancelled the in-progress one
+    # (cancel-in-progress is on for pull_request) and spent another ~15 minutes
+    # on the same code: 140 of 331 PR runs in the 2026-10-12 sample. Receipt
+    # and label gating is pr-scope-guard.yml, a separate small job.
+    types: [opened, reopened, synchronize, ready_for_review]
   # The merge queue. `required-tests` and `slow-tests` are required checks, and
   # a queue waits for every required check to report on the merge-group commit;
   # without this trigger nothing reports and every queued PR times out.

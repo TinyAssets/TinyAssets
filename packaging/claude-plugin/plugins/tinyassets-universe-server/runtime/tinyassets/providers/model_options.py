@@ -37,6 +37,9 @@ def model_options_document(
                    else reasons.setdefault(item.ref, []))
         if reason not in entries:
             entries.append(reason)
+    for entries in source_reasons.values():
+        if any(entry["reason"] == "stale" for entry in entries):
+            entries[:] = [entry for entry in entries if entry["reason"] != "fresh"]
 
     rows, seen = [], set()
     for connection in available.connections:
@@ -55,8 +58,7 @@ def model_options_document(
                 # Refresh diagnostics belong on the source, not on independently
                 # admitted choices. Any row reason disables the desktop picker.
                 # A pending/failed catalogue must not revoke accepted access.
-                if (ref in admitted
-                        and reason["reason"] in {
+                if (ref in admitted and reason["reason"] in {
                             "native_catalogue_unavailable", "native_enumeration_unsupported",
                             "refreshing", "never_run", "stale",
                             "catalogue_refresh_unavailable",
@@ -70,7 +72,10 @@ def model_options_document(
                 "reference": {"provider_ref": ref.connection_id, "model_id": ref.model_id},
                 "source_kind": connection.source_kind,
                 "availability_basis": model.availability_basis or connection.availability_basis,
-                "freshness": connection.freshness,
+                "freshness": ("stale" if any(
+                    reason["reason"] == "stale"
+                    for reason in source_reasons.get(ref.connection_id, ())
+                ) else connection.freshness),
                 "provider_default": connection.default_model_id == model.model_id,
                 "tools": model.tools,
                 # What the SOURCE said this model accepts, so a client renders

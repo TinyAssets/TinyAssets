@@ -1,11 +1,40 @@
 """Connect requests follow current universe authority, not a surviving binding row."""
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
 from tests.test_open_serving_bind import _CONN_ID, _GRANT_ID, _bound_and_serving
 from tinyassets.api.pending_requests import _serving_llm_bound
+
+
+def _install_native_executor(monkeypatch):
+    """Give source readiness owned metadata without a host-installed CLI."""
+    from types import SimpleNamespace
+
+    from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
+
+    class Executor:
+        name = "codex"
+        native_credential_service = "codex"
+
+        def is_available(self):
+            return True
+
+        async def enumerate_models(self, *, universe_dir, credential_snapshot_dir):
+            assert universe_dir.is_dir()
+            assert credential_snapshot_dir.is_dir()
+            return NativeCatalogue(
+                (NativeModel("fixture-model", frozenset({"text"})),),
+                "fixture-model", datetime.now(timezone.utc),
+            )
+
+    monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
+    monkeypatch.setattr(
+        "tinyassets.providers.call.get_provider_router",
+        lambda: SimpleNamespace(_providers={"codex": Executor()}),
+    )
 
 
 @pytest.fixture
@@ -68,7 +97,7 @@ def test_manifest_connection_makes_only_its_owners_connect_request_optional(mani
         assert entry["sticky"] is False
 
 
-@pytest.mark.parametrize("change", ["custody_lost", "paused", "stale_provider_ref"])
+@pytest.mark.parametrize("change", ["custody_lost", "paused"])
 def test_manifest_connection_revalidates_current_state(manifest_connection, change):
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.storage import db_path
@@ -80,15 +109,20 @@ def test_manifest_connection_revalidates_current_state(manifest_connection, chan
     else:
         # Fixture corruption exercises a surviving enrollment, not production edits.
         with sqlite3.connect(db_path(base)) as conn:
-            if change == "paused":
-                conn.execute("UPDATE agent_bindings SET status = 'configured' "
-                             "WHERE agent_binding_id = ?",
-                             (agent["agent_binding_id"],))
-            else:
-                conn.execute("UPDATE agent_bindings SET configuration_json = '{}' "
-                             "WHERE agent_binding_id = ?",
-                             (agent["agent_binding_id"],))
+            conn.execute("UPDATE agent_bindings SET status = 'configured' "
+                         "WHERE agent_binding_id = ?",
+                         (agent["agent_binding_id"],))
     assert _serving_llm_bound(base, "u-owner", "owner-1") is False
+
+
+def test_manifest_connection_uses_live_source_not_saved_provider_ref(manifest_connection):
+    from tinyassets.storage import db_path
+
+    base, _, agent = manifest_connection
+    with sqlite3.connect(db_path(base)) as conn:
+        conn.execute("UPDATE agent_bindings SET configuration_json = '{}' "
+                     "WHERE agent_binding_id = ?", (agent["agent_binding_id"],))
+    assert _serving_llm_bound(base, "u-owner", "owner-1") is True
 
 
 @pytest.mark.parametrize("manifest_connection", [("codex", "claude-code")], indirect=True)
@@ -105,15 +139,16 @@ def test_manifest_readiness_accepts_live_member_without_anchor(manifest_connecti
     assert _serving_llm_bound(base, "u-owner", "owner-1") is False
 
 
-def test_manifest_readiness_does_not_relax_execution_resolver(manifest_connection):
+def test_manifest_readiness_resolves_live_connected_source(manifest_connection):
     from tinyassets.provider_serving_binding import resolve_current_serving_provider_authority
 
     base, universe, _ = manifest_connection
     assert _serving_llm_bound(base, "u-owner", "owner-1") is True
-    with pytest.raises(PermissionError, match="model selection authority is not active"):
-        resolve_current_serving_provider_authority(
-            base, universe_dir=universe, universe_id="u-owner", owner_user_id="owner-1",
-        )
+    authority = resolve_current_serving_provider_authority(
+        base, universe_dir=universe, universe_id="u-owner", owner_user_id="owner-1",
+    )
+    assert authority.provider == "codex"
+    assert authority.access_method == "subscription_cli"
 
 
 def test_current_open_connection_satisfies_the_connect_request(tmp_path, monkeypatch):
@@ -122,7 +157,7 @@ def test_current_open_connection_satisfies_the_connect_request(tmp_path, monkeyp
     assert _serving_llm_bound(tmp_path, "u-owner", "someone-else") is False
 
 
-@pytest.mark.parametrize("change", ["revoke_grant", "rotate_reference"])
+@pytest.mark.parametrize("change", ["revoke_grant", "revoke_connection"])
 def test_a_surviving_binding_does_not_hide_a_broken_connection_request(
     tmp_path, monkeypatch, change
 ):
@@ -131,18 +166,14 @@ def test_a_surviving_binding_does_not_hide_a_broken_connection_request(
 
     _bound_and_serving(tmp_path, monkeypatch)
     assert _serving_llm_bound(tmp_path, "u-owner", "owner-1") is True
+    ledger = ConnectionLedger(
+        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+        verify_authenticated_principal=lambda: "owner-1"
+    )
     if change == "revoke_grant":
-        ledger = ConnectionLedger(
-            tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
-            verify_authenticated_principal=lambda: "owner-1"
-        )
         ledger.revoke_grant(_GRANT_ID)
     else:
-        with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as conn:
-            conn.execute(
-                "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
-                ("vault://http/replaced", _CONN_ID),
-            )
+        ledger.revoke_connection(_CONN_ID)
     # Reproduce the exact old premise: the serving row still exists.
     assert resolve_serving_agent_binding(
         tmp_path, universe_id="u-owner", owner_user_id="owner-1"
@@ -176,15 +207,19 @@ def test_subscription_custody_loss_restores_the_actual_request_rail(tmp_path, mo
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir, agent = _seed_universe(tmp_path)
+    set_founder_home(
+        tmp_path, founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
+    )
     grant_universe_access(
         tmp_path, universe_id="u-owner", actor_id="owner-1",
         permission="admin", granted_by="owner-1",
     )
+    _install_native_executor(monkeypatch)
     connected = bind_serving_provider(
         base_path=tmp_path, universe_dir=udir, owner_user_id="owner-1",
         universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],

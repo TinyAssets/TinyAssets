@@ -95,6 +95,8 @@
           "done": {"method": "turn/completed", "status": "/turn/status",
                    "items": "/turn/items", "item_type": "/type",
                    "item_text": "/text", "agent_type": "agentMessage",
+                   "auth_error": "/turn/error/codexErrorInfo",
+                   "auth_code": "unauthorized",
                    "success": "completed"}
         },
         "cancel": {"method": "turn/interrupt", "params": {"threadId": "{session}"},

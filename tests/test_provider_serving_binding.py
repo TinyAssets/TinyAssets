@@ -30,9 +30,13 @@ def _binding() -> dict[str, object]:
 def _seed_universe(tmp_path):
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import set_founder_home
 
     universe_dir = tmp_path / "u-owner"
     universe_dir.mkdir()
+    set_founder_home(
+        tmp_path, founder_sub="owner-1", universe_id="u-owner", platform_generated=True,
+    )
     write_credential_vault(
         universe_dir,
         [{
@@ -160,6 +164,11 @@ def test_path_backed_codex_rotation_changes_custody_generation_and_digest(tmp_pa
         owner_user_id="owner-1",
         universe_id="u-owner",
     )
+    # The deposit warms catalogues on a background thread that opens this same
+    # database. A later CREATE inside a deferred read transaction will not wait
+    # for that lock, so finish the warm before taking one.
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+    SHORTLIST_CACHE.shutdown(wait=True)
     conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
     conn.execute("BEGIN IMMEDIATE")
     first = adopt_llm_subscription_custody(
@@ -419,7 +428,7 @@ def test_generic_binding_writes_cannot_inject_provider_ref(tmp_path):
         )
 
 
-def test_set_serving_requires_current_server_authority_and_is_reversible(tmp_path):
+def test_set_serving_requires_eligible_connected_source_and_is_reversible(tmp_path):
     from tinyassets.custom_agents import get_binding
     from tinyassets.provider_serving_binding import (
         bind_serving_provider,
@@ -427,7 +436,7 @@ def test_set_serving_requires_current_server_authority_and_is_reversible(tmp_pat
     )
 
     universe_dir, agent = _seed_universe(tmp_path)
-    with pytest.raises(PermissionError, match="connect your provider"):
+    with pytest.raises(PermissionError, match="no eligible model"):
         set_serving(
             base_path=tmp_path,
             universe_dir=universe_dir,
@@ -599,10 +608,11 @@ def test_served_binding_selection_is_owner_scoped_and_unambiguous(tmp_path):
             universe_id="u-owner",
             owner_user_id="owner-1",
         )
-    with pytest.raises(PermissionError, match="exactly one"):
-        resolve_current_serving_provider_authority(
-            tmp_path, universe_dir=universe_dir, universe_id="u-owner", owner_user_id="owner-1",
-        )
+    # Model source resolution is owner-scoped, independent of how many serving
+    # agent bindings use the same connected subscription.
+    assert resolve_current_serving_provider_authority(
+        tmp_path, universe_dir=universe_dir, universe_id="u-owner", owner_user_id="owner-1",
+    ).provider == "codex"
 
 
 def test_agent_binding_api_exposes_exact_bind_and_set_serving_operations(

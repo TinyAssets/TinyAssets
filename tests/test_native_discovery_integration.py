@@ -113,9 +113,14 @@ def test_cancelled_selection_releases_real_owned_snapshot(native, monkeypatch):
             await asyncio.Event().wait()
         seen, configs = install_discovery(native, monkeypatch, discover)
         context = replace(native.context, model_selection=ModelRef("codex", "new-account-model"))
-        task = asyncio.create_task(native.router.call(
-            "writer", "hello", "system", operation="converse", universe_context=context,
-        ))
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+        task = asyncio.create_task(call(ModelCall(
+            model=None, fallbacks=(), context=ModelContext(
+                role="writer", prompt="hello", system="system",
+                operation="converse", universe_context=context, router=native.router,
+            ),
+        ), Parent(owner="owner-1", command_center=native.universe.name)))
         await asyncio.wait_for(started.wait(), 3)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

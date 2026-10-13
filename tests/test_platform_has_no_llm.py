@@ -73,6 +73,7 @@ def _calls(spies: dict[str, _SpyProvider]) -> dict[str, int]:
 def _carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
     carrier._receipt = MagicMock(principal_id="owner", universe_id="u1")
+    carrier._receipt.admitted_sources = (provider,)
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation
@@ -126,8 +127,7 @@ def test_router_call_with_no_universe_is_refused_before_any_provider_or_probe():
         asyncio.run(router.call("writer", "prompt", "system"))
     with pytest.raises(PlatformLLMCallRefusedError):
         router.call_sync("writer", "prompt", "system")
-    with pytest.raises(PlatformLLMCallRefusedError):
-        asyncio.run(router.call_judge_ensemble("prompt", "system"))
+    assert not hasattr(router, "call_judge_ensemble")
 
     assert _calls(spies) == {}
     health.assert_not_called()
@@ -229,13 +229,18 @@ def test_owner_authority_cannot_launch_a_host_credential_provider(
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):
         with pytest.raises(PlatformLLMCallRefusedError, match=host_provider):
-            asyncio.run(router.call(
-                "writer", "prompt", "system", ModelConfig(max_tokens=10),
-                operation="run_graph",
-                universe_context=UniverseContext(
-                    universe_dir=tmp_path / "u1", provider_invocation=carrier,
+            from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+            (tmp_path / "u1").mkdir()
+            asyncio.run(call(ModelCall(
+                model=None, fallbacks=(), context=ModelContext(
+                    role="writer", prompt="prompt", system="system",
+                    config=ModelConfig(max_tokens=10), operation="run_graph",
+                    universe_context=UniverseContext(
+                        universe_dir=tmp_path / "u1", provider_invocation=carrier,
+                    ), router=router,
                 ),
-            ))
+            ), Parent(owner=carrier._receipt.principal_id, command_center="u1")))
     assert _calls(spies) == {}
 
 
@@ -262,14 +267,20 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     source = f"api_key_http:{definition.id}"
     authority = SimpleNamespace(owner_user_id="owner-1", universe_id=universe.name)
     carrier = SimpleNamespace(
-        _receipt=SimpleNamespace(principal_id="owner-1", universe_id=universe.name),
+        _receipt=SimpleNamespace(
+            principal_id="owner-1", universe_id=universe.name,
+            admitted_sources=(source,),
+        ),
         provider=source,
     )
     assert source in connected_sources(tmp_path, universe, "owner-1")
     require_owner_bound_dispatch(source, universe_dir=universe, served_authority=authority)
     require_owner_bound_dispatch(source, universe_dir=universe, invocation_carrier=carrier)
     foreign_carrier = SimpleNamespace(
-        _receipt=SimpleNamespace(principal_id="owner-2", universe_id=universe.name),
+        _receipt=SimpleNamespace(
+            principal_id="owner-2", universe_id=universe.name,
+            admitted_sources=(source,),
+        ),
         provider=source,
     )
     with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
@@ -286,7 +297,7 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
     other_ledger.create_connection(
         connection_id=other_connection, owner_user_id="owner-2",
         connection_class="http", connection_type="http", auth_scheme="bearer",
-        scopes=("http",), provider="http", destination="compute:other",
+        scopes=("POST",), provider="http", destination="compute:other",
         credential_ref="vault://http/other",
         allowed_endpoints=[{"host": "api.example.com",
                             "path_template": "/v1/chat/completions", "methods": ["POST"]}],
@@ -301,9 +312,19 @@ def test_dispatch_rechecks_owner_source_membership_after_grant_revocation(
         access_method="api_key_http", protocol="openai_chat",
         model="other/model", ref=other_grant,
     )
+    other_ledger.configure_capability(
+        connection_id=other_connection, capability_kind="model_use", enabled=True,
+        descriptor={
+            "wire": "openai_chat", "billing": "free",
+            "models": [{"id": "other/model", "tools": True, "context": 8192}],
+        },
+    )
+    other_source = f"api_key_http:{other_definition.id}"
+    assert other_source in connected_sources(tmp_path, universe, "owner-2")
+    assert other_source not in connected_sources(tmp_path, universe, "owner-1")
     with pytest.raises(PlatformLLMCallRefusedError, match="current connected source"):
         require_owner_bound_dispatch(
-            f"api_key_http:{other_definition.id}", universe_dir=universe,
+            other_source, universe_dir=universe,
             served_authority=authority,
         )
 
@@ -386,13 +407,18 @@ def test_bound_call_is_served_by_the_owners_provider_and_ignores_host_pin(
 
     with patch("tinyassets.providers.router._provider_invocation_carrier",
                side_effect=_resolver(carrier)):
-        response = asyncio.run(router.call(
-            "writer", "prompt", "system", ModelConfig(max_tokens=10),
-            operation="run_graph",
-            universe_context=UniverseContext(
-                universe_dir=tmp_path / "u1", provider_invocation=carrier,
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+
+        (tmp_path / "u1").mkdir()
+        response = asyncio.run(call(ModelCall(
+            model=None, fallbacks=(), context=ModelContext(
+                role="writer", prompt="prompt", system="system",
+                config=ModelConfig(max_tokens=10), operation="run_graph",
+                universe_context=UniverseContext(
+                    universe_dir=tmp_path / "u1", provider_invocation=carrier,
+                ), router=router,
             ),
-        ))
+        ), Parent(owner=carrier._receipt.principal_id, command_center="u1"))).response
     assert response.provider == "codex"
     assert _calls(spies) == {"codex": 1}
     health.assert_not_called()

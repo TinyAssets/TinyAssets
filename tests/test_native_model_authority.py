@@ -21,6 +21,7 @@ from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityH
 from tinyassets.provider_assignment import authorize_served_provider_call
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import bind_serving_provider
+from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 from tinyassets.providers.model_policy import ModelRef
 from tinyassets.providers.router import ProviderRouter
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
@@ -74,11 +75,14 @@ def native(tmp_path, monkeypatch, request):
         revoke_provider_request(capability)
 
 
-def _call(native, context=None):
-    return asyncio.run(native.router.call(
-        "writer", "hello", "system", operation="converse",
-        universe_context=context or native.context,
-    ))
+def _call(native, context=None, config=None):
+    selected = context or native.context
+    return asyncio.run(call(ModelCall(
+        model=None, fallbacks=(), context=ModelContext(
+            role="writer", prompt="hello", system="system", config=config,
+            operation="converse", universe_context=selected, router=native.router,
+        ),
+    ), Parent(owner="owner-1", command_center=native.universe.name))).response
 
 
 def test_native_default_uses_member_not_structural_anchor(native):
@@ -134,7 +138,14 @@ def test_native_default_still_requires_current_owned_credential(native):
     assert native.provider.calls == 0 and native.other.calls == 0
 
 
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_accepted_native_model_reaches_request_local_config(native, monkeypatch):
+    from tests.test_native_discovery_integration import catalogue, install_discovery
+
+    async def discover():
+        return catalogue(["future-native-model"])
+
+    install_discovery(native, monkeypatch, discover)
     captured = []
     original = native.provider.complete
 
@@ -160,10 +171,7 @@ def test_caller_native_model_cannot_replace_authorized_default(native, monkeypat
         return await original(prompt, system, config, **kwargs)
 
     monkeypatch.setattr(native.provider, "complete", record)
-    asyncio.run(native.router.call(
-        "writer", "hello", "", ModelConfig(native_model_id="injected-model"),
-        operation="converse", universe_context=native.context,
-    ))
+    _call(native, config=ModelConfig(native_model_id="injected-model"))
     assert captured[0].native_model_id == ""
 
 

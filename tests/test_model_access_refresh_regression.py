@@ -37,7 +37,8 @@ def test_known_model_stays_pickable_during_refresh(native, monkeypatch, history,
     SHORTLIST_CACHE.forget(**where)
     if history == "verified":
         OwnModelHistory(native.base).record(
-            source_kind="subscription", model_id=model_id, owner_user_id="owner-1")
+            source_kind="subscription", provider_ref="codex",
+            model_id=model_id, owner_user_id="owner-1")
     snapshot = SHORTLIST_CACHE.refresh_now(**where)
     # Even verified history needs this provider's snapshot. Display retention
     # has no upper age limit; execution still requires fresh discovery.
@@ -68,14 +69,16 @@ def test_known_model_stays_pickable_during_refresh(native, monkeypatch, history,
                          owner="owner-1", agent=native.agent)
 
 
-@pytest.mark.parametrize("native", ["explicit", "discovered"], indirect=True)
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch):  # noqa: F811
     install_discovery(native, monkeypatch)
     monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
     history = OwnModelHistory(native.base)
-    history.record(source_kind="subscription", model_id="private-other-owner-model",
+    history.record(source_kind="subscription", provider_ref="codex",
+                   model_id="private-other-owner-model",
                    owner_user_id="someone-else")
-    history.record(source_kind="subscription", model_id="previously-verified-model",
+    history.record(source_kind="subscription", provider_ref="codex",
+                   model_id="previously-verified-model",
                    owner_user_id="owner-1")
     SHORTLIST_CACHE.refresh_now(
         base=native.base, owner="owner-1", universe_id=native.universe.name,
@@ -85,14 +88,11 @@ def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch)
         allow_empty=True)
     document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
     rows = {row["reference"]["model_id"]: row for row in document["options"]}
+    assert len(rows) == len(document["options"])
     assert "private-other-owner-model" not in rows
-    discovered = prepared.assignment.candidates[0].access.model_scope == "discovered"
     assert rows["previously-verified-model"]["in_candidate_catalog"] is False
-    if not discovered:
-        assert rows["future-native-model"]["in_candidate_catalog"] is True
-        assert rows["future-native-model"]["reasons"] == []
-        assert rows["previously-verified-model"]["reasons"][0]["reason"] == \
-            "model_access_optin_required"
+    assert rows["previously-verified-model"]["reasons"]
+    assert "future-native-model" not in rows
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
@@ -149,7 +149,9 @@ def test_verified_on_source_a_is_not_selectable_on_source_b(native, monkeypatch,
         SHORTLIST_CACHE.refresh_now(**where)
     monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
     rows = {row["reference"]["model_id"]: row for row in _display(native)["options"]}
-    assert rows[model_id]["in_candidate_catalog"] is False
+    assert model_id not in rows
+    assert [row.model_id for row in OwnModelHistory(native.base).ids_for(
+        "subscription", "claude-code", "owner-1")] == [model_id]
     assert rows["new-account-model"]["in_candidate_catalog"] is True
 
 
@@ -163,7 +165,8 @@ def test_fresh_catalogue_that_dropped_verified_model_hides_it(native, monkeypatc
 
     install_discovery(native, monkeypatch, discover)
     OwnModelHistory(native.base).record(
-        source_kind="subscription", model_id=model_id, owner_user_id="owner-1")
+        source_kind="subscription", provider_ref="codex",
+        model_id=model_id, owner_user_id="owner-1")
     where = dict(base=native.base, owner="owner-1", universe_id=native.universe.name,
                  provider="codex")
     SHORTLIST_CACHE.refresh_now(**where)
@@ -186,7 +189,8 @@ def test_hidden_verified_model_stays_unselectable_with_no_snapshot(native, monke
 
     install_discovery(native, monkeypatch, discover)
     OwnModelHistory(native.base).record(
-        source_kind="subscription", model_id=model_id, owner_user_id="owner-1")
+        source_kind="subscription", provider_ref="codex",
+        model_id=model_id, owner_user_id="owner-1")
     where = dict(base=native.base, owner="owner-1", universe_id=native.universe.name,
                  provider="codex")
     SHORTLIST_CACHE.refresh_now(**where)

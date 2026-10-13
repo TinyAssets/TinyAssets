@@ -27,13 +27,18 @@ delegate to plain callables in those submodules (Pattern A2).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import math
 import os
 import re
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar, copy_context
 from functools import wraps
 from typing import Annotated, Any, Literal
 
@@ -84,6 +89,40 @@ logger = logging.getLogger("universe_server")
 # ---------------------------------------------------------------------------
 
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
+_CONVERSE_PROGRESS_INTERVAL_S = 20
+_CONVERSE_WORKERS = 8
+_CONVERSE_EXECUTOR = ThreadPoolExecutor(max_workers=_CONVERSE_WORKERS,
+                                        thread_name_prefix="converse")
+_CONVERSE_SLOTS = threading.BoundedSemaphore(_CONVERSE_WORKERS)
+_CONVERSE_BUSY: ContextVar[bool] = ContextVar("converse_busy", default=False)
+
+
+class _ConverseBusy(RuntimeError):
+    pass
+
+
+def _run_converse_worker(tool, args, kwargs):
+    try:
+        return tool(*args, **kwargs)
+    finally:
+        _CONVERSE_SLOTS.release()
+
+
+def _run_busy_converse(tool, args, kwargs):
+    token = _CONVERSE_BUSY.set(True)
+    try:
+        return tool(*args, **kwargs)
+    finally:
+        _CONVERSE_BUSY.reset(token)
+
+
+def _busy_failure_record():
+    from tinyassets.conversation_failure import turn_failure
+
+    return turn_failure("platform_busy", stage="before_send", effects="none",
+                        ref=uuid.uuid4().hex[:16])
+
+
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
 #: Seconds uvicorn keeps waiting on connections and tracked request tasks after
@@ -425,14 +464,52 @@ def _register_structured_tool(fn, *, tags, name=None):
             if capability is not None:
                 revoke_provider_request(capability)
 
-    _tool.__name__ = f"_mcp_{fn.__name__}"
+    if wire_name == "converse":
+        @wraps(fn)
+        async def _owned_tool(*args, **kwargs):
+            # The admitted turn belongs to the server, not the HTTP/SSE task.
+            # A disconnected client stops waiting but must not stop its worker.
+            if _CONVERSE_SLOTS.acquire(blocking=False):
+                try:
+                    future = asyncio.get_running_loop().run_in_executor(
+                        _CONVERSE_EXECUTOR, copy_context().run,
+                        _run_converse_worker, _tool, args, kwargs)
+                except BaseException:
+                    _CONVERSE_SLOTS.release()
+                    raise
+            else:
+                # This short path still authenticates and admits the message, then
+                # records a terminal before it can dispatch any model work.
+                future = asyncio.to_thread(_run_busy_converse, _tool, args, kwargs)
+            worker = asyncio.ensure_future(future)
+            def finished(task):
+                if not task.cancelled() and task.exception() is not None:
+                    logger.error("converse: detached worker failed: %r", task.exception())
+
+            worker.add_done_callback(finished)
+            progress = 0
+            while True:
+                progress += 1
+                with contextlib.suppress(Exception):
+                    from fastmcp.server.dependencies import get_context
+
+                    await get_context().report_progress(progress, message="Turn is running")
+                done, _ = await asyncio.wait(
+                    {worker}, timeout=_CONVERSE_PROGRESS_INTERVAL_S)
+                if done:
+                    return worker.result()
+
+        registered = _owned_tool
+    else:
+        registered = _tool
+    registered.__name__ = f"_mcp_{fn.__name__}"
     # Inject docstring-derived parameter descriptions so the advertised
     # tool contract is labelled identically on every FastMCP version
     # (3.2.0 ships no docstring extraction; 3.4.x does). See
     # tinyassets.mcp_schema_utils.
-    _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
+    registered.__signature__, registered.__annotations__ = describe_signature(fn)
     tool = _OAuthFunctionTool.from_function(
-        _tool,
+        registered,
         name=wire_name,
         title=annotations.title,
         description=_advertised_tool_description(fn),
@@ -2696,8 +2773,22 @@ def _context_overflow(exc: BaseException) -> bool:
 def _served_failure_code(exc: BaseException) -> str:
     """Reduce observed diagnostics to a closed code before any durable write."""
     from tinyassets.conversation_failure import FAILURE_CODES
+    from tinyassets.exceptions import ProviderAuthorityHeldError, WorkModelExhaustedError
+    from tinyassets.providers.model_pins import ModelPinError
+    from tinyassets.providers.provider_jail import ProviderConfinementError
+    from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     try:
+        if isinstance(exc, PermissionError) and str(exc).startswith(NO_ELIGIBLE_MODEL):
+            return "model_unavailable"
+        if isinstance(exc, WorkModelExhaustedError):
+            return "work_model_exhausted"
+        if isinstance(exc, ProviderConfinementError):
+            return "provider_confinement_unavailable"
+        if isinstance(exc, ModelPinError):
+            return "model_unavailable"
+        if isinstance(exc, ProviderAuthorityHeldError):
+            return "authority_held"
         if any(tell in str(exc).lower() for tell in _PLATFORM_FAULT_TELLS):
             return "platform_fault"
         # Before the taxonomies: this refusal is ours and carries no attempt for
@@ -2804,10 +2895,19 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
         if evidence is not None:
             effects, ledger_stage, ref = evidence
         else:
-            never_sent = code == "setup_required" or (bool(attempts) and not invoked)
+            never_sent = (
+                (code in {"setup_required", "model_unavailable", "authority_held",
+                          "work_model_exhausted", "provider_confinement_unavailable"}
+                 or bool(attempts))
+                and not invoked
+                and _chain_attribute(exc, "turn_requests") in (None, 0)
+            )
             effects, ledger_stage, ref = ("none" if never_sent else "unknown"), None, None
         stage = ledger_stage or STAGE_OF_CLASS.get(code)
-        if code == "setup_required" or (attempts and not invoked):
+        if invoked and code in {"model_unavailable", "authority_held",
+                                "work_model_exhausted", "provider_confinement_unavailable"}:
+            stage = ledger_stage or "model_request"
+        elif code == "setup_required" or (attempts and not invoked):
             stage = "before_send"
         return turn_failure(
             code, stage=stage, effects=effects,
@@ -3229,6 +3329,7 @@ def converse(
     # is stored, because "settled through turn N" cannot name a turn the store does
     # not have yet (change `deferred-learning-never-blocks-the-reply`).
     lesson_settled: list[bool] = []
+    learning_failures: list[str] = []
     # Where the cursor should already stand. A turn whose learning FAILED left it
     # behind, and a watermark cannot say "N settled, N-1 not" -- so this turn's
     # settle is refused rather than jumping past the owed one (PR #4001 review).
@@ -3298,6 +3399,8 @@ def converse(
                                        "universe_id": uid})
                 return json.dumps({"error": "Your message could not be saved, so nothing was sent.",
                                    "history_saved": False, "universe_id": uid})
+            if _CONVERSE_BUSY.get():
+                raise _ConverseBusy("Interactive turns are busy; try again shortly.")
             _announce_owner_message(memory_universe_dir)
             # A reconnect must not consume context owed to the next new turn.
             message = _with_carryover(memory_universe_dir, memory_session, message)
@@ -3316,6 +3419,7 @@ def converse(
                 input_method=input_method,
                 response_observer=_observe_execution,
                 learning_observer=lesson_settled.append,
+                learning_failure_observer=learning_failures.append,
                 session_key=f"thread:{memory_session}",
                 addressed_agent=addressed,
                 **({} if model_choice is None else {"model_choice": model_choice}),
@@ -3333,18 +3437,23 @@ def converse(
             ),
             memory_universe_dir, memory_session, live_id,
         ))
-    except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
+    except BaseException as exc:  # noqa: BLE001 - every admitted turn needs a terminal
         # P0 #1582: a universe with no engine credential of its own cannot
         # speak at all, and "All providers exhausted" is a dead end for the
         # founder reading it. Exhaustion on a CREDENTIALED universe is a real
         # outage and still surfaces verbatim.
         from tinyassets.api.universe import engine_setup_required_payload
 
-        held = engine_setup_required_payload(uid, exc) or _unpowered_setup_payload(uid, exc)
+        try:
+            held = engine_setup_required_payload(uid, exc) or _unpowered_setup_payload(uid, exc)
+        except Exception:
+            logger.warning("converse: setup diagnosis failed", exc_info=True)
+            held = None
         from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 
-        record = _served_failure_record(exc, held=held is not None)
+        record = (_busy_failure_record() if isinstance(exc, _ConverseBusy)
+                  else _served_failure_record(exc, held=held is not None))
         try:
             saved = record_failure(
                 memory_universe_dir, memory_session, typed, record, client_send_id=client_send_id,
@@ -3353,8 +3462,14 @@ def converse(
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
+        if not saved and founder_turn is not None:
+            from tinyassets.conversation_store import terminal_exists
+
+            saved = terminal_exists(memory_universe_dir, memory_session, founder_turn)
         if saved and founder_turn is None:
             _announce_owner_message(memory_universe_dir)
+        if not isinstance(exc, Exception):
+            raise
         history = {
             "turn_failure": normalize_turn_failure(record),
             "failure_notice": failure_notice(record),
@@ -3363,21 +3478,31 @@ def converse(
         if held is not None:
             from tinyassets.api.pending_requests import _connect_llm_request
 
-            held["needs_connection"] = _connect_llm_request()
+            try:
+                held["needs_connection"] = _connect_llm_request()
+            except Exception:
+                logger.warning("converse: connect request unavailable", exc_info=True)
             return json.dumps(_with_unsettled_steering(
                 {**held, **history}, memory_universe_dir, memory_session, live_id,
             ))
-        _record_served_failure(uid, exc, ref=record.ref)
+        try:
+            _record_served_failure(uid, exc, ref=record.ref)
+        except Exception:
+            logger.warning("converse: failure telemetry unavailable", exc_info=True)
         return json.dumps({
             "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
             **_unsettled_steering(memory_universe_dir, memory_session, live_id),
         })
-    execution = execution_receipts[0] if execution_receipts else None
-    delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
+        execution = execution_receipts[0] if execution_receipts else None
+        if execution is not None and learning_failures:
+            execution = {**execution, "learning_failure": learning_failures[0]}
+        delivered, undelivered = _settle_steering(
+            memory_universe_dir, memory_session, live_id)
         from tinyassets.conversation_store import record_exchange_turns
+        from tinyassets.conversation_store import terminal_exists as _terminal_exists
 
         # Attach the terminal to the admitted row without inserting the request twice.
         recorded = record_exchange_turns(
@@ -3386,20 +3511,47 @@ def converse(
             client_send_id=client_send_id,
             founder_turn=founder_turn,
         )
+        if recorded is None and not (
+            founder_turn is not None and _terminal_exists(
+                memory_universe_dir, memory_session, founder_turn)
+        ):
+            raise RuntimeError("converse reply could not be recorded")
         # Only now can the cursor name this turn -- by the exact rows it wrote, never
         # "the latest row", which with two turns in flight can be another turn's
         # unlearned exchange. Settled -> the lesson is done; unsettled (a failed
         # extraction, or an exchange that is not next after the cursor) -> it stays
         # owed, which is the retry state the deferred path will drain.
         if recorded is not None and lesson_settled and lesson_settled[0]:
-            from tinyassets.conversation_store import settle_learned_cursor
+            try:
+                from tinyassets.conversation_store import settle_learned_cursor
 
-            settle_learned_cursor(
-                memory_universe_dir, memory_session, from_turn=turn_began_at,
-                first_turn=recorded[0], through_turn=recorded[1],
-            )
-    except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
-        logger.warning("converse: conversation memory could not record the turn", exc_info=True)
+                settle_learned_cursor(
+                    memory_universe_dir, memory_session, from_turn=turn_began_at,
+                    first_turn=recorded[0], through_turn=recorded[1],
+                )
+            except Exception:
+                logger.warning("converse: learned cursor could not settle", exc_info=True)
+    except BaseException as exc:  # noqa: BLE001 - every admitted turn needs a terminal
+        logger.warning("converse: reply terminal failed", exc_info=True)
+        from tinyassets.conversation_failure import failure_notice, turn_failure
+        from tinyassets.conversation_store import record_failure
+
+        failure = turn_failure("unknown", ref=uuid.uuid4().hex[:16])
+        saved = record_failure(
+            memory_universe_dir, memory_session, typed, failure,
+            client_send_id=client_send_id, founder_turn=founder_turn,
+        )
+        if not saved and founder_turn is not None:
+            from tinyassets.conversation_store import terminal_exists
+
+            saved = terminal_exists(memory_universe_dir, memory_session, founder_turn)
+        if not saved:
+            raise RuntimeError("converse terminal could not be recorded") from exc
+        if not isinstance(exc, Exception):
+            raise
+        return json.dumps({"error": failure_notice(failure),
+                           "failure_notice": failure_notice(failure),
+                           "history_saved": True, "universe_id": uid})
     payload = {"reply": reply, "universe_id": uid}
     if addressed is not None:
         payload["agent"] = {"agent_id": addressed.agent_id, "name": addressed.name}
@@ -3970,6 +4122,10 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             sanitized_observation_fields(_admitted),
         )
 
+        from tinyassets.observability import emit_crash, emit_startup, install_serving
+
+        install_serving()
+
         from tinyassets.scoped_reset import prepare_service_writer_barrier
         from tinyassets.storage import data_dir
 
@@ -4020,7 +4176,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
                 await stack.enter_async_context(
                     canonical_app.router.lifespan_context(canonical_app),
                 )
+                emit_startup()
                 yield
+        except Exception as exc:
+            emit_crash(exc)
+            raise
         finally:
             stop_scheduler_for_serving()
             stop_workspace_sweepers_for_serving()
@@ -4140,9 +4300,14 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             logger.exception("platform runtime provenance: pulse readback failed")
         return _PulseJSON(payload)
 
+    from tinyassets.observability import client_error
+
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            # Public beacon. Mounted here, not inside onboarding_routes, so it
+            # still accepts browser reports when the onboarding app is dark.
+            _PulseRoute("/app/client-error", client_error, methods=["POST"]),
             _PulseRoute("/mcp/pulse", _pulse_endpoint, methods=["GET"]),
             *_inbound_routes,
             # Onboarding SPA at /app — same-origin to /mcp, dark-flagged
@@ -4162,7 +4327,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # browser-style GETs on /mcp; pass MCP transport requests through unchanged.
     from tinyassets.auth.middleware import AuthContextMiddleware
     from tinyassets.ingress import AppIngressMiddleware
+    from tinyassets.observability import RequestLogMiddleware, StashExceptionMiddleware
 
+    # Inside Starlette's server-error wrapper, outside the exception middleware,
+    # so a route exception is stashed before it becomes an HTTP 500.
+    app.add_middleware(StashExceptionMiddleware)
     app = AuthContextMiddleware(AppIngressMiddleware(_MCPDiscoveryMiddleware(app), ingress))
     # Browser clients preflight OPTIONS /mcp with no bearer, and they can
     # read WWW-Authenticate and Mcp-Session-Id only when the response names
@@ -4173,6 +4342,10 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.mcp_browser_cors import McpBrowserCors
 
     app = McpBrowserCors(app)
+    # The session trail records every admitted request. It sits directly
+    # inside admission so no request body is buffered before the origin is
+    # admitted; a refused origin leaves no event.
+    app = RequestLogMiddleware(app)
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no

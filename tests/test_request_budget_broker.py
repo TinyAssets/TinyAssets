@@ -253,7 +253,7 @@ def test_missing_inference_usage_explains_recovery_before_credentials(rig):
 
     events = []
     dispatch = build_dispatch(rig.base, events=events)
-    with pytest.raises(InferenceUsageRequired, match="prompt_template.*run_graph"):
+    with pytest.raises(InferenceUsageRequired, match="ta call model"):
         invoke(dispatch)
     assert events == []
     # An accounted call on the SAME grant works: wider HTTP permission is not needed.
@@ -377,7 +377,7 @@ def test_unix_broker_preserves_missing_accounting_recovery(uds_broker, rig):
 
     events = []
     uds_broker.state["dispatch"] = build_dispatch(rig.base, events=events)
-    with pytest.raises(InferenceUsageRequired, match="owner-approved model"):
+    with pytest.raises(InferenceUsageRequired, match="raw HTTP to a model API"):
         uds_broker.client.request(
             grant_id=GRANT, connection_id=CONNECTION, verb="POST", request=WIRE,
             op_id=new_op_id(),
@@ -392,7 +392,7 @@ def test_inference_recovery_never_uses_remote_exception_text():
     with pytest.raises(InferenceUsageRequired) as held:
         _raise_for({"error_class": "InferenceUsageRequired", "message": "secret-canary"})
     assert "secret-canary" not in str(held.value)
-    assert "parent usage reference" in str(held.value)
+    assert "ta call model" in str(held.value)
 
 
 @pytest.mark.parametrize("limit", [1, 2])

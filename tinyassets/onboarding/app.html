@@ -2115,7 +2115,12 @@
       const settleGesture=()=>{
         clearTimeout(gestureTimer);
         // Wheel default actions can arrive after the next animation frame.
+        // An explicit return (resume, visibility) clears the gesture first.
+        // This timer must not then copy a stale "not at bottom" into
+        // following: it raced the return's animation frame and the reader
+        // stayed put (merge-queue run 38205591928).
         gestureTimer=setTimeout(()=>{
+          if(!state.gesture) return;
           state.following=atBottom();
           if(state.following) state.gesture=false;
         },120);

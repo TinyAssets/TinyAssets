@@ -28,6 +28,7 @@ from tinyassets.providers.agent_capacity_boundary import (
 )
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
+from tinyassets.providers.model_call import open_allocation
 from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
@@ -36,12 +37,9 @@ from tinyassets.request_budget import (
     FREE_TURN_ATTEMPTS,
     TEXT_TURN_ATTEMPTS,
     RequestBudgetExceeded,
-    TurnRequestBudget,
     candidate_is_metered_free,
-    current_request_budget,
     metered_free_source,
     pooled_budget,
-    request_budget_scope,
 )
 from tinyassets.served_tools import granted_tools, model_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
@@ -139,7 +137,7 @@ class AgentTurnCoordinator:
         # How hard the rendered history is compacted to fit a small window;
         # 0 renders every completed result whole. See ``_compact_to_fit``.
         self.compaction = 0
-        self.request_budget = config.request_budget or current_request_budget()
+        self.request_budget = config.request_budget
         self._owns_request_budget = self.request_budget is None
         self._free_request = False
         self._budget_skipped = set()
@@ -290,26 +288,18 @@ class AgentTurnCoordinator:
         ))
 
     def _learn_verified_model(self, response):
-        """Record a model id that just answered, for every universe on this KIND.
+        """Record a model id that just answered on this owner's source.
 
         Only reached from a committed success. It records the id on THIS OWNER's own
         list and nowhere else -- there is no shared store any more, so nothing here can
-        reach another user. See ``tinyassets/storage/learned_models.py``; sharing is a
-        reviewed file per source kind (``models/``), merged by a person.
+        reach another user. See ``tinyassets/storage/learned_models.py``.
 
         The id recorded is the one THIS UNIVERSE ASKED FOR and that then succeeded
         -- its own ``model_selection.model_id`` -- and never a string the source
         chose.
 
-        The first version preferred ``response.reported_model``, and Codex refuted
-        it on #4028: that field is source-controlled, so a source could publish
-        anything to every other user of its kind (it reproduced
-        ``owner-alice@example.com-private-9``), and ``codex_provider`` deliberately
-        reports the literal ``provider-default`` when it cannot resolve a model,
-        which would then have been published as a verified model id. What this
-        universe REQUESTED is the only id worth sharing: it is a name its owner
-        already held, it is exactly what another owner would need to grant, and a
-        source cannot inject it.
+        ``response.reported_model`` is source-controlled; the owner's requested
+        id is the only one this owner has actually validated.
 
         An empty requested id is the provider default -- a position, not a model --
         so there is nothing to teach anyone and it is skipped.
@@ -319,22 +309,19 @@ class AgentTurnCoordinator:
         account-bearing selector on its own owner's list and nowhere else. Ids reach
         everyone by a different route entirely -- a reviewed file in the repo.
         """
-        from tinyassets.storage.learned_models import (
-            LEARNED_SOURCE_KIND,
-            record_verified_model,
-        )
+        from tinyassets.storage.learned_models import LEARNED_SOURCE_KIND, record_verified_model
 
         selection = getattr(self.context, "model_selection", None)
         model_id = (getattr(selection, "model_id", "") or "").strip()
-        if not model_id:
+        provider = getattr(selection, "connection_id", "")
+        if not model_id or not provider:
             return
-        # The OWNER, not the universe: the founder's threshold counts distinct
-        # owners, so one person's two universes must not promote an id between
-        # them. `self.owner` is the capability principal this turn ran under, which
-        # is the same identity the journal scopes its rows by.
+        # The owner and executed source are both part of the evidence identity.
+        # `self.owner` is the capability principal this turn ran under.
         record_verified_model(
             self.context.universe_dir.parent,
             source_kind=LEARNED_SOURCE_KIND,
+            provider_ref=provider,
             model_id=model_id,
             owner_user_id=self.owner,
         )
@@ -403,6 +390,13 @@ class AgentTurnCoordinator:
             actor_id=actor_id, graph_id=graph_id,
             enabled_tools=model_tools(self.config),
             capability_grant=granted_tools(self.config), timeout=timeout,
+            model_budget=getattr(self, "request_budget", None),
+            model_parent=("turn", self.turn.turn_id,
+                          getattr(getattr(self.context, "provider_request", None),
+                                  "agent_binding_id", ""),
+                          getattr(getattr(self.context, "provider_request", None),
+                                  "binding_revision", None))
+            if getattr(self.context, "provider_request", None) is not None else None,
             **self.steering(),
         )
 
@@ -461,17 +455,14 @@ class AgentTurnCoordinator:
     async def run(self):
         owner = self._check_scope()
         if self.request_budget is None:
-            self.request_budget = TurnRequestBudget(
-                owner, self.context.universe_dir.name,
+            self.request_budget = open_allocation(
+                owner, self.context.universe_dir,
                 free_limit=TEXT_TURN_ATTEMPTS if self._text_only else FREE_TURN_ATTEMPTS,
                 free_pool_limit=TEXT_TURN_ATTEMPTS if self._text_only else FREE_TURN_ATTEMPTS,
             )
         self.request_budget.check_scope(owner, self.context.universe_dir.name)
         try:
-            with request_budget_scope(
-                self.request_budget, close_on_exit=self._owns_request_budget,
-            ):
-                return await self._run()
+            return await self._run()
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
@@ -602,6 +593,13 @@ class AgentTurnCoordinator:
                         observer = self._begin_native
                     config = replace(
                         config, request_budget=self.request_budget,
+                        model_launch_parent=(
+                            "turn", self.turn.turn_id,
+                            getattr(getattr(self.context, "provider_request", None),
+                                    "agent_binding_id", ""),
+                            getattr(getattr(self.context, "provider_request", None),
+                                    "binding_revision", None),
+                        ) if getattr(self.context, "provider_request", None) is not None else None,
                         request_purpose="tool_review" if self._completed_tools() else "reply",
                     )
                     self.inference_system = system

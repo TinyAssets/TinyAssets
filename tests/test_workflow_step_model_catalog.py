@@ -10,6 +10,31 @@ from tinyassets.providers.model_pins import ModelPinError
 from tinyassets.providers.model_policy import Exhaustion, ModelRef
 
 
+def _enumerated_native_models(monkeypatch):
+    """Named workflow pins come from each accepted executor's fresh catalogue."""
+    from datetime import datetime, timezone
+
+    from tests.test_run_provider_session import _CountingProvider
+    from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
+
+    monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
+    monkeypatch.setattr(
+        _CountingProvider, "native_credential_service",
+        property(lambda self: "claude" if self.name == "claude-code" else "codex"),
+        raising=False,
+    )
+
+    async def enumerate_models(self, *, universe_dir, credential_snapshot_dir):
+        assert credential_snapshot_dir.is_dir()
+        model_id = "opus" if self.name == "claude-code" else "gpt-6-astra"
+        return NativeCatalogue(
+            (NativeModel(model_id, frozenset({"text"})),),
+            model_id, datetime.now(timezone.utc),
+        )
+
+    monkeypatch.setattr(_CountingProvider, "enumerate_models", enumerate_models, raising=False)
+
+
 def test_step_model_reaches_the_single_prompt_call():
     from tinyassets.graph_compiler import compile_branch
 
@@ -80,14 +105,21 @@ def test_workflow_dispatches_each_step_to_its_owners_chosen_family(
 ):
     from tests.test_run_provider_session import _branch, _run_branch
     from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers.model_preferences import ModelPreferences
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
 
+    _enumerated_native_models(monkeypatch)
+    ModelPreferenceStore(tmp_path).save(
+        "acct_alice", "universe_alice", expected_generation=0,
+        policy=ModelPreferences("explicit", ModelRef("claude-code", "opus"), ()),
+    )
     branch = _branch(node_count=2)
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "claude-code", "model": "opus"}}
     branch.node_defs[1].llm_policy = {"preferred": {"provider": "codex", "model": "gpt-6-astra"}}
     result, _, captured = _run_branch(
         tmp_path, monkeypatch, authenticate_request, branch, services=("codex", "claude"),
-        model_access={"codex": ModelAccess("explicit", ("", "gpt-6-astra")),
-                      "claude-code": ModelAccess("explicit", ("", "opus"))},
+        model_access={"codex": ModelAccess("discovered"),
+                      "claude-code": ModelAccess("discovered")},
     )
     assert result["terminal_status"] == "completed", result["terminal_error"]
     assert [c.native_model_id for c in captured["providers"]["claude-code"].calls] == ["opus"]
@@ -103,6 +135,7 @@ def test_workflow_cannot_silently_review_on_claude_when_its_codex_step_is_rate_l
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
 
+    _enumerated_native_models(monkeypatch)
     monkeypatch.setattr(_CountingProvider, "agent_execution_kind", "native_agent", raising=False)
     branch = _branch(node_count=2)
     branch.node_defs[0].llm_policy = {"preferred": {"provider": "claude-code", "model": "opus"}}
@@ -116,8 +149,8 @@ def test_workflow_cannot_silently_review_on_claude_when_its_codex_step_is_rate_l
 
     result, _, captured = _run_branch(
         tmp_path, monkeypatch, authenticate_request, branch, services=("codex", "claude"),
-        model_access={"codex": ModelAccess("explicit", ("", "gpt-6-astra")),
-                      "claude-code": ModelAccess("explicit", ("", "opus"))},
+        model_access={"codex": ModelAccess("discovered"),
+                      "claude-code": ModelAccess("discovered")},
         after_provider_call=quota,
     )
     assert result["terminal_status"] == "failed", result

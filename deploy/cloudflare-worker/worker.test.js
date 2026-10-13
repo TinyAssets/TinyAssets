@@ -16,6 +16,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { readFileSync } from 'node:fs';
+
 import worker, {
     belongsToWebsite,
     PASSTHROUGH_MARKER,
@@ -25,6 +27,7 @@ import worker, {
     HOP_BY_HOP_REQUEST_HEADERS,
     HOP_BY_HOP_RESPONSE_HEADERS,
 } from './worker.js';
+import browserCors from '../../tinyassets/mcp_browser_origins.json' with { type: 'json' };
 
 // ------- fetch stub harness ------------------------------------------------
 
@@ -90,6 +93,22 @@ describe('shouldProxy', () => {
     it('rejects paths outside /mcp', () => {
         assert.equal(shouldProxy('/catalog'), false);
         assert.equal(shouldProxy('/assets/logo.png'), false);
+    });
+
+    // RFC 9728 inserts the resource path. https://tinyassets.io/mcp is fetched
+    // at the apex, which the /mcp* route never matches.
+    it('accepts the apex OAuth discovery documents', () => {
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/mcp'), true);
+    });
+
+    it('does not proxy other well-known paths or a longer discovery suffix', () => {
+        assert.equal(shouldProxy('/.well-known/openai-apps-challenge'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp/extra'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource-extra'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/extra'), false);
     });
 
     // The app moved from /mcp/app to the apex /app on 2026-09-30. The Worker is
@@ -204,8 +223,182 @@ describe('worker handler — retired /mcp-directory routing', () => {
     }
 });
 
+describe('worker handler — apex OAuth discovery', () => {
+    const documents = [
+        '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-protected-resource/mcp',
+        '/.well-known/oauth-authorization-server',
+        '/.well-known/oauth-authorization-server/mcp',
+    ];
+
+    for (const path of documents) {
+        it(`proxies GET ${path} to the tunnel`, async () => {
+            const response = await worker.fetch(
+                new Request(`https://tinyassets.io${path}`, { method: 'GET' }),
+                {},
+            );
+            assert.ok(lastUpstreamRequest, path);
+            assert.equal(lastUpstreamRequest.method, 'GET');
+            const upstreamPath = {
+                '/.well-known/oauth-protected-resource/mcp':
+                    '/.well-known/oauth-protected-resource',
+                '/.well-known/oauth-authorization-server/mcp':
+                    '/.well-known/oauth-authorization-server',
+            }[path] || path;
+            assert.equal(
+                lastUpstreamRequest.url,
+                `${TUNNEL_ORIGIN}${upstreamPath}`,
+            );
+            assert.equal(response.status, 200);
+        });
+    }
+
+    it('does not proxy the website well-known challenge', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/.well-known/openai-apps-challenge'),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null);
+        assert.equal(response.status, 404);
+    });
+});
+
+describe('worker handler — REST API', () => {
+    it('proxies a keyed request under /api with its path, query and bearer', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/api/command-centers?limit=10', {
+                headers: { Authorization: 'Bearer ta_key_example' },
+            }),
+            {},
+        );
+        assert.equal(response.status, 200);
+        assert.equal(
+            lastUpstreamRequest.url,
+            `${TUNNEL_ORIGIN}/api/command-centers?limit=10`,
+        );
+        assert.equal(lastUpstreamRequest.headers.get('Authorization'), 'Bearer ta_key_example');
+    });
+});
+
+describe('worker handler — browser preflight stays at the edge', () => {
+    const preflightPaths = [
+        '/mcp',
+        '/app',
+        '/api',
+        '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-protected-resource/mcp',
+        '/mcp/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-authorization-server',
+        '/.well-known/oauth-authorization-server/mcp',
+    ];
+
+    const browserHeaders = {
+        Origin: 'https://claude.ai',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization, content-type, mcp-protocol-version',
+    };
+
+    it('reads the shared origin list, and does not keep a second copy', () => {
+        assert.ok(browserCors.origins.includes('https://claude.ai'));
+        assert.ok(browserCors.origins.includes('https://chatgpt.com'));
+        const source = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+        assert.match(source, /mcp_browser_origins\.json/);
+        assert.equal(source.includes('https://claude.ai'), false);
+        assert.equal(source.includes('https://chatgpt.com'), false);
+    });
+
+    for (const path of preflightPaths) {
+        it(`answers OPTIONS ${path} with 204 and does not call origin`, async () => {
+            const response = await worker.fetch(
+                new Request(`https://tinyassets.io${path}`, {
+                    method: 'OPTIONS',
+                    headers: browserHeaders,
+                }),
+                {},
+            );
+
+            assert.equal(lastUpstreamRequest, null, `${path} must not reach the tunnel`);
+            assert.equal(response.status, 204);
+            assert.equal(response.headers.get('access-control-allow-origin'), 'https://claude.ai');
+            assert.equal(
+                response.headers.get('access-control-allow-methods'),
+                browserCors.allow_methods,
+            );
+            assert.equal(
+                response.headers.get('access-control-allow-headers'),
+                browserCors.allow_headers,
+            );
+            assert.equal(
+                response.headers.get('access-control-expose-headers'),
+                browserCors.expose_headers,
+            );
+            assert.equal(
+                response.headers.get('access-control-max-age'),
+                String(browserCors.max_age),
+            );
+            const allowed = response.headers.get('access-control-allow-headers');
+            assert.ok(allowed.includes('authorization'));
+            assert.ok(allowed.includes('content-type'));
+            assert.ok(allowed.includes('mcp-protocol-version'));
+            assert.ok(response.headers.get('access-control-allow-methods').includes('POST'));
+            assert.equal(await response.text(), '');
+        });
+    }
+
+    it('allows a chatgpt.com preflight on the path-inserted metadata URL', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/.well-known/oauth-protected-resource/mcp', {
+                method: 'OPTIONS',
+                headers: {
+                    Origin: 'https://chatgpt.com',
+                    'Access-Control-Request-Method': 'GET',
+                    'Access-Control-Request-Headers': 'authorization',
+                },
+            }),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null);
+        assert.equal(response.status, 204);
+        assert.equal(response.headers.get('access-control-allow-origin'), 'https://chatgpt.com');
+    });
+
+    it('refuses a disallowed origin and does not call origin', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/mcp', {
+                method: 'OPTIONS',
+                headers: {
+                    Origin: 'https://evil.example',
+                    'Access-Control-Request-Method': 'POST',
+                    'Access-Control-Request-Headers': 'authorization, content-type',
+                },
+            }),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null);
+        assert.equal(response.status, 403);
+        assert.equal(response.headers.get('access-control-allow-origin'), null);
+        assert.deepEqual(await response.json(), { error: 'origin_not_allowed' });
+    });
+
+    it('refuses a disallowed origin on the legacy metadata path', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/mcp/.well-known/oauth-protected-resource', {
+                method: 'OPTIONS',
+                headers: {
+                    Origin: 'https://evil.example',
+                    'Access-Control-Request-Method': 'GET',
+                },
+            }),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null);
+        assert.equal(response.status, 403);
+        assert.equal(response.headers.get('access-control-allow-origin'), null);
+    });
+});
+
 describe('worker handler — canonical /mcp routing', () => {
-    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
+    for (const method of ['GET', 'HEAD', 'POST']) {
         it(`continues to proxy ${method} /mcp`, async () => {
             const response = await worker.fetch(
                 new Request('https://tinyassets.io/mcp?canonical=true', { method }),
@@ -221,7 +414,7 @@ describe('worker handler — canonical /mcp routing', () => {
 });
 
 describe('worker handler — canonical /app routing', () => {
-    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
+    for (const method of ['GET', 'HEAD', 'POST']) {
         it(`proxies ${method} /app to the tunnel`, async () => {
             const response = await worker.fetch(
                 new Request('https://tinyassets.io/app?subscribed=1', { method }),

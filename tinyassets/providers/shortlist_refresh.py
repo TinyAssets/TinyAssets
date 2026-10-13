@@ -199,11 +199,18 @@ class ShortlistCache:
 
             diagnostic = status(Path(base), owner=owner, universe_id=universe_id,
                                 agent=provider)
+            # A retained owner-scoped enumeration predating the receipt table
+            # is still evidence that this catalogue ran. Never label its rows
+            # never_run just because the newer attempt ledger is empty.
+            if snapshot is not None and diagnostic == "never_run":
+                diagnostic = "stale" if needs else "fresh"
         else:
             diagnostic = ("failed: " + reason if reason else
                           "refreshing" if inflight else
                           "never_run" if not attempted else
                           "stale" if needs else "fresh")
+        if diagnostic == "fresh" and not usable:
+            diagnostic = "stale" if snapshot is not None else "refreshing"
         if usable:
             return snapshot, ("" if diagnostic == "fresh" else diagnostic) if display_only else ""
         # A failed attempt reports ITS reason; a cold one reports pending. The

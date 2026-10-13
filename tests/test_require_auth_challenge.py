@@ -71,6 +71,7 @@ def _drive(
     token: str | None,
     method: str = "POST",
     body: bytes = b"",
+    accept: str | None = None,
 ) -> tuple[list[dict], bool]:
     """Run one request through AuthContextMiddleware; return (sent, app_called)."""
     called = {"hit": False}
@@ -97,6 +98,8 @@ def _drive(
     headers = []
     if token is not None:
         headers.append((b"authorization", f"Bearer {token}".encode("latin1")))
+    if accept is not None:
+        headers.append((b"accept", accept.encode("latin-1")))
     scope = {"type": "http", "method": method, "path": path, "headers": headers}
     asyncio.run(AuthContextMiddleware(_app)(scope, _receive, _send))
     return sent, called["hit"]
@@ -118,6 +121,22 @@ def _body(sent: list[dict]) -> bytes:
     return b"".join(
         m.get("body", b"") for m in sent if m["type"] == "http.response.body"
     )
+
+
+def test_a_browser_get_reaches_the_connect_page_and_a_client_does_not():
+    set_provider(_ResolveAlwaysProvider())
+    page, page_called = _drive(
+        "/mcp", token=None, method="GET", accept="text/html",
+    )
+    assert page_called
+    assert _status(page) == 200
+    client, client_called = _drive(
+        "/mcp", token=None, method="GET",
+        accept="application/json, text/event-stream",
+    )
+    assert not client_called
+    assert _status(client) == 401
+    assert "resource_metadata=" in _www_authenticate(client)
 
 
 def test_missing_token_on_mcp_is_challenged():
@@ -147,10 +166,16 @@ def test_discovery_routes_stay_public():
         "/.well-known/oauth-protected-resource",
         "/mcp/.well-known/oauth-protected-resource",
         "/.well-known/oauth-authorization-server",
+        "/mcp/oauth/register",
+        "/mcp/oauth/authorize",
+        "/mcp/oauth/token",
     ):
         sent, app_called = _drive(path, token=None)
         assert app_called, f"{path} must not be challenged"
         assert _status(sent) == 200
+    sent, app_called = _drive("/mcp/oauth/register/extra", token=None, method="POST")
+    assert not app_called
+    assert _status(sent) == 401
 
 
 def test_valid_token_on_mcp_passes_through():
@@ -165,7 +190,12 @@ def test_invalid_token_is_challenged_as_invalid():
     sent, app_called = _drive("/mcp", token="bad")
     assert not app_called
     assert _status(sent) == 401
-    assert 'error="invalid_token"' in _www_authenticate(sent)
+    challenge = _www_authenticate(sent)
+    assert 'error="invalid_token"' in challenge
+    assert "error_description=" in challenge
+    body = json.loads(_body(sent))
+    assert body["error"] == "invalid_token"
+    assert body["error_description"]
 
 
 def test_cached_hosted_tool_call_gets_linking_challenge_without_dispatch(monkeypatch):
@@ -187,7 +217,10 @@ def test_cached_hosted_tool_call_gets_linking_challenge_without_dispatch(monkeyp
     assert payload["result"]["isError"] is True
     challenges = payload["result"]["_meta"]["mcp/www_authenticate"]
     assert len(challenges) == 1
-    assert "resource_metadata=\"https://tinyassets.io/mcp/.well-known/" in challenges[0]
+    assert (
+        'resource_metadata="https://tinyassets.io/'
+        '.well-known/oauth-protected-resource/mcp"'
+    ) in challenges[0]
     assert 'error="invalid_token"' in challenges[0]
     assert "error_description=" in challenges[0]
 
@@ -243,12 +276,18 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/app/token", False),                 # its PKCE exchange
         ("/app/settings", True),               # every other app route needs the bearer
         ("/app/billing/webhook", False),       # Stripe-signed
+        ("/app/client-error", False),          # browser trail beacon
+        ("/app/client-errors", True),
+        ("/app/client-error/x", True),
         ("/app/billing/checkout", True),
         ("/mcp/pulse", True),                      # service-principal release facts
         ("/mcp/pulse/", True),                     # exact path, nothing under it
         ("/mcp/pulse/extra", True),
         ("/mcp/.well-known/oauth-protected-resource", False),
         ("/.well-known/oauth-protected-resource", False),
+        ("/.well-known/oauth-protected-resource/mcp", False),
+        ("/.well-known/oauth-authorization-server", False),
+        ("/.well-known/oauth-authorization-server/mcp", False),
         ("/not-mcp", False),
         ("/", False),
         # The retired path (moved to the apex /app on 2026-09-30) keeps no
@@ -290,14 +329,14 @@ def test_the_retired_connect_deposit_paths_are_challenged(monkeypatch):
 
 
 def test_challenge_metadata_url_is_routed_in_production(monkeypatch):
-    # In production only /mcp* is proxied to the daemon, so the challenge must
-    # advertise a /mcp-prefixed (routed) PRM, not the apex root path that 404s.
+    # RFC 9728 inserts the well-known segment. The legacy path under /mcp
+    # still serves the same document; the header no longer points there.
     from tinyassets.auth.middleware import _challenge_prm_url
 
     monkeypatch.setenv("WORKOS_MCP_RESOURCE", "https://tinyassets.io/mcp")
     assert (
         _challenge_prm_url()
-        == "https://tinyassets.io/mcp/.well-known/oauth-protected-resource"
+        == "https://tinyassets.io/.well-known/oauth-protected-resource/mcp"
     )
 
 
@@ -307,8 +346,13 @@ def test_challenge_header_is_exact(monkeypatch):
     sent, _ = _drive("/mcp", token=None)
     assert _www_authenticate(sent) == (
         'Bearer resource_metadata='
-        '"https://tinyassets.io/mcp/.well-known/oauth-protected-resource"'
+        '"https://tinyassets.io/.well-known/oauth-protected-resource/mcp"'
     )
+    assert "error=" not in _www_authenticate(sent)
+    assert json.loads(_body(sent)) == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_workos_provider_no_longer_reads_a_require_auth_switch(monkeypatch):

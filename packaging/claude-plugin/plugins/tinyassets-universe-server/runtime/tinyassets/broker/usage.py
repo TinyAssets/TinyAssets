@@ -15,9 +15,13 @@ _FIELDS = {
     "settle_invocation": {"ordinal", "outcome"}, "close": set(), "receipt": set(),
     "link": {"kind", "subject_id"}, "for_subject": {"kind", "subject_id"},
     "issue_reference": {"ordinal", "grant_id", "connection_id", "verb", "request", "operation_id"},
+    "issue_launch_reference": {"authority_kind", "authority_id", "agent_binding_id",
+                               "binding_revision"},
+    "resolve_launch_reference": {"reference"},
 }
 _POLICY = {"max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
            "deadline"}
+_POLICY_LIMITS = {"max_tokens", "max_cost_microunits"}
 
 
 def validate(document):
@@ -32,7 +36,8 @@ def validate(document):
     if action not in _FIELDS or set(document) != _FIELDS[action] | {"action"}:
         raise ValueError("invalid accounting fields")
     for name in ("source_ref", "model", "grant_id", "connection_id", "operation_id",
-                 "subject_id", "owner_token", "parent_token"):
+                 "subject_id", "owner_token", "parent_token", "authority_id",
+                 "agent_binding_id"):
         if name in document and (not isinstance(document[name], str)
                                  or not document[name] or len(document[name]) > 512):
             raise ValueError("invalid accounting identity")
@@ -48,10 +53,25 @@ def validate(document):
         raise ValueError("invalid accounting outcome")
     if action in {"link", "for_subject"} and document["kind"] not in {"turn", "run"}:
         raise ValueError("invalid accounting link")
+    if action == "issue_launch_reference":
+        if (document["authority_kind"] not in {"turn", "run"}
+                or (document["authority_kind"] == "turn" and
+                    (type(document["binding_revision"]) is not int
+                     or document["binding_revision"] < 1))
+                or (document["authority_kind"] == "run" and
+                    document["binding_revision"] is not None)):
+            raise ValueError("invalid model launch parent")
+    if action == "resolve_launch_reference" and (
+            not isinstance(document["reference"], str) or len(document["reference"]) != 64):
+        raise ValueError("invalid model launch reference")
     if action == "create":
         policy = document["policy"]
-        if not isinstance(policy, dict) or set(policy) != _POLICY:
+        if (not isinstance(policy, dict) or not _POLICY <= set(policy)
+                or not set(policy) <= _POLICY | _POLICY_LIMITS):
             raise ValueError("invalid accounting policy")
+        if any(type(policy[name]) is not int or policy[name] < 1
+               for name in _POLICY_LIMITS if name in policy):
+            raise ValueError("invalid accounting allowance")
         deadline = policy["deadline"]
         if deadline is not None and (type(deadline) not in {int, float}
                                      or not math.isfinite(deadline)):
@@ -79,7 +99,7 @@ def mutation_document(operation, args, kwargs):
 
 def local_operation(ledger, *, principal, command_center, usage_id, document):
     from tinyassets.process_liveness import ALIVE, owner_state
-    from tinyassets.request_budget import RequestAttempt, TurnRequestBudget
+    from tinyassets.request_budget import RequestAttempt, _RequestLedger
     from tinyassets.storage.agent_request_usage import UsageStore
 
     validate(document)
@@ -91,8 +111,10 @@ def local_operation(ledger, *, principal, command_center, usage_id, document):
         if usage_id != "":
             raise ValueError("daily evidence does not select a parent")
         return evidence(store, principal, document)
-    if action != "for_subject" and (not isinstance(usage_id, str) or len(usage_id) != 32
-                                    or any(c not in "0123456789abcdef" for c in usage_id)):
+    scoped = action not in {"for_subject", "resolve_launch_reference"}
+    valid_id = (isinstance(usage_id, str) and len(usage_id) == 32
+                and all(c in "0123456789abcdef" for c in usage_id))
+    if scoped and not valid_id:
         raise ValueError("invalid accounting root")
     scope = (principal, command_center, usage_id)
     fields = {k: v for k, v in document.items() if k != "action"}
@@ -101,7 +123,7 @@ def local_operation(ledger, *, principal, command_center, usage_id, document):
         if (parent != "request_" + usage_id or owner_state(store.base, token) != ALIVE
                 or owner_state(store.base, parent) != ALIVE):
             raise ValueError("accounting owner is unavailable")
-        budget = TurnRequestBudget(principal, command_center, **fields["policy"])
+        budget = _RequestLedger(principal, command_center, **fields["policy"])
         budget._attempts = [RequestAttempt(**a) for a in fields["attempts"]]
         if any(a.ordinal != i for i, a in enumerate(budget._attempts, 1)):
             raise ValueError("invalid accounting attempt order")
@@ -115,6 +137,11 @@ def local_operation(ledger, *, principal, command_center, usage_id, document):
         return {"receipts": store.for_subject(principal, command_center, **fields)}
     if action == "issue_reference":
         return {"reference": store.issue_reference(scope, **fields).document()}
+    if action == "issue_launch_reference":
+        return {"reference": store.issue_launch_reference(scope, **fields)}
+    if action == "resolve_launch_reference":
+        return {"launch": store.resolve_launch_reference(principal, command_center,
+                                                        fields["reference"])}
     # Explicit dispatch table, never getattr on an incoming operation name.
     operations = {
         "reserve": lambda: store.mutate(scope, "reserve", owner=principal,

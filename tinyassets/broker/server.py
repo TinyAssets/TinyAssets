@@ -620,6 +620,7 @@ class _Connection:
     def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import local_operation, validate
         from tinyassets.request_budget import RequestBudgetExceeded
+        from tinyassets.storage.agent_request_usage import ModelLaunchEnded
 
         try:
             if set(doc) != {"op", "principal", "command_center", "generation", "token",
@@ -639,6 +640,8 @@ class _Connection:
                 except RequestBudgetExceeded as exc:
                     answer = {"op": "USAGE_STOPPED", "reason": exc.reason,
                               "receipt": exc.request_receipt}
+                except ModelLaunchEnded:
+                    answer = {"op": "USAGE_MODEL_ENDED"}
                 rf.control(rf.CONNECTION, answer)
                 return answer
         except Exception:  # noqa: BLE001 - fixed refusal, no storage details on wire

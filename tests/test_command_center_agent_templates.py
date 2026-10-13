@@ -591,11 +591,7 @@ def test_unpowered_recipient_installs_without_model_or_router_calls(monkeypatch,
         raise AssertionError("installation must not request model inference")
 
     monkeypatch.setattr(ProviderRouter, "available_providers", lambda self: [])
-    for method in (
-        "call",
-        "call_sync",
-        "call_judge_ensemble",
-    ):
+    for method in ("call", "call_sync"):
         monkeypatch.setattr(ProviderRouter, method, forbidden)
     request_id = _copy_request(source)
     result = _answer(BOB, BOB_UNIVERSE, request_id)

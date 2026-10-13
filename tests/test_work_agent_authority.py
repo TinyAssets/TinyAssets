@@ -18,7 +18,7 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 @pytest.mark.parametrize("manifest", [False, True])
 @pytest.mark.parametrize("change", [
-    None, "closed", "subject", "cancelled", "revoked", "child", "claim", "home", "seal",
+    None, "closed", "subject", "cancelled", "revoked", "receipt", "claim", "home", "seal",
 ])
 @pytest.mark.usefixtures("http_wire")
 def test_step_rechecks_current_authority_without_new_reservation(
@@ -54,13 +54,37 @@ def test_step_rechecks_current_authority_without_new_reservation(
                 from tinyassets.runs import request_cancel
 
                 request_cancel(tmp_path, session.bound_run_id)
-            elif change in {"revoked", "child", "claim"}:
+            elif change == "revoked":
+                # C3 admits live connected custody, not a provider_work_binding.
+                if manifest:
+                    from tinyassets.providers.definition import get_definition
+                    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+                    definition = get_definition(
+                        session._universe_id,
+                        carrier.provider.removeprefix("api_key_http:"),
+                    )
+                    assert definition is not None
+                    ledger = ConnectionLedger(
+                        tmp_path / ".broker" / "outbound.db", data_root=tmp_path,
+                        verify_authenticated_principal=lambda: "acct_alice",
+                    )
+                    ledger.revoke_grant(definition.ref)
+                else:
+                    from tinyassets.credential_vault import write_credential_vault
+
+                    write_credential_vault(
+                        session._universe_dir, [], owner_user_id="acct_alice",
+                        universe_id=session._universe_id,
+                    )
+            elif change in {"receipt", "claim"}:
                 with sqlite3.connect(db_path(tmp_path)) as conn:
-                    if change == "revoked":
-                        conn.execute("UPDATE provider_work_bindings SET state = 'revoked'")
-                    elif change == "child":
-                        conn.execute("DELETE FROM provider_work_bindings WHERE binding_id = ?",
-                                     (carrier.binding_id,))
+                    if change == "receipt":
+                        assert carrier.binding_id is None
+                        conn.execute(
+                            "UPDATE provider_work_receipts SET state = 'revoked' "
+                            "WHERE receipt_id = ?", (carrier.work_receipt_id,),
+                        )
                     else:
                         conn.execute("DELETE FROM provider_work_execution_claims")
             elif change == "home":

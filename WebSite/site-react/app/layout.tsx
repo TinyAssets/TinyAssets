@@ -6,6 +6,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 import TopNav from "../components/TopNav";
 import Footer from "../components/Footer";
+import ClientTrail from "../components/ClientTrail";
 import { TINYASSETS_MARK_VERSION } from "../components/TinyAssetsMark";
 import { SITE } from "../lib/site";
 
@@ -85,7 +86,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           Skip to content
         </a>
         <TopNav />
-        <main id="main">{children}</main>
+        <main id="main">
+          <ClientTrail>{children}</ClientTrail>
+        </main>
         <Footer />
       </body>
     </html>

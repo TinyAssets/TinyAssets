@@ -200,8 +200,12 @@ class WorkAgentAdapter:
                     agent_observer=observer, agent_execution_kind=kind,
                     router=router,
                 ), origin="workflow",
-            ), Parent(owner=self.receipt.principal_id,
-                      command_center=context.universe_dir.name))
+            ), Parent(
+                owner=self.receipt.principal_id,
+                command_center=context.universe_dir.name,
+                usage_id=(config.request_budget.usage_id
+                          if config.request_budget is not None else None),
+            ))
             return result.response
 
         call = _infer()

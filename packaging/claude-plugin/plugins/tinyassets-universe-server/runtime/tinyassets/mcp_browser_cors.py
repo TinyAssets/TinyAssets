@@ -1,4 +1,4 @@
-"""Browser CORS for the public MCP surface.
+"""Browser CORS for the public MCP surface and its OAuth discovery documents.
 
 Claude.ai, ChatGPT, and Claude Code talk to ``/mcp`` from their own
 servers and send no ``Origin``. A browser does: the page at
@@ -9,9 +9,11 @@ from its own origin. A preflight carries no bearer. Challenging it with
 ``Access-Control-Allow-Origin``, means the browser never shows the
 client ``WWW-Authenticate`` or ``Mcp-Session-Id``.
 
-The MCP streamable-HTTP rule is the other half: when ``Origin`` is
-present and is not one of ours, the request is 403. A missing
-``Origin`` is a server-side client and is left alone.
+The same headers cover the apex discovery documents, including the
+RFC 9728 path-inserted protected-resource URL. The MCP streamable-HTTP
+rule is the other half: when ``Origin`` is present and is not one of
+ours, the request is 403. A missing ``Origin`` is a server-side client
+and is left alone.
 """
 
 from __future__ import annotations
@@ -22,20 +24,33 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-_EXACT_ORIGINS = frozenset(
-    json.loads(
+
+def _load_policy() -> dict[str, Any]:
+    """The one CORS policy. The Worker imports this same JSON file."""
+    document = json.loads(
         (Path(__file__).with_name("mcp_browser_origins.json")).read_text(encoding="utf-8")
-    )["origins"]
-)
+    )
+    required = (
+        "origins",
+        "loopback_hosts",
+        "allow_methods",
+        "allow_headers",
+        "expose_headers",
+        "max_age",
+    )
+    missing = [key for key in required if key not in document]
+    if missing:
+        raise RuntimeError(f"mcp_browser_origins.json missing {missing}")
+    return document
 
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
 
-_ALLOW_METHODS = b"GET, POST, DELETE, OPTIONS"
-_ALLOW_HEADERS = (
-    b"authorization, content-type, accept, mcp-session-id, "
-    b"mcp-protocol-version, last-event-id"
-)
-_EXPOSE_HEADERS = b"www-authenticate, mcp-session-id"
+_POLICY = _load_policy()
+_EXACT_ORIGINS = frozenset(origin.lower() for origin in _POLICY["origins"])
+_LOOPBACK_HOSTS = frozenset(host.lower() for host in _POLICY["loopback_hosts"])
+_ALLOW_METHODS = str(_POLICY["allow_methods"]).encode("ascii")
+_ALLOW_HEADERS = str(_POLICY["allow_headers"]).encode("ascii")
+_EXPOSE_HEADERS = str(_POLICY["expose_headers"]).encode("ascii")
+_MAX_AGE = str(_POLICY["max_age"]).encode("ascii")
 
 _FORBIDDEN_BODY = b'{"error":"origin_not_allowed"}'
 
@@ -48,8 +63,24 @@ def _header(scope: dict, name: str) -> str:
     return ""
 
 
+#: Apex discovery documents. ``/mcp/.well-known/...`` is already inside the
+#: ``/mcp`` prefix. RFC 9728 path insertion for ``https://tinyassets.io/mcp``
+#: is the ``/mcp`` suffix on the apex protected-resource path, which is not.
+_DISCOVERY_PATHS = frozenset({
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-authorization-server/mcp",
+})
+
+
 def _mcp_surface(path: str) -> bool:
-    return path == "/mcp" or path.startswith("/mcp/")
+    # Local OAuth lives at ``/mcp/oauth/*``, so the ``/mcp/`` prefix covers it.
+    return (
+        path == "/mcp"
+        or path.startswith("/mcp/")
+        or path in _DISCOVERY_PATHS
+    )
 
 
 def _resource_origin() -> str:
@@ -91,7 +122,7 @@ def _cors_headers(origin: str) -> list[tuple[bytes, bytes]]:
         (b"access-control-allow-methods", _ALLOW_METHODS),
         (b"access-control-allow-headers", _ALLOW_HEADERS),
         (b"access-control-expose-headers", _EXPOSE_HEADERS),
-        (b"access-control-max-age", b"600"),
+        (b"access-control-max-age", _MAX_AGE),
         (b"vary", b"Origin"),
     ]
 

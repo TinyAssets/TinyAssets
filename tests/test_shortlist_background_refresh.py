@@ -123,6 +123,33 @@ def test_a_cold_read_schedules_instead_of_discovering(monkeypatch, cache):
     assert reason == "" and [m.model_id for m in again.catalogue.models] == ["m"]
 
 
+def test_package_enumeration_cannot_be_labelled_never_run(monkeypatch, cache):
+    from tinyassets.external_agents import registry
+
+    install(monkeypatch, cache, {"codex": catalogue(["gpt-6.1-sol"])})
+    cache.refresh_now(base="/b", owner="o", universe_id="u", provider="codex")
+    monkeypatch.setattr(registry, "PACKAGES", {"codex": object()})
+    snapshot, reason = cache.get(
+        base="/b", owner="o", universe_id="u", provider="codex", display_only=True)
+    assert [model.model_id for model in snapshot.catalogue.models] == ["gpt-6.1-sol"]
+    assert reason == ""
+
+
+def test_old_snapshot_cannot_carry_a_fresh_receipt_reason(monkeypatch, cache):
+    from tinyassets.external_agents import registry
+
+    install(monkeypatch, cache, {"codex": catalogue(["gpt-6-astra"])})
+    snapshot = cache.refresh_now(base="/b", owner="o", universe_id="u", provider="codex")
+    monkeypatch.setattr(registry, "PACKAGES", {"codex": object()})
+    monkeypatch.setattr("tinyassets.external_agents.receipts.status", lambda *a, **k: "fresh")
+    monkeypatch.setattr(cache, "schedule", lambda **kwargs: False)
+    cache._now = lambda: snapshot.observed_at + timedelta(seconds=USABLE_AGE + 1)
+    retained, reason = cache.get(base="/b", owner="o", universe_id="u",
+                                 provider="codex", display_only=True)
+    assert retained is not None
+    assert reason == "stale"
+
+
 def test_one_wedged_source_does_not_delay_another(monkeypatch, cache):
     """Discovery isolation, which is the concern's second ask.
 

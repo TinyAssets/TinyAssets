@@ -1,4 +1,4 @@
-"""Differential proof of the shared execution/readiness authority validator."""
+"""Served execution admits the request owner's live connected source."""
 from __future__ import annotations
 
 import sqlite3
@@ -6,13 +6,14 @@ from dataclasses import fields
 
 import pytest
 
-from tests.served_authority_baseline import legacy_authorize_served_provider_call
 from tests.test_open_serving_bind import _CONN_ID, _GRANT_ID, _bound_and_serving
+from tests.test_pending_requests_power import _install_native_executor
 from tests.test_provider_served_router import _fresh_served_request, _served_context
 from tinyassets.auth.middleware import revoke_provider_request
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment import authorize_served_provider_call
 from tinyassets.provider_serving_binding import set_serving
+from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
@@ -48,9 +49,10 @@ def _observe(authorize, root, universe, context, *, role="writer", body_error=Fa
     "ready", "wrong-role", "revoked-carrier", "disabled-agent", "body-error",
     "pending", "failed", "unassigned", "digest-tamper", "binding-tamper",
 ])
-def test_execution_matches_legacy_chain(tmp_path, monkeypatch, provider, condition):
+def test_execution_uses_live_connected_chain(tmp_path, monkeypatch, provider, condition):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     if provider == "subscription":
+        _install_native_executor(monkeypatch)
         universe, serving, capability, context = _served_context(tmp_path)
     else:
         universe, serving, _ = _bound_and_serving(tmp_path, monkeypatch)
@@ -77,23 +79,36 @@ def test_execution_matches_legacy_chain(tmp_path, monkeypatch, provider, conditi
             role="reviewer" if condition == "wrong-role" else "writer",
             body_error=condition == "body-error",
         )
-        before = _observe(
-            legacy_authorize_served_provider_call, tmp_path, universe, context, **arguments,
+        observed = _observe(
+            authorize_served_provider_call, tmp_path, universe, context, **arguments,
         )
-        after = _observe(authorize_served_provider_call, tmp_path, universe, context, **arguments)
-        assert after == before
-        if condition not in {"ready", "body-error"}:
-            assert after == "held"
+        if condition in {"wrong-role", "revoked-carrier", "disabled-agent",
+                         "pending", "failed", "unassigned", "digest-tamper"} or (
+                condition == "binding-tamper" and provider == "http"):
+            # Connected custody alone is not run authority: the owner's READY,
+            # digest-valid accepted assignment is. A non-ready or tampered row
+            # cannot say what the owner accepted, so the turn is held. An
+            # accepted manifest also pins its anchor's binding digest, so a
+            # tampered binding digest on that row is a tampered acceptance.
+            assert observed == "held"
         elif condition == "body-error":
-            assert after == "body-error"
+            assert observed == "body-error"
         else:
-            assert after["provider"]
+            # A legacy single-provider row carries no manifest to cross-check,
+            # and the serving binding row is not authority: its tampered digest
+            # does not deny the live, accepted source.
+            if provider == "subscription":
+                assert observed["provider"] == "codex"
+            else:
+                assert observed["provider"].startswith("api_key_http:")
+            assert observed["owner_user_id"] == "owner-1"
+            assert observed["budget_owner"] == "connected_request"
     finally:
         revoke_provider_request(capability)
 
 
 @pytest.mark.parametrize("condition", ["revoked-grant", "rotated-credential"])
-def test_live_http_custody_matches_legacy(tmp_path, monkeypatch, condition):
+def test_live_http_custody_follows_current_grant(tmp_path, monkeypatch, condition):
     universe, serving, _ = _bound_and_serving(tmp_path, monkeypatch)
     capability, context = _fresh_served_request(universe, serving, request_id="custody-diff")
     try:
@@ -108,25 +123,61 @@ def test_live_http_custody_matches_legacy(tmp_path, monkeypatch, condition):
                     "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
                     ("vault://http/rotated", _CONN_ID),
                 )
-        for authorize in (legacy_authorize_served_provider_call, authorize_served_provider_call):
-            assert _observe(authorize, tmp_path, universe, context) == "held"
+        observed = _observe(authorize_served_provider_call, tmp_path, universe, context)
+        if condition == "revoked-grant":
+            assert observed == "held"
+        else:
+            # A reference rotated before admission is the current owned source.
+            assert observed["authority_kind"] == "connection_grant"
     finally:
         revoke_provider_request(capability)
 
 
-def test_dispatch_uses_shared_validator_with_explicit_root(tmp_path, monkeypatch):
-    import tinyassets.provider_serving_binding as serving_module
+def test_http_rotation_after_admission_is_fenced_before_launch(tmp_path, monkeypatch):
+    universe, serving, _ = _bound_and_serving(tmp_path, monkeypatch)
+    capability, context = _fresh_served_request(universe, serving, request_id="rotate-after")
+    try:
+        with authorize_served_provider_call(
+            tmp_path, universe_dir=universe, request_carrier=context.provider_request,
+            role="writer", operation="converse",
+        ) as authority:
+            with sqlite3.connect(tmp_path / ".broker" / "outbound.db") as conn:
+                conn.execute(
+                    "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
+                    ("vault://http/rotated-after-admission", _CONN_ID),
+                )
+            with pytest.raises((PermissionError, ModelDiscoveryUnavailable)):
+                authority.before_provider_launch()
+    finally:
+        revoke_provider_request(capability)
+
+
+def test_foreign_request_owner_cannot_use_subscription(tmp_path, monkeypatch):
+    _install_native_executor(monkeypatch)
+    universe, _, capability, context = _served_context(
+        tmp_path, capability_owner="other-owner",
+    )
+    try:
+        assert _observe(
+            authorize_served_provider_call, tmp_path, universe, context,
+        ) == "held"
+    finally:
+        revoke_provider_request(capability)
+
+
+def test_dispatch_uses_selected_chain_with_explicit_root(tmp_path, monkeypatch):
+    import tinyassets.provider_assignment as assignment_module
 
     universe, serving, _ = _bound_and_serving(tmp_path, monkeypatch)
     capability, context = _fresh_served_request(universe, serving, request_id="shared-chain")
-    shared = serving_module._current_serving_authority
+    shared = assignment_module._selected_chain
     roots = []
 
-    def recording(*args, **kwargs):
-        roots.append(kwargs["base_path"])
-        return shared(*args, **kwargs)
+    def recording(store, base_path, universe_dir, capability, agent, selection):
+        roots.append(base_path)
+        return shared(store, base_path, universe_dir, capability, agent, selection)
 
-    monkeypatch.setattr(serving_module, "_current_serving_authority", recording)
+    monkeypatch.setattr(assignment_module, "_selected_chain", recording)
     try:
         result = _observe(authorize_served_provider_call, tmp_path, universe, context)
         assert isinstance(result, dict)

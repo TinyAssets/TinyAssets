@@ -163,6 +163,8 @@ def require_owner_bound_dispatch(
         and (invocation_carrier is None or (
             getattr(carrier_receipt, "principal_id", None) == owner
             and getattr(carrier_receipt, "universe_id", None) == Path(universe_dir).name
+            and carrier_receipt.admitted_sources is not None
+            and provider_name in carrier_receipt.admitted_sources
         ))
         and provider_name in connected_sources(Path(universe_dir).parent, universe_dir, owner)
         and (invocation_carrier is None

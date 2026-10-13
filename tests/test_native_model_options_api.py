@@ -42,6 +42,38 @@ def test_refreshed_codex_catalogue_is_selectable_in_a_new_cache_instance(
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_idle_codex_catalogue_keeps_enumerated_row_selectable(picker, native, monkeypatch):
+    from tinyassets.providers import shortlist_store
+    from tinyassets.providers.shortlist_refresh import (
+        SHORTLIST_CACHE,
+        USABLE_AGE,
+        ShortlistCache,
+    )
+
+    snapshot = SHORTLIST_CACHE.refresh_now(
+        base=native.base, owner="owner-1", universe_id=native.universe.name,
+        provider="codex",
+    )
+    idle = replace(snapshot, observed_at=snapshot.observed_at - timedelta(
+        seconds=USABLE_AGE + 1))
+    monkeypatch.setattr(shortlist_store, "load", lambda **_kwargs: idle)
+    fresh = ShortlistCache()
+    monkeypatch.setattr(fresh, "schedule", lambda **kwargs: False)
+    monkeypatch.setattr("tinyassets.providers.shortlist_refresh.SHORTLIST_CACHE", fresh)
+    try:
+        result = model_options.read_model_options()
+        row = next(row for row in result["options"]
+                   if row["reference"] == {"provider_ref": "codex",
+                                           "model_id": "new-account-model"})
+        assert row["availability_basis"] == "executor_enumerated"
+        assert row["in_candidate_catalog"] and row["reasons"] == []
+        assert any(source["provider_ref"] == "codex" and "stale" in source["reasons"]
+                   for source in result["sources"])
+    finally:
+        fresh.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_persisted_shortlist_never_crosses_owner_or_revoked_custody(picker, native):
     from tinyassets.providers import shortlist_store
     from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
@@ -138,6 +170,21 @@ def test_native_public_picker_lists_default_and_discovered_model(picker, native)
     assert native.provider.calls == 0
     serialized = json.dumps(result)
     assert str(native.base) not in serialized and "custody" not in serialized
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_package_catalogue_status_tracks_the_enumeration_in_model_options(
+    picker, native, monkeypatch,
+):
+    from tinyassets.external_agents import registry
+
+    picker()  # Warm the owner-scoped catalogue through the synthetic executor.
+    monkeypatch.setattr(registry, "PACKAGES", {"codex": object()})
+    result = model_options._collect(native.base, "owner-1", native.universe.name)
+    assert any(row["availability_basis"] == "executor_enumerated"
+               for row in result["options"])
+    source = next(row for row in result["sources"] if row["provider_ref"] == "codex")
+    assert source["catalogue_status"] == "fresh"
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)

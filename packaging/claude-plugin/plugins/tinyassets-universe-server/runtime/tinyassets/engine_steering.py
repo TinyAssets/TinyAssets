@@ -34,7 +34,8 @@ STEERED_PREFIX = "thread:"
 
 
 def route_with_session(url: str, session_key: str, turn: str = "", *,
-                       grant_key: str = "", tools=None, context_tokens: int | None = None) -> str:
+                       grant_key: str = "", tools=None, context_tokens: int | None = None,
+                       model_reference: str = "") -> str:
     """``url`` naming ``session_key`` (and the live ``turn``) for one launch.
 
     ``tools`` (``served_tools.granted_tools(config)``) adds the launch's grant,
@@ -59,7 +60,8 @@ def route_with_session(url: str, session_key: str, turn: str = "", *,
     if (identity is not None and identity.metadata.get("outside_origin") is not None
             and (tools is None or not grant_key)):
         raise PermissionError("outside work requires a signed engine launch")
-    grant = launch_grant(grant_key, key, live, tools) if tools is not None else ""
+    grant = launch_grant(grant_key, key, live, tools,
+                         model_reference=model_reference) if tools is not None else ""
     if grant:
         params.append(f"{GRANT_PARAM}={quote(grant, safe='')}")
     if not params:
@@ -82,6 +84,14 @@ def turn_of() -> str:
         return live.live_id
     launch = _launch.get()
     return launch["turn"] if launch else ""
+
+
+def issue_model_reference(budget, parent) -> str:
+    """Issue only from the platform's linked allocation at session launch."""
+    if budget is None or parent is None:
+        return ""
+    kind, subject_id, agent_binding_id, revision = parent
+    return budget.issue_launch_reference(kind, subject_id, agent_binding_id, revision)
 
 
 def _route_params() -> tuple[str, str]:
@@ -119,6 +129,21 @@ def launch_tools() -> tuple[str, ...] | None:
 
     session_key, turn = _route_params()
     return verified_launch_grant(grant_key(), session_key, turn, grant)
+
+
+def launch_model_reference() -> str | None:
+    """No query string or unsigned route can supply model authority."""
+    from tinyassets.engine_endpoint import grant_key
+    from tinyassets.served_tools import model_reference_from_grant
+
+    try:
+        from fastmcp.server.dependencies import get_http_request
+
+        grant = str(get_http_request().query_params.get(GRANT_PARAM) or "")
+    except Exception:
+        return None
+    session_key, turn = _route_params()
+    return model_reference_from_grant(grant_key(), session_key, turn, grant)
 
 
 def outside_origin():

@@ -84,8 +84,11 @@ def _is_hex_sha(value: str) -> bool:
 
 
 def _release_build_sha() -> str:
-    """The sha production is serving (release-state.json), so the beat is truthful
-    when TINYASSETS_BUILD_SHA is unset (prod never sets it); zeros only when unknown."""
+    """Receipt sha, used when the image did not bake TINYASSETS_BUILD_SHA.
+
+    The image build sets that variable. The receipt can move during a swap, so
+    it is only the fallback. Zeros only when both are unknown.
+    """
     try:
         from tinyassets.api.status import _load_release_state
 

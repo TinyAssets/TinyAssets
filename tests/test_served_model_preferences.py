@@ -9,6 +9,7 @@ import pytest
 
 from tests import test_interactive_http_agent as integration
 from tests import test_selected_model_authority as authority
+from tests.test_pending_requests_power import _install_native_executor
 from tests.test_provider_served_router import _RecordingProvider, _served_context
 from tinyassets import daemon_server, universe_intelligence
 from tinyassets.api.custom_agents import custom_agents
@@ -31,6 +32,13 @@ rig = authority.rig
 reader = authority.reader
 agent = integration.agent
 REAL_GET_HOME = daemon_server.get_founder_home
+
+
+@pytest.fixture
+def served_native_context(tmp_path, monkeypatch):
+    """Prepare native serving without a host-installed executor."""
+    _install_native_executor(monkeypatch)
+    return _served_context(tmp_path)
 
 
 @pytest.fixture
@@ -281,6 +289,38 @@ def test_mixed_explicit_http_overrides_native_preference(agent, monkeypatch):
     assert agent.served.native.calls == 0 and not agent.tools and len(agent.wires) == 1
 
 
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_agent_settings_model_runs_connected_nondefault_source(agent, monkeypatch):
+    source = f"api_key_http:{agent.served.rig.definition.id}"
+    settings = agent.served.rig.base / "u-models" / "settings.yaml"
+    settings.write_text(
+        f"schema_version: 1\nmodel: {{connection: '{source}', id: '{authority.MODEL}'}}\n"
+    )
+    assert _converse(agent, monkeypatch) == "finished exact answer"
+    assert agent.served.native.calls == 0 and len(agent.wires) == 1
+    assert agent.latest().policy_source == "current"
+
+
+@pytest.mark.parametrize("configured", ["mixed"], indirect=True)
+def test_explicit_choice_outweighs_agent_settings_model(agent, monkeypatch):
+    settings = agent.served.rig.base / "u-models" / "settings.yaml"
+    settings.write_text(
+        f"schema_version: 1\nmodel: {{connection: 'api_key_http:{agent.served.rig.definition.id}', "
+        f"id: '{authority.MODEL}'}}\n"
+    )
+    chosen = ModelPreferences("explicit", ModelRef("codex", ""), ()).document()
+    assert _converse(agent, monkeypatch, chosen) == "codex:hello"
+    assert agent.served.native.calls == 1 and agent.wires == []
+
+
+def test_unavailable_settings_pin_refuses_without_substituting(agent, monkeypatch):
+    settings = agent.served.rig.base / "u-models" / "settings.yaml"
+    settings.write_text("schema_version: 1\nmodel: {connection: missing, id: unavailable}\n")
+    with pytest.raises(ProviderAuthorityHeldError, match="unavailable"):
+        _converse(agent, monkeypatch)
+    assert agent.wires == [] and agent.tools == []
+
+
 def test_revocation_after_capture_still_prevents_inference(agent, monkeypatch):
     def revoke():
         agent.served.rig.ledger.revoke_grant("grant-models")
@@ -292,10 +332,9 @@ def test_revocation_after_capture_still_prevents_inference(agent, monkeypatch):
     assert agent.wires == [] and agent.tools == []
 
 
-def test_http_enable_refuses_when_agent_executor_is_disabled(configured, monkeypatch):
+def test_http_enable_allows_text_when_agent_executor_is_disabled(configured, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
-    with pytest.raises(PermissionError, match="no eligible model"):
-        enable(configured)
+    assert enable(configured)["status"] == "serving"
 
 
 def test_public_enable_accepts_the_owned_model_assignment(configured):
@@ -423,10 +462,10 @@ def test_invalid_current_choice_refuses_before_provider_work(agent, monkeypatch,
     assert agent.wires == [] and agent.tools == []
 
 
-def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch):
+def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch, served_native_context):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id="different-home", platform_generated=True,
@@ -440,30 +479,33 @@ def test_other_owned_universe_keeps_legacy_path(tmp_path, monkeypatch):
         auth.revoke_provider_request(capability)
 
 
-def test_legacy_home_without_preferences_is_unchanged(tmp_path):
+def test_connected_home_without_preferences_builds_automatic_plan(tmp_path, served_native_context):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
         )
-        assert apply_served_model_preferences(context) is context
-        with pytest.raises(ProviderAuthorityHeldError, match="accepted model assignment"):
-            apply_served_model_preferences(
-                context, model_choice=ModelPreferences("automatic", None, ()).document(),
-            )
+        prepared = apply_served_model_preferences(context)
+        assert prepared is not context
+        assert prepared.agent_model_plan is not None
+        assert prepared.model_selection == ModelRef("codex", "")
+        explicit_auto = apply_served_model_preferences(
+            context, model_choice=ModelPreferences("automatic", None, ()).document(),
+        )
+        assert explicit_auto.model_selection == prepared.model_selection
     finally:
         auth.revoke_provider_request(capability)
 
 
 @pytest.mark.parametrize("mode", ["absent", "automatic", "explicit", "corrupt", "deleted"])
-def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode):
+def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode, served_native_context):
     from tinyassets.account_deletion import principal_digest
     from tinyassets.storage.current_home import CurrentHomeChanged
     from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
@@ -513,8 +555,10 @@ def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode):
         auth.revoke_provider_request(capability)
 
 
-def test_legacy_nonhome_readiness_does_not_consume_home_preferences(tmp_path):
-    universe, binding, capability, context = _served_context(tmp_path)
+def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path, served_native_context):
+    """A second command center serves on the owner's connected source; the
+    home's explicit choice of a missing model neither applies nor is touched."""
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id="other-home", platform_generated=True,
@@ -545,10 +589,12 @@ def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch)
 
 
 @pytest.mark.parametrize("explicit", [False, True])
-def test_saved_policy_on_legacy_preserves_auto_but_never_ignores_explicit(tmp_path, explicit):
+def test_saved_policy_on_connected_source_preserves_auto_and_explicit(
+    tmp_path, explicit, served_native_context,
+):
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    universe, binding, capability, context = _served_context(tmp_path)
+    universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
             tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
@@ -559,20 +605,33 @@ def test_saved_policy_on_legacy_preserves_auto_but_never_ignores_explicit(tmp_pa
         saved = store.save("owner-1", universe.name, expected_generation=0, policy=preference,
                            require_current_home=True)
         if explicit:
-            with pytest.raises(ProviderAuthorityHeldError, match="accepted model assignment"):
+            with pytest.raises(ProviderAuthorityHeldError, match="absent from catalogue"):
                 apply_served_model_preferences(context)
         else:
             prepared = apply_served_model_preferences(context)
-            assert prepared is context
-            with pytest.raises(ProviderAuthorityHeldError, match="accepted model assignment"):
-                apply_served_model_preferences(
-                    context, model_choice=ModelPreferences("automatic", None, ()).document(),
-                )
+            assert prepared is not context
+            assert prepared.model_selection == ModelRef("codex", "")
+            auto = apply_served_model_preferences(
+                context, model_choice=ModelPreferences("automatic", None, ()).document(),
+            )
+            assert auto.model_selection == prepared.model_selection
             native = _RecordingProvider("codex")
-            response = asyncio.run(ProviderRouter({"codex": native}).call(
-                role="writer", prompt="hello", system="system", operation="converse",
-                universe_context=prepared,
-            ))
+            from tinyassets.providers.base import ModelConfig
+            from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
+            from tinyassets.request_budget import TurnRequestBudget
+
+            budget = TurnRequestBudget("owner-1", universe.name)
+            budget.persist(tmp_path)
+            try:
+                response = asyncio.run(call(ModelCall(
+                    model=None, fallbacks=(), context=ModelContext(
+                        role="writer", prompt="hello", system="system", operation="converse",
+                        universe_context=prepared, router=ProviderRouter({"codex": native}),
+                        config=ModelConfig(request_budget=budget),
+                    ),
+                ), Parent(owner="owner-1", command_center=universe.name))).response
+            finally:
+                budget.close()
             assert response.provider == "codex" and native.calls == 1
         assert store.get("owner-1", universe.name, require_current_home=True) == saved
     finally:

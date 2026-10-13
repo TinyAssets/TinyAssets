@@ -116,7 +116,9 @@ def test_mixed_native_catalogue_keeps_independent_http_choices(
     assert catalogue.native.calls == 0
 
 
-def test_registered_but_unaccepted_models_are_visible_and_not_authorized(catalogue):
+def test_newly_connected_source_is_listed_but_not_selectable_until_accepted(catalogue):
+    """Connected custody is not model authority: a source the owner never
+    accepted is shown so it can be offered, and nothing on it is selectable."""
     catalogue.binding = integration.enable(catalogue)
     extra = definition.register_definition(
         universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
@@ -125,10 +127,11 @@ def test_registered_but_unaccepted_models_are_visible_and_not_authorized(catalog
     result = read()
     source = next(row for row in result["sources"] if row["bind_key"] == extra.id)
     assert source["accepted"] is False and "source_not_accepted" in source["reasons"]
-    row = next(row for row in result["options"]
-               if row["reference"]["provider_ref"] == "api_key_http:" + extra.id)
-    assert not row["in_candidate_catalog"] and row["order_index"] is None
+    assert not any(row["in_candidate_catalog"] for row in result["options"]
+                   if row["reference"]["provider_ref"] == "api_key_http:" + extra.id)
     assert extra.id not in result["accepted_model_access"]
+    assert result["order"] == [{"provider_ref": "api_key_http:" + catalogue.rig.definition.id,
+                                "model_id": "new-company/new-model"}]
 
 
 def test_legacy_model_scope_explains_optin_without_hiding_discovery(catalogue):
@@ -149,6 +152,18 @@ def test_legacy_model_scope_explains_optin_without_hiding_discovery(catalogue):
     assert "discovery_unavailable" not in result["sources"][0]["reasons"]
 
 
+def _discovers_configured_model(monkeypatch, reader):
+    """The legacy source's configured model is on its live catalogue; the legacy
+    lane runs that one model and nothing the catalogue does not list."""
+    def read(**kwargs):
+        document = reader[1](**kwargs)
+        if "benchmarks" not in kwargs["url"]:
+            document = {**document, "data": [*document["data"], _model("legacy-fixed")]}
+        return document
+    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", read)
+    return read
+
+
 @pytest.mark.parametrize("revoked", [False, True])
 def test_legacy_http_configuration_is_identified_without_inventing_a_candidate(
     catalogue, reader, monkeypatch, revoked,
@@ -162,10 +177,11 @@ def test_legacy_http_configuration_is_identified_without_inventing_a_candidate(
         expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
     )
     catalogue.binding = connected["agent_binding"]
+    discover = _discovers_configured_model(monkeypatch, reader)
     catalogue.binding = integration.enable(catalogue)
     if revoked:
         def revoke_during_discovery(**kwargs):
-            result = reader[1](**kwargs)
+            result = discover(**kwargs)
             catalogue.rig.ledger.revoke_grant("grant-models")
             return result
         monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document",
@@ -190,7 +206,8 @@ def test_foreign_registered_source_is_not_listed(catalogue):
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_shared_access_confirmation_composes_bind_then_enable(catalogue, legacy):
+def test_shared_access_confirmation_composes_bind_then_enable(catalogue, reader, monkeypatch,
+                                                              legacy):
     from tinyassets.provider_serving_binding import bind_serving_provider
 
     if legacy:
@@ -201,6 +218,7 @@ def test_shared_access_confirmation_composes_bind_then_enable(catalogue, legacy)
             expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
         )
         catalogue.binding = bound["agent_binding"]
+        _discovers_configured_model(monkeypatch, reader)
         source_id = catalogue.rig.definition.id
     else:
         extra = definition.register_definition(

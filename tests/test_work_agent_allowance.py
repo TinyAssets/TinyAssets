@@ -12,6 +12,7 @@ from tests.test_work_model_selection import http_wire  # noqa: F401 - pytest fix
 from tinyassets.foreground_run_provider import _work_invocation_allowance
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_work_authority import ProviderInvocationReservationState
+from tinyassets.request_budget import TurnRequestBudget
 from tinyassets.storage.provider_work_authority import _reservation_charge, db_path
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
@@ -62,14 +63,20 @@ def test_a_plain_prompt_node_beside_an_agent_node_shares_the_allowance():
 @pytest.mark.parametrize("agent", [False, True])
 @pytest.mark.parametrize("open_provider", [False, True])
 @pytest.mark.usefixtures("http_wire")
-def test_actual_foreground_receipt_uses_existing_binding_ceiling(
+def test_actual_foreground_receipt_uses_parent_allocation_ceiling(
     tmp_path, monkeypatch, authenticate_request, agent, open_provider,
 ):
+    from tinyassets.daemon_server import grant_universe_access
+
     # Exercise admission only for agent work. No engine route is installed in
     # this fixture; full tool-loop proof lives in test_workflow_http_agent.py.
     branch = _branch(node_count=1)
     if agent:
         branch.node_defs[0].tools_allowed = ["universe_self"]
+        grant_universe_access(
+            tmp_path, universe_id="universe_alice", actor_id="acct_alice",
+            permission="admin", granted_by="acct_alice",
+        )
     _run_branch(
         tmp_path, monkeypatch, authenticate_request, branch, open_provider=open_provider,
         model_access=ModelAccess("discovered") if open_provider else None,
@@ -78,31 +85,33 @@ def test_actual_foreground_receipt_uses_existing_binding_ceiling(
         receipts = [json.loads(row[0]) for row in conn.execute(
             "SELECT record_json FROM provider_work_receipts",
         )]
-        bindings = [json.loads(row[0]) for row in conn.execute(
-            "SELECT record_json FROM provider_work_bindings",
-        )]
     assert len(receipts) == 1
     receipt = receipts[0]
+    assert receipt["authority_scope"] == "manifest"
+    assert receipt["binding_id"] is None
+    assert receipt["provider"] is None
+    assert receipt["principal_id"] == "acct_alice"
     if open_provider:
-        assert receipt["authority_scope"] == "manifest" and receipt["binding_id"] is None
-        assert len(bindings) == 1
-        binding = bindings[0]
+        assert len(receipt["admitted_sources"]) == 1
+        assert receipt["admitted_sources"][0].startswith("api_key_http:")
     else:
-        binding = next(b for b in bindings if b["binding_id"] == receipt["binding_id"])
+        assert receipt["admitted_sources"] == ["codex"]
     # Open-provider fixture supplies a policy. The node pins a provider and no model,
     # so the run's captured automatic order is that source's whole eligible
-    # catalogue (two models in this fixture), fitted under the accepted binding
+    # catalogue (two models in this fixture), fitted under the parent allocation
     # ceiling. It used to be one slot's worth, because a run with no saved
     # preference built no order and could only ever attempt the source's
     # declared default (tests/test_free_account_run_provider_parity.py).
     retry_slots = 1
+    allocation = TurnRequestBudget("acct_alice", "universe_alice")
+    ceiling = allocation.max_requests or 1000
     assert receipt["max_invocations"] == (
-        binding["max_invocations"] if agent
+        ceiling if agent
         else 2 * retry_slots if open_provider
         else 1
     )
-    assert receipt["max_tokens"] == binding["max_tokens"]
-    assert receipt["max_cost_microunits"] == binding["max_cost_microunits"]
+    assert receipt["max_tokens"] == allocation.max_tokens
+    assert receipt["max_cost_microunits"] == allocation.max_cost_microunits
 
 
 @pytest.mark.parametrize("state", list(ProviderInvocationReservationState))

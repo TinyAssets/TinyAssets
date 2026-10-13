@@ -253,8 +253,9 @@ def test_a_stored_failure_without_evidence_infers_no_pending_tool():
     (True, math.nan, {}),
 ])
 async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
-    monkeypatch, phase, age, expected,
+    monkeypatch, tmp_path, phase, age, expected,
 ):
+    from tests.support.model_call import call as model_call
     from tinyassets.api.runs import _run_error_detail
     from tinyassets.exceptions import AllProvidersExhaustedError
     from tinyassets.foreground_run_provider import _held_attempt_error
@@ -274,7 +275,6 @@ async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
                 prompt="private-prompt", credential="private-credential",
             )
 
-    from pathlib import Path
     from unittest.mock import MagicMock
 
     import tinyassets.providers.router as router_mod
@@ -283,7 +283,10 @@ async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
 
     # Hard Rule 15: a real router call carries one universe owner's authority.
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-tool-wait")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-tool-wait",
+        admitted_sources=frozenset({"codex"}),
+    )
     carrier.provider = "codex"
     carrier.role = "writer"
     carrier.operation = "run_graph"
@@ -298,12 +301,14 @@ async def test_router_held_compiler_and_run_read_keep_only_valid_evidence(
 
     monkeypatch.delenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", raising=False)
     router = ProviderRouter(providers={"codex": TimeoutProvider()})
+    universe = tmp_path / "u-tool-wait"
+    universe.mkdir()
     with pytest.raises(AllProvidersExhaustedError) as caught:
-        await router.call(
+        await model_call(router,
             "writer", "prompt", "system", ModelConfig(max_tokens=10),
             operation="run_graph",
             universe_context=UniverseContext(
-                universe_dir=Path("u-tool-wait"), provider_invocation=carrier,
+                universe_dir=universe, provider_invocation=carrier,
             ),
         )
     held = _held_attempt_error("writer", ModelRef("codex", "default"), caught.value)

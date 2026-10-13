@@ -308,8 +308,7 @@ class TestTheAsyncSlotDoesNotStallItsOwnLoop:
     A blocking `acquire()` inside async router code stalls the event loop, so a waiter
     prevents the very holder it is waiting for from finishing. Reproduced with limit 1,
     a 200 ms wait and 10 ms of admitted work: `[0.201, 'ProviderBusy']`. It reaches
-    production through `call_judge_ensemble`, which gathers admission-taking tasks onto
-    one loop.
+    production through concurrent model calls on one loop.
     """
 
     def test_two_coroutines_on_one_loop_do_not_starve_each_other(self, monkeypatch):
@@ -393,7 +392,7 @@ class TestTheBoundBindsBehaviourally:
     asserts the ADMISSION LEDGER moved — which no substitution can fake.
     """
 
-    def test_a_router_call_holds_a_slot_during_the_provider_call(self, monkeypatch):
+    def test_a_router_call_holds_a_slot_during_the_provider_call(self, monkeypatch, tmp_path):
         """Constructs a real ProviderRouter and awaits a real dispatch.
 
         Three weaker versions lost to Codex first: a `nullcontext` plugin, a runtime
@@ -426,15 +425,18 @@ class TestTheBoundBindsBehaviourally:
                     latency_ms=0.0,
                 )
 
-        from pathlib import Path
         from unittest.mock import MagicMock, patch
 
         from tinyassets.provider_work_authority import ProviderInvocationCarrier
         from tinyassets.providers.base import UniverseContext
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
 
         # Hard Rule 15: a real dispatch needs an owner's authority.
         carrier = MagicMock(spec=ProviderInvocationCarrier)
-        carrier._receipt = MagicMock(principal_id="owner", universe_id="u-admission")
+        carrier._receipt = MagicMock(
+            principal_id="owner", universe_id="u-admission",
+            admitted_sources=frozenset({"codex"}),
+        )
         carrier.provider = "codex"
         carrier.role = "judge"
         carrier.operation = "run_graph"
@@ -446,14 +448,19 @@ class TestTheBoundBindsBehaviourally:
         carrier.validate_for_call.return_value = "codex"
 
         router = ProviderRouter(providers={"codex": _Observing()})
+        universe = tmp_path / "u-admission"
+        universe.mkdir()
         with patch("tinyassets.providers.router._provider_invocation_carrier",
                    return_value=carrier):
-            asyncio.run(router.call_judge_ensemble(
-                "p", "s", ModelConfig(max_tokens=10), operation="run_graph",
-                universe_context=UniverseContext(
-                    universe_dir=Path("u-admission"), provider_invocation=carrier,
+            asyncio.run(call(ModelCall(
+                model=None, fallbacks=(), context=ModelContext(
+                    role="judge", prompt="p", system="s",
+                    config=ModelConfig(max_tokens=10), operation="run_graph",
+                    universe_context=UniverseContext(
+                        universe_dir=universe, provider_invocation=carrier,
+                    ), router=router,
                 ),
-            ))
+            ), Parent(owner="owner", command_center=universe.name)))
 
         # Deliberately NOT a skip on failure: a test that opts out when it cannot reach
         # the provider is the same decorative failure in a new costume.

@@ -381,6 +381,28 @@ def test_converse_persistence_failure_does_not_break_reply(tmp_path, monkeypatch
     assert _fm(udir / "founder.md", "status") == "not-learned"
 
 
+def test_failed_post_turn_learning_reports_a_bounded_receipt_reason(tmp_path, monkeypatch):
+    from tinyassets.exceptions import ExternalAgentUnavailable
+    from tinyassets.providers.execution_receipt import normalize_execution_receipt
+
+    def refused(*_args):
+        raise ExternalAgentUnavailable("codex", "gpt-6.1-sol", "job_failed:incomplete")
+
+    monkeypatch.setattr(ui, "extract_learning", refused)
+    reasons = []
+    settled = ui._learn_from_turn(
+        object(), universe_dir=tmp_path, universe_id="u-owner",
+        founder_message="hello", reply="done", actor_id="owner", agent_id="main",
+        failure_observer=reasons.append,
+    )
+    assert not settled and reasons == ["job_failed:incomplete"]
+    receipt = normalize_execution_receipt({
+        "provider": "codex", "model": "", "model_status": "unknown",
+        "execution": "native_agent", "learning_failure": reasons[0],
+    })
+    assert receipt["learning_failure"] == "job_failed:incomplete"
+
+
 def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):
     # Worldbuilding is written into the universe's OWN private canon by the
     # intelligence — organic (custom) category allowed (OKF growth).

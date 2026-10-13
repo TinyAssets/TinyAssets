@@ -79,5 +79,12 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
                                                          coordinator.config),
             timeout=timeout,
             ta_turn=turn_id,
+            model_budget=coordinator.request_budget,
+            model_parent=("turn", turn_id,
+                          getattr(coordinator.context.provider_request,
+                                  "agent_binding_id", ""),
+                          getattr(coordinator.context.provider_request,
+                                  "binding_revision", None))
+            if coordinator.context.provider_request is not None else None,
             **coordinator.steering(),
         )

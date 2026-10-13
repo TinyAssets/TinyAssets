@@ -188,14 +188,20 @@ def test_initialize_without_a_bearer_is_challenged_through_the_app(client):
     )
     assert response.status_code == 401
     assert response.headers["www-authenticate"].startswith("Bearer ")
-    assert response.json() == {"error": "authentication_required"}
+    assert response.json() == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_browser_get_of_the_endpoint_is_challenged_too(client):
-    # The discovery HTML used to be served to anybody. It is under /mcp and
-    # carries no named authentication of its own, so it is challenged like
-    # every other /mcp path; the public website is the place for prose.
-    assert client.get("/mcp", headers={"Accept": "text/html"}).status_code == 401
+    # A human following the site footer gets the connect page. It is not an
+    # anonymous principal: the body is static instructions, and a transport
+    # request on the same path is still the bearer challenge.
+    page = client.get("/mcp", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "Connect via MCP client" in page.text
+    assert "authentication_required" not in page.text
 
 
 # --------------------------------------------------------------------------
@@ -400,7 +406,11 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
         "/.well-known/oauth-protected-resource",
         "/mcp/.well-known/oauth-protected-resource",
         "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/mcp",
         "/mcp/.well-known/oauth-authorization-server",
+        "/mcp/oauth/register",
+        "/mcp/oauth/authorize",
+        "/mcp/oauth/token",
     ):
         assert _auth_challenge_path(exempt) is False, exempt
     for challenged in (
@@ -408,6 +418,8 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
         "/mcp/.well-known/../secret",
         "/mcp/.well-known/oauth-protected-resource/extra",
         "/mcp/x.well-known.y",
+        "/mcp/oauth",
+        "/mcp/oauth/register/extra",
     ):
         assert _auth_challenge_path(challenged) is True, challenged
 
@@ -415,7 +427,10 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
 def test_an_unauthenticated_post_to_a_wellknown_lookalike_is_challenged(client):
     response = client.post("/mcp/not.well-known/a", json={"jsonrpc": "2.0"})
     assert response.status_code == 401
-    assert response.json() == {"error": "authentication_required"}
+    assert response.json() == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_a_source_event_carries_its_hook_owner_to_the_run(monkeypatch, tmp_path):

@@ -483,6 +483,11 @@ def auth_middleware(token: str | None) -> Identity | None:
     identity: Identity | None = None
     from tinyassets.api_keys import looks_like_key
 
+    if token:
+        from tinyassets.observability import observe_bearer
+
+        observe_bearer(token)
+
     # An API key is a REST credential only: it never reaches the OAuth provider
     # (or its logs), so it can never become an MCP or app session.
     if token and not looks_like_key(token):
@@ -528,9 +533,23 @@ def _inbound_hooks_enabled() -> bool:
 #: a pattern.
 _DISCOVERY_PATHS = frozenset({
     "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
     "/mcp/.well-known/oauth-protected-resource",
     "/.well-known/oauth-authorization-server",
+    # RFC 8414 path insertion when a client treats the MCP URL as the issuer.
+    "/.well-known/oauth-authorization-server/mcp",
     "/mcp/.well-known/oauth-authorization-server",
+})
+
+
+#: Local authorization server, mounted under the ``/mcp`` door. Exact paths
+#: only: registration, authorize, and token run before a bearer exists. A
+#: sibling such as ``/mcp/oauth/register/extra`` stays challenged. WorkOS mode
+#: still answers these three with 501.
+_LOCAL_OAUTH_PATHS = frozenset({
+    "/mcp/oauth/register",
+    "/mcp/oauth/authorize",
+    "/mcp/oauth/token",
 })
 
 
@@ -620,7 +639,7 @@ def _auth_challenge_path(path: str) -> bool:
     retired path answer a "clean" 404 would be a special case *for* the retired
     path, which is the back-compat the move removes.
     """
-    if path in _DISCOVERY_PATHS:
+    if path in _DISCOVERY_PATHS or path in _LOCAL_OAUTH_PATHS:
         return False
     from tinyassets.onboarding.public_run import public_path
 
@@ -689,6 +708,11 @@ def _auth_challenge_path(path: str) -> bool:
     # /app/billing/... route is exempt, so checkout and cancel stay identity-gated.
     if path == "/app/billing/webhook":
         return False
+    # Browser page loads and uncaught errors. The marketing site has no bearer.
+    # Exactly this path; ``/app/client-error/x`` and ``/app/client-errors`` stay
+    # challenged.
+    if path == "/app/client-error":
+        return False
     # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
     # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
@@ -701,25 +725,61 @@ def _auth_challenge_path(path: str) -> bool:
     return path == "/mcp" or path.startswith("/mcp/") or _is_app_path(path)
 
 
+def _scope_header(scope: dict, name: str) -> str:
+    target = name.lower().encode("ascii")
+    for key, value in scope.get("headers") or []:
+        if key.lower() == target:
+            return value.decode("latin-1")
+    return ""
+
+
+def _browser_connect_page(scope: dict) -> bool:
+    """A person opened ``/mcp`` in a browser.
+
+    The footer links here. ``Accept: text/html`` with no streamable-HTTP
+    signal gets the static connect page. POST, HEAD, a session, a protocol
+    version, or ``text/event-stream`` stay on the bearer challenge so an MCP
+    client still receives ``401`` and ``WWW-Authenticate``.
+    """
+    if scope.get("method", "").upper() != "GET":
+        return False
+    if scope.get("path") not in {"/mcp", "/mcp/"}:
+        return False
+    if _scope_header(scope, "mcp-protocol-version").strip():
+        return False
+    if _scope_header(scope, "mcp-session-id").strip():
+        return False
+    accept = _scope_header(scope, "accept").lower()
+    if "text/event-stream" in accept:
+        return False
+    return "text/html" in accept
+
+
+#: Body copy for the two 401 shapes. The header stays a bare challenge when
+#: the token is absent (RFC 6750); ``invalid_token`` is only for a token we
+#: were given and refused.
+_MISSING_TOKEN_DESCRIPTION = "Sign in to TinyAssets to continue."
+_INVALID_TOKEN_DESCRIPTION = (
+    "The TinyAssets access token is invalid or expired; sign in again."
+)
+
+
 def _challenge_prm_url() -> str:
     """The ``resource_metadata`` URL to advertise in the 401 challenge.
 
-    It MUST be fetchable by the client, or OAuth discovery never starts. In
-    production only ``/mcp*`` is proxied to the daemon (Cloudflare Worker), so an
-    apex ``/.well-known/oauth-protected-resource`` 404s. When ``WORKOS_MCP_RESOURCE``
-    is set (e.g. ``https://tinyassets.io/mcp``) derive the PRM from it, yielding
-    the routed ``…/mcp/.well-known/oauth-protected-resource`` (the mcp-prefixed
-    variant the server also mounts). Fallback: the server root well-known, which
-    is correct in dev/tunnel where every path routes to the daemon.
+    RFC 9728 inserts ``/.well-known/oauth-protected-resource`` between the
+    host and the resource path, so ``https://tinyassets.io/mcp`` is advertised
+    as ``https://tinyassets.io/.well-known/oauth-protected-resource/mcp``.
+    The older ``/mcp/.well-known/oauth-protected-resource`` path still serves
+    the same document. When ``WORKOS_MCP_RESOURCE`` is unset, the server URL
+    is inserted the same way.
     """
     import os
 
-    resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip().rstrip("/")
-    if resource:
-        return f"{resource}/.well-known/oauth-protected-resource"
-    from tinyassets.auth.wellknown import _server_url
+    from tinyassets.auth.wellknown import _server_url, resource_metadata_url
 
-    return f"{_server_url()}/.well-known/oauth-protected-resource"
+    resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip()
+    return resource_metadata_url(resource or _server_url())
 
 
 async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
@@ -738,22 +798,28 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
             rejection_description,
         )
 
-        description = rejection_description(rejection_category())
-        if description:
-            challenge = (
-                f'Bearer error="invalid_token", error_description="{description}", '
-                f'resource_metadata="{prm}"'
-            )
-            body = json.dumps(
-                {"error": "invalid_token", "error_description": description},
-                separators=(",", ":"),
-            ).encode()
-        else:
-            challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
-            body = b'{"error":"invalid_token"}'
+        description = (
+            rejection_description(rejection_category()) or _INVALID_TOKEN_DESCRIPTION
+        )
+        challenge = (
+            f'Bearer error="invalid_token", error_description="{description}", '
+            f'resource_metadata="{prm}"'
+        )
+        body = json.dumps(
+            {"error": "invalid_token", "error_description": description},
+            separators=(",", ":"),
+        ).encode()
     else:
+        # No error code: RFC 6750 says a request that carries no token gets
+        # the challenge alone. The body still names why, for a person reading it.
         challenge = f'Bearer resource_metadata="{prm}"'
-        body = b'{"error":"authentication_required"}'
+        body = json.dumps(
+            {
+                "error": "authentication_required",
+                "error_description": _MISSING_TOKEN_DESCRIPTION,
+            },
+            separators=(",", ":"),
+        ).encode()
     await send(
         {
             "type": "http.response.start",
@@ -805,9 +871,7 @@ def _tool_linking_challenge_body(
 
     specific = rejection_description(rejection_category()) if invalid_token else None
     description = specific or (
-        "The TinyAssets access token is invalid or expired; sign in again."
-        if invalid_token
-        else "Sign in to TinyAssets to continue."
+        _INVALID_TOKEN_DESCRIPTION if invalid_token else _MISSING_TOKEN_DESCRIPTION
     )
     challenge = (
         f'Bearer resource_metadata="{prm}", error="{error}", '
@@ -1169,6 +1233,9 @@ class AuthContextMiddleware:
                         return
                     receive = _replay_receive(messages, receive)
             if not canary_authorized and not is_hook_route and identity is None:
+                if not token and _browser_connect_page(scope):
+                    await self.app(scope, receive, send)
+                    return
                 linking_body = None
                 if method == "POST" and path in ("/mcp", "/mcp/"):
                     request_body, _, disconnected, oversized = await _buffer_request_body(receive)
@@ -1199,6 +1266,12 @@ class AuthContextMiddleware:
                     return
             await self.app(scope, receive, send)
         finally:
+            try:
+                from tinyassets.observability import observe_identity
+
+                observe_identity(_current_identity.get())
+            except Exception:
+                logger.exception("session trail identity snapshot failed")
             reset_wiki_canary_authority(previous_canary)
             _current_request_boundary_id.reset(previous_boundary)
             _current_bearer_present.reset(previous_bearer)

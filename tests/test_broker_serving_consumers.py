@@ -23,9 +23,15 @@ def case(tmp_path, monkeypatch):
                                 "methods": ["POST"]}])
         ledger.grant_connection(grant_id=f"grant-{owner}", connection_id=f"conn-{owner}",
                                 owner_user_id=owner, universe_id="cc-alice")
+        ledger.configure_capability(
+            connection_id=f"conn-{owner}", capability_kind="model_use", enabled=True,
+            descriptor={"wire": "openai_chat", "billing": "free", "models": [
+                {"id": f"{owner}-fixture", "tools": True, "context": 8192},
+            ]},
+        )
         definitions[owner] = register_definition(
             universe_id="cc-alice", owner_user_id=owner, access_method="api_key_http",
-            protocol="chat_messages", model=f"{owner}-fixture", ref=f"grant-{owner}")
+            protocol="openai_chat", model=f"{owner}-fixture", ref=f"grant-{owner}")
     definitions["foreign"] = register_definition(
         universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
         protocol="chat_messages", model="foreign-fixture", ref="grant-bob")
@@ -110,9 +116,12 @@ def test_serving_broker_outage_has_no_local_fallback(case, monkeypatch):
 
 def test_real_bind_and_set_serving_use_broker_custody(case):
     from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import set_founder_home
 
     home = case.root / "cc-alice"
     home.mkdir(exist_ok=True)
+    set_founder_home(case.root, founder_sub="alice", universe_id="cc-alice",
+                     platform_generated=True)
     published = publish_definition(case.root, author_id="alice", payload={
         "schema_version": 1, "name": "Served", "description": "broker custody fixture",
         "tags": ["test"], "components": {"identity": {"kind": "soul", "config": {}}}})

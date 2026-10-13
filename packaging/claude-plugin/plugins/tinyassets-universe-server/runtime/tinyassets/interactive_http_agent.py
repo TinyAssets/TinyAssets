@@ -72,7 +72,11 @@ class ServedChatAgentAdapter:
                 agent_execution_kind=kind,
                 router=router,
             ), origin="chat",
-        ), Parent(owner="", command_center=context.universe_dir.name))
+        ), Parent(
+            owner="", command_center=context.universe_dir.name,
+            usage_id=(config.request_budget.usage_id
+                      if config.request_budget is not None else None),
+        ))
         return result.response
 
     def round_input(self, authority, reservation, config, *, owner, context,

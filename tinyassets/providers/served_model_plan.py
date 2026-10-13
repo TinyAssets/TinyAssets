@@ -14,14 +14,15 @@ from tinyassets.custom_agents import get_binding
 from tinyassets.exceptions import ProviderError
 from tinyassets.provider_assignment import (
     _served_request_agent,
+    accepted_connected_model_access,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
 )
 from tinyassets.provider_serving_binding import (
     _PROVIDER_SERVICE,
     ServingProviderHeld,
-    _current_selected_member_authority,
     _resolve_serving_source,
+    current_connected_source_custody,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
@@ -40,12 +41,12 @@ from tinyassets.providers.model_policy import (
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
-from tinyassets.storage.current_home import check_current_home
+from tinyassets.storage.current_home import check_plan_scope, current_home
 from tinyassets.storage.learned_models import (
     LEARNED_SOURCE_KIND,
     OWN_VERIFIED_BASIS,
 )
-from tinyassets.storage.model_preferences import ModelPreferenceStore
+from tinyassets.storage.model_preferences import ModelPreferenceStore, PreferenceSnapshot
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
@@ -59,7 +60,8 @@ PUBLIC_LISTED_BASIS = "publicly_listed"
 _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
-def connected_sources(base: str | Path, universe: str | Path, owner: str) -> frozenset[str]:
+def connected_sources(base: str | Path, universe: str | Path, owner: str,
+                      *, conn=None) -> frozenset[str]:
     """Return this owner's live model sources for one command center.
 
     The set is rebuilt from custody and broker grants on each launch. A saved
@@ -76,15 +78,20 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
             or not owner):
         raise PermissionError("invalid connected-source scope")
     sources: set[str] = set()
-    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
-        conn.execute("BEGIN")
+    def subscriptions(db):
         for provider, service in _PROVIDER_SERVICE.items():
             if current_llm_subscription_custody(
-                conn, universe_dir=universe, owner_user_id=owner,
+                db, universe_dir=universe, owner_user_id=owner,
                 universe_id=universe.name, service=service,
             ) is not None:
                 sources.add(provider)
-        conn.rollback()
+    if conn is None:
+        with SQLiteProviderWorkAuthorityStore(base).connection() as db:
+            db.execute("BEGIN")
+            subscriptions(db)
+            db.rollback()
+    else:
+        subscriptions(conn)
     for definition in list_definitions(universe.name):
         if definition.owner_user_id != owner or definition.access_method != "api_key_http":
             continue
@@ -105,7 +112,7 @@ def connected_sources(base: str | Path, universe: str | Path, owner: str) -> fro
 
 #: Prefix of the refusal when no accepted model can run. The served turn's
 #: notice reads the held sources after ``HELD_SOURCES`` (universe_server).
-NO_ELIGIBLE_MODEL = "no eligible model in the accepted assignment"
+NO_ELIGIBLE_MODEL = "no eligible model in the connected sources"
 HELD_SOURCES = "not usable now: "
 
 def _assert_plan_snapshot(snapshot, *, display_only=False):
@@ -137,6 +144,8 @@ class PreparedPlan:
     preferences: object
     snapshots: tuple
     display_only: bool = False
+    #: Captured for the owner's current home, where saved preferences apply.
+    home_scoped: bool = True
 
     def recheck(self, conn, *, store, base, universe, owner, agent, check_preferences=False):
         if self.display_only:
@@ -144,25 +153,23 @@ class PreparedPlan:
         self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
                            check_preferences=check_preferences)
         for provider, expected in self.chains:
-            actual = _current_selected_member_authority(
-                conn, store=store, universe_dir=universe, base_path=base,
-                owner_user_id=owner, universe_id=universe.name, agent=agent, provider=provider,
+            actual = current_connected_source_custody(
+                conn, base=base, universe=universe, owner=owner, provider=provider,
             )
-            if actual != expected:
-                raise PermissionError("model member changed during discovery")
+            if actual != expected[1]:
+                raise PermissionError("model source changed during discovery")
         for snapshot in self.snapshots:
             _assert_plan_snapshot(snapshot)
 
     def recheck_scope(self, conn, *, universe, owner, agent, check_preferences=False):
-        """A changed home/agent/assignment invalidates the entire display too."""
+        """A changed home or agent invalidates the captured plan."""
         from tinyassets.storage.model_preferences import _read
 
-        check_current_home(conn, owner, universe.name)
-        if agent != self.agent or load_provider_assignment_in_transaction(
-            conn, universe_id=universe.name,
-        ) != self.assignment:
-            raise PermissionError("model assignment changed during discovery")
-        if check_preferences and _read(conn, owner, universe.name) != self.preferences:
+        check_plan_scope(conn, owner, universe.name, home_scoped=self.home_scoped)
+        if agent != self.agent:
+            raise PermissionError("model agent changed during discovery")
+        if (check_preferences and self.home_scoped
+                and _read(conn, owner, universe.name) != self.preferences):
             raise PermissionError("model preferences changed during activation")
     def recheck_display(self, conn, *, store, base, universe, owner, agent):
         """Demote only failed sources; never let them hide independent choices."""
@@ -171,11 +178,10 @@ class PreparedPlan:
         failed = {}
         for provider, expected in self.chains:
             try:
-                actual = _current_selected_member_authority(
-                    conn, store=store, universe_dir=universe, base_path=base,
-                    owner_user_id=owner, universe_id=universe.name, agent=agent, provider=provider,
+                actual = current_connected_source_custody(
+                    conn, base=base, universe=universe, owner=owner, provider=provider,
                 )
-                if actual != expected:
+                if actual != expected[1]:
                     failed[provider] = "source_revoked"
             except PermissionError:
                 failed[provider] = "source_revoked"
@@ -265,7 +271,7 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
             effort_levels=model.effort_levels,
         ) for model in native_snapshot.catalogue.models if not model.hidden)
-    # What the PLATFORM has seen work on this KIND of source, newest of each class.
+    # The owner's verified history is source-scoped; reviewed public lists use kind.
     # Without this the list is only what this owner typed into their own access
     # grant, so a newly released model was invisible until someone shipped a patch
     # (founder, 2026-09-26: "i cant seem to select fable as a user for the llm").
@@ -281,15 +287,21 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
     # nothing ever listed it, so a solo user's ARN silently vanished from their own
     # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
     # keeping it.
-    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, owner,
+    # Package catalogues are provider-specific. A subscription-wide history or
+    # list can carry another CLI's ids and must not be presented as this one.
+    from tinyassets.external_agents.provider import ExternalAgentProvider
+
+    router = get_provider_router()
+    provider = None if router is None else router._providers.get(member.provider)
+    candidate_kind = ("agent_" + member.provider.replace("-", "_")
+                      if isinstance(provider, ExternalAgentProvider) else LEARNED_SOURCE_KIND)
+    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, member.provider, owner,
                                           already=models, excluded=withdrawn))
     # ...then the reviewed public list for this kind of source, which is how a newly
     # released model reaches everyone without a patch: a PR adds the id, review is the
     # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models,
+    models.extend(_listed_candidates(candidate_kind, already=models,
                                      excluded=withdrawn))
-    router = get_provider_router()
-    provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
         raise ModelSourceUnavailable("executor_unavailable")
     return ConnectionModels(
@@ -299,17 +311,17 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
     )
 
 
-def _own_verified_candidates(base, source_kind, owner, *, already, excluded=frozenset()):
-    """Ids THIS owner has already made work on this kind of source.
+def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
+                             excluded=frozenset()):
+    """Ids THIS owner has already made work on this source.
 
     Their own history, not anyone else's: read from the private evidence table
     scoped to this owner, so nothing here depends on the promotion threshold. A
     solo user keeps every id they have ever used even though none of it is public.
 
-    Carries its own basis so the list can be honest about the difference between
-    "you have run this" and "two owners elsewhere have run this". Like the
-    published rows, these do not grant access: the owner may have narrowed their
-    scope since, and subscription history does not identify the provider. Display
+    Carries its own basis so the list distinguishes owner history from reviewed
+    public ids. Like the published rows, these do not grant access: the owner may
+    have narrowed their scope since. Display
     retention requires a non-hidden row in this provider's last catalogue under
     current custody, while refresh is pending or failed. Such rows are already
     included as executor_enumerated, so history-only rows remain offers. A fresh
@@ -319,7 +331,7 @@ def _own_verified_candidates(base, source_kind, owner, *, already, excluded=froz
 
     have = {model.model_id for model in already} | set(excluded)
     try:
-        rows = OwnModelHistory(base).ids_for(source_kind, owner)
+        rows = OwnModelHistory(base).ids_for(source_kind, provider_ref, owner)
     except (OSError, sqlite3.DatabaseError, ValueError) as exc:
         _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
         return ()
@@ -407,16 +419,16 @@ def _reconnect_sources(base, owner, uid, chains):
     return tuple(
         provider for provider, chain in chains
         if SOURCE_HEALTH.needs_reconnect(source_key(
-            base, owner, uid, next(m for m in chain[0].candidates if m.provider == provider),
+            base, owner, uid, chain[0],
         ))
     )
 
 
-def _refused_models(base, owner, chains):
+def _refused_models(base, owner, sources):
     """This owner's recently refused models on the sources in this plan."""
     from tinyassets.storage.refused_models import active_refused_models
 
-    providers = {provider for provider, _chain in chains}
+    providers = set(sources)
     return tuple(
         ModelRef(mark.connection_id, mark.model_id)
         for mark in active_refused_models(base, owner_user_id=owner)
@@ -431,21 +443,34 @@ def prepare_owned_model_plan(
     """Private composition for authenticated ingress and serving readiness.
 
     Caller must verify its principal and exact agent first. No principal is
-    inferred from preferences. A manifest is the explicit opt-in to discovery;
-    absent preferences on an existing legacy assignment leave its path unchanged.
-    allow_empty permits advisory display, never invocation without a candidate.
+    inferred from preferences. The plan is advisory; dispatch checks live
+    connected custody again. allow_empty permits advisory display.
     """
     if type(needs_tools) is not bool:
         raise ValueError("invalid conversation tool mode")
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
+    # Saved preferences, model choice and a confirmed model setup all belong to
+    # the owner's current home: `apply_served_model_preferences` refuses a
+    # choice anywhere else, the preference writers require the home, and model
+    # access is confirmed on the home-only surface, so a manifest stays bound to
+    # the home it was accepted in. A command center that is not the home and
+    # has no manifest -- a second one the owner created, or a first connect
+    # before any home row exists -- plans automatically over the owner's
+    # connected sources with no preference read, which is what enabling serving
+    # there always did. Read here, not through the serving-side home helper:
+    # planning is discovery configuration, which must not need a powered agent.
+    with store.connection() as conn:
+        conn.execute("BEGIN")
+        accepted = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
+        home_scoped = (current_home(conn, owner) == universe.name
+                       or bool(accepted is not None and accepted.manifest_digest))
+        conn.rollback()
     if preference_snapshot is None:
         preferences = ModelPreferenceStore(base).get(
             owner, universe.name, require_current_home=True,
-        )
+        ) if home_scoped else PreferenceSnapshot()
     else:
-        from tinyassets.storage.model_preferences import PreferenceSnapshot
-
         if type(preference_snapshot) is not PreferenceSnapshot or allow_empty:
             raise ValueError("invalid captured model preferences")
         preferences = preference_snapshot
@@ -460,47 +485,41 @@ def prepare_owned_model_plan(
             raise PermissionError("agent binding changed")
         with store.connection() as conn:
             conn.execute("BEGIN")
-            check_current_home(conn, owner, universe.name)
+            check_plan_scope(conn, owner, universe.name, home_scoped=home_scoped)
             assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
-            if assignment is None or not assignment.manifest_digest:
-                if captured is None or (
-                    current is None and preferences.policy is not None
-                    and preferences.policy.mode == "automatic"
-                ):
-                    # Saving an unpowered preference cannot brick an existing
-                    # native binding. Without model-access opt-in, saved auto
-                    # retains that provider's own default and grants nothing.
-                    # Explicit saved/current choices still require a manifest.
-                    return None
-                raise PermissionError("model choice requires an accepted model assignment")
-            if (assignment.owner_user_id != owner or assignment.universe_id != universe.name
-                    or agent["configuration"].get("provider_ref") != assignment.binding_id):
-                raise PermissionError("model assignment does not match the current owned agent")
+            from types import SimpleNamespace
+
             chains, rejected = [], []
-            for member in assignment.candidates:
+            for provider in sorted(connected_sources(base, universe, owner, conn=conn)):
                 try:
-                    chain = _current_selected_member_authority(
-                        conn, store=store, universe_dir=universe, base_path=base,
-                        owner_user_id=owner, universe_id=universe.name,
-                        agent=agent, provider=member.provider,
+                    custody = current_connected_source_custody(
+                        conn, base=base, universe=universe, owner=owner, provider=provider,
                     )
                 except PermissionError:
-                    rejected.append(Ineligible(ModelRef(member.provider, ""), "source_revoked",
+                    rejected.append(Ineligible(ModelRef(provider, ""), "source_revoked",
                                                scope="source"))
                 else:
-                    chains.append((member.provider, chain))
+                    try:
+                        access = accepted_connected_model_access(assignment, owner, provider)
+                    except PermissionError:
+                        rejected.append(Ineligible(ModelRef(provider, ""), "source_not_accepted",
+                                                   scope="source"))
+                        continue
+                    member = SimpleNamespace(
+                        provider=provider, access=access,
+                        credential_reference_id=custody.reference_id,
+                        credential_reference_generation=custody.generation,
+                        credential_reference_digest=custody.reference_digest,
+                    )
+                    chains.append((provider, (member, custody)))
     if captured is None:
         captured = ModelPolicy(0, "automatic", ()), "automatic"
     policy, source = captured
     all_models, admitted, snapshots, source_policies = [], [], [], []
     interaction = Interaction(needs_tools, frozenset({"text"}), frozenset())
     ranking_sources = set()
-    from tinyassets.provider_authority import current as current_authority
-
-    config = current_authority(universe, config)
-    allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
-        member = next(m for m in chain[0].candidates if m.provider == provider)
+        member = chain[0]
         try:
             if provider in _PROVIDER_SERVICE:
                 native_snapshot = None
@@ -517,13 +536,21 @@ def prepare_owned_model_plan(
                     # confirmed is not a saving. Execution's own fresh check in
                     # `prepare_selected_model` is unchanged either way.
                     if allow_empty:
-                        from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+                        from tinyassets.providers.shortlist_refresh import (
+                            SHORTLIST_CACHE,
+                            USABLE_AGE,
+                        )
 
                         native_snapshot, pending = SHORTLIST_CACHE.get(
                             base=base, owner=owner, universe_id=universe.name,
                             provider=provider,
                             display_only=True,
                         )
+                        if (native_snapshot is not None
+                                and (datetime.now(timezone.utc)
+                                     - native_snapshot.observed_at).total_seconds()
+                                > USABLE_AGE):
+                            pending = "stale"
                         if pending:
                             rejected.append(Ineligible(ModelRef(provider, ""), pending,
                                                        scope="source"))
@@ -613,15 +640,11 @@ def prepare_owned_model_plan(
             continue
         if provider in _PROVIDER_SERVICE:
             all_models.append(catalog)
-        if allowed is not None and provider not in allowed:
-            rejected.extend(Ineligible(ModelRef(provider, m.model_id), "provider_not_allowed")
-                            for m in catalog.models)
-        else:
-            admitted.append(filtered)
-            source_policies.append(SourceModelPolicy(
-                provider, required,
-                None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
-            ))
+        admitted.append(filtered)
+        source_policies.append(SourceModelPolicy(
+            provider, required,
+            None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
+        ))
     from tinyassets.providers.default_model_evidence import cooling_sources, with_request_capacity
 
     admitted = [with_request_capacity(base, owner, universe, c) for c in admitted]
@@ -633,10 +656,11 @@ def prepare_owned_model_plan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
         _reconnect_sources(base, owner, universe.name, chains),
-        _refused_models(base, owner, chains),
+        _refused_models(base, owner, (provider for provider, _chain in chains)),
         cooling_sources(owner, admitted),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
+        pinned = policy.current_selection or policy.saved_default
         # Name what is held and why: "no model connected" was wrong for an owner
         # whose accepted sources exist but cannot run (live 2026-09-28).
         held = [
@@ -644,12 +668,20 @@ def prepare_owned_model_plan(
             f"({item.reason.replace('_', ' ')})"
             for item in rejected if item.scope == "source"
         ]
+        pin_detail = ""
+        if pinned is not None:
+            reason = next((item.reason for item in plan.order(owner, universe.name).ineligible
+                           if item.ref == pinned), "not_connected")
+            pin_detail = (f"; model {pinned.connection_id}/{pinned.model_id} unavailable: "
+                          f"{reason.replace('_', ' ')}")
         raise PermissionError(
             NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
+            + pin_detail
         )
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
         assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,
+        home_scoped=home_scoped,
     )
     with provider_assignment_admission().shared(universe):
         current_agent = get_binding(
@@ -672,13 +704,14 @@ def prepare_owned_model_plan(
 
 def apply_served_model_preferences(context, *, model_choice=None, needs_tools=True):
     """Capture preferences only from a genuine current owned conversation."""
+    from tinyassets.addressed_agents import MAIN_AGENT, resolve
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.harness_settings import read_settings
 
     try:
-        current = None if model_choice is None else ModelPreferences.from_document(model_choice)
         if context.provider_request is None:
-            if current is not None:
+            if model_choice is not None:
                 raise PermissionError("model choice requires an authenticated conversation")
             return context
         universe = context.universe_dir
@@ -686,9 +719,17 @@ def apply_served_model_preferences(context, *, model_choice=None, needs_tools=Tr
             universe.parent, universe, context.provider_request, "writer", "converse",
         )
         if get_founder_home(universe.parent, capability.principal_id) != universe.name:
-            if current is not None:
+            if model_choice is not None:
                 raise PermissionError("model choice is not supported outside the current home")
             return context
+        slug = None
+        if context.agent_id != MAIN_AGENT:
+            addressed = resolve(universe.parent, universe_id=universe.name,
+                                owner=capability.principal_id, agent_id=context.agent_id)
+            slug = addressed.agent_slug if addressed is not None else None
+        if context.agent_id == MAIN_AGENT or slug is not None:
+            model_choice = read_settings(universe, agent_slug=slug).model_choice(model_choice)
+        current = None if model_choice is None else ModelPreferences.from_document(model_choice)
         prepared = prepare_owned_model_plan(
             base=universe.parent, universe=universe, owner=capability.principal_id,
             agent=agent, current=current, config=context.config, needs_tools=needs_tools,

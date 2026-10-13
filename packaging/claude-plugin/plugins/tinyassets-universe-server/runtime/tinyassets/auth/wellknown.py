@@ -48,9 +48,10 @@ def authorization_server_metadata() -> dict[str, Any]:
 
     return {
         "issuer": base,
-        "authorization_endpoint": f"{base}/oauth/authorize",
-        "token_endpoint": f"{base}/oauth/token",
-        "registration_endpoint": f"{base}/oauth/register",
+        # Under /mcp so this is the existing public door, not a new /oauth prefix.
+        "authorization_endpoint": f"{base}/mcp/oauth/authorize",
+        "token_endpoint": f"{base}/mcp/oauth/token",
+        "registration_endpoint": f"{base}/mcp/oauth/register",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_methods_supported": ["none"],
@@ -58,6 +59,30 @@ def authorization_server_metadata() -> dict[str, Any]:
         "scopes_supported": supported_oauth_scopes(),
         "service_documentation": f"{base}/docs",
     }
+
+
+def resource_metadata_url(resource: str) -> str:
+    """RFC 9728 path insertion for a protected-resource identifier.
+
+    ``https://tinyassets.io/mcp`` is fetched at
+    ``https://tinyassets.io/.well-known/oauth-protected-resource/mcp``.
+    A resource with no path uses the apex document. The legacy URL under the
+    resource path keeps serving the same document; it is not this URL.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    raw = resource.strip().rstrip("/")
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return f"{raw}/.well-known/oauth-protected-resource"
+    suffix = "" if parts.path in ("", "/") else parts.path
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        "/.well-known/oauth-protected-resource" + suffix,
+        "",
+        "",
+    ))
 
 
 def protected_resource_metadata() -> dict[str, Any]:
@@ -122,12 +147,25 @@ def starlette_discovery_routes() -> list[Any]:
             methods=["GET"],
         ),
         Route(
+            # RFC 9728 path insertion. A resource of
+            # https://tinyassets.io/mcp is fetched here, not under /mcp.
+            "/.well-known/oauth-protected-resource/mcp",
+            _handle_protected_resource_metadata,
+            methods=["GET"],
+        ),
+        Route(
             "/mcp/.well-known/oauth-protected-resource",
             _handle_protected_resource_metadata,
             methods=["GET"],
         ),
         Route(
             "/.well-known/oauth-authorization-server",
+            _handle_authz_server_metadata,
+            methods=["GET"],
+        ),
+        Route(
+            # RFC 8414 path insertion for an issuer whose path is /mcp.
+            "/.well-known/oauth-authorization-server/mcp",
             _handle_authz_server_metadata,
             methods=["GET"],
         ),
@@ -139,6 +177,9 @@ def starlette_discovery_routes() -> list[Any]:
             _handle_authz_server_metadata,
             methods=["GET"],
         ),
+        Route("/mcp/oauth/register", _handle_register, methods=["POST"]),
+        Route("/mcp/oauth/authorize", _handle_authorize, methods=["GET"]),
+        Route("/mcp/oauth/token", _handle_token, methods=["POST"]),
     ]
 
 
@@ -166,19 +207,19 @@ def create_wellknown_routes() -> list[dict[str, Any]]:
             "description": "OAuth Protected Resource Metadata (RFC 9728)",
         },
         {
-            "path": "/oauth/register",
+            "path": "/mcp/oauth/register",
             "method": "POST",
             "handler": _handle_register,
             "description": "Dynamic Client Registration (RFC 7591)",
         },
         {
-            "path": "/oauth/authorize",
+            "path": "/mcp/oauth/authorize",
             "method": "GET",
             "handler": _handle_authorize,
             "description": "Authorization endpoint",
         },
         {
-            "path": "/oauth/token",
+            "path": "/mcp/oauth/token",
             "method": "POST",
             "handler": _handle_token,
             "description": "Token endpoint",
@@ -207,11 +248,16 @@ async def _fetch_authkit_as_metadata(issuer: str) -> dict[str, Any] | None:
         import json as _json
         import urllib.request
 
+        from tinyassets.observability import dependency
+
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                if getattr(resp, "status", 200) != 200:
-                    return None
-                data = _json.loads(resp.read().decode("utf-8"))
+            with dependency("workos", url) as span:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    span.status = int(getattr(resp, "status", 200) or 0)
+                    if span.status != 200:
+                        span.error = f"HTTP{span.status}"
+                        return None
+                    data = _json.loads(resp.read().decode("utf-8"))
         except Exception:
             logger.warning(
                 "AuthKit AS metadata proxy failed for %s", url, exc_info=True,
@@ -222,12 +268,28 @@ async def _fetch_authkit_as_metadata(issuer: str) -> dict[str, Any] | None:
     return await asyncio.to_thread(_get)
 
 
+def _oauth_provider() -> Any:
+    """The process provider, so a code issued here is the one the transport checks."""
+    from tinyassets.auth.middleware import _get_provider
+
+    return _get_provider()
+
+
+def _oauth_not_here(exc: NotImplementedError) -> Any:
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(
+        {"error": "not_implemented", "error_description": str(exc)},
+        status_code=501,
+    )
+
+
 async def _handle_authz_server_metadata(request: Any) -> Any:
     """Serve authorization server metadata.
 
     In WorkOS mode we are NOT the authorization server — AuthKit is. Proxy
     AuthKit's published AS metadata as JSON (per WorkOS AuthKit MCP docs)
-    rather than advertising self-hosted ``/oauth/*`` endpoints this Resource
+    rather than advertising self-hosted ``/mcp/oauth/*`` endpoints this Resource
     Server does not implement. If the proxy fetch fails, fall back to a
     redirect so discovery still resolves.
     """
@@ -259,15 +321,15 @@ async def _handle_register(request: Any) -> Any:
     """Handle Dynamic Client Registration."""
     from starlette.responses import JSONResponse
 
-    from tinyassets.auth.provider import create_provider
-
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid_request"}, status_code=400)
 
-    provider = create_provider()
-    result = provider.register_client(body)
+    try:
+        result = _oauth_provider().register_client(body)
+    except NotImplementedError as exc:
+        return _oauth_not_here(exc)
     return JSONResponse(result, status_code=201)
 
 
@@ -279,8 +341,6 @@ async def _handle_authorize(request: Any) -> Any:
     the tunnel/local context implies trust.
     """
     from starlette.responses import RedirectResponse
-
-    from tinyassets.auth.provider import create_provider
 
     params = dict(request.query_params)
     client_id = params.get("client_id", "")
@@ -297,12 +357,13 @@ async def _handle_authorize(request: Any) -> Any:
             status_code=400,
         )
 
-    provider = create_provider()
     try:
-        code = provider.create_authorization(
+        code = _oauth_provider().create_authorization(
             client_id, redirect_uri, scope, state,
             code_challenge, code_challenge_method,
         )
+    except NotImplementedError as exc:
+        return _oauth_not_here(exc)
     except ValueError as exc:
         from starlette.responses import JSONResponse
         return JSONResponse(
@@ -323,8 +384,6 @@ async def _handle_token(request: Any) -> Any:
     """Handle token exchange."""
     from starlette.responses import JSONResponse
 
-    from tinyassets.auth.provider import create_provider
-
     try:
         body = await request.form()
         body = dict(body)
@@ -341,13 +400,15 @@ async def _handle_token(request: Any) -> Any:
             status_code=400,
         )
 
-    provider = create_provider()
-    result = provider.exchange_code(
-        code=body.get("code", ""),
-        client_id=body.get("client_id", ""),
-        redirect_uri=body.get("redirect_uri", ""),
-        code_verifier=body.get("code_verifier", ""),
-    )
+    try:
+        result = _oauth_provider().exchange_code(
+            code=body.get("code", ""),
+            client_id=body.get("client_id", ""),
+            redirect_uri=body.get("redirect_uri", ""),
+            code_verifier=body.get("code_verifier", ""),
+        )
+    except NotImplementedError as exc:
+        return _oauth_not_here(exc)
 
     if result is None:
         return JSONResponse(

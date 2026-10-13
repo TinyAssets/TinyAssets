@@ -54,6 +54,246 @@ def test_job_receipt_distinguishes_resolved_and_unreported_model(tmp_path):
     assert row == ("gpt-6.1-sol", "gpt-6.1-sol", "", "unknown", "cli_reported")
 
 
+def test_package_turn_has_native_receipt_and_no_subscription_call_price(tmp_path, monkeypatch):
+    from tinyassets.external_agents import runner
+    from tinyassets.external_agents.jsonrpc_job import TurnOutcome
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.execution_receipt import receipt_from_response
+
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    executable = tmp_path / "cli"
+    executable.write_text("fixture", encoding="utf-8")
+    package = SimpleNamespace(executable=executable, digest="package", row={
+        "family": "openai",
+        "auth": {"service": "codex", "home_dir": "codex", "home_env": "CODEX_HOME"},
+        "job": {"transport": "jsonrpc", "argv": ["app-server"],
+                "events": {"done": {"success": "completed"}}},
+    })
+    monkeypatch.setattr(runner.registry, "resolve", lambda _: package)
+    monkeypatch.setattr(runner, "materialize", lambda *_: {"auth.json": b"token"})
+
+    async def no_tools(*_):
+        return None
+
+    monkeypatch.setattr(runner, "_engine_tools", no_tools)
+
+    class Job:
+        def __init__(self, *_args, **_kwargs):
+            self.outcome = TurnOutcome()
+
+        async def run(self, **_kwargs):
+            self.outcome = TurnOutcome(
+                thread_id="session", configured_model="gpt-6.1-sol",
+                messages=["done"], input_tokens=100, output_tokens=50,
+                usage_seen=True, status="completed")
+            return self.outcome
+
+    monkeypatch.setattr("tinyassets.external_agents.jsonrpc_job.JsonRpcJob", Job)
+
+    class Launch:
+        async def spawn(self, *_args, **_kwargs):
+            return object()
+
+        async def close(self, _proc):
+            return {}
+
+    custody = SimpleNamespace(universe_dir=center, owner_user_id="owner",
+                              reference=SimpleNamespace(service="codex",
+                                                        reference_digest="custody"),
+                              current=lambda: True)
+    response = asyncio.run(runner._run_job_locked(
+        "codex", Launch(), custody, prompt="hello", system="system",
+        config=ModelConfig(invocation_owner_user_id="owner",
+                           native_model_id="gpt-6.1-sol")))
+    receipt = receipt_from_response(response)
+    assert receipt.execution == "native_agent"
+    assert receipt.cost_microunits == 0
+    assert (receipt.input_tokens, receipt.output_tokens) == (100, 50)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        row = conn.execute(
+            "SELECT execution, outcome, reason FROM external_agent_job_receipts").fetchone()
+    assert row == ("native_agent", "succeeded", "")
+
+
+@pytest.mark.parametrize("message, category, marked, refresh_fails", [
+    ("Unknown model gpt-5.6-sol", "model_unavailable", True, False),
+    ("Unknown model gpt-5.6-sol", "model_unavailable", True, True),
+    ("Model gpt-5.6-sol is temporarily unavailable due to capacity",
+     "transient_capacity", False, False),
+])
+def test_package_model_refusal_is_classified_and_remembered(
+    tmp_path, monkeypatch, message, category, marked, refresh_fails,
+):
+    from tinyassets.exceptions import ExternalAgentUnavailable, ProviderError
+    from tinyassets.external_agents import runner
+    from tinyassets.external_agents.jsonrpc_job import TurnOutcome, refusal_category
+    from tinyassets.external_agents.registry import resolve
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+    from tinyassets.storage.refused_models import active_refused_models
+
+    center = tmp_path / "u-owner"
+    center.mkdir()
+    executable = tmp_path / "cli"
+    executable.write_text("fixture")
+    package = resolve("codex")
+    monkeypatch.setattr(runner.registry, "resolve", lambda _: SimpleNamespace(
+        executable=executable, digest=package.digest, row=package.row))
+    monkeypatch.setattr(runner, "materialize", lambda *_: {})
+    refreshes = []
+    def refresh(**kwargs):
+        refreshes.append(kwargs)
+        if refresh_fails:
+            raise RuntimeError("refresh worker unavailable")
+        return True
+
+    monkeypatch.setattr(SHORTLIST_CACHE, "schedule",
+                        refresh)
+
+    async def no_tools(*_):
+        return None
+
+    monkeypatch.setattr(runner, "_engine_tools", no_tools)
+
+    class Job:
+        def __init__(self, *_args, **kwargs):
+            self.job = kwargs["job"]
+            self.phase = self.job["start"]["method"]
+            self.outcome = TurnOutcome()
+
+        async def run(self, **_kwargs):
+            raise ProviderError(
+                f"external agent refused thread/start:{refusal_category({'message': message})}")
+
+    monkeypatch.setattr("tinyassets.external_agents.jsonrpc_job.JsonRpcJob", Job)
+
+    class Launch:
+        async def spawn(self, *_args, **_kwargs):
+            return object()
+
+        async def close(self, _proc):
+            return {}
+
+    custody = SimpleNamespace(universe_dir=center, owner_user_id="owner",
+                              reference=SimpleNamespace(service="codex",
+                                                        reference_digest="custody"))
+    with pytest.raises(ExternalAgentUnavailable) as failure:
+        asyncio.run(runner._run_job_locked(
+            "codex", Launch(), custody, prompt="hello", system="system",
+            config=ModelConfig(invocation_owner_user_id="owner",
+                               native_model_id="gpt-5.6-sol")))
+    expected = (f"job_failed:refused:thread/start:{category}"
+                if marked else "job_failed:refused")
+    assert failure.value.reason == expected
+    marks = active_refused_models(tmp_path, owner_user_id="owner")
+    assert [(mark.connection_id, mark.model_id) for mark in marks] == (
+        [("codex", "gpt-5.6-sol")] if marked else [])
+    assert refreshes == ([{"base": tmp_path, "owner": "owner",
+                          "universe_id": "u-owner", "provider": "codex"}]
+                         if marked else [])
+
+
+def test_package_refusal_category_never_carries_upstream_text():
+    from tinyassets.external_agents.jsonrpc_job import refusal_category
+
+    assert refusal_category({"message": "Unknown model SECRET_TOKEN"}) == "model_unavailable"
+    assert refusal_category({"message": "SECRET_TOKEN"}) == "unknown"
+    assert refusal_category({"message": "Model is temporarily unavailable"}) == (
+        "transient_capacity")
+    assert refusal_category({"message": "High demand for this model"}) == (
+        "transient_capacity")
+
+
+def test_package_rpc_refusal_names_phase_and_sanitized_category():
+    from tinyassets.exceptions import ProviderError
+    from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
+    from tinyassets.external_agents.registry import resolve
+    from tinyassets.providers.base import ModelConfig
+
+    class Process:
+        returncode = None
+
+        def __init__(self):
+            self.stdout = asyncio.StreamReader()
+            self.stdin = self
+
+        def write(self, data):
+            request = json.loads(data)
+            if "id" not in request:
+                return
+            answer = ({"error": {"message": "Model gpt-5.6-sol is not available; SECRET"}}
+                      if request["method"] == "thread/start" else {"result": {}})
+            self.stdout.feed_data((json.dumps({"id": request["id"], **answer}) + "\n").encode())
+
+        async def drain(self):
+            pass
+
+    async def run():
+        turn = JsonRpcJob(
+            Process(), job=resolve("codex").row["job"], agent="codex", tools=None,
+            profile=ModelConfig().stream_timeout_profile(), start=time.monotonic(),
+            turn_wait=5, tool_wait=5)
+        await turn.run(definition=SimpleNamespace(instructions="", tools=[]),
+                       model="gpt-5.6-sol", input_text="hello", effort=None,
+                       workdir="/agent-home/jobs/test")
+
+    with pytest.raises(ProviderError) as failure:
+        asyncio.run(run())
+    assert str(failure.value) == "external agent refused thread/start:model_unavailable"
+
+
+def test_stale_source_and_refused_model_remain_pickable():
+    from dataclasses import replace
+
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.model_options import model_options_document
+    from tinyassets.providers.model_policy import (
+        Catalog,
+        ConnectionModels,
+        Ineligible,
+        Interaction,
+        Model,
+        ModelPolicy,
+        ModelRef,
+        Pricing,
+    )
+
+    ref = ModelRef("codex", "gpt-6-sol")
+    listed = Model("gpt-6-sol", True, frozenset({"text"}),
+                   pricing=Pricing("fresh", unmetered=True),
+                   availability_basis="executor_enumerated")
+    other = Model("gpt-6.1-sol", True, frozenset({"text"}),
+                  pricing=Pricing("fresh", unmetered=True),
+                  availability_basis="executor_enumerated")
+    default = Model("", True, frozenset({"text"}),
+                    pricing=Pricing("fresh", unmetered=True),
+                    availability_basis="executor_default")
+    catalog = Catalog("owner", "u-owner", (ConnectionModels(
+        "codex", "native-subscription:codex", "subscription", "fresh", True, True,
+        (default, listed, other), default_model_id=""),))
+    plan = AgentModelPlan(catalog, ModelPolicy(0, "automatic", ()),
+                          Interaction(True, frozenset({"text"}), frozenset()),
+                          refused_models=(ref,))
+    document = model_options_document(
+        catalog, plan, (Ineligible(ModelRef("codex", ""), "stale", scope="source"),))
+    rows = {row["reference"]["model_id"]: row for row in document["options"]}
+    assert all(row["in_candidate_catalog"] and row["reasons"] == []
+               for row in rows.values())
+    assert "recently_refused" in rows[ref.model_id]["labels"]
+    assert document["order"][-1] == {"provider_ref": "codex", "model_id": ref.model_id}
+    assert document["source_failures"] == [{
+        "provider_ref": "codex",
+        "reasons": [{"reason": "stale", "component": ""}],
+    }]
+    retry = model_options_document(catalog, replace(plan, policy=ModelPolicy(
+        0, "explicit", (), saved_default=ref)),
+        (Ineligible(ModelRef("codex", ""), "stale", scope="source"),))
+    retried = next(row for row in retry["options"]
+                   if row["reference"]["model_id"] == ref.model_id)
+    assert retried["in_candidate_catalog"] and retried["reasons"] == []
+
+
 def test_job_stream_does_not_report_thread_configuration_as_answering_model():
     from tinyassets.external_agents.jsonrpc_job import JsonRpcJob
     from tinyassets.external_agents.registry import resolve

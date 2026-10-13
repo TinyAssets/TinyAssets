@@ -17,6 +17,8 @@ import json
 
 import pytest
 
+from tests.support.model_call import call as model_call
+from tests.support.model_call import call_sync as model_call_sync
 from tests.support.owned_spawn import fake_owned_spawn
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -1121,16 +1123,25 @@ def _solo_router(provider):
     return ProviderRouter(providers={provider.name: provider}, quota=quota), quota
 
 
+@pytest.fixture(autouse=True)
+def _model_root(tmp_path):
+    global _MODEL_ROOT
+    _MODEL_ROOT = tmp_path / "u-stream"
+    _MODEL_ROOT.mkdir()
+
+
 def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     """Hard Rule 15: a routed call carries one universe owner's authority."""
-    from pathlib import Path
     from unittest.mock import MagicMock
 
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
     from tinyassets.providers.base import UniverseContext
 
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id="u-stream")
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id="u-stream",
+        admitted_sources=frozenset({provider}),
+    )
     carrier.provider = provider
     carrier.role = role
     carrier.operation = "run_graph"
@@ -1143,7 +1154,7 @@ def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     return {
         "operation": "run_graph",
         "universe_context": UniverseContext(
-            universe_dir=Path("u-stream"), provider_invocation=carrier,
+            universe_dir=_MODEL_ROOT, provider_invocation=carrier,
         ),
     }
 
@@ -1169,7 +1180,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError) as ei:
-            await router.call("writer", "prompt", "system", **_bound())
+            await model_call(router, "writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code", owner="owner") is True  # NOT cooled
         assert ei.value.failure_class == "provider_idle_timeout"
@@ -1180,7 +1191,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError) as ei:
-            await router.call("writer", "prompt", "system", **_bound())
+            await model_call(router, "writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code", owner="owner") is True
         assert ei.value.failure_class == "interactive_deadline"
@@ -1191,9 +1202,9 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError):
-            await router.call("writer", "prompt", "system", **_bound())
+            await model_call(router, "writer", "prompt", "system", **_bound())
         # The writer stayed eligible: the very next turn goes through.
-        resp = await router.call("writer", "prompt", "system", **_bound())
+        resp = await model_call(router, "writer", "prompt", "system", **_bound())
         assert resp.text == "ok now"
         assert provider.calls == 2
 
@@ -1205,7 +1216,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError) as ei:
-            await router.call("writer", "prompt", "system", **_bound())
+            await model_call(router, "writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code", owner="owner") is False  # cooled
         remaining = quota.cooldown_remaining("claude-code", owner="owner")
@@ -1220,7 +1231,7 @@ class TestRouterCooldownMap:
         router, quota = _solo_router(provider)
 
         with pytest.raises(AllProvidersExhaustedError):
-            await router.call("writer", "prompt", "system", **_bound())
+            await model_call(router, "writer", "prompt", "system", **_bound())
 
         assert quota.available("claude-code", owner="owner") is False
         assert 3 <= quota.cooldown_remaining("claude-code", owner="owner") <= 10
@@ -1499,7 +1510,7 @@ class TestPolicyRouterCooldownMap:
         # Must be re-raised on the policy path, NOT swallowed as generic error +
         # fallthrough (blocker F).
         with pytest.raises(ProviderAuthorityHeldError):
-            await router.call("writer", "p", "s", ModelConfig(), **_bound())
+            await model_call(router, "writer", "p", "s", ModelConfig(), **_bound())
         assert provider.calls == 1  # no fallthrough retry
 
 
@@ -1548,7 +1559,7 @@ class TestSyncWrapperTimeout:
                   return_value={}),
         ):
             with pytest.raises(_PTE):
-                router.call_sync("writer", "prompt", "system", ModelConfig(), **_bound())
+                model_call_sync(router, "writer", "prompt", "system", ModelConfig(), **_bound())
 
         assert proc.killed is True  # subprocess killed on sync timeout
 

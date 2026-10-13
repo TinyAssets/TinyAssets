@@ -524,6 +524,7 @@ class ProviderUniverseWorkReceipt:
     # by each invocation. This record remains inert, never launch authority.
     authority_scope: str = "provider"
     manifest_digest: str | None = None
+    admitted_sources: tuple[str, ...] | None = None
 
     _FIELDS_V1 = frozenset(
         {
@@ -574,9 +575,10 @@ class ProviderUniverseWorkReceipt:
         }
     )
     _FIELDS_V4 = _FIELDS_V3 | frozenset({"authority_scope", "manifest_digest"})
+    _FIELDS_V5 = _FIELDS_V4 | frozenset({"admitted_sources"})
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version not in {1, 2, 3, 4}:
+        if type(self.schema_version) is not int or self.schema_version not in {1, 2, 3, 4, 5}:
             raise ValueError("unsupported schema_version")
         if (
             type(self.authority_scope) is not str
@@ -584,6 +586,17 @@ class ProviderUniverseWorkReceipt:
         ):
             raise ValueError("unsupported work authority scope")
         manifest_scope = self.authority_scope == "manifest"
+        if self.schema_version == 5:
+            if (not manifest_scope or type(self.admitted_sources) is not tuple
+                    or not self.admitted_sources
+                    or self.admitted_sources != tuple(sorted(set(self.admitted_sources)))
+                    or any(not isinstance(source, str) or not source.strip()
+                           for source in self.admitted_sources)):
+                raise ValueError("connected admission requires sorted owned sources")
+            if self.manifest_digest != _content_digest(self.admitted_sources):
+                raise ValueError("connected admission digest does not match its sources")
+        elif self.admitted_sources is not None:
+            raise ValueError("legacy receipt cannot carry connected admission")
         if self.schema_version < 4 and (manifest_scope or self.manifest_digest is not None):
             raise ValueError("legacy receipts cannot carry manifest authority")
         if manifest_scope:
@@ -751,11 +764,13 @@ class ProviderUniverseWorkReceipt:
                     ),
                 }
             )
-        if self.schema_version == 4:
+        if self.schema_version >= 4:
             payload.update(
                 authority_scope=self.authority_scope,
                 manifest_digest=self.manifest_digest,
             )
+        if self.schema_version == 5:
+            payload["admitted_sources"] = list(self.admitted_sources)
         return payload
 
     @classmethod
@@ -770,6 +785,7 @@ class ProviderUniverseWorkReceipt:
             2: cls._FIELDS_V2,
             3: cls._FIELDS_V3,
             4: cls._FIELDS_V4,
+            5: cls._FIELDS_V5,
         }.get(schema_version, cls._FIELDS_V3)
         if set(data) != expected:
             raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
@@ -777,6 +793,8 @@ class ProviderUniverseWorkReceipt:
         values["state"] = ProviderWorkReceiptState(values["state"])
         values["allowed_operations"] = tuple(values["allowed_operations"])
         values["allowed_roles"] = tuple(values["allowed_roles"])
+        if schema_version == 5:
+            values["admitted_sources"] = tuple(values["admitted_sources"])
         if schema_version == 1:
             values.update(
                 execution_subject=None,
@@ -914,25 +932,20 @@ class ProviderWorkExecutionClaimWriteResult:
 
 @dataclass(frozen=True, slots=True)
 class ProviderInvocationSelection:
-    """Immutable selected-member facts, never an inference grant by themselves.
-
-    The manifest receipt carries the shared work budget. This document identifies
-    one attempt's member, custody and model evidence for exact replay/launch
-    fencing. Opaque model names are data; no executable or callback is persisted.
-    """
+    """Immutable model facts for one attempt; the receipt carries authority."""
 
     provider: str
-    binding_id: str
-    binding_generation: int
-    binding_digest: str
-    binding_revocation_generation: int
-    credential_reference_id: str
-    credential_reference_generation: int
-    credential_reference_digest: str
-    assignment_generation: int
-    assignment_digest: str
-    manifest_digest: str
-    member_digest: str
+    binding_id: str | None
+    binding_generation: int | None
+    binding_digest: str | None
+    binding_revocation_generation: int | None
+    credential_reference_id: str | None
+    credential_reference_generation: int | None
+    credential_reference_digest: str | None
+    assignment_generation: int | None
+    assignment_digest: str | None
+    manifest_digest: str | None
+    member_digest: str | None
     model_id: str
     executor_id: str
     model_evidence_json: str | None = None
@@ -945,7 +958,35 @@ class ProviderInvocationSelection:
         "member_digest", "model_id", "executor_id", "model_evidence",
     })
 
+    @classmethod
+    def connected(cls, provider: str, model_id: str) -> ProviderInvocationSelection:
+        return cls(
+            provider=provider, model_id=model_id, executor_id=provider,
+            binding_id=None, binding_generation=None, binding_digest=None,
+            binding_revocation_generation=None, credential_reference_id=None,
+            credential_reference_generation=None, credential_reference_digest=None,
+            assignment_generation=None, assignment_digest=None,
+            manifest_digest=None, member_digest=None,
+        )
+
     def __post_init__(self) -> None:
+        if self.binding_id is None:
+            if any(getattr(self, name) is not None for name in (
+                "binding_generation", "binding_digest", "binding_revocation_generation",
+                "credential_reference_id", "credential_reference_generation",
+                "credential_reference_digest", "assignment_generation", "assignment_digest",
+                "manifest_digest", "member_digest",
+            )):
+                raise ValueError("connected selection cannot carry assignment authority")
+            _reference(self.provider, "provider")
+            _reference(self.executor_id, "executor_id")
+            if (type(self.model_id) is not str or len(self.model_id) > 200
+                    or self.model_id != self.model_id.strip()
+                    or (self.model_id and not self.model_id.isprintable())):
+                raise ValueError("invalid selected model identifier")
+            if self.model_evidence_json is not None:
+                self.model_evidence()
+            return
         for name in ("provider", "binding_id", "credential_reference_id", "executor_id"):
             _reference(getattr(self, name), name)
         for name in ("binding_generation", "credential_reference_generation",
@@ -1596,9 +1637,9 @@ def _mint_provider_invocation_carrier(
             receipt.authority_scope == "provider" and reservation.selection is None
         ) or (
             receipt.authority_scope == "manifest" and reservation.selection is not None
-            and reservation.selection.assignment_generation == receipt.assignment_generation
-            and reservation.selection.assignment_digest == receipt.assignment_digest
-            and reservation.selection.manifest_digest == receipt.manifest_digest
+            and receipt.admitted_sources is not None
+            and reservation.selection.provider in receipt.admitted_sources
+            and reservation.selection.binding_id is None
         ),
         receipt.receipt_digest == receipt.expected_digest(),
         claim.claim_digest == claim.expected_digest(),
@@ -1688,61 +1729,6 @@ def provider_invocation_reservation_id(
         "schema_version": 1,
     }
     return f"pir_{_content_digest(identity).removeprefix('sha256:')[:32]}"
-
-
-def _receipt_from_authority(
-    authority: ProviderUniverseWorkAuthority,
-    *,
-    created_at: str,
-) -> ProviderUniverseWorkReceipt:
-    binding = authority.binding
-    provisional = ProviderUniverseWorkReceipt(
-        schema_version=3 if authority.parent_binding_id is not None else 2,
-        receipt_id=provider_work_receipt_id(
-            universe_id=binding.universe_id,
-            root=authority.root,
-        ),
-        receipt_digest=_PLACEHOLDER_DIGEST,
-        generation=1,
-        state=ProviderWorkReceiptState.ACTIVE,
-        work_item_kind=authority.root.work_item_kind,
-        work_item_id=authority.root.work_item_id,
-        binding_id=binding.binding_id,
-        binding_generation=binding.generation,
-        binding_digest=binding.binding_digest,
-        binding_revocation_generation=binding.revocation_generation,
-        principal_id=authority.principal_id,
-        actor_id=authority.actor_id,
-        universe_id=binding.universe_id,
-        branch_def_id=authority.branch_def_id,
-        branch_version_id=authority.branch_version_id,
-        provider=binding.provider,
-        credential_reference_digest=binding.credential_reference_digest,
-        assignment_generation=binding.assignment_generation,
-        assignment_digest=binding.assignment_digest,
-        executor_class=authority.executor_class,
-        allowed_operations=(authority.operation,),
-        allowed_roles=authority.allowed_roles,
-        max_invocations=authority.max_invocations,
-        max_tokens=authority.max_tokens,
-        max_cost_microunits=authority.max_cost_microunits,
-        expires_at=authority.expires_at,
-        created_at=created_at,
-        execution_subject=authority.execution_subject,
-        agent_invocation_command_id=authority.agent_invocation_command_id,
-        agent_invocation_command_digest=authority.agent_invocation_command_digest,
-        agent_invocation_generation=authority.agent_invocation_generation,
-        parent_binding_id=authority.parent_binding_id,
-        parent_binding_generation=authority.parent_binding_generation,
-        parent_binding_digest=authority.parent_binding_digest,
-        parent_binding_revocation_generation=(
-            authority.parent_binding_revocation_generation
-        ),
-    )
-    return replace(
-        provisional,
-        receipt_digest=provisional.expected_digest(),
-    )
 
 
 def _claim_from_request(
@@ -2127,47 +2113,6 @@ class ProviderWorkBindingService:
         return transition(connection, expected, replacement)
 
 
-class ProviderWorkReceiptService:
-    """Issue inert receipts only from a trusted server-owned resolver."""
-
-    def __init__(
-        self,
-        store: Any,
-        resolver: ProviderUniverseWorkResolver,
-    ) -> None:
-        if not callable(getattr(store, "_issue_universe_receipt", None)):
-            raise ValueError("store must implement receipt persistence")
-        if not isinstance(resolver, ProviderUniverseWorkResolver):
-            raise ValueError("resolver must implement ProviderUniverseWorkResolver")
-        self._store = store
-        self._resolver = resolver
-
-    def issue(
-        self,
-        root: ProviderUniverseWorkRoot,
-    ) -> ProviderWorkReceiptWriteResult:
-        if not isinstance(root, ProviderUniverseWorkRoot):
-            raise ValueError("root must be a ProviderUniverseWorkRoot")
-        authority = self._resolver.resolve(root)
-        if not isinstance(authority, ProviderUniverseWorkAuthority) or authority.root != root:
-            raise PermissionError("server-owned provider authority is unavailable")
-        binding = authority.binding
-        exact = (
-            binding.state is ProviderWorkBindingState.ACTIVE,
-            authority.operation in binding.allowed_operations,
-            authority.role in binding.allowed_roles,
-            set(authority.allowed_roles).issubset(binding.allowed_roles),
-            authority.executor_class == "cloud",
-            authority.max_invocations <= binding.max_invocations,
-            authority.max_tokens <= binding.max_tokens,
-            authority.max_cost_microunits <= binding.max_cost_microunits,
-            _parsed_timestamp(authority.expires_at) <= _parsed_timestamp(binding.expires_at),
-        )
-        if not all(exact):
-            raise PermissionError("resolved provider authority exceeds binding")
-        return self._store._issue_universe_receipt(authority)
-
-
 __all__ = [
     "ProviderInvocationCarrier",
     "ProviderInvocationReservation",
@@ -2191,7 +2136,6 @@ __all__ = [
     "ProviderWorkExecutionClaimRequest",
     "ProviderWorkExecutionClaimState",
     "ProviderWorkExecutionClaimWriteResult",
-    "ProviderWorkReceiptService",
     "ProviderWorkReceiptState",
     "ProviderWorkReceiptWriteResult",
     "ProviderUniverseWorkAuthority",

@@ -1,6 +1,7 @@
 """Synthetic dispatches prove a turn budget; daily account balances stay unknown."""
 
 import asyncio
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
@@ -15,10 +16,25 @@ from tinyassets.providers.model_selection import SelectedModel
 from tinyassets.request_budget import (
     RequestBudgetExceeded,
     TurnRequestBudget,
-    current_request_budget,
-    request_budget_scope,
+    _RequestLedger,
     selection_is_free,
 )
+
+_BudgetClass = TurnRequestBudget
+
+
+@pytest.fixture(autouse=True)
+def durable_test_allocations(request, monkeypatch):
+    """Pure reducer checks and real turn checks use their respective boundaries."""
+    def allocate(owner, universe, **policy):
+        if "agent" not in request.fixturenames:
+            return _RequestLedger(owner, universe, **policy)
+        root = request.getfixturevalue("agent").served.context.universe_dir.parent
+        budget = _BudgetClass(owner, universe, **policy)
+        budget.persist(root)
+        return budget
+
+    monkeypatch.setattr(sys.modules[__name__], "TurnRequestBudget", allocate)
 
 rig = integration.rig
 reader = integration.reader
@@ -140,24 +156,6 @@ def test_thread_reservations_are_atomic_and_independent_turns_do_not_share_limit
     assert dispatch(other) == 1
 
 
-def test_context_flows_to_children_and_cannot_be_reset():
-    budget = TurnRequestBudget("owner", "u-models")
-
-    async def child():
-        assert current_request_budget() is budget
-        assert await asyncio.to_thread(current_request_budget) is budget
-
-    async def parent():
-        with request_budget_scope(budget):
-            await asyncio.create_task(child())
-            with pytest.raises(ProviderAuthorityHeldError):
-                with request_budget_scope(TurnRequestBudget("owner", "u-models")):
-                    pytest.fail("nested budget replacement admitted")
-        assert current_request_budget() is None
-
-    asyncio.run(parent())
-
-
 def test_foreign_scope_and_unlaunched_calls_do_not_spend_or_grant_authority():
     budget = TurnRequestBudget("owner", "u-models", max_requests=1)
     with pytest.raises(ProviderAuthorityHeldError):
@@ -203,7 +201,8 @@ def test_text_only_encoding_needs_no_tool_capability_or_wire_fields():
 def test_real_coordinator_budget_stops_before_extra_tool_effect(agent):
     budget = TurnRequestBudget("owner", "u-models", max_requests=3)
     agent.requested_rounds = 20
-    with request_budget_scope(budget), pytest.raises(RequestBudgetExceeded) as held:
+    agent.config = replace(agent.config, request_budget=budget)
+    with pytest.raises(RequestBudgetExceeded) as held:
         run_coordinator(agent)
     assert len(agent.wires) == 3
     assert len(agent.tools) == 2
@@ -224,8 +223,8 @@ def test_real_text_only_coordinator_one_call_opens_no_tool_session(agent, monkey
     agent.config = replace(agent.config,
                            agent_request=AgentInferenceRequest(tools=(), tool_choice="none"))
     budget = TurnRequestBudget("owner", "u-models", max_requests=3)
-    with request_budget_scope(budget):
-        assert integration.run(agent) == "finished exact answer"
+    agent.config = replace(agent.config, request_budget=budget)
+    assert integration.run(agent) == "finished exact answer"
     assert len(agent.wires) == 1 and not agent.tools
     assert "tools" not in agent.wires[0][1]["body"]
     assert budget.receipt()["sources"][0]["purpose"] == "reply"
@@ -262,7 +261,8 @@ def test_real_coordinator_close_race_records_no_dispatch_and_keeps_typed_stop(ag
         return result
 
     monkeypatch.setattr(agent.journal.__class__, "begin_round", close_after_journal)
-    with request_budget_scope(budget), pytest.raises(RequestBudgetExceeded) as held:
+    agent.config = replace(agent.config, request_budget=budget)
+    with pytest.raises(RequestBudgetExceeded) as held:
         run_coordinator(agent)
     assert held.value.reason == "dispatch_closed"
     assert not agent.wires and not agent.tools
@@ -290,7 +290,8 @@ def test_real_claim_denial_never_reserves_request(agent, monkeypatch):
 
     monkeypatch.setattr(middleware, "consume_provider_request_invocation", denied)
     budget = TurnRequestBudget("owner", "u-models")
-    with request_budget_scope(budget), pytest.raises(ProviderAuthorityHeldError):
+    agent.config = replace(agent.config, request_budget=budget)
+    with pytest.raises(ProviderAuthorityHeldError):
         integration.run(agent)
     assert not agent.wires and not agent.tools
     assert budget.receipt()["reserved"] == 0
@@ -302,7 +303,8 @@ def test_real_cancelled_tool_keeps_one_request_and_no_automatic_followup(agent, 
 
     monkeypatch.setattr(integration.engine_tool_client.EngineToolSession, "call", cancelled)
     budget = TurnRequestBudget("owner", "u-models")
-    with request_budget_scope(budget), pytest.raises(asyncio.CancelledError):
+    agent.config = replace(agent.config, request_budget=budget)
+    with pytest.raises(asyncio.CancelledError):
         integration.run(agent)
     assert len(agent.wires) == 1 and not agent.tools
     assert budget.receipt()["sources"][0]["succeeded"] == 1
@@ -332,8 +334,8 @@ def test_real_larger_owner_allocation_crosses_advisory_daily_zero(agent, monkeyp
     source = agent.served.context.model_selection.connection_id
     budget = TurnRequestBudget("owner", "u-models", source_limits={source: 20}, free_pool_limit=20)
     agent.requested_rounds = 15
-    with request_budget_scope(budget):
-        assert integration.run(agent) == "finished exact answer"
+    agent.config = replace(agent.config, request_budget=budget)
+    assert integration.run(agent) == "finished exact answer"
     assert len(agent.wires) == 16 and len(agent.tools) == 15
     assert budget.receipt()["dispatched"] == 16
 
@@ -359,8 +361,8 @@ def test_real_mixed_pool_keeps_long_progress_on_accepted_unmetered_fallback(
                         else original(ctx, **kw))
     budget = TurnRequestBudget("owner", "u-models")
     agent.requested_rounds = 20
-    with request_budget_scope(budget):
-        assert integration.run(agent) == "finished exact answer"
+    agent.config = replace(agent.config, request_budget=budget)
+    assert integration.run(agent) == "finished exact answer"
     refs = [row.candidate.source_ref for row in agent.latest().rounds]
     assert refs == [first.connection_id] * 6 + [second.connection_id] * 15
     assert len(agent.tools) == 20
@@ -375,8 +377,8 @@ def test_real_reply_retry_has_reply_purpose_and_counts_failed_http(agent, monkey
     agent.capacity_failures[1] = 200
     agent.failure_bodies[1] = '{"error":{"code":504,"message":"Synthetic idle timeout"}}'
     budget = TurnRequestBudget("owner", "u-models")
-    with request_budget_scope(budget):
-        assert integration.run(agent) == "finished exact answer"
+    agent.config = replace(agent.config, request_budget=budget)
+    assert integration.run(agent) == "finished exact answer"
     assert len(agent.wires) == 2 and not agent.tools
     groups = budget.receipt()["sources"]
     assert len(groups) == 1
@@ -391,7 +393,8 @@ def test_real_repeated_gateway_504_never_sweeps_catalogue(agent):
     agent.requested_rounds = 0
     agent.capacity_failures.update(dict.fromkeys(range(1, 10), 504))
     budget = TurnRequestBudget("owner", "u-models")
-    with request_budget_scope(budget), pytest.raises(AllProvidersExhaustedError):
+    agent.config = replace(agent.config, request_budget=budget)
+    with pytest.raises(AllProvidersExhaustedError):
         integration.run(agent)
     assert len(agent.wires) <= 2 and not agent.tools
     assert budget.receipt()["dispatched"] == len(agent.wires)
@@ -558,8 +561,8 @@ def test_whole_parent_receipt_includes_learning_when_unmetered_work_requests_it(
 def test_budget_stop_returns_bounded_continuation_without_extra_model_call(agent):
     agent.requested_rounds = 20
     budget = TurnRequestBudget("owner", "u-models", max_requests=2)
-    with request_budget_scope(budget):
-        answer = integration.run(agent)
+    agent.config = replace(agent.config, request_budget=budget)
+    answer = integration.run(agent)
     assert "request budget (2 provider attempts)" in answer
     assert "none is scheduled automatically" in answer
     assert len(agent.wires) == 2 and len(agent.tools) == 1
@@ -600,11 +603,11 @@ def test_budget_stop_observer_receives_parent_receipt(agent):
     agent.requested_rounds = 20
     budget = TurnRequestBudget("owner", "u-models", max_requests=2)
     observations = []
-    with request_budget_scope(budget):
-        answer = _call_writer(
-            "Build the requested app", system="system", universe_context=agent.served.context,
-            config=agent.config, response_observer=observations.append,
-        )
+    agent.config = replace(agent.config, request_budget=budget)
+    answer = _call_writer(
+        "Build the requested app", system="system", universe_context=agent.served.context,
+        config=agent.config, response_observer=observations.append,
+    )
     assert "none is scheduled automatically" in answer
     assert len(observations) == 1
     assert observations[0].request_receipt["dispatched"] == len(agent.wires) == 2

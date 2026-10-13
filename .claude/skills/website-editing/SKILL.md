@@ -1,14 +1,15 @@
 ---
 name: website-editing
-description: "Conventions for editing the TinyAssets public site (WebSite/site-react, Next.js static export on @tiny/design-system). Use for website copy, components, routes, styling, the mark and brand assets, live-data surfaces, preview, tests, or deploy. Covers the preview loop, the copy rules, the public-read boundary, the build/test/sweep pipeline, and the manual deploy."
+description: "Conventions for editing the TinyAssets public site (WebSite/site-react, Next.js static export on @tiny/design-system). Use for website copy, components, routes, styling, the mark and brand assets, live-data surfaces, preview, tests, or deploy. Covers the preview loop, the copy rules, the public-read boundary, the build/test/sweep pipeline, and the site deploy."
 ---
 
 # Website editing
 
 `WebSite/site-react/` is the only source for `tinyassets.io`. It is a Next.js
 14 App Router static export that consumes `@tiny/design-system`
-(`WebSite/design-system/`, tokens + base styles + components). It deploys
-manually through `deploy-site-react.yml`. The Svelte rollback tree was retired
+(`WebSite/design-system/`, tokens + base styles + components). Site source on
+`main` runs `deploy-site-react.yml` (see `WebSite/DEPLOY.md`).
+`confirm: deploy` rolls back. The Svelte rollback tree was retired
 on 2026-09-02; do not recreate a second tree or a parity step.
 
 These are project-level website rules for every provider; `AGENTS.md` only
@@ -113,9 +114,9 @@ and protected live surfaces render an explicit signed-in state while snapshots
 retain their date and provenance. Reject raw placeholders such as `{}`, `[]`,
 `undefined`, or epoch numbers.
 
-Ship through the normal pull-request path. A merge does not deploy. A host runs
-`deploy-site-react.yml` with `confirm: deploy`, then the canary and
-`deployed_sha.py` checks in `WebSite/DEPLOY.md`.
+Ship through the normal pull-request path. A site-source merge runs
+`deploy-site-react.yml`, then the canary and `deployed_sha.py` checks in
+`WebSite/DEPLOY.md`.
 
 ## Auto-iterate on recurring website failures
 
@@ -144,5 +145,5 @@ boundary (the pinned preview-worker security test).
 | `WebSite/brand/` | The mark's SVGs and exporters |
 | `WebSite/shared/mcp/public-read-contract.js` | Public read contract shared by site and baker |
 | `WebSite/PREVIEW.md`, `WebSite/DEPLOY.md` | Preview loop; deploy and verify |
-| `.github/workflows/deploy-site-react.yml` | Manual production deployment |
+| `.github/workflows/deploy-site-react.yml` | Publishes site-source pushes; manual rollback |
 | `openspec/specs/public-website-surface/spec.md` | As-built spec of the public site |
