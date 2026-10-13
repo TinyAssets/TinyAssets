@@ -607,6 +607,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "wiki": "commons_pages",
     ".wiki": "commons_pages (the dot-named home a fresh volume uses)",
     ".storage_accounting.db": "platform: this ledger",
+    ".agent-file-migration": "platform: the C8 agent-file migration's private pre-delete backups",
     ".command-center-packages": (
         "packages (published package blobs, by author); its consent pins and "
         "version index are platform"
