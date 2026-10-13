@@ -161,6 +161,9 @@ def test_native_public_picker_lists_default_and_discovered_model(picker, native)
     # permitted provenance, be unadmitted, carry a reason, and belong to this source.
     excluded = [row for row in result["options"]
                 if row["reference"]["provider_ref"] == "codex" and row not in choices]
+    assert {row["reference"]["model_id"] for row in excluded
+            if row["availability_basis"] == "publicly_listed"} == {
+                "gpt-5.6-sol", "gpt-6-astra"}
     assert all(row["availability_basis"] in ("publicly_listed", "owner_verified_here")
                and not row["in_candidate_catalog"] and row["reasons"]
                for row in excluded), excluded

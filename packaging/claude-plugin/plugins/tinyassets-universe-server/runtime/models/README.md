@@ -1,4 +1,4 @@
-# Public model lists, one file per source kind
+# Public model lists, grouped by source
 
 A source that can call its provider's own list-models endpoint needs nothing here:
 its ids arrive from discovery already, as `executor_enumerated`, and are public by
@@ -16,11 +16,14 @@ ones its owner had typed by hand, so a newly released model stayed invisible.
 ```json
 {
   "source_kind": "subscription",
-  "models": ["some-model-4-6", "some-model-4-7"]
+  "models": {
+    "source-package-name": ["some-model-4-6", "some-model-4-7"]
+  }
 }
 ```
 
-Nothing else. No per-user data, no per-universe data, no credentials, no URLs, no
+The key under `models` is the source's provider or package name. Put each id only
+under the source that actually lists it. No per-user data, no per-universe data, no credentials, no URLs, no
 prices. A list here is a claim that **these model ids exist publicly** — never a grant
 to use one. A universe still needs its owner's own accepted model access before any of
 them can be selected, and they appear in the picker under "needs access" until then.

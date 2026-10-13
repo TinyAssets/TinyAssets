@@ -10,6 +10,7 @@ Exit 0 clean, 1 with findings. Every finding names the file and the reason.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -50,6 +51,13 @@ def findings(directory: Path) -> list[str]:
             # An empty file is pointless rather than harmful, but it is also almost
             # certainly a mistake in a PR whose purpose was to ADD an id.
             found.append(f"{path.name}: lists no models")
+        if source_kind == "subscription":
+            from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+
+            keys = json.loads(path.read_text(encoding="utf-8"))["models"]
+            for key in keys:
+                if key not in _PROVIDER_SERVICE:
+                    found.append(f"{path.name}: unknown subscription source {key!r}")
     return found
 
 
