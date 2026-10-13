@@ -92,6 +92,22 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/assets/logo.png'), false);
     });
 
+    // RFC 9728 inserts the resource path. https://tinyassets.io/mcp is fetched
+    // at the apex, which the /mcp* route never matches.
+    it('accepts the apex OAuth discovery documents', () => {
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server'), true);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/mcp'), true);
+    });
+
+    it('does not proxy other well-known paths or a longer discovery suffix', () => {
+        assert.equal(shouldProxy('/.well-known/openai-apps-challenge'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource/mcp/extra'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-protected-resource-extra'), false);
+        assert.equal(shouldProxy('/.well-known/oauth-authorization-server/extra'), false);
+    });
+
     // The app moved from /mcp/app to the apex /app on 2026-09-30. The Worker is
     // the only thing standing between that path and the website origin, so the
     // binding is load-bearing: without these the app URL 404s from GitHub Pages.
@@ -186,6 +202,49 @@ describe('worker handler — retired /mcp-directory routing', () => {
             });
         }
     }
+});
+
+describe('worker handler — apex OAuth discovery', () => {
+    const documents = [
+        '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-protected-resource/mcp',
+        '/.well-known/oauth-authorization-server',
+        '/.well-known/oauth-authorization-server/mcp',
+    ];
+
+    for (const path of documents) {
+        it(`proxies GET and OPTIONS ${path} to the tunnel`, async () => {
+            for (const method of ['GET', 'OPTIONS']) {
+                lastUpstreamRequest = null;
+                const response = await worker.fetch(
+                    new Request(`https://tinyassets.io${path}`, { method }),
+                    {},
+                );
+                assert.ok(lastUpstreamRequest, path);
+                assert.equal(lastUpstreamRequest.method, method);
+                const upstreamPath = {
+                    '/.well-known/oauth-protected-resource/mcp':
+                        '/.well-known/oauth-protected-resource',
+                    '/.well-known/oauth-authorization-server/mcp':
+                        '/.well-known/oauth-authorization-server',
+                }[path] || path;
+                assert.equal(
+                    lastUpstreamRequest.url,
+                    `${TUNNEL_ORIGIN}${upstreamPath}`,
+                );
+                assert.equal(response.status, 200);
+            }
+        });
+    }
+
+    it('does not proxy the website well-known challenge', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/.well-known/openai-apps-challenge'),
+            {},
+        );
+        assert.equal(lastUpstreamRequest, null);
+        assert.equal(response.status, 404);
+    });
 });
 
 describe('worker handler — canonical /mcp routing', () => {

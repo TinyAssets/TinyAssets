@@ -35,14 +35,13 @@ def client(app):
 
 
 def test_browser_get_mcp_is_challenged_like_everything_under_mcp(client):
-    """A browser GET of /mcp used to get discovery HTML anonymously. There is no
-    anonymous read of the endpoint (founder, 2026-09-02): it is challenged, and
-    the challenge names the authorization server so a client can proceed."""
+    """A footer visitor with Accept: text/html and no MCP headers gets the
+    connect page. The page is static: it names no principal and holds no data."""
     response = client.get("/mcp", headers={"Accept": "text/html"})
-    assert response.status_code == 401
-    assert response.headers["www-authenticate"].startswith("Bearer ")
-    assert "resource_metadata=" in response.headers["www-authenticate"]
-    assert response.json() == {"error": "authentication_required"}
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Connect via MCP client" in response.text
+    assert "authentication_required" not in response.text
 
 
 def test_browser_get_mcp_directory_is_an_ordinary_404(client):

@@ -13,8 +13,18 @@ authorization (universe visibility plus ownership ACL).
 The auth provider SHALL be selected by `UNIVERSE_SERVER_AUTH`: unset or false
 selects the dev provider, `true`/`oauth` the full OAuth provider,
 `optional`/`resolve` the optional OAuth provider, `workos` the WorkOS
-provider. In every mode a request without a valid bearer SHALL be challenged;
-the modes differ only in how a bearer is validated and whether named action
+provider. In every mode a request without a valid bearer SHALL be challenged,
+except a browser `GET` of exactly `/mcp` whose `Accept` contains `text/html`
+and that carries no MCP session id, no MCP protocol version, and no
+`text/event-stream`. That request SHALL receive the static connect page and
+SHALL NOT bind a principal. POST, HEAD, and every streamable-HTTP request
+on `/mcp` stay challenged.
+Local OAuth mode serves dynamic client registration, authorization, and token
+exchange at exactly `/mcp/oauth/register`, `/mcp/oauth/authorize`, and
+`/mcp/oauth/token`. Those three paths SHALL be exempt from the bearer
+challenge. Any other path under `/mcp/oauth/` SHALL stay challenged. WorkOS
+mode SHALL answer the three paths with 501 and SHALL NOT bind a principal.
+The modes differ only in how a bearer is validated and whether named action
 scopes are enforced on writes. The dev provider SHALL require
 `UNIVERSE_SERVER_DEV_USER` and resolve every bearer to that named identity.
 
@@ -37,9 +47,14 @@ identity is bound for it.
 ### Requirement: Protected Resource Metadata advertises the AuthKit issuer and OIDC scopes only
 
 In WorkOS mode the server SHALL advertise, at the Protected Resource Metadata endpoint
-(`/.well-known/oauth-protected-resource` and its `/mcp`-prefixed mirror), the AuthKit issuer as the
+(`/.well-known/oauth-protected-resource`, the RFC 9728 path-inserted
+`/.well-known/oauth-protected-resource/mcp`, and the `/mcp`-prefixed mirror), the AuthKit issuer as the
 authorization server plus the registered MCP resource indicator, and SHALL list only standard OIDC
 scopes (`openid`, `profile`, `email`, `offline_access`).
+The same documents SHALL be reachable at the apex well-known paths, which the edge proxies to this
+server. Authorization-server metadata SHALL be served at `/.well-known/oauth-authorization-server`,
+its RFC 8414 path-inserted form `/.well-known/oauth-authorization-server/mcp`, and the `/mcp`-prefixed
+mirror.
 It SHALL NOT advertise internal `tinyassets.*` action scopes, because AuthKit cannot issue them and
 per-action authorization is enforced at the Resource Server via founder grants, not via OAuth scopes.
 The metadata is produced in `tinyassets/auth/wellknown.py`.

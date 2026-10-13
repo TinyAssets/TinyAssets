@@ -160,6 +160,14 @@ def test_wrangler_toml_keeps_load_bearing_broad_route_and_runtime_settings():
     assert config["routes"] == [
         {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"},
         {"pattern": "tinyassets.io/app*", "zone_name": "tinyassets.io"},
+        {
+            "pattern": "tinyassets.io/.well-known/oauth-protected-resource*",
+            "zone_name": "tinyassets.io",
+        },
+        {
+            "pattern": "tinyassets.io/.well-known/oauth-authorization-server*",
+            "zone_name": "tinyassets.io",
+        },
     ]
     assert config["compatibility_date"] == "2025-10-01"
     assert config["compatibility_flags"] == []

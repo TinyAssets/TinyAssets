@@ -3,8 +3,16 @@
 **Status:** The canonical proxy shipped after the 2026-04-20 single-entry
 cutover. This repository revision also retires `/mcp-directory*` at the edge;
 that newer behavior is not production truth until deploy and post-deploy proof
-complete. The Worker routes `tinyassets.io/mcp*` and `tinyassets.io/app*` while
-leaving the GitHub Pages landing intact for all other paths.
+complete. The Worker routes `tinyassets.io/mcp*`, `tinyassets.io/app*`, and the
+apex OAuth discovery documents
+`tinyassets.io/.well-known/oauth-protected-resource*` and
+`tinyassets.io/.well-known/oauth-authorization-server*` while leaving the
+GitHub Pages landing intact for all other paths. The discovery wildcards are
+the document name only, so `/.well-known/openai-apps-challenge` stays on the
+website. Path-inserted discovery (`/.well-known/oauth-protected-resource/mcp`
+and `/.well-known/oauth-authorization-server/mcp`) is forwarded to the apex
+document the daemon already serves, so a worker deploy answers those URLs
+before the daemon image that mounts them directly is live.
 
 **After deploy:** the canonical public MCP URL returns to
 `https://tinyassets.io/mcp`. Installed TinyAssets chatbot connectors pointing

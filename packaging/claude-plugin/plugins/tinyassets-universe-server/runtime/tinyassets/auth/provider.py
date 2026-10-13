@@ -1026,25 +1026,38 @@ class OAuthProvider(AuthProvider):
         self, client_id: str, redirect_uri: str, scope: str,
         state: str, code_challenge: str, code_challenge_method: str,
     ) -> str:
-        # Verify client exists
+        # Verify client exists and the redirect is one it registered.
         conn = self._connect()
         try:
             client = conn.execute(
-                "SELECT client_id FROM oauth_clients WHERE client_id = ?",
+                "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?",
                 (client_id,),
             ).fetchone()
             if not client:
                 raise ValueError(f"Unknown client: {client_id}")
+            try:
+                allowed = json.loads(client["redirect_uris"])
+            except json.JSONDecodeError:
+                allowed = []
+            if not isinstance(allowed, list) or redirect_uri not in allowed:
+                raise ValueError("redirect_uri is not registered for this client")
+            subject = (
+                os.environ.get("UNIVERSE_SERVER_OAUTH_SUBJECT", "").strip()
+                or os.environ.get(DEV_USER_ENV, "").strip()
+            )
+            if not subject:
+                raise ValueError("UNIVERSE_SERVER_OAUTH_SUBJECT is not set")
 
             code = secrets.token_urlsafe(48)
             conn.execute(
                 "INSERT INTO authorization_codes "
                 "(code, client_id, redirect_uri, scope, code_challenge, "
-                " code_challenge_method, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " code_challenge_method, user_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     code, client_id, redirect_uri, scope or "read write",
                     code_challenge, code_challenge_method or "S256",
+                    subject,
                     time.time(),
                 ),
             )
@@ -1068,6 +1081,8 @@ class OAuthProvider(AuthProvider):
             ).fetchone()
 
             if not row:
+                return None
+            if (redirect_uri or "") != row["redirect_uri"]:
                 return None
 
             # Check expiry (codes valid for 10 minutes)

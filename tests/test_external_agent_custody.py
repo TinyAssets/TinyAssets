@@ -40,8 +40,15 @@ def _stored(center):
 
 
 def _custody(center):
-    with sqlite3.connect(db_path(center.parent), isolation_level=None) as conn:
-        conn.execute("BEGIN")
+    # A deposit starts a background catalogue warm that also writes this
+    # database. A deferred BEGIN upgrades to a write lock without waiting, so
+    # the CREATE inside adoption fails immediately with "database is locked".
+    # BEGIN IMMEDIATE takes the write lock through the busy timeout instead.
+    with sqlite3.connect(
+        db_path(center.parent), timeout=5, isolation_level=None,
+    ) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("BEGIN IMMEDIATE")
         ref = adopt_llm_subscription_custody(
             conn, universe_dir=center, owner_user_id=OWNER,
             universe_id=CENTER, service="codex",

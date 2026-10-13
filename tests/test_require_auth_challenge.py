@@ -71,6 +71,7 @@ def _drive(
     token: str | None,
     method: str = "POST",
     body: bytes = b"",
+    accept: str | None = None,
 ) -> tuple[list[dict], bool]:
     """Run one request through AuthContextMiddleware; return (sent, app_called)."""
     called = {"hit": False}
@@ -97,6 +98,8 @@ def _drive(
     headers = []
     if token is not None:
         headers.append((b"authorization", f"Bearer {token}".encode("latin1")))
+    if accept is not None:
+        headers.append((b"accept", accept.encode("latin-1")))
     scope = {"type": "http", "method": method, "path": path, "headers": headers}
     asyncio.run(AuthContextMiddleware(_app)(scope, _receive, _send))
     return sent, called["hit"]
@@ -118,6 +121,22 @@ def _body(sent: list[dict]) -> bytes:
     return b"".join(
         m.get("body", b"") for m in sent if m["type"] == "http.response.body"
     )
+
+
+def test_a_browser_get_reaches_the_connect_page_and_a_client_does_not():
+    set_provider(_ResolveAlwaysProvider())
+    page, page_called = _drive(
+        "/mcp", token=None, method="GET", accept="text/html",
+    )
+    assert page_called
+    assert _status(page) == 200
+    client, client_called = _drive(
+        "/mcp", token=None, method="GET",
+        accept="application/json, text/event-stream",
+    )
+    assert not client_called
+    assert _status(client) == 401
+    assert "resource_metadata=" in _www_authenticate(client)
 
 
 def test_missing_token_on_mcp_is_challenged():
@@ -147,10 +166,16 @@ def test_discovery_routes_stay_public():
         "/.well-known/oauth-protected-resource",
         "/mcp/.well-known/oauth-protected-resource",
         "/.well-known/oauth-authorization-server",
+        "/mcp/oauth/register",
+        "/mcp/oauth/authorize",
+        "/mcp/oauth/token",
     ):
         sent, app_called = _drive(path, token=None)
         assert app_called, f"{path} must not be challenged"
         assert _status(sent) == 200
+    sent, app_called = _drive("/mcp/oauth/register/extra", token=None, method="POST")
+    assert not app_called
+    assert _status(sent) == 401
 
 
 def test_valid_token_on_mcp_passes_through():
@@ -252,6 +277,9 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/mcp/pulse/extra", True),
         ("/mcp/.well-known/oauth-protected-resource", False),
         ("/.well-known/oauth-protected-resource", False),
+        ("/.well-known/oauth-protected-resource/mcp", False),
+        ("/.well-known/oauth-authorization-server", False),
+        ("/.well-known/oauth-authorization-server/mcp", False),
         ("/not-mcp", False),
         ("/", False),
         # The retired path (moved to the apex /app on 2026-09-30) keeps no

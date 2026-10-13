@@ -24,7 +24,9 @@ from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthori
 
 def _custody(base, universe, owner, service):
     with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
-        conn.execute("BEGIN")
+        # IMMEDIATE so this write waits on the store's busy timeout. A deferred
+        # BEGIN upgrades without waiting and loses to a concurrent adoption.
+        conn.execute("BEGIN IMMEDIATE")
         return current_llm_subscription_custody(
             conn, universe_dir=universe, owner_user_id=owner,
             universe_id=universe.name, service=service,
