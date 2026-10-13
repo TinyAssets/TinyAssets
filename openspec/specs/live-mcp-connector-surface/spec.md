@@ -112,13 +112,19 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 ### Requirement: Cloudflare Worker Public Front Door
 
 `https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A
-Cloudflare Worker on the `tinyassets.io/mcp*` and `tinyassets.io/app*` routes
-SHALL proxy only canonical
-`/mcp` and `/app` traffic to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
+Cloudflare Worker on the `tinyassets.io/mcp*`, `tinyassets.io/app*`, and apex
+OAuth discovery routes SHALL proxy canonical
+`/mcp`, `/app`, and those discovery documents to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
 the CF Access service-token headers (`CF-Access-Client-Id` /
-`CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL
+`CF-Access-Client-Secret`) from Worker environment secrets. An `OPTIONS`
+preflight on those routes SHALL be answered by the Worker with 204 and the
+CORS policy in `tinyassets/mcp_browser_origins.json` (the same document the
+daemon reads). The Worker SHALL NOT forward `OPTIONS` to the origin: Access
+answers that preflight with 403 before it checks the service token. A
+disallowed `Origin` SHALL be refused at the edge and SHALL NOT be reflected.
+The Worker SHALL
 stream SSE bodies straight through without buffering, SHALL preserve request
-headers and method, SHALL preserve non-hop-by-hop upstream response headers
+headers and method for every method other than that preflight, SHALL preserve non-hop-by-hop upstream response headers
 except that it MUST strip every `Set-Cookie` response header, and SHALL map any
 tunnel `5xx` (or an unreachable tunnel) to an explicit `502` JSON body rather
 than falling through to the GoDaddy origin. It SHALL NOT route, redirect, proxy,
@@ -131,6 +137,17 @@ Access-gated origin and MUST NOT be presented as user-facing.
 - **WHEN** a client request arrives at `tinyassets.io/mcp`
 - **THEN** the Worker rewrites `Host` to `mcp.tinyassets.io`, adds the CF Access service-token headers from env secrets, and forwards method, body stream, and non-hop-by-hop headers
 - **AND** the broad Worker binding terminates `/mcp-directory*` as an ordinary edge 404 without proxy, redirect, alias, or translation
+
+#### Scenario: A browser preflight is answered at the edge
+
+- **WHEN** a browser sends `OPTIONS` to `/mcp`, `/app`, or either protected-resource metadata path with `Origin: https://claude.ai`, `Access-Control-Request-Method: POST`, and `Access-Control-Request-Headers` including `authorization`
+- **THEN** the Worker returns 204 with `Access-Control-Allow-Origin: https://claude.ai` and the allow-methods and allow-headers from `tinyassets/mcp_browser_origins.json`
+- **AND** the tunnel origin is not called
+
+#### Scenario: A disallowed browser origin is refused at the edge
+
+- **WHEN** a browser sends `OPTIONS /mcp` with `Origin: https://evil.example`
+- **THEN** the Worker returns 403, does not reflect that origin, and does not call the tunnel origin
 
 #### Scenario: Upstream response cookies never cross the public boundary
 

@@ -89,6 +89,11 @@ def test_workflow_path_filter_covers_worker_dir():
         "push trigger must path-filter on deploy/cloudflare-worker/**"
     assert "deploy/cloudflare-worker/**" in pr_paths, \
         "pull_request trigger must path-filter on deploy/cloudflare-worker/**"
+    shared = "tinyassets/mcp_browser_origins.json"
+    assert shared in push_paths, \
+        "push trigger must redeploy when the shared browser-origin list changes"
+    assert shared in pr_paths, \
+        "pull_request trigger must dry-run when the shared browser-origin list changes"
 
 
 def test_workflow_path_filter_covers_workflow_itself():
@@ -285,8 +290,12 @@ def test_live_deploy_probes_run_in_safety_order_under_the_same_condition():
         assert steps[names.index(name)].get("if") == live_condition
 
     canonical_probe = steps[names.index("Probe canonical URL after deploy")]
-    assert "--url https://tinyassets.io/mcp" in canonical_probe.get("run", "")
-    assert "--assert-name" not in canonical_probe.get("run", "")
+    script = canonical_probe.get("run", "")
+    assert "--edge-preflight" in script
+    assert "--url https://tinyassets.io/mcp" in script
+    assert "--assert-name" not in script
+    assert ">/dev/null" not in script
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" not in (canonical_probe.get("env") or {})
 
 
 # ---------------------------------------------------------------------------

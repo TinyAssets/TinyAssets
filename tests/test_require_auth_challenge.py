@@ -190,7 +190,12 @@ def test_invalid_token_is_challenged_as_invalid():
     sent, app_called = _drive("/mcp", token="bad")
     assert not app_called
     assert _status(sent) == 401
-    assert 'error="invalid_token"' in _www_authenticate(sent)
+    challenge = _www_authenticate(sent)
+    assert 'error="invalid_token"' in challenge
+    assert "error_description=" in challenge
+    body = json.loads(_body(sent))
+    assert body["error"] == "invalid_token"
+    assert body["error_description"]
 
 
 def test_cached_hosted_tool_call_gets_linking_challenge_without_dispatch(monkeypatch):
@@ -212,7 +217,10 @@ def test_cached_hosted_tool_call_gets_linking_challenge_without_dispatch(monkeyp
     assert payload["result"]["isError"] is True
     challenges = payload["result"]["_meta"]["mcp/www_authenticate"]
     assert len(challenges) == 1
-    assert "resource_metadata=\"https://tinyassets.io/mcp/.well-known/" in challenges[0]
+    assert (
+        'resource_metadata="https://tinyassets.io/'
+        '.well-known/oauth-protected-resource/mcp"'
+    ) in challenges[0]
     assert 'error="invalid_token"' in challenges[0]
     assert "error_description=" in challenges[0]
 
@@ -321,14 +329,14 @@ def test_the_retired_connect_deposit_paths_are_challenged(monkeypatch):
 
 
 def test_challenge_metadata_url_is_routed_in_production(monkeypatch):
-    # In production only /mcp* is proxied to the daemon, so the challenge must
-    # advertise a /mcp-prefixed (routed) PRM, not the apex root path that 404s.
+    # RFC 9728 inserts the well-known segment. The legacy path under /mcp
+    # still serves the same document; the header no longer points there.
     from tinyassets.auth.middleware import _challenge_prm_url
 
     monkeypatch.setenv("WORKOS_MCP_RESOURCE", "https://tinyassets.io/mcp")
     assert (
         _challenge_prm_url()
-        == "https://tinyassets.io/mcp/.well-known/oauth-protected-resource"
+        == "https://tinyassets.io/.well-known/oauth-protected-resource/mcp"
     )
 
 
@@ -338,8 +346,13 @@ def test_challenge_header_is_exact(monkeypatch):
     sent, _ = _drive("/mcp", token=None)
     assert _www_authenticate(sent) == (
         'Bearer resource_metadata='
-        '"https://tinyassets.io/mcp/.well-known/oauth-protected-resource"'
+        '"https://tinyassets.io/.well-known/oauth-protected-resource/mcp"'
     )
+    assert "error=" not in _www_authenticate(sent)
+    assert json.loads(_body(sent)) == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_workos_provider_no_longer_reads_a_require_auth_switch(monkeypatch):

@@ -61,6 +61,30 @@ def authorization_server_metadata() -> dict[str, Any]:
     }
 
 
+def resource_metadata_url(resource: str) -> str:
+    """RFC 9728 path insertion for a protected-resource identifier.
+
+    ``https://tinyassets.io/mcp`` is fetched at
+    ``https://tinyassets.io/.well-known/oauth-protected-resource/mcp``.
+    A resource with no path uses the apex document. The legacy URL under the
+    resource path keeps serving the same document; it is not this URL.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    raw = resource.strip().rstrip("/")
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return f"{raw}/.well-known/oauth-protected-resource"
+    suffix = "" if parts.path in ("", "/") else parts.path
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        "/.well-known/oauth-protected-resource" + suffix,
+        "",
+        "",
+    ))
+
+
 def protected_resource_metadata() -> dict[str, Any]:
     """OAuth Protected Resource Metadata (RFC 9728).
 
