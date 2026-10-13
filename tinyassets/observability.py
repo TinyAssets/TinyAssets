@@ -845,9 +845,10 @@ async def _buffer_small(receive: Any) -> tuple[bytes, Any]:
     async def replay() -> dict:
         if queue:
             return queue.popleft()
-        if overflow:
-            return await receive()
-        return {"type": "http.disconnect"}
+        # Past the buffered body, wait on the real channel: a streaming
+        # response listens here for the client's disconnect, and a fake
+        # one would end every SSE stream at once.
+        return await receive()
 
     return payload, replay
 
