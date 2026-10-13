@@ -33,6 +33,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/agent_activities.py",
     "tinyassets/agent_activity.py",
     "tinyassets/agent_interchange.py",
+    "tinyassets/agent_files.py",
     "tinyassets/broker/policy.py",
     "tinyassets/agent_steering.py",
     "tinyassets/agent_wakes.py",
