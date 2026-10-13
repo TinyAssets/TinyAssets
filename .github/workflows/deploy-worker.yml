@@ -136,22 +136,24 @@ jobs:
           python-version: '3.11'
 
       - name: Probe canonical URL after deploy
-        env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         if: >
           github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
         run: |
+          # Browser preflight is answered by this Worker. The full MCP canary
+          # asserts the daemon's resource_metadata URL, and deploy-prod swaps
+          # that image after this job, so it does not belong here.
           # Allow up to 60s for edge propagation before probing.
           for i in $(seq 1 12); do
             if python scripts/mcp_public_canary.py \
-                 --url https://tinyassets.io/mcp --timeout 10 >/dev/null 2>&1; then
-              echo "canary green after ${i} poll(s)"
+                 --edge-preflight \
+                 --url https://tinyassets.io/mcp --timeout 10; then
+              echo "edge preflight green after ${i} poll(s)"
               break
             fi
             sleep 5
             if [ "$i" = "12" ]; then
-              echo "::error::canary still red 60s after Worker deploy"
+              echo "::error::edge preflight still red 60s after Worker deploy"
               exit 1
             fi
           done
