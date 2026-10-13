@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   measure:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/conv/c6-p2a-g1-cgroup'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -35,15 +35,6 @@ jobs:
           printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Install branch harness for G1 proof
-        if: github.ref == 'refs/heads/conv/c6-p2a-g1-cgroup'
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/box_preflight.py \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/box_preflight-${GITHUB_RUN_ID}.py"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo cp /opt/tinyassets/boxhostd/box_preflight.py /tmp/box_preflight-original-${GITHUB_RUN_ID}.py && sudo install -m 0755 /tmp/box_preflight-${GITHUB_RUN_ID}.py /opt/tinyassets/boxhostd/box_preflight.py"
 
       - name: Run G1 G3 G4 G6 inside boxhostd
         id: gates
@@ -83,9 +74,3 @@ jobs:
           path: box-preflight-results.json
           if-no-files-found: warn
           retention-days: 30
-
-      - name: Restore production harness
-        if: always() && github.ref == 'refs/heads/conv/c6-p2a-g1-cgroup'
-        run: |
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo test ! -f /tmp/box_preflight-original-${GITHUB_RUN_ID}.py || sudo mv /tmp/box_preflight-original-${GITHUB_RUN_ID}.py /opt/tinyassets/boxhostd/box_preflight.py"

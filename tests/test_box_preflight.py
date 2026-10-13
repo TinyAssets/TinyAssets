@@ -45,11 +45,12 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
     boxes.names = []
     boxes.sandbox_pids = {}
     starts = []
+    state_pid = 123
     monkeypatch.setattr(box_preflight, "CGROUP_ROOT", tmp_path)
 
     def spec(*args, **_kwargs):
         if args[0] == "state":
-            return subprocess.CompletedProcess(args, 0, stdout='{"pid": 123}')
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"pid": state_pid}))
         bundle = Path(args[args.index("--bundle") + 1])
         (bundle / "config.json").write_text(
             json.dumps({"process": {}, "mounts": [], "linux": {}})
@@ -81,6 +82,12 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
             "swap": box_preflight.GIB,
         }
     assert starts == ["g1", "cap0", "cap1", "cap2", "cap3"]
+    state_pid = 999
+    with pytest.raises(RuntimeError, match="outside its limited box cgroup"):
+        boxes.start("outside", memory=box_preflight.GIB)
+    (boxes.parent_cgroup / "stale").mkdir()
+    with pytest.raises(RuntimeError, match="already exists"):
+        boxes.start("stale", memory=box_preflight.GIB)
 
 
 def test_host_cgroup_membership_and_rss_use_fake_sys_and_proc(tmp_path, monkeypatch) -> None:
