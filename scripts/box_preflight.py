@@ -33,6 +33,7 @@ CANARY = "http://127.0.0.1:8001/app"
 HARNESS_DEADLINE = 1800
 QUOTA_SCRATCH = ".box-preflight-scratch"
 QUOTA_TOOLS = {"xfs": ("xfs_quota",), "ext4": ("repquota", "chattr", "setquota")}
+MOUNTINFO = Path("/proc/self/mountinfo")
 
 
 class CleanupError(Exception):
@@ -49,6 +50,8 @@ def cleanup_reason(error: Exception) -> str:
         return "permission_denied"
     if isinstance(error, subprocess.TimeoutExpired):
         return "timeout"
+    if isinstance(error, OSError) and error.errno in errno.errorcode:
+        return f"operation_failed:{errno.errorcode[error.errno]}"
     return "operation_failed"
 
 
@@ -580,13 +583,61 @@ def g4(volume: Path, work: Path | None = None) -> dict:
         return result
 
 
+def valid_work_dir(work: Path) -> bool:
+    return (
+        work.parent == Path("/var/tmp")
+        and work.name.startswith("box-preflight-")
+        and not work.is_symlink()
+    )
+
+
+def unmount_beneath(tree: Path) -> None:
+    try:
+        mountinfo = MOUNTINFO.read_text()
+    except FileNotFoundError:
+        return
+    mounts = set()
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        target = Path(re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[4]))
+        if target == tree or tree in target.parents:
+            mounts.add(target)
+    for target in sorted(mounts, key=lambda path: len(path.parts), reverse=True):
+        try:
+            result = run(["umount", str(target)], timeout=20, check=False)
+            if result.returncode:
+                result = run(["umount", "-l", str(target)], timeout=20, check=False)
+            if result.returncode:
+                raise CleanupError("work_unmount", "umount_failed")
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise CleanupError("work_unmount", cleanup_reason(error)) from error
+
+
+def remove_cleanup_tree(tree: Path, step: str) -> None:
+    if not tree.exists():
+        return
+    unmount_beneath(tree)
+    try:
+        run(["chattr", "-R", "-ia", str(tree)], timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # Attributes may be unsupported; rmtree reports any real failure.
+    try:
+        shutil.rmtree(tree)
+    except OSError as error:
+        raise CleanupError(step, cleanup_reason(error)) from error
+
+
 def cleanup_scratch(work: Path) -> None:
     """Recover resources even when the measurement process was killed."""
     if not work.exists():
         return
     state = work / "runsc-state"
     if state.exists() and any(state.iterdir()):
-        for name in ("cap3", "cap2", "cap1", "cap0", "g1"):
+        names = {"cap3", "cap2", "cap1", "cap0", "g1"}
+        names.update(child.name for child in state.iterdir() if child.is_dir())
+        for name in sorted(names):
             prefix = [str(RUNSC), "--root", str(state), "--network=none", "--platform=systrap"]
             try:
                 run([*prefix, "kill", name, "KILL"], timeout=10, check=False)
@@ -609,7 +660,11 @@ def cleanup_scratch(work: Path) -> None:
             tree = Path(details["tree"])
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise CleanupError("quota_state", "invalid_state") from error
-        if tree.parent.name != QUOTA_SCRATCH or not tree.name.startswith("quota-"):
+        if (
+            tree.parent.name != QUOTA_SCRATCH
+            or not tree.name.startswith("quota-")
+            or tree.is_symlink()
+        ):
             raise CleanupError("quota_state", "invalid_state")
         if filesystem == "xfs":
             command = ["xfs_quota", "-x", "-c", f"limit -p bhard=0 {project}", mount]
@@ -626,11 +681,7 @@ def cleanup_scratch(work: Path) -> None:
         if cleared.returncode:
             raise CleanupError("quota_clear", "quota_clear_failed")
         else:
-            try:
-                if tree.exists():
-                    shutil.rmtree(tree)
-            except OSError as error:
-                raise CleanupError("quota_tree_remove", cleanup_reason(error)) from error
+            remove_cleanup_tree(tree, "quota_tree_remove")
             try:
                 tree.parent.rmdir()
             except OSError:
@@ -639,10 +690,7 @@ def cleanup_scratch(work: Path) -> None:
                 quota_state.unlink()
             except OSError as error:
                 raise CleanupError("quota_state_remove", cleanup_reason(error)) from error
-    try:
-        shutil.rmtree(work)
-    except OSError as error:
-        raise CleanupError("work_remove", cleanup_reason(error)) from error
+    remove_cleanup_tree(work, "work_remove")
 
 
 def _deadline(_signum: int, _frame: object) -> None:
@@ -656,11 +704,7 @@ def main() -> int:
     parser.add_argument("--cleanup-only", action="store_true")
     args = parser.parse_args()
     if args.cleanup_only:
-        if (
-            args.work_dir is None
-            or args.work_dir.parent != Path("/var/tmp")
-            or not args.work_dir.name.startswith("box-preflight-")
-        ):
+        if args.work_dir is None or not valid_work_dir(args.work_dir):
             failure = CleanupError("cleanup_guard", "invalid_work_dir")
         else:
             try:
@@ -675,6 +719,8 @@ def main() -> int:
     if args.result is None:
         parser.error("--result is required")
     work = args.work_dir or Path(tempfile.mkdtemp(prefix="box-preflight-", dir="/var/tmp"))
+    if not valid_work_dir(work):
+        parser.error("--work-dir must be a /var/tmp/box-preflight-* directory")
     work.mkdir(mode=0o700, exist_ok=True)
     signal.signal(signal.SIGALRM, _deadline)
     signal.alarm(HARNESS_DEADLINE)
