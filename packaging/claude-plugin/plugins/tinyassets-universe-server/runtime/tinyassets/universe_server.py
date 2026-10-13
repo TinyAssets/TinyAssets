@@ -34,8 +34,11 @@ import logging
 import math
 import os
 import re
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar, copy_context
 from functools import wraps
 from typing import Annotated, Any, Literal
 
@@ -87,6 +90,39 @@ logger = logging.getLogger("universe_server")
 
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
 _CONVERSE_PROGRESS_INTERVAL_S = 20
+_CONVERSE_WORKERS = 8
+_CONVERSE_EXECUTOR = ThreadPoolExecutor(max_workers=_CONVERSE_WORKERS,
+                                        thread_name_prefix="converse")
+_CONVERSE_SLOTS = threading.BoundedSemaphore(_CONVERSE_WORKERS)
+_CONVERSE_BUSY: ContextVar[bool] = ContextVar("converse_busy", default=False)
+
+
+class _ConverseBusy(RuntimeError):
+    pass
+
+
+def _run_converse_worker(tool, args, kwargs):
+    try:
+        return tool(*args, **kwargs)
+    finally:
+        _CONVERSE_SLOTS.release()
+
+
+def _run_busy_converse(tool, args, kwargs):
+    token = _CONVERSE_BUSY.set(True)
+    try:
+        return tool(*args, **kwargs)
+    finally:
+        _CONVERSE_BUSY.reset(token)
+
+
+def _busy_failure_record():
+    from tinyassets.conversation_failure import turn_failure
+
+    return turn_failure("platform_busy", stage="before_send", effects="none",
+                        ref=uuid.uuid4().hex[:16])
+
+
 _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 
 #: Seconds uvicorn keeps waiting on connections and tracked request tasks after
@@ -433,7 +469,19 @@ def _register_structured_tool(fn, *, tags, name=None):
         async def _owned_tool(*args, **kwargs):
             # The admitted turn belongs to the server, not the HTTP/SSE task.
             # A disconnected client stops waiting but must not stop its worker.
-            worker = asyncio.create_task(asyncio.to_thread(_tool, *args, **kwargs))
+            if _CONVERSE_SLOTS.acquire(blocking=False):
+                try:
+                    future = asyncio.get_running_loop().run_in_executor(
+                        _CONVERSE_EXECUTOR, copy_context().run,
+                        _run_converse_worker, _tool, args, kwargs)
+                except BaseException:
+                    _CONVERSE_SLOTS.release()
+                    raise
+            else:
+                # This short path still authenticates and admits the message, then
+                # records a terminal before it can dispatch any model work.
+                future = asyncio.to_thread(_run_busy_converse, _tool, args, kwargs)
+            worker = asyncio.ensure_future(future)
             def finished(task):
                 if not task.cancelled() and task.exception() is not None:
                     logger.error("converse: detached worker failed: %r", task.exception())
@@ -3328,6 +3376,8 @@ def converse(
                                        "universe_id": uid})
                 return json.dumps({"error": "Your message could not be saved, so nothing was sent.",
                                    "history_saved": False, "universe_id": uid})
+            if _CONVERSE_BUSY.get():
+                raise _ConverseBusy("Interactive turns are busy; try again shortly.")
             _announce_owner_message(memory_universe_dir)
             # A reconnect must not consume context owed to the next new turn.
             message = _with_carryover(memory_universe_dir, memory_session, message)
@@ -3364,7 +3414,7 @@ def converse(
             ),
             memory_universe_dir, memory_session, live_id,
         ))
-    except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
+    except BaseException as exc:  # noqa: BLE001 - every admitted turn needs a terminal
         # P0 #1582: a universe with no engine credential of its own cannot
         # speak at all, and "All providers exhausted" is a dead end for the
         # founder reading it. Exhaustion on a CREDENTIALED universe is a real
@@ -3379,7 +3429,8 @@ def converse(
         from tinyassets.conversation_failure import failure_notice, normalize_turn_failure
         from tinyassets.conversation_store import record_failure
 
-        record = _served_failure_record(exc, held=held is not None)
+        record = (_busy_failure_record() if isinstance(exc, _ConverseBusy)
+                  else _served_failure_record(exc, held=held is not None))
         try:
             saved = record_failure(
                 memory_universe_dir, memory_session, typed, record, client_send_id=client_send_id,
@@ -3388,8 +3439,14 @@ def converse(
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
+        if not saved and founder_turn is not None:
+            from tinyassets.conversation_store import terminal_exists
+
+            saved = terminal_exists(memory_universe_dir, memory_session, founder_turn)
         if saved and founder_turn is None:
             _announce_owner_message(memory_universe_dir)
+        if not isinstance(exc, Exception):
+            raise
         history = {
             "turn_failure": normalize_turn_failure(record),
             "failure_notice": failure_notice(record),
@@ -3422,6 +3479,7 @@ def converse(
         delivered, undelivered = _settle_steering(
             memory_universe_dir, memory_session, live_id)
         from tinyassets.conversation_store import record_exchange_turns
+        from tinyassets.conversation_store import terminal_exists as _terminal_exists
 
         # Attach the terminal to the admitted row without inserting the request twice.
         recorded = record_exchange_turns(
@@ -3430,7 +3488,10 @@ def converse(
             client_send_id=client_send_id,
             founder_turn=founder_turn,
         )
-        if recorded is None:
+        if recorded is None and not (
+            founder_turn is not None and _terminal_exists(
+                memory_universe_dir, memory_session, founder_turn)
+        ):
             raise RuntimeError("converse reply could not be recorded")
         # Only now can the cursor name this turn -- by the exact rows it wrote, never
         # "the latest row", which with two turns in flight can be another turn's
@@ -3447,7 +3508,7 @@ def converse(
                 )
             except Exception:
                 logger.warning("converse: learned cursor could not settle", exc_info=True)
-    except Exception as exc:  # noqa: BLE001 - every admitted turn needs a terminal
+    except BaseException as exc:  # noqa: BLE001 - every admitted turn needs a terminal
         logger.warning("converse: reply terminal failed", exc_info=True)
         from tinyassets.conversation_failure import failure_notice, turn_failure
         from tinyassets.conversation_store import record_failure
@@ -3457,8 +3518,14 @@ def converse(
             memory_universe_dir, memory_session, typed, failure,
             client_send_id=client_send_id, founder_turn=founder_turn,
         )
+        if not saved and founder_turn is not None:
+            from tinyassets.conversation_store import terminal_exists
+
+            saved = terminal_exists(memory_universe_dir, memory_session, founder_turn)
         if not saved:
             raise RuntimeError("converse terminal could not be recorded") from exc
+        if not isinstance(exc, Exception):
+            raise
         return json.dumps({"error": failure_notice(failure),
                            "failure_notice": failure_notice(failure),
                            "history_saved": True, "universe_id": uid})
