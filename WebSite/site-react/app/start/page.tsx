@@ -109,6 +109,7 @@ export default function StartPage() {
                 Settings › Connectors › Create, paste the URL. Both ask you to sign in to TinyAssets
                 once.
               </p>
+              <p><Link href="/connect/">Setup for Claude, ChatGPT, Cursor and Codex</Link></p>
             </div>
 
             <div className="sheet" id="android">

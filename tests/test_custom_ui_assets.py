@@ -439,23 +439,6 @@ def test_the_apps_pin_table_is_the_manifest():
                      for name, e in ui_library_set.manifest().items()}
 
 
-def test_the_plugin_mirror_ships_the_manifest_but_not_the_files():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "build_plugin", "packaging/claude-plugin/build_plugin.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert "ui_libraries" in module._TREE_EXCLUDES
-    from tempfile import TemporaryDirectory
-
-    with TemporaryDirectory() as directory:
-        module._stage_runtime(Path(directory))
-        runtime = Path(directory) / "tinyassets/onboarding"
-        assert (runtime / "ui_libraries.json").is_file()
-        assert not (runtime / "ui_libraries").exists()
-
-
 def test_library_load_order_puts_requirements_first():
     order = ui_library_set.load_order(["three/addons/loaders/GLTFLoader.js"])
     assert order == ["three", "three/addons/utils/BufferGeometryUtils.js",

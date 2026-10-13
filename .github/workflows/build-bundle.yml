@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   stage-and-probe:
-    name: Stage + import-probe both bundle and plugin
+    name: Stage + import-probe MCPB bundle
     # Drafts do not spend a runner here; `ready_for_review` above runs it for
     # real as soon as the PR is ready. Not a branch-protection context, which is
     # what makes skipping safe -- a skipped job reports `conclusion=skipped` and
@@ -79,21 +79,6 @@ jobs:
       - name: Stage MCPB bundle (with import probe)
         run: python packaging/mcpb/build_bundle.py
 
-      - name: Stage claude-plugin runtime (with import probe)
-        run: python packaging/claude-plugin/build_plugin.py
-
-      - name: Pack Claude plugin for fixed release
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        run: python packaging/claude-plugin/build_plugin.py --pack
-
-      - name: Save Claude plugin archive
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        uses: actions/upload-artifact@v4
-        with:
-          name: tinyassets-claude-plugin
-          path: packaging/dist/tinyassets-claude-plugin.zip
-          if-no-files-found: error
-
       - name: Verify plugin runtime is not tracked
         run: python scripts/check_mirror_parity.py
 
@@ -105,7 +90,7 @@ jobs:
   pack-mcpb:
     name: Pack release artifacts
     needs: stage-and-probe
-    if: github.event_name == 'release' && github.event.release.tag_name != 'claude-plugin-latest'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -139,43 +124,10 @@ jobs:
       - name: Build + pack MCPB bundle
         run: python packaging/mcpb/build_bundle.py --validate --pack
 
-      - name: Build + pack Claude plugin
-        run: python packaging/claude-plugin/build_plugin.py --pack
-
       - name: Upload packaging as release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             packaging/dist/tinyassets-universe-server.mcpb
-            packaging/dist/tinyassets-claude-plugin.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-claude-plugin:
-    name: Publish Claude plugin to fixed release
-    needs: stage-and-probe
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      RELEASE_TAG: claude-plugin-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: tinyassets-claude-plugin
-          path: dist
-
-      - name: Publish plugin archive
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
-              --title "TinyAssets Claude plugin" \
-              --notes "Claude plugin archive built from main." --latest=false
-          fi
-          gh release upload "$RELEASE_TAG" dist/tinyassets-claude-plugin.zip --clobber
-          echo "published tinyassets-claude-plugin.zip to release $RELEASE_TAG"

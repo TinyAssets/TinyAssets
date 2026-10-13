@@ -23,7 +23,7 @@ export function Footer() {
           <span className="eyebrow">Use it</span>
           <ul>
             <li><a href={SITE.app}>Open the app</a></li>
-            <li><Link href="/start/#connector">Add it to Claude or ChatGPT</Link></li>
+            <li><Link href="/connect/">Add it to your tools</Link></li>
             <li><Link href="/start/#android">Android app</Link></li>
             <li><Link href="/start/">Start from zero</Link></li>
           </ul>

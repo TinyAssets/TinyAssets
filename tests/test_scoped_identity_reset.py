@@ -704,22 +704,6 @@ def test_scoped_reset_is_not_registered_as_public_surface() -> None:
     assert "TINYASSETS_TEST_IDENTITIES" not in os.environ
 
 
-def test_packaged_runtime_matches_scoped_reset_writer_sources(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    import subprocess
-    import sys
-
-    mirror = tmp_path / "runtime"
-    subprocess.run([sys.executable, str(root / "packaging/claude-plugin/build_plugin.py"),
-                    "--runtime-root", str(mirror), "--skip-probe"], check=True)
-    for relative in (
-        Path("tinyassets/scoped_reset.py"),
-        Path("tinyassets/mcp_server.py"),
-        Path("tinyassets/desktop/launcher.py"),
-    ):
-        assert (root / relative).read_bytes() == (mirror / relative).read_bytes()
-
-
 def _roster(*, include_subject: bool = True):
     from tinyassets.scoped_reset import TestIdentityRoster
 

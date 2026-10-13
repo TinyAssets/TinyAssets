@@ -14,9 +14,12 @@ packaged `tinyassets-universe-server` plugin.
 
 ## Notes
 
-- `python packaging/claude-plugin/build_plugin.py --pack` builds the ignored
-  runtime and writes `packaging/dist/tinyassets-claude-plugin.zip`. The release
-  workflow uploads that archive to the `claude-plugin-latest` release on main
-  pushes. The marketplace installs it from that fixed release.
+- `VERSION` is the only plugin version. `.claude-plugin/marketplace.json` and
+  `plugins/tinyassets-universe-server/.claude-plugin/plugin.json` copy it.
+  `tests/test_claude_plugin_manifests.py` fails if they disagree.
+- The plugin connects Claude Code to `https://tinyassets.io/mcp`. Claude Code
+  discovers OAuth from that server. The manifest does not launch a local
+  Python process and does not contain a client secret.
 - The packaged plugin carries its own end-user slash-command skills. Those are
-  plugin assets, not main project workflow skills.
+  plugin assets, not main project workflow skills. Skill directory names start
+  with `tinyassets-`.

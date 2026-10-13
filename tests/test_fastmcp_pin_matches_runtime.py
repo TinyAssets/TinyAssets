@@ -1,7 +1,7 @@
 """The fastmcp bound must be the same in every place that declares it.
 
 On 2026-08-31 the canonical `pyproject.toml` carried `fastmcp>=3.0` while the
-plugin runtime carried `fastmcp>=3.2,<4`. pip resolved the canonical one to
+MCPB runtime carried `fastmcp>=3.2,<4`. pip resolved the canonical one to
 fastmcp 4.0.0 / mcp 2.1.1, which dropped `request_ctx` from
 `mcp.server.lowlevel.server`. Seven tests failed with ImportError and
 `required-tests` went red on every open PR at once -- a repo-wide merge stop
@@ -26,11 +26,7 @@ REPO = Path(__file__).resolve().parents[1]
 CANONICAL = REPO / "pyproject.toml"
 RUNTIME = (
     REPO
-    / "packaging/claude-plugin/runtime-src/pyproject.toml"
-)
-REQUIREMENTS = (
-    REPO
-    / "packaging/claude-plugin/runtime-src/requirements.txt"
+    / "packaging/mcpb/pyproject.toml"
 )
 
 _SPEC = re.compile(r"^fastmcp\s*(?P<spec>[<>=!,.\d\s]+)$")
@@ -66,26 +62,12 @@ def test_every_canonical_declaration_agrees_with_itself() -> None:
 def test_the_runtime_and_the_canonical_package_agree() -> None:
     canonical = _specs(CANONICAL)
     runtime = _specs(RUNTIME)
-    assert runtime, "no fastmcp constraint in the plugin runtime pyproject"
+    assert runtime, "no fastmcp constraint in the MCPB runtime pyproject"
     assert canonical == runtime, (
-        "the canonical package and the plugin runtime disagree about fastmcp: "
+        "the canonical package and the MCPB runtime disagree about fastmcp: "
         f"{sorted(canonical)} vs {sorted(runtime)}. They install the same code; "
         "a split bound means one of them resolves to a version the other has "
         "never run."
-    )
-
-
-def test_the_requirements_file_agrees_too() -> None:
-    lines = [
-        line.strip()
-        for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines()
-        if line.strip().startswith("fastmcp")
-    ]
-    assert lines, "no fastmcp line in the runtime requirements"
-    declared = {line.replace("fastmcp", "", 1).replace(" ", "") for line in lines}
-    assert declared == _specs(CANONICAL), (
-        f"requirements.txt declares fastmcp {sorted(declared)} but the "
-        f"canonical pyproject declares {sorted(_specs(CANONICAL))}"
     )
 
 

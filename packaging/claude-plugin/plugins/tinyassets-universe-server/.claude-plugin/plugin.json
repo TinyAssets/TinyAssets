@@ -1,43 +1,23 @@
 {
   "name": "tinyassets-universe-server",
   "version": "0.2.0",
-  "description": "Bundled TinyAssets Server runtime and explicit slash-style skills for inspecting and steering local command centers.",
+  "displayName": "TinyAssets",
+  "description": "Connect Claude Code to the hosted TinyAssets MCP server and steer your command center from chat.",
   "author": {
-    "name": "Jonathan Farnsworth"
+    "name": "TinyAssets, a trade name of Simkal Holdings LLC"
   },
-  "homepage": "https://github.com/TinyAssets/TinyAssets",
+  "homepage": "https://tinyassets.io/connect",
   "repository": "https://github.com/TinyAssets/TinyAssets",
   "license": "MIT",
   "keywords": [
-    "workflow",
+    "tinyassets",
     "mcp",
-    "daemon",
-    "fiction",
-    "langgraph"
+    "command-center"
   ],
-  "userConfig": {
-    "universe_base": {
-      "type": "directory",
-      "title": "TinyAssets Data Directory",
-      "description": "Directory containing your TinyAssets data root, including command center folders."
-    },
-    "default_universe": {
-      "type": "string",
-      "title": "Default Command Center",
-      "description": "Optional default command center ID when a command does not specify one.",
-      "sensitive": false
-    }
-  },
   "mcpServers": {
-    "tinyassets-universe-server": {
-      "command": "python",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/runtime/bootstrap.py"
-      ],
-      "env": {
-        "TINYASSETS_DATA_DIR": "${user_config.universe_base}",
-        "UNIVERSE_SERVER_DEFAULT_UNIVERSE": "${user_config.default_universe}"
-      }
+    "TinyAssets": {
+      "type": "http",
+      "url": "https://tinyassets.io/mcp"
     }
   }
 }

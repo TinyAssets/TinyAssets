@@ -165,7 +165,7 @@ SHAPES: dict[str, Shape] = {
         ceiling=57,
     ),
     "S19": Shape(
-        ("packaging/claude-plugin/build_plugin.py",),
+        ("packaging/claude-plugin/.claude-plugin/marketplace.json",),
         (("packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/**", ""),),
         ceiling=0,
     ),

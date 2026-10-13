@@ -8,7 +8,7 @@ Use the build script to stage a minimal bundle that contains:
 - the official MCPB `manifest.json`
 - a small runtime project with only the FastMCP dependency
 - a stdio wrapper server
-- a synced copy of `fantasy_author/universe_server.py`
+- a staged copy of `tinyassets/` and the public `models/` lists
 - the bundle icon asset
 
 ## Cloud-runtime caveat
@@ -37,11 +37,9 @@ python packaging/mcpb/build_bundle.py --pack
 
 ## Why a staging step exists
 
-The repo's runtime source of truth stays in
-`fantasy_author/universe_server.py`, but the MCPB bundle needs a small,
-self-contained runtime surface. The staging script copies the current
-TinyAssets Server file into the staged bundle so the packaged extension does
-not depend on the whole repo layout or the full project dependency set.
+The repo's runtime source of truth stays in `tinyassets/`. The staging script
+copies that package and its public model lists into the bundle so they resolve
+from the same layout as the repository.
 
 The current official MCPB validator still requires `server.type` to be one of
 `python`, `node`, or `binary`, so the manifest uses `python` while the actual

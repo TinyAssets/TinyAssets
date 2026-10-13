@@ -1,24 +1,22 @@
 {
-  "name": "workflow-plugins",
+  "name": "tinyassets",
   "owner": {
-    "name": "Jonathan Farnsworth"
+    "name": "TinyAssets, a trade name of Simkal Holdings LLC"
   },
   "metadata": {
-    "version": "0.1.0",
-    "description": "TinyAssets — build and run custom AI workflows as agent graphs. Also: Tiny Builder, Universe Builder, Custom AI Builder."
+    "version": "0.2.0",
+    "description": "TinyAssets — connect Claude Code to the hosted MCP server at https://tinyassets.io/mcp."
   },
   "plugins": [
     {
       "name": "tinyassets-universe-server",
-      "description": "TinyAssets / Tiny Builder — build, run, and steer custom AI agent workflows inside your command center. Ships a long-form fiction domain (Author daemons writing novels) and extends to other domains via custom graph nodes. Also known as: Tiny builder, custom AI builder, command center, agent workflow platform.",
-      "version": "0.1.0",
+      "description": "Connects Claude Code to the hosted TinyAssets MCP server. Sign-in is OAuth at https://tinyassets.io/mcp. The plugin does not launch a local server.",
+      "version": "0.2.0",
+      "displayName": "TinyAssets",
       "author": {
-        "name": "Jonathan Farnsworth"
+        "name": "TinyAssets, a trade name of Simkal Holdings LLC"
       },
-      "source": {
-        "source": "archive",
-        "url": "https://github.com/TinyAssets/TinyAssets/releases/download/claude-plugin-latest/tinyassets-claude-plugin.zip"
-      }
+      "source": "./plugins/tinyassets-universe-server"
     }
   ]
 }

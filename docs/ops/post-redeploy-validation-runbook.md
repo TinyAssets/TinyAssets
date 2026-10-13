@@ -182,9 +182,10 @@ green, declare the redeploy validated.
 
 ## §3 — Plugin packaging check
 
-When validating a plugin release, run `python packaging/claude-plugin/build_plugin.py --pack`.
-The builder stages the runtime from canonical sources, import-probes it, and
-writes `packaging/dist/tinyassets-claude-plugin.zip`.
+When validating the Claude Code plugin, check that its marketplace source is
+`./plugins/tinyassets-universe-server` and its manifest points to
+`https://tinyassets.io/mcp`. The local Claude Desktop `.mcpb` is built
+separately with `python packaging/mcpb/build_bundle.py --validate --pack`.
 
 ---
 

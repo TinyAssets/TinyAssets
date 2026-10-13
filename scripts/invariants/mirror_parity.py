@@ -1,4 +1,4 @@
-"""Reject tracked files under the generated Claude plugin runtime."""
+"""Reject tracked files under the retired Claude plugin runtime path."""
 from __future__ import annotations
 
 import subprocess
@@ -20,7 +20,7 @@ def tracked_mirror(root: Path = REPO_ROOT) -> list[str]:
 
 class MirrorParityInvariant(Invariant):
     name = "mirror-parity"
-    description = "Plugin runtime is built at package time, never tracked."
+    description = "The hosted Claude plugin has no tracked runtime."
     pre_commit_scope = True
     poll_interval_s = None
     auto_heal = False
