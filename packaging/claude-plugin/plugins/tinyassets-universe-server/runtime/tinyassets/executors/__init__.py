@@ -1,7 +1,0 @@
-"""Executors for non-Branch execution shapes (Phase G+).
-
-A Branch run goes through ``graph_compiler.compile_branch`` + the
-wrapper stream in ``fantasy_author/__main__.py``. A NodeBid execution
-is different: single node, stripped inputs, no universe state. The
-executors package isolates those paths so they can evolve independently.
-"""

@@ -353,7 +353,7 @@ def test_the_lists_are_packaged_into_the_runtime_artifacts():
 
     `lists_directory()` resolves `models/` relative to the package, so the data has to
     be copied alongside it in every artifact. The Dockerfile copied the package and not
-    the lists, and the plugin staging omitted them too, so the whole feature would have
+    the lists, and the MCPB staging omitted them too, so the whole feature would have
     shipped doing nothing — silently, because an absent directory reads as "unlisted".
     """
     from tinyassets.providers.public_model_lists import lists_directory
@@ -367,11 +367,17 @@ def test_the_lists_are_packaged_into_the_runtime_artifacts():
     # package lands at /app/tinyassets, so parents[2] is /app.
     assert "COPY --from=builder /build/tinyassets /app/tinyassets" in dockerfile
 
-    plugin = (root / "packaging" / "claude-plugin" / "plugins"
-              / "tinyassets-universe-server" / "runtime")
-    if (plugin / "tinyassets").is_dir():
-        assert (plugin / "models" / "subscription.json").is_file(), (
-            "the plugin runtime resolves models/ from its own root; stage it there")
+    import subprocess
+    import sys
+    subprocess.run(
+        [sys.executable, str(root / "packaging/mcpb/build_bundle.py"), "--skip-probe"],
+        check=True,
+    )
+    bundled_list = root / "packaging/dist/tinyassets-universe-server-src/models/subscription.json"
+    assert bundled_list.is_file(), (
+        "the MCPB runtime resolves models/ from its own root; stage it there"
+    )
+
 
 
 def test_a_list_only_change_triggers_a_deploy():

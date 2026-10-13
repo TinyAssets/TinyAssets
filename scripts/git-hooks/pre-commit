@@ -8,12 +8,8 @@
 #      staged, the Claude Code mirror at `.claude/skills/` is
 #      refreshed by running scripts/sync-skills.ps1.
 #
-#   2. Plugin-mirror parity. For every staged canonical file at
-#      `tinyassets/**`, the packaged-plugin copy at
-#      `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/**`
-#      must EXIST and be byte-identical. A canonical file with no mirror
-#      counterpart fails by name, exactly like one that diverges: the shared
-#      checker is scripts/check_mirror_parity.py, which CI runs too.
+#   2. Plugin runtime is generated at package time. No file below its
+#      runtime/ directory may be tracked.
 #
 #   3. Mojibake detection. Staged `.md` / `.py` / `.json` / `.toml` /
 #      `.txt` files are scanned for CP-1252-as-UTF-8 garbled sequences
@@ -93,95 +89,22 @@ if [ "${SKILL_SOURCE_CHANGED}" -eq 1 ]; then
   git add .claude/skills 2>/dev/null || true
 fi
 
-# --- 2. Plugin-mirror parity -----------------------------------------
+# --- 2. No tracked plugin runtime -----------------------------------
 
-# One implementation, shared with CI: scripts/check_mirror_parity.py, which CI
-# reaches through `invariants_run.py --pre-commit`. The bash version that used
-# to live here had its own idea of parity and skipped any canonical file with no
-# mirror counterpart at all ("a new module the build has not picked up yet"),
-# which is the same sentence as "the mirror does not ship this module":
-# workspace_pool.py and workspace_fs.py stayed outside the mirror across three
-# commits while this line printed "mirror parity verified" every time
-# (2026-08-30). Missing is now a failure, named, exactly like diverged.
-#
-# Staged scope, deliberately: a whole-tree scan would fail commits for drift the
-# author did not cause. CI scans the whole tree.
-
-STAGED_CANONICAL=$(
-  git diff --cached --name-only --diff-filter=ACMR     | grep -E '^tinyassets/' || true
-)
-
-if [ -z "${STAGED_CANONICAL}" ]; then
-  echo "${GREEN}pre-commit: no canonical tinyassets/ changes - mirror parity N/A${RESET}"
+if command -v python >/dev/null 2>&1; then
+  MIRROR_PYTHON=python
+elif command -v python3 >/dev/null 2>&1; then
+  MIRROR_PYTHON=python3
+elif command -v py >/dev/null 2>&1; then
+  MIRROR_PYTHON='py -3'
 else
-  if command -v python >/dev/null 2>&1; then
-    MIRROR_PYTHON="python"
-  elif command -v python3 >/dev/null 2>&1; then
-    MIRROR_PYTHON="python3"
-  elif command -v py >/dev/null 2>&1; then
-    MIRROR_PYTHON="py -3"
-  else
-    MIRROR_PYTHON=""
-  fi
+  echo "${RED}pre-commit: python is required to check tracked plugin runtime files.${RESET}" >&2
+  exit 1
+fi
 
-  if [ -z "${MIRROR_PYTHON}" ]; then
-    # Fail CLOSED. An unverifiable gate that waves the commit through is the
-    # failure mode this whole section exists to fix.
-    echo "${RED}pre-commit: python not available; cannot verify plugin-mirror parity.${RESET}" >&2
-    echo "Install python, or use --no-verify if you are certain the mirror is current." >&2
-    exit 1
-  fi
-
-  if [ ! -f "scripts/check_mirror_parity.py" ]; then
-    # THE INSTALLED HOOK IS SHARED BY EVERY WORKTREE. Linked worktrees use the
-    # main repo's .git/hooks, so this file can be NEWER than the checkout it is
-    # running in: a worktree on a branch that predates the shared checker has no
-    # scripts/check_mirror_parity.py, and execing it there failed every commit
-    # with "can't open file" (2026-08-30, four lanes blocked at once).
-    #
-    # Degrade to the comparison this hook did before the checker existed, and
-    # say so. A worktree behind the gate stays gated - it just cannot see the
-    # missing-counterpart case until it picks the script up.
-    echo "${YELLOW}pre-commit: scripts/check_mirror_parity.py is not in this worktree;${RESET}" >&2
-    echo "${YELLOW}  falling back to the legacy divergence-only comparison. Rebase onto a${RESET}" >&2
-    echo "${YELLOW}  branch that has the script for the full check.${RESET}" >&2
-
-    LEGACY_MIRROR_PREFIX="packaging/claude-plugin/plugins/tinyassets-universe-server/runtime"
-    LEGACY_MISMATCHES=()
-    for canon in ${STAGED_CANONICAL}; do
-      legacy_mirror="${LEGACY_MIRROR_PREFIX}/${canon}"
-      if [ ! -f "${legacy_mirror}" ]; then
-        continue
-      fi
-      if ! cmp -s "${canon}" "${legacy_mirror}"; then
-        LEGACY_MISMATCHES+=("${canon}")
-      fi
-    done
-
-    if [ "${#LEGACY_MISMATCHES[@]}" -gt 0 ]; then
-      echo "${RED}pre-commit: plugin-mirror parity broken.${RESET}" >&2
-      echo "" >&2
-      echo "These staged canonical files diverge from their plugin-mirror copies:" >&2
-      for f in "${LEGACY_MISMATCHES[@]}"; do
-        echo "  ${f}" >&2
-        echo "    mirror: ${LEGACY_MIRROR_PREFIX}/${f}" >&2
-      done
-      echo "" >&2
-      echo "Rebuild the mirror and stage it in the same commit:" >&2
-      echo "  python packaging/claude-plugin/build_plugin.py" >&2
-      echo "Override with --no-verify if this is an intentional one-sided edit." >&2
-      exit 1
-    fi
-    echo "${GREEN}pre-commit: mirror parity verified (legacy comparison)${RESET}"
-  else
-    # shellcheck disable=SC2086  # word splitting is how the staged list is passed
-    if ! ${MIRROR_PYTHON} scripts/check_mirror_parity.py ${STAGED_CANONICAL}; then
-      echo "" >&2
-      echo "${RED}pre-commit: plugin-mirror parity broken.${RESET}" >&2
-      echo "Override with --no-verify if this is an intentional one-sided edit." >&2
-      exit 1
-    fi
-  fi
+if ! ${MIRROR_PYTHON} scripts/check_mirror_parity.py; then
+  echo "${RED}pre-commit: plugin runtime must be built, not committed.${RESET}" >&2
+  exit 1
 fi
 
 # --- 3. Mojibake detection ------------------------------------------
@@ -252,7 +175,7 @@ fi
 
 STAGED_TINYASSETS_PY=$(
   git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/.*\.py$' \
+    | grep -E '^tinyassets/.*\.py$' \
     || true
 )
 
@@ -303,8 +226,8 @@ fi
 
 STAGED_WF_PY=$(
   git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/.*\.py$' \
-    | grep -v -E '(tinyassets|runtime/tinyassets)/storage/__init__\.py$' \
+    | grep -E '^tinyassets/.*\.py$' \
+    | grep -v -E 'tinyassets/storage/__init__\.py$' \
     || true
 )
 

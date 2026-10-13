@@ -75,6 +75,10 @@ on:
       - 'scripts/backup_prune.py'
       - 'scripts/retire_cheat_loop_deploy_fence.py'
       - 'scripts/prepare_expected_instance_state.py'
+      # deploy-prod.yml installs this beside boxhostd; the manual host gate
+      # uses the summary script after exercising that installed service.
+      - 'scripts/box_preflight.py'
+      - 'scripts/box_preflight_summary.py'
       # Python the deploy-chain workflows run, and what it imports
       # (scripts/runtime_paths.py python_import_closure).
       - 'scripts/cloud_only_preflight.py'
@@ -107,6 +111,7 @@ on:
       - '.github/workflows/apply-daemon-env.yml'
       - '.github/workflows/p0-outage-triage.yml'
       - '.github/workflows/restart-daemon.yml'
+      - '.github/workflows/box-preflight.yml'
   workflow_dispatch:
 
 permissions:

@@ -170,11 +170,8 @@ jobs:
           # Release-critical: anything that can change how the product is built,
           # deployed, or what runs in production.
           #
-          # packaging/ is deliberately EXCLUDED. The plugin mirror there is a
-          # GENERATED artifact that legitimately changes with most canonical
-          # tinyassets/* PRs, and it already has its own parity check. Including it
-          # flagged 4 of 5 sampled real PRs, which would have trained everyone to
-          # rubber-stamp the infra-change label and defeated the guard.
+          # Generated plugin runtime files are absent from Git. Its builder and
+          # source declarations are release-critical packaging inputs.
           # scripts/ci_required_tests.py and .github/known-failing-tests.txt are
           # here because they ARE the `required-tests` gate. That gate runs from
           # the PR's own checkout (it must — it executes the PR's code), so a PR

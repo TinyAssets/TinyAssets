@@ -903,6 +903,21 @@ jobs:
             --report-provenance \
             --assert-contains "${GIT_SHA}"
 
+      # P2a installs an idle service after the image and public surfaces are
+      # healthy. No daemon path calls it, and this step runs no gate workload.
+      - name: Install pinned gVisor and idle boxhostd
+        if: ${{ success() }}
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-boxhostd-preflight.sh deploy/boxhostd_idle.py \
+              deploy/boxhostd.service scripts/box_preflight.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash /tmp/install-boxhostd-preflight.sh"
+
       - name: Enforce daemon image retention (post-canary)
         # Use this revision's policy on the first repaired deploy as well as later
         # timer installs. Failure is visible and blocks further successful pulls.

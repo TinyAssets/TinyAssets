@@ -134,94 +134,26 @@ def test_heal_exception_surfaces_as_failed():
     assert "heal boom" in result.message
 
 
+# Generated plugin runtime guard
 # -------------------------------------------------------------------
-# MirrorParity — synthetic scan
-# -------------------------------------------------------------------
 
 
-def test_mirror_parity_detects_mismatch(tmp_path, monkeypatch):
-    from scripts.invariants import mirror_parity as mp
+def test_plugin_runtime_guard_rejects_tracked_file(tmp_path):
+    import subprocess
 
-    canon = tmp_path / "workflow"
-    mirror = (
-        tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "tinyassets-universe-server" / "runtime" / "workflow"
-    )
-    canon.mkdir(parents=True)
-    mirror.mkdir(parents=True)
-    (canon / "a.py").write_text("x = 1\n", encoding="utf-8")
-    (mirror / "a.py").write_text("x = 2\n", encoding="utf-8")
+    from scripts.invariants.mirror_parity import MirrorParityInvariant
 
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", canon)
-    monkeypatch.setattr(mp, "MIRROR_ROOT", mirror)
-
-    result = mp.MirrorParityInvariant().check()
-
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    runtime = tmp_path / "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "server.py").write_text("pass\n")
+    assert MirrorParityInvariant(root=tmp_path).check().status == Status.OK
+    subprocess.run(["git", "add", "-f", str(runtime / "server.py")], cwd=tmp_path, check=True)
+    result = MirrorParityInvariant(root=tmp_path).check()
     assert result.status == Status.VIOLATED
-    assert "a.py" in result.evidence["mismatches"]
-
-
-def test_mirror_parity_clean_passes(tmp_path, monkeypatch):
-    from scripts.invariants import mirror_parity as mp
-
-    canon = tmp_path / "workflow"
-    mirror = (
-        tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "tinyassets-universe-server" / "runtime" / "workflow"
-    )
-    canon.mkdir(parents=True)
-    mirror.mkdir(parents=True)
-    (canon / "a.py").write_text("x = 1\n", encoding="utf-8")
-    (mirror / "a.py").write_text("x = 1\n", encoding="utf-8")
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", canon)
-    monkeypatch.setattr(mp, "MIRROR_ROOT", mirror)
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.OK
-    assert result.evidence["checked"] == 1
-
-
-def test_mirror_parity_skipped_when_roots_missing(tmp_path, monkeypatch):
-    from scripts.invariants import mirror_parity as mp
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", tmp_path / "nope")
-    monkeypatch.setattr(mp, "MIRROR_ROOT", tmp_path / "nope2")
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.SKIPPED
-
-
-def test_mirror_parity_fails_on_a_canonical_file_the_mirror_does_not_have(
-    tmp_path, monkeypatch
-):
-    """Inverted 2026-08-30. This used to assert that a canonical file with no
-    mirror counterpart is ALLOWED ("the build has not picked it up yet"), which
-    is the same sentence as "the mirror does not ship this module":
-    ``workspace_pool.py`` and ``workspace_fs.py`` stayed outside the mirror
-    across three commits with the gate reporting clean. Missing is drift."""
-    from scripts.invariants import mirror_parity as mp
-
-    canon = tmp_path / "workflow"
-    mirror = (
-        tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "tinyassets-universe-server" / "runtime" / "workflow"
-    )
-    canon.mkdir(parents=True)
-    mirror.mkdir(parents=True)
-    (canon / "new.py").write_text("brand new\n", encoding="utf-8")
-    # No mirror file.
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", canon)
-    monkeypatch.setattr(mp, "MIRROR_ROOT", mirror)
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.VIOLATED
-    assert result.evidence["missing"] == ["new.py"]
-    assert result.evidence["checked"] == 1
+    assert result.evidence["paths"] == [
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/server.py"
+    ]
 
 
 # -------------------------------------------------------------------

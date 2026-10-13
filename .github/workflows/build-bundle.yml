@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "tinyassets/**"
+      - "models/**"
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   pull_request:
@@ -15,10 +16,12 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "tinyassets/**"
+      - "models/**"
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -36,7 +39,7 @@ concurrency:
 
 jobs:
   stage-and-probe:
-    name: Stage + import-probe both bundle and plugin
+    name: Stage + import-probe MCPB bundle
     # Drafts do not spend a runner here; `ready_for_review` above runs it for
     # real as soon as the PR is ready. Not a branch-protection context, which is
     # what makes skipping safe -- a skipped job reports `conclusion=skipped` and
@@ -76,30 +79,8 @@ jobs:
       - name: Stage MCPB bundle (with import probe)
         run: python packaging/mcpb/build_bundle.py
 
-      - name: Stage claude-plugin runtime (with import probe)
-        run: python packaging/claude-plugin/build_plugin.py
-
-      - name: Verify committed plugin runtime matches live tinyassets/
-        # The plugin runtime tree under
-        # packaging/claude-plugin/.../runtime/tinyassets/ is tracked so
-        # marketplace consumers can install from the cloned repo. If a
-        # commit modifies tinyassets/ but forgets to re-run
-        # build_plugin.py, the committed tree goes stale — CI would
-        # otherwise pass silently because the build script re-stages
-        # locally on each run. This check closes that gap.
-        #
-        # `git status --porcelain`, NOT `git diff`: a canonical file that is
-        # brand new leaves an UNTRACKED mirror file after the build, and
-        # `git diff` does not see untracked paths. workspace_pool.py and
-        # workspace_fs.py were absent from the committed mirror for three
-        # commits and every gate reported clean (2026-08-30).
-        run: |
-          STALE=$(git status --porcelain -- packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)
-          if [ -n "$STALE" ]; then
-            echo "::error::Committed plugin runtime is stale. Run 'python packaging/claude-plugin/build_plugin.py' and commit the result."
-            echo "$STALE"
-            exit 1
-          fi
+      - name: Verify plugin runtime is not tracked
+        run: python scripts/check_mirror_parity.py
 
       - name: Run packaging build tests
         run: |
@@ -107,10 +88,12 @@ jobs:
           python -m pytest tests/test_packaging_build.py -v
 
   pack-mcpb:
-    name: Pack .mcpb on tagged release
+    name: Pack release artifacts
     needs: stage-and-probe
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -141,9 +124,10 @@ jobs:
       - name: Build + pack MCPB bundle
         run: python packaging/mcpb/build_bundle.py --validate --pack
 
-      - name: Upload .mcpb as release asset
+      - name: Upload packaging as release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: packaging/dist/tinyassets-universe-server.mcpb
+          files: |
+            packaging/dist/tinyassets-universe-server.mcpb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

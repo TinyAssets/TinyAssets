@@ -108,5 +108,5 @@ data-room/
 pitch-deck/
 investor-list/
 
-# build_plugin.py serializes builds on this lock file (it never holds content).
-packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/.build.lock
+# Reject accidentally staged legacy plugin runtime files.
+packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/
