@@ -19,26 +19,14 @@ configuration verbatim). A binding whose package install already landed
 ``AGENTS.md`` gives way to the instructions the agent actually spoke with, and
 the backup keeps the old bytes.
 
-What stays. The main agent's provider binding is not an agent in either
-state: serving, it IS the main agent (main resolved it to ``main``); paused or
-not yet consented, it is the row ``onboarding.serving._reconnect_manifest``,
-``model_bootstrap_binding.reconnect_owned_binding`` and
-``ensure_bootstrap_binding`` resume by ``provider_ref`` or by its untouched
-platform definition, and the model-consent request pins its id and revision.
-Its definition carries no instructions, so no text an owner read is lost. The
-conversation-design installation, turn consumers and catalogue definitions
-with no binding stay too.
+What stays. Serving bindings, the conversation-design installation, turn
+consumers and catalogue definitions with no configured binding stay in SQL.
 
-Replay. One transaction holds the catalogue's write lock for the whole run,
-so two daemons or a daemon and the script serialize. Files are written before
-the rows go, ``settings.yaml`` (the claim: it carries ``agent.id``) before
-``AGENTS.md``, so after a crash at any point the agent exists in at least one
-place and the next run finds its directory BY ID rather than allocating a
-second slug; every file found is compared byte for byte, a file this run would
-not have written refuses. The rows are deleted and the ledger row
-(``agent_file_migration``) is inserted in the same commit, after the backup of
-every row and every replaced file is on disk. A ledger row ends the matter:
-later starts read nothing.
+Replay. One catalogue transaction serializes migrations. Every planned file
+is staged privately before the binding deletion and ledger commit; publication
+follows that commit. The ledger retains staged paths until all renames finish,
+so a crash replays the same id and file bytes. Bad rows keep their SQL records
+and fixed ledger reasons, and are retried on a later start.
 """
 
 from __future__ import annotations
@@ -47,9 +35,11 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,6 +57,7 @@ from tinyassets.agent_definition import (
 from tinyassets.storage import DB_FILENAME, db_path
 from tinyassets.universe_files import (
     list_universe_dir,
+    publish_staged_universe_file,
     read_universe_file,
     write_universe_file,
 )
@@ -114,28 +105,14 @@ def _instructions(definition: dict | None) -> str:
                        for key, kind, text in sections) + ("\n" if sections else "")
 
 
-def _is_provider_binding(binding: dict, definition: dict | None) -> bool:
-    """The main agent's provider binding, in any state (see the module doc)."""
-    from tinyassets.onboarding.serving import (
-        PLATFORM_DEFINITION_AUTHOR,
-        RETIRED_PLATFORM_DEFINITION_AUTHOR,
-    )
-
-    return ("provider_ref" in binding["configuration"]
-            or (definition or {}).get("author_id") in {
-                PLATFORM_DEFINITION_AUTHOR, RETIRED_PLATFORM_DEFINITION_AUTHOR})
-
-
-def _is_agent(binding: dict, definition: dict | None) -> bool:
-    """Main's ``is_conversable`` without its per-caller parts (owner, universe,
-    retired), minus the provider binding; a retired agent moves with its id."""
+def _is_agent(binding: dict) -> bool:
+    """Main's ``is_conversable`` without owner, universe or retirement filters."""
     configuration = binding.get("configuration")
     return bool(
         binding.get("status") == "configured"
         and isinstance(configuration, dict)
         and configuration.get("role") not in NOT_AN_AGENT_ROLES
         and "turn_consumer" not in configuration
-        and not _is_provider_binding(binding, definition)
     )
 
 
@@ -211,6 +188,8 @@ def _settings(universe_dir: Path, relpath: str, identity: dict) -> tuple[bytes |
         if parsed.legacy_model is not None:
             raise ValueError(f"{relpath} is a legacy model-only file; give it schema_version: 1")
         doc = yaml.safe_load(raw.decode("utf-8")) or {}
+        if doc.get("agent") == identity:
+            return raw, raw
     doc["agent"] = {**(doc.get("agent") or {}), **identity}
     text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True).encode("utf-8")
     parse_settings(text)  # the file must read back as settings
@@ -227,7 +206,8 @@ def _file(path: str, old: bytes | None, new: bytes, *, claimed: bool) -> _File |
     return _File(path, new, old, "replace")
 
 
-def _plan_universe(base: Path, universe_id: str, rows: list, conn) -> list[_Placement]:
+def _plan_universe(base: Path, universe_id: str, rows: list, conn,
+                   failures: dict[str, str]) -> list[_Placement]:
     from tinyassets.command_center_packages import slug as slugify
     from tinyassets.commons_catalog import (
         _binding_from_row,
@@ -236,55 +216,71 @@ def _plan_universe(base: Path, universe_id: str, rows: list, conn) -> list[_Plac
     )
 
     universe_dir = base / universe_id
-    if not universe_dir.is_dir():
-        raise ValueError(f"command center directory {universe_id!r} is missing; its agent "
-                         "bindings cannot be migrated until it is restored")
-    taken, claims = _index(universe_dir)
+    missing = not universe_dir.is_dir()
+    taken, claims = _index(universe_dir) if not missing else (set(), {})
     placements = []
     for row in rows:
-        binding = _binding_from_row(row)
-        definition_row = _read_definition_row(conn, binding["agent_definition_id"])
-        definition = (_definition_from_row(conn, definition_row)
-                      if definition_row is not None else None)
-        if not _is_agent(binding, definition):
+        binding_id = str(row["agent_binding_id"])
+        try:
+            placement = _plan_agent(base, universe_dir, row, conn, taken, claims, slugify,
+                                    _binding_from_row, _definition_from_row,
+                                    _read_definition_row, missing)
+        except (ValueError, KeyError, TypeError, OSError, SettingsError) as exc:
+            failures[binding_id] = f"{type(exc).__name__}: {exc}"
             continue
-        binding_id = binding["agent_binding_id"]
-        configuration = dict(binding["configuration"])
-        name = str(configuration.pop("name", "") or (definition or {}).get("name")
-                   or "").strip() or "Unnamed agent"
-        configuration.pop("schema_version", None)
-        claimed = claims.get(binding_id, [])
-        if len(claimed) > 1:
-            raise ValueError(f"agent {binding_id!r} is claimed by more than one directory: "
-                             + ", ".join(claimed))
-        slug = claimed[0] if claimed else _installed_slug(base, binding)
-        if slug is None:
-            stem = slugify(name)
-            slug, n = stem, 1
-            while slug in taken:
-                n += 1
-                slug = f"{stem}-{n}"
-        taken.add(slug)
-        claims.setdefault(binding_id, [slug])
-        directory = f"{AGENTS_DIR}/{slug}"
-        identity = {"id": binding_id, "name": name, "owner": binding["created_by"]}
-        if binding.get("retired"):
-            identity["retired"] = True
-        if configuration:
-            identity["configuration"] = configuration
-        placement = _Placement(binding, definition, directory)
-        settings_path = f"{directory}/{SETTINGS_FILE}"
-        old, new = _settings(universe_dir, settings_path, identity)
-        for file in (
-            _file(settings_path, old, new, claimed=bool(claimed)),
-            _file(f"{directory}/{INSTRUCTIONS_FILE}",
-                  _read(universe_dir, f"{directory}/{INSTRUCTIONS_FILE}"),
-                  _instructions(definition).encode("utf-8"), claimed=bool(claimed)),
-        ):
-            if file is not None:
-                placement.files.append(file)
-        placements.append(placement)
+        if placement is not None:
+            placements.append(placement)
     return placements
+
+
+def _plan_agent(base, universe_dir, row, conn, taken, claims, slugify,
+            binding_from_row, definition_from_row, read_definition_row, missing):
+    binding = binding_from_row(row)
+    definition_row = read_definition_row(conn, binding["agent_definition_id"])
+    definition = (definition_from_row(conn, definition_row)
+                  if definition_row is not None else None)
+    if not _is_agent(binding):
+        return None
+    if missing:
+        raise ValueError(f"command center directory {binding['universe_id']!r} is missing")
+    binding_id = binding["agent_binding_id"]
+    configuration = dict(binding["configuration"])
+    name = str(configuration.pop("name", "") or (definition or {}).get("name")
+               or "").strip() or "Unnamed agent"
+    configuration.pop("schema_version", None)
+    claimed = claims.get(binding_id, [])
+    if len(claimed) > 1:
+        raise ValueError(f"agent {binding_id!r} is claimed by more than one directory: "
+                         + ", ".join(claimed))
+    installed = _installed_slug(base, binding)
+    slug = claimed[0] if claimed else installed
+    if slug is None:
+        stem = slugify(name)
+        slug, n = stem, 1
+        while slug in taken:
+            n += 1
+            slug = f"{stem}-{n}"
+    taken.add(slug)
+    claims.setdefault(binding_id, [slug])
+    directory = f"{AGENTS_DIR}/{slug}"
+    identity = {"id": binding_id, "name": name, "owner": binding["created_by"]}
+    if binding.get("retired"):
+        identity["retired"] = True
+    if configuration:
+        identity["configuration"] = configuration
+    placement = _Placement(binding, definition, directory)
+    settings_path = f"{directory}/{SETTINGS_FILE}"
+    old, new = _settings(universe_dir, settings_path, identity)
+    for file in (
+        _file(settings_path, old, new, claimed=bool(claimed)),
+        _file(f"{directory}/{INSTRUCTIONS_FILE}",
+              _read(universe_dir, f"{directory}/{INSTRUCTIONS_FILE}"),
+              _instructions(definition).encode("utf-8"),
+              claimed=bool(claimed) and slug != installed),
+    ):
+        if file is not None:
+            placement.files.append(file)
+    return placement
 
 
 def _write_backup(base: Path, plan: dict[str, list[_Placement]]) -> str:
@@ -306,22 +302,56 @@ def _write_backup(base: Path, plan: dict[str, list[_Placement]]) -> str:
     }
     data = json.dumps(record, sort_keys=True, indent=1).encode("utf-8")
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    private = _private_dir(base)
     for counter in range(1000):
         name = f"{DB_FILENAME}.agent-bindings-{stamp}" + (f"-{counter}" if counter else "")
         try:
-            write_universe_file(base, name + ".json", data, mode="exclusive")
+            write_universe_file(private, name + ".json", data, mode="exclusive")
         except FileExistsError:
             continue
-        return name + ".json"
+        os.chmod(private / (name + ".json"), 0o600)
+        return f"{private.name}/{name}.json"
     raise RuntimeError("could not allocate a backup file name")
 
 
-def _apply(universe_dir: Path, placement: _Placement) -> None:
-    for file in placement.files:  # settings (the claim) first, then AGENTS.md
-        if file.action == "create":
-            write_universe_file(universe_dir, file.path, file.new, mode="exclusive")
-        elif file.action == "replace":
-            write_universe_file(universe_dir, file.path, file.new)
+def _private_dir(base: Path) -> Path:
+    private = base / ".agent-file-migration"
+    if private.is_symlink():
+        raise ValueError("migration private directory is a link")
+    private.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(private, 0o700)
+    return private
+
+
+def _stage(base: Path, plan: dict[str, list[_Placement]]) -> list[dict]:
+    batch = _private_dir(base) / uuid.uuid4().hex
+    batch.mkdir(mode=0o700)
+    pending = []
+    for uid, placements in plan.items():
+        for placement in placements:
+            for file in placement.files:
+                if file.action == "keep":
+                    continue
+                source = f"{batch.name}/{len(pending)}"
+                write_universe_file(batch.parent, source, file.new, mode="exclusive")
+                pending.append({"universe_id": uid, "path": file.path,
+                                "source": f"{batch.parent.name}/{source}",
+                                "sha256": hashlib.sha256(file.new).hexdigest(),
+                                "old_sha256": (hashlib.sha256(file.old).hexdigest()
+                                               if file.old is not None else None)})
+    return pending
+
+
+def _publish(base: Path, pending: list[dict]) -> None:
+    for item in pending:
+        target = base / item["universe_id"]
+        current = _read(target, item["path"])
+        if current is not None and hashlib.sha256(current).hexdigest() == item["sha256"]:
+            continue
+        if ((hashlib.sha256(current).hexdigest() if current is not None else None)
+                != item["old_sha256"]):
+            raise ValueError(f"agent file already edited or conflicts: {item['path']}")
+        publish_staged_universe_file(base, item["source"], target, item["path"])
 
 
 def _delete(conn, binding_ids: list[str]) -> None:
@@ -344,19 +374,8 @@ def _catalogue_exists(base: Path) -> bool:
         ).fetchone() is not None
 
 
-def _ledger_done(conn) -> bool:
-    return conn.execute("SELECT 1 FROM agent_file_migration WHERE name = ?",
-                        (LEDGER_NAME,)).fetchone() is not None
-
-
 def migrate(base_path: str | Path) -> dict[str, list[str]]:
-    """Move every agent binding into its directory; ``{universe_id: [directories]}``.
-
-    Idempotent and exactly-once: a ledger row ends it for every later call in
-    any process, and this process asks the ledger once. Raises rather than
-    serving with an agent missing: an interrupted or refused run leaves every
-    row in place (and in the backup) for the next start to finish.
-    """
+    """Stage all files, commit SQL, publish files, and retry failed rows later."""
     from tinyassets.commons_catalog import _agent_connect
 
     base = Path(base_path)
@@ -365,7 +384,18 @@ def migrate(base_path: str | Path) -> dict[str, list[str]]:
         return {}
     with _LOCK, _agent_connect(base) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        if _ledger_done(conn):
+        ledger = conn.execute(
+            "SELECT backup, detail_json FROM agent_file_migration WHERE name = ?",
+            (LEDGER_NAME,),
+        ).fetchone()
+        detail = json.loads(ledger["detail_json"]) if ledger else {}
+        pending = detail.get("_pending", [])
+        if pending:
+            _publish(base, pending)
+            detail["_pending"] = []
+            conn.execute("UPDATE agent_file_migration SET detail_json = ? WHERE name = ?",
+                         (json.dumps(detail, sort_keys=True), LEDGER_NAME))
+        if ledger and not detail.get("_failed"):
             _DONE.add(key)
             return {}
         rows = conn.execute(
@@ -374,20 +404,40 @@ def migrate(base_path: str | Path) -> dict[str, list[str]]:
         by_universe: dict[str, list] = {}
         for row in rows:
             by_universe.setdefault(str(row["universe_id"]), []).append(row)
-        plan = {uid: _plan_universe(base, uid, rows, conn) for uid, rows in by_universe.items()}
+        failures: dict[str, str] = {}
+        plan = {uid: _plan_universe(base, uid, rows, conn, failures)
+                for uid, rows in by_universe.items()}
         plan = {uid: placements for uid, placements in plan.items() if placements}
         backup = _write_backup(base, plan) if plan else ""
-        for uid, placements in plan.items():
-            for placement in placements:
-                _apply(base / uid, placement)
+        pending = _stage(base, plan) if plan else []
         _delete(conn, [p.binding["agent_binding_id"]
                        for placements in plan.values() for p in placements])
         result = {uid: [p.directory for p in placements] for uid, placements in plan.items()}
+        for uid, directories in result.items():
+            detail.setdefault(uid, []).extend(directories)
+        detail["_failed"] = failures
+        detail["_pending"] = pending
+        if backup:
+            detail.setdefault("_backups", []).append(backup)
         conn.execute(
             "INSERT INTO agent_file_migration (name, applied_at, backup, detail_json) "
-            "VALUES (?, ?, ?, ?)",
-            (LEDGER_NAME, time.time(), backup, json.dumps(result, sort_keys=True)),
+            "VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+            "applied_at = excluded.applied_at, backup = excluded.backup, "
+            "detail_json = excluded.detail_json",
+            (LEDGER_NAME, time.time(), backup or (ledger["backup"] if ledger else ""),
+             json.dumps(detail, sort_keys=True)),
         )
+    if pending:
+        with _agent_connect(base) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            fresh = conn.execute("SELECT detail_json FROM agent_file_migration WHERE name = ?",
+                                 (LEDGER_NAME,)).fetchone()
+            detail = json.loads(fresh["detail_json"])
+            _publish(base, detail.get("_pending", []))
+            detail["_pending"] = []
+            conn.execute("UPDATE agent_file_migration SET detail_json = ? WHERE name = ?",
+                         (json.dumps(detail, sort_keys=True), LEDGER_NAME))
+    if not failures:
         _DONE.add(key)
     if result:
         _log.warning("agent files: migrated %d binding(s) in %d command center(s); backup %s",

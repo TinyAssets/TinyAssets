@@ -275,7 +275,8 @@ def initialize(base):
     or worker fence. Every serving path calls this before it serves (the HTTP
     lifespan, the sse/stdio main, the assigned consumer), so the agent-file
     migration below has run before any turn, wake or activity can look for an
-    agent; it raises rather than let the daemon serve with agents missing."""
+    agent. Individual invalid legacy rows remain in SQL with ledger reasons
+    while the daemon serves the other agents."""
     from tinyassets.agent_file_migration import migrate
 
     canonical.initialize(base)
