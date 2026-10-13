@@ -7,16 +7,6 @@ not a grant: the store reconstructs current member/model authority before arming
 from pathlib import Path
 
 
-def observed_price_caps(snapshot):
-    """Bound each price component to the owner's fresh advertised catalogue."""
-    return tuple((name, max(
-        (charge.amount_micros for model in snapshot.models.models
-         for charge in model.pricing.charges
-         if charge.component == name and charge.confirmed),
-        default=0,
-    )) for name in sorted(snapshot.contract().price_components)) or None
-
-
 def prepare_work_model_snapshot(*, base_path, universe_id, owner_user_id,
                                 provider, model_id=""):
     """Discover one currently connected source before the reservation transaction."""

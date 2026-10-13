@@ -448,9 +448,26 @@ def _same_claim_intent(
     return left == right
 
 
+def _accepted_work_access(conn, receipt, provider):
+    """The owner's accepted scope and cost caps, read inside the fence.
+
+    The one cost authority for workflow carriers, reservations and native
+    selection, shared with the served turn's ``_selected_chain``. A ceiling
+    observed from the source's own catalogue is not consent to pay it.
+    """
+    from tinyassets.provider_assignment import (
+        accepted_connected_model_access,
+        load_provider_assignment_in_transaction,
+    )
+
+    return accepted_connected_model_access(
+        load_provider_assignment_in_transaction(conn, universe_id=receipt.universe_id),
+        receipt.principal_id, provider,
+    )
+
+
 def _current_connected_member(conn, base, receipt, selection):
     """Fence one attempt against its admission snapshot and live owner custody."""
-    from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.provider_serving_binding import current_connected_source_custody
     from tinyassets.providers.native_model_selection import NativeSelection
     from tinyassets.storage.current_home import check_current_home
@@ -469,7 +486,7 @@ def _current_connected_member(conn, base, receipt, selection):
     evidence = selection.model_evidence()
     if evidence is not None and evidence.get("kind") == "native":
         NativeSelection.from_dict(evidence).assert_access(
-            ModelAccess(model_scope="discovered"), custody.reference_digest,
+            _accepted_work_access(conn, receipt, selection.provider), custody.reference_digest,
         )
     return custody
 
@@ -2008,12 +2025,12 @@ class SQLiteProviderWorkAuthorityStore:
         self, conn, receipt, selection, model_snapshot=None, *, needs_tools=False,
     ):
         """Validate model evidence on a source in the snapshot and live set."""
-        from tinyassets.provider_assignment_manifest import ModelAccess
         from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
 
         custody = _current_connected_member(conn, self.base_path, receipt, selection)
         if selection.model_evidence_json is not None or selection.executor_id != selection.provider:
             raise PermissionError("work model evidence must be prepared by admission")
+        access = _accepted_work_access(conn, receipt, selection.provider)
         if selection.provider in _PROVIDER_SERVICE and selection.model_id:
             from tinyassets.provider_work_authority import _canonical_json
             from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
@@ -2023,7 +2040,7 @@ class SQLiteProviderWorkAuthorityStore:
             native = model_snapshot.select(
                 provider=selection.provider, owner=receipt.principal_id,
                 universe=self.base_path / receipt.universe_id, custody=custody,
-                model_id=selection.model_id, access=ModelAccess(model_scope="discovered"),
+                model_id=selection.model_id, access=access,
             )
             return replace(selection, model_evidence_json=_canonical_json(native.to_dict()))
         if selection.provider in _PROVIDER_SERVICE:
@@ -2039,10 +2056,7 @@ class SQLiteProviderWorkAuthorityStore:
             _validate_snapshot,
             eligible_model_ids,
         )
-        from tinyassets.providers.work_model_selection import (
-            observed_price_caps,
-            selection_with_model,
-        )
+        from tinyassets.providers.work_model_selection import selection_with_model
 
         if type(model_snapshot) is not DiscoverySnapshot:
             raise PermissionError("workflow model requires fresh discovery")
@@ -2051,10 +2065,6 @@ class SQLiteProviderWorkAuthorityStore:
         )
         if definition is None:
             raise PermissionError("workflow model source is unavailable")
-        access = ModelAccess(
-            model_scope="discovered",
-            cost_caps=observed_price_caps(model_snapshot),
-        )
         model_id = selection.model_id
         if not model_id:
             eligible = eligible_model_ids(

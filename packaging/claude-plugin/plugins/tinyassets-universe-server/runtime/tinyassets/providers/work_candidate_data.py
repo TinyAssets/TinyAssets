@@ -74,7 +74,10 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
     from types import SimpleNamespace
 
     from tinyassets.exceptions import ProviderError
-    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_assignment import (
+        accepted_connected_model_access,
+        load_provider_assignment,
+    )
     from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
@@ -92,7 +95,6 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
         _native_models,
         _refused_models,
     )
-    from tinyassets.providers.work_model_selection import observed_price_caps
 
     if (not isinstance(document, dict)
             or set(document) != {"version", "saved", "observed_generation", "current"}
@@ -108,18 +110,32 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
     base, home = Path(base), Path(base) / universe
     interaction = Interaction(True, frozenset({"text"}), frozenset())
     admitted, source_policies, ranking_sources = [], [], set()
+    # The owner's accepted scope and cost caps are the only cost authority. A
+    # connected key reaches whatever its account can pay for; a ceiling read
+    # from that catalogue would let a free-only owner's workflow spend on it.
+    assignment = load_provider_assignment(base, universe_id=universe)
+    held = []
     for provider in sources:
+        try:
+            access = accepted_connected_model_access(assignment, owner, provider)
+        except PermissionError:
+            # Connected is not accepted: a deposited key or adopted subscription
+            # the owner never approved is admitted to the run's snapshot but is
+            # never a candidate, the same as the served turn's plan.
+            held.append(provider)
+            continue
         if provider in _PROVIDER_SERVICE:
             model_snapshot = None
-            try:
-                model_snapshot = discover_native_models_sync(
-                    base_path=base, owner_user_id=owner,
-                    universe_id=universe, provider=provider,
-                )
-            except ProviderError:
-                pass  # The owner's native default is still runnable.
+            if access.model_scope == "discovered":
+                try:
+                    model_snapshot = discover_native_models_sync(
+                        base_path=base, owner_user_id=owner,
+                        universe_id=universe, provider=provider,
+                    )
+                except ProviderError:
+                    pass  # The owner's native default is still runnable.
             member = SimpleNamespace(
-                provider=provider, access=ModelAccess(model_scope="discovered"),
+                provider=provider, access=access,
                 credential_reference_digest=(
                     model_snapshot.custody.reference_digest if model_snapshot else ""
                 ),
@@ -138,11 +154,7 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
                 owner_user_id=owner, universe_id=universe,
                 definition_id=provider.removeprefix("api_key_http:"),
             )
-            caps = observed_price_caps(snapshot)
-            member = SimpleNamespace(
-                provider=provider,
-                access=ModelAccess(model_scope="discovered", cost_caps=caps),
-            )
+            member = SimpleNamespace(provider=provider, access=access)
             _snapshot, catalog, required, caps, _rejected = _http_models(
                 owner, universe, member, snapshot=snapshot, needs_tools=True,
             )
@@ -154,6 +166,11 @@ def prepare_captured_choices(base, *, owner, universe, document, sources):
             provider, required,
             None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
         ))
+    if not admitted:
+        raise PermissionError(
+            "no accepted model source for this run; not accepted: "
+            + ", ".join(item.removeprefix("api_key_http:") for item in held)
+        )
     if len(ranking_sources) == 1:
         policy = replace(policy, ranking_source=next(iter(ranking_sources)))
     plan = AgentModelPlan(

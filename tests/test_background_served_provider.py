@@ -113,6 +113,31 @@ def _task() -> Epoch2BranchTask:
     )
 
 
+def _assignment(provider: str, *, generation: int):
+    """A real legacy assignment: the owner accepted this native source's default."""
+    from tinyassets.provider_assignment import ProviderAssignment, provider_assignment_digest
+
+    fields = dict(
+        owner_user_id="acct_owner_a", universe_id="universe_a", provider=provider,
+        generation=generation, binding_id="agent-a", credential_reference_id="credential-a",
+        credential_reference_generation=2, credential_reference_digest="sha256:" + "1" * 64,
+    )
+    return ProviderAssignment(
+        state="ready", binding_generation=2, binding_digest="sha256:" + "3" * 64,
+        assignment_digest=provider_assignment_digest(**fields),
+        updated_at="2026-08-22T00:00:00Z", **fields,
+    )
+
+
+def _store_assignment(conn: sqlite3.Connection, assignment):
+    from tinyassets.provider_assignment import store_provider_assignment_in_transaction
+
+    conn.execute("BEGIN")
+    store_provider_assignment_in_transaction(conn, assignment)
+    conn.commit()
+    return assignment
+
+
 def _lease() -> AssignedConsumerLease:
     return AssignedConsumerLease(
         consumer_id="assigned-consumer:boot-a",
@@ -222,14 +247,10 @@ def _authority_fixture(
     )
     conn.commit()
 
-    assignment = SimpleNamespace(
-        state="ready",
-        owner_user_id="acct_owner_a",
-        provider=provider,
-        generation=4,
-        assignment_digest="sha256:" + "f" * 64,
-        manifest_digest="",
-    )
+    # A REAL row, not a stub object: the work fence reads the owner's accepted
+    # model access from the assignment, and nothing ever loaded the stub, so
+    # every launch would be refused "connected model access is unavailable".
+    assignment = _store_assignment(conn, _assignment(provider, generation=4))
     custody = SimpleNamespace(
         reference_id="credential-a",
         reference_digest="sha256:" + "1" * 64,
@@ -620,8 +641,9 @@ def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(
 def test_assignment_rotation_does_not_revoke_connected_background_source(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    task, conn, assignment, current, events = _authority_fixture(tmp_path, monkeypatch)
-    current["value"] = SimpleNamespace(**{**assignment.__dict__, "generation": 5})
+    task, conn, assignment, _current, events = _authority_fixture(tmp_path, monkeypatch)
+    # Rotated for real, as a re-accept writes it; the member is unchanged.
+    _store_assignment(conn, _assignment(assignment.provider, generation=5))
     raw_calls: list[str] = []
     session = background_provider._BackgroundAssignedProviderSession(
         tmp_path,

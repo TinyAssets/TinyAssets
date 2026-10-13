@@ -63,16 +63,20 @@ NOW = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 DECLARED = "vendor/retired-model:free"
 #: What the account can actually run right now, best first.
 LIVE_MODELS = ("vendor/live-flagship:free", "vendor/live-small:free")
+#: Models the account's key COULD reach but the owner never accepted paying for.
+#: A connected key alone must not let a workflow spend on them.
+PRICED_MODELS = ("vendor/paid-flagship", "vendor/paid-small")
 
 
 def _catalogue_entry(model_id: str) -> dict[str, Any]:
+    price = "0" if model_id.endswith(":free") else "0.000003"
     return {
         "id": model_id,
         "canonical_slug": model_id,
         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
         "supported_parameters": ["tools"],
         "context_length": 128000,
-        "pricing": {"prompt": "0", "completion": "0", "image": "0", "request": "0"},
+        "pricing": {"prompt": price, "completion": price, "image": "0", "request": "0"},
     }
 
 
@@ -615,6 +619,48 @@ def test_the_reservation_never_consults_the_sources_declared_model(
         _validate_snapshot(
             definition, snapshot, provider, DECLARED, ModelAccess("discovered"),
         )
+
+
+def test_a_free_only_owner_never_reserves_a_priced_model_the_key_can_reach(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """A connected key is not paid consent (onboarding-connection-progress spec).
+
+    The owner accepted ``discovered`` scope with no cost caps: free models only.
+    The key itself reaches priced models. Serving readiness already reads the
+    owner's accepted caps, so the source is connected while a free model is
+    still listed; then the live catalogue narrows to priced models only, as a
+    source does when its free tier is withdrawn. Every workflow site that
+    derives cost authority -- the captured order, the reservation's eligible
+    set and the validator -- must read the OWNER'S accepted caps, never a
+    ceiling observed from the catalogue, or the run would spend on a model
+    nobody agreed to pay for. With no free model the run refuses and the
+    source sees no request at all.
+    """
+    from tinyassets.exceptions import WorkModelExhaustedError
+    from tinyassets.providers.work_candidate_data import prepare_captured_choices
+
+    authenticate_request(A_OWNER)
+    provider = _seed_universe(
+        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
+        models=PRICED_MODELS + LIVE_MODELS,
+    )
+    wires[A_OWNER].models = PRICED_MODELS
+
+    # The captured order: an accepted source whose catalogue holds only models
+    # outside the accepted caps yields no candidate at all.
+    with pytest.raises(WorkModelExhaustedError):
+        prepare_captured_choices(
+            Path(tmp_path), owner=A_OWNER, universe=A_HOME, sources=(provider,),
+            document={"version": 1, "saved": None, "observed_generation": 0, "current": None},
+        )
+
+    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
+
+    assert record["status"] == "failed", record
+    assert WorkModelExhaustedError.MESSAGE in record["error"], record["error"]
+    assert wires[A_OWNER].requests == [], wires[A_OWNER].sent_models
+    assert wires[A_OWNER].reads, "the catalogue was consulted, so the refusal is on price"
 
 
 @pytest.fixture

@@ -602,9 +602,16 @@ def test_foreground_run_launches_active_serving_provider_and_settles_once(
     assert claim["state"] == "released"
 
 
-def test_newly_connected_source_runs_on_next_admission_without_assignment_write(
+def test_newly_connected_source_does_not_run_until_accepted(
     tmp_path, monkeypatch, authenticate_request,
 ):
+    """Connected custody is not run authority; accepted model access is.
+
+    A subscription adopted into custody with no assignment write is connected,
+    but the owner never accepted it, so a node pinned to it is refused before
+    any receipt or launch (onboarding-connection-progress: connecting does not
+    enable execution). The first run's receipt and the assignment are untouched.
+    """
     from tinyassets.api import runs as api_runs
     from tinyassets.credential_vault import (
         adopt_llm_subscription_custody,
@@ -651,8 +658,9 @@ def test_newly_connected_source_runs_on_next_admission_without_assignment_write(
     }))
     wait_for(next_run["run_id"], timeout=10)
     result = get_run(tmp_path, next_run["run_id"])
-    assert result["status"] == "completed", result["error"]
-    assert len(second_provider.calls) == 1
+    assert result["status"] == "failed", result
+    assert "claude-code" in result["error"] and "not eligible" in result["error"], result["error"]
+    assert second_provider.calls == []
     with sqlite3.connect(db) as conn:
         assignment_after = conn.execute(
             "SELECT generation, assignment_digest FROM provider_assignments "
@@ -662,8 +670,7 @@ def test_newly_connected_source_runs_on_next_admission_without_assignment_write(
             "SELECT record_json FROM provider_work_receipts ORDER BY rowid"
         )]
     assert assignment_after == assignment_before
-    assert receipts[0]["admitted_sources"] == ["codex"]
-    assert receipts[1]["admitted_sources"] == ["claude-code", "codex"]
+    assert [receipt["admitted_sources"] for receipt in receipts] == [["codex"]]
 
 
 @pytest.mark.parametrize("pin_provider", [False, True], ids=["default", "pinned"])
@@ -754,21 +761,27 @@ def test_manifest_run_uses_independent_members_under_one_receipt(
 
 
 @pytest.mark.parametrize("authority_case", ["revoked", "stale", "home_rebound"])
-def test_assignment_edits_do_not_grant_or_revoke_connected_run(
+def test_binding_edits_do_not_revoke_a_connected_run_but_a_stale_assignment_does(
     tmp_path, monkeypatch, authenticate_request, authority_case,
 ):
+    """The serving binding is not run authority; the accepted assignment is.
+
+    A revoked converse binding leaves the run on its connected source. A
+    tampered assignment row cannot say what the owner accepted, so the run is
+    refused before launch rather than treating connected as paid.
+    """
     from tinyassets.provider_assignment_manifest import ModelAccess
 
     response, provider, _captured = _run_branch(
         tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
         authority_case=authority_case, model_access={"codex": ModelAccess("explicit", ("",))},
     )
-    if authority_case == "home_rebound":
-        assert response["terminal_status"] == "failed"
-        assert provider.calls == []
-    else:
+    if authority_case == "revoked":
         assert response["terminal_status"] == "completed", response["terminal_error"]
         assert len(provider.calls) == 1
+    else:
+        assert response["terminal_status"] == "failed"
+        assert provider.calls == []
 
 
 def test_manifest_work_model_pin_is_not_silently_replaced_by_native_default(
@@ -1072,9 +1085,11 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
 
 
 @pytest.mark.parametrize("authority_case", ["registered_only", "revoked", "stale"])
-def test_connected_run_does_not_require_saved_assignment_authority(
+def test_connected_run_requires_accepted_assignment_not_a_serving_binding(
     authority_case, tmp_path, monkeypatch, authenticate_request,
 ) -> None:
+    """A registered-only key and a stale assignment are refused; a revoked
+    converse binding is not run authority and leaves the run on its source."""
     proxy = None
     if authority_case == "registered_only":
         from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -1089,11 +1104,13 @@ def test_connected_run_does_not_require_saved_assignment_authority(
         authority_case=authority_case,
         open_provider=authority_case == "registered_only",
     )
-    assert response["terminal_status"] == "completed", response["terminal_error"]
-    if proxy is not None:
-        assert len(proxy.calls) == 1
+    calls = provider.calls if proxy is None else proxy.calls
+    if authority_case == "revoked":
+        assert response["terminal_status"] == "completed", response["terminal_error"]
+        assert len(calls) == 1
     else:
-        assert len(provider.calls) == 1
+        assert response["terminal_status"] == "failed"
+        assert calls == []
 
 
 @pytest.mark.parametrize("policy", [
