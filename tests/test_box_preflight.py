@@ -43,17 +43,9 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
     boxes.parent_cgroup = tmp_path / "cgroups"
     boxes.parent_cgroup.mkdir()
     boxes.names = []
+    boxes.sandbox_pids = {}
     starts = []
-    original_relative_to = Path.relative_to
-
-    def relative_to(path, other, *args, **kwargs):
-        if path == boxes.parent_cgroup and other == "/sys/fs/cgroup":
-            return Path("test")
-        if path.parent == boxes.parent_cgroup and other == "/sys/fs/cgroup":
-            return Path("test") / path.name
-        return original_relative_to(path, other, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "relative_to", relative_to)
+    monkeypatch.setattr(box_preflight, "CGROUP_ROOT", tmp_path)
 
     def spec(*args, **_kwargs):
         if args[0] == "state":
@@ -65,29 +57,52 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
         return subprocess.CompletedProcess(args, 0)
 
     def detached_run(args, **kwargs):
+        assert "--systemd-cgroup=false" in args
         assert args[args.index("run") + 1] == "--detach"
         assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["stdout"] == subprocess.DEVNULL
         assert kwargs["stderr"] == subprocess.DEVNULL
         assert kwargs.get("capture_output") is not True
         starts.append(args[-1])
+        cgroup = boxes.parent_cgroup / args[-1]
+        cgroup.mkdir()
+        (cgroup / "cgroup.procs").write_text("123\n456\n")
+        (cgroup / "memory.current").write_text("1048576\n")
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(boxes, "command", spec)
-    monkeypatch.setattr(
-        box_preflight, "process_cgroup_path", lambda _pid: f"/test/{boxes.names[-1]}"
-    )
     monkeypatch.setattr(box_preflight.subprocess, "run", detached_run)
     for name in ("g1", "cap0", "cap1", "cap2", "cap3"):
-        (boxes.parent_cgroup / name).mkdir()
         boxes.start(name, memory=box_preflight.GIB)
         config = json.loads((tmp_path / name / "config.json").read_text())
-        assert config["linux"]["cgroupsPath"] == f"/test/{name}"
+        assert config["linux"]["cgroupsPath"] == f"/cgroups/{name}"
         assert config["linux"]["resources"]["memory"] == {
             "limit": box_preflight.GIB,
             "swap": box_preflight.GIB,
         }
     assert starts == ["g1", "cap0", "cap1", "cap2", "cap3"]
+
+
+def test_host_cgroup_membership_and_rss_use_fake_sys_and_proc(tmp_path, monkeypatch) -> None:
+    cgroup = tmp_path / "sys/fs/cgroup/boxhostd/g1"
+    child = cgroup / "nested"
+    child.mkdir(parents=True)
+    (cgroup / "cgroup.procs").write_text("123\n")
+    (child / "cgroup.procs").write_text("456\n")
+    proc = tmp_path / "proc"
+    for pid, kib in ((123, 1024), (456, 2048)):
+        status = proc / str(pid) / "status"
+        status.parent.mkdir(parents=True)
+        status.write_text(f"Name:\trunsc\nVmRSS:\t{kib} kB\n")
+        (proc / str(pid) / "cgroup").write_text("0::/\n")
+    monkeypatch.setattr(box_preflight, "PROC_ROOT", proc)
+    assert box_preflight.cgroup_pids(cgroup) == {123, 456}
+    assert box_preflight.rss_bytes(cgroup) == 3 * box_preflight.MIB
+    (cgroup / "cgroup.procs").write_text("")
+    (child / "cgroup.procs").write_text("")
+    with pytest.raises(RuntimeError, match="no processes"):
+        box_preflight.rss_bytes(cgroup)
+    assert box_preflight.rss_bytes(cgroup, allow_empty=True) == 0
 
 
 def test_workload_error_preserves_fixed_step_category() -> None:
@@ -193,9 +208,10 @@ def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
     assert g6.get("failed_steps", []) == failed_steps
 
 
-def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
+def test_g1_accepts_box_oom_with_or_without_surviving_sentry(monkeypatch, tmp_path: Path) -> None:
     class Boxes:
         state = tmp_path
+        sandbox_pids = {"g1": 123}
 
         def start(self, _name, *, memory):
             assert memory == box_preflight.GIB
@@ -209,8 +225,12 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
             return 137
 
     monkeypatch.setattr(box_preflight.subprocess, "Popen", lambda *_a, **_k: Allocation())
+    monkeypatch.setattr(box_preflight, "CGROUP_ROOT", tmp_path.parent)
     monkeypatch.setattr(box_preflight, "canary_p95", lambda: 10)
-    monkeypatch.setattr(box_preflight, "rss_bytes", lambda _c: 64 * box_preflight.MIB)
+    monkeypatch.setattr(
+        box_preflight, "rss_bytes", lambda _c, **_k: 64 * box_preflight.MIB
+    )
+    monkeypatch.setattr(box_preflight, "cgroup_pids", lambda _c: remaining_pids)
     oom = iter((0, 1))
     events = iter((0, 1))
     monkeypatch.setattr(box_preflight, "host_oom_kills", lambda: next(oom))
@@ -228,14 +248,23 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
         }[key],
     )
     sandbox_rc = 1
+    remaining_pids = {123}
     assert box_preflight.g1(Boxes(), 10)["pass"] is False
     oom = iter((0, 1))
     events = iter((0, 1))
     sandbox_rc = 0
     result = box_preflight.g1(Boxes(), 10)
     assert result["pass"] is True
+    assert result["sandbox_pid_in_cgroup_after_allocation"] is True
     assert result["box_memory_peak_bytes"] == box_preflight.GIB
     assert result["box_rss_after_bytes"] == 64 * box_preflight.MIB
+    oom = iter((0, 1))
+    events = iter((0, 1))
+    remaining_pids = set()
+    result = box_preflight.g1(Boxes(), 10)
+    assert result["pass"] is True
+    assert result["sandbox_pid_in_cgroup_after_allocation"] is False
+    assert result["sandbox_exec_after_oom_rc"] is None
 
 
 def test_g1_allocation_touches_every_page() -> None:
