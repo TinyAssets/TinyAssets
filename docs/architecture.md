@@ -20,9 +20,9 @@ it when a module boundary moves.
 ## Shape
 
 ```text
-App (web, Android, iOS, desktop)      Any MCP client (Claude, ChatGPT, ...)
-        |  /app/api/* (owner door)              |  /mcp (model door)
-        +-------------------+-------------------+
+App (web, Android, iOS, desktop)   Any MCP client (Claude, ...)   Scripts, agents
+        |  /app/api/* (owner door)          |  /mcp (model door)         |  /api (REST, API key)
+        +-------------------+---------------+----------------------------+
                             |
           https://tinyassets.io  (Cloudflare Worker -> tunnel)
                             |
@@ -33,7 +33,9 @@ App (web, Android, iOS, desktop)      Any MCP client (Claude, ChatGPT, ...)
           provider children jailed to their owner's command center
 ```
 
-`https://tinyassets.io/mcp` is the only public endpoint (`AGENTS.md` fact 11).
+`https://tinyassets.io/mcp` (MCP) and `https://tinyassets.io/api` (REST,
+API keys; `tinyassets/rest_api.py`, keys in `tinyassets/api_keys.py`) are the
+public endpoints (`AGENTS.md` fact 11).
 Production is one container image (`Dockerfile`) run by `deploy/compose.yml`
 beside `cloudflared` and a log shipper.
 
