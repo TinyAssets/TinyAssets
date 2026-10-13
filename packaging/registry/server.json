@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.Jonnyton/tinyassets-universe-server",
+  "name": "io.github.TinyAssets/tinyassets",
   "title": "TinyAssets",
   "description": "Create, browse, remix, collaborate on, and run durable AI workflow nodes from MCP hosts.",
   "version": "0.2.0",

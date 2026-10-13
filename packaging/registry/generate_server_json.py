@@ -11,7 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_URL = (
     "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
 )
-REGISTRY_NAME = "io.github.Jonnyton/tinyassets-universe-server"
+# GitHub org namespace. Publishing needs mcp-publisher logged in as the
+# TinyAssets org. This generator does not publish.
+REGISTRY_NAME = "io.github.TinyAssets/tinyassets"
 REGISTRY_VERSION = "0.2.0"
 TITLE = "TinyAssets"
 DESCRIPTION = (

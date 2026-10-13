@@ -1,19 +1,22 @@
-# TinyAssets Server Plugin
+# TinyAssets
 
-Packaged Claude plugin for the TinyAssets Server.
+Packaged Claude Code plugin for the hosted TinyAssets MCP server at
+`https://tinyassets.io/mcp`. Enabling the plugin connects to that address.
+Sign-in is the server's OAuth flow. The plugin does not start a local server.
 
 ## Packaged Skills
 
-- [premise/SKILL.md](skills/premise/SKILL.md)
-- [progress/SKILL.md](skills/progress/SKILL.md)
-- [status/SKILL.md](skills/status/SKILL.md)
-- [steer/SKILL.md](skills/steer/SKILL.md)
+- [tinyassets-premise/SKILL.md](skills/tinyassets-premise/SKILL.md)
+- [tinyassets-progress/SKILL.md](skills/tinyassets-progress/SKILL.md)
+- [tinyassets-status/SKILL.md](skills/tinyassets-status/SKILL.md)
+- [tinyassets-steer/SKILL.md](skills/tinyassets-steer/SKILL.md)
 
 ## Structure
 
-- `.claude-plugin/` - plugin metadata
-- `runtime/` - packaged runtime files
-- `skills/` - plugin-local slash-command docs
+- `.claude-plugin/` - plugin metadata. Version matches `packaging/claude-plugin/VERSION`.
+- `runtime/` - packaged runtime files, kept for parity with the main tree. The
+  plugin manifest does not launch them.
+- `skills/` - plugin-local slash commands. Each name starts with `tinyassets-`.
 
 ## Notes
 

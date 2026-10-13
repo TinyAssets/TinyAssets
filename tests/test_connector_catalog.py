@@ -27,6 +27,7 @@ def _load_generate_server_json() -> ModuleType:
 def test_registry_advertises_only_canonical_mcp() -> None:
     document = _load_generate_server_json()._build_document()
 
+    assert document["name"] == "io.github.TinyAssets/tinyassets"
     assert document["title"] == "TinyAssets"
     assert document["remotes"] == [
         {

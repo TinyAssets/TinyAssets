@@ -30,11 +30,11 @@ OUT = HERE.parent / "out"
 PORT = 4323
 
 ROUTES = [
-    "/", "/start/", "/build/", "/commons/",
+    "/", "/start/", "/connect/", "/build/", "/commons/",
     "/developers/", "/fine-print/", "/legal/", "/account/",
 ]
 ALIASES = {
-    "/host/": "/start/", "/connect/": "/start/",
+    "/host/": "/start/",
     "/soul/": "/build/", "/graph/": "/build/", "/notebook/": "/build/",
     "/goals/": "/commons/", "/goal/": "/commons/", "/catalog/": "/commons/",
     "/patterns/": "/commons/", "/wiki/": "/commons/",
@@ -108,6 +108,14 @@ def main() -> int:
                     h1s = page.locator("main h1").count()
                     if h1s != 1:
                         failures.append(f"{label} {route}: expected one H1, got {h1s}")
+                    if route == "/connect/":
+                        if page.locator("main h1").inner_text() != (
+                            "Talk to your agent from the tool you use."
+                        ):
+                            failures.append(f"{label} {route}: setup page missing")
+                        canonical = page.locator('link[rel="canonical"]').get_attribute("href")
+                        if canonical != "https://tinyassets.io/connect/":
+                            failures.append(f"{label} {route}: wrong canonical {canonical}")
                     if not page.locator("footer").count():
                         failures.append(f"{label} {route}: no footer")
                     overflow = page.evaluate(
