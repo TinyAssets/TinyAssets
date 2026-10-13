@@ -30,8 +30,8 @@ def _scripted_post(
     structured_status=False,
     converse_status=200,
     converse_challenge=(
-        'Bearer resource_metadata="https://example/mcp/'
-        '.well-known/oauth-protected-resource" error="invalid_token" '
+        'Bearer resource_metadata="https://example/'
+        '.well-known/oauth-protected-resource/mcp" error="invalid_token" '
         'error_description="Sign in required"'
     ),
     converse_is_error=True,
@@ -64,10 +64,13 @@ def _scripted_post(
             if bearer is None:
                 return anonymous_initialize_status, {
                     "www-authenticate": (
-                        'Bearer resource_metadata="https://example/mcp/'
-                        '.well-known/oauth-protected-resource"'
+                        'Bearer resource_metadata="https://example/'
+                        '.well-known/oauth-protected-resource/mcp"'
                     ),
-                }, b'{"error":"authentication_required"}'
+                }, (
+                    b'{"error":"authentication_required",'
+                    b'"error_description":"Sign in to TinyAssets to continue."}'
+                )
             body = json.dumps({
                 "jsonrpc": "2.0", "id": 1,
                 "result": {
@@ -108,7 +111,8 @@ def _scripted_post(
                     }).encode()
                 if converse_status == 401:
                     return 401, {"www-authenticate": converse_challenge}, (
-                        b'{"error":"authentication_required"}'
+                        b'{"error":"authentication_required",'
+                        b'"error_description":"Sign in to TinyAssets to continue."}'
                     )
                 body = json.dumps({
                     "jsonrpc": "2.0",
@@ -201,6 +205,20 @@ def test_advertised_tool_names_round_trips(monkeypatch):
     assert names == set(_CANONICAL_PLUS_STATUS)
 
 
+def test_canary_metadata_url_matches_the_challenge_helper():
+    from tinyassets.auth.wellknown import resource_metadata_url
+
+    resource = "https://tinyassets.io/mcp"
+    advertised, legacy = canary.resource_metadata_urls(resource)
+    assert advertised == resource_metadata_url(resource)
+    assert advertised == (
+        "https://tinyassets.io/.well-known/oauth-protected-resource/mcp"
+    )
+    assert legacy == (
+        "https://tinyassets.io/mcp/.well-known/oauth-protected-resource"
+    )
+
+
 def test_converse_auth_gate_reaches_canonical_bearer_challenge(monkeypatch):
     monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
 
@@ -233,7 +251,8 @@ def test_converse_auth_gate_reaches_canonical_bearer_challenge(monkeypatch):
     canary.assert_converse_auth_gate("https://example/mcp", 5.0)
 
     assert requested_urls == [
-        "https://example/mcp/.well-known/oauth-protected-resource"
+        "https://example/.well-known/oauth-protected-resource/mcp",
+        "https://example/mcp/.well-known/oauth-protected-resource",
     ]
 
 
@@ -702,8 +721,11 @@ def test_the_healthcheck_invocation_does_not_authenticate_its_anonymous_probe(mo
             raise urllib.error.HTTPError(
                 request.full_url, 401,
                 "Unauthorized",
-                {"www-authenticate": 'Bearer resource_metadata="https://x/.well-known/oauth-protected-resource"'},
-                io.BytesIO(b'{"error": "authentication_required"}'),
+                {"www-authenticate": 'Bearer resource_metadata="https://example/.well-known/oauth-protected-resource/mcp"'},
+                io.BytesIO(
+                    b'{"error":"authentication_required",'
+                    b'"error_description":"Sign in to TinyAssets to continue."}'
+                ),
             )
         return _Resp(
             200,

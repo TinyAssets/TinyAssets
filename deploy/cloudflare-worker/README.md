@@ -34,9 +34,13 @@ With this Worker revision deployed:
 
 - Same DNS (tinyassets.io still Cloudflare-fronted).
 - Same GitHub Pages origin for apex paths (landing unchanged).
-- NEW: the Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`.
+- NEW: the Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`,
+  plus the apex OAuth discovery documents.
   Canonical `/mcp` and `/app` requests get proxied to `mcp.tinyassets.io`
-  (tunnel origin) as a streaming pass-through. Retired `/mcp-directory*`
+  (tunnel origin) as a streaming pass-through. `OPTIONS` preflights are
+  answered by the Worker (204, the shared browser CORS policy) and are not
+  forwarded: Cloudflare Access would answer them 403 before checking the
+  service token. Retired `/mcp-directory*`
   requests terminate at the edge with an ordinary 404. Apex `/` + every other
   path still hits GitHub Pages.
 

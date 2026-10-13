@@ -109,7 +109,7 @@ def test_fixture_config_matches_real_challenge_and_discovery(monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_AUTH", "dev")
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "http://localhost:8001/mcp")
     assert _challenge_prm_url() == (
-        "http://localhost:8001/mcp/.well-known/oauth-protected-resource"
+        "http://localhost:8001/.well-known/oauth-protected-resource/mcp"
     )
     document = protected_resource_metadata()
     assert document["resource"] == "http://localhost:8001/mcp"

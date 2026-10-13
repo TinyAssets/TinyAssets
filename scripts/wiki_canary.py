@@ -202,10 +202,15 @@ def _assert_anonymous_initialize_challenged(
         payload = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
         payload = None
+    description = payload.get("error_description") if isinstance(payload, dict) else None
     if (
         status != 401
         or not headers.get("www-authenticate", "").startswith("Bearer ")
-        or payload != {"error": "authentication_required"}
+        or not isinstance(payload, dict)
+        or payload.get("error") != "authentication_required"
+        or not isinstance(description, str)
+        or not description.strip()
+        or set(payload) > {"error", "error_description"}
     ):
         raise ToolCanaryError(
             6,

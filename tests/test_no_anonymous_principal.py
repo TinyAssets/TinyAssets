@@ -188,7 +188,10 @@ def test_initialize_without_a_bearer_is_challenged_through_the_app(client):
     )
     assert response.status_code == 401
     assert response.headers["www-authenticate"].startswith("Bearer ")
-    assert response.json() == {"error": "authentication_required"}
+    assert response.json() == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_browser_get_of_the_endpoint_is_challenged_too(client):
@@ -424,7 +427,10 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
 def test_an_unauthenticated_post_to_a_wellknown_lookalike_is_challenged(client):
     response = client.post("/mcp/not.well-known/a", json={"jsonrpc": "2.0"})
     assert response.status_code == 401
-    assert response.json() == {"error": "authentication_required"}
+    assert response.json() == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_a_source_event_carries_its_hook_owner_to_the_run(monkeypatch, tmp_path):

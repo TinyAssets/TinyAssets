@@ -52,7 +52,10 @@ In WorkOS mode the server SHALL advertise, at the Protected Resource Metadata en
 authorization server plus the registered MCP resource indicator, and SHALL list only standard OIDC
 scopes (`openid`, `profile`, `email`, `offline_access`).
 The same documents SHALL be reachable at the apex well-known paths, which the edge proxies to this
-server. Authorization-server metadata SHALL be served at `/.well-known/oauth-authorization-server`,
+server. A 401 challenge SHALL advertise `resource_metadata` as the RFC 9728 path-inserted URL
+(`https://tinyassets.io/.well-known/oauth-protected-resource/mcp` when the resource is
+`https://tinyassets.io/mcp`). The legacy path `/mcp/.well-known/oauth-protected-resource` SHALL
+keep serving that same document. Authorization-server metadata SHALL be served at `/.well-known/oauth-authorization-server`,
 its RFC 8414 path-inserted form `/.well-known/oauth-authorization-server/mcp`, and the `/mcp`-prefixed
 mirror.
 It SHALL NOT advertise internal `tinyassets.*` action scopes, because AuthKit cannot issue them and
@@ -212,7 +215,11 @@ token in any auth mode. `current_identity()` SHALL raise `PermissionError`
 when no identity is bound. On every path outside the exempt table the ASGI
 middleware SHALL answer HTTP 401 with a `WWW-Authenticate: Bearer` challenge
 carrying the resource-metadata URL when no valid bearer is present, including
-for JSON-RPC `initialize`, `tools/list` and every `tools/call`. No
+for JSON-RPC `initialize`, `tools/list` and every `tools/call`. A request
+that carries no token SHALL put no `error` parameter on that header (RFC
+6750). A request that carries a token the server refuses SHALL set
+`error="invalid_token"`. Both bodies SHALL include `error_description`. The
+missing-token body SHALL keep `error` equal to `authentication_required`. No
 environment variable SHALL supply an actor or a git author. The dev provider
 SHALL resolve a named local identity from `UNIVERSE_SERVER_DEV_USER` and the
 server SHALL refuse to start in dev mode without it.

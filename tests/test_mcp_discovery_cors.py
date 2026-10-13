@@ -101,6 +101,18 @@ def test_an_unlisted_origin_is_refused_on_discovery_too():
     assert response.json()["error"] == "origin_not_allowed"
     assert "access-control-allow-origin" not in response.headers
 
+    preflight = client.options(
+        "/.well-known/oauth-protected-resource/mcp",
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization, content-type, mcp-protocol-version",
+        },
+    )
+    assert preflight.status_code == 403
+    assert preflight.json()["error"] == "origin_not_allowed"
+    assert "access-control-allow-origin" not in preflight.headers
+
 
 def test_a_missing_origin_is_left_alone():
     client = _client()

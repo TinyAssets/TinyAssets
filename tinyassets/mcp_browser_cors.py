@@ -24,20 +24,33 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-_EXACT_ORIGINS = frozenset(
-    json.loads(
+
+def _load_policy() -> dict[str, Any]:
+    """The one CORS policy. The Worker imports this same JSON file."""
+    document = json.loads(
         (Path(__file__).with_name("mcp_browser_origins.json")).read_text(encoding="utf-8")
-    )["origins"]
-)
+    )
+    required = (
+        "origins",
+        "loopback_hosts",
+        "allow_methods",
+        "allow_headers",
+        "expose_headers",
+        "max_age",
+    )
+    missing = [key for key in required if key not in document]
+    if missing:
+        raise RuntimeError(f"mcp_browser_origins.json missing {missing}")
+    return document
 
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
 
-_ALLOW_METHODS = b"GET, POST, DELETE, OPTIONS"
-_ALLOW_HEADERS = (
-    b"authorization, content-type, accept, mcp-session-id, "
-    b"mcp-protocol-version, last-event-id"
-)
-_EXPOSE_HEADERS = b"www-authenticate, mcp-session-id"
+_POLICY = _load_policy()
+_EXACT_ORIGINS = frozenset(origin.lower() for origin in _POLICY["origins"])
+_LOOPBACK_HOSTS = frozenset(host.lower() for host in _POLICY["loopback_hosts"])
+_ALLOW_METHODS = str(_POLICY["allow_methods"]).encode("ascii")
+_ALLOW_HEADERS = str(_POLICY["allow_headers"]).encode("ascii")
+_EXPOSE_HEADERS = str(_POLICY["expose_headers"]).encode("ascii")
+_MAX_AGE = str(_POLICY["max_age"]).encode("ascii")
 
 _FORBIDDEN_BODY = b'{"error":"origin_not_allowed"}'
 
@@ -109,7 +122,7 @@ def _cors_headers(origin: str) -> list[tuple[bytes, bytes]]:
         (b"access-control-allow-methods", _ALLOW_METHODS),
         (b"access-control-allow-headers", _ALLOW_HEADERS),
         (b"access-control-expose-headers", _EXPOSE_HEADERS),
-        (b"access-control-max-age", b"600"),
+        (b"access-control-max-age", _MAX_AGE),
         (b"vary", b"Origin"),
     ]
 

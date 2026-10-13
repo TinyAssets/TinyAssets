@@ -55,6 +55,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
@@ -68,6 +69,43 @@ from _canary_common import canary_bearer, canary_bearer_for  # noqa: E402
 #: test that drives a helper) behaves as it always did.
 _FROM_ENV: Any = object()
 
+
+
+def resource_metadata_urls(resource_url: str) -> tuple[str, str]:
+    """RFC 9728 URL the challenge advertises, and the legacy path.
+
+    Must match ``tinyassets.auth.wellknown.resource_metadata_url``. The legacy
+    path keeps serving the same document.
+    """
+    resource = resource_url.strip().rstrip("/")
+    parts = urlsplit(resource)
+    suffix = "" if parts.path in ("", "/") else parts.path
+    advertised = urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        "/.well-known/oauth-protected-resource" + suffix,
+        "",
+        "",
+    ))
+    legacy = f"{resource}/.well-known/oauth-protected-resource"
+    return advertised, legacy
+
+
+def _anonymous_challenge_body(payload: Any) -> bool:
+    """Missing-token 401: ``authentication_required`` plus a description.
+
+    The ``error`` value stays, so existing clients keep working. The header
+    itself carries no ``error`` parameter (RFC 6750).
+    """
+    if not isinstance(payload, dict):
+        return False
+    description = payload.get("error_description")
+    return (
+        payload.get("error") == "authentication_required"
+        and isinstance(description, str)
+        and bool(description.strip())
+        and set(payload) <= {"error", "error_description"}
+    )
 
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
@@ -310,8 +348,8 @@ def assert_converse_auth_gate(
             f"from {url}, got {status}",
         )
     resource_url = url.rstrip("/")
-    metadata_url = f"{resource_url}/.well-known/oauth-protected-resource"
-    expected_metadata = f'resource_metadata="{metadata_url}"'
+    advertised_url, legacy_url = resource_metadata_urls(resource_url)
+    expected_metadata = f'resource_metadata="{advertised_url}"'
     try:
         payload = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -341,7 +379,15 @@ def assert_converse_auth_gate(
             6,
             f"converse auth gate resource metadata drift on {url}",
         )
-    metadata = _get_json(metadata_url, timeout)
+    documents = [
+        _get_json(metadata_url, timeout)
+        for metadata_url in dict.fromkeys((advertised_url, legacy_url))
+    ]
+    if any(document != documents[0] for document in documents):
+        raise CanaryError(
+            6, f"protected resource documents diverged on {url}",
+        )
+    metadata = documents[0]
     authorization_servers = metadata.get("authorization_servers")
     if (
         metadata.get("resource") != resource_url
@@ -555,10 +601,13 @@ def probe_result(
             challenge_payload = json.loads(challenge_body)
         except (UnicodeDecodeError, json.JSONDecodeError):
             challenge_payload = None
+        advertised_url, _legacy_url = resource_metadata_urls(url)
         if (
             status != 401
             or not challenge.startswith("Bearer ")
-            or challenge_payload != {"error": "authentication_required"}
+            or f'resource_metadata="{advertised_url}"' not in challenge
+            or 'error="' in challenge
+            or not _anonymous_challenge_body(challenge_payload)
         ):
             raise CanaryError(
                 6,

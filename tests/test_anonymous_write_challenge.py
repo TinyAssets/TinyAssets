@@ -203,7 +203,10 @@ def test_every_anonymous_request_is_challenged(body, expected_status):
     assert wa.startswith("Bearer ")
     assert "resource_metadata=" in wa
     assert "invalid_token" not in wa            # missing != invalid (RFC 6750)
-    assert json.loads(_body(sent)) == {"error": "authentication_required"}
+    assert json.loads(_body(sent)) == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
 
 
 def test_chunked_anonymous_body_gets_linking_challenge_without_dispatch():
@@ -266,7 +269,7 @@ def test_challenge_header_matches_connect_time_challenge(monkeypatch):
     sent, _, _ = _drive(_rpc("tools/call", "write_page", page="x"))
     assert _linking_challenge(sent).startswith(
         'Bearer resource_metadata='
-        '"https://tinyassets.io/mcp/.well-known/oauth-protected-resource"'
+        '"https://tinyassets.io/.well-known/oauth-protected-resource/mcp"'
     )
 
 
