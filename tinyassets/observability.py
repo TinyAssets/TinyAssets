@@ -6,8 +6,8 @@ Fields: ``ts`` (UTC), ``event`` (``session.step``, ``session.link``,
 ``dependency.call``, ``client.error``, ``process.startup``, ``process.crash``),
 ``session_id``, ``trace_id`` (one HTTP request, echoed as ``X-Trace-Id``),
 ``commit`` (``TINYASSETS_BUILD_SHA``), ``context`` (client kind from
-``mcp_client_kinds.json``, opaque ``account_id``, ``signed_in``, token
-``iss``/``iat``/``exp`` only), ``step``, ``http``, ``dependency`` (``kind``
+``mcp_client_kinds.json``, opaque ``account_id``, ``signed_in``,
+``token_age_s``, ``token_exp``, ``token_iss``), ``step``, ``http``, ``dependency`` (``kind``
 ``workos``/``billing``/``db``/``other``, target, status, duration, SQL verb
 only), ``error`` (type and redacted stack; browser reports keep the type and
 top frames, never the message), ``links``, ``tool``, ``page``.
