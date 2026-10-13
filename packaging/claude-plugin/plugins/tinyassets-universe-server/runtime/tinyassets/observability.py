@@ -7,10 +7,12 @@ Fields: ``ts`` (UTC), ``event`` (``session.step``, ``session.link``,
 ``session_id``, ``trace_id`` (one HTTP request, echoed as ``X-Trace-Id``),
 ``commit`` (``TINYASSETS_BUILD_SHA``), ``context`` (client kind from
 ``mcp_client_kinds.json``, opaque ``account_id``, ``signed_in``,
-``token_age_s``, ``token_exp``, ``token_iss``), ``step``, ``http``, ``dependency`` (``kind``
+``token_age_s``, ``token_exp``, ``token_iss``), ``step``, ``http`` (including
+``db_calls`` and ``db_ms`` for fast successful statements), ``dependency`` (``kind``
 ``workos``/``billing``/``db``/``other``, target, status, duration, SQL verb
-only), ``error`` (type and redacted stack; browser reports keep the type and
-top frames, never the message), ``links``, ``tool``, ``page``.
+only; db calls emit individually only when failed or slow), ``error`` (type and
+redacted stack; browser reports keep the type and top frames, never the
+message), ``links``, ``tool``, ``page``.
 
 Trust: a trail is named only by the server-signed ``ta_session`` cookie or,
 on ``/mcp`` routes, the transport's own session id. ``links`` record the
@@ -97,6 +99,7 @@ _SQL_VERBS = frozenset({
 _BODY_PATHS = frozenset({"/mcp", "/mcp/", "/oauth/token", "/app/token"})
 _BODY_CAP = 65_536
 _REPORT_CAP = 4096
+DB_SLOW_MS = 250
 
 _MISSING = object()
 _request_active: ContextVar[bool] = ContextVar("ta_obs_active", default=False)
@@ -107,6 +110,9 @@ _token_facts: ContextVar[dict[str, Any] | None] = ContextVar("ta_obs_token", def
 _client: ContextVar[str] = ContextVar("ta_obs_client", default="other")
 _stashed: ContextVar[dict[str, Any] | None] = ContextVar("ta_obs_stashed", default=None)
 _db_depth: ContextVar[int] = ContextVar("ta_obs_db_depth", default=0)
+# A mutable per-request tally, set once by the middleware: worker threads run
+# in a copied context, so they must mutate this object rather than re-set it.
+_db_totals: ContextVar[list[float] | None] = ContextVar("ta_obs_db_totals", default=None)
 
 _configured = False
 _commit_cache: str | None = None
@@ -402,7 +408,7 @@ class Span:
 
 @contextmanager
 def dependency(kind: str, target: str) -> Iterator[Span]:
-    """Time one outbound call and write a ``dependency.call`` event."""
+    """Time an outbound call; omit fast successful db calls from the trail."""
     span = Span()
     started = time.perf_counter()
     try:
@@ -414,8 +420,11 @@ def dependency(kind: str, target: str) -> Iterator[Span]:
     finally:
         # No `return` here: inside a generator it would swallow the exception.
         failed = bool(span.error)
+        duration_ms = (time.perf_counter() - started) * 1000
         quiet_db = kind == "db" and (_db_depth.get() or (not _request_active.get() and not failed))
-        if not quiet_db:
+        if kind == "db" and not quiet_db and not failed and duration_ms < DB_SLOW_MS:
+            _count_fast_db(duration_ms)
+        elif not quiet_db:
             safe_kind = kind if kind in {"workos", "billing", "db"} else "other"
             emit(
                 "dependency.call",
@@ -423,10 +432,17 @@ def dependency(kind: str, target: str) -> Iterator[Span]:
                     "kind": safe_kind,
                     "target": _dependency_target(safe_kind, target),
                     "status": int(span.status or 0),
-                    "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                    "duration_ms": round(duration_ms, 3),
                     "error": span.error or None,
                 },
             )
+
+
+def _count_fast_db(duration_ms: float) -> None:
+    tally = _db_totals.get()
+    if tally is not None:
+        tally[0] += 1
+        tally[1] += duration_ms
 
 
 def _dependency_target(kind: str, target: str) -> str:
@@ -556,7 +572,10 @@ def _traced(label: str, sql: str, fn: Callable[[], Any]) -> Any:
         # Never `return` here: it would replace the cursor with None and
         # swallow the statement's own exception.
         _db_depth.reset(token)
-        if error or _request_active.get():
+        duration_ms = (time.perf_counter() - started) * 1000
+        if _request_active.get() and not error and duration_ms < DB_SLOW_MS:
+            _count_fast_db(duration_ms)
+        elif error or _request_active.get():
             try:
                 emit(
                     "dependency.call",
@@ -564,7 +583,7 @@ def _traced(label: str, sql: str, fn: Callable[[], Any]) -> Any:
                         "kind": "db",
                         "target": label if str(label).startswith("sqlite:") else f"sqlite:{label}",
                         "status": 0 if error else 1,
-                        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                        "duration_ms": round(duration_ms, 3),
                         "error": error or None,
                         "operation": _sql_verb(sql),
                     },
@@ -625,6 +644,7 @@ class RequestLogMiddleware:
             _token_facts.set({}),
             _client.set(client),
             _stashed.set(holder),
+            _db_totals.set([0, 0.0]),
         )
         started = time.perf_counter()
         status = 500
@@ -669,6 +689,10 @@ class RequestLogMiddleware:
                         "user_agent": _user_agent(scope),
                     },
                 }
+                db_calls, db_ms = _db_totals.get() or (0, 0.0)
+                if db_calls:
+                    fields["http"]["db_calls"] = int(db_calls)
+                    fields["http"]["db_ms"] = round(db_ms, 3)
                 if tool:
                     fields["tool"] = tool
                 if links:
@@ -684,6 +708,7 @@ class RequestLogMiddleware:
 def _reset(tokens: tuple[Any, ...]) -> None:
     variables = (
         _request_active, _session_id, _trace_id, _actor, _token_facts, _client, _stashed,
+        _db_totals,
     )
     for variable, token in zip(variables, tokens, strict=True):
         variable.reset(token)
