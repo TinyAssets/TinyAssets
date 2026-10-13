@@ -210,6 +210,17 @@ CREATE TABLE IF NOT EXISTS universe_app_ui_asset (
     created_at REAL NOT NULL,
     PRIMARY KEY (owner_user_id, sha256)
 );
+
+-- The C8 cutover's receipt (``agent_file_migration``): every agent binding of
+-- this installation became an ``agents/<name>/`` directory, after the backup
+-- named here was written. Inserted in the same commit as the rows' deletion;
+-- a later start reads this row and nothing else.
+CREATE TABLE IF NOT EXISTS agent_file_migration (
+    name TEXT PRIMARY KEY,
+    applied_at REAL NOT NULL,
+    backup TEXT NOT NULL,
+    detail_json TEXT NOT NULL
+);
 """
 
 

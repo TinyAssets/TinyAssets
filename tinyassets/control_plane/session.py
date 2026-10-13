@@ -101,10 +101,23 @@ def _universe_dir(parent: Parent) -> Path:
     return Path(parent.base_path) / parent.universe_id
 
 
+def _owner(parent: Parent) -> str:
+    """The admitted account the agent runs for: the one whose agents it may be."""
+    if isinstance(parent, RunStep):
+        return parent.session._principal_id
+    if isinstance(parent, BackgroundStep):
+        return parent.session._task.actor_id
+    return parent.owner
+
+
 def start(agent_ref: str, input: str, parent: Parent):
-    """Start ``agent_ref`` on ``input`` under ``parent``'s admission."""
+    """Start ``agent_ref`` on ``input`` under ``parent``'s admission.
+
+    The agent is resolved among the parent's admitted account's agents only:
+    on a shared command center, a co-admin's own agent is not this account's.
+    """
     try:
-        agent = load_agent(_universe_dir(parent), agent_ref)
+        agent = load_agent(_universe_dir(parent), agent_ref, owner=_owner(parent))
     except (LookupError, ValueError, OSError) as exc:
         raise AgentUnavailable(f"no agent named {agent_ref!r} in this command center") from exc
     if isinstance(parent, OwnerTurn):

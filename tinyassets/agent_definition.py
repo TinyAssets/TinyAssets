@@ -20,11 +20,16 @@ owner's agent edits them with the four tools, and a package installs them.
     agent:
       id: agent_binding_01J...   # durable address; defaults to the directory name
       name: Evidence Weaver      # shown in the roster; defaults to the directory name
+      owner: user_01H...         # the one account that may address it; absent
+                                 # means every admin of the command center
       retired: false             # a retired agent answers nothing and is not listed
 
 The id is the thread key (``addressed_agents.memory_session``) and what every
 activity, wake and request records, so an agent moved from the retired SQL
-binding store keeps answering under the id it always had.
+binding store keeps answering under the id it always had. ``owner`` keeps that
+store's rule: a binding was its creator's alone, so on a shared command center
+a co-admin's migrated agent is neither listed for nor answerable by anyone
+else; the loader takes the caller and returns only what the caller may address.
 
 The tools are the engine route's own registrations, discovered from the
 owner-pinned route the turn is granted (``engine_tool_client``), so their
@@ -190,6 +195,9 @@ class AgentIdentity:
 
     id: str | None = None
     name: str | None = None
+    #: The one account that may address this agent; None is every admin of
+    #: the command center.
+    owner: str | None = None
     retired: bool = False
     #: Private operational configuration carried over from the retired binding
     #: store; the platform reads nothing from it.
@@ -230,7 +238,7 @@ class SettingsSnapshot:
 def _agent_block(doc) -> AgentIdentity:
     if "agent" not in doc:
         return AgentIdentity()
-    item = _object(doc["agent"], {"id", "name", "retired", "configuration"}, "agent")
+    item = _object(doc["agent"], {"id", "name", "owner", "retired", "configuration"}, "agent")
     identity = None
     if "id" in item:
         identity = _text(item["id"])
@@ -243,6 +251,7 @@ def _agent_block(doc) -> AgentIdentity:
     if configuration is not None and not isinstance(configuration, dict):
         raise SettingsError("agent.configuration must be a mapping")
     return AgentIdentity(identity, _text(item["name"]) if "name" in item else None,
+                         _text(item["owner"]) if "owner" in item else None,
                          retired, configuration)
 
 
@@ -354,10 +363,16 @@ class AgentFile:
     instructions: str
     settings: SettingsSnapshot
     retired: bool = False
+    #: ``settings.agent.owner``: the one account that may address this agent;
+    #: None is every admin of the command center.
+    owner: str | None = None
 
     @property
     def directory(self) -> str:
         return "" if self.slug == MAIN_AGENT else f"{AGENTS_DIR}/{self.slug}"
+
+    def addressable_by(self, owner: str) -> bool:
+        return self.owner is None or self.owner == owner
 
 
 def _instructions(universe_dir: Path, directory: str) -> str:
@@ -374,17 +389,19 @@ def _agent_file(universe_dir: Path, slug: str) -> AgentFile:
     return AgentFile(
         slug=slug, agent_id=identity.id or slug, name=identity.name or slug,
         instructions=_instructions(universe_dir, agent_directory(slug)),
-        settings=settings, retired=identity.retired,
+        settings=settings, retired=identity.retired, owner=identity.owner,
     )
 
 
-def list_agent_files(universe_dir: Path, *, include_retired: bool = False) -> list[AgentFile]:
-    """Every ``agents/<name>/`` directory that is an agent, by name; never ``main``.
+def list_agent_files(universe_dir: Path, *, owner: str,
+                     include_retired: bool = False) -> list[AgentFile]:
+    """Every ``agents/<name>/`` directory that is an agent ``owner`` may address.
 
-    A directory with neither ``AGENTS.md`` nor ``settings.yaml`` is not an
-    agent (a package may land other files there). A malformed settings file
-    fails visibly: an agent whose settings cannot be read must not answer with
-    defaults.
+    By name; never ``main``. An agent whose ``settings.agent.owner`` names
+    another account is not listed (``AgentFile.addressable_by``). A directory
+    with neither ``AGENTS.md`` nor ``settings.yaml`` is not an agent (a package
+    may land other files there). A malformed settings file fails visibly: an
+    agent whose settings cannot be read must not answer with defaults.
     """
     universe_dir = Path(universe_dir)
     try:
@@ -403,25 +420,30 @@ def list_agent_files(universe_dir: Path, *, include_retired: bool = False) -> li
         if not entries & {INSTRUCTIONS_FILE, SETTINGS_FILE}:
             continue
         agent = _agent_file(universe_dir, slug)
-        if agent.retired and not include_retired:
+        if (agent.retired and not include_retired) or not agent.addressable_by(owner):
             continue
         found.append(agent)
     return found
 
 
-def load_agent(universe_dir: Path, agent_ref: str, *, include_retired: bool = False) -> AgentFile:
-    """The agent ``agent_ref`` names: ``main``, a directory name or an ``agent.id``.
+def load_agent(universe_dir: Path, agent_ref: str, *, owner: str,
+               include_retired: bool = False) -> AgentFile:
+    """The agent ``agent_ref`` names for ``owner``: ``main``, a directory name or
+    an ``agent.id``.
 
-    Raises ``LookupError`` when no agent of this command center answers to it,
-    and when two directories claim the same id (an address must have exactly
-    one reading).
+    ``owner`` is the account the caller already admitted to this command
+    center. Raises ``LookupError`` when no agent of theirs answers to the
+    reference (an unknown name, another account's agent: the message never
+    says which), and when two directories claim the same id (an address must
+    have exactly one reading).
     """
     universe_dir = Path(universe_dir)
     ref = str(agent_ref or "").strip() or MAIN_AGENT
     if ref == MAIN_AGENT:
         return AgentFile(MAIN_AGENT, MAIN_AGENT, MAIN_AGENT,
                          _instructions(universe_dir, ""), read_settings(universe_dir))
-    matches = [agent for agent in list_agent_files(universe_dir, include_retired=include_retired)
+    matches = [agent for agent in list_agent_files(universe_dir, owner=owner,
+                                                   include_retired=include_retired)
                if ref in (agent.slug, agent.agent_id)]
     if not matches:
         raise LookupError(f"no agent named {ref!r}")

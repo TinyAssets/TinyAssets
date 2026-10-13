@@ -93,7 +93,8 @@ def _agent(base: Path, uid: str, owner: str, name: str, **settings) -> str:
         "## identity (soul)\n\n" + WEAVER_RULE + "\n\n## fact_check (skill)\n\n"
         + CHECK_RULE + "\n", encoding="utf-8")
     (folder / "settings.yaml").write_text(json.dumps({
-        "schema_version": 1, "agent": {"id": agent_id, "name": name, **settings}}),
+        "schema_version": 1,
+        "agent": {"id": agent_id, "name": name, "owner": owner, **settings}}),
         encoding="utf-8")
     return agent_id
 
@@ -205,13 +206,16 @@ def test_main_sees_what_the_other_agents_said(world):
 
 def test_a_stranger_agent_is_refused_before_any_model_runs(world):
     base, provider = world["base"], world["provider"]
-    # Agents of ANOTHER command center, a retired one here, and ids that are
-    # nothing at all: none is answered, by name or by file.
+    # Agents of ANOTHER command center, a co-admin's own agent on THIS one, a
+    # retired one here, and ids that are nothing at all: none is answered, by
+    # name or by file.
     theirs = _agent(base, "u-other", "stranger", "Theirs")
+    co_admins = _agent(base, "u-home", "co-admin", "Co-admin's")
     mine_elsewhere = _agent(base, "u-other", OWNER, "Elsewhere")
     retired = _agent(base, "u-home", OWNER, "Retired", retired=True)
 
-    for agent_id in (theirs, mine_elsewhere, retired, "agent_binding_nope", "a:b", "x y"):
+    for agent_id in (theirs, co_admins, "co-admins", mine_elsewhere, retired,
+                     "agent_binding_nope", "a:b", "x y"):
         out = _converse(message="hi", agent_id=agent_id)
         assert out.get("agent_not_found") is True, agent_id
         assert "reply" not in out

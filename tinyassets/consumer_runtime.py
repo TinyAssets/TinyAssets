@@ -271,10 +271,17 @@ def converse_turn(base, *, owner, universe, message, input_method, model_choice,
 
 
 def initialize(base):
-    """Explicit schema setup only; not called inside request/worker fences."""
+    """Explicit schema setup and the one storage cutover; never inside a request
+    or worker fence. Every serving path calls this before it serves (the HTTP
+    lifespan, the sse/stdio main, the assigned consumer), so the agent-file
+    migration below has run before any turn, wake or activity can look for an
+    agent; it raises rather than let the daemon serve with agents missing."""
+    from tinyassets.agent_file_migration import migrate
+
     canonical.initialize(base)
     with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
         run_input_admissions.ensure_schema(conn)
+    migrate(base)
 
 
 def _mapped_inputs(selection, intent, context):

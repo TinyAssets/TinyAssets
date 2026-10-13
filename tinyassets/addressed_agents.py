@@ -9,8 +9,9 @@ own instructions on its own thread while reading and writing the SAME brain.
 
 The selector never stands in for ownership. The caller has already bound the
 authenticated owner and the universe; this only resolves an id INSIDE that
-scope, and an id that is not one of the command center's agents is refused by
-name, never quietly answered by the main agent.
+scope, and an id that is not one of the owner's agents there (an agent another
+account owns, ``settings.agent.owner``, included) is refused by name, never
+quietly answered by the main agent.
 """
 
 from __future__ import annotations
@@ -116,17 +117,17 @@ def resolve(
     """The agent ``agent_id`` addresses, or None for the main agent.
 
     Raises :class:`AgentNotAddressable` for anything that is not one of this
-    command center's agents: an unknown name, a retired one, a malformed id.
-    ``owner`` is the authenticated owner the caller already bound to
-    ``universe_id``; the agent's files are the command center's, so the id is
-    resolved inside that scope and nowhere else. The message never says which
-    refusal applied, so a probe learns nothing.
+    owner's agents in this command center: an unknown name, another account's
+    agent, a retired one, a malformed id. ``owner`` is the authenticated owner
+    the caller already bound to ``universe_id``; the id is resolved inside that
+    scope and nowhere else. The message never says which refusal applied, so a
+    probe learns nothing.
     """
     wanted = normalize_agent_id(agent_id)
     if wanted == MAIN_AGENT:
         return None
     try:
-        agent = load_agent(Path(base_path) / universe_id, wanted)
+        agent = load_agent(Path(base_path) / universe_id, wanted, owner=owner)
     except (LookupError, ValueError, OSError):
         raise AgentNotAddressable(
             f"no agent of yours is {wanted!r} in this command center") from None
@@ -134,8 +135,8 @@ def resolve(
 
 
 def roster(base_path: str | Path, *, universe_id: str, owner: str) -> list[dict]:
-    """``[{agent_id, name}]`` of the command center's agents, ``main`` first."""
+    """``[{agent_id, name}]`` of the owner's agents in the command center, ``main`` first."""
     agents = [{"agent_id": MAIN_AGENT, "name": "Your agent"}]
-    for agent in list_agent_files(Path(base_path) / universe_id):
+    for agent in list_agent_files(Path(base_path) / universe_id, owner=owner):
         agents.append({"agent_id": agent.agent_id, "name": agent.name})
     return agents

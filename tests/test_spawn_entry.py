@@ -70,12 +70,19 @@ def test_every_parent_kind_resolves_the_agent_from_its_files(tmp_path):
     folder = tmp_path / "u" / "agents" / "scout"
     folder.mkdir(parents=True)
     (folder / "AGENTS.md").write_text("Scout ahead.", encoding="utf-8")
+    theirs = tmp_path / "u" / "agents" / "theirs"
+    theirs.mkdir()
+    (theirs / "settings.yaml").write_text("schema_version: 1\nagent: {owner: p}\n",
+                                          encoding="utf-8")
     parent = session.ChildOf(base_path=tmp_path, universe_id="u", owner="o", agent_id="main")
     with pytest.raises(session.AgentUnavailable):
         session.start("nobody", "hi", parent)
     with pytest.raises(session.AgentUnavailable):
         session.start("scout", "hi", session.ChildOf(
             base_path=tmp_path, universe_id="elsewhere", owner="o", agent_id="main"))
+    # A co-admin's own agent on this shared command center is not "o"'s to start.
+    with pytest.raises(session.AgentUnavailable):
+        session.start("theirs", "hi", parent)
     # A child started from inside an activity is refused before anything is queued.
     from tinyassets.agent_activities import ActivityRefused
 
