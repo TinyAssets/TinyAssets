@@ -625,13 +625,29 @@ class AutomationStore:
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.executescript(_SCHEMA)
         _rebuild_trigger_check(conn)
-        for table, column, decl in _MIGRATIONS:
-            existing = {
-                str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
-            }
-            if column not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-        conn.execute(_EVENT_KEY_INDEX)
+        # The consumer and a write_graph create can both pass a PRAGMA check
+        # and both ALTER. Re-probe inside one BEGIN IMMEDIATE so the second
+        # waiter sees the column. A loser that still gets "duplicate column"
+        # (two transactions that passed the check before either committed)
+        # treats that as the column already existing.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table, column, decl in _MIGRATIONS:
+                existing = {
+                    str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if column in existing:
+                    continue
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+            conn.execute(_EVENT_KEY_INDEX)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
         return conn
 
     def get_by_event_key(self, event_key: str) -> Automation | None:

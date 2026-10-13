@@ -164,6 +164,11 @@ def test_path_backed_codex_rotation_changes_custody_generation_and_digest(tmp_pa
         owner_user_id="owner-1",
         universe_id="u-owner",
     )
+    # The deposit warms catalogues on a background thread that opens this same
+    # database. A later CREATE inside a deferred read transaction will not wait
+    # for that lock, so finish the warm before taking one.
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+    SHORTLIST_CACHE.shutdown(wait=True)
     conn = sqlite3.connect(db_path(tmp_path), isolation_level=None)
     conn.execute("BEGIN IMMEDIATE")
     first = adopt_llm_subscription_custody(

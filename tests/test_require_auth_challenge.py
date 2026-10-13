@@ -328,7 +328,7 @@ def test_the_retired_connect_deposit_paths_are_challenged(monkeypatch):
         assert _auth_challenge_path(path) is True, path
 
 
-def test_challenge_metadata_url_is_the_rfc_9728_path(monkeypatch):
+def test_challenge_metadata_url_is_routed_in_production(monkeypatch):
     # RFC 9728 inserts the well-known segment. The legacy path under /mcp
     # still serves the same document; the header no longer points there.
     from tinyassets.auth.middleware import _challenge_prm_url
