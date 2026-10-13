@@ -198,14 +198,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/desktop/dashboard.py": [
         "_seed_from_output_dir: .read_text()",
     ],
-    "tinyassets/desktop/launcher.py": [
-        "_handle_add_files: shutil.copy2()",
-    ],
-    "tinyassets/desktop/packaged_entrypoint.py": [
-        "_apply_update: .read_bytes()",
-        "_apply_update: .read_bytes()",
-        "_apply_update: .read_text()",
-    ],
     "tinyassets/dispatcher.py": [
         "load_dispatcher_config: .read_text()",
     ],
@@ -233,18 +225,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/knowledge/raptor.py": [
         "_read_canon_paragraphs: .read_text()",
-    ],
-    "tinyassets/mcp_server.py": [
-        "add_canon: .write_text()",
-        "get_activity: .read_text()",
-        "get_chapter: .read_text()",
-        "get_progress: .read_text()",
-        "get_review_state: .read_text()",
-        "get_status: .read_text()",
-        "get_work_targets: .read_text()",
-        "pause: .write_text()",
-        "resume: .unlink()",
-        "set_premise: .write_text()",
     ],
     "tinyassets/memory/ingestion.py": [
         "_split_into_sections: .read_text()",

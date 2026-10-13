@@ -1253,8 +1253,7 @@ def main() -> int:
         "--durations=15",
         # Without this, ONE unimportable file aborts collection and the entire
         # suite reports "1 error, nothing run" — the gate would then be blind to
-        # every real regression behind it. tests/test_tinyassets_tray.py does
-        # exactly that on a headless runner (pystray -> Xlib DisplayNameError).
+        # every real regression behind it.
         # With it, the bad import is reported as an ordinary error against that
         # file and everything else still runs and still gates.
         "--continue-on-collection-errors",

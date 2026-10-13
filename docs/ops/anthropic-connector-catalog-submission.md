@@ -82,7 +82,7 @@ The daemon is a real executor, not a chatbot simulation. Open commons
 
 Typical directory requirements:
 
-- **Logo:** 512×512 PNG, transparent background. The "U" daemon-circle from `tinyassets_tray.py` is the current visual; needs a standalone catalog version (transparent BG, higher-contrast).
+- **Logo:** 512×512 PNG, transparent background. Generate the mark from `tinyassets/desktop/icon_gen.py`.
 - **Banner / card art:** 1200×630 PNG (OG-card ratio). Likely reused between this catalog + our own `/` landing page + per-node OG images.
 - **Screenshot / demo:** ≥1 screenshot showing a user in Claude.ai doing a TinyAssets operation. Ideally a quick GIF / video (≤30s) of "summon daemon → create universe → see daemon work."
 

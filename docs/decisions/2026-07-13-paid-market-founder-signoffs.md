@@ -80,11 +80,8 @@ against it with tie-heavy randomized trials plus a scale gate.
 
 **Rationale:** a concurrency proof-of-need showed 8 unlocked threads against the
 pure ledger created 278 units from nothing (lost updates), while single-writer
-did 1M tx with zero drift — serialization is not optional. Source of the rule:
-`prototype/full-platform-v0/migrations/008_market_ledger.sql` header (the
-original `CRASH-TEST-FINDINGS-2026-07-11.md` §3 doc is absent from the drop, so
-the migration header is the authoritative carrier). Reference differential-test
-implementation: `tests/test_match_scale.py`.
+did 1M tx with zero drift — serialization is not optional. Reference
+differential-test implementation: `tests/test_match_scale.py`.
 
 ## Consequences
 
