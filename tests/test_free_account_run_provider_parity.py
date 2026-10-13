@@ -63,16 +63,20 @@ NOW = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 DECLARED = "vendor/retired-model:free"
 #: What the account can actually run right now, best first.
 LIVE_MODELS = ("vendor/live-flagship:free", "vendor/live-small:free")
+#: Models the account's key COULD reach but the owner never accepted paying for.
+#: A connected key alone must not let a workflow spend on them.
+PRICED_MODELS = ("vendor/paid-flagship", "vendor/paid-small")
 
 
 def _catalogue_entry(model_id: str) -> dict[str, Any]:
+    price = "0" if model_id.endswith(":free") else "0.000003"
     return {
         "id": model_id,
         "canonical_slug": model_id,
         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
         "supported_parameters": ["tools"],
         "context_length": 128000,
-        "pricing": {"prompt": "0", "completion": "0", "image": "0", "request": "0"},
+        "pricing": {"prompt": price, "completion": price, "image": "0", "request": "0"},
     }
 
 
@@ -617,6 +621,48 @@ def test_the_reservation_never_consults_the_sources_declared_model(
         )
 
 
+def test_a_free_only_owner_never_reserves_a_priced_model_the_key_can_reach(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """A connected key is not paid consent (onboarding-connection-progress spec).
+
+    The owner accepted ``discovered`` scope with no cost caps: free models only.
+    The key itself reaches priced models. Serving readiness already reads the
+    owner's accepted caps, so the source is connected while a free model is
+    still listed; then the live catalogue narrows to priced models only, as a
+    source does when its free tier is withdrawn. Every workflow site that
+    derives cost authority -- the captured order, the reservation's eligible
+    set and the validator -- must read the OWNER'S accepted caps, never a
+    ceiling observed from the catalogue, or the run would spend on a model
+    nobody agreed to pay for. With no free model the run refuses and the
+    source sees no request at all.
+    """
+    from tinyassets.exceptions import WorkModelExhaustedError
+    from tinyassets.providers.work_candidate_data import prepare_captured_choices
+
+    authenticate_request(A_OWNER)
+    provider = _seed_universe(
+        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
+        models=PRICED_MODELS + LIVE_MODELS,
+    )
+    wires[A_OWNER].models = PRICED_MODELS
+
+    # The captured order: an accepted source whose catalogue holds only models
+    # outside the accepted caps yields no candidate at all.
+    with pytest.raises(WorkModelExhaustedError):
+        prepare_captured_choices(
+            Path(tmp_path), owner=A_OWNER, universe=A_HOME, sources=(provider,),
+            document={"version": 1, "saved": None, "observed_generation": 0, "current": None},
+        )
+
+    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
+
+    assert record["status"] == "failed", record
+    assert WorkModelExhaustedError.MESSAGE in record["error"], record["error"]
+    assert wires[A_OWNER].requests == [], wires[A_OWNER].sent_models
+    assert wires[A_OWNER].reads, "the catalogue was consulted, so the refusal is on price"
+
+
 @pytest.fixture
 def engine_tools(tmp_path, monkeypatch):
     """The universe's own engine-tool surface, with a synthetic MCP transport.
@@ -969,7 +1015,6 @@ def test_an_emptied_catalogue_names_the_eligibility_gap_not_a_missing_provider(
     carry; the owner was previously told to connect the provider they had.
     """
     from tinyassets.providers.owner_binding import CONNECT_PROVIDER_MESSAGE
-    from tinyassets.providers.served_model_plan import NO_ELIGIBLE_MODEL
 
     authenticate_request(A_OWNER)
     _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
@@ -978,7 +1023,7 @@ def test_an_emptied_catalogue_names_the_eligibility_gap_not_a_missing_provider(
     record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
 
     assert record["status"] == "failed"
-    assert NO_ELIGIBLE_MODEL in record["error"], record["error"]
+    assert "no eligible work model remains" in record["error"], record["error"]
     assert CONNECT_PROVIDER_MESSAGE not in record["error"]
     assert wires[A_OWNER].requests == []
 
@@ -1115,7 +1160,7 @@ def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
         tmp_path, universe_id=A_HOME, principal_id=A_OWNER,
         provider_call=lambda *args, **kwargs: "",
     )
-    session._capture_choices()
+    session._capture_choices((provider,))
     order = session._work_candidates
     assert order is not None, "a run with nothing saved built no model order"
     assert order.automatic is True
@@ -1123,18 +1168,10 @@ def test_every_run_captures_the_owners_model_order_even_with_nothing_saved(
     assert {ref.connection_id for ref in order.order} == {provider}
 
 
-def test_a_legacy_assignment_without_a_manifest_keeps_its_existing_path(
+def test_a_legacy_assignment_without_a_manifest_uses_connected_source_order(
     tmp_path, monkeypatch, authenticate_request,
 ):
-    """Always returning a document must not change a legacy universe.
-
-    `prepare_owned_model_plan` reports no plan for a no-manifest assignment, and
-    `prepare_captured_choices` passes that through as no captured choices -- so
-    the pre-existing single-provider path is still what a legacy universe takes.
-    Seeded through the real legacy route (`model_access=None`), not by editing a
-    stored row: a hand-blanked `manifest_digest` is refused as an invalid
-    assignment digest, which would prove nothing about this branch.
-    """
+    """A legacy assignment is a preference over the same connected source set."""
     from tests.test_run_provider_session import _seed_serving_assignment
     from tinyassets.daemon_server import initialize_author_server, set_founder_home
     from tinyassets.foreground_run_provider import captured_work_preference
@@ -1155,6 +1192,9 @@ def test_a_legacy_assignment_without_a_manifest_keeps_its_existing_path(
     )
     assert document is not None and document["saved"] is None
 
-    assert prepare_captured_choices(
+    choices = prepare_captured_choices(
         Path(tmp_path), owner=A_OWNER, universe=A_HOME, document=document,
-    ) is None
+        sources=("codex",),
+    )
+    assert choices is not None and choices.automatic
+    assert all(ref.connection_id == "codex" for ref in choices.order)

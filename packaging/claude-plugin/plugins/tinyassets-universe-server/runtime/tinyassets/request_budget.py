@@ -8,8 +8,6 @@ import os
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -57,27 +55,23 @@ class RequestAttempt:
 
 
 class TurnRequestBudget:
-    """One parent turn's locked ledger, shared by retries, helpers and children.
-
-    This object restricts dispatch but grants no provider/tool authority. Bind it
-    outside the writer and keep it through secondary work. Child tasks share the
-    object; independent turns create independent objects. Closing is final, so a
-    copied task context cannot spend after the parent returns. No crash replay.
-    ``dispatched`` means an invocation crossed the local dispatch boundary, not
-    proof the upstream received it or a confirmed provider billing count.
-    """
+    """Durable parent allocation handle; provider authority is checked separately."""
 
     def __init__(self, owner, universe, *, max_requests=None,
                  free_limit=FREE_TURN_ATTEMPTS, failure_limit=FREE_CONSECUTIVE_FAILURES,
                  free_pool_limit=FREE_TURN_ATTEMPTS,
-                 deadline=None, clock=time.monotonic, source_limits=None, wall_clock=None):
-        for limit in (max_requests, free_limit, failure_limit, free_pool_limit):
+                 deadline=None, clock=time.monotonic, source_limits=None, wall_clock=None,
+                 max_tokens=1_000_000, max_cost_microunits=25_000_000):
+        for limit in (max_requests, free_limit, failure_limit, free_pool_limit,
+                      max_tokens, max_cost_microunits):
             if limit is not None and (type(limit) is not int or limit < 1):
                 raise ValueError("request limits must be positive integers")
         if not owner or not universe:
             raise ValueError("parent turn owner and command center required")
         self.owner, self.universe = owner, universe
         self.max_requests, self.free_limit = max_requests, free_limit
+        self.max_tokens = max_tokens
+        self.max_cost_microunits = max_cost_microunits
         self.free_pool_limit = free_pool_limit
         self.failure_limit, self.deadline, self.clock = failure_limit, deadline, clock
         self.wall_clock = wall_clock or _now
@@ -92,6 +86,9 @@ class TurnRequestBudget:
         self._store = None
         self.usage_id = None
         self._lease = None
+        self._borrowed = False
+        self._launch_reference = None
+        self._launch_parent = None
 
     @property
     def _scope(self):
@@ -113,40 +110,106 @@ class TurnRequestBudget:
             weakref.finalize(self, self._lease.close)
             self._store = store
 
+    @classmethod
+    def join(cls, base_path, owner, universe, usage_id):
+        """Join only the durable allocation scoped to this owner and center."""
+        from tinyassets.storage.agent_request_usage import UsageStore
+
+        if (not isinstance(usage_id, str) or len(usage_id) != 32
+                or any(char not in "0123456789abcdef" for char in usage_id)):
+            raise ProviderAuthorityHeldError("invalid parent allocation")
+        budget = cls(owner, universe)
+        budget._store = UsageStore(base_path)
+        budget.usage_id = usage_id
+        budget._borrowed = True
+        budget.receipt()  # Broker rejects an absent or cross-owner allocation.
+        return budget
+
     def link(self, kind, subject_id):
         with self._lock:
-            if self._store is not None:
-                self._store.link(self._scope, kind, subject_id)
+            self._require_store().link(self._scope, kind, subject_id)
 
     def issue_reference(self, ordinal, **kwargs):
         with self._lock:
-            if self._store is None:
-                raise ProviderAuthorityHeldError("HTTP inference requires durable usage accounting")
-            return self._store.issue_reference(self._scope, ordinal, **kwargs)
+            return self._require_store().issue_reference(self._scope, ordinal, **kwargs)
+
+    def issue_launch_reference(self, kind, subject_id, agent_binding_id,
+                               binding_revision=None):
+        with self._lock:
+            if self._closed:
+                raise ProviderAuthorityHeldError("this launch's model authority has ended")
+            parent = (kind, subject_id, agent_binding_id, binding_revision)
+            if self._launch_reference is not None:
+                if parent != self._launch_parent:
+                    raise ProviderAuthorityHeldError("model launch parent changed")
+                return self._launch_reference
+            reference = self._require_store().issue_launch_reference(
+                self._scope, authority_kind=kind, authority_id=subject_id,
+                agent_binding_id=agent_binding_id,
+                binding_revision=binding_revision)
+            self._launch_reference, self._launch_parent = reference, parent
+            return reference
 
     def settle_invocation(self, ordinal, outcome):
         with self._lock:
-            if self._store is not None:
-                return self._store.settle_invocation(self._scope, ordinal, outcome)
-            attempt = self._attempts[ordinal - 1]
-            if attempt.state == "reserved":
-                self.settle(ordinal, "not_sent")
-            if attempt.state == "dispatched":
-                self.settle(ordinal, outcome)
-            return int(attempt.dispatched_at is not None)
+            return self._require_store().settle_invocation(self._scope, ordinal, outcome)
+
+    def _require_store(self):
+        if self._store is None:
+            raise ProviderAuthorityHeldError("model call requires a durable allocation")
+        return self._store
 
     def _stored(self, operation, *args, **kwargs):
-        return self._store.mutate(self._scope, operation, *args, clock=self.clock,
+        if self._borrowed and self._closed:
+            raise ProviderAuthorityHeldError("joined request allocation is closed")
+        return self._require_store().mutate(self._scope, operation, *args, clock=self.clock,
                                   wall_clock=self.wall_clock, **kwargs)
 
     def check_scope(self, owner, universe):
         if (owner, universe) != (self.owner, self.universe):
             raise ProviderAuthorityHeldError("parent request budget scope changed")
 
+    def check_available(self, *, source_ref, free, purpose="reply"):
+        with self._lock:
+            return self._stored("check_available", source_ref=source_ref,
+                                free=free, purpose=purpose)
+
+    def reserve(self, *, owner, universe, source_ref, model, free, purpose="reply"):
+        with self._lock:
+            return self._stored("reserve", owner=owner, universe=universe,
+                                source_ref=source_ref, model=model, free=free, purpose=purpose)
+
+    def dispatched(self, ordinal):
+        with self._lock:
+            return self._stored("dispatched", ordinal)
+
+    def settle(self, ordinal, outcome):
+        with self._lock:
+            return self._stored("settle", ordinal, outcome)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            if self._borrowed:
+                return
+            if self._lease is not None:
+                self._lease.close()
+            if self._store is not None:
+                return self._stored("close")
+
+    def receipt(self):
+        """Detached source/purpose counters; no prompts, results or credentials."""
+        with self._lock:
+            return self._require_store().receipt(self._scope, clock=self.clock,
+                                                 wall_clock=self.wall_clock)
+
+
+class _RequestLedger(TurnRequestBudget):
+    """Transaction-local reducer; only the usage store constructs this state."""
+
     def _check(self, *, source_ref, free, purpose):
         active = [a for a in self._attempts if a.state != "not_sent"]
         limit = self.source_limits.get(source_ref, self.free_limit)
-        source_attempts = sum(a.free and a.source_ref == source_ref for a in active)
         reason = None
         if self._closed:
             reason = "parent_closed"
@@ -159,7 +222,8 @@ class TurnRequestBudget:
         elif (free and self.free_pool_limit is not None
               and sum(a.free for a in active) >= self.free_pool_limit):
             reason = "free_pool_attempt_limit"
-        elif free and limit is not None and source_attempts >= limit:
+        elif (free and limit is not None and sum(
+                a.free and a.source_ref == source_ref for a in active) >= limit):
             reason = "free_attempt_limit"
         elif (free and self.failure_limit is not None
               and self._failures.get(source_ref, 0) >= self.failure_limit):
@@ -168,122 +232,89 @@ class TurnRequestBudget:
             raise RequestBudgetExceeded(reason, self.receipt())
 
     def check_available(self, *, source_ref, free, purpose="reply"):
-        with self._lock:
-            if self._store is not None:
-                return self._stored("check_available", source_ref=source_ref,
-                                    free=free, purpose=purpose)
-            self._check(source_ref=source_ref, free=free, purpose=purpose)
+        self._check(source_ref=source_ref, free=free, purpose=purpose)
 
     def reserve(self, *, owner, universe, source_ref, model, free, purpose="reply"):
-        """Reserve BEFORE dispatch, after existing grant/admission checks.
-
-        ``free`` means an admitted metered free source, NOT merely zero price.
-        Local/unmetered models pass False. Only explicit owner policy supplies
-        max_requests. The free pool allocation counts only metered free attempts;
-        adding connections cannot multiply it or restrict paid/local work.
-        """
         self.check_scope(owner, universe)
         if purpose not in {"reply", "tool_review", "review", "helper", "learning"}:
             raise ValueError("unknown request purpose")
         if type(free) is not bool or not source_ref or not model:
             raise ValueError("admitted source, model and price classification required")
-        with self._lock:
-            if self._store is not None:
-                return self._stored("reserve", owner=owner, universe=universe,
-                                    source_ref=source_ref, model=model, free=free, purpose=purpose)
-            self._check(source_ref=source_ref, free=free, purpose=purpose)
-            attempt = RequestAttempt(len(self._attempts) + 1, source_ref, model, purpose,
-                                     free, "reserved", self.clock())
-            self._attempts.append(attempt)
-            return attempt.ordinal
+        self._check(source_ref=source_ref, free=free, purpose=purpose)
+        attempt = RequestAttempt(len(self._attempts) + 1, source_ref, model, purpose,
+                                 free, "reserved", self.clock())
+        self._attempts.append(attempt)
+        return attempt.ordinal
 
     def dispatched(self, ordinal):
         from dataclasses import replace
 
-        with self._lock:
-            if self._store is not None:
-                return self._stored("dispatched", ordinal)
-            if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
-                raise ValueError("unknown request reservation")
-            attempt = self._attempts[ordinal - 1]
-            if attempt.state != "reserved":
-                raise ValueError("request reservation already dispatched or settled")
-            # A reservation is no licence to launch after Stop/parent completion.
-            if self._closed or self.deadline is not None and self.clock() >= self.deadline:
-                self._attempts[ordinal - 1] = replace(attempt, state="not_sent")
-                raise RequestBudgetExceeded("dispatch_closed", self.receipt())
-            self._attempts[ordinal - 1] = replace(
-                attempt, state="dispatched",
-                dispatched_at=self.wall_clock().astimezone(timezone.utc).isoformat(),
-            )
+        if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
+            raise ValueError("unknown request reservation")
+        attempt = self._attempts[ordinal - 1]
+        if attempt.state != "reserved":
+            raise ValueError("request reservation already dispatched or settled")
+        if self._closed or self.deadline is not None and self.clock() >= self.deadline:
+            self._attempts[ordinal - 1] = replace(attempt, state="not_sent")
+            raise RequestBudgetExceeded("dispatch_closed", self.receipt())
+        self._attempts[ordinal - 1] = replace(
+            attempt, state="dispatched",
+            dispatched_at=self.wall_clock().astimezone(timezone.utc).isoformat(),
+        )
 
     def settle(self, ordinal, outcome):
         from dataclasses import replace
 
-        with self._lock:
-            if self._store is not None:
-                return self._stored("settle", ordinal, outcome)
-            if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
-                raise ValueError("unknown request reservation")
-            attempt = self._attempts[ordinal - 1]
-            allowed = {"not_sent"} if attempt.state == "reserved" else {
-                "succeeded", "failed", "unknown",
-            } if attempt.state == "dispatched" else set()
-            if outcome not in allowed:
-                raise ValueError("invalid request settlement")
-            self._attempts[ordinal - 1] = replace(attempt, state=outcome)
-            if attempt.free:
-                # Settlement completion order is not request order: an older
-                # success arriving late must not erase newer failed requests.
-                failures = 0
-                for item in reversed(self._attempts):
-                    if item.source_ref != attempt.source_ref or not item.free:
-                        continue
-                    if item.state == "succeeded":
-                        break
-                    if item.state in {"failed", "unknown"}:
-                        failures += 1
-                self._failures[attempt.source_ref] = failures
+        if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
+            raise ValueError("unknown request reservation")
+        attempt = self._attempts[ordinal - 1]
+        allowed = ({"not_sent"} if attempt.state == "reserved" else
+                   {"succeeded", "failed", "unknown"} if attempt.state == "dispatched" else set())
+        if outcome not in allowed:
+            raise ValueError("invalid request settlement")
+        self._attempts[ordinal - 1] = replace(attempt, state=outcome)
+        if attempt.free:
+            failures = 0
+            for item in reversed(self._attempts):
+                if item.source_ref != attempt.source_ref or not item.free:
+                    continue
+                if item.state == "succeeded":
+                    break
+                if item.state in {"failed", "unknown"}:
+                    failures += 1
+            self._failures[attempt.source_ref] = failures
 
     def close(self):
-        with self._lock:
-            self._closed = True
-            if self._lease is not None:
-                self._lease.close()
-            if self._store is not None:
-                return self._stored("close")
+        self._closed = True
 
     def receipt(self):
-        """Detached source/purpose counters; no prompts, results or credentials."""
         from dataclasses import asdict
 
-        with self._lock:
-            if self._store is not None:
-                return self._store.receipt(self._scope, clock=self.clock,
-                                           wall_clock=self.wall_clock)
-            groups = {}
-            for attempt in self._attempts:
-                group = groups.setdefault((attempt.source_ref, attempt.purpose), {
-                    "source_ref": attempt.source_ref, "purpose": attempt.purpose,
-                    "reserved": 0, "dispatched": 0, "succeeded": 0,
-                    "failed": 0, "unknown": 0, "not_sent": 0,
-                })
-                group["reserved"] += 1
-                if attempt.dispatched_at is not None:
-                    group["dispatched"] += 1
-                if attempt.state not in {"reserved", "dispatched"}:
-                    group[attempt.state] += 1
-            return {
-                "dispatched": sum(a.dispatched_at is not None for a in self._attempts),
-                "reserved": len(self._attempts), "closed": self._closed,
-                "sources": list(groups.values()),
-                "attempts": [asdict(a) for a in self._attempts],
-                "quota_authoritative": False,
-                "count_basis": "local_provider_dispatch",
-            }
-
-
-_TURN_REQUEST_BUDGET = ContextVar("parent_turn_request_budget", default=None)
+        groups = {}
+        for attempt in self._attempts:
+            group = groups.setdefault((attempt.source_ref, attempt.purpose), {
+                "source_ref": attempt.source_ref, "purpose": attempt.purpose,
+                "reserved": 0, "dispatched": 0, "succeeded": 0,
+                "failed": 0, "unknown": 0, "not_sent": 0,
+            })
+            group["reserved"] += 1
+            if attempt.dispatched_at is not None:
+                group["dispatched"] += 1
+            if attempt.state not in {"reserved", "dispatched"}:
+                group[attempt.state] += 1
+        return {
+            "dispatched": sum(a.dispatched_at is not None for a in self._attempts),
+            "reserved": len(self._attempts), "closed": self._closed,
+            "sources": list(groups.values()),
+            "attempts": [asdict(a) for a in self._attempts],
+            "quota_authoritative": False,
+            "count_basis": "local_provider_dispatch",
+            "limits": {
+                "max_requests": self.max_requests,
+                "max_tokens": self.max_tokens,
+                "max_cost_microunits": self.max_cost_microunits,
+            },
+        }
 
 
 class _RunRequestFamily:
@@ -342,27 +373,6 @@ class RunRequestAllocation:
 
     def close(self):
         self._release()
-
-
-def current_request_budget():
-    return _TURN_REQUEST_BUDGET.get()
-
-
-@contextmanager
-def request_budget_scope(budget, *, close_on_exit=True):
-    """Propagate a parent object without permitting a nested reset of its limit."""
-    current = current_request_budget()
-    if current is not None and current is not budget:
-        raise ProviderAuthorityHeldError("cannot replace an active parent request budget")
-    token = _TURN_REQUEST_BUDGET.set(budget)
-    try:
-        yield budget
-    finally:
-        try:
-            if current is None and close_on_exit:
-                budget.close()
-        finally:
-            _TURN_REQUEST_BUDGET.reset(token)
 
 
 def selection_is_free(selection):

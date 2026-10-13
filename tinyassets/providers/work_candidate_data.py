@@ -44,14 +44,57 @@ def policy_key(policy):
     return json.dumps(policy or {}, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def prepare_captured_choices(base, *, owner, universe, document):
-    """Discover current owned facts using original preference DATA, outside SQL."""
-    from pathlib import Path
+def select_admitted_work_model(base, *, owner, universe, admitted_sources,
+                               live_sources, preferred):
+    """Select from one run snapshot intersected with current owner custody."""
+    if not isinstance(preferred, dict):
+        raise PermissionError("work model preference is invalid")
+    if ("model_id" in preferred and "model" in preferred
+            and preferred["model_id"] != preferred["model"]):
+        raise PermissionError("work model preference is conflicting")
+    usable = tuple(source for source in admitted_sources if source in live_sources)
+    if not usable:
+        raise PermissionError("run has no live admitted model source")
+    provider = preferred.get("provider")
+    if provider:
+        if provider not in usable:
+            raise PermissionError(f"source {provider!r} is not live and admitted for this run")
+        return provider, preferred.get("model_id", preferred.get("model", ""))
+    choices = prepare_captured_choices(
+        base, owner=owner, universe=universe, sources=usable,
+        document={"version": 1, "saved": None,
+                  "observed_generation": 0, "current": None},
+    )
+    return choices.order[0].connection_id, choices.order[0].model_id
 
-    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+
+def prepare_captured_choices(base, *, owner, universe, document, sources):
+    """Build a run's finite order from its connected admission snapshot."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from tinyassets.exceptions import ProviderError
+    from tinyassets.provider_assignment import (
+        accepted_connected_model_access,
+        load_provider_assignment,
+    )
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+    from tinyassets.providers.model_policy import (
+        Catalog,
+        Charge,
+        Interaction,
+        ModelPolicy,
+        SourceModelPolicy,
+    )
     from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
-    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
-    from tinyassets.storage.model_preferences import PreferenceSnapshot
+    from tinyassets.providers.native_discovery import discover_native_models_sync
+    from tinyassets.providers.served_model_plan import (
+        _http_models,
+        _native_models,
+        _refused_models,
+    )
 
     if (not isinstance(document, dict)
             or set(document) != {"version", "saved", "observed_generation", "current"}
@@ -60,14 +103,82 @@ def prepare_captured_choices(base, *, owner, universe, document):
     saved = None if document["saved"] is None else ModelPreferences.from_document(document["saved"])
     current = (None if document["current"] is None else
                ModelPreferences.from_document(document["current"]))
-    generation = document["observed_generation"]
-    capture_preference_policy(saved=saved, observed_generation=generation, current=current)
-    agent = resolve_serving_agent_binding(base, universe_id=universe, owner_user_id=owner)
-    prepared = prepare_owned_model_plan(
-        base=base, universe=Path(base) / universe, owner=owner, agent=agent, current=current,
-        preference_snapshot=PreferenceSnapshot(generation, saved),
+    captured = capture_preference_policy(
+        saved=saved, observed_generation=document["observed_generation"], current=current,
     )
-    return None if prepared is None else WorkCandidateData(prepared.plan)
+    policy, source = captured or (ModelPolicy(0, "automatic", ()), "automatic")
+    base, home = Path(base), Path(base) / universe
+    interaction = Interaction(True, frozenset({"text"}), frozenset())
+    admitted, source_policies, ranking_sources = [], [], set()
+    # The owner's accepted scope and cost caps are the only cost authority. A
+    # connected key reaches whatever its account can pay for; a ceiling read
+    # from that catalogue would let a free-only owner's workflow spend on it.
+    assignment = load_provider_assignment(base, universe_id=universe)
+    held = []
+    for provider in sources:
+        try:
+            access = accepted_connected_model_access(assignment, owner, provider)
+        except PermissionError:
+            # Connected is not accepted: a deposited key or adopted subscription
+            # the owner never approved is admitted to the run's snapshot but is
+            # never a candidate, the same as the served turn's plan.
+            held.append(provider)
+            continue
+        if provider in _PROVIDER_SERVICE:
+            model_snapshot = None
+            if access.model_scope == "discovered":
+                try:
+                    model_snapshot = discover_native_models_sync(
+                        base_path=base, owner_user_id=owner,
+                        universe_id=universe, provider=provider,
+                    )
+                except ProviderError:
+                    pass  # The owner's native default is still runnable.
+            member = SimpleNamespace(
+                provider=provider, access=access,
+                credential_reference_digest=(
+                    model_snapshot.custody.reference_digest if model_snapshot else ""
+                ),
+            )
+            catalog = _native_models(
+                base, home, owner, member, native_snapshot=model_snapshot,
+            )
+            catalog = replace(catalog, models=tuple(
+                model for model in catalog.models
+                if model.availability_basis not in {"publicly_listed", "own_verified"}
+            ))
+            caps = None
+            required = interaction
+        else:
+            snapshot = refresh_model_discovery(
+                owner_user_id=owner, universe_id=universe,
+                definition_id=provider.removeprefix("api_key_http:"),
+            )
+            member = SimpleNamespace(provider=provider, access=access)
+            _snapshot, catalog, required, caps, _rejected = _http_models(
+                owner, universe, member, snapshot=snapshot, needs_tools=True,
+            )
+            benchmark = snapshot.contract().ranking_source
+            if benchmark:
+                ranking_sources.add(benchmark)
+        admitted.append(catalog)
+        source_policies.append(SourceModelPolicy(
+            provider, required,
+            None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
+        ))
+    if not admitted:
+        raise PermissionError(
+            "no accepted model source for this run; not accepted: "
+            + ", ".join(item.removeprefix("api_key_http:") for item in held)
+        )
+    if len(ranking_sources) == 1:
+        policy = replace(policy, ranking_source=next(iter(ranking_sources)))
+    plan = AgentModelPlan(
+        Catalog(owner, universe, tuple(admitted)), policy, interaction, source,
+        tuple(source_policies),
+        refused_models=_refused_models(base, owner, sources),
+    )
+    return WorkCandidateData(plan)
 
 
 def _matches(ref, pin):

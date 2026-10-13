@@ -214,6 +214,8 @@ async def open_engine_tools(
     session_key: str = "",
     turn: str = "",
     context_tokens: int | None = None,
+    model_budget=None,
+    model_parent=None,
 ) -> AsyncIterator[EngineToolSession]:
     """Use caller-verified identity; no caller-supplied URL, secret or transport."""
     if not isinstance(enabled_tools, Sequence) or isinstance(enabled_tools, (str, bytes)):
@@ -257,10 +259,11 @@ async def open_engine_tools(
     try:
         # The session and live turn ride on the URL the client dials; the
         # verified route itself, which the session checks against, is unchanged.
-        from tinyassets.engine_steering import route_with_session
+        from tinyassets.engine_steering import issue_model_reference, route_with_session
 
         dialled = replace(route, url=route_with_session(
             route.url, session_key, turn, grant_key=getattr(route, "grant_key", ""), tools=grant,
+            model_reference=issue_model_reference(model_budget, model_parent),
             context_tokens=context_tokens))
         client = _make_client(dialled, timeout)
     except Exception:

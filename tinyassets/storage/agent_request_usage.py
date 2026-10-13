@@ -48,6 +48,11 @@ _SCHEMA = (
       operation_id TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       UNIQUE(owner, universe, usage_id, first_ordinal))""",
+    """CREATE TABLE IF NOT EXISTS agent_model_launches (
+      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, universe TEXT NOT NULL,
+      usage_id TEXT NOT NULL, authority_kind TEXT NOT NULL, authority_id TEXT NOT NULL,
+      agent_binding_id TEXT NOT NULL, binding_revision INTEGER,
+      active INTEGER NOT NULL DEFAULT 1)""",
 )
 
 
@@ -128,12 +133,17 @@ class InferenceUsageRequired(ProviderAuthorityHeldError):
 
     def __init__(self):
         super().__init__(
-            "HTTP inference requires a parent usage reference. Run the review as a "
-            "prompt_template node through run_graph with an owner-approved model; "
-            "direct connection POSTs cannot supply inference accounting. Read "
-            'read_graph target="handbook" query="write_graph.connections" for the '
-            "inference recovery and model-access approval steps."
+            "This connection is a model source. Call it through the `model` capability "
+            "(`ta call model …`) or the agent's `model` setting, which meters it; "
+            "raw HTTP to a model API is not metered."
         )
+
+
+class ModelLaunchEnded(ProviderAuthorityHeldError):
+    """Fixed refusal safe to return across private broker IPC."""
+
+    def __init__(self):
+        super().__init__("this launch's model authority has ended")
 
 
 class InferenceUsageStopped(ProviderAuthorityHeldError):
@@ -241,7 +251,7 @@ class UsageStore:
         usage_id = secrets.token_hex(16)
         policy = {name: getattr(budget, name) for name in (
             "max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
-            "deadline",
+            "deadline", "max_tokens", "max_cost_microunits",
         )}
         scope = (budget.owner, budget.universe, usage_id)
         token = owner_token(self.base, broker_readable=self._remote)
@@ -264,7 +274,7 @@ class UsageStore:
     def _insert(self, scope, budget, token, parent_token):
         policy = {name: getattr(budget, name) for name in (
             "max_requests", "free_limit", "free_pool_limit", "failure_limit", "source_limits",
-            "deadline",
+            "deadline", "max_tokens", "max_cost_microunits",
         )}
         with self._connection(write=True) as conn:
             conn.execute("INSERT INTO agent_request_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -275,13 +285,13 @@ class UsageStore:
 
     def _load(self, conn, scope, *, clock=time.monotonic, wall_clock=None):
         from tinyassets.process_liveness import ALIVE, owner_state
-        from tinyassets.request_budget import RequestAttempt, TurnRequestBudget
+        from tinyassets.request_budget import RequestAttempt, _RequestLedger
 
         row = conn.execute(f"SELECT * FROM agent_request_usage WHERE {_SCOPE}", scope).fetchone()
         if row is None:
             raise ProviderAuthorityHeldError("inference usage scope is unavailable")
-        budget = TurnRequestBudget(scope[0], scope[1], clock=clock, wall_clock=wall_clock,
-                                   **json.loads(row["policy_json"]))
+        budget = _RequestLedger(scope[0], scope[1], clock=clock, wall_clock=wall_clock,
+                                **json.loads(row["policy_json"]))
         budget._closed = bool(row["closed"])
         budget._failures = json.loads(row["failures_json"])
         budget._attempts = [RequestAttempt(**json.loads(a[0])) for a in conn.execute(
@@ -333,6 +343,8 @@ class UsageStore:
             except RequestBudgetExceeded as exc:
                 error, result = exc, None
             self._save(conn, scope, budget)
+            if budget._closed:
+                conn.execute(f"UPDATE agent_model_launches SET active=0 WHERE {_SCOPE}", scope)
         if error is not None:
             error.request_receipt["usage_id"] = scope[2]
             raise error
@@ -357,6 +369,73 @@ class UsageStore:
             self._save(conn, scope, budget)
             conn.execute("INSERT OR IGNORE INTO agent_request_usage_links VALUES (?, ?, ?, ?, ?)",
                          (*scope, kind, subject_id))
+
+    def issue_launch_reference(self, scope, *, authority_kind, authority_id,
+                               agent_binding_id, binding_revision=None):
+        """Seal one allocation's recorded parent, never an agent-supplied scope."""
+        if self._remote:
+            return self._rpc(scope, "issue_launch_reference",
+                             authority_kind=authority_kind, authority_id=authority_id,
+                             agent_binding_id=agent_binding_id,
+                             binding_revision=binding_revision)["reference"]
+        if (authority_kind not in {"turn", "run"} or not authority_id
+                or not agent_binding_id
+                or (authority_kind == "turn" and
+                    (type(binding_revision) is not int or binding_revision < 1))
+                or (authority_kind == "run" and binding_revision is not None)):
+            raise ProviderAuthorityHeldError("invalid model launch parent")
+        reference = secrets.token_hex(32)
+        with self._connection(write=True) as conn:
+            budget = self._load(conn, scope)
+            if budget._closed:
+                raise ModelLaunchEnded()
+            linked = conn.execute(
+                f"SELECT 1 FROM agent_request_usage_links WHERE {_SCOPE} "
+                "AND kind=? AND subject_id=?", (*scope, authority_kind, authority_id),
+            ).fetchone()
+            if linked is None:
+                raise ProviderAuthorityHeldError("model launch parent is not linked to allocation")
+            conn.execute(
+                "INSERT INTO agent_model_launches VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                (_reference_hash(reference), *scope, authority_kind, authority_id,
+                 agent_binding_id, binding_revision),
+            )
+        return reference
+
+    def resolve_launch_reference(self, owner, universe, reference):
+        """Read a reusable private selector under the engine's pinned owner scope."""
+        if self._remote:
+            return self._rpc((owner, universe, ""), "resolve_launch_reference",
+                             reference=reference)["launch"]
+        ended = False
+        with self._connection(write=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_model_launches WHERE reference_hash=?",
+                (_reference_hash(reference),),
+            ).fetchone()
+            if (row is None or row["owner"] != owner or row["universe"] != universe
+                    or not row["active"]):
+                raise ModelLaunchEnded()
+            scope = (owner, universe, row["usage_id"])
+            budget = self._load(conn, scope)
+            if budget._closed:
+                conn.execute("UPDATE agent_model_launches SET active=0 WHERE reference_hash=?",
+                             (row["reference_hash"],))
+                ended = True
+            else:
+                linked = conn.execute(
+                    f"SELECT 1 FROM agent_request_usage_links WHERE {_SCOPE} "
+                    "AND kind=? AND subject_id=?",
+                    (*scope, row["authority_kind"], row["authority_id"]),
+                ).fetchone()
+                if linked is None:
+                    raise ProviderAuthorityHeldError("model launch parent is unavailable")
+                launch = {key: row[key] for key in (
+                    "usage_id", "authority_kind", "authority_id", "agent_binding_id",
+                    "binding_revision")}
+        if ended:
+            raise ModelLaunchEnded()
+        return launch
 
     def for_subject(self, owner, universe, kind, subject_id):
         if self._remote:

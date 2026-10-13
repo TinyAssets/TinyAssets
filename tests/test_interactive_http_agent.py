@@ -485,7 +485,7 @@ def test_replacement_revalidates_revoked_discovery_authority(agent, monkeypatch)
     assert agent.latest().state == "held_transport"
 
 
-def test_paid_replacement_is_rejected_after_fresh_discovery(agent, monkeypatch):
+def test_over_cap_replacement_is_rejected_after_fresh_discovery(agent, monkeypatch):
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers import discovery_snapshot
 

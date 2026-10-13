@@ -66,7 +66,8 @@ def test_coordinator_passes_four_handles_and_full_backend_grant(monkeypatch):
                         lambda **kwargs: captured.append(kwargs))
     turn = SimpleNamespace(
         adapter=SimpleNamespace(engine_identity=lambda *_: ("owner", "center")),
-        context=object(), config=ModelConfig(), steering=lambda: {},
+        context=SimpleNamespace(provider_request=None), config=ModelConfig(),
+        request_budget=None, turn=SimpleNamespace(turn_id="turn"), steering=lambda: {},
     )
     agent_turn_coordinator.AgentTurnCoordinator._open_tools(turn, 60)
     assert captured[0]["enabled_tools"] == subject.FOUR_MODEL_TOOLS

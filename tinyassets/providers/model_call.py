@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from tinyassets.exceptions import ProviderAuthorityHeldError
-from tinyassets.providers.base import ProviderResponse, UniverseContext
+from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.execution_receipt import (
     ExecutionReceipt,
     receipt_from_response,
@@ -57,6 +57,7 @@ class ModelContext:
     agent_observer: Any = None
     agent_execution_kind: str | None = None
     router: Any = None
+    launch_reference: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,15 @@ class ModelResult:
         return self.response.text
 
 
+def open_allocation(owner: str, universe_dir, **policy):
+    """Create a durable parent for a turn or run with several model calls."""
+    from tinyassets.request_budget import TurnRequestBudget
+
+    budget = TurnRequestBudget(owner, universe_dir.name, **policy)
+    budget.persist(universe_dir.parent)
+    return budget
+
+
 def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContext]:
     from tinyassets.providers.call import get_provider_router, register_open_providers_for
 
@@ -103,8 +113,6 @@ def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContex
     authority = universe.served_provider
     if authority is not None and parent.owner and authority.owner_user_id != parent.owner:
         raise PermissionError("Model call parent does not match its owner")
-    # The current router revalidates the selected source and owner authority at
-    # each dispatch. This is a request, never an authority token.
     if request.model is not None:
         universe = replace(universe, model_selection=request.model)
         context = replace(context, universe_context=universe)
@@ -112,34 +120,108 @@ def _dispatch_args(request: ModelCall, parent: Parent) -> tuple[Any, ModelContex
     return router, context
 
 
-def _result(response: ProviderResponse, request: ModelCall) -> ModelResult:
+def _result(response: ProviderResponse, request: ModelCall, parent: Parent) -> ModelResult:
     _last_provider.set(response.provider)
     receipt = response.execution_receipt or receipt_from_response(
         response, requested=request.model,
     )
     if request.model is not None:
         receipt = replace(receipt, requested_model=request.model.model_id)
+    if parent.usage_id is not None:
+        receipt = replace(receipt, parent_usage_id=parent.usage_id)
     return ModelResult(response=response, receipt=receipt)
+
+
+@contextmanager
+def _allocation(context: ModelContext, parent: Parent):
+    from tinyassets.request_budget import TurnRequestBudget
+
+    universe = context.universe_context
+    authority = universe.served_provider
+    carrier = universe.provider_invocation
+    request_carrier = universe.provider_request
+    cfg = context.config or ModelConfig()
+    budget = cfg.request_budget
+    request_owner = ""
+    launch_owner = ""
+    if context.launch_reference is not None:
+        from tinyassets.storage.agent_request_usage import UsageStore
+
+        launch = UsageStore(universe.universe_dir.parent).resolve_launch_reference(
+            parent.owner, parent.command_center, context.launch_reference)
+        if parent.usage_id != launch["usage_id"]:
+            raise PermissionError("Model call allocation changed")
+        launch_owner = parent.owner
+    if request_carrier is not None:
+        from tinyassets.auth.middleware import validate_provider_request_carrier
+
+        try:
+            capability = validate_provider_request_carrier(
+                request_carrier, universe_id=universe.universe_dir.name,
+                agent_binding_id=request_carrier.agent_binding_id,
+                binding_revision=request_carrier.binding_revision,
+                operation=context.operation,
+            )
+        except PermissionError as exc:
+            raise ProviderAuthorityHeldError(f"Connect your provider: {exc}") from exc
+        request_owner = capability.principal_id
+    owner = (authority.owner_user_id if authority is not None else
+             carrier._receipt.principal_id if carrier is not None else
+             request_owner or launch_owner or (budget.owner if budget is not None else ""))
+    if not owner and not parent.owner:
+        raise ProviderAuthorityHeldError(
+            "Connect your provider: an owner-bound source is required"
+        )
+    if not owner or (parent.owner and parent.owner != owner):
+        raise PermissionError("Model call parent does not match its owner")
+    owns = budget is None
+    if budget is None:
+        if parent.usage_id is None:
+            from tinyassets.request_budget import FREE_TURN_ATTEMPTS, TEXT_TURN_ATTEMPTS
+
+            limit = FREE_TURN_ATTEMPTS if cfg.engine_mcp_enabled else TEXT_TURN_ATTEMPTS
+            budget = open_allocation(
+                owner, universe.universe_dir,
+                free_limit=limit, free_pool_limit=limit,
+            )
+        else:
+            budget = TurnRequestBudget.join(
+                universe.universe_dir.parent, owner, parent.command_center,
+                parent.usage_id,
+            )
+    if parent.usage_id is not None and budget.usage_id != parent.usage_id:
+        raise PermissionError("Model call allocation changed")
+    budget.check_scope(owner, parent.command_center)
+    budget.persist(universe.universe_dir.parent)
+    try:
+        if parent.subject is not None:
+            budget.link(*parent.subject)
+        yield replace(context, config=replace(cfg, request_budget=budget))
+    finally:
+        if owns:
+            budget.close()
 
 
 async def call(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
-    response = await router.call(
-        context.role, context.prompt, context.system, context.config,
-        operation=context.operation, universe_context=context.universe_context,
-        _agent_observer=context.agent_observer,
-        _agent_execution_kind=context.agent_execution_kind,
-    )
-    return _result(response, request)
+    with _allocation(context, parent) as context:
+        response = await router.call(
+            context.role, context.prompt, context.system, context.config,
+            operation=context.operation, universe_context=context.universe_context,
+            _agent_observer=context.agent_observer,
+            _agent_execution_kind=context.agent_execution_kind,
+        )
+    return _result(response, request, parent)
 
 
 def call_sync(request: ModelCall, parent: Parent) -> ModelResult:
     router, context = _dispatch_args(request, parent)
-    response = router.call_sync(
-        context.role, context.prompt, context.system, context.config,
-        operation=context.operation, universe_context=context.universe_context,
-    )
-    return _result(response, request)
+    with _allocation(context, parent) as context:
+        response = router.call_sync(
+            context.role, context.prompt, context.system, context.config,
+            operation=context.operation, universe_context=context.universe_context,
+        )
+    return _result(response, request, parent)
 
 
 def _policy_models(policy: dict[str, Any] | None) -> tuple[ModelRef | None, tuple[ModelRef, ...]]:
@@ -196,9 +278,13 @@ def text_sync(
     preferred, fallbacks = _policy_models(policy)
     model = universe_context.model_selection or preferred
     authority = universe_context.served_provider
+    carrier = universe_context.provider_invocation
+    budget = getattr(config, "request_budget", None)
     parent = Parent(
-        owner=authority.owner_user_id if authority is not None else "",
+        owner=(authority.owner_user_id if authority is not None else
+               carrier._receipt.principal_id if carrier is not None else ""),
         command_center=universe_context.universe_dir.name,
+        usage_id=budget.usage_id if budget is not None else None,
     )
     result = call_sync(ModelCall(
         model=model, fallbacks=fallbacks,

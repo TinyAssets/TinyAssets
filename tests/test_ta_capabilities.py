@@ -46,15 +46,11 @@ def test_response_header_values_never_cross_into_jail(tmp_path, monkeypatch):
         assert value not in json.dumps(result)
 
 
-@pytest.mark.parametrize("enabled,sampling,verdict,expected", [
-    (False, False, "proceed", None),
-    (False, True, "proceed", None),
-    (True, False, "proceed", "auto_review_unavailable"),
-    (True, True, "proceed", None),
-    (True, True, "needs_approval", "auto_review_needs_approval"),
+@pytest.mark.parametrize("enabled,sampling", [
+    (False, False), (False, True), (True, False), (True, True),
 ])
-def test_engine_binds_owners_opt_in_review_to_callers_sampling(
-    tmp_path, monkeypatch, enabled, sampling, verdict, expected,
+def test_engine_never_uses_client_sampling_for_review(
+    tmp_path, monkeypatch, enabled, sampling,
 ):
     from fastmcp import Client
 
@@ -72,7 +68,7 @@ def test_engine_binds_owners_opt_in_review_to_callers_sampling(
 
     async def sample(messages, params, context):
         reviews.append((messages, params))
-        return json.dumps({"verdict": verdict, "reason": "owner's connected model"})
+        return json.dumps({"verdict": "proceed", "reason": "sampled"})
 
     @server.mcp.tool(name="bash")
     async def turn():
@@ -89,18 +85,13 @@ def test_engine_binds_owners_opt_in_review_to_callers_sampling(
     try:
         answer = asyncio.run(run())
         result = json.loads(answer.content[0].text)["result"]
-        if expected:
-            assert result["error_kind"] == expected
+        if enabled:
+            assert result["error_kind"] == "auto_review_unavailable"
             assert loop.recorded == []
         else:
             assert result.get("delivered") is True, result
             assert len(loop.recorded) == 1
-        assert len(reviews) == int(enabled and sampling)
-        if reviews:
-            messages, params = reviews[0]
-            assert "conn-http" in messages[0].content.text
-            assert params.systemPrompt == agent_review.SAFETY_REQUIREMENTS
-            assert params.includeContext == "none"
+        assert reviews == []
     finally:
         loop.stop()
 

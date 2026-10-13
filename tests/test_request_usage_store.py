@@ -269,11 +269,9 @@ def test_paid_reservation_cannot_be_used_for_other_free_source(budget):
     assert budget.receipt()["dispatched"] == 0
 
 
-@pytest.mark.parametrize("persistent", [False, True])
-def test_late_success_does_not_reset_newer_failure_streak(tmp_path, persistent):
+def test_late_success_does_not_reset_newer_failure_streak(tmp_path):
     budget = TurnRequestBudget("owner", "home")
-    if persistent:
-        budget.persist(tmp_path)
+    budget.persist(tmp_path)
     first, second, third = [reserve(budget) for _ in range(3)]
     for ordinal in (first, second, third):
         budget.dispatched(ordinal)
@@ -332,9 +330,7 @@ def test_inferred_parent_close_is_durable_after_rejected_reference(budget, monke
     assert budget.receipt()["dispatched"] == 0
 
 
-def test_failed_sqlite_close_resets_context_and_fences_copied_dispatch(budget, monkeypatch):
-    from tinyassets.request_budget import current_request_budget, request_budget_scope
-
+def test_failed_sqlite_close_fences_copied_dispatch(budget, monkeypatch):
     ordinal = reserve(budget)
     ref = ticket(budget, ordinal)
     dispatch = claim(budget, ref)
@@ -346,9 +342,8 @@ def test_failed_sqlite_close_resets_context_and_fences_copied_dispatch(budget, m
         return original(scope, operation, *args, **kwargs)
 
     monkeypatch.setattr(budget._store, "mutate", fail_close)
-    with pytest.raises(sqlite3.OperationalError), request_budget_scope(budget):
-        assert current_request_budget() is budget
-    assert current_request_budget() is None
+    with pytest.raises(sqlite3.OperationalError):
+        budget.close()
     with pytest.raises(RequestBudgetExceeded):
         dispatch.dispatched()
     with pytest.raises(RequestBudgetExceeded):

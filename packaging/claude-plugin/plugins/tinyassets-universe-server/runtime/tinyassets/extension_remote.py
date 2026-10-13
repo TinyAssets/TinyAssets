@@ -32,7 +32,7 @@ class EffectorTransport:
 
         self.check()
         backend = self.service.backend
-        with bound(backend.review_provider, active=backend.review_provider is not None):
+        with bound(backend.review_model, active=backend.model_reference is not None):
             result = await asyncio.to_thread(
                 run_authenticated_external_call_effector,
                 node_id="extension-mcp", output_keys=["call"], base_path=backend.root,

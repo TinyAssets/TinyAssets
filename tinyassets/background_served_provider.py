@@ -29,13 +29,11 @@ from tinyassets.platform_runtime_provenance import (
     resolve_process_cloud_admission,
 )
 from tinyassets.provider_assignment import (
-    load_provider_assignment_in_transaction,
     provider_assignment_admission,
 )
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationSelection,
-    ProviderUniverseWorkAuthority,
     ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
@@ -45,6 +43,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkBindingService,
     ProviderWorkBindingState,
     ProviderWorkReceiptState,
+    _content_digest,
     provider_work_receipt_id,
 )
 from tinyassets.runtime.claimed_branch_execution import ClaimedBranchExecutorIdentity
@@ -197,19 +196,6 @@ def _hold_background_authority(base_path: Path, task: Epoch2BranchTask) -> None:
         failure=failure,
         held_at=held_at,
     )
-
-
-def _positive_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if value < 1:
-        raise ValueError(f"{name} must be positive")
-    return value
 
 
 def _utc(value: str) -> datetime:
@@ -743,10 +729,13 @@ class _BackgroundAssignedProviderSession:
         self._sign_ins_refreshed = False
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
-        from tinyassets.request_budget import TurnRequestBudget, current_request_budget
+        from tinyassets.providers.model_call import open_allocation
 
-        self._request_budget = current_request_budget() or TurnRequestBudget(
-            task.actor_id, task.universe_id,
+        self._request_budget = open_allocation(
+            task.actor_id, self._universe_dir,
+            max_requests=_DEFAULT_MAX_INVOCATIONS,
+            max_tokens=_DEFAULT_MAX_TOKENS,
+            max_cost_microunits=_DEFAULT_MAX_COST_MICROUNITS,
         )
         self._request_budget.check_scope(task.actor_id, task.universe_id)
         self._call_index = 0
@@ -873,6 +862,8 @@ class _BackgroundAssignedProviderSession:
                 from tinyassets.providers.base import ModelConfig, UniverseContext
 
                 carrier, snapshot_dir, provider = launch
+                work_id = carrier._receipt.work_item_id
+                self._request_budget.link("run", work_id)
                 universe_dir = self._base_path / self._task.universe_id
                 call_kwargs = dict(kwargs)
                 call_config = config
@@ -888,7 +879,11 @@ class _BackgroundAssignedProviderSession:
                 if isinstance(call_config, ModelConfig):
                     # A workflow node call: each provider confines it to the
                     # owner's universe in its own way (ModelConfig.workflow_node).
-                    call_config = replace(call_config, workflow_node=True)
+                    call_config = replace(
+                        call_config, workflow_node=True,
+                        model_launch_parent=("run", work_id,
+                                             carrier.work_receipt_id, None),
+                    )
                 call_kwargs.update(
                     operation=BACKGROUND_BRANCH_RUN_OPERATION,
                     policy=policy,
@@ -950,11 +945,6 @@ class _BackgroundAssignedProviderSession:
         import hmac
 
         from tinyassets.branch_versions import compute_content_hash
-        from tinyassets.provider_serving_binding import (
-            _current_selected_member_authority,
-            _current_serving_authority,
-            resolve_serving_agent_binding,
-        )
         from tinyassets.provider_work_authority import _provider_invocation_carrier_seal
         from tinyassets.shared_self import require_founder_home, shared_self_requested
         from tinyassets.storage.current_home import check_current_home
@@ -962,9 +952,8 @@ class _BackgroundAssignedProviderSession:
             SQLiteProviderWorkAuthorityStore,
             _background_receipt_authority,
             _claim_record,
-            _current_work_member,
+            _current_connected_member,
             _receipt_record,
-            _record,
             _reservation_record,
         )
 
@@ -982,9 +971,6 @@ class _BackgroundAssignedProviderSession:
         principal = self._task.actor_id
         require_founder_home(self._base_path, self._task.universe_id, principal)
         store = SQLiteProviderWorkAuthorityStore(self._base_path)
-        agent = resolve_serving_agent_binding(
-            self._base_path, universe_id=self._task.universe_id, owner_user_id=principal,
-        )
         with provider_assignment_admission().shared(self._universe_dir):
             with store.connection() as conn:
                 conn.execute("BEGIN")
@@ -1029,42 +1015,9 @@ class _BackgroundAssignedProviderSession:
                 _, _, owner = _background_receipt_authority(conn, receipt, now=now, claim=claim)
                 if owner.owner_id != self._task.branch_task_id:
                     raise PermissionError("background agent queue owner changed")
-                if receipt.authority_scope == "manifest":
-                    _current_selected_member_authority(
-                        conn, store=store, universe_dir=self._universe_dir,
-                        base_path=self._base_path, owner_user_id=principal,
-                        universe_id=self._task.universe_id, agent=agent, provider=carrier.provider,
-                    )
-                    _current_work_member(conn, receipt, reservation.selection, now)
-                else:
-                    child_row = conn.execute(
-                        "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
-                        (receipt.binding_id,),
-                    ).fetchone()
-                    child = _record(child_row) if child_row is not None else None
-                    assignment, _, _ = _current_serving_authority(
-                        conn, store=store, universe_dir=self._universe_dir,
-                        owner_user_id=principal, universe_id=self._task.universe_id, agent=agent,
-                    )
-                    if child is None or not all((
-                        child.state is ProviderWorkBindingState.ACTIVE,
-                        child.generation == receipt.binding_generation,
-                        child.binding_digest == receipt.binding_digest,
-                        child.revocation_generation == receipt.binding_revocation_generation,
-                        child.owner_user_id == principal, child.universe_id == receipt.universe_id,
-                        child.provider == receipt.provider == carrier.provider
-                        == assignment.provider,
-                        child.assignment_generation == receipt.assignment_generation
-                        == assignment.generation,
-                        child.assignment_digest == receipt.assignment_digest
-                        == assignment.assignment_digest,
-                        child.credential_reference_digest == receipt.credential_reference_digest
-                        == assignment.credential_reference_digest,
-                        _utc(child.expires_at) > now,
-                        carrier.operation in child.allowed_operations,
-                        carrier.role in child.allowed_roles,
-                    )):
-                        raise PermissionError("background agent child or assigned provider changed")
+                _current_connected_member(
+                    conn, self._base_path, receipt, reservation.selection,
+                )
         return principal
 
     def _check_agent_task(self, conn, now):
@@ -1113,9 +1066,7 @@ class _BackgroundAssignedProviderSession:
         from tinyassets.credential_vault import snapshot_llm_subscription_credential
         from tinyassets.exceptions import ProviderAuthorityHeldError
         from tinyassets.provider_serving_binding import (
-            _current_serving_authority,
             _is_open_provider,
-            resolve_serving_agent_binding,
         )
         from tinyassets.shared_self import shared_self_requested
         from tinyassets.storage.background_branch_authority import (
@@ -1167,19 +1118,61 @@ class _BackgroundAssignedProviderSession:
             admission_store = RequestAdmissionStore(self._base_path)
             provider_store = SQLiteProviderWorkAuthorityStore(self._base_path)
             background_store = SQLiteBackgroundBranchAuthorityStore(self._base_path)
+            from tinyassets.providers.served_model_plan import connected_sources
+            from tinyassets.providers.work_candidate_data import select_admitted_work_model
             from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
 
-            policy = self._resolved_policy(policy)
+            live_sources = tuple(sorted(connected_sources(
+                self._base_path, universe_dir, self._task.actor_id,
+            )))
+            if not live_sources:
+                raise PermissionError("background run has no connected model source")
+            with admission_store.connection() as read_conn:
+                admitted_row = read_conn.execute(
+                    "SELECT body_digest, grant_generation FROM request_admissions "
+                    "WHERE admission_id=? AND request_id=? AND branch_task_id=?",
+                    (self._task.admission_id, self._task.request_id,
+                     self._task.branch_task_id),
+                ).fetchone()
+            if admitted_row is None:
+                raise PermissionError("background task admission is unavailable")
+            logical_key = build_request_task_attempt_key(
+                tenant_id=self._task.actor_id, request_id=self._task.request_id,
+                admission_id=self._task.admission_id, task_id=self._task.branch_task_id,
+                body_digest=str(admitted_row["body_digest"]),
+                admission_generation=int(admitted_row["grant_generation"]),
+            )
+            prior_attempt = background_store.get_attempt_by_logical_key(logical_key)
+            prior_receipt = (None if prior_attempt is None else provider_store.get_receipt(
+                provider_work_receipt_id(
+                    universe_id=self._task.universe_id,
+                    root=ProviderUniverseWorkRoot(
+                        "background_attempt", prior_attempt.attempt_id,
+                    ),
+                ),
+            ))
+            if prior_receipt is not None:
+                if prior_receipt.schema_version != 5 or prior_receipt.admitted_sources is None:
+                    raise PermissionError("stale connected-source admission")
+                admitted_now = prior_receipt.admitted_sources
+            else:
+                admitted_now = live_sources
+            policy = self._resolved_policy(policy, admitted_now)
             preferred = (policy or {}).get("preferred", {})
-            if not isinstance(preferred, dict):
-                raise PermissionError("background model preference is invalid")
+            provider, model_id = select_admitted_work_model(
+                self._base_path, owner=self._task.actor_id,
+                universe=self._task.universe_id,
+                admitted_sources=admitted_now, live_sources=live_sources,
+                preferred=preferred,
+            )
             # Validate the task before any discovery IO, then revalidate every
             # durable task/activation/member fact below after discovery finishes.
             load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
             model_snapshot = prepare_work_model_snapshot(
                 base_path=self._base_path, universe_id=self._task.universe_id,
-                provider=preferred.get("provider"),
-                model_id=preferred.get("model_id", preferred.get("model", "")),
+                owner_user_id=self._task.actor_id,
+                provider=provider,
+                model_id=model_id,
             )
             with provider_assignment_admission().shared(universe_dir):
                 with admission_store.connection() as conn:
@@ -1236,49 +1229,14 @@ class _BackgroundAssignedProviderSession:
                             )
                         ):
                             raise PermissionError("automation activation changed")
-                        assignment = load_provider_assignment_in_transaction(
-                            conn, universe_id=self._task.universe_id
-                        )
-                        if assignment is None or assignment.state != "ready":
-                            raise PermissionError("assigned provider is unavailable")
-                        agent = resolve_serving_agent_binding(
-                            self._base_path,
-                            universe_id=self._task.universe_id,
-                            owner_user_id=assignment.owner_user_id,
-                        )
-                        selection = None
-                        manifest_bindings = ()
-                        provider = assignment.provider
-                        if assignment.manifest_digest:
-                            manifest_bindings, serving_binding, custody, selection = (
-                                self._manifest_member(
-                                    conn,
-                                    provider_store,
-                                    universe_dir,
-                                    assignment,
-                                    agent,
-                                    roles,
-                                    declared_providers,
-                                    policy,
-                                )
-                            )
-                            provider = selection.provider
-                            current_assignment = assignment
-                        else:
-                            current_assignment, serving_binding, custody = (
-                                _current_serving_authority(
-                                    conn,
-                                    store=provider_store,
-                                    universe_dir=universe_dir,
-                                    owner_user_id=assignment.owner_user_id,
-                                    universe_id=self._task.universe_id,
-                                    agent=agent,
-                                )
-                            )
-                        if current_assignment != assignment:
-                            raise PermissionError("assigned provider rotated")
+                        owner = self._task.actor_id
+                        provider = preferred.get("provider") or provider
+                        if ("model_id" in preferred and "model" in preferred
+                                and preferred["model_id"] != preferred["model"]):
+                            raise PermissionError("background model preference is conflicting")
+                        selection = ProviderInvocationSelection.connected(provider, model_id)
                         logical_key = build_request_task_attempt_key(
-                            tenant_id=assignment.owner_user_id,
+                            tenant_id=owner,
                             request_id=self._task.request_id,
                             admission_id=self._task.admission_id,
                             task_id=self._task.branch_task_id,
@@ -1300,7 +1258,7 @@ class _BackgroundAssignedProviderSession:
                                 binding.status is BackgroundBranchBindingStatus.ACTIVE,
                                 binding.expires_at is not None,
                                 binding.expires_at is not None and _utc(binding.expires_at) > now,
-                                binding.authorizing_principal_id == assignment.owner_user_id,
+                                binding.authorizing_principal_id == owner,
                                 binding.universe_id == self._task.universe_id,
                                 binding.branch_def_id == self._task.branch_def_id,
                                 binding.pinned_branch_version_id
@@ -1312,7 +1270,7 @@ class _BackgroundAssignedProviderSession:
                                 attempt.binding_id == binding.binding_id,
                                 attempt.binding_generation == binding.generation,
                                 attempt.binding_digest == binding.binding_digest,
-                                attempt.authorizing_principal_id == assignment.owner_user_id,
+                                attempt.authorizing_principal_id == owner,
                                 attempt.universe_id == self._task.universe_id,
                                 attempt.branch_def_id == self._task.branch_def_id,
                                 attempt.branch_version_id == self._task.automation_branch_version,
@@ -1331,116 +1289,80 @@ class _BackgroundAssignedProviderSession:
                             )
                         ):
                             raise PermissionError("background Branch attempt is unavailable")
+                        limits = self._request_budget.receipt()["limits"]
                         max_invocations = min(
-                            attempt.remaining_count,
-                            _positive_env(
-                                "TINYASSETS_ASSIGNED_QUEUE_UNIVERSE_MAX_INVOCATIONS",
-                                _DEFAULT_MAX_INVOCATIONS,
-                            ),
+                            attempt.remaining_count, limits["max_requests"],
                         )
-                        max_tokens = _positive_env(
-                            "TINYASSETS_ASSIGNED_QUEUE_UNIVERSE_MAX_TOKENS", _DEFAULT_MAX_TOKENS
-                        )
+                        max_tokens = limits["max_tokens"]
                         max_cost = min(
                             attempt.remaining_cost_microunits,
-                            _positive_env(
-                                "TINYASSETS_ASSIGNED_QUEUE_UNIVERSE_MAX_COST_MICROUNITS",
-                                _DEFAULT_MAX_COST_MICROUNITS,
-                            ),
+                            limits["max_cost_microunits"],
                         )
-                        if manifest_bindings:
-                            max_invocations = min(
-                                max_invocations, *(b.max_invocations for b in manifest_bindings)
-                            )
-                            max_tokens = min(max_tokens, *(b.max_tokens for b in manifest_bindings))
-                            max_cost = min(
-                                max_cost, *(b.max_cost_microunits for b in manifest_bindings)
-                            )
                         attempt_expiry = _utc(
                             attempt.lease_expires_at or str(row["lease_expires_at"])
                         )
-                        expires_at = (
-                            min(
-                                attempt_expiry,
-                                _utc(binding.expires_at),
-                                *(
-                                    _utc(b.expires_at)
-                                    for b in (manifest_bindings or (serving_binding,))
-                                ),
-                            )
-                            .isoformat()
-                            .replace("+00:00", "Z")
+                        expires_at = min(
+                            attempt_expiry, _utc(binding.expires_at)
+                        ).isoformat().replace("+00:00", "Z")
+                        from tinyassets.storage.provider_work_authority import (
+                            _current_connected_member,
+                            _receipt_record,
                         )
-                        seed = None if manifest_bindings else ProviderWorkBindingSeed(
-                            owner_user_id=assignment.owner_user_id,
-                            universe_id=self._task.universe_id,
-                            provider=assignment.provider,
-                            credential_reference_digest=custody.reference_digest,
-                            allowed_operations=(BACKGROUND_BRANCH_RUN_OPERATION,),
-                            allowed_roles=roles,
-                            assignment_generation=assignment.generation,
-                            assignment_digest=assignment.assignment_digest,
-                            max_invocations=max_invocations,
-                            max_tokens=max_tokens,
-                            max_cost_microunits=max_cost,
-                            expires_at=expires_at,
-                        )
-                        provider_binding = (
-                            None
-                            if manifest_bindings
-                            else _current_background_binding(
-                                conn, provider_store=provider_store, seed=seed
-                            )
-                        )
-                        if _is_open_provider(provider):
-                            snapshot = None
+
+                        old_row = conn.execute(
+                            "SELECT * FROM provider_work_receipts WHERE universe_id=? "
+                            "AND work_item_kind='background_attempt' AND work_item_id=?",
+                            (self._task.universe_id, attempt.attempt_id),
+                        ).fetchone()
+                        if old_row is not None:
+                            authority = _receipt_record(old_row)
+                            if authority.schema_version != 5 or authority.admitted_sources is None:
+                                raise PermissionError("stale connected-source admission")
                         else:
-                            snapshot = snapshot_llm_subscription_credential(
-                                universe_dir=universe_dir,
-                                custody=custody,
+                            root = ProviderUniverseWorkRoot(
+                                work_item_kind="background_attempt",
+                                work_item_id=attempt.attempt_id,
                             )
-                        authority = (
-                            self._manifest_authority(
-                                assignment,
-                                binding,
-                                attempt,
-                                roles,
-                                max_invocations,
-                                max_tokens,
-                                max_cost,
-                                expires_at,
-                                provider_store.timestamp(),
-                            )
-                            if manifest_bindings
-                            else ProviderUniverseWorkAuthority(
-                                root=ProviderUniverseWorkRoot(
-                                    work_item_kind="background_attempt",
-                                    work_item_id=attempt.attempt_id,
+                            digest = _content_digest(admitted_now)
+                            authority = ProviderUniverseWorkReceipt(
+                                schema_version=5, authority_scope="manifest",
+                                admitted_sources=admitted_now, manifest_digest=digest,
+                                receipt_id=provider_work_receipt_id(
+                                    universe_id=self._task.universe_id, root=root,
                                 ),
-                                binding=provider_binding,
-                                principal_id=binding.authorizing_principal_id,
-                                actor_id=str(binding.daemon_id),
-                                operation=BACKGROUND_BRANCH_RUN_OPERATION,
-                                role=role,
-                                allowed_roles=roles,
-                                # Cached-only peek inside the open transaction:
-                                # the class is derived from the process verdict
-                                # rather than written as a literal, and no
-                                # socket can open under the write lock.
+                                receipt_digest="sha256:" + "0" * 64, generation=1,
+                                state=ProviderWorkReceiptState.ACTIVE,
+                                work_item_kind=root.work_item_kind, work_item_id=root.work_item_id,
+                                binding_id=None, binding_generation=None, binding_digest=None,
+                                binding_revocation_generation=None, provider=None,
+                                credential_reference_digest=None, principal_id=owner,
+                                actor_id=str(binding.daemon_id), universe_id=self._task.universe_id,
+                                branch_def_id=self._task.branch_def_id,
+                                branch_version_id=self._task.automation_branch_version,
+                                assignment_generation=1, assignment_digest=digest,
                                 executor_class=_admitted_cloud_class(),
-                                max_invocations=max_invocations,
-                                max_tokens=max_tokens,
-                                max_cost_microunits=max_cost,
-                                expires_at=provider_binding.expires_at,
+                                allowed_operations=(BACKGROUND_BRANCH_RUN_OPERATION,),
+                                allowed_roles=roles, max_invocations=max_invocations,
+                                max_tokens=max_tokens, max_cost_microunits=max_cost,
+                                expires_at=expires_at, created_at=provider_store.timestamp(),
                                 execution_subject=ExecutionSubject(
                                     kind=ExecutionSubjectKind.BRANCH_VERSION,
                                     ref=self._task.automation_branch_version,
                                     digest=self._task.automation_subject_digest,
                                 ),
-                                branch_def_id=self._task.branch_def_id,
-                                branch_version_id=self._task.automation_branch_version,
                             )
+                            authority = replace(
+                                authority, receipt_digest=authority.expected_digest(),
+                            )
+                        custody = _current_connected_member(
+                            conn, self._base_path, authority, selection,
                         )
+                        if _is_open_provider(provider):
+                            snapshot = None
+                        else:
+                            snapshot = snapshot_llm_subscription_credential(
+                                universe_dir=universe_dir, custody=custody,
+                            )
                         prompt_digest = hashlib.sha256(
                             json.dumps(
                                 [role, prompt, system],
@@ -1473,9 +1395,7 @@ class _BackgroundAssignedProviderSession:
                                         binding.binding_id,
                                         binding.binding_digest,
                                         attempt.attempt_id,
-                                        authority.receipt_id
-                                        if manifest_bindings
-                                        else provider_binding.binding_id,
+                                        authority.receipt_id,
                                         self._task.branch_task_id,
                                     ],
                                     separators=(",", ":"),
@@ -1502,7 +1422,6 @@ class _BackgroundAssignedProviderSession:
                             role=role,
                             max_tokens=token_share,
                             max_cost_microunits=cost_share,
-                            manifest_bindings=manifest_bindings,
                             selection=selection,
                             model_snapshot=model_snapshot,
                             needs_tools=needs_tools,
@@ -1539,44 +1458,19 @@ class _BackgroundAssignedProviderSession:
 
             cleanup_llm_credential_snapshot(snapshot)
 
-    def _resolved_policy(self, policy):
-        """``policy`` with a bare access-method pin resolved to one accepted source.
-
-        ``{"provider": "api_key_http", "model_id": ...}`` names the universe's
-        single accepted source of that method, or the one of them offering the
-        model (``providers.model_pins``). Resolved here, BEFORE the model
-        snapshot, which needs the exact source to discover. Discovery runs only
-        when several accepted sources share the method and a model must decide
-        between them -- the read the owner's own turn already makes. An exact
-        ref passes unchanged; `_manifest_member` still decides admission.
-        """
+    def _resolved_policy(self, policy, admitted_sources):
+        """Resolve a bare source name against the run's connected set."""
         preferred = (policy or {}).get("preferred")
         if not isinstance(preferred, dict) or not str(preferred.get("provider") or "").strip():
             return policy
         provider = str(preferred["provider"]).strip()
-        if ":" in provider:
+        if provider in admitted_sources:
             return policy
-        from tinyassets.provider_assignment import (
-            load_provider_assignment_in_transaction,
-            provider_assignment_admission,
-        )
         from tinyassets.providers.model_pins import resolve_pin_source
-        from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
-        universe = self._task.universe_id
-        store = SQLiteProviderWorkAuthorityStore(self._base_path)
-        with provider_assignment_admission().shared(self._base_path / universe):
-            with store.connection() as conn:
-                conn.execute("BEGIN")
-                assignment = load_provider_assignment_in_transaction(conn, universe_id=universe)
-        if assignment is None:
-            return policy
-        accepted = [member.provider for member in assignment.candidates]
-        if provider in accepted:
-            return policy
         model_id = str(preferred.get("model_id", preferred.get("model", "")) or "").strip()
-        sources = dict.fromkeys(accepted)
-        same_method = [ref for ref in accepted if ref.split(":", 1)[0] == provider]
+        sources = dict.fromkeys(admitted_sources)
+        same_method = [ref for ref in admitted_sources if ref.split(":", 1)[0] == provider]
         if len(same_method) > 1 and model_id:
             from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
@@ -1585,148 +1479,15 @@ class _BackgroundAssignedProviderSession:
                     continue
                 try:
                     found = refresh_model_discovery(
-                        owner_user_id=assignment.owner_user_id, universe_id=universe,
+                        owner_user_id=self._task.actor_id,
+                        universe_id=self._task.universe_id,
                         definition_id=ref.removeprefix("api_key_http:"),
                     )
-                except Exception:  # noqa: BLE001 - unknown models, so it cannot decide
+                except Exception:  # noqa: BLE001 - an unavailable source cannot decide
                     continue
                 sources[ref] = tuple(model.model_id for model in found.models.models)
         resolved = resolve_pin_source(provider, model_id, sources)
         return {**policy, "preferred": {**preferred, "provider": resolved}}
-
-    def _manifest_member(
-        self, conn, store, universe_dir, assignment, agent, roles, declared_providers, policy
-    ):
-        """Resolve actual owned members; the structural default is not a grant."""
-        from tinyassets.provider_serving_binding import _current_selected_member_authority
-
-        current = {}
-        for member in assignment.candidates:
-            try:
-                observed, binding, custody = _current_selected_member_authority(
-                    conn,
-                    store=store,
-                    universe_dir=universe_dir,
-                    base_path=self._base_path,
-                    owner_user_id=assignment.owner_user_id,
-                    universe_id=assignment.universe_id,
-                    agent=agent,
-                    provider=member.provider,
-                )
-            except PermissionError:
-                continue
-            if observed != assignment:
-                raise PermissionError("background model assignment changed")
-            if set(roles) <= set(binding.allowed_roles):
-                current[member.provider] = (member, binding, custody)
-        if not current:
-            raise PermissionError("background workflow requests an unavailable accepted provider")
-        from tinyassets.providers.model_pins import resolve_pin_source
-
-        # A bare access method (``api_key_http``) names this universe's single
-        # source of that method; anything unresolvable refuses with the refs.
-        sources = dict.fromkeys(current)
-        # Read off the policy itself: `_authorize_launch` already resolved its
-        # preferred pin model-aware (`_resolved_policy`), and the caller's set
-        # still carries the bare name it was given.
-        for declared in self._declared_policy_providers(policy):
-            if resolve_pin_source(declared, "", sources) not in sources:
-                raise PermissionError(
-                    "background workflow requests an unavailable accepted provider"
-                )
-        preferred = (policy or {}).get("preferred", {})
-        if not isinstance(preferred, dict):
-            raise PermissionError("background model preference is invalid")
-        provider = (
-            resolve_pin_source(preferred["provider"], "", sources)
-            if preferred.get("provider") else
-            assignment.provider if assignment.provider in current else next(iter(current))
-        )
-        if provider not in current:
-            raise PermissionError("background model source is unavailable")
-        model_id = preferred.get("model_id", preferred.get("model", ""))
-        if (
-            "model_id" in preferred
-            and "model" in preferred
-            and preferred["model_id"] != preferred["model"]
-        ):
-            raise PermissionError("background model preference is conflicting")
-        member, binding, custody = current[provider]
-        selection = ProviderInvocationSelection(
-            provider=provider,
-            binding_id=binding.binding_id,
-            binding_generation=binding.generation,
-            binding_digest=binding.binding_digest,
-            binding_revocation_generation=binding.revocation_generation,
-            credential_reference_id=custody.reference_id,
-            credential_reference_generation=custody.generation,
-            credential_reference_digest=custody.reference_digest,
-            assignment_generation=assignment.generation,
-            assignment_digest=assignment.assignment_digest,
-            manifest_digest=assignment.manifest_digest,
-            member_digest=member.digest(assignment.universe_id, assignment.generation),
-            model_id=model_id,
-            executor_id=provider,
-        )
-        return tuple(value[1] for value in current.values()), binding, custody, selection
-
-    def _manifest_authority(
-        self,
-        assignment,
-        binding,
-        attempt,
-        roles,
-        max_invocations,
-        max_tokens,
-        max_cost,
-        expires_at,
-        created_at,
-    ):
-        root = ProviderUniverseWorkRoot(
-            work_item_kind="background_attempt", work_item_id=attempt.attempt_id
-        )
-        candidate = ProviderUniverseWorkReceipt(
-            schema_version=4,
-            authority_scope="manifest",
-            manifest_digest=assignment.manifest_digest,
-            receipt_id=provider_work_receipt_id(universe_id=self._task.universe_id, root=root),
-            receipt_digest="sha256:" + "0" * 64,
-            generation=1,
-            state=ProviderWorkReceiptState.ACTIVE,
-            work_item_kind=root.work_item_kind,
-            work_item_id=root.work_item_id,
-            binding_id=None,
-            binding_generation=None,
-            binding_digest=None,
-            binding_revocation_generation=None,
-            provider=None,
-            credential_reference_digest=None,
-            principal_id=binding.authorizing_principal_id,
-            actor_id=str(binding.daemon_id),
-            universe_id=self._task.universe_id,
-            branch_def_id=self._task.branch_def_id,
-            branch_version_id=self._task.automation_branch_version,
-            assignment_generation=assignment.generation,
-            assignment_digest=assignment.assignment_digest,
-            # Manifest path: same cached-only admission as the non-manifest
-            # branch above. `_manifest_authority` is called from inside
-            # `_authorize_launch`'s transaction, so this is a peek, never a
-            # resolve.
-            executor_class=_admitted_cloud_class(),
-            allowed_operations=(BACKGROUND_BRANCH_RUN_OPERATION,),
-            allowed_roles=roles,
-            max_invocations=max_invocations,
-            max_tokens=max_tokens,
-            max_cost_microunits=max_cost,
-            expires_at=expires_at,
-            created_at=created_at,
-            execution_subject=ExecutionSubject(
-                kind=ExecutionSubjectKind.BRANCH_VERSION,
-                ref=self._task.automation_branch_version,
-                digest=self._task.automation_subject_digest,
-            ),
-        )
-        return replace(candidate, receipt_digest=candidate.expected_digest())
 
 
 def authorize_background_served_provider_call(

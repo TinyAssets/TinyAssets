@@ -79,13 +79,17 @@ def test_unpowered_recipient_adopts_only_after_consent_with_zero_provider_calls(
         home, monkeypatch, publication):
     import sqlite3
 
+    from tinyassets.credential_vault import write_credential_vault
     from tinyassets.providers.router import ProviderRouter
 
     definition_id = (_legacy(home) if publication == "system" else
                      _published(home)["done"]["agent_definition_id"])
     source_before = get_definition(home, definition_id)
-    # Delete synthetic fixture setup, not a live account. The actual assignment
-    # loader must see no provider, and the background consumer is off too.
+    # Remove Bob's synthetic connected source and saved assignment. The
+    # recipient has no model authority, and the background consumer is off.
+    write_credential_vault(
+        home / BOB_UNIVERSE, [], owner_user_id=BOB, universe_id=BOB_UNIVERSE,
+    )
     with sqlite3.connect(db_path(home)) as conn:
         conn.execute("DELETE FROM provider_assignments WHERE universe_id=?", (BOB_UNIVERSE,))
     assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
@@ -97,8 +101,7 @@ def test_unpowered_recipient_adopts_only_after_consent_with_zero_provider_calls(
         raise AssertionError("adoption must not call a model")
 
     monkeypatch.setattr("tinyassets.providers.model_call.text_sync", forbidden)
-    for name in ("call", "call_async", "call_sync",
-                 "call_judge_ensemble"):
+    for name in ("call", "call_async", "call_sync"):
         if hasattr(ProviderRouter, name):
             monkeypatch.setattr(ProviderRouter, name, forbidden)
     with _as(BOB):

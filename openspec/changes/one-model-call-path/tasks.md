@@ -21,30 +21,63 @@
       `call_with_policy_sync`, `_call_policy_router_with_retry` and both
       mocks. Verify: `git grep` finds no removed name, and a node with no model
       raises `CompilerError`. Net below 0.
-- [ ] 2.4 Authority is the connected set (D2): add `connected_sources`; make
-      `require_owner_bound_dispatch` check membership; collapse the
-      default/manifest scopes in foreground, background and cloud continuation
-      admission; delete the exactly-one-provider checks and `FALLBACK_CHAINS`.
-      Floor: one cross-family `peer-agents` round. Verify: a two-owner test
-      shows owner B's source refused for owner A, and a revoked grant is
-      refused on the next attempt. Net below 0.
-- [ ] 2.5 Explicit choice (D3): resolution order, declared fallbacks only,
+- [x] 2.4 Authority is the connected set (D2, decided: admission snapshots
+      the live set). Build: admission in foreground, background and cloud
+      continuation reads `connected_sources` once and writes the sorted set
+      into the receipt as `admitted_sources` (its digest in `manifest_digest`);
+      reservation and launch allow a source only in both `admitted_sources`
+      and the live set; receipt limits come from the run's allocation (D4).
+      Delete: the default/provider scope and its child work-binding mint,
+      `_admit_manifest`, `_current_work_manifest`, `_current_work_member`,
+      `_issue_manifest_receipt`, the `manifest_bindings` plumbing,
+      `_current_selected_member_authority`, the assignment and parent-binding
+      fields checked in `_validate_receipt_parent`, the assignment rewrite on
+      disconnect in `connection_lifecycle`, `_ensure_manifest_receipt_schema`,
+      the exactly-one-provider serving checks and `FALLBACK_CHAINS`; delete
+      `provider_assignment_manifest.py` if `git grep` finds no reader left.
+      Migration M2 (window, writers stopped, after the backup): fence every
+      active receipt and close its claim, log the count and run IDs; no table
+      changes shape. Floor (cross-owner, revocation): one cross-family
+      `peer-agents` round. Verify: a two-owner test shows owner B's source
+      refused for owner A; a source connected after the owner's last
+      admission runs on the next run without any assignment write; a running
+      run never gains a source connected after its admission; a disconnected
+      source is refused on the next attempt of a running run and in every new
+      admission; an active receipt without `admitted_sources` is refused. Net
+      below 0.
+- [x] 2.5 Explicit choice (D3): resolution order, declared fallbacks only,
       the first runtime caller of `SettingsSnapshot.model_choice()`, and M1
       (backup first, writers stopped). Verify: a node that pins a connected
       non-default model runs on it; a pinned model that is unavailable fails
       naming it; nothing substitutes without a declared fallback. Net below 0.
-- [ ] 2.6 Allocation (D4): `call` opens or joins the durable broker
+- [x] 2.6 Allocation (D4): `call` opens or joins the durable broker
       allocation; delete the caller-built allocations,
       `request_budget_scope`, `current_request_budget` and the in-memory
       branch. Floor (money): cross-family round, plus a mutation table for
       double settlement and cross-owner allocation join. Verify: a retry and a
       child call settle on the parent exactly once, and a parent stop ends the
       child. Net below 0.
-- [ ] 2.7 `ta` `model` capability and refusal (D6): add the capability,
-      replace the refusal text, delete the `engine_mcp_server` prompt band-aid
-      and the MCP-sampling reviewer. Verify: a raw POST to a model connection
-      is refused with the fixed text before anything is sent, and `ta call
-      model` returns text and a receipt. Net below 0.
+- [x] 2.7 `ta` `model` capability and refusal (D6, D6a, D7). Build: at the
+      two engine-launch sites, issue one launch reference for the current
+      allocation, shared across its rounds (reuse the broker's private reference
+      pattern; the row records owner, command center, `usage_id` and parent authority) and
+      put it inside the signed launch grant's MAC. In the engine, `ta call
+      model` and the action reviewer resolve that reference from the verified
+      grant only, check owner and command center against the engine server and
+      that the allocation is open, then call `model_call.call` joined to that
+      `usage_id`. Deactivate the reference when the parent allocation settles or
+      stops. Replace the refusal text with D6's fixed message. Delete:
+      `_turn_reviewer` and MCP sampling, the `review_provider` plumbing, the
+      `agent_review` bound sampling callback, the `engine_mcp_server.py`
+      prompt band-aid and the old refusal text. Floor (authority, money): one
+      cross-family `peer-agents` round. Verify: `ta call model` returns text
+      and a receipt whose attempt settles on the parent allocation once; an
+      edited grant, a grant from another owner's engine, a request naming its
+      own `usage_id`, and a call after the parent allocation settled are each
+      refused before reservation; an unsigned launch gets the fixed "no model
+      authority" message; a raw POST to a model connection is refused with the
+      fixed text before anything is sent; `git grep create_message` finds no
+      model sampling. Net below 0.
 - [x] 2.8 Supersede PR #4614: land its lost-message fix alone, then close the
       rest with a pointer to this change. Verify: #4614 is closed, and the
       lost-message fix is merged and deployed. Completed before this build;

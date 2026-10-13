@@ -1385,6 +1385,7 @@ def register_automation(
     from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.providers.served_model_plan import connected_sources
     from tinyassets.runtime.assigned_queue_consumer import (
         assigned_queue_consumer_enabled,
     )
@@ -1402,13 +1403,13 @@ def register_automation(
     if get_founder_home(base, owner) != uid:
         raise AutomationUnavailable("not_owner_home")
     if not paused_reason:
+        # Admission reads the owner's ready accepted assignment and launches on
+        # live custody; either one missing is the same hold.
         assignment = load_provider_assignment(base, universe_id=uid)
-        if assignment is None or assignment.state != "ready":
+        if (assignment is None or assignment.state != "ready"
+                or assignment.owner_user_id != owner
+                or not connected_sources(base, base / uid, owner)):
             raise AutomationUnavailable("no_serving_assignment")
-    # An OPEN (api_key_http) assignment is the owner's own source like any
-    # other: foreground admission stopped refusing open providers on 2026-09-03
-    # (0f96c04d), and the runtime check (_runtime_authority_reason) never did.
-    # Refusing it here left free accounts with no automation at all.
     resolved = _resolve_readable_branch(str(branch_def_id or "").strip(), str(base))
     if resolved is None:
         raise AutomationUnavailable("branch_not_readable")
@@ -1937,12 +1938,13 @@ def _runtime_authority_reason(base_path: Path, automation: Automation) -> str:
     """'' when this automation may run right now, else the refusal token (D3).
 
     Re-derived from live state on every run. Active registration proved all
-    three; a paused copy may never have had an assignment. Between two ticks
+    three; a paused copy may never have had a connected source. Between two ticks
     any authority can be revoked, and the RUN has to notice, not the row.
     """
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.outside_authority import automation_identity
     from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.providers.served_model_plan import connected_sources
 
     try:
         with automation_identity(base_path, automation):
@@ -1955,8 +1957,10 @@ def _runtime_authority_reason(base_path: Path, automation: Automation) -> str:
         return "owner_lost_admin"
     if get_founder_home(base_path, owner) != uid:
         return "not_owner_home"
-    assignment = load_provider_assignment(base_path, universe_id=uid)
-    if assignment is None or assignment.state != "ready":
+    base = Path(base_path)
+    assignment = load_provider_assignment(base, universe_id=uid)
+    if (assignment is None or assignment.state != "ready" or assignment.owner_user_id != owner
+            or not connected_sources(base, base / uid, owner)):
         return "no_serving_assignment"
     return ""
 
@@ -1967,7 +1971,7 @@ def _bind_automation_provider_call(base_path: Path, automation: Automation) -> A
     ``tinyassets.api.runs._bind_run_provider_call`` reads the principal off the
     request; a consumer thread has no request, so the principal comes off the
     automation row instead. Everything downstream -- founder-home validation,
-    the CURRENT assignment, custody, admission, budget -- is the foreground path
+    connected custody, admission, allocation -- is the foreground path
     unchanged, which is what lets a provider switch need no re-preparation.
     """
     from tinyassets.config import load_universe_config

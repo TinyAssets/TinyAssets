@@ -676,7 +676,7 @@ def _parse_learning_json(raw: str) -> dict:
 
 
 def extract_learning(
-    founder_message: str, reply: str, ctx: UniverseContext
+    founder_message: str, reply: str, ctx: UniverseContext, request_budget=None,
 ) -> dict:
     """Ask the assigned engine what the founder EXPLICITLY taught us this turn.
 
@@ -684,7 +684,7 @@ def extract_learning(
     never blindly persisted. Returns a possibly-empty dict; grounding is enforced
     by the prompt and re-checked in :func:`commit_learning`.
     """
-    from tinyassets.request_budget import budget_for_context, current_request_budget
+    from tinyassets.request_budget import budget_for_context
 
     owner = None
     if ctx.provider_request is not None:
@@ -709,7 +709,7 @@ def extract_learning(
         # 120s, and the founder's next message never reached a model. See
         # ``ModelConfig.secondary_call``.
         config=replace(_sandboxed_config(ctx), secondary_call=True,
-                       request_budget=current_request_budget(), request_purpose="learning"),
+                       request_budget=request_budget, request_purpose="learning"),
         operation="converse",
         # Learning extraction runs AFTER the reply is already produced but BEFORE
         # `converse` returns it, so a synchronous tenacity backoff here (call.py's
@@ -879,6 +879,7 @@ def _learn_from_turn(
     reply: str,
     actor_id: str,
     agent_id: str,
+    request_budget=None,
     failure_observer=None,
 ) -> bool:
     """Persist what the founder taught this turn. Returns whether it ran.
@@ -916,7 +917,10 @@ def _learn_from_turn(
                 logger.warning("converse: learning failure could not be reported")
 
     try:
-        proposed = extract_learning(founder_message, reply, ctx)
+        args = (founder_message, reply, ctx)
+        if request_budget is not None:
+            args += (request_budget,)
+        proposed = extract_learning(*args)
         if agent_id != MAIN_AGENT:
             # The door refuses a non-main edit that names; drop those parts so
             # the rest of the lesson still lands in the shared brain.
@@ -1119,10 +1123,9 @@ def _call_writer(
     from tinyassets.exceptions import AllProvidersExhaustedError
     from tinyassets.providers.agent_inference import AgentInferenceRequest
     from tinyassets.providers.base import ModelConfig
-    from tinyassets.request_budget import RequestBudgetExceeded, current_request_budget
+    from tinyassets.request_budget import RequestBudgetExceeded
 
     config = config or ModelConfig()
-    config = replace(config, request_budget=config.request_budget or current_request_budget())
     ordinary_text = (type(config.agent_request) is AgentInferenceRequest
                      and config.agent_request.text_only)
     http_turn = None
@@ -1536,24 +1539,25 @@ def converse(
     # queue row, tagged with this universe, is what `get_status` reports as
     # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
     # reserve means a chat only ever waits behind another chat.
-    from contextlib import nullcontext
+    from contextlib import closing, nullcontext
 
     from tinyassets import universe_seats
+    from tinyassets.providers.model_call import open_allocation
     from tinyassets.request_budget import (
         FREE_TURN_ATTEMPTS,
         TEXT_TURN_ATTEMPTS,
-        TurnRequestBudget,
-        current_request_budget,
-        request_budget_scope,
     )
 
-    budget = current_request_budget()
+    budget = turn_config.request_budget
+    owns_budget = budget is None
     if budget is None and capability is not None:
         allocation = TEXT_TURN_ATTEMPTS if ordinary_text else FREE_TURN_ATTEMPTS
-        budget = TurnRequestBudget(
-            capability.principal_id, uid, free_limit=allocation, free_pool_limit=allocation,
+        budget = open_allocation(
+            capability.principal_id, udir,
+            free_limit=allocation, free_pool_limit=allocation,
         )
-    scope = request_budget_scope(budget) if budget is not None else nullcontext()
+    turn_config = replace(turn_config, request_budget=budget)
+    scope = closing(budget) if owns_budget and budget is not None else nullcontext()
     with scope, universe_seats.hold(
         universe_seats.account_key(uid, root=udir.parent),
         seat_class=universe_seats.CLASS_INTERACTIVE,
@@ -1602,6 +1606,7 @@ def converse(
                     ctx, universe_dir=udir, universe_id=uid,
                     founder_message=founder_message, reply=reply, actor_id=actor_id,
                     agent_id=addressed_agent.agent_id if addressed_agent else MAIN_AGENT,
+                    request_budget=budget,
                     failure_observer=learning_failure_observer,
                 )
             if learning_observer is not None:

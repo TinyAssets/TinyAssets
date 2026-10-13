@@ -19,6 +19,31 @@ Callers SHALL NOT branch on a provider or vendor name.
 - **WHEN** an extension or `ta` issues a model call during a turn
 - **THEN** the call names that turn's allocation as its parent
 
+### Requirement: A `ta` model call's parent is its launch's allocation
+A model call made through `ta` or by the engine's action reviewer SHALL take
+its owner, command center and allocation only from a launch reference that the
+platform issued for the invoking allocation and sealed inside the signed launch
+grant. The call SHALL join that allocation. A `ta` request SHALL NOT supply an
+owner, a usage ID, a turn or a carrier. The reference SHALL stop working when
+the parent allocation settles or is stopped. MCP sampling SHALL NOT be used to
+reach a model.
+
+#### Scenario: a ta model call meters on its parent
+- **WHEN** an agent in a running turn calls `ta call model`
+- **THEN** the call's attempt is reserved and settled once on that turn's
+  allocation, and its receipt names the parent usage
+
+#### Scenario: forged or stale launch authority
+- **WHEN** the grant is edited, comes from another owner's engine, names its
+  own usage ID, or is used after the parent allocation settled
+- **THEN** the call is refused before any reservation or transport, with a
+  message naming the reason
+
+#### Scenario: a launch with no reference
+- **WHEN** an unsigned launch calls `ta call model`
+- **THEN** it is refused, saying the launch has no model authority, and no
+  other model path is tried
+
 ### Requirement: The owner's authority is the set of connected sources
 A call SHALL be admitted only for a source in the owner's connected set for
 that command center: HTTP connections with an active grant and a model
@@ -26,7 +51,10 @@ capability, verified owner-owned open provider definitions, and subscription
 sources with adopted custody. Membership SHALL be checked again for every
 attempt. No platform, host or other owner's credential SHALL ever serve a call.
 The serving binding SHALL act as the owner's default preference, not as a
-limit to one provider.
+limit to one provider. Run admission SHALL record the owner's connected set at
+that moment, and an attempt in that run SHALL be admitted only for a source in
+both the recorded set and the live connected set. A stored provider assignment
+SHALL NOT be an authority input.
 
 #### Scenario: a second connected source is usable
 - **GIVEN** an owner who connected a Claude subscription and an OpenRouter API key
@@ -41,6 +69,16 @@ limit to one provider.
 - **WHEN** a source's grant is revoked after the first attempt
 - **THEN** the next attempt on that source is refused, and no broader
   credential is substituted
+
+#### Scenario: a source connected after a run was admitted
+- **GIVEN** a run admitted with the owner's connected set at that moment
+- **WHEN** the owner connects another source
+- **THEN** the running run cannot use it, and the next run admitted can,
+  with no stored assignment rewritten
+
+#### Scenario: a run admitted before the migration
+- **WHEN** an active receipt has no recorded admitted set
+- **THEN** every attempt under it is refused, naming the stale admission
 
 ### Requirement: An explicit model choice is honoured with declared fallbacks only
 The call SHALL resolve its model from the first of these that applies: the
@@ -116,6 +154,13 @@ path SHALL return placeholder or mock text as a model response.
 - **AND** no `[Mock response …]` text is produced
 
 ## REMOVED Requirements
+
+### Requirement: Judge ensemble fans out to all healthy judges in parallel
+**Reason**: `call_judge_ensemble` was a second model-call entry with provider
+fan-out and no returned per-call receipt. Review uses an owner-bound `model_call`
+with a settled attempt instead.
+**Migration**: Review requests use the caller's selected model and declared
+fallbacks through the same call boundary as a reply.
 
 ### Requirement: Every role chain terminates at the local model
 **Reason**: Fixed role chains ending at a host-local model contradict ADR-006,

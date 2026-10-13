@@ -1,4 +1,4 @@
-"""D6a daemon capabilities. No credentials, new tables, or public MCP handles.
+"""D6a daemon capabilities. No credentials or public MCP handles.
 
 The platform supplies this context and callbacks, never the socket client.
 The socket grants exactly the authority of ONE bash invocation.
@@ -53,10 +53,15 @@ class ExecutionContext:
     approval_id: str | None = None
 
 
+class ModelSourceUnavailable(PermissionError):
+    """A named source cannot serve this allocation's next model attempt."""
+
+
 class Capabilities:
     def __init__(self, root: Path, context: ExecutionContext, platform: list[dict],
                  call_platform, check_authority: Callable, *,
-                 connections_granted: bool = True, capability_grant=(), review_provider=None,
+                 connections_granted: bool = True, capability_grant=(),
+                 model_reference: str | None = None,
                  stopped: Callable[[], str | None] | None = None):
         if (root.name != context.universe or not context.owner
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", context.initiating_agent)
@@ -72,7 +77,7 @@ class Capabilities:
 
         # A narrowed workflow launch cannot schedule an unrestricted chat turn.
         self.wakes_granted = set(BACKEND_ENGINE_CAPABILITIES).issubset(capability_grant)
-        self.review_provider = review_provider
+        self.model_reference = model_reference
         # An activity's launch: every request is refused once it stops running
         # (tinyassets/activity_fence.py), connection calls included.
         self.stopped = stopped
@@ -145,6 +150,15 @@ class Capabilities:
             from tinyassets.wake_capabilities import CATALOG
 
             items = list(self.platform.values()) + (CATALOG if self.wakes_granted else [])
+            if self.model_reference is not None:
+                items.append({"name": "model", "description":
+                              "Call a connected model within this turn's allocation.",
+                              "arguments": {"type": "object", "required": ["messages"],
+                                            "additionalProperties": False,
+                                            "properties": {"model": {"type": "string"},
+                                                           "fallbacks": {"type": "array"},
+                                                           "messages": {"type": "array"},
+                                                           "tools": {"type": "array"}}}})
             if self._bound_policy_owner():
                 items.extend((
                 {"name": "policy:show", "description":
@@ -196,10 +210,20 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
-        known = (name == "browser" or name.startswith(("extension:", "wake:", "policy:"))
+        known = (name in {"browser", "model"} or name.startswith(("extension:", "wake:", "policy:"))
                  or name in self.platform or name in self.connections())
         if known and not _is_read(name) and not self.mutations_granted:
             return {"error": "mutation capability not granted"}
+        if name == "model":
+            from tinyassets.exceptions import ProviderError
+            from tinyassets.providers.diagnostics import redacted_failure_detail
+
+            try:
+                return {"result": await self.call_model(arguments)}
+            except (ValueError, PermissionError, LookupError) as exc:
+                return {"error": str(exc)}
+            except ProviderError as exc:
+                return {"error": redacted_failure_detail(str(exc))}
         if name == "policy:show":
             if not self._bound_policy_owner():
                 return {"error": "owner policy unavailable"}
@@ -245,7 +269,7 @@ class Capabilities:
             try:
                 from tinyassets.agent_review import bound as review_bound
 
-                with review_bound(self.review_provider, active=self.review_provider is not None):
+                with review_bound(self.review_model, active=self.model_reference is not None):
                     return {'result': await asyncio.to_thread(
                         agent, self.root.parent, self.context, arguments, checkpoint)}
             except Exception:  # noqa: BLE001 - browser exceptions can contain secrets
@@ -273,7 +297,7 @@ class Capabilities:
             run_authenticated_external_call_effector,
         )
 
-        with review_bound(self.review_provider, active=self.review_provider is not None):
+        with review_bound(self.review_model, active=self.model_reference is not None):
             result = await asyncio.to_thread(
                 run_authenticated_external_call_effector,
                 node_id="ta", output_keys=["call"], base_path=self.root,
@@ -292,6 +316,188 @@ class Capabilities:
             response["header_names"] = sorted(str(k) for k in response.pop("headers"))
             result = {**result, "response": response}
         return {"result": result}
+
+    def review_model(self, prompt, system, **_kwargs):
+        """Review uses the same sealed launch and settled child model attempt."""
+        from tinyassets.providers.model_call import call_sync
+
+        return self._model_request(
+            {"messages": [{"role": "system", "content": system},
+                          {"role": "user", "content": prompt}]}, call_sync,
+            purpose="review")["text"]
+
+    async def call_model(self, arguments):
+        from tinyassets.exceptions import AllProvidersExhaustedError
+        from tinyassets.providers.model_call import call
+
+        fallbacks = (arguments.get("fallbacks", []) if isinstance(arguments, dict)
+                     else None)
+        if not isinstance(fallbacks, list):
+            return await self._model_request(arguments, call)
+        for index in range(len(fallbacks) + 1):
+            trial = (arguments if index == 0 else
+                     {**arguments, "model": fallbacks[index - 1], "fallbacks": []})
+            try:
+                return await self._model_request(trial, call)
+            except (ModelSourceUnavailable, AllProvidersExhaustedError):
+                if index == len(fallbacks):
+                    raise
+        raise AssertionError("unreachable model fallback sequence")
+
+    def _model_request(self, arguments, invoke, *, purpose="reply"):
+        """The request carries content only; its authority comes from this launch."""
+        from dataclasses import asdict
+
+        from tinyassets.auth.middleware import (
+            claim_provider_request,
+            mint_provider_request_carrier,
+            reserve_provider_request,
+            revoke_provider_request,
+        )
+        from tinyassets.providers.agent_inference import AgentInferenceRequest
+        from tinyassets.providers.base import ModelConfig, UniverseContext
+        from tinyassets.providers.model_call import ModelCall, ModelContext, Parent
+        from tinyassets.providers.model_policy import ModelRef
+        from tinyassets.request_budget import TurnRequestBudget
+        from tinyassets.storage.agent_request_usage import UsageStore
+
+        def model_result(completed):
+            result = {"text": completed.text, "receipt": asdict(completed.receipt)}
+            reply = completed.response.agent_reply
+            if reply is not None and reply.tool_requests:
+                result["tool_requests"] = [
+                    {"call_id": item.call_id, "name": item.name,
+                     "arguments": item.arguments()}
+                    for item in reply.tool_requests]
+            return result
+
+        if not self.model_reference:
+            raise PermissionError("this launch has no model authority")
+        if not isinstance(arguments, dict) or set(arguments) - {
+                "model", "fallbacks", "messages", "tools"}:
+            raise ValueError("model arguments cannot name owner, usage, turn or carrier")
+        messages = arguments.get("messages")
+        if (not isinstance(messages, list) or not messages or
+                any(not isinstance(item, dict) or set(item) != {"role", "content"}
+                    or item["role"] not in {"system", "user", "assistant"}
+                    or not isinstance(item["content"], str) for item in messages)):
+            raise ValueError("model messages must be role/content text objects")
+        tools = arguments.get("tools", [])
+        if not isinstance(tools, list):
+            raise ValueError("model tools must be a list")
+        def parse_ref(value):
+            if not isinstance(value, str) or "/" not in value:
+                raise ValueError("model must be a connection/model reference")
+            source, model_id = value.split("/", 1)
+            if not source or not model_id:
+                raise ValueError("model must be a connection/model reference")
+            return ModelRef(source, model_id)
+        model = parse_ref(arguments["model"]) if "model" in arguments else None
+        fallbacks = arguments.get("fallbacks", [])
+        if not isinstance(fallbacks, list):
+            raise ValueError("model fallbacks must be a list")
+        for value in fallbacks:
+            parse_ref(value)
+        row = UsageStore(self.root.parent).resolve_launch_reference(
+            self.context.owner, self.context.universe, self.model_reference)
+        from tinyassets.providers.served_model_plan import connected_sources
+
+        live = connected_sources(self.root.parent, self.root, self.context.owner)
+        admitted = live
+        if row["authority_kind"] == "run":
+            from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+            from tinyassets.provider_work_authority import ProviderWorkReceiptState
+            from tinyassets.storage.provider_work_authority import (
+                SQLiteProviderWorkAuthorityStore,
+            )
+
+            receipt = SQLiteProviderWorkAuthorityStore(
+                self.root.parent).get_receipt(row["agent_binding_id"])
+            if (receipt is None or receipt.state is not ProviderWorkReceiptState.ACTIVE
+                    or receipt.principal_id != self.context.owner
+                    or receipt.universe_id != self.context.universe
+                    or receipt.work_item_id != row["authority_id"]):
+                raise PermissionError("run model authority has ended")
+            # The 2.4 receipt adds admitted_sources. Until it lands, live
+            # connected sources are the narrowest source set available here.
+            if hasattr(receipt, "admitted_sources"):
+                sources = receipt.admitted_sources
+                if not sources:
+                    raise PermissionError("run has no admitted model sources")
+                admitted = live.intersection(sources)
+            binding = resolve_serving_agent_binding(
+                self.root.parent, universe_id=self.context.universe,
+                owner_user_id=self.context.owner)
+            binding_id = str(binding["agent_binding_id"])
+            binding_revision = int(binding["revision"])
+        else:
+            from tinyassets.custom_agents import get_binding
+
+            binding_id = row["agent_binding_id"]
+            binding_revision = row["binding_revision"]
+            binding = get_binding(self.root.parent, universe_id=self.context.universe,
+                                  binding_id=binding_id)
+            if (binding is None or binding["created_by"] != self.context.owner
+                    or binding["revision"] != binding_revision):
+                raise PermissionError("turn model binding has ended")
+        if model is not None and model.connection_id not in admitted:
+            raise ModelSourceUnavailable("requested model is not an admitted live source")
+        if model is None:
+            from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+
+            prepared = prepare_owned_model_plan(
+                base=self.root.parent, universe=self.root, owner=self.context.owner,
+                agent=binding, needs_tools=bool(tools))
+            model = next((candidate.ref for candidate in prepared.plan.order(
+                self.context.owner, self.context.universe).candidates
+                if candidate.ref.connection_id in admitted), None)
+            if model is None:
+                raise PermissionError("allocation has no admitted live model")
+        if tools and not model.connection_id.startswith("api_key_http:"):
+            raise ValueError("model tools require an HTTP model connection")
+        budget = TurnRequestBudget.join(self.root.parent, self.context.owner,
+                                        self.context.universe, row["usage_id"])
+        reserve = reserve_provider_request(
+            principal_id=self.context.owner, session_id=row["authority_id"],
+            request_id=secrets.token_hex(16), tool_name="converse")
+        capability = claim_provider_request(reserve, tool_name="converse")
+        try:
+            carrier = mint_provider_request_carrier(
+                universe_id=self.context.universe,
+                agent_binding_id=binding_id,
+                binding_revision=binding_revision, operation="converse")
+            system = "\n".join(item["content"] for item in messages
+                               if item["role"] == "system")
+            prompt = "\n".join(f"{item['role']}: {item['content']}" for item in messages
+                               if item["role"] != "system")
+            request = ModelCall(
+                model=model, fallbacks=(), purpose=purpose, origin="ta",
+                context=ModelContext(
+                    prompt=prompt, system=system,
+                    config=ModelConfig(
+                        request_budget=budget, text_only=not tools,
+                        agent_request=AgentInferenceRequest(tools=tools)
+                        if tools else None, engine_mcp_enabled=bool(tools)),
+                    launch_reference=self.model_reference,
+                    universe_context=UniverseContext(
+                        universe_dir=self.root, provider_request=carrier,
+                        model_selection=model), operation="converse"))
+            result = invoke(request, Parent(
+                owner=self.context.owner, command_center=self.context.universe,
+                usage_id=row["usage_id"]))
+            if asyncio.iscoroutine(result):
+                deferred = True
+                async def finish():
+                    try:
+                        completed = await result
+                        return model_result(completed)
+                    finally:
+                        revoke_provider_request(capability)
+                return finish()
+            return model_result(result)
+        finally:
+            if not locals().get("deferred", False):
+                revoke_provider_request(capability)
 
 
 class JailBridge:
@@ -393,7 +599,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
     """
     from tinyassets.activity_fence import stop_check
     from tinyassets.api.helpers import _universe_dir
-    from tinyassets.engine_steering import _session_key, launch_tools
+    from tinyassets.engine_steering import _session_key, launch_model_reference, launch_tools
     from tinyassets.research_capability import is_research_session
     from tinyassets.served_tools import connections_granted
 
@@ -437,7 +643,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
     universe_dir = _universe_dir(context.universe)
     backend = Capabilities(universe_dir, context, platform,
                            call_platform, server._binding_error,
-                           review_provider=_turn_reviewer(loop),
+                           model_reference=launch_model_reference(),
                            capability_grant=granted,
                            connections_granted=connections_granted(granted),
                            stopped=stop_check(universe_dir, _session_key()))
@@ -452,41 +658,3 @@ async def engine_dispatch(server, *, completed: list | None = None):
 
     dispatch.extension_backend = backend
     return dispatch
-
-
-def _turn_reviewer(loop):
-    """Use only this MCP caller's model; never a daemon/host model fallback.
-
-    The engine is a separate process from the turn. MCP sampling is its
-    provider connection. Clients without sampling leave owner-enabled review
-    unavailable, which the same graph review gate reports as a clear hold.
-    Capture the session before the bridge changes threads / nests tool calls.
-    """
-    from fastmcp.server.dependencies import get_context
-    from mcp.types import ClientCapabilities, SamplingCapability, SamplingMessage, TextContent
-
-    from tinyassets.agent_review import REVIEW_TIMEOUT_S
-
-    try:
-        session = get_context().session
-    except RuntimeError:
-        return None
-    if not session.check_client_capability(ClientCapabilities(sampling=SamplingCapability())):
-        return None
-
-    async def sample(prompt, system):
-        answer = await session.create_message(
-            [SamplingMessage(role="user", content=TextContent(type="text", text=prompt))],
-            system_prompt=system, max_tokens=512, include_context="none",
-        )
-        return answer.content.text if isinstance(answer.content, TextContent) else ""
-
-    def review(prompt, system, **_kwargs):
-        future = asyncio.run_coroutine_threadsafe(sample(prompt, system), loop)
-        try:
-            return future.result(timeout=REVIEW_TIMEOUT_S)
-        except TimeoutError:
-            future.cancel()
-            raise
-
-    return review

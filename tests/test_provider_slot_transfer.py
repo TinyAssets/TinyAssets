@@ -2,6 +2,8 @@ import asyncio
 
 import pytest
 
+from tests.support.model_call import call as model_call
+from tests.support.model_call import call_sync as model_call_sync
 from tinyassets import provider_admission as pa
 
 
@@ -126,7 +128,10 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
     pa.reset_for_tests()
     carrier = MagicMock(spec=ProviderInvocationCarrier)
-    carrier._receipt = MagicMock(principal_id="owner", universe_id=tmp_path.name)
+    carrier._receipt = MagicMock(
+        principal_id="owner", universe_id=tmp_path.name,
+        admitted_sources=frozenset({"codex"}),
+    )
     for name, value in dict(provider="codex", role="judge", operation="run_graph",
                             max_tokens=10, max_cost_microunits=5, selected_model=None,
                             native_selection=None, settlement_owner=None).items():
@@ -161,9 +166,9 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
                 kw = dict(operation="run_graph", universe_context=context)
                 if entry == "call":
                     with pa.blocking_provider_child():
-                        await router.call(*args, config, **kw)
+                        await model_call(router, *args, config, **kw)
                 else:
-                    await asyncio.to_thread(router.call_sync, *args, config, **kw)
+                    await asyncio.to_thread(model_call_sync, router, *args, config, **kw)
             return ProviderResponse(text="finished", provider="codex", model="fake",
                                     family="openai", latency_ms=0)
 
@@ -172,8 +177,8 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
         # An outer turn holds slot 1. This agent child acquires slot 2, then
         # invokes grandchildren through the actual router, including its pool.
         async with pa.provider_slot_async():
-            return await router.call("judge", "3", "s", config,
-                                     operation="run_graph", universe_context=context)
+            return await model_call(router, "judge", "3", "s", config,
+                                    operation="run_graph", universe_context=context)
     response = asyncio.run(asyncio.wait_for(run(), 4))
     assert response.text == "finished"
     assert seen == [2, 2, 2, 2]

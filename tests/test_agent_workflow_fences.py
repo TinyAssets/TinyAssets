@@ -35,7 +35,7 @@ def test_unarmed_structured_request_cannot_infer():
     with pytest.raises(
         PermissionError, match="agent inference requires the selected served writer",
     ):
-        asyncio.run(ProviderRouter({})._call_routed(
+        asyncio.run(ProviderRouter({})._call_routed_attempts(
             "writer", "hello", "", ModelConfig(agent_request=object(), engine_mcp_enabled=True),
             operation="converse", universe_context=None,
         ))
@@ -51,10 +51,19 @@ def test_selected_http_tools_require_the_coordinator(tmp_path, monkeypatch):
         _receipt=SimpleNamespace(principal_id="owner"),
     )
     monkeypatch.setattr(module, "_provider_invocation_carrier", lambda *a, **k: authority)
-    with pytest.raises(
-        PermissionError, match="selected HTTP agent tool execution is not implemented",
-    ):
-        asyncio.run(ProviderRouter({})._call_routed(
-            "writer", "hello", "", ModelConfig(engine_mcp_enabled=True),
-            operation="run_graph", universe_context=UniverseContext(universe_dir=tmp_path),
-        ))
+    from tinyassets.providers.model_call import open_allocation
+
+    universe = tmp_path / "u-work"
+    universe.mkdir()
+    budget = open_allocation("owner", universe)
+    try:
+        with pytest.raises(
+            PermissionError, match="selected HTTP agent tool execution is not implemented",
+        ):
+            asyncio.run(ProviderRouter({})._call_routed_attempts(
+                "writer", "hello", "",
+                ModelConfig(engine_mcp_enabled=True, request_budget=budget),
+                operation="run_graph", universe_context=UniverseContext(universe_dir=universe),
+            ))
+    finally:
+        budget.close()

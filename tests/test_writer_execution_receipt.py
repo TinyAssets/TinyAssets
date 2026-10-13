@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from tinyassets.exceptions import ProviderAuthorityHeldError
-from tinyassets.providers.base import ProviderResponse, UniverseContext
+from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.providers.call import get_provider_router, set_provider_router
 from tinyassets.providers.execution_receipt import (
     normalize_execution_receipt,
@@ -16,6 +16,7 @@ from tinyassets.providers.model_call import (
     ModelContext,
     Parent,
     call_sync,
+    open_allocation,
 )
 from tinyassets.providers.model_policy import ModelRef
 
@@ -64,12 +65,14 @@ def test_single_call_returns_response_and_receipt_with_explicit_selection(
     previous = get_provider_router()
     set_provider_router(Router())
     monkeypatch.setattr(registry, "register_open_providers_for", lambda _: None)
+    budget = open_allocation("owner", tmp_path / "center")
     try:
         selected = ModelRef("owned", "requested-gpt")
         request = ModelCall(
             model=selected, fallbacks=(),
             context=ModelContext(
-                prompt="review", universe_context=UniverseContext(
+                prompt="review", config=ModelConfig(request_budget=budget),
+                universe_context=UniverseContext(
                     universe_dir=tmp_path / "center",
                 ), operation="run_graph",
             ),
@@ -82,6 +85,7 @@ def test_single_call_returns_response_and_receipt_with_explicit_selection(
         assert receipt["resolved_model"] == "resolved-gpt"
         assert receipt["reported_model"] == "reported-gpt"
     finally:
+        budget.close()
         set_provider_router(previous)
 
 
@@ -111,11 +115,13 @@ def test_failed_call_does_not_replay_a_single_use_parent(tmp_path, monkeypatch):
     previous = get_provider_router()
     set_provider_router(router)
     monkeypatch.setattr(registry, "register_open_providers_for", lambda _: None)
+    budget = open_allocation("owner", tmp_path / "center")
     try:
         request = ModelCall(
             model=None, fallbacks=(),
             context=ModelContext(
-                prompt="review", universe_context=UniverseContext(
+                prompt="review", config=ModelConfig(request_budget=budget),
+                universe_context=UniverseContext(
                     universe_dir=tmp_path / "center",
                 ), operation="run_graph",
             ),
@@ -124,4 +130,5 @@ def test_failed_call_does_not_replay_a_single_use_parent(tmp_path, monkeypatch):
             call_sync(request, Parent(owner="owner", command_center="center"))
         assert router.attempts == 1
     finally:
+        budget.close()
         set_provider_router(previous)

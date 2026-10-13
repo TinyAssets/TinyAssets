@@ -71,6 +71,15 @@ def identity(value: Any) -> str:
     return value
 
 
+def digest(value: Any) -> None:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("sha256:")
+        or (len(value) != 71 or any(c not in "0123456789abcdef" for c in value[7:]))
+    ):
+        raise invalid()
+
+
 def dump(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
@@ -117,25 +126,26 @@ class RoundInput:
     source_ref: str
     model: str
     tools_json: str
-    binding_id: str
+    binding_id: str | None
     reservation_id: str
-    binding_generation: int
-    binding_digest: str
+    binding_generation: int | None
+    binding_digest: str | None
     request_digest: str
     authority_kind: str = "served_request"
     work_receipt_id: str = ""
 
     def canonical_json(self) -> str:
-        for name in ("source_ref", "model", "binding_id", "reservation_id"):
+        for name in ("source_ref", "model", "reservation_id"):
             identity(getattr(self, name))
-        integer(self.binding_generation, minimum=1)
-        for value in (self.binding_digest, self.request_digest):
-            if (
-                not isinstance(value, str)
-                or not value.startswith("sha256:")
-                or (len(value) != 71 or any(c not in "0123456789abcdef" for c in value[7:]))
-            ):
+        work = work_lineage(self.authority_kind, self.work_receipt_id)
+        if work and self.binding_id is None:
+            if self.binding_generation is not None or self.binding_digest is not None:
                 raise invalid()
+        else:
+            identity(self.binding_id)
+            integer(self.binding_generation, minimum=1)
+            digest(self.binding_digest)
+        digest(self.request_digest)
         tools = document(self.tools_json)
         fields(tools, {"version", "tools"})
         # An empty inventory records a text-only inference, never permission
@@ -144,7 +154,7 @@ class RoundInput:
         if tools["tools"] != []:
             codec._definitions(tools["tools"])
         value = asdict(self)
-        if work_lineage(self.authority_kind, self.work_receipt_id):
+        if work:
             return dump({"version": 3, "kind": "engine_inference", **value})
         value.pop("authority_kind")
         value.pop("work_receipt_id")

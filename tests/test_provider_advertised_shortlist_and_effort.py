@@ -28,6 +28,7 @@ from tests.test_native_model_authority import _call, native  # noqa: F401
 from tests.test_native_model_discovery import (
     metadata_transport_processes,  # noqa: F401 - a fixture, requested by name below
 )
+from tests.test_pending_requests_power import _install_native_executor
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.external_agents.registry import resolve
 from tinyassets.external_agents.runner import _protocol
@@ -49,6 +50,15 @@ from tinyassets.storage.model_preferences import ModelPreferenceStore
 CODEX_PROTOCOL = _protocol(resolve("codex").row["catalogue"])
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
+
+@pytest.fixture(autouse=True)
+def discovered_native_executor(request, monkeypatch):
+    """Serving setup must not depend on a host-installed Codex executable."""
+    params = getattr(getattr(request.node, "callspec", None), "params", {})
+    if params.get("native") == "discovered":
+        _install_native_executor(monkeypatch)
+
 
 #: The shape the installed Claude Code CLI actually answers `list_models` with,
 #: captured from 2.1.288 on 2026-10-02. Alias rows, a `default` marker, no
@@ -231,10 +241,7 @@ def test_unset_effort_leaves_the_executor_default(native, monkeypatch):  # noqa:
     _seen, configs = install_discovery(native, monkeypatch, discover)
     context = replace(native.context,
                       model_selection=ModelRef("codex", "new-account-model"))
-    asyncio.run(native.router.call(
-        "writer", "hello", "system", operation="converse", universe_context=context,
-        config=ModelConfig(reasoning_effort="max"),
-    ))
+    _call(native, context, ModelConfig(reasoning_effort="max"))
     assert configs and configs[0].reasoning_effort == ""
 
 
@@ -595,37 +602,26 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     }, indent=1))
 
 
-@pytest.mark.parametrize("native", ["explicit"], indirect=True)
-def test_a_declared_native_selection_does_not_clobber_a_node_effort(native, monkeypatch):  # noqa: F811
-    """A workflow node's own effort must survive the served authority path.
+def test_a_native_default_does_not_clobber_a_node_effort(
+    tmp_path, monkeypatch, authenticate_request,
+):
+    """A workflow node's own effort survives the connected native default.
 
-    A node declares effort for itself (`api/branches.py`, reaching the provider
-    as ModelConfig.reasoning_effort). A DECLARED native selection carries no
-    level -- it has no advertised list to validate one against -- so overwriting
-    the config from it unconditionally would silently downgrade every node that
-    runs on a native source with an explicit model id.
+    The provider default carries no advertised effort level. It must not erase
+    the level the node declared for itself.
     """
-    configs = []
-    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: native.router)
-    complete = native.provider.complete
+    from tests.test_run_provider_session import _branch, _run_branch
 
-    async def record(prompt, system, config, **kwargs):
-        configs.append(config)
-        return await complete(prompt, system, config, **kwargs)
-
-    monkeypatch.setattr(native.provider, "complete", record)
-    context = replace(native.context,
-                      model_selection=ModelRef("codex", "future-native-model"))
-    from tinyassets.providers.base import ModelConfig
-
-    asyncio.run(native.router.call(
-        "writer", "hello", "system", operation="converse", universe_context=context,
-        config=ModelConfig(reasoning_effort="minimal"),
-    ))
-    assert configs, "the provider was never invoked"
-    assert configs[0].native_model_id == "future-native-model"
-    assert configs[0].reasoning_effort == "minimal", (
-        "a declared selection with no level erased the node's own effort"
+    branch = _branch(node_count=1)
+    branch.node_defs[0].reasoning_effort = "minimal"
+    response, provider, _ = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, branch,
+    )
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert len(provider.calls) == 1
+    assert provider.calls[0].native_model_id == ""
+    assert provider.calls[0].reasoning_effort == "minimal", (
+        "the provider default erased the node's own effort"
     )
 
 

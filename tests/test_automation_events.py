@@ -258,11 +258,13 @@ def test_another_users_run_in_the_owners_universe_wakes_nothing(home: Path) -> N
     assert _wakes(home, BOB_UNIVERSE) == []
 
 
-def test_a_co_admin_sharing_the_home_wakes_only_their_own_subscriptions(
+def test_a_co_admin_sharing_the_home_cannot_subscribe_on_the_owners_assignment(
     home: Path,
 ) -> None:
     """Carol is an admin whose home is also Alice's universe. Her run must not
-    spend Alice's subscription, and her own subscription is hers to wake."""
+    spend Alice's subscription, and the home's one accepted assignment is
+    Alice's: Carol has no run authority there, so her own subscription is
+    refused rather than stored to run on Alice's acceptance."""
     carol = "acct_carol"
     _seed_owner(home, owner=carol)
     _seed_branch(home, branch_def_id="branch_carols", author=carol,
@@ -270,26 +272,30 @@ def test_a_co_admin_sharing_the_home_wakes_only_their_own_subscriptions(
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
     _finish(home, actor=carol)
     assert _wakes(home) == []
-    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
-               branch_def_id="branch_carols")
+    with pytest.raises(AutomationUnavailable) as caught:
+        _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
+                   branch_def_id="branch_carols")
+    assert caught.value.reason == "no_serving_assignment"
     _finish(home, actor=carol)
-    [wake] = _wakes(home)
-    assert wake.owner_principal_id == carol
+    assert _wakes(home) == []
 
 
 def test_a_recovered_run_wakes_only_its_own_owner_not_a_co_admin(
     home: Path,
 ) -> None:
-    """Codex refute 2026-09-28, P1: Alice and Carol share a home, each following
-    A. Alice's background run is recovered at boot with nobody bound; only
-    Alice's subscription wakes."""
+    """Codex refute 2026-09-28, P1: Alice and Carol share a home, each trying to
+    follow A. Carol's subscription is refused (the home's accepted assignment
+    is Alice's); Alice's background run is recovered at boot with nobody
+    bound; only Alice's subscription wakes."""
     carol = "acct_carol"
     _seed_owner(home, owner=carol)
     _seed_branch(home, branch_def_id="branch_carols", author=carol,
                  visibility="private")
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
-    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
-               branch_def_id="branch_carols")
+    with pytest.raises(AutomationUnavailable) as caught:
+        _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
+                   branch_def_id="branch_carols")
+    assert caught.value.reason == "no_serving_assignment"
     run_id = _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
     _started_before_this_process(home, run_id)
     with _as(None):
@@ -1142,19 +1148,19 @@ def test_cleanup_reads_references_after_proving_death(home: Path, monkeypatch) -
 
 
 def test_a_transient_refusal_keeps_the_event_owed(home: Path, monkeypatch) -> None:
-    """No serving assignment at the moment the run ends: the wake cannot be
-    stored yet, so the event stays owed and lands once the assignment is back."""
-    import tinyassets.provider_assignment as assignment
+    """No connected source at the moment the run ends leaves its event owed."""
+    from tinyassets.providers import served_model_plan
     from tinyassets.runs import deliver_terminal_events
 
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
-    real = assignment.load_provider_assignment
-    monkeypatch.setattr(assignment, "load_provider_assignment", lambda *a, **k: None)
+    real = served_model_plan.connected_sources
+    assert real(home, home / UNIVERSE, OWNER)
+    monkeypatch.setattr(served_model_plan, "connected_sources", lambda *a, **k: frozenset())
     _finish(home, actor=OWNER)
     with _as(None):
         assert deliver_terminal_events(home, older_than=0) == 0
     assert _wakes(home) == []
-    monkeypatch.setattr(assignment, "load_provider_assignment", real)
+    monkeypatch.setattr(served_model_plan, "connected_sources", real)
     with _as(None):
         assert deliver_terminal_events(home, older_than=0) == 1
     assert len(_wakes(home)) == 1

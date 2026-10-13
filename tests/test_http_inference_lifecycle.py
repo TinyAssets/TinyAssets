@@ -297,9 +297,15 @@ def test_served_http_cancellation_holds_slot_and_budget_until_request_finishes(
     from tests.test_run_provider_session import _seed_open_serving_assignment
     from tinyassets.auth import middleware as auth
     from tinyassets.custom_agents import list_bindings
+    from tinyassets.daemon_server import set_founder_home
     from tinyassets.providers import router as routing
+    from tinyassets.providers.model_call import ModelCall, ModelContext, Parent, call
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
+    set_founder_home(
+        tmp_path, founder_sub="owner-1", universe_id="u-owner",
+        platform_generated=True,
+    )
     _seed_open_serving_assignment(
         tmp_path,
         monkeypatch,
@@ -344,15 +350,13 @@ def test_served_http_cancellation_holds_slot_and_budget_until_request_finishes(
             ]
 
     async def scenario():
-        task = asyncio.create_task(
-            routing.ProviderRouter({}).call(
-                "writer",
-                "hello",
-                "system",
-                operation="converse",
-                universe_context=context,
-            )
-        )
+        task = asyncio.create_task(call(ModelCall(
+            model=None, fallbacks=(), context=ModelContext(
+                role="writer", prompt="hello", system="system",
+                operation="converse", universe_context=context,
+                router=routing.ProviderRouter({}),
+            ),
+        ), Parent(owner="owner-1", command_center="u-owner")))
         try:
             assert await asyncio.to_thread(entered.wait, 3)
             assert reservations() == ["reserved"]

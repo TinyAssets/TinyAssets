@@ -153,8 +153,10 @@ def served(rig, reader, monkeypatch):
 
 
 def _call(served, *, config=None, context=None):
+    from tests.support.model_call import call as model_call
+
     return asyncio.run(
-        served.router.call(
+        model_call(served.router,
             "writer",
             "hello",
             "be terse",
@@ -301,10 +303,10 @@ def test_model_context_limit_refuses_without_truncation_or_launch(served):
     assert served.wire == []
 
 
-def test_absent_selection_keeps_v2_legacy_execution_hold(served):
-    with pytest.raises(ProviderAuthorityHeldError):
-        _call(served, context=replace(served.context, model_selection=None))
-    assert served.wire == []
+def test_absent_selection_uses_connected_model(served):
+    context = replace(served.context, model_selection=None)
+    assert _call(served, context=context).text == "selected answer"
+    assert served.wire[0][1]["body"]["model"] == MODEL
 
 
 @pytest.mark.parametrize(
@@ -393,7 +395,7 @@ def test_explicit_universe_allowlist_still_narrows_selected_authority(served, al
     assert served.wire == []
 
 
-def test_revoked_primary_does_not_prevent_independent_accepted_member(served, monkeypatch):
+def test_revoked_primary_does_not_prevent_independent_connected_source(served, monkeypatch):
     from tests.test_model_discovery_capability import DESCRIPTOR
     from tinyassets.providers.definition import register_definition
 
@@ -484,14 +486,15 @@ def test_revoked_primary_does_not_prevent_independent_accepted_member(served, mo
         row = conn.execute(
             "SELECT binding_id, state FROM served_provider_budget_reservations"
         ).fetchone()
-    assignment = load_provider_assignment(rig.base, universe_id="u-models")
-    member = next(m for m in assignment.candidates if m.provider == response.provider)
-    assert tuple(row) == (member.binding_id, "succeeded")
+    assert row[0].startswith("connected_") and row[1] == "succeeded"
 
 
-def test_without_selected_authority_router_discards_configuration_override(tmp_path):
+def test_without_selected_authority_router_discards_configuration_override(tmp_path, monkeypatch):
+    from tests.support.model_call import call as model_call
+    from tests.test_pending_requests_power import _install_native_executor
     from tests.test_provider_served_router import _RecordingProvider, _served_context
 
+    _install_native_executor(monkeypatch)
     _, _, capability, context = _served_context(tmp_path)
     seen = []
 
@@ -502,7 +505,7 @@ def test_without_selected_authority_router_discards_configuration_override(tmp_p
 
     try:
         asyncio.run(
-            ProviderRouter({"codex": Recording("codex")}).call(
+            model_call(ProviderRouter({"codex": Recording("codex")}),
                 "writer",
                 "hello",
                 "system",
@@ -528,12 +531,16 @@ def test_request_revocation_refuses_before_discovery(served, reader):
 def blocked_discovery(served, reader, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     calls = []
+    catalogue_reads = 0
 
     def read(**kwargs):
+        nonlocal catalogue_reads
         calls.append(kwargs)
         if "models/user" in kwargs["url"]:
-            entered.set()
-            assert release.wait(5), "test failed to release discovery"
+            catalogue_reads += 1
+            if catalogue_reads == 2:
+                entered.set()
+                assert release.wait(5), "test failed to release discovery"
         return reader[1](**kwargs)
 
     monkeypatch.setattr(snapshots, "read_http_discovery_document", read)
@@ -542,7 +549,9 @@ def blocked_discovery(served, reader, monkeypatch):
 
 
 def _async_call(served):
-    return served.router.call(
+    from tests.support.model_call import call as model_call
+
+    return model_call(served.router,
         "writer", "hello", "system", operation="converse", universe_context=served.context
     )
 
@@ -637,12 +646,12 @@ def test_cancelled_router_does_not_launch_or_duplicate_discovery(served, blocked
             assert auth._active_provider_request(served.capability)["invocations"] == 0
             second = asyncio.create_task(_async_call(served))
             await asyncio.sleep(0)
-            assert not second.done() and len(calls) == 1
+            assert not second.done() and len([c for c in calls if "models/user" in c["url"]]) == 3
             release.set()
             await asyncio.wait_for(second, 5)
             assert len(served.wire) == 1
             assert auth._active_provider_request(served.capability)["invocations"] == 1
-            assert len([c for c in calls if "models/user" in c["url"]]) == 1
+            assert len([c for c in calls if "models/user" in c["url"]]) == 4
             assert not snapshots._INFLIGHT
         finally:
             release.set()
@@ -864,3 +873,96 @@ def test_cancelled_http_inference_keeps_slot_and_reservation_until_worker_finish
             await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
+def test_revoked_primary_does_not_prevent_independent_accepted_member(served, monkeypatch):
+    from tests.test_model_discovery_capability import DESCRIPTOR
+    from tinyassets.providers.definition import register_definition
+
+    rig = served.rig
+    endpoint_json, _ = rig.ledger.policy_json("conn-models")
+    rig.ledger.create_connection(
+        connection_id="independent",
+        owner_user_id="owner",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("GET", "POST"),
+        provider="http",
+        destination="compute:independent",
+        credential_ref="vault://http/other",
+        allowed_endpoints=json.loads(endpoint_json),
+    )
+    grant = rig.ledger.grant_connection(
+        grant_id="independent-grant",
+        connection_id="independent",
+        owner_user_id="owner",
+        universe_id="u-models",
+    )
+    other = register_definition(
+        universe_id="u-models",
+        owner_user_id="owner",
+        access_method="api_key_http",
+        protocol="openai_chat",
+        model="unchanged-other-pin",
+        ref=grant.grant_id,
+    )
+    rig.ledger.configure_capability(
+        connection_id="independent",
+        capability_kind="model_discovery",
+        descriptor=DESCRIPTOR,
+        enabled=True,
+        expected_grant=grant,
+    )
+    connected = bind_serving_provider(
+        base_path=rig.base,
+        universe_dir=served.context.universe_dir,
+        owner_user_id="owner",
+        universe_id="u-models",
+        agent_binding_id=served.agent["agent_binding_id"],
+        expected_revision=served.agent["revision"],
+        provider=rig.definition.id,
+        model_access={
+            rig.definition.id: ModelAccess("discovered"),
+            other.id: ModelAccess("discovered"),
+        },
+    )
+    with SQLiteProviderWorkAuthorityStore(rig.base).connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        agent = set_binding_serving_in_transaction(
+            conn,
+            universe_id="u-models",
+            binding_id=served.agent["agent_binding_id"],
+            expected_revision=connected["agent_binding"]["revision"],
+            owner_user_id="owner",
+            enabled=True,
+        )
+        conn.commit()
+    carrier = auth.mint_provider_request_carrier(
+        universe_id="u-models",
+        agent_binding_id=agent["agent_binding_id"],
+        binding_revision=agent["revision"],
+        operation="converse",
+    )
+    rig.ledger.revoke_grant("grant-models")
+    reads = []
+
+    def read(**kwargs):
+        reads.append(kwargs["definition"].ref)
+        assert kwargs["definition"].ref == "independent-grant"
+        return {"data": [snapshot_tests._model()]}
+
+    monkeypatch.setattr(snapshots, "read_http_discovery_document", read)
+    context = replace(
+        served.context,
+        provider_request=carrier,
+        config=load_universe_config(served.context.universe_dir),
+        model_selection=ModelRef(f"api_key_http:{other.id}", MODEL),
+    )
+    response = _call(served, context=context)
+    assert response.provider == f"api_key_http:{other.id}" and reads
+    assert len(served.wire) == 1
+    with SQLiteProviderWorkAuthorityStore(rig.base).connection() as conn:
+        row = conn.execute(
+            "SELECT binding_id, state FROM served_provider_budget_reservations"
+        ).fetchone()
+    assert row[0].startswith("connected_")
+    assert row[1] == "succeeded"

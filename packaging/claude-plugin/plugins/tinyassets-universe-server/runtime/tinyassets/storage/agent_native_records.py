@@ -17,29 +17,32 @@ from tinyassets.storage import agent_turn_records as records
 class NativeInput:
     source_ref: str
     model: str  # Empty means the provider's default, not an invented model alias.
-    binding_id: str
+    binding_id: str | None
     reservation_id: str
-    binding_generation: int
-    binding_digest: str
+    binding_generation: int | None
+    binding_digest: str | None
     request_digest: str
     authority_kind: str = "served_request"
     work_receipt_id: str = ""
 
     def canonical_json(self) -> str:
-        for name in ("source_ref", "binding_id", "reservation_id"):
+        for name in ("source_ref", "reservation_id"):
             records.identity(getattr(self, name))
         if type(self.model) is not str:
             raise records.invalid()
         if self.model:
             records.identity(self.model)
-        records.integer(self.binding_generation, minimum=1)
-        for value in (self.binding_digest, self.request_digest):
-            if (type(value) is not str or len(value) != 71
-                    or not value.startswith("sha256:")
-                    or any(c not in "0123456789abcdef" for c in value[7:])):
+        work = records.work_lineage(self.authority_kind, self.work_receipt_id)
+        if work and self.binding_id is None:
+            if self.binding_generation is not None or self.binding_digest is not None:
                 raise records.invalid()
+        else:
+            records.identity(self.binding_id)
+            records.integer(self.binding_generation, minimum=1)
+            records.digest(self.binding_digest)
+        records.digest(self.request_digest)
         value = asdict(self)
-        if records.work_lineage(self.authority_kind, self.work_receipt_id):
+        if work:
             return records.dump({"version": 3, "kind": "native_agent", **value})
         value.pop("authority_kind")
         value.pop("work_receipt_id")

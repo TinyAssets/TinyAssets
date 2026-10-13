@@ -226,7 +226,7 @@ def test_resumed_turn_uses_real_owner_provider_admission(home, monkeypatch):
     from tinyassets.provider_assignment import _served_request_agent
     from tinyassets.providers.owner_binding import require_owner_bound_context
 
-    connect_owner_provider(home, OWNER)
+    connect_owner_provider(home, OWNER, monkeypatch)
     key = register(home, after_seconds=0)
     turns = []
     def writer(turn_input, *, universe_context, **_):

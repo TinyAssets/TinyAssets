@@ -52,6 +52,16 @@ def rig(tmp_path, monkeypatch):
 def source(rig, destination="model:mine"):
     provisioned = _connect("u-owner", destination=destination)
     assert provisioned.get("status") == "provisioned", provisioned
+    ConnectionLedger(
+        rig[0] / ".broker" / "outbound.db", data_root=rig[0],
+        verify_authenticated_principal=lambda: "owner",
+    ).configure_capability(
+        connection_id=provisioned["connection_id"], capability_kind="model_use",
+        enabled=True, descriptor={
+            "wire": "openai_chat", "billing": "free",
+            "models": [{"id": "test-model", "tools": True, "context": 8192}],
+        },
+    )
     definition = register_definition(
         universe_id="u-owner",
         owner_user_id="owner",
@@ -101,21 +111,24 @@ def remove(destination="model:mine", **extra):
 def test_disconnect_fences_custody_and_old_binding_without_erasing_agent(rig):
     from tinyassets.credential_vault import current_connection_grant_custody
     from tinyassets.onboarding.model_setup import model_setup_state
+    from tinyassets.provider_serving_binding import serving_connection_is_current
+    from tinyassets.providers.served_model_plan import connected_sources
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     conn, definition = source(rig)
     before_agent = bind(rig, [definition])
     before = load_provider_assignment(rig[0], universe_id="u-owner")
     assert remove()["status"] == "removed"
-    after = load_provider_assignment(rig[0], universe_id="u-owner")
-    assert after.state == "unassigned" and after.generation > before.generation
-    assert after.assignment_digest != before.assignment_digest
+    assert connected_sources(rig[0], rig[1], "owner") == frozenset()
+    assert not serving_connection_is_current(
+        rig[0], universe_dir=rig[1], universe_id="u-owner", owner_user_id="owner",
+    )
     after_agent = get_binding(
         rig[0], universe_id="u-owner", binding_id=before_agent["agent_binding_id"]
     )
     assert after_agent["configuration"] == before_agent["configuration"]
     assert after_agent["revision"] == before_agent["revision"]
-    assert after_agent["status"] == "configured"
+    assert after_agent["status"] == before_agent["status"]
     store = SQLiteProviderWorkAuthorityStore(rig[0])
     assert store.get(before.binding_id).state.value == "revoked"
     with store.connection() as db:
@@ -133,31 +146,38 @@ def test_disconnect_fences_custody_and_old_binding_without_erasing_agent(rig):
     )
 
 
-def test_redeposit_does_not_resurrect_serving(rig):
+def test_explicit_redeposit_restores_owned_serving_source(rig):
     from tinyassets.provider_serving_binding import serving_connection_is_current
 
     _, definition = source(rig)
     bind(rig, [definition])
     remove()
-    source(rig)
     assert not serving_connection_is_current(
+        rig[0], universe_dir=rig[1], universe_id="u-owner", owner_user_id="owner"
+    )
+    source(rig)
+    assert serving_connection_is_current(
         rig[0], universe_dir=rig[1], universe_id="u-owner", owner_user_id="owner"
     )
 
 
 @pytest.mark.parametrize("removed_index", [0, 1])
 def test_disconnect_preserves_other_accepted_source(rig, removed_index):
+    from tinyassets.providers.served_model_plan import connected_sources
+
     first, a = source(rig)
     second, b = source(rig, "model:other")
     bind(rig, [a, b])
-    before = load_provider_assignment(rig[0], universe_id="u-owner")
+    assert connected_sources(rig[0], rig[1], "owner") == frozenset({
+        "api_key_http:" + a.id, "api_key_http:" + b.id,
+    })
     assert remove(["model:mine", "model:other"][removed_index])["status"] == "removed"
-    after = load_provider_assignment(rig[0], universe_id="u-owner")
     expected = [b, a][removed_index]
-    assert after.state == "ready"
-    assert [m.provider for m in after.candidates] == ["api_key_http:" + expected.id]
-    assert after.generation == before.generation + 1
+    assert connected_sources(rig[0], rig[1], "owner") == frozenset({
+        "api_key_http:" + expected.id,
+    })
     ledger = ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0])
+    assert ledger.get_connection([first, second][removed_index]["connection_id"]) is None
     assert ledger.get_connection([second, first][removed_index]["connection_id"]) is not None
     from tinyassets.provider_serving_binding import serving_connection_is_current
 
@@ -181,18 +201,22 @@ def test_disconnect_does_not_revive_an_already_revoked_other_source(rig):
         ProviderWorkBindingFence,
         ProviderWorkBindingService,
     )
+    from tinyassets.providers.served_model_plan import connected_sources
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     _, first = source(rig)
-    _, other = source(rig, "model:other")
+    other_connection, other = source(rig, "model:other")
     bind(rig, [first, other])
     store = SQLiteProviderWorkAuthorityStore(rig[0])
     assignment = load_provider_assignment(rig[0], universe_id="u-owner")
     member = next(m for m in assignment.candidates if m.provider.endswith(other.id))
     ProviderWorkBindingService(store).revoke(ProviderWorkBindingFence(store.get(member.binding_id)))
+    ConnectionLedger(rig[0] / ".broker" / "outbound.db", data_root=rig[0]).revoke_grant(
+        other_connection["grant_id"],
+    )
     assert remove()["status"] == "removed"
     assert store.get(member.binding_id).state.value == "revoked"
-    assert load_provider_assignment(rig[0], universe_id="u-owner").state == "unassigned"
+    assert connected_sources(rig[0], rig[1], "owner") == frozenset()
 
 
 def test_explicit_reconnect_reuses_custom_agent_unchanged(rig):
@@ -263,6 +287,8 @@ def test_cross_origin_cannot_disconnect(rig, monkeypatch):
 
 def test_cleanup_failure_keeps_authority_fenced_and_retryable(rig, monkeypatch):
     import tinyassets.credential_vault as vault
+    from tinyassets.provider_serving_binding import serving_connection_is_current
+    from tinyassets.providers.served_model_plan import connected_sources
 
     _, definition = source(rig)
     bind(rig, [definition])
@@ -272,7 +298,10 @@ def test_cleanup_failure_keeps_authority_fenced_and_retryable(rig, monkeypatch):
     )
     with pytest.raises(OSError):
         remove()
-    assert load_provider_assignment(rig[0], universe_id="u-owner").state == "unassigned"
+    assert connected_sources(rig[0], rig[1], "owner") == frozenset()
+    assert not serving_connection_is_current(
+        rig[0], universe_dir=rig[1], universe_id="u-owner", owner_user_id="owner",
+    )
     monkeypatch.setattr(vault, "forget_credential", original)
     assert remove()["status"] == "removed"
 

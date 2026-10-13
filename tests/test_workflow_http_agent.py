@@ -199,9 +199,11 @@ def test_cancellation_after_inference_prevents_first_tool(
 def test_member_revoked_after_known_tool_does_not_start_second_inference(
     tmp_path, monkeypatch, authenticate_request, work_agent,
 ):
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
     def revoke():
-        with sqlite3.connect(db_path(tmp_path)) as conn:
-            conn.execute("UPDATE provider_work_bindings SET state = 'revoked'")
+        ledger = ConnectionLedger(tmp_path / ".broker" / "outbound.db", data_root=tmp_path)
+        ledger.revoke_grant("http_grant_" + "a" * 32)
 
     work_agent.after_tool = revoke
     result = run(tmp_path, monkeypatch, authenticate_request)
@@ -259,7 +261,14 @@ def test_prelaunch_failure_releases_reserved_budget(
 def test_agent_rounds_cannot_exceed_existing_invocation_allowance(
     tmp_path, monkeypatch, authenticate_request, work_agent,
 ):
-    monkeypatch.setattr("tinyassets.provider_serving_binding._MAX_BINDING_INVOCATIONS", 3)
+    from tinyassets.providers import model_call
+
+    open_allocation = model_call.open_allocation
+
+    def limited_allocation(owner, universe_dir, **policy):
+        return open_allocation(owner, universe_dir, **{**policy, "max_requests": 3})
+
+    monkeypatch.setattr(model_call, "open_allocation", limited_allocation)
     work_agent.mode = "ongoing_tools"
     result = run(tmp_path, monkeypatch, authenticate_request)
     assert result["terminal_status"] == "failed", result

@@ -102,7 +102,7 @@ def test_changed_home_refuses_complete_display(configured, monkeypatch):
         collect(configured)
 
 
-def test_changed_assignment_refuses_complete_display(configured, monkeypatch):
+def test_changed_assignment_does_not_remove_connected_source(configured, monkeypatch):
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     actual = served_model_plan._http_models
@@ -115,8 +115,7 @@ def test_changed_assignment_refuses_complete_display(configured, monkeypatch):
         return value
 
     monkeypatch.setattr(served_model_plan, "_http_models", change_assignment)
-    with pytest.raises(PermissionError, match="assignment changed"):
-        collect(configured)
+    assert document(collect(configured))["order"]
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
@@ -125,39 +124,10 @@ def test_native_executor_absence_is_visible_without_blocking_http(configured, mo
     result = document(collect(configured))
     assert len(result["order"]) == 1
     assert result["order"][0]["provider_ref"].startswith("api_key_http:")
-    assert {"provider_ref": "codex", "reasons": [
-        {"reason": "executor_unavailable", "component": ""},
-    ]} in result["source_failures"]
-
-
-def test_native_role_hold_retains_fixed_reason(tmp_path, monkeypatch):
-    from tinyassets.provider_serving_binding import ServingProviderHeld, _resolve_serving_source
-
-    monkeypatch.setattr("tinyassets.provider_serving_binding._SERVING_ROLES",
-                        ("writer", "judge"))
-    with pytest.raises(ServingProviderHeld) as held:
-        _resolve_serving_source(
-            tmp_path, "u", "owner", "claude-code", ModelAccess("explicit", ("",)),
-        )
-    assert held.value.reason == "role_not_supported"
-
-
-def test_unknown_price_components_keep_facts_but_no_candidate(configured):
-    connected = bind_serving_provider(
-        base_path=configured.rig.base, universe_dir=configured.rig.base / "u-models",
-        owner_user_id="owner", universe_id="u-models",
-        agent_binding_id=configured.binding["agent_binding_id"],
-        expected_revision=configured.binding["revision"], provider=configured.rig.definition.id,
-        model_access={configured.rig.definition.id: ModelAccess(
-            "discovered", cost_caps=(("unsupported_component", 0),),
-        )},
-    )
-    configured.binding = connected["agent_binding"]
-    result = document(collect(configured))
-    assert result["order"] == [] and len(result["options"]) == 1
-    assert not result["options"][0]["in_candidate_catalog"]
-    assert {"reason": "price_components_unenforceable", "component": ""} in (
-        result["options"][0]["reasons"]
+    assert any(
+        row["provider_ref"] == "codex" and
+        {"reason": "executor_unavailable", "component": ""} in row["reasons"]
+        for row in result["source_failures"]
     )
 
 

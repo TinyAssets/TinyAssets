@@ -163,8 +163,8 @@ def _effective_universe_provider_ceiling(
 ) -> list[str] | None:
     """Return the requester's provider ceiling, or legacy/platform ``None``.
 
-    A server-minted invocation carrier is already pinned to one provider and
-    remains subject to any explicit assignment allowlist. An unarmed explicit
+    A server-minted invocation carrier is already pinned to a source in its
+    admitted and live connected sets. An unarmed explicit
     universe context is requester work: legacy ``allowed_providers=None`` may
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
@@ -172,7 +172,9 @@ def _effective_universe_provider_ceiling(
     from tinyassets.provider_authority import current
 
     universe_dir = universe_context.universe_dir if universe_context is not None else None
-    if carrier_armed or universe_context is None:
+    if carrier_armed:
+        return None
+    if universe_context is None:
         resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
@@ -436,7 +438,7 @@ async def _routable_authorization(inner, selection):
     """Turn a sign-in refusal raised while AUTHORIZING into a routable outcome.
 
     The pre-launch credential refresh runs inside this context manager, so a stored
-    sign-in the source has finished with is discovered BEFORE ``_call_routed`` is
+    sign-in the source has finished with is discovered BEFORE ``_call_routed_attempts`` is
     entered -- which means the provider loop's ``except ProviderAuthenticationError``
     never sees it and the exception escapes the turn entirely. Measured: the founder's
     spent-refresh-token path ended with the turn ``abandoned``, no fallback and no
@@ -691,23 +693,7 @@ class ProviderRouter:
         ):
             raise PermissionError("agent step requires the selected served writer")
 
-        # A context that ALREADY carries an authorized ServedProviderAuthority (the
-        # daemon-owned background consumer fences its own authority per call in
-        # background_served_provider._authorize_launch and injects it here) must
-        # NOT be re-authorized as a founder-facing served turn: that path demands a
-        # live provider_request the background has none of, so it raised
-        # ProviderAuthorityHeldError and the real background path could never
-        # launch (Codex REJECT #1, PR #2528). Only an UN-authorized context is
-        # fenced here.
-        # REVERTED (Codex REJECT #4 on #2531): an earlier head honoured a pre-set
-        # ``served_provider`` on the context so the background consumer could inject
-        # its authority. ServedProviderAuthority is a plain dataclass, and no
-        # in-process provenance scheme (registry, sentinel fence) survived review:
-        # 'if arbitrary in-process Python is the adversary, no underscore, sentinel,
-        # or same-process secret suffices'. The correct route for background is the
-        # server-minted, pid-bound, ONE-USE ProviderInvocationCarrier (the
-        # ``provider_invocation`` branch below) - the next lane. Until then a context
-        # without a carrier is re-fenced as a served turn: fail closed.
+        # A context without a workflow carrier needs a fresh served request.
         if universe_context is not None and universe_context.provider_invocation is None:
             from tinyassets.provider_assignment import authorize_served_provider_call
 
@@ -738,7 +724,7 @@ class ProviderRouter:
                         if not agent_turn or not callable(_agent_observer):
                             raise PermissionError("agent observer requires an agent inference")
                         authority = replace(authority, after_provider_claim=_agent_observer)
-                    return await self._call_routed(
+                    return await self._call_routed_attempts(
                         role, prompt, system, config, operation=operation,
                         universe_context=replace(universe_context, served_provider=authority),
                         _agent_execution_kind=_agent_execution_kind,
@@ -754,7 +740,7 @@ class ProviderRouter:
                     universe_context,
                     served_provider=authority,
                 )
-                return await self._call_routed(
+                return await self._call_routed_attempts(
                     role,
                     prompt,
                     system,
@@ -762,7 +748,7 @@ class ProviderRouter:
                     operation=operation,
                     universe_context=authorized_context,
                 )
-        return await self._call_routed(
+        return await self._call_routed_attempts(
             role,
             prompt,
             system,
@@ -772,38 +758,6 @@ class ProviderRouter:
             **({"_agent_execution_kind": _agent_execution_kind,
                 "_work_agent_observer": _agent_observer} if work_agent else {}),
         )
-
-    async def _call_routed(self, role, prompt, system, config=None, **kwargs):
-        """A standalone authorized call owns a root; nested calls must borrow it."""
-        from tinyassets.request_budget import (
-            FREE_TURN_ATTEMPTS,
-            TEXT_TURN_ATTEMPTS,
-            TurnRequestBudget,
-            current_request_budget,
-            request_budget_scope,
-        )
-
-        context = kwargs.get("universe_context")
-        cfg = config or _default_config(_resolve_universe_config(context))
-        if cfg.request_budget is not None or current_request_budget() is not None:
-            return await self._call_routed_attempts(role, prompt, system, cfg, **kwargs)
-        authority = context.served_provider if context is not None else None
-        carrier = context.provider_invocation if context is not None else None
-        if authority is not None:
-            owner = authority.owner_user_id
-        elif type(carrier) is ProviderInvocationCarrier:
-            owner = carrier._receipt.principal_id
-        else:
-            # Existing admission code owns the exact refusal and creates no root.
-            return await self._call_routed_attempts(role, prompt, system, cfg, **kwargs)
-        limit = FREE_TURN_ATTEMPTS if cfg.engine_mcp_enabled else TEXT_TURN_ATTEMPTS
-        budget = TurnRequestBudget(owner, context.universe_dir.name,
-                                   free_limit=limit, free_pool_limit=limit)
-        with request_budget_scope(budget):
-            response = await self._call_routed_attempts(
-                role, prompt, system, replace(cfg, request_budget=budget), **kwargs,
-            )
-        return replace(response, request_receipt=budget.receipt())
 
     async def _call_routed_attempts(
         self,
@@ -904,17 +858,15 @@ class ProviderRouter:
         cfg = config or _default_config(resolved_config)
         from tinyassets.request_budget import (
             TurnRequestBudget,
-            current_request_budget,
             metered_free_source,
         )
 
-        parent_budget = current_request_budget()
-        request_budget = cfg.request_budget or parent_budget
-        if request_budget is not None and (
-            type(request_budget) is not TurnRequestBudget
-            or parent_budget is not None and parent_budget is not request_budget
-        ):
+        request_budget = cfg.request_budget
+        if request_budget is not None and type(request_budget) is not TurnRequestBudget:
             raise ProviderAuthorityHeldError("invalid parent request budget")
+        if request_budget is None and (served_authority is not None
+                                       or invocation_carrier is not None):
+            raise ProviderAuthorityHeldError("model call requires a durable allocation")
         cfg = replace(cfg, request_budget=request_budget, request_attempt=None,
                       invocation_owner_user_id="")
         if _work_agent_observer is not None:
@@ -1098,11 +1050,6 @@ class ProviderRouter:
                     required_tokens=required_context + (cfg.max_tokens or 1),
                 )
 
-        # Hard Rule 15: the owner's binding alone names the provider. There is
-        # no host pin (``TINYASSETS_PIN_WRITER`` is retired: a host env var must
-        # never choose, narrow or probe the provider serving a universe) and no
-        # preference over a platform fallback chain, because there is no chain.
-
         # Q6.3 — apply per-universe allowlist (privacy primitive).
         if served_authority is not None:
             # The served authority is the explicitly-bound provider, but it must ALSO
@@ -1274,8 +1221,7 @@ class ProviderRouter:
                 # capability, which background does not carry — skipped below when
                 # absent; reservation + finalization are common to both.
                 if served_authority is not None and served_authority.budget_owner not in (
-                    "served_request",
-                    "background_attempt",
+                    "connected_request",
                 ):
                     # An authority with an UNKNOWN budget owner must never reach a
                     # provider: it would skip the reservation block below and launch
@@ -1283,8 +1229,7 @@ class ProviderRouter:
                     # with a forged authority). Fail closed before routing.
                     raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
                 if served_authority is not None and served_authority.budget_owner in (
-                    "served_request",
-                    "background_attempt",
+                    "connected_request",
                 ):
                     from tinyassets.auth.middleware import (
                         consume_provider_request_invocation,
@@ -1313,8 +1258,7 @@ class ProviderRouter:
                 try:
                     # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
                     # measured). ASYNC form: a blocking acquire here stalls the event
-                    # loop, and `call_judge_ensemble` gathers admission-taking tasks on
-                    # one loop, so the bound would refuse work it was itself holding up.
+                    # loop, so the bound would refuse work it was itself holding up.
                     #
                     # Acquired BEFORE `before_provider_launch` on purpose. With the
                     # order reversed, a busy refusal charged the launch, abandoned the
@@ -2026,34 +1970,3 @@ class ProviderRouter:
                 f"call_sync exceeded {inner_timeout + 30:.0f}s hard backstop "
                 f"for role={role}"
             )
-
-    # ------------------------------------------------------------------
-    # Judge ensemble (model family diversity)
-    # ------------------------------------------------------------------
-
-    async def call_judge_ensemble(
-        self,
-        prompt: str,
-        system: str,
-        config: ModelConfig | None = None,
-        *,
-        operation: str | None = None,
-        universe_context: UniverseContext | None = None,
-    ) -> list[ProviderResponse]:
-        """Judge through the owner's authority: exactly one response.
-
-        The ensemble used to fan out to every host-registered judge provider.
-        There is no platform provider pool to fan out to (Hard Rule 15), so the
-        ensemble is the owner's one authorized judge.
-        """
-        require_owner_bound_context(universe_context, operation=operation)
-        return [
-            await self.call(
-                "judge",
-                prompt,
-                system,
-                config,
-                operation=operation,
-                universe_context=universe_context,
-            )
-        ]

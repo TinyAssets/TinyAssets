@@ -262,17 +262,36 @@ def _seed_owner(
 
 
 def _copy_assignment_to(tmp_path: Path, *, universe_id: str, owner: str) -> None:
-    """Give a SECOND universe its own ready assignment row.
+    """Give a second owner a connected subscription and a ready preference.
 
     The seeded serving path is hard-wired to one universe; the pump-isolation
     tests need a second owner whose automation must keep running while the
     first one's is refused.
     """
+    from tinyassets.credential_vault import (
+        adopt_llm_subscription_custody,
+        write_credential_vault,
+    )
     from tinyassets.provider_assignment import (
         load_provider_assignment,
         provider_assignment_digest,
         store_provider_assignment_in_transaction,
     )
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    write_credential_vault(
+        tmp_path / universe_id,
+        [{"credential_type": "llm_subscription", "service": "codex",
+          "auth_json_b64": "e30="}],
+        owner_user_id=owner, universe_id=universe_id,
+    )
+    with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        adopt_llm_subscription_custody(
+            conn, universe_dir=tmp_path / universe_id, owner_user_id=owner,
+            universe_id=universe_id, service="codex",
+        )
+        conn.commit()
 
     source = load_provider_assignment(tmp_path, universe_id=UNIVERSE)
     assert source is not None
@@ -828,7 +847,7 @@ def test_a_home_rebind_between_ticks_is_refused_as_not_owner_home(
     assert seam.calls == []
 
 
-def test_a_revoked_assignment_between_ticks_is_refused(
+def test_a_revoked_connected_source_between_ticks_is_refused(
     tmp_path: Path,
     registered: Automation,
     monkeypatch,
@@ -836,7 +855,7 @@ def test_a_revoked_assignment_between_ticks_is_refused(
     seam = _SeamRecorder()
     monkeypatch.setattr(automations_module, "_execute", seam)
     with sqlite3.connect(db_path(tmp_path)) as conn:
-        conn.execute("DELETE FROM provider_assignments WHERE universe_id = ?", (UNIVERSE,))
+        conn.execute("DELETE FROM llm_credential_custody WHERE universe_id = ?", (UNIVERSE,))
         conn.commit()
 
     reason = run_due_automation(
@@ -1142,8 +1161,8 @@ def _real_providers(**providers):
         provider_call_module.set_provider_router(previous_router)
 
 
-def _receipt_provider(tmp_path: Path, run_id: str) -> tuple[str, int]:
-    """The provider + assignment generation the REAL admission recorded."""
+def _receipt_sources(tmp_path: Path, run_id: str) -> tuple[str, ...]:
+    """The connected source snapshot the real admission recorded."""
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,
     )
@@ -1156,7 +1175,7 @@ def _receipt_provider(tmp_path: Path, run_id: str) -> tuple[str, int]:
         ).fetchone()
     assert row is not None, f"no provider work receipt for run {run_id}"
     record = json.loads(row[0])
-    return str(record["provider"]), int(record["assignment_generation"])
+    return tuple(record["admitted_sources"])
 
 
 # §5 -- the ACL race
@@ -2219,20 +2238,14 @@ def test_the_real_admission_records_the_current_assignment_on_the_receipt(
 ) -> None:
     """The no-pin property, through the REAL session and its real receipt.
 
-    The previous version replaced `_execute` and observed a monkeypatched
-    session factory, so it could not see admission or custody at all (Codex §9).
-    This one runs the real path and reads what admission ACTUALLY wrote, then
-    takes the live assignment away and shows the automation cannot run without
-    it.
+    Runs the real path and reads what admission ACTUALLY wrote, then takes the
+    live accepted assignment away and shows the automation cannot run without
+    it: connected custody alone is not run authority.
 
     Deliberately NOT a provider flip. Rewriting `provider` on the assignment row
-    is not a rebind: `_current_serving_authority` re-derives the agent binding
-    and credential custody, which a hand-edited row no longer matches, so the
-    run fails on the binding rather than on the property under test. A real flip
-    needs a second deposited subscription, which this fixture has no way to
-    seed. What IS provable here is the same claim from the other side -- the
-    receipt carries the assignment that was live at run time, and with no live
-    assignment there is nothing stored anywhere to run from.
+    is not a rebind: admission re-derives the agent binding and credential
+    custody, which a hand-edited row no longer matches, so the run would fail on
+    the binding rather than on the property under test.
     """
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets.provider_assignment import load_provider_assignment
@@ -2246,15 +2259,14 @@ def test_the_real_admission_records_the_current_assignment_on_the_receipt(
             tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
         )
     assert first.startswith("ok:ran:"), first
-    provider, generation = _receipt_provider(tmp_path, first.split("ok:ran:", 1)[1])
-
-    # What admission recorded is what the ASSIGNMENT said, not what the
-    # automation said -- the automation says nothing about a provider.
-    assert provider == live.provider == "codex"
-    assert generation == live.generation
+    # What admission recorded is what the accepted ASSIGNMENT admitted, not
+    # what the automation said -- the automation says nothing about a provider.
+    assert live.provider == "codex"
+    assert _receipt_sources(tmp_path, first.split("ok:ran:", 1)[1]) == ("codex",)
     assert len(fake.calls) == 1
 
-    # Take the assignment away. A row carrying a pin would still run.
+    # Take the accepted assignment away. The subscription stays connected, and
+    # a row carrying a pin would still run; neither is authority.
     with sqlite3.connect(db_path(tmp_path)) as conn:
         conn.execute(
             "DELETE FROM provider_assignments WHERE universe_id = ?", (UNIVERSE,)
@@ -2267,7 +2279,7 @@ def test_the_real_admission_records_the_current_assignment_on_the_receipt(
         )
 
     assert second == "no_serving_assignment"
-    assert len(fake.calls) == 1  # unchanged: nothing ran from a pin
+    assert len(fake.calls) == 1  # unchanged: nothing ran from custody or a pin
 
 
 def test_a_restart_into_a_new_period_cannot_overlap_the_old_process(

@@ -28,6 +28,7 @@ from tinyassets.providers.agent_capacity_boundary import (
 )
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
+from tinyassets.providers.model_call import open_allocation
 from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
@@ -36,12 +37,9 @@ from tinyassets.request_budget import (
     FREE_TURN_ATTEMPTS,
     TEXT_TURN_ATTEMPTS,
     RequestBudgetExceeded,
-    TurnRequestBudget,
     candidate_is_metered_free,
-    current_request_budget,
     metered_free_source,
     pooled_budget,
-    request_budget_scope,
 )
 from tinyassets.served_tools import granted_tools, model_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
@@ -139,7 +137,7 @@ class AgentTurnCoordinator:
         # How hard the rendered history is compacted to fit a small window;
         # 0 renders every completed result whole. See ``_compact_to_fit``.
         self.compaction = 0
-        self.request_budget = config.request_budget or current_request_budget()
+        self.request_budget = config.request_budget
         self._owns_request_budget = self.request_budget is None
         self._free_request = False
         self._budget_skipped = set()
@@ -398,6 +396,13 @@ class AgentTurnCoordinator:
             actor_id=actor_id, graph_id=graph_id,
             enabled_tools=model_tools(self.config),
             capability_grant=granted_tools(self.config), timeout=timeout,
+            model_budget=getattr(self, "request_budget", None),
+            model_parent=("turn", self.turn.turn_id,
+                          getattr(getattr(self.context, "provider_request", None),
+                                  "agent_binding_id", ""),
+                          getattr(getattr(self.context, "provider_request", None),
+                                  "binding_revision", None))
+            if getattr(self.context, "provider_request", None) is not None else None,
             **self.steering(),
         )
 
@@ -456,17 +461,14 @@ class AgentTurnCoordinator:
     async def run(self):
         owner = self._check_scope()
         if self.request_budget is None:
-            self.request_budget = TurnRequestBudget(
-                owner, self.context.universe_dir.name,
+            self.request_budget = open_allocation(
+                owner, self.context.universe_dir,
                 free_limit=TEXT_TURN_ATTEMPTS if self._text_only else FREE_TURN_ATTEMPTS,
                 free_pool_limit=TEXT_TURN_ATTEMPTS if self._text_only else FREE_TURN_ATTEMPTS,
             )
         self.request_budget.check_scope(owner, self.context.universe_dir.name)
         try:
-            with request_budget_scope(
-                self.request_budget, close_on_exit=self._owns_request_budget,
-            ):
-                return await self._run()
+            return await self._run()
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
@@ -597,6 +599,13 @@ class AgentTurnCoordinator:
                         observer = self._begin_native
                     config = replace(
                         config, request_budget=self.request_budget,
+                        model_launch_parent=(
+                            "turn", self.turn.turn_id,
+                            getattr(getattr(self.context, "provider_request", None),
+                                    "agent_binding_id", ""),
+                            getattr(getattr(self.context, "provider_request", None),
+                                    "binding_revision", None),
+                        ) if getattr(self.context, "provider_request", None) is not None else None,
                         request_purpose="tool_review" if self._completed_tools() else "reply",
                     )
                     self.inference_system = system

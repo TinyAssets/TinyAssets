@@ -81,10 +81,39 @@ from `served_model_plan`. `require_owner_bound_dispatch` changes from
 "the provider the binding names" to "a member of `connected_sources`, with
 owner credentials" (ADR-006 is unchanged: no host or platform credential ever
 serves). The serving binding row stays as the owner's durable default
-preference, so there is no schema change. Its exactly-one-provider checks, and
-the `default` versus `manifest` scopes in foreground, background and cloud
-continuation admission, collapse into this one membership check. Callers carry
-no provider names.
+preference only. Callers carry no provider names.
+
+**Run admission snapshots the live set (decided 2026-10-11, task 2.4).** The
+stored provider assignment and its candidate manifest stop being an authority
+input. Admission of a run (foreground, background, cloud continuation) reads
+`connected_sources(owner, command_center)` once and writes the sorted set into
+the run's receipt as `admitted_sources`, with its digest in the existing
+`manifest_digest` column. Every attempt is then allowed only for a source in
+both `admitted_sources` and the live `connected_sources`, checked at
+reservation and again at launch. Consequences:
+
+- A newly connected source is usable by every run admitted after it connects.
+  A running run keeps the set it was admitted with, so its resolution order
+  and allowance do not shift underneath it.
+- Revocation: a disconnected source leaves the live set at once, so no new
+  admission includes it, and the next attempt of a running run on that source
+  is refused before reservation. Automatic moves to its next admitted source
+  that is still live; an explicit choice with no declared fallback fails
+  visibly, naming the source. An attempt already dispatched settles as it
+  ends (`succeeded`, `failed` or `unknown`); nothing is cut mid-flight.
+- Cross-owner: the snapshot is built only from the principal's own custody,
+  grants and definitions for that command center, and the per-attempt check
+  matches the receipt's principal and command center to the carrier's.
+- Money: the run's invocation, token and cost limits come from its durable
+  allocation (D4), not from the minimum over per-source work bindings.
+
+Rejected: (a) rewriting the stored assignment on every connect and disconnect
+adds writers to every connect path, and each write bumps the assignment
+generation, which stales every in-flight receipt, including runs that never
+touch the changed source. (b) a third "connected" receipt scope keeps the
+default and manifest scopes alive beside it and needs a receipt-table rebuild.
+Option (c) deletes both scopes and the assignment as an authority input, with
+no table-shape change.
 
 ### D3. Resolution
 
@@ -122,6 +151,15 @@ removed by migration M1, and the validator refuses it afterwards.
 - Native CLI attempts use the same reserve, dispatched and settle cycle. Their
   usage provenance is `cli_reported` or `unknown`.
 
+#### Allocation mutation table
+
+| Mutation | Test that must fail |
+| --- | --- |
+| Settle an already settled child attempt again | `test_joined_child_attempt_settles_once_on_parent` |
+| Join by usage ID without checking owner and command center | `test_join_rejects_another_owner_or_center_before_reservation`; `test_model_call_cannot_join_another_owners_root` |
+| Ignore a parent stop when a child dispatches | `test_parent_stop_fences_a_joined_child` |
+| Close a shared root when one child releases | `test_admitted_run_children_keep_one_budget_until_final_release` |
+
 ### D5. The receipt
 
 The receipt extends `ExecutionReceipt` with these fields:
@@ -156,6 +194,55 @@ records store the receipt as they store `execution` today.
   HTTP to a model API is not metered." `InferenceUsageRequired` keeps its
   class, with this text. The 19-line prompt band-aid at
   `engine_mcp_server.py:1745-1763` becomes this one rule.
+
+#### D6a. Where a `ta` model call gets its parent (decided 2026-10-11, task 2.7)
+
+The engine launch carries a signed grant over (session, live turn, tools);
+it carries no allocation and no carrier, and the live turn ID is not the
+journal ID the allocation links to. The platform therefore binds the
+allocation to the launch itself, server-side, reusing the private usage
+reference the broker already uses for HTTP sends
+(`agent_request_dispatches`, `issue_reference` / `claim_reference`):
+
+1. **At launch.** The two launch sites that sign an engine route
+   (`claude_provider` engine flags, `engine_tool_client`) run inside an
+   admitted allocation. There, the platform issues one launch reference for
+   that allocation (`config.request_budget`), shared across its rounds: a random
+   secret whose hash row records owner, command center, `usage_id` and the
+   parent's authority (the run's receipt ID, or the
+   turn's agent binding ID and revision). The secret goes inside the signed
+   grant, so the MAC covers it; editing or moving it voids the grant.
+2. **At `ta call model`.** The engine verifies the grant (as today), takes the
+   reference from the verified grant only, and resolves its row. It refuses
+   unless the row is active, its owner and command center equal the engine
+   server's own, and the allocation is open and not stopped. The engine then
+   builds `Parent(owner, command_center, usage_id=<row>)` and a server-side
+   launch authority from the row, then calls `call`. Nothing in the `ta`
+   request names an owner, a usage ID, a turn or a carrier; such fields are
+   rejected.
+3. **Each child attempt** joins the parent allocation (D4), so it counts
+   against the parent's policy and settles exactly once on it. Its source must
+   pass the live membership check (D2), and for a run also the receipt's
+   `admitted_sources` (2.4). The journal link comes from the allocation's own
+   `agent_request_usage_links` row, never from the route's live turn ID.
+4. **Revocation.** When the parent allocation settles, or is stopped,
+   the reference row goes inactive in the same transaction (as
+   `settle_invocation` already does for HTTP references). Any later
+   `ta call model` from that launch fails loudly with "this launch's model
+   authority has ended". An unsigned or stdio launch has no reference, and
+   `ta call model` says so; there is no fallback.
+
+The engine's action reviewer (D7) uses the same launch authority with
+`purpose="review"`. Both replace MCP sampling, so the engine has one way to
+reach a model. The launch authority is accepted only by `call`'s owner check,
+next to the served, invocation and request authorities it is derived from;
+no caller can construct it from input.
+
+Rejected: passing `usage_id` or a carrier through the `ta` request (forgeable
+by the agent); looking up "the current turn" by the live turn ID (it is not
+the journal ID, and races with the next turn); an in-process carrier registry
+(engine routes and work runs can be in different processes, and it does not
+survive a restart).
 
 ### D7. Action review and fail-loudly
 
@@ -221,8 +308,11 @@ definitions; their deletion size is measured from each PR's actual numstat.
 | Caller-built allocations and `request_budget_scope` / `current_request_budget` | `agent_turn_coordinator.py:464`, `universe_intelligence.py:699, 1522`, `router.py:801`, `request_budget.py:347-365` | -80 |
 | The in-memory allocation branch | `request_budget.py` `TurnRequestBudget` | -120 |
 | The exactly-one-provider serving checks | `provider_serving_binding.py` | -150 |
+| The assignment as run authority: `_admit_manifest`, the provider-scope child binding mint, `_current_work_manifest`, `_current_work_member`, `_issue_manifest_receipt`, `manifest_bindings`, `_current_selected_member_authority`, the assignment rewrite on disconnect, `_ensure_manifest_receipt_schema` | `foreground_run_provider.py`, `background_served_provider.py`, `storage/provider_work_authority.py`, `provider_serving_binding.py`, `providers/connection_lifecycle.py` | measured in the 2.4 PR |
 | `WriterExecutionReceipt` | `providers/execution_receipt.py:149-195` | 47 measured |
 | The MCP-sampling reviewer | `ta_capabilities.py:410-445`, `agent_review.py` bound callback | -50 |
+| The `review_provider` plumbing on `Capabilities` and `engine_dispatch` | `ta_capabilities.py` | measured in the 2.7 PR |
+| The launch reference (issue at launch, resolve in the engine) | `served_tools.py`, `engine_steering.py`, `storage/agent_request_usage.py` | measured in the 2.7 PR |
 | The prompt band-aid; the old refusal text | `engine_mcp_server.py:1745-1763`, `agent_request_usage.py:126-136` | -25 |
 | **Deleted** | | **Net measured per PR** |
 | `model_call.py` (contract, resolution, allocation, receipt) | new | +320 |
@@ -244,9 +334,18 @@ M1 (with writers stopped, after a full backup): rewrite every stored workflow
 node whose `llm_policy` has `difficulty_override` so that the key is removed,
 and record the count and branch IDs in the deploy log. Nothing else changes in
 storage: serving binding rows and usage store rows keep their shape.
-In-flight runs admitted under a `manifest` receipt finish under the new
-membership check. It is a superset of the old exact-provider check, so no
-admitted call becomes forbidden.
+
+M2 (task 2.4, same window, writers stopped, after the backup): set every
+`provider_work_receipts` row in state `active` to `fenced` and close its claim,
+and record the count and run IDs in the deploy log. Those runs show as
+interrupted and the owner reruns them; they are admitted under the snapshot.
+No table changes shape: new receipts use the existing `manifest` row shape
+(`binding_id` null, `manifest_digest` set), and the `provider` shape is no
+longer written. The validator refuses any active receipt without
+`admitted_sources`, so a missed legacy row fails loudly instead of running
+under the old check. M2 also asserts the receipt table already has
+`authority_scope`, so the online `_ensure_manifest_receipt_schema` rebuild is
+deleted.
 
 ## Risks / Trade-offs
 
