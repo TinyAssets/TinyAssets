@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (founder decisions 2026-10-11). Amends ADR-012.
+Accepted (founder decisions 2026-10-11). Amends ADR-012. The driver choice
+is evidenced and the Firecracker trigger fixed by ADR-022.
 
 ## Date
 

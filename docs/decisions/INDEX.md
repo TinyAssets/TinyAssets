@@ -12,6 +12,7 @@ acceptance except its Status line (ADR-005).
 - [ADR-011-owner-door-complete-model-door-bounded.md](ADR-011-owner-door-complete-model-door-bounded.md) — the app's reads are complete · only the model door bounds · `AccountType` is the one per-account input
 - [ADR-012-sealed-box-target-architecture.md](ADR-012-sealed-box-target-architecture.md) — one sealed box per command center (amended by ADR-019) · control plane is the only always-on layer · capacity later
 - [ADR-019-one-box-per-owner.md](ADR-019-one-box-per-owner.md) — one box per owner runs the loop, tools, browser and CLIs · gVisor driver · owner-only policy enforced at the box boundary · email via the owner's connector
+- [ADR-022-box-backend-gvisor-on-the-droplet.md](ADR-022-box-backend-gvisor-on-the-droplet.md) — gVisor measured on the production droplet size is the one box backend · owner cell deleted, not wrapped · Firecracker only on a KVM host with a measured need · no new spending to start P2
 - [ADR-013-primitives-not-operators.md](ADR-013-primitives-not-operators.md) — ship the missing primitive, not an operator · irreducibility finding for new handles · no graph-size caps · test via the app agent · generator, evaluator and ground truth separate
 - [ADR-014-an-agent-is-a-node.md](ADR-014-an-agent-is-a-node.md) — an agent node runs the `converse` turn under the owner's grant
 - [ADR-015-only-the-floor-blocks-a-deploy.md](ADR-015-only-the-floor-blocks-a-deploy.md) — the six floor classes · everything else is tracked and re-judged after live use · outages equal severity
