@@ -180,29 +180,11 @@ green, declare the redeploy validated.
 
 ---
 
-## §3 — Mirror parity check
+## §3 — Plugin packaging check
 
-Quick sanity that the canonical and packaging mirrors match — drift here
-would indicate dev-side packaging-sync didn't run before the build.
-
-```bash
-cmp -s tinyassets/universe_server.py \
-       packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py \
-  && echo "universe_server.py mirrors MATCH" \
-  || echo "WARN: universe_server.py mirrors DIFFER"
-
-cmp -s tinyassets/runs.py \
-       packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/runs.py \
-  && echo "runs.py mirrors MATCH" \
-  || echo "WARN: runs.py mirrors DIFFER"
-```
-
-**Green:** both MATCH. (Mirrors may pre-diverge for the dist surface per
-memory `feedback_three_mirrors_dist_may_diverge` — runtime should match.)
-
-**Red:** WARN on either → file an issue but don't block the redeploy
-validation. The deployed image was built from one of them; whichever it
-was is what's running.
+When validating a plugin release, run `python packaging/claude-plugin/build_plugin.py --pack`.
+The builder stages the runtime from canonical sources, import-probes it, and
+writes `packaging/dist/tinyassets-claude-plugin.zip`.
 
 ---
 

@@ -16,6 +16,7 @@ packaged `tinyassets-universe-server` plugin.
 
 - `python packaging/claude-plugin/build_plugin.py --pack` builds the ignored
   runtime and writes `packaging/dist/tinyassets-claude-plugin.zip`. The release
-  workflow uploads that archive; the marketplace installs it from the latest release.
+  workflow uploads that archive to the `claude-plugin-latest` release on main
+  pushes. The marketplace installs it from that fixed release.
 - The packaged plugin carries its own end-user slash-command skills. Those are
   plugin assets, not main project workflow skills.

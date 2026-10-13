@@ -325,7 +325,7 @@ def test_plugin_archive_contains_the_built_runtime(tmp_path):
         assert "runtime/.build.lock" not in names
 
 
-def test_marketplace_downloads_the_release_plugin_archive():
+def test_marketplace_downloads_the_fixed_release_plugin_archive():
     marketplace = json.loads((
         REPO_ROOT / "packaging/claude-plugin/.claude-plugin/marketplace.json"
     ).read_text(encoding="utf-8"))
@@ -333,13 +333,25 @@ def test_marketplace_downloads_the_release_plugin_archive():
     assert source == {
         "source": "archive",
         "url": (
-            "https://github.com/TinyAssets/TinyAssets/releases/latest/download/"
+            "https://github.com/TinyAssets/TinyAssets/releases/download/"
+            "claude-plugin-latest/"
             "tinyassets-claude-plugin.zip"
         ),
     }
     workflow = (REPO_ROOT / ".github/workflows/build-bundle.yml").read_text()
     assert "python packaging/claude-plugin/build_plugin.py --pack" in workflow
     assert "packaging/dist/tinyassets-claude-plugin.zip" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "publish-claude-plugin:" in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "RELEASE_TAG: claude-plugin-latest" in workflow
+    assert "github.event.release.tag_name != 'claude-plugin-latest'" in workflow
+    assert 'gh release create "$RELEASE_TAG"' in workflow
+    assert "--latest=false" in workflow
+    assert (
+        'gh release upload "$RELEASE_TAG" '
+        'dist/tinyassets-claude-plugin.zip --clobber'
+    ) in workflow
 
 
 def test_build_plugin_purges_legacy_fantasy_author_snapshot(tmp_path):

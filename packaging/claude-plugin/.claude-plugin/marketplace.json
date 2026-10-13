@@ -17,7 +17,7 @@
       },
       "source": {
         "source": "archive",
-        "url": "https://github.com/TinyAssets/TinyAssets/releases/latest/download/tinyassets-claude-plugin.zip"
+        "url": "https://github.com/TinyAssets/TinyAssets/releases/download/claude-plugin-latest/tinyassets-claude-plugin.zip"
       }
     }
   ]
