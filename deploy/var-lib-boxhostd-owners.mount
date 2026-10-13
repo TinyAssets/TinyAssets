@@ -1,0 +1,13 @@
+[Unit]
+Description=TinyAssets XFS box store
+Requires=box-store-device.service
+After=box-store-device.service
+
+[Mount]
+What=/run/boxhostd/box-store-device
+Where=/var/lib/boxhostd/owners
+Type=xfs
+Options=pquota,noatime,nodiscard
+
+[Install]
+WantedBy=multi-user.target

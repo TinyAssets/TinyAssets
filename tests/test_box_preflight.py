@@ -152,34 +152,42 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
     assert box_preflight.g1(Boxes(), 10)["pass"] is True
 
 
-def test_ext4_project_inheritance_and_dedicated_scratch(monkeypatch, tmp_path: Path) -> None:
+def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: Path) -> None:
     commands = []
 
     def fake_run(args, **_kwargs):
         commands.append(args)
-        output = (
-            "ext4 rw,prjquota"
-            if args[-1] == "FSTYPE,OPTIONS"
-            else "/volume"
-            if args[-1] == "TARGET"
-            else ""
-        )
+        output = "xfs rw,pquota,noatime,nodiscard" if args[0] == "findmnt" else ""
         return subprocess.CompletedProcess(args, 0, stdout=output)
 
-    monkeypatch.setattr(box_preflight, "run", fake_run)
-    monkeypatch.setattr(box_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
-    monkeypatch.setattr(box_preflight, "MIB", 1)
-    volume = tmp_path / "volume"
-    volume.mkdir()
+    class Boxes:
+        def start(self, _name, **_kwargs):
+            return None
+
+        def exec(self, name, *_args, **_kwargs):
+            code = errno.EDQUOT if name == "g4quota" else errno.ENOSPC
+            return subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"errno": code, "bytes": 1})
+            )
+
+        def stop(self, _name):
+            return None
+
+    store = tmp_path / "owners"
+    store.mkdir()
     work = tmp_path / "work"
     work.mkdir()
-    box_preflight.g4(volume, work)
-    chattr = next(command for command in commands if command[0] == "chattr")
-    assert chattr[3] == "+P"
-    assert Path(chattr[4]).parent == volume / box_preflight.QUOTA_SCRATCH
+    image = tmp_path / "boxes.img"
+    image.write_bytes(b"image")
+    monkeypatch.setattr(box_preflight, "BOX_IMAGE", image)
+    monkeypatch.setattr(box_preflight, "run", fake_run)
+    monkeypatch.setattr(box_preflight.shutil, "which", lambda _tool: "/usr/bin/xfs_quota")
+    result = box_preflight.g4(store, Boxes(), work)
+    assert result["pass"] is True
+    assert result["quota_errno"] == errno.EDQUOT
+    assert result["store_errno"] == errno.ENOSPC
+    assert ["fstrim", "-a"] in commands
     assert (work / "quota-state.json").exists()
-    box_preflight.cleanup_scratch(work)
-    assert not work.exists()
 
 
 def test_cleanup_pass_removes_killed_harness_quota_tree(monkeypatch, tmp_path: Path) -> None:
@@ -266,45 +274,6 @@ def test_cleanup_only_guard_reports_fixed_failure(monkeypatch, capsys, tmp_path:
         "step": "cleanup_guard",
         "reason": "invalid_work_dir",
     }
-
-
-def test_g4_missing_optional_tool_is_gate_failure_without_quota_state(
-    monkeypatch, tmp_path: Path
-) -> None:
-    volume = tmp_path / "volume"
-    volume.mkdir()
-    work = tmp_path / "work"
-    work.mkdir()
-
-    def fake_run(args, **_kwargs):
-        assert args[0] in {"findmnt", "chattr"}
-        return subprocess.CompletedProcess(args, 0, stdout="ext4 rw,prjquota")
-
-    monkeypatch.setattr(box_preflight, "run", fake_run)
-    monkeypatch.setattr(
-        box_preflight.shutil, "which", lambda tool: None if tool == "chattr" else f"/usr/bin/{tool}"
-    )
-    assert box_preflight.g4(volume, work)["reason"] == "missing_tool:chattr"
-    assert not (work / "quota-state.json").exists()
-    box_preflight.cleanup_scratch(work)
-
-
-def test_g4_creates_absent_scratch_directory(monkeypatch, tmp_path: Path) -> None:
-    volume = tmp_path / "volume"
-    volume.mkdir()
-    work = tmp_path / "work"
-    work.mkdir()
-
-    def fake_run(args, **_kwargs):
-        output = "ext4 rw,prjquota" if args[-1] == "FSTYPE,OPTIONS" else "/volume"
-        return subprocess.CompletedProcess(args, 0, stdout=output)
-
-    monkeypatch.setattr(box_preflight, "run", fake_run)
-    monkeypatch.setattr(box_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
-    monkeypatch.setattr(box_preflight, "MIB", 1)
-    box_preflight.g4(volume, work)
-    assert (volume / box_preflight.QUOTA_SCRATCH).is_dir()
-    box_preflight.cleanup_scratch(work)
 
 
 def test_cleanup_quota_state_missing_tool_names_step(monkeypatch, tmp_path: Path) -> None:
@@ -460,11 +429,12 @@ def test_missing_quota_mount_fails_without_touching_volume(monkeypatch, tmp_path
         stdout = "ext4 rw,relatime\n"
 
     monkeypatch.setattr(box_preflight, "run", lambda _args: Result())
-    assert box_preflight.g4(tmp_path) == {
+    assert box_preflight.g4(tmp_path, None, tmp_path) == {
         "filesystem": "ext4",
         "project_quota_mount": False,
+        "nodiscard_mount": False,
         "pass": False,
-        "reason": "project quotas are not mounted on data volume",
+        "reason": "box store requires XFS pquota,nodiscard",
     }
 
 

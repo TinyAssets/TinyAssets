@@ -4,9 +4,9 @@ Use this procedure for whole-volume recovery, rollback after a bad migration,
 or a fresh-host recovery drill. Nightly full archives are gzip files named
 `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`.
 
-`deploy/backup-restore.sh` owns data restore only. It validates and stages the
-archive before stopping containers, swaps the staged directory into place, and
-retains the prior volume for rollback. It never starts a service.
+`deploy/backup-restore.sh` validates and stages the data and paired box-store
+archives before stopping consumers. It swaps the staged data into place and
+retains the prior volume and owner trees for rollback. It never starts a service.
 
 ## Preconditions
 
@@ -149,3 +149,28 @@ The automated fresh-host proof is `.github/workflows/dr-drill.yml`. It
 transfers a selected full archive, invokes this restore script, starts only the
 daemon, probes through an SSH port forward, destroys a green drill host, and
 keeps a red host by default.
+# Box-store pair
+
+An installed box store adds `tinyassets-box-store-<timestamp>.tar.gz` beside
+each full data archive in the rclone destination. `backup.sh` freezes XFS
+while streaming this member to rclone, then thaws it. The box member is not
+staged on the root filesystem or shipped to GitHub releases. Restore requires
+the exact timestamp pair and
+extracts the box member to a temporary directory on the XFS store. Numeric
+owners, ACLs, xattrs and safe in-tree links are preserved. The broker's
+`.broker/box-registry.json` export in the data archive must contain `boxes`
+rows with `uid`, `gid`, `project_id` and `bhard_bytes` for every owner tree;
+restore re-applies each XFS project and `bhard`, then runs `xfs_quota report`.
+An empty P2a box store needs no registry rows. A local restore can provide the
+matching archive through `BOX_BACKUP_FILE` and a registry export through
+`BOX_REGISTRY_FILE`. `BOX_STORE_DIR` permits a restore drill on a mounted
+temporary XFS store.
+
+The restore script stops boxhostd and retains old owner trees in
+`.tinyassets-box-restore-old.*` on the store. After checking both restored
+data and boxes, start `boxhostd.service`; remove the retained old trees only
+after the post-restore verification. To roll back before removing them, stop
+boxhostd, move the restored numeric owner trees aside, move the retained old
+trees back, restore the retained old data volume, then start services and
+verify the public canary. Keep both archive members and the old directories
+until verification completes.

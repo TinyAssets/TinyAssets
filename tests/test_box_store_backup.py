@@ -1,0 +1,163 @@
+"""Paired box-store archive and restore against a disposable store."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tarfile
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="Linux host tools required")
+
+
+def _shim(directory: Path, name: str, body: str) -> None:
+    path = directory / name
+    path.write_text("#!/usr/bin/env bash\nset -e\n" + body)
+    path.chmod(0o755)
+
+
+@pytest.mark.parametrize("remote_restore", [False, True])
+def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    volume = tmp_path / "volume" / "_data"
+    volume.mkdir(parents=True)
+    broker = volume / ".broker"
+    broker.mkdir()
+    uid, gid = os.getuid(), os.getgid()
+    (broker / "box-registry.json").write_text(json.dumps({"boxes": [{
+        "uid": uid, "gid": gid, "project_id": 123456, "bhard_bytes": 8 * 1024 * 1024,
+    }]}))
+    (volume / "record.txt").write_text("data")
+    store = tmp_path / "owners"
+    owner = store / str(uid)
+    owner.mkdir(parents=True)
+    (owner / "box.txt").write_text("box")
+    (owner / "link.txt").symlink_to("box.txt")
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    log = tmp_path / "commands.log"
+    _shim(
+        bin_dir, "docker",
+        'case "$1 $2" in "volume inspect") echo "$TEST_VOLUME_DIR";; '
+        '"ps -q") :;; *) :;; esac\n',
+    )
+    _shim(bin_dir, "findmnt", '''
+if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; else echo rw,pquota,nodiscard; fi
+''')
+    _shim(bin_dir, "xfs_freeze", 'echo "$1" >> "$TEST_COMMAND_LOG"\n')
+    _shim(bin_dir, "xfs_quota", 'echo "$*" >> "$TEST_COMMAND_LOG"\n')
+    _shim(bin_dir, "systemctl", 'echo "$*" >> "$TEST_COMMAND_LOG"\n')
+    _shim(bin_dir, "rclone", '''
+case "$1" in
+  copyto) cp "${@: -2:1}" "${@: -1}" ;;
+  rcat) cat > "${@: -1}" ;;
+  cat) cat "${@: -1}" ;;
+  ls) test -f "${@: -1}" ;;
+  lsf) : ;;
+  deletefile) : ;;
+  *) exit 1 ;;
+esac
+''')
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+           "TEST_VOLUME_DIR": str(volume), "TEST_COMMAND_LOG": str(log),
+           "BOX_STORE_DIR": str(store), "BACKUP_VOLUME": "test-volume",
+           "BACKUP_DEST": str(remote), "BACKUP_LOG": str(tmp_path / "backup.log"),
+           "GH_TOKEN": ""}
+    backup = subprocess.run(["bash", str(ROOT / "deploy/backup.sh")], env=env,
+                            capture_output=True, text=True)
+    assert backup.returncode == 0, backup.stdout + backup.stderr
+    assert log.read_text().splitlines()[:2] == ["-f", "-u"]
+    data_archive, = remote.glob("tinyassets-data-*.tar.gz")
+    box_archive, = remote.glob("tinyassets-box-store-*.tar.gz")
+    (volume / "record.txt").write_text("changed")
+    (owner / "box.txt").write_text("changed")
+    env.update(BACKUP_FILE=str(data_archive), BOX_BACKUP_FILE=str(box_archive),
+               BACKUP_LOG=str(tmp_path / "restore.log"))
+    restore_args = []
+    if remote_restore:
+        del env["BACKUP_FILE"]
+        del env["BOX_BACKUP_FILE"]
+        timestamp = data_archive.name.removeprefix("tinyassets-data-").removesuffix(".tar.gz")
+        restore_args = [f"--timestamp={timestamp}"]
+    restore = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh"), *restore_args],
+        env=env, capture_output=True, text=True,
+    )
+    assert restore.returncode == 0, restore.stdout + restore.stderr
+    assert (volume / "record.txt").read_text() == "data"
+    assert (owner / "box.txt").read_text() == "box"
+    assert (owner / "link.txt").read_text() == "box"
+    assert "bhard=8192k 123456" in log.read_text()
+    assert "report -p -n" in log.read_text()
+    assert list(store.glob(".tinyassets-box-restore-old.*/" + str(uid) + "/box.txt"))
+
+
+def test_store_unit_contract_and_installer_guards() -> None:
+    unit = (ROOT / "deploy/boxhostd.service").read_text()
+    mount = (ROOT / "deploy/var-lib-boxhostd-owners.mount").read_text()
+    prepare = (ROOT / "deploy/box-store-device.service").read_text()
+    device = (ROOT / "deploy/box-store-device.sh").read_text()
+    assert "Requires=var-lib-boxhostd-owners.mount" in unit
+    assert "ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh" in unit
+    assert "Options=pquota,noatime,nodiscard" in mount
+    assert "DefaultDependencies=no" in prepare
+    assert "fallocate -l" in device and "reserve=$((6 * 1024 * 1024 * 1024))" in device
+    assert "discard_max_bytes" in device and "--direct-io=on" in device
+    assert "mkfs.xfs" in device and "if [[ ! -e \"$device\" ]]" in device
+    for name in ("box-store-device.sh", "box-store-device-stop.sh",
+                 "box-store-check.sh", "install-boxhostd-preflight.sh", "backup.sh",
+                 "backup-restore.sh"):
+        result = subprocess.run(["bash", "-n", str(ROOT / "deploy" / name)], check=False)
+        assert result.returncode == 0, name
+
+
+@pytest.mark.parametrize(
+    ("filesystem", "options", "expected"),
+    [
+        ("xfs", "rw,pquota,noatime,nodiscard", 0),
+        ("xfs", "rw,noatime,nodiscard", 1),
+        ("xfs", "rw,pquota,noatime", 1),
+        ("ext4", "rw,pquota,nodiscard", 1),
+    ],
+)
+def test_store_check_requires_all_mount_properties(
+    tmp_path: Path, filesystem: str, options: str, expected: int
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _shim(bin_dir, "findmnt", '''
+if [[ "${@: -1}" == FSTYPE ]]; then echo "$TEST_FS"; else echo "$TEST_OPTIONS"; fi
+''')
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+           "TEST_FS": filesystem, "TEST_OPTIONS": options}
+    result = subprocess.run(
+        ["bash", str(ROOT / "deploy/box-store-check.sh"), str(tmp_path / "owners")],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == expected
+
+
+def test_box_archive_rejects_extraction_through_symlink(tmp_path: Path) -> None:
+    archive = tmp_path / "unsafe.tar.gz"
+    with tarfile.open(archive, "w:gz") as output:
+        root = tarfile.TarInfo("owners/1000")
+        root.type = tarfile.DIRTYPE
+        output.addfile(root)
+        link = tarfile.TarInfo("owners/1000/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc"
+        output.addfile(link)
+        payload = tarfile.TarInfo("owners/1000/link/payload")
+        payload.size = 0
+        output.addfile(payload)
+    result = subprocess.run(
+        ["python3", str(ROOT / "deploy/box-store-archive.py"), str(archive)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "traverses a symlink" in result.stderr

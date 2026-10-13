@@ -11,9 +11,15 @@ root=/opt/tinyassets/boxhostd
 target="${root}/${release}"
 source_dir="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$root"
-# G4 needs the project-quota tools (setquota, repquota); chattr ships with e2fsprogs.
-if ! command -v setquota >/dev/null || ! command -v repquota >/dev/null; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends quota >/dev/null
+# G4 and the store require XFS userspace tools.
+if ! command -v mkfs.xfs >/dev/null || ! command -v xfs_quota >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfsprogs >/dev/null
+fi
+mkdir -p /etc/tinyassets /var/lib/boxhostd/owners
+if [[ ! -e /etc/tinyassets/box-store.conf ]]; then
+    printf '%s\n' 'BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img' \
+        > /etc/tinyassets/box-store.conf
+    chmod 0600 /etc/tinyassets/box-store.conf
 fi
 archive="$(mktemp /tmp/boxhostd-runsc.XXXXXX)"
 stage="$(mktemp -d "${root}/.stage.XXXXXX")"
@@ -49,16 +55,18 @@ a0dde4d5e75d4f8e4287bc2e631b96536e83c80f574fb4ff62c58d472d4f58c5  ${target}/gvis
 EOF
 "${target}/runsc" --version | grep -F "$release" >/dev/null
 changed=0
-for name in boxhostd_idle.py box_preflight.py; do
+for name in boxhostd_idle.py box_preflight.py box-store-device.sh box-store-device-stop.sh box-store-check.sh; do
     if ! cmp -s "${source_dir}/${name}" "${root}/${name}"; then
         install -m 0755 "${source_dir}/${name}" "${root}/${name}"
         changed=1
     fi
 done
-if ! cmp -s "${source_dir}/boxhostd.service" /etc/systemd/system/boxhostd.service; then
-    install -m 0644 "${source_dir}/boxhostd.service" /etc/systemd/system/boxhostd.service
-    changed=1
-fi
+for name in boxhostd.service box-store-device.service var-lib-boxhostd-owners.mount; do
+    if ! cmp -s "${source_dir}/${name}" "/etc/systemd/system/${name}"; then
+        install -m 0644 "${source_dir}/${name}" "/etc/systemd/system/${name}"
+        changed=1
+    fi
+done
 if [[ "$(readlink "${root}/current" 2>/dev/null || true)" != "$release" ]]; then
     ln -s "$release" "${root}/.current.new.$$"
     mv -Tf "${root}/.current.new.$$" "${root}/current"
@@ -66,6 +74,10 @@ if [[ "$(readlink "${root}/current" 2>/dev/null || true)" != "$release" ]]; then
 fi
 if [[ "$changed" -eq 1 ]]; then
     systemctl daemon-reload
+fi
+systemctl enable --now var-lib-boxhostd-owners.mount
+systemctl is-active --quiet var-lib-boxhostd-owners.mount
+if [[ "$changed" -eq 1 ]]; then
     systemctl restart boxhostd.service
 fi
 systemctl enable --now boxhostd.service

@@ -33,6 +33,8 @@ set -euo pipefail
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
 BACKUP_FILE="${BACKUP_FILE:-}"
+BOX_BACKUP_FILE="${BOX_BACKUP_FILE:-}"
+BOX_STORE_DIR="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
 DRY_RUN="${DRY_RUN:-0}"
 BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
@@ -40,6 +42,7 @@ TIMESTAMP_ARG=""
 LIST_MODE=0
 DOWNLOAD_DIR=""
 STAGE_DIR=""
+BOX_STAGE=""
 VOLUME_PARENT=""
 
 for arg in "$@"; do
@@ -60,6 +63,12 @@ log() {
 }
 
 cleanup() {
+    if [[ -n "${BOX_STAGE}" && -d "${BOX_STAGE}" ]]; then
+        case "${BOX_STAGE}" in
+            "${BOX_STORE_DIR}"/.tinyassets-box-restore-stage.*) rm -rf -- "${BOX_STAGE}" ;;
+            *) log "ERROR: refusing to clean unexpected box stage ${BOX_STAGE}" ;;
+        esac
+    fi
     if [[ -n "${STAGE_DIR}" && -d "${STAGE_DIR}" ]]; then
         case "${STAGE_DIR}" in
             "${VOLUME_PARENT}"/.tinyassets-restore-stage.*)
@@ -172,6 +181,34 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     exit 0
 fi
 
+# An installed box store gets an archive with the exact data timestamp.
+BOX_TAR_PATH=""
+BOX_REMOTE=""
+if [[ -e "${BOX_STORE_DIR}" ]]; then
+    if ! "$(dirname "$(realpath "$0")")/box-store-check.sh" "${BOX_STORE_DIR}"; then
+        log "ERROR: box store is not mounted with XFS project quota"
+        exit 1
+    fi
+    if ! is_full_archive_name "${TAR_NAME}"; then
+        log "ERROR: paired restore requires a timestamped full archive"
+        exit 2
+    fi
+    BOX_NAME="${TAR_NAME/tinyassets-data-/tinyassets-box-store-}"
+    if [[ -n "${BACKUP_FILE}" ]]; then
+        BOX_TAR_PATH="${BOX_BACKUP_FILE:-$(dirname "${BACKUP_FILE}")/${BOX_NAME}}"
+        if [[ "${BOX_TAR_PATH}" != /* || -L "${BOX_TAR_PATH}" || ! -f "${BOX_TAR_PATH}" ]]; then
+            log "ERROR: paired box-store archive missing"
+            exit 2
+        fi
+    else
+        BOX_REMOTE="${BACKUP_DEST}/${BOX_NAME}"
+        if ! rclone ls "${BOX_REMOTE}" > /dev/null 2>&1; then
+            log "ERROR: paired box-store archive missing"
+            exit 2
+        fi
+    fi
+fi
+
 # ----- 2. resolve and guard the Docker volume --------------------------
 
 VOLUME_DIR="$(
@@ -254,7 +291,8 @@ if ! tar -tzf "${TAR_PATH}" > /dev/null; then
 fi
 
 STAGE_DIR="$(mktemp -d "${VOLUME_PARENT}/.tinyassets-restore-stage.XXXXXX")"
-if ! tar -xzf "${TAR_PATH}" -C "${STAGE_DIR}" --strip-components=1; then
+if ! tar -xzf "${TAR_PATH}" -C "${STAGE_DIR}" --strip-components=1 \
+        --numeric-owner --acls --xattrs; then
     log "ERROR: archive staging extract failed"
     exit 4
 fi
@@ -264,6 +302,37 @@ if ! chown --reference="${VOLUME_DIR}" "${STAGE_DIR}" \
     exit 4
 fi
 log "  archive validated and staged at ${STAGE_DIR}"
+
+if [[ -n "${BOX_NAME:-}" ]]; then
+    archive_check="$(dirname "$(realpath "$0")")/box-store-archive.py"
+    if [[ -n "${BOX_REMOTE}" ]]; then
+        rclone cat "${BOX_REMOTE}" | python3 "${archive_check}" - || {
+            log "ERROR: box-store archive validation failed"; exit 4;
+        }
+    elif ! python3 "${archive_check}" "${BOX_TAR_PATH}"; then
+        log "ERROR: box-store archive validation failed"
+        exit 4
+    fi
+    BOX_STAGE="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-stage.XXXXXX")"
+    if [[ -n "${BOX_REMOTE}" ]]; then
+        rclone cat "${BOX_REMOTE}" | tar -xzf - -C "${BOX_STAGE}" \
+            --strip-components=1 --numeric-owner --acls --xattrs || {
+                log "ERROR: box-store extraction failed"; exit 4;
+            }
+    else
+        if ! tar -xzf "${BOX_TAR_PATH}" -C "${BOX_STAGE}" --strip-components=1 \
+                --numeric-owner --acls --xattrs; then
+            log "ERROR: box-store extraction failed"
+            exit 4
+        fi
+    fi
+    REGISTRY="${BOX_REGISTRY_FILE:-${STAGE_DIR}/.broker/box-registry.json}"
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            "${BOX_STORE_DIR}" "${BOX_STAGE}" "${REGISTRY}"; then
+        log "ERROR: box-store quota restoration failed"
+        exit 4
+    fi
+fi
 
 # ----- 4. stop every consumer, then swap with automatic rollback -------
 
@@ -276,6 +345,22 @@ fi
 containers=()
 if [[ -n "${CONTAINER_OUTPUT}" ]]; then
     mapfile -t containers <<< "${CONTAINER_OUTPUT}"
+fi
+
+if [[ -n "${BOX_STAGE}" ]]; then
+    # Retain old owner trees on the same XFS store until the caller verifies.
+    systemctl stop boxhostd.service
+    BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
+    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
+        [[ -e "$tree" ]] || continue
+        mv -- "$tree" "${BOX_OLD}/"
+    done
+    for tree in "${BOX_STAGE}"/[0-9]*; do
+        [[ -e "$tree" ]] || continue
+        mv -- "$tree" "${BOX_STORE_DIR}/"
+    done
+    rmdir "${BOX_STAGE}"
+    BOX_STAGE=""
 fi
 if [[ "${#containers[@]}" -gt 0 ]]; then
     log "stopping ${#containers[@]} container(s) mounting ${BACKUP_VOLUME}..."
@@ -314,5 +399,8 @@ STAGE_DIR=""
 
 log "restore complete. Data installed at ${VOLUME_DIR}."
 log "pre-restore volume retained at ${OLD_DIR} until caller health verification."
+if [[ -n "${BOX_NAME:-}" ]]; then
+    log "pre-restore box trees retained at ${BOX_OLD} until caller health verification."
+fi
 log "NEXT — start only the intended service, probe it, then remove ${OLD_DIR}."
 exit 0
