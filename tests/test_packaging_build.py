@@ -342,6 +342,7 @@ def test_marketplace_downloads_the_fixed_release_plugin_archive():
     assert "python packaging/claude-plugin/build_plugin.py --pack" in workflow
     assert "packaging/dist/tinyassets-claude-plugin.zip" in workflow
     assert "workflow_dispatch:" in workflow
+    assert workflow.count('"models/**"') == 2
     assert "publish-claude-plugin:" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "RELEASE_TAG: claude-plugin-latest" in workflow
