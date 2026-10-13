@@ -496,23 +496,69 @@ def test_admission_refuses_before_the_trail_reads_a_body(captured, monkeypatch):
     )
 
 
-def test_db_trace_logs_the_verb_during_a_request(captured):
+def test_db_trace_counts_fast_statements_on_the_request(captured):
     obs.install_db_trace()
-    active = obs._request_active.set(True)
-    session = obs._session_id.set("s_" + "ef" * 16)
+
+    async def query(scope, receive, send):
+        with sqlite3.connect(":memory:") as connection:
+            for _ in range(20):
+                assert connection.execute("select 1").fetchone() == (1,)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
     try:
-        connection = sqlite3.connect(":memory:")
-        row = connection.execute("select 1").fetchone()
-        assert row == (1,)
+        app = obs.RequestLogMiddleware(query)
+        asyncio.run(_drive(app, _scope("/app")))
+        first = _events(captured)
+        assert len(first) == 1
+        assert first[0]["event"] == "session.step"
+        assert first[0]["http"]["db_calls"] == 20
+        assert first[0]["http"]["db_ms"] >= 0
+        assert obs._db_totals.get() == (0, 0.0)
+
+        async def no_query(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        captured.clear()
+        asyncio.run(_drive(obs.RequestLogMiddleware(no_query), _scope("/app")))
+        assert "db_calls" not in _events(captured)[0]["http"]
     finally:
-        obs._session_id.reset(session)
-        obs._request_active.reset(active)
         obs.uninstall_db_trace()
-    calls = [event for event in _events(captured) if event["event"] == "dependency.call"]
-    assert len(calls) == 1
-    assert calls[0]["dependency"]["operation"] == "SELECT"
-    assert calls[0]["dependency"]["target"].startswith("sqlite:")
-    assert "select 1" not in json.dumps(calls[0])
+
+
+def test_db_trace_keeps_failed_and_slow_statements(captured, monkeypatch):
+    obs.install_db_trace()
+
+    async def query(scope, receive, send):
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("select 1")
+            with pytest.raises(sqlite3.OperationalError):
+                connection.execute("select missing_column")
+            with monkeypatch.context() as patch:
+                ticks = iter((1.0, 1.3))
+                patch.setattr(obs.time, "perf_counter", lambda: next(ticks))
+                connection.execute("select 2")
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    try:
+        asyncio.run(_drive(obs.RequestLogMiddleware(query), _scope("/app")))
+    finally:
+        obs.uninstall_db_trace()
+    events = _events(captured)
+    assert [event["event"] for event in events] == [
+        "dependency.call", "dependency.call", "session.step",
+    ]
+    failed, slow, step = events
+    assert failed["dependency"]["operation"] == "SELECT"
+    assert failed["dependency"]["error"] == "OperationalError"
+    assert failed["dependency"]["target"].startswith("sqlite:")
+    assert slow["dependency"]["operation"] == "SELECT"
+    assert slow["dependency"]["status"] == 1
+    assert slow["dependency"]["duration_ms"] >= obs.DB_SLOW_MS
+    assert step["http"]["db_calls"] == 1
+    assert "missing_column" not in json.dumps(events)
 
 
 def test_tools_list_step_and_client(captured):
