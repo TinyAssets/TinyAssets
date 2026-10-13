@@ -192,6 +192,16 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
 
 
 
+    assert (
+        CallSite(
+            "tinyassets/graph_compiler.py",
+            "_build_invoke_branch_node._node_fn",
+            "execute_branch",
+        )
+        in observed
+    )
+
+
 def test_sensitive_call_manifest_is_nonempty_and_duplicate_free() -> None:
     assert EXPECTED_SENSITIVE_CALL_SITES
     assert len(EXPECTED_SENSITIVE_CALL_SITES) == len(set(EXPECTED_SENSITIVE_CALL_SITES))
