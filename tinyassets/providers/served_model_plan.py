@@ -41,12 +41,12 @@ from tinyassets.providers.model_policy import (
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
-from tinyassets.storage.current_home import check_current_home
+from tinyassets.storage.current_home import check_plan_scope
 from tinyassets.storage.learned_models import (
     LEARNED_SOURCE_KIND,
     OWN_VERIFIED_BASIS,
 )
-from tinyassets.storage.model_preferences import ModelPreferenceStore
+from tinyassets.storage.model_preferences import ModelPreferenceStore, PreferenceSnapshot
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _LOG = logging.getLogger("universe_server.served_model_plan")
@@ -144,6 +144,8 @@ class PreparedPlan:
     preferences: object
     snapshots: tuple
     display_only: bool = False
+    #: Captured for the owner's current home, where saved preferences apply.
+    home_scoped: bool = True
 
     def recheck(self, conn, *, store, base, universe, owner, agent, check_preferences=False):
         if self.display_only:
@@ -163,10 +165,11 @@ class PreparedPlan:
         """A changed home or agent invalidates the captured plan."""
         from tinyassets.storage.model_preferences import _read
 
-        check_current_home(conn, owner, universe.name)
+        check_plan_scope(conn, owner, universe.name, home_scoped=self.home_scoped)
         if agent != self.agent:
             raise PermissionError("model agent changed during discovery")
-        if check_preferences and _read(conn, owner, universe.name) != self.preferences:
+        if (check_preferences and self.home_scoped
+                and _read(conn, owner, universe.name) != self.preferences):
             raise PermissionError("model preferences changed during activation")
     def recheck_display(self, conn, *, store, base, universe, owner, agent):
         """Demote only failed sources; never let them hide independent choices."""
@@ -447,13 +450,26 @@ def prepare_owned_model_plan(
         raise ValueError("invalid conversation tool mode")
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
+    from tinyassets.daemon_server import get_founder_home
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    # Saved preferences, model choice and a confirmed model setup all belong to
+    # the owner's current home: `apply_served_model_preferences` refuses a
+    # choice anywhere else, the preference writers require the home, and model
+    # access is confirmed on the home-only surface, so a manifest stays bound to
+    # the home it was accepted in. A command center that is not the home and
+    # has no manifest -- a second one the owner created, or a first connect
+    # before any home row exists -- plans automatically over the owner's
+    # connected sources with no preference read, which is what enabling serving
+    # there always did.
+    accepted = load_provider_assignment(base, universe_id=universe.name)
+    home_scoped = (get_founder_home(base, owner) == universe.name
+                   or bool(accepted is not None and accepted.manifest_digest))
     if preference_snapshot is None:
         preferences = ModelPreferenceStore(base).get(
             owner, universe.name, require_current_home=True,
-        )
+        ) if home_scoped else PreferenceSnapshot()
     else:
-        from tinyassets.storage.model_preferences import PreferenceSnapshot
-
         if type(preference_snapshot) is not PreferenceSnapshot or allow_empty:
             raise ValueError("invalid captured model preferences")
         preferences = preference_snapshot
@@ -468,7 +484,7 @@ def prepare_owned_model_plan(
             raise PermissionError("agent binding changed")
         with store.connection() as conn:
             conn.execute("BEGIN")
-            check_current_home(conn, owner, universe.name)
+            check_plan_scope(conn, owner, universe.name, home_scoped=home_scoped)
             assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
             from types import SimpleNamespace
 
@@ -665,6 +681,7 @@ def prepare_owned_model_plan(
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
         assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,
+        home_scoped=home_scoped,
     )
     with provider_assignment_admission().shared(universe):
         current_agent = get_binding(

@@ -556,8 +556,8 @@ def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode, served_
 
 
 def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path, served_native_context):
-    from tinyassets.storage.current_home import CurrentHomeChanged
-
+    """A second command center serves on the owner's connected source; the
+    home's explicit choice of a missing model neither applies nor is touched."""
     universe, binding, capability, context = served_native_context
     try:
         daemon_server.set_founder_home(
@@ -569,14 +569,11 @@ def test_nonhome_readiness_does_not_consume_home_preferences(tmp_path, served_na
             policy=ModelPreferences("explicit", ModelRef("missing", "model"), ()),
             require_current_home=True,
         )
-        with pytest.raises(CurrentHomeChanged):
-            set_serving(
-                base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
-                universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
-                expected_revision=binding["revision"], enabled=True,
-            )
-        assert get_binding(tmp_path, universe_id=universe.name,
-                           binding_id=binding["agent_binding_id"]) == binding
+        assert set_serving(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=binding["revision"], enabled=True,
+        )["status"] == "serving"
         assert store.get("owner-1", "other-home", require_current_home=True) == saved
     finally:
         auth.revoke_provider_request(capability)
