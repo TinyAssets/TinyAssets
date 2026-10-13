@@ -53,7 +53,7 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 )
 
 # Required reviewed CLASSIFICATION of canonical execution callsites.
-# New boundaries must be reviewed; mirror paths are generated below.
+# New boundaries must be reviewed.
 CLASSIFICATION: tuple[CallSite, ...] = (
     # K1 remote MCP transport uses the governed connection effector stream, not
     # a graph executor. Exact launch/connection authority is rechecked per reply.
@@ -153,7 +153,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # `BoxProvider.stream`, the box contract's output read (target architecture
     # D2). It starts nothing: the execution was started by `start_exec` on a
     # handle bound to the turn's own owner and command center, and runs no
-    # branch. Registered for both the canonical module and its plugin mirror.
+    # branch. The package build copies the canonical module.
     CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
     # Reviewed 2026-08-25 (run-provider-authority): server-owned trigger
     # enqueue enters the same governed foreground admission as the MCP action.
@@ -245,15 +245,8 @@ CLASSIFICATION: tuple[CallSite, ...] = (
 
 
 # Review the canonical authority boundary exactly once. The plugin builder
-# copies tinyassets verbatim; its expected boundaries follow the same mapping.
-# Scan BOTH trees below, so a missing/extra/changed mirror call still fails.
-EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = CLASSIFICATION + tuple(
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/" + site.path,
-        site.function, site.callee, site.count,
-    )
-    for site in CLASSIFICATION if site.path.startswith("tinyassets/")
-)
+# copies tinyassets verbatim.
+EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = CLASSIFICATION
 
 
 REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
@@ -375,12 +368,6 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
             "def _wiki_file_bug(",
             state="filing-only-negative",
         ),
-        SourceReference(
-            "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-            "runtime/tinyassets/api/wiki.py",
-            "def _wiki_file_bug(",
-            state="filing-only-negative",
-        ),
     ),
 }
 
@@ -433,11 +420,9 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
 _SCAN_ROOTS = (
     "tinyassets",
     "fantasy_daemon",
-    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets",
 )
 _WIKI_NEGATIVE_PATHS = (
     "tinyassets/api/wiki.py",
-    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/wiki.py",
 )
 _WIKI_FORBIDDEN_CALLS = frozenset(
     {

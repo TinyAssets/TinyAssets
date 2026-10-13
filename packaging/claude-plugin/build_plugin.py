@@ -28,6 +28,7 @@ PLUGIN_ROOT = (
     / "tinyassets-universe-server"
 )
 RUNTIME_ROOT = PLUGIN_ROOT / "runtime"
+RUNTIME_SRC = Path(__file__).resolve().parent / "runtime-src"
 TINYASSETS_SRC = REPO_ROOT / "tinyassets"
 
 _TREE_EXCLUDES: tuple[str, ...] = (
@@ -76,11 +77,8 @@ def _copy_tree(source: Path, destination: Path) -> int:
 def _exclusive_build(runtime_root: Path):
     """One build at a time per runtime root, released when the process dies.
 
-    The mirror is TRACKED, so a half-staged tree is a working-tree full of
-    deleted files. Two concurrent builds (pytest-xdist runs several build tests
-    at once) interleaved one's rmtree with the other's copy and left 247-302
-    tracked mirror files deleted (reproduced 2026-10-01). An OS file lock, not a
-    marker file, so a killed build never strands the next one.
+    Two concurrent builds can interleave a tree swap. An OS file lock, not a
+    marker file, ensures a killed build never strands the next one.
 
     The lock lives AT the runtime root (``.build.lock``, gitignored), so every
     process that builds this root contends for the same file whatever its
@@ -115,7 +113,7 @@ def _exclusive_build(runtime_root: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-#: The lock file at a runtime root. Gitignored for the tracked runtime.
+#: The lock file at a runtime root.
 LOCK_NAME = ".build.lock"
 
 
@@ -157,11 +155,8 @@ def _swap_in(staging: Path, destination: Path) -> None:
 def _stage_runtime(runtime_root: Path = RUNTIME_ROOT) -> int:
     """Replace the runtime's bundled `tinyassets/` tree with the live one.
 
-    Preserves the runtime scaffolding (server.py, bootstrap.py,
-    requirements.txt, pyproject.toml) — those carry venv-bootstrap
-    logic the build script does not regenerate. Only the
-    ``tinyassets/`` subtree (and the now-retired ``fantasy_author/``
-    snapshot, if present) is purged + re-staged.
+    Copies the launcher and dependency declarations from runtime-src and
+    stages the live package and model data.
 
     Every tree is copied into a sibling staging directory BEFORE anything
     published is touched, so a copy that fails part-way (a full disk) raises with
@@ -178,6 +173,8 @@ def _stage_runtime(runtime_root: Path = RUNTIME_ROOT) -> int:
         trees.append((REPO_ROOT / "models", runtime_root / "models"))
 
     with _exclusive_build(runtime_root):
+        for name in ("server.py", "bootstrap.py", "requirements.txt", "pyproject.toml"):
+            shutil.copy2(RUNTIME_SRC / name, runtime_root / name)
         staged, count = [], 0
         try:
             for source, destination in trees:
@@ -249,8 +246,8 @@ def main() -> None:
         type=Path,
         default=RUNTIME_ROOT,
         help=(
-            "Stage into this runtime directory instead of the tracked plugin "
-            "mirror. Tests use it so the suite never rewrites the working tree."
+            "Stage into this runtime directory instead of the default plugin "
+            "runtime. Tests use it to isolate builds."
         ),
     )
     args = parser.parse_args()

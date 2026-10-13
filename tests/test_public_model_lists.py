@@ -319,11 +319,18 @@ def test_the_lists_are_packaged_into_the_runtime_artifacts():
     # package lands at /app/tinyassets, so parents[2] is /app.
     assert "COPY --from=builder /build/tinyassets /app/tinyassets" in dockerfile
 
-    plugin = (root / "packaging" / "claude-plugin" / "plugins"
-              / "tinyassets-universe-server" / "runtime")
-    if (plugin / "tinyassets").is_dir():
+    import subprocess
+    import sys
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as directory:
+        plugin = Path(directory) / "runtime"
+        subprocess.run([sys.executable, str(root / "packaging/claude-plugin/build_plugin.py"),
+                        "--runtime-root", str(plugin), "--skip-probe"], check=True)
         assert (plugin / "models" / "subscription.json").is_file(), (
             "the plugin runtime resolves models/ from its own root; stage it there")
+
 
 
 def test_a_list_only_change_triggers_a_deploy():

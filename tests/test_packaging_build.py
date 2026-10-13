@@ -41,6 +41,7 @@ PLUGIN_BUILD = REPO_ROOT / "packaging" / "claude-plugin" / "build_plugin.py"
 DIST_STAGE = (
     REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server-src"
 )
+PLUGIN_SOURCE = REPO_ROOT / "packaging" / "claude-plugin" / "runtime-src"
 PLUGIN_RUNTIME = (
     REPO_ROOT
     / "packaging"
@@ -265,7 +266,7 @@ def test_bundle_server_imports_tinyassets_package(staged_bundle):
 
 
 def _build_plugin(runtime_root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
-    """Stage into ``runtime_root`` -- never the tracked mirror.
+    """Stage into ``runtime_root`` -- never the default generated runtime.
 
     Building in place made the suite rewrite tracked files, and under xdist two
     builds interleaved and left hundreds of mirror files deleted (2026-10-01).
@@ -280,8 +281,6 @@ _SCAFFOLDING = ("server.py", "bootstrap.py", "requirements.txt", "pyproject.toml
 def _seeded_runtime(root: Path) -> Path:
     """A runtime dir holding the tracked scaffolding, as the real one does."""
     root.mkdir(parents=True, exist_ok=True)
-    for name in _SCAFFOLDING:
-        shutil.copy2(PLUGIN_RUNTIME / name, root / name)
     return root
 
 
@@ -301,7 +300,7 @@ def test_build_plugin_stages_tinyassets_package(tmp_path):
     )
     assert (runtime / "tinyassets" / "universe_server.py").is_file()
     for name in _SCAFFOLDING:
-        assert (runtime / name).read_bytes() == (PLUGIN_RUNTIME / name).read_bytes()
+        assert (runtime / name).read_bytes() == (PLUGIN_SOURCE / name).read_bytes()
     assert _entries(runtime) == sorted([*_SCAFFOLDING, "models", "tinyassets"])
     assert "probe-ok" in result.stdout
 
@@ -346,7 +345,7 @@ def test_concurrent_plugin_builds_never_leave_a_partial_tree(tmp_path):
         for path in (tmp_path / "tinyassets").rglob("*") if path.is_file()
     }
     assert staged == expected
-    assert _entries(tmp_path) == ["models", "tinyassets"]
+    assert _entries(tmp_path) == sorted([*_SCAFFOLDING, "models", "tinyassets"])
     models = {
         path.relative_to(REPO_ROOT / "models"): path.read_bytes()
         for path in (REPO_ROOT / "models").rglob("*") if path.is_file()
@@ -373,7 +372,7 @@ def test_a_failed_copy_keeps_the_previous_tree(tmp_path, monkeypatch):
         build._stage_runtime(tmp_path)
 
     assert (old / "kept.py").read_text() == "# previous build\n"
-    assert _entries(tmp_path) == ["tinyassets"]
+    assert _entries(tmp_path) == sorted([*_SCAFFOLDING, "tinyassets"])
 
 
 def test_a_refused_publish_puts_the_previous_tree_back(tmp_path, monkeypatch):
@@ -395,7 +394,7 @@ def test_a_refused_publish_puts_the_previous_tree_back(tmp_path, monkeypatch):
         build._stage_runtime(tmp_path)
 
     assert (old / "kept.py").read_text() == "# previous build\n"
-    assert _entries(tmp_path) == ["tinyassets"]
+    assert _entries(tmp_path) == sorted([*_SCAFFOLDING, "tinyassets"])
     assert not [p for p in tmp_path.iterdir() if ".old-" in p.name or ".staging-" in p.name]
 
 
@@ -410,7 +409,7 @@ def test_a_build_killed_between_renames_is_recovered(tmp_path):
     assert _build_plugin(tmp_path, "--skip-probe").returncode == 0
 
     assert (tmp_path / "tinyassets" / "universe_server.py").is_file()
-    assert _entries(tmp_path) == ["models", "tinyassets"]
+    assert _entries(tmp_path) == sorted([*_SCAFFOLDING, "models", "tinyassets"])
 
 
 def test_plugin_server_imports_tinyassets_package(tmp_path):

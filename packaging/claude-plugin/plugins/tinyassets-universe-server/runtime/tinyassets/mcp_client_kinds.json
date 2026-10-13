@@ -1,8 +1,0 @@
-{
-  "_comment": "How a request's client name or user agent maps to a client kind on the log trail. Data, not code (channel-agnostic substrate). First match wins; no match is 'other'.",
-  "kinds": [
-    {"kind": "claude", "match": ["claude", "anthropic"], "remember": true},
-    {"kind": "chatgpt", "match": ["chatgpt", "openai"], "remember": true},
-    {"kind": "browser", "match": ["mozilla", "chrome", "safari", "firefox", "edg/"], "remember": false}
-  ]
-}

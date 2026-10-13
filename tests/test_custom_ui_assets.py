@@ -447,10 +447,13 @@ def test_the_plugin_mirror_ships_the_manifest_but_not_the_files():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert "ui_libraries" in module._TREE_EXCLUDES
-    runtime = Path("packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-                   "tinyassets/onboarding")
-    assert (runtime / "ui_libraries.json").is_file()
-    assert not (runtime / "ui_libraries").exists()
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as directory:
+        module._stage_runtime(Path(directory))
+        runtime = Path(directory) / "tinyassets/onboarding"
+        assert (runtime / "ui_libraries.json").is_file()
+        assert not (runtime / "ui_libraries").exists()
 
 
 def test_library_load_order_puts_requirements_first():

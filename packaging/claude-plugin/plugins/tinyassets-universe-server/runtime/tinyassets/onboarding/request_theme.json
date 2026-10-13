@@ -1,4 +1,0 @@
-{
-  "_why": "The colour of the request-rail tab text, in ONE tiny file on purpose. The GitHub Contents API replaces a whole file and offers no patch parameter, so the universe can only ship a change to a file it can reproduce byte-for-byte. app.html is ~98KB; this is not. Edit request_text, open a PR, and the live rail changes.",
-  "request_text": "#7ee0ff"
-}

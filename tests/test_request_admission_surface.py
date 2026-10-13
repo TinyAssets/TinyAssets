@@ -196,18 +196,18 @@ def test_canonical_write_graph_advertises_request_fields() -> None:
     assert tool.annotations.idempotentHint is False
 
 
-def test_all_runtime_manifests_include_rfc8785() -> None:
+def test_all_runtime_manifests_include_rfc8785(tmp_path: Path) -> None:
     root = Path(__file__).parents[1]
+    import subprocess
+    import sys
+
+    runtime = tmp_path / "runtime"
+    subprocess.run([sys.executable, str(root / "packaging/claude-plugin/build_plugin.py"),
+                    "--runtime-root", str(runtime), "--skip-probe"], check=True)
     manifests = (
         root / "pyproject.toml",
         root / "packaging" / "mcpb" / "pyproject.toml",
-        root
-        / "packaging"
-        / "claude-plugin"
-        / "plugins"
-        / "tinyassets-universe-server"
-        / "runtime"
-        / "pyproject.toml",
+        runtime / "pyproject.toml",
     )
 
     for manifest in manifests:

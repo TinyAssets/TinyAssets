@@ -167,7 +167,7 @@ SHAPES: dict[str, Shape] = {
     "S19": Shape(
         ("packaging/claude-plugin/build_plugin.py",),
         (("packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/**", ""),),
-        ceiling=6,
+        ceiling=0,
     ),
     "S20": Shape(("docs/architecture.md", "docs/decisions/**", "openspec/**")),
     "S21": Shape(
@@ -288,6 +288,10 @@ def files(glob: str, root: Path = ROOT) -> list[Path]:
 
 
 def old_count(shape: Shape, root: Path = ROOT) -> int:
+    if shape is SHAPES["S19"]:
+        return len(subprocess.check_output(
+            ["git", "ls-files", "--cached", "--", MIRROR_ROOT], cwd=root, text=True
+        ).splitlines())
     total = 0
     for glob, pattern in shape.old:
         for path in files(glob, root):
@@ -295,14 +299,6 @@ def old_count(shape: Shape, root: Path = ROOT) -> int:
                 registered_path(path.relative_to(root).as_posix(), home) for home in shape.paths
             ):
                 continue
-            if shape is SHAPES.get("S19"):
-                counterpart = (
-                    root / "tinyassets" / path.relative_to(root / MIRROR_ROOT / "tinyassets")
-                    if path.is_relative_to(root / MIRROR_ROOT / "tinyassets")
-                    else None
-                )
-                if counterpart is not None and counterpart.is_file():
-                    continue
             total += (
                 len(re.findall(pattern, path.read_text(encoding="utf-8", errors="replace")))
                 if pattern

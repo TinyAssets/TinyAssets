@@ -3020,17 +3020,15 @@ def test_private_store_production_shaped_concurrent_load(tmp_path: Path) -> None
     assert exported == custody.export_conversation(snapshot.thread, snapshot.messages)
 
 
-def test_packaged_runtime_mirrors_exist_and_are_byte_identical() -> None:
+def test_packaged_runtime_mirrors_exist_and_are_byte_identical(tmp_path: Path) -> None:
     root = Path(__file__).parents[1]
-    runtime = (
-        root
-        / "packaging"
-        / "claude-plugin"
-        / "plugins"
-        / "tinyassets-universe-server"
-        / "runtime"
-        / "tinyassets"
-    )
+    import subprocess
+    import sys
+
+    runtime = tmp_path / "runtime"
+    subprocess.run([sys.executable, str(root / "packaging/claude-plugin/build_plugin.py"),
+                    "--runtime-root", str(runtime), "--skip-probe"], check=True)
+    runtime /= "tinyassets"
     pairs = (
         (root / "tinyassets" / "conversation_custody.py", runtime / "conversation_custody.py"),
         (

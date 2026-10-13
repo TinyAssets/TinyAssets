@@ -9,8 +9,6 @@ from unittest.mock import patch
 
 import pytest
 
-import pytest
-
 from scripts import check_shapes
 
 
@@ -104,14 +102,15 @@ def test_base_pin_parser_records_ceiling_and_probes():
     }
 
 
-def test_mirror_count_only_includes_orphans(tmp_path: Path):
-    canonical = tmp_path / "tinyassets"
-    mirror = tmp_path / check_shapes.MIRROR_ROOT / "tinyassets"
-    canonical.mkdir(parents=True)
+def test_mirror_count_only_includes_tracked_files(tmp_path: Path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    mirror = tmp_path / check_shapes.MIRROR_ROOT
     mirror.mkdir(parents=True)
-    (canonical / "paired.py").write_text("pass\n", encoding="utf-8")
-    (mirror / "paired.py").write_text("pass\n", encoding="utf-8")
-    (mirror / "orphan.py").write_text("pass\n", encoding="utf-8")
+    (mirror / "generated.py").write_text("pass\n", encoding="utf-8")
+    assert check_shapes.old_count(check_shapes.SHAPES["S19"], tmp_path) == 0
+    subprocess.run(["git", "add", "-f", str(mirror / "generated.py")], cwd=tmp_path, check=True)
     assert check_shapes.old_count(check_shapes.SHAPES["S19"], tmp_path) == 1
 
 
@@ -161,7 +160,7 @@ def test_raising_a_ceiling_fails_against_the_base_pin(monkeypatch):
             return_value=subprocess.CompletedProcess([], 0, stdout=baseline),
         ),
     ):
-        assert "S19 ceiling: pin raised 6 -> 7" in check_shapes.base_shape_problems()
+        assert "S19 ceiling: pin raised 0 -> 7" in check_shapes.base_shape_problems()
 
 
 def test_old_path_growth_requires_labeled_floor_reason(tmp_path: Path, monkeypatch):

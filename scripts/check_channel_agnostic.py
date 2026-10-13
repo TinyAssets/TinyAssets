@@ -98,13 +98,6 @@ PLATFORM_OWN = {
 #: that module. Everything else -- the same name in a function, in a class, in
 #: another file, or assigned twice -- counts.
 #:
-#: The survey walks ``tinyassets/`` only, so the packaging mirror is not surveyed
-#: today; it is listed anyway so widening the survey cannot silently start
-#: counting the mirrored copy.
-_MIRROR = (
-    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-    "tinyassets/engine_mcp_server.py"
-)
 _ENGINE_CHAPTERS = frozenset({
     "_WRITE_GRAPH_CONNECTIONS_CHAPTER",
     "_WRITE_GRAPH_CODE_NODES_CHAPTER",
@@ -112,7 +105,6 @@ _ENGINE_CHAPTERS = frozenset({
 })
 DOCUMENTATION_CONSTANTS: dict[str, frozenset[str]] = {
     "tinyassets/engine_mcp_server.py": _ENGINE_CHAPTERS,
-    _MIRROR: _ENGINE_CHAPTERS,
 }
 
 

@@ -22,17 +22,15 @@ import re
 import tomllib
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[1]
 CANONICAL = REPO / "pyproject.toml"
 RUNTIME = (
     REPO
-    / "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/pyproject.toml"
+    / "packaging/claude-plugin/runtime-src/pyproject.toml"
 )
 REQUIREMENTS = (
     REPO
-    / "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/requirements.txt"
+    / "packaging/claude-plugin/runtime-src/requirements.txt"
 )
 
 _SPEC = re.compile(r"^fastmcp\s*(?P<spec>[<>=!,.\d\s]+)$")
@@ -65,7 +63,6 @@ def test_every_canonical_declaration_agrees_with_itself() -> None:
     assert len(specs) == 1, f"canonical pyproject declares fastmcp {sorted(specs)}"
 
 
-@pytest.mark.skipif(not RUNTIME.exists(), reason="plugin runtime pyproject absent")
 def test_the_runtime_and_the_canonical_package_agree() -> None:
     canonical = _specs(CANONICAL)
     runtime = _specs(RUNTIME)
@@ -78,7 +75,6 @@ def test_the_runtime_and_the_canonical_package_agree() -> None:
     )
 
 
-@pytest.mark.skipif(not REQUIREMENTS.exists(), reason="runtime requirements absent")
 def test_the_requirements_file_agrees_too() -> None:
     lines = [
         line.strip()

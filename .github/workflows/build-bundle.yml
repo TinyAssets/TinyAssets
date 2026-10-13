@@ -79,27 +79,8 @@ jobs:
       - name: Stage claude-plugin runtime (with import probe)
         run: python packaging/claude-plugin/build_plugin.py
 
-      - name: Verify committed plugin runtime matches live tinyassets/
-        # The plugin runtime tree under
-        # packaging/claude-plugin/.../runtime/tinyassets/ is tracked so
-        # marketplace consumers can install from the cloned repo. If a
-        # commit modifies tinyassets/ but forgets to re-run
-        # build_plugin.py, the committed tree goes stale — CI would
-        # otherwise pass silently because the build script re-stages
-        # locally on each run. This check closes that gap.
-        #
-        # `git status --porcelain`, NOT `git diff`: a canonical file that is
-        # brand new leaves an UNTRACKED mirror file after the build, and
-        # `git diff` does not see untracked paths. workspace_pool.py and
-        # workspace_fs.py were absent from the committed mirror for three
-        # commits and every gate reported clean (2026-08-30).
-        run: |
-          STALE=$(git status --porcelain -- packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)
-          if [ -n "$STALE" ]; then
-            echo "::error::Committed plugin runtime is stale. Run 'python packaging/claude-plugin/build_plugin.py' and commit the result."
-            echo "$STALE"
-            exit 1
-          fi
+      - name: Verify plugin runtime is not tracked
+        run: python scripts/check_mirror_parity.py
 
       - name: Run packaging build tests
         run: |
