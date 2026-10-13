@@ -4,22 +4,12 @@ import { Component, useEffect, type ReactNode } from "react";
 
 import { topFrames } from "../lib/trail-frames";
 
-const COOKIE = "ta_session";
-
-function readSession(): string {
-  const found = document.cookie.match(/(?:^|; )ta_session=(s_[0-9a-f]{32})(?:;|$)/);
-  if (found) return found[1];
-  const id = `s_${crypto.randomUUID().replace(/-/g, "")}`;
-  const secure = window.location.protocol === "https:" ? "; Secure" : "";
-  document.cookie = `${COOKIE}=${id}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
-  return id;
-}
-
 // The session is the ta_session cookie the request carries; the server binds
-// the report to it. Only the error name and its top frames are sent: an error
-// message is free text and may hold anything the page held.
+// the report to it. The cookie is server-signed and server-minted: the first
+// beacon with no valid cookie gets one on its response, and this script never
+// writes one of its own. Only the error name and its top frames are sent: an
+// error message is free text and may hold anything the page held.
 function send(kind: string, fields: { name?: string; frames?: string }) {
-  readSession();
   const body = JSON.stringify({
     kind,
     path: window.location.pathname,

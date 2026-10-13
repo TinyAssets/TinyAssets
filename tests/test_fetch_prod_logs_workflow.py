@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -44,7 +45,7 @@ def test_fetch_workflow_is_read_only_and_queries_a_trail():
     assert "printf '%q '" in joined
     assert "--session" in joined
     assert "--account" in joined
-    assert "toJson(github.event)" in text
+    assert "toJson(github.event)" not in text
     fetch = next(
         item for item in workflow["jobs"]["fetch"]["steps"]
         if item.get("name") == "Fetch the timeline"
@@ -98,15 +99,71 @@ def test_only_the_sealed_timeline_leaves_the_runner():
 def _resolve(payload: dict, tmp_path: Path) -> subprocess.CompletedProcess:
     step = next(step for step in _steps() if step.get("name") == "Resolve the log query")
     script = step["run"].split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({"inputs": payload}), encoding="utf-8")
     env = {
         **os.environ,
-        "EVENT_JSON": json.dumps({"inputs": payload}),
-        "EVENT_NAME": "workflow_dispatch",
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
         "GITHUB_ENV": str(tmp_path / "github.env"),
     }
     return subprocess.run(
         [sys.executable, "-I", "-"], input=script, text=True, capture_output=True, env=env,
     )
+
+
+def test_query_inputs_never_enter_an_env_block_or_an_expression():
+    # The job log is public and prints every step's env: block and any
+    # expression-substituted run: text. The query is read from the runner's
+    # event file inside the step and masked before anything else sees it.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    steps = workflow["jobs"]["fetch"]["steps"]
+    assert "toJson(github.event)" not in text
+    assert "EVENT_JSON" not in text
+    assert re.search(r"\$\{\{[^}]*(inputs\b|github\.event\b|client_payload)", text) is None
+    blocks = [workflow.get("env") or {}, workflow["jobs"]["fetch"].get("env") or {}]
+    blocks += [step.get("env") or {} for step in steps]
+    for block in blocks:
+        for value in block.values():
+            assert "inputs" not in str(value)
+            assert "event" not in str(value)
+    for step in steps:
+        assert "${{" not in (step.get("run") or "")
+    resolve = next(step for step in steps if step.get("name") == "Resolve the log query")
+    assert "env" not in resolve
+    run = resolve["run"]
+    assert 'os.environ["GITHUB_EVENT_PATH"]' in run
+    assert "::add-mask::" in run
+    assert run.index("::add-mask::") < run.index('os.environ["GITHUB_ENV"]')
+
+
+def test_query_identifiers_are_masked_before_they_leave_the_step(tmp_path):
+    window = {"since": "2026-10-12T17:00:00Z", "until": "2026-10-12T18:00:00Z"}
+    session = "s_" + "a" * 32
+    payload = {
+        **window, "session_id": session, "account_id": "user_01ABC",
+        "trace_id": "trace-0001", "grep": "needle text",
+    }
+    done = _resolve(payload, tmp_path)
+    assert done.returncode == 0, done.stderr
+    masked = [line for line in done.stdout.splitlines() if line.startswith("::add-mask::")]
+    assert masked == [
+        "::add-mask::" + session, "::add-mask::user_01ABC",
+        "::add-mask::trace-0001", "::add-mask::needle text",
+    ]
+    env_text = (tmp_path / "github.env").read_text(encoding="utf-8")
+    assert "LOG_SESSION_ID<<EOF\n" + session + "\nEOF\n" in env_text
+    assert "LOG_GREP<<EOF\nneedle text\nEOF\n" in env_text
+    # A rejected identifier is masked first and never echoed in the error.
+    bad = _resolve({**payload, "account_id": "someone@example.com"}, tmp_path)
+    assert bad.returncode != 0
+    assert "::add-mask::someone@example.com" in bad.stdout
+    assert "someone@example.com" not in bad.stderr
+    # Empty inputs emit no mask line at all.
+    plain = _resolve(window, tmp_path)
+    assert plain.returncode == 0, plain.stderr
+    assert "::add-mask::" not in plain.stdout
 
 
 def test_an_unfiltered_window_is_within_one_hour(tmp_path):

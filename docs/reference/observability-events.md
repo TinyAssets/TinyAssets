@@ -41,10 +41,18 @@ age and issuer, so a 401 on `tools/list` is diagnosable.
 
 ## Session and links
 
-The primary `session_id` is the `ta_session` cookie (`s_` plus 32 hex), else
-`X-Session-Id` in that shape, else an `mcp-session-id` that is not a JWT, else
-a new cookie. The cookie is not a credential. It is not HttpOnly, because the
-site script has to send it. `SameSite=Lax`, 30 days, `Secure` only on https.
+The primary `session_id` is the `ta_session` cookie, else `X-Session-Id` as an
+`s_` plus 32 hex id, else an `mcp-session-id` that is not a JWT, else a new
+cookie. The cookie value is `s_<32 hex>.<mac>`: the id, then an HMAC-SHA256 of
+it under a key derived from the session seal key (`TINYASSETS_SESSION_SEAL_KEY`,
+the same key that seals the refresh-token store; no second secret). The daemon
+mints every cookie and signs it; a cookie that is missing, unsigned, or signed
+under another key names no trail and is replaced on the response by a freshly
+minted one, so nobody can write to another trail by naming its id. The id, not
+the signed value, is what events record. The cookie is not a credential. It is
+not HttpOnly, because the site script sends it with its reports. `SameSite=Lax`,
+30 days, `Secure` only on https. Without a configured seal key the derived key
+is per process, so cookies turn over on a restart.
 
 `links` joins what showed up on the same request:
 
@@ -71,10 +79,13 @@ The marketing site is static, so the daemon never sees its HTML GET. The site
 beacons `page.load` to `POST /app/client-error`, and the same endpoint accepts
 `window.error`, `unhandledrejection`, and `react` reports. That path is public.
 The body is at most 4 KiB, enforced while it streams. The session is the
-caller's own `ta_session` cookie, or the one minted for that request; a
-`session_id` in the body is ignored. The rate limit is 30 reports per client
-address per minute, and the response is empty. It does not replace
-`/app/trace`.
+caller's own signed `ta_session` cookie, or the one minted for that request
+when the cookie is absent or forged; a `session_id` in the body is ignored.
+The rate limit is 30 reports per client address per minute, and the response
+is empty. It does not replace `/app/trace`. The public summary of **Fetch
+production logs** counts server-originated error types by name and every
+browser report under one key, `client_error`, because a browser chooses its
+own error type string.
 
 ## Dependencies
 

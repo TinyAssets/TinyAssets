@@ -40,3 +40,9 @@ test("the beacon sends frames only, on the cookie session", () => {
   assert.doesNotMatch(trail, /\.message\b/);
   assert.doesNotMatch(trail, /session_id/);
 });
+
+test("the site never mints or rewrites the session cookie; the server signs it", () => {
+  assert.doesNotMatch(trail, /document\.cookie\s*=/);
+  assert.doesNotMatch(trail, /randomUUID/);
+  assert.doesNotMatch(trail, /s_\[0-9a-f\]/);
+});

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import secrets
 import sqlite3
 from pathlib import Path
 
@@ -107,14 +108,36 @@ def test_session_cookie_is_minted_once_and_then_reused(captured):
     assert cookie is not None
     assert cookie.startswith(b"ta_session=s_")
     assert b"HttpOnly" not in cookie
-    session = cookie.split(b";", 1)[0].split(b"=", 1)[1]
+    value = cookie.split(b";", 1)[0].split(b"=", 1)[1].decode()
+    session, _dot, mac = value.partition(".")
+    assert obs._SESSION_RE.fullmatch(session)
+    assert obs._SESSION_SIG_RE.fullmatch(mac)
+    assert value == obs.sign_session(session)
+    assert _events(captured)[-1]["session_id"] == session
     second = asyncio.run(_drive(
-        app, _scope("/", headers=[(b"cookie", b"ta_session=" + session)]),
+        app, _scope("/", headers=[(b"cookie", b"ta_session=" + value.encode())]),
     ))
     assert _header(second, b"set-cookie") is None
-    assert _events(captured)[-1]["session_id"] == session.decode()
+    assert _events(captured)[-1]["session_id"] == session
+    assert _events(captured)[-1]["links"]["cookie"] == session
     assert obs._session_id.get() is None
     assert obs._request_active.get() is False
+    # A cookie naming another trail's id without its MAC, or with a tampered
+    # MAC, names no trail: a fresh signed cookie is minted instead.
+    theirs = "s_" + "ef" * 16
+    tampered = value[:-1] + ("A" if value[-1] != "A" else "B")
+    for forged in (theirs, tampered, theirs + "." + mac):
+        response = asyncio.run(_drive(
+            app, _scope("/", headers=[(b"cookie", b"ta_session=" + forged.encode())]),
+        ))
+        reissued = _header(response, b"set-cookie")
+        assert reissued is not None
+        fresh = reissued.split(b";", 1)[0].split(b"=", 1)[1].decode().partition(".")[0]
+        assert fresh not in {session, theirs}
+        event = _events(captured)[-1]
+        assert event["session_id"] == fresh
+        assert "links" not in event or "cookie" not in event["links"]
+        assert theirs not in json.dumps(event)
 
 
 def test_redaction_strips_secrets_and_keeps_the_commit(captured, monkeypatch):
@@ -238,12 +261,18 @@ def _report(
     headers: list | None = None,
     content_length: str | None = "auto",
     chunks: list[bytes] | None = None,
+    signed: bool = True,
 ):
-    """A Starlette-shaped request for the beacon: headers, scope, client, stream."""
+    """A Starlette-shaped request for the beacon: headers, scope, client, stream.
+
+    ``cookie`` is a session id; it is sent server-signed unless ``signed`` is
+    off, in which case the value goes on the wire exactly as given.
+    """
     raw = body if isinstance(body, bytes) else json.dumps(body).encode()
     scope_headers = list(headers or [])
     if cookie:
-        scope_headers.append((b"cookie", f"ta_session={cookie}".encode()))
+        value = obs.sign_session(cookie) if signed else cookie
+        scope_headers.append((b"cookie", f"ta_session={value}".encode()))
     pieces = chunks if chunks is not None else [raw]
 
     class Request:
@@ -297,6 +326,45 @@ def test_client_report_binds_the_session_to_the_cookie(captured):
     finally:
         obs._session_id.reset(token)
     assert _post(_report({"kind": "nope"}, cookie=mine)).status_code == 400
+
+
+def test_client_report_refuses_a_forged_cookie(captured):
+    from tinyassets.onboarding import session_store
+
+    theirs = "s_" + "ef" * 16
+    good = obs.sign_session(theirs)
+    tampered = good[:-1] + ("A" if good[-1] != "A" else "B")
+    grafted = theirs + "." + obs.sign_session("s_" + "ab" * 16).partition(".")[2]
+    original = session_store._key
+    session_store._key = secrets.token_bytes(32)
+    try:
+        foreign = obs.sign_session(theirs)
+    finally:
+        session_store._key = original
+    assert foreign != good
+    forged = (theirs, tampered, grafted, foreign, theirs + ".", theirs + ".x")
+    # Without the middleware there is nothing to bind a forged cookie to.
+    for value in forged:
+        assert _post(_report({"kind": "page.load"}, cookie=value, signed=False)).status_code == 400
+    assert not any(theirs in line for line in captured)
+    # Behind the middleware the report lands on the session minted for this
+    # request, never on the trail the forged cookie names.
+    minted = "s_" + "cd" * 16
+    token = obs._session_id.set(minted)
+    try:
+        for value in forged:
+            ok = _post(_report({"kind": "window.error", "name": "TypeError"},
+                               cookie=value, signed=False))
+            assert ok.status_code == 204
+            assert _events(captured)[-1]["session_id"] == minted
+    finally:
+        obs._session_id.reset(token)
+    assert not any(theirs in line for line in captured)
+    # The genuine cookie still names its own trail.
+    assert _post(_report({"kind": "page.load"}, cookie=good, signed=False)).status_code == 204
+    assert _events(captured)[-1]["session_id"] == theirs
+    with pytest.raises(ValueError):
+        obs.sign_session("not-a-session")
 
 
 def test_client_report_rate_limits_per_client_address(captured):

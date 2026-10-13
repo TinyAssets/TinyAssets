@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -44,6 +45,10 @@ TRACE_HEADER = "x-trace-id"
 MCP_SESSION_HEADER = "mcp-session-id"
 
 _SESSION_RE = re.compile(r"^s_[0-9a-f]{32}$")
+_SESSION_SIG_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+# The cookie MAC key is derived from the process seal key (the one that seals
+# the onboarding refresh-token store), so no second secret is provisioned.
+_COOKIE_KEY_PURPOSE = b"tinyassets.observability.ta_session.v1"
 _TRACE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _OPAQUE_ACCOUNT = re.compile(r"^[A-Za-z0-9_|.-]{1,128}$")
 _MCP_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
@@ -692,9 +697,43 @@ def _incoming_trace(scope: Mapping[str, Any]) -> str:
     return raw if _TRACE_RE.fullmatch(raw) else ""
 
 
+def _cookie_key() -> bytes:
+    from tinyassets.onboarding.session_store import seal_key
+
+    return hmac.new(seal_key(), _COOKIE_KEY_PURPOSE, hashlib.sha256).digest()
+
+
+def _session_signature(session: str) -> str:
+    digest = hmac.new(_cookie_key(), session.encode("ascii"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def sign_session(session: str) -> str:
+    """The ``ta_session`` cookie value for a session id: ``s_<hex>.<mac>``.
+
+    The MAC is HMAC-SHA256 under a key derived from the process seal key. A
+    cookie without it, or with one minted elsewhere, names no trail: the
+    middleware replaces it with a freshly minted signed cookie.
+    """
+    if not _SESSION_RE.fullmatch(session):
+        raise ValueError("not a session id")
+    return f"{session}.{_session_signature(session)}"
+
+
+def _verified_cookie_session(scope: Mapping[str, Any]) -> str:
+    """The session id the ``ta_session`` cookie names, or "" unless its MAC holds."""
+    value = _cookie(scope, SESSION_COOKIE)
+    session, dot, signature = value.partition(".")
+    if not dot or not _SESSION_RE.fullmatch(session) or not _SESSION_SIG_RE.fullmatch(signature):
+        return ""
+    if not hmac.compare_digest(signature, _session_signature(session)):
+        return ""
+    return session
+
+
 def _incoming_session(scope: Mapping[str, Any]) -> tuple[str, bool]:
-    cookie = _cookie(scope, SESSION_COOKIE)
-    if _SESSION_RE.fullmatch(cookie):
+    cookie = _verified_cookie_session(scope)
+    if cookie:
         return cookie, False
     header = _header(scope, SESSION_HEADER).strip()
     if _SESSION_RE.fullmatch(header):
@@ -717,8 +756,8 @@ def _cookie(scope: Mapping[str, Any], name: str) -> str:
 
 def _incoming_links(scope: Mapping[str, Any], session: str) -> dict[str, str]:
     links: dict[str, str] = {}
-    cookie = _cookie(scope, SESSION_COOKIE)
-    if _SESSION_RE.fullmatch(cookie):
+    cookie = _verified_cookie_session(scope)
+    if cookie:
         links["cookie"] = cookie
     header = _header(scope, SESSION_HEADER).strip()
     if _SESSION_RE.fullmatch(header) and header != session:
@@ -758,7 +797,8 @@ def _session_cookie(session: str, scope: Mapping[str, Any]) -> bytes:
     if scheme == "https" or forwarded == "https":
         secure = "; Secure"
     value = (
-        f"{SESSION_COOKIE}={session}; Path=/; Max-Age=2592000; SameSite=Lax{secure}"
+        f"{SESSION_COOKIE}={sign_session(session)}; Path=/; Max-Age=2592000; "
+        f"SameSite=Lax{secure}"
     )
     return value.encode("ascii")
 
@@ -951,8 +991,9 @@ async def client_error(request: Any) -> Any:
     """Browser reports: uncaught errors and page loads, on the same trail.
 
     Public on purpose. The marketing site has no bearer. The session is the
-    caller's own ``ta_session`` cookie (or the one the middleware minted for
-    this request); a ``session_id`` in the body is ignored. The rate limit is
+    caller's own server-signed ``ta_session`` cookie (or the one the middleware
+    minted for this request when the cookie is absent, unsigned or forged); a
+    ``session_id`` in the body is ignored. The rate limit is
     per client address. The body is read with a running cap, and a report
     keeps the error type and its top frames only: the free-text message is
     dropped rather than redacted. This does not echo the report back.
@@ -988,11 +1029,12 @@ async def client_error(request: Any) -> Any:
     if kind not in {"page.load", "window.error", "unhandledrejection", "react"}:
         return Response(status_code=400)
     scope = getattr(request, "scope", None) or {}
-    session = _cookie(scope, SESSION_COOKIE)
-    if not _SESSION_RE.fullmatch(session):
-        # No cookie: the middleware minted a session for this request and sets
-        # it on the response, so the next report lands on the same trail. A
-        # session named only by a header is not a browser's.
+    session = _verified_cookie_session(scope)
+    if not session:
+        # No signed cookie: the middleware minted a session for this request
+        # and sets it on the response, so the next report lands on the same
+        # trail. A forged cookie lands here too, never on the trail it names.
+        # A session named only by a header is not a browser's.
         session = _session_id.get() or ""
         if not _SESSION_RE.fullmatch(session) or not _incoming_session(scope)[1]:
             return Response(status_code=400)

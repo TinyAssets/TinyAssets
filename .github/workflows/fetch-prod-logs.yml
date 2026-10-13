@@ -69,10 +69,12 @@ jobs:
       - name: Reject a missing or placeholder recipient
         run: python mobile/scripts/review_evidence.py validate-recipient
 
+      # The job log is public and prints every step's env: block and any
+      # expression-substituted run: text. So the query never passes through
+      # env: or ${{ }}: this step reads the event file the runner already
+      # holds, masks each identifier the moment it is read, and only then
+      # hands the fields on through GITHUB_ENV.
       - name: Resolve the log query
-        env:
-          EVENT_JSON: ${{ toJson(github.event) }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 - <<'PY'
           import json
@@ -81,15 +83,16 @@ jobs:
           import sys
           from datetime import datetime, timedelta
 
-          event = json.loads(os.environ["EVENT_JSON"])
-          if os.environ["EVENT_NAME"] == "repository_dispatch":
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
+              event = json.load(handle)
+          if os.environ["GITHUB_EVENT_NAME"] == "repository_dispatch":
               src = event.get("client_payload") or {}
           else:
               src = event.get("inputs") or {}
           if not isinstance(src, dict):
               sys.exit("log query payload is not an object")
 
-          def take(key):
+          def take(key, mask=False):
               value = src.get(key, "")
               if value is None:
                   return ""
@@ -97,14 +100,18 @@ jobs:
                   sys.exit(f"{key} must be a string")
               if "\n" in value or "\r" in value or "\x00" in value:
                   sys.exit(f"{key} contains a newline")
-              return value.strip()
+              value = value.strip()
+              if mask and value:
+                  # Masked before validation, so a rejected value is hidden too.
+                  print(f"::add-mask::{value}", flush=True)
+              return value
 
           since = take("since")
           until = take("until")
-          session = take("session_id")
-          account = take("account_id")
-          trace = take("trace_id")
-          needle = take("grep")
+          session = take("session_id", mask=True)
+          account = take("account_id", mask=True)
+          trace = take("trace_id", mask=True)
+          needle = take("grep", mask=True)
           stamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
           if not stamp.fullmatch(since) or not stamp.fullmatch(until):
               sys.exit("since and until must be YYYY-MM-DDTHH:MM:SSZ")

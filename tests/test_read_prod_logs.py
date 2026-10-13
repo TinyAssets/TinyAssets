@@ -129,6 +129,33 @@ def test_grep_runs_after_the_trail_is_joined_and_summary_counts_by_commit():
     assert counts["lines"] == 2
 
 
+def test_public_summary_never_keys_on_a_browser_supplied_error_type():
+    cookie = "s_" + "a" * 32
+    browser = {"client": "browser", "account_id": None, "signed_in": False}
+    idlike = "s_" + "b" * 32
+    events = [
+        _event(START, event="client.error", session_id=cookie, trace_id="trace-beacon",
+               step="client.error", context=browser, error={"type": idlike, "stack": ""}),
+        _event(START + timedelta(minutes=1), event="client.error", session_id=cookie,
+               trace_id="trace-beacon-2", step="client.error", context=browser,
+               error={"type": "TypeError", "stack": "at render (x.js:1:2)"}),
+        _event(START + timedelta(minutes=2), session_id=cookie, trace_id="trace-page",
+               step="page.load", context=browser),
+        _event(START + timedelta(minutes=3), session_id=cookie, trace_id="trace-http",
+               step="http", context=browser, http={"status": 500},
+               error={"type": "HTTP500", "stack": ""}),
+        _event(START + timedelta(minutes=4), session_id="s_" + "e" * 32, trace_id="trace-hook",
+               step="checkout.paid", error={"type": "StripeError", "stack": ""}),
+    ]
+    summary = reader.summary_for(events, truncated=False)
+    counts = summary["errors_by_commit"]["a" * 40]
+    assert counts == {reader.CLIENT_ERROR_KIND: 2, "HTTP500": 1, "StripeError": 1}
+    rendered = json.dumps(summary)
+    assert idlike not in rendered
+    assert "TypeError" not in rendered
+    assert summary["lines"] == 5
+
+
 def test_unwrap_and_render_keep_redaction():
     inner = _event(START, session_id="s_" + "a" * 32, trace_id="trace-0001")
     wrapped = json.dumps({"log": json.dumps(inner)})

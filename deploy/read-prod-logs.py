@@ -287,7 +287,22 @@ def _seed(
     return bool(session or account or trace)
 
 
+#: The public bucket for every browser-reported error. A browser names its own
+#: error type, so that string is never a key in output that leaves the host.
+CLIENT_ERROR_KIND = "client_error"
+
+
+def _browser_originated(event: dict[str, Any]) -> bool:
+    return event.get("event") == "client.error" or event.get("step") == "client.error"
+
+
 def summary_for(events: list[dict[str, Any]], *, truncated: bool) -> dict[str, Any]:
+    """Aggregates only, for the public job log: error types by commit.
+
+    Server-originated types (exception class names, ``HTTP5xx``) are counted by
+    name. A browser report is counted under ``client_error`` whatever type it
+    carried, because the browser chose that string.
+    """
     counts: dict[str, dict[str, int]] = {}
     for event in events:
         http = event.get("http") if isinstance(event.get("http"), dict) else {}
@@ -296,6 +311,8 @@ def summary_for(events: list[dict[str, Any]], *, truncated: bool) -> dict[str, A
         kind = error.get("type") if isinstance(error.get("type"), str) and error.get("type") else ""
         if not kind and isinstance(status, int) and status >= 500:
             kind = f"HTTP{status}"
+        if _browser_originated(event):
+            kind = CLIENT_ERROR_KIND if kind or error else ""
         if not kind:
             continue
         commit = event.get("commit") if isinstance(event.get("commit"), str) else ""
