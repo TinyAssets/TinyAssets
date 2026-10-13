@@ -271,7 +271,7 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
             effort_levels=model.effort_levels,
         ) for model in native_snapshot.catalogue.models if not model.hidden)
-    # What the PLATFORM has seen work on this KIND of source, newest of each class.
+    # The owner's verified history is source-scoped; reviewed public lists use kind.
     # Without this the list is only what this owner typed into their own access
     # grant, so a newly released model was invisible until someone shipped a patch
     # (founder, 2026-09-26: "i cant seem to select fable as a user for the llm").
@@ -295,7 +295,7 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
     provider = None if router is None else router._providers.get(member.provider)
     candidate_kind = ("agent_" + member.provider.replace("-", "_")
                       if isinstance(provider, ExternalAgentProvider) else LEARNED_SOURCE_KIND)
-    models.extend(_own_verified_candidates(base, candidate_kind, owner,
+    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, member.provider, owner,
                                           already=models, excluded=withdrawn))
     # ...then the reviewed public list for this kind of source, which is how a newly
     # released model reaches everyone without a patch: a PR adds the id, review is the
@@ -311,17 +311,17 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None, displ
     )
 
 
-def _own_verified_candidates(base, source_kind, owner, *, already, excluded=frozenset()):
-    """Ids THIS owner has already made work on this kind of source.
+def _own_verified_candidates(base, source_kind, provider_ref, owner, *, already,
+                             excluded=frozenset()):
+    """Ids THIS owner has already made work on this source.
 
     Their own history, not anyone else's: read from the private evidence table
     scoped to this owner, so nothing here depends on the promotion threshold. A
     solo user keeps every id they have ever used even though none of it is public.
 
-    Carries its own basis so the list can be honest about the difference between
-    "you have run this" and "two owners elsewhere have run this". Like the
-    published rows, these do not grant access: the owner may have narrowed their
-    scope since, and subscription history does not identify the provider. Display
+    Carries its own basis so the list distinguishes owner history from reviewed
+    public ids. Like the published rows, these do not grant access: the owner may
+    have narrowed their scope since. Display
     retention requires a non-hidden row in this provider's last catalogue under
     current custody, while refresh is pending or failed. Such rows are already
     included as executor_enumerated, so history-only rows remain offers. A fresh
@@ -331,7 +331,7 @@ def _own_verified_candidates(base, source_kind, owner, *, already, excluded=froz
 
     have = {model.model_id for model in already} | set(excluded)
     try:
-        rows = OwnModelHistory(base).ids_for(source_kind, owner)
+        rows = OwnModelHistory(base).ids_for(source_kind, provider_ref, owner)
     except (OSError, sqlite3.DatabaseError, ValueError) as exc:
         _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
         return ()
@@ -546,14 +546,13 @@ def prepare_owned_model_plan(
                             provider=provider,
                             display_only=True,
                         )
-                        if pending:
-                            rejected.append(Ineligible(ModelRef(provider, ""), pending,
-                                                       scope="source"))
                         if (native_snapshot is not None
                                 and (datetime.now(timezone.utc)
                                      - native_snapshot.observed_at).total_seconds()
                                 > USABLE_AGE):
-                            rejected.append(Ineligible(ModelRef(provider, ""), "stale",
+                            pending = "stale"
+                        if pending:
+                            rejected.append(Ineligible(ModelRef(provider, ""), pending,
                                                        scope="source"))
                     else:
                         from tinyassets.providers.native_discovery import (

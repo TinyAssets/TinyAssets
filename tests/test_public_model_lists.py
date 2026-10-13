@@ -174,11 +174,11 @@ def test_a_typed_id_never_reaches_any_shared_place(tmp_path):
     merging a PR.
     """
     history = OwnModelHistory(tmp_path)
-    assert history.record(source_kind="subscription", model_id=ARN,
+    assert history.record(source_kind="subscription", provider_ref="codex", model_id=ARN,
                           owner_user_id="alice") is True
-    assert [row.model_id for row in history.ids_for("subscription", "alice")] == [ARN]
+    assert [row.model_id for row in history.ids_for("subscription", "codex", "alice")] == [ARN]
     # Nobody else's view contains it...
-    assert history.ids_for("subscription", "bob") == []
+    assert history.ids_for("subscription", "codex", "bob") == []
     # ...and it is on no shared list, which is the only route to another user.
     assert ARN not in read_list("subscription")
     # The only table this creates is the per-owner one.
@@ -192,11 +192,73 @@ def test_a_typed_id_never_reaches_any_shared_place(tmp_path):
 
 def test_one_owners_several_universes_are_one_row(tmp_path):
     history = OwnModelHistory(tmp_path)
-    assert history.record(source_kind="subscription", model_id="a-1",
+    assert history.record(source_kind="subscription", provider_ref="codex", model_id="a-1",
                           owner_user_id="alice") is True
-    assert history.record(source_kind="subscription", model_id="a-1",
+    assert history.record(source_kind="subscription", provider_ref="codex", model_id="a-1",
                           owner_user_id="alice") is False
-    assert len(history.ids_for("subscription", "alice")) == 1
+    assert len(history.ids_for("subscription", "codex", "alice")) == 1
+
+
+def test_verified_history_is_scoped_to_the_source(tmp_path):
+    history = OwnModelHistory(tmp_path)
+    assert history.record(source_kind="subscription", provider_ref="codex",
+                          model_id="gpt-private", owner_user_id="alice")
+    assert history.ids_for("subscription", "claude-code", "alice") == []
+    assert history.record(source_kind="subscription", provider_ref="claude-code",
+                          model_id="gpt-private", owner_user_id="alice")
+    assert [row.model_id for row in history.ids_for(
+        "subscription", "codex", "alice")] == ["gpt-private"]
+
+
+def test_legacy_history_is_preserved_and_only_unambiguous_rows_are_attributed(tmp_path):
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("CREATE TABLE learned_model_evidence (source_kind TEXT NOT NULL, "
+                     "model_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, "
+                     "first_verified_at TEXT NOT NULL, "
+                     "PRIMARY KEY(source_kind, model_id, owner_user_id))")
+        conn.executemany("INSERT INTO learned_model_evidence VALUES (?, ?, ?, ?)", [
+            ("agent_claude_code", "agent-private", "alice", "2026-01-01T00:00:00Z"),
+            ("subscription", "ambiguous", "alice", "2026-01-02T00:00:00Z"),
+            ("subscription", "single-source", "bob", "2026-01-03T00:00:00Z"),
+        ])
+        conn.execute("CREATE TABLE llm_credential_deposit_owners ("
+                     "universe_id TEXT NOT NULL, service TEXT NOT NULL, "
+                     "owner_user_id TEXT NOT NULL, PRIMARY KEY(universe_id, service))")
+        conn.executemany("INSERT INTO llm_credential_deposit_owners VALUES (?, ?, ?)", [
+            ("alice-codex", "codex", "alice"),
+            ("alice-claude", "claude", "alice"),
+            ("bob-codex", "codex", "bob"),
+        ])
+    history = OwnModelHistory(tmp_path)
+    assert [row.model_id for row in history.ids_for(
+        "agent_claude_code", "claude-code", "alice")] == ["agent-private"]
+    assert history.ids_for("subscription", "claude-code", "alice") == []
+    assert history.ids_for("subscription", "codex", "alice") == []
+    assert [row.model_id for row in history.ids_for(
+        "subscription", "codex", "bob")] == ["single-source"]
+    history.record(source_kind="subscription", provider_ref="codex",
+                   model_id="new-model", owner_user_id="alice")
+    assert [row.model_id for row in history.ids_for(
+        "subscription", "codex", "alice")] == ["new-model"]
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM learned_model_evidence").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM learned_model_source_evidence").fetchone()[0] == 3
+        assert conn.execute("SELECT provider_ref FROM learned_model_source_evidence "
+                            "WHERE model_id = 'agent-private'").fetchone()[0] == "claude-code"
+        assert conn.execute("SELECT provider_ref FROM learned_model_source_evidence "
+                            "WHERE model_id = 'single-source'").fetchone()[0] == "codex"
+        assert conn.execute("SELECT 1 FROM learned_model_source_evidence "
+                            "WHERE model_id = 'ambiguous'").fetchone() is None
+        # An old process can still use its four-value INSERT after the new schema exists.
+        conn.execute("INSERT INTO learned_model_evidence VALUES (?, ?, ?, ?)",
+                     ("agent_codex", "rolling-turn", "alice", "2026-01-04T00:00:00Z"))
+    assert [row.model_id for row in history.ids_for(
+        "agent_codex", "codex", "alice")] == ["rolling-turn"]
+    assert [row.model_id for row in history.ids_for(
+        "agent_codex", "codex", "alice")] == ["rolling-turn"]
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM learned_model_evidence").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM learned_model_source_evidence").fetchone()[0] == 4
 
 
 def test_the_per_owner_table_is_reachable_by_the_deletion_sweep(tmp_path):
@@ -204,16 +266,19 @@ def test_the_per_owner_table_is_reachable_by_the_deletion_sweep(tmp_path):
     from tinyassets.account_deletion import PRESERVED_TABLES, PRINCIPAL_KEYS
     from tinyassets.scoped_reset import MAIN_DB_TABLE_CLASSIFICATIONS
 
-    OwnModelHistory(tmp_path).record(source_kind="subscription", model_id="a-1",
+    OwnModelHistory(tmp_path).record(source_kind="subscription", provider_ref="codex",
+                                     model_id="a-1",
                                      owner_user_id="alice")
     with sqlite3.connect(db_path(tmp_path)) as conn:
         columns = {row[1] for row in conn.execute(
-            "PRAGMA table_info(learned_model_evidence)")}
+            "PRAGMA table_info(learned_model_source_evidence)")}
     assert columns == set(COLUMNS)
     assert columns & set(PRINCIPAL_KEYS), "rows would be orphaned on account deletion"
     assert MAIN_DB_TABLE_CLASSIFICATIONS.get("learned_model_evidence") == "preserve"
+    assert MAIN_DB_TABLE_CLASSIFICATIONS.get("learned_model_source_evidence") == "preserve"
     assert "learned_model_evidence" not in PRESERVED_TABLES, (
         "the owner's own data must not be preserved through an account deletion")
+    assert "learned_model_source_evidence" not in PRESERVED_TABLES
     # The retired shared table is gone from both sweeps with its code.
     assert "learned_models" not in MAIN_DB_TABLE_CLASSIFICATIONS
     assert "learned_models" not in PRESERVED_TABLES
@@ -226,7 +291,7 @@ def test_a_failed_record_never_raises_at_the_call_site(tmp_path, monkeypatch):
         raise sqlite3.DatabaseError("disk went away")
 
     monkeypatch.setattr(module.OwnModelHistory, "record", explode)
-    assert record_verified_model(tmp_path, source_kind="subscription",
+    assert record_verified_model(tmp_path, source_kind="subscription", provider_ref="codex",
                                  model_id="a-1", owner_user_id="alice") is False
 
 

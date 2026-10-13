@@ -64,6 +64,20 @@ def test_health_hint_visible_on_models_outside_explicit_order():
     assert result["order"] == [{"provider_ref": "owned-source", "model_id": "first"}]
 
 
+def test_source_and_rows_have_one_freshness_state():
+    catalog = Catalog("owner", "home", (connection("first"),))
+    ref = ModelRef("owned-source", "")
+    result = model_options_document(catalog, plan(catalog), (
+        Ineligible(ref, "fresh", scope="source"),
+        Ineligible(ref, "stale", scope="source"),
+    ))
+    assert result["source_failures"] == [{
+        "provider_ref": "owned-source",
+        "reasons": [{"reason": "stale", "component": ""}],
+    }]
+    assert result["options"][0]["freshness"] == "stale"
+
+
 def test_zero_eligible_models_still_shows_reason_and_original_price():
     source = connection("costly")
     source = replace(source, models=(replace(source.models[0], pricing=Pricing("fresh", (

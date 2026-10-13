@@ -331,7 +331,7 @@ def _collect(base, owner, uid):
             source = sources[provider]
             if provider in snapshots and provider not in failed:
                 age = (datetime.now(timezone.utc)
-                       - snapshots[provider].completed_at).total_seconds()
+                       - snapshots[provider].observed_at).total_seconds()
                 source["catalogue_status"] = (
                     "fresh" if 0 <= age <= agent_receipts.FRESH_SECONDS else "stale")
             else:

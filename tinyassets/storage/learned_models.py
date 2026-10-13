@@ -32,20 +32,28 @@ from pathlib import Path
 
 from tinyassets.storage import db_path
 
-_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
-  -- The KIND of source (subscription, http, local), never a connection id.
+_LEGACY_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
   source_kind TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  first_verified_at TEXT NOT NULL,
+  PRIMARY KEY(source_kind, model_id, owner_user_id))"""
+
+_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_source_evidence (
+  source_kind TEXT NOT NULL,
+  provider_ref TEXT NOT NULL,
   model_id TEXT NOT NULL,
   -- Whose it is. Named owner_user_id, not something nicer, because account deletion
   -- finds per-user rows BY COLUMN NAME from its PRINCIPAL_KEYS list: a prettier name
   -- is silently skipped by that sweep and leaves a departed owner's rows behind.
   owner_user_id TEXT NOT NULL,
   first_verified_at TEXT NOT NULL,
-  PRIMARY KEY(source_kind, model_id, owner_user_id))"""
+  PRIMARY KEY(owner_user_id, provider_ref, model_id))"""
 
 #: Every column. The table is per-owner by design, so unlike the retired shared table
 #: it is ALLOWED an owner column -- and required to have one, so deletion finds it.
-COLUMNS = ("source_kind", "model_id", "owner_user_id", "first_verified_at")
+COLUMNS = ("source_kind", "provider_ref", "model_id", "owner_user_id",
+           "first_verified_at")
 
 #: The source KIND a native (subscription CLI) connection reports. One definition,
 #: read by the writer and the reader, so they cannot disagree about what a kind is.
@@ -69,6 +77,7 @@ _IDENTIFIER = re.compile(r"\A[\x21-\x7e]{1,200}\Z", re.ASCII)
 @dataclass(frozen=True, slots=True)
 class LearnedModel:
     source_kind: str
+    provider_ref: str
     model_id: str
     first_verified_at: str
 
@@ -85,6 +94,39 @@ def _clean(value: object, field: str) -> str:
 def _stamp(now: datetime | None) -> str:
     value = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _attribute_legacy(conn: sqlite3.Connection, owner: str) -> None:
+    """Copy attributable history without changing the old writer's four-column table."""
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+
+    services = set()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'llm_credential_deposit_owners'").fetchone():
+        services = {row[0] for row in conn.execute(
+            "SELECT DISTINCT service FROM llm_credential_deposit_owners "
+            "WHERE owner_user_id = ?", (owner,))}
+    providers = {provider for provider, service in _PROVIDER_SERVICE.items()
+                 if service in services}
+    subscription = next(iter(providers)) if len(providers) == 1 else None
+    for row in conn.execute(
+        "SELECT source_kind, model_id, first_verified_at "
+        "FROM learned_model_evidence WHERE owner_user_id = ?", (owner,)
+    ):
+        kind = row["source_kind"]
+        if kind.startswith("agent_"):
+            provider = kind.removeprefix("agent_").replace("_", "-") or None
+        elif kind == LEARNED_SOURCE_KIND:
+            provider = subscription
+        else:
+            provider = None
+        if provider is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO learned_model_source_evidence "
+                "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (kind, provider, row["model_id"], owner, row["first_verified_at"]),
+            )
 
 
 class OwnModelHistory:
@@ -112,7 +154,8 @@ class OwnModelHistory:
         conn.execute(f"PRAGMA busy_timeout = {_BUSY_WAIT_MS}")
         return conn
 
-    def record(self, *, source_kind: str, model_id: str, owner_user_id: str,
+    def record(self, *, source_kind: str, provider_ref: str, model_id: str,
+               owner_user_id: str,
                now: datetime | None = None) -> bool:
         """Record that this owner made this id work. Returns whether it was new.
 
@@ -120,50 +163,66 @@ class OwnModelHistory:
         accumulates -- there is no count of anything here, by design.
         """
         kind = _clean(source_kind, "source kind")
+        provider = _clean(provider_ref, "provider ref")
         model = _clean(model_id, "model id")
         owner = _clean(owner_user_id, "owner")
         when = _stamp(now)
         conn = self._connect(create=True)
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_LEGACY_SCHEMA)
             conn.execute(_SCHEMA)
-            return conn.execute(
-                "INSERT OR IGNORE INTO learned_model_evidence VALUES (?, ?, ?, ?)",
-                (kind, model, owner, when),
+            _attribute_legacy(conn, owner)
+            added = conn.execute(
+                "INSERT OR IGNORE INTO learned_model_source_evidence "
+                "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (kind, provider, model, owner, when),
             ).rowcount == 1
+            conn.commit()
+            return added
         finally:
             conn.close()
 
-    def ids_for(self, source_kind: str, owner_user_id: str) -> list[LearnedModel]:
-        """ONE OWNER's own ids for a source kind, oldest first.
+    def ids_for(self, source_kind: str, provider_ref: str,
+                owner_user_id: str) -> list[LearnedModel]:
+        """ONE OWNER's own ids for one source, oldest first.
 
         Owner-scoped on purpose, and there is deliberately no API that returns another
         owner's rows, a count of them, or anything aggregated across owners.
         """
         kind = _clean(source_kind, "source kind")
+        provider = _clean(provider_ref, "provider ref")
         owner = _clean(owner_user_id, "owner")
         conn = self._connect(create=False)
         if conn is None:
             return []
         try:
             if not conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
                 "AND name = 'learned_model_evidence'"
             ).fetchone():
                 return []
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_SCHEMA)
+            _attribute_legacy(conn, owner)
             rows = conn.execute(
-                "SELECT source_kind, model_id, first_verified_at "
-                "FROM learned_model_evidence "
-                "WHERE source_kind = ? AND owner_user_id = ? "
+                "SELECT source_kind, provider_ref, model_id, first_verified_at "
+                "FROM learned_model_source_evidence "
+                "WHERE source_kind = ? AND provider_ref = ? AND owner_user_id = ? "
                 "ORDER BY first_verified_at, model_id",
-                (kind, owner),
+                (kind, provider, owner),
             ).fetchall()
+            conn.commit()
         finally:
             conn.close()
-        return [LearnedModel(row["source_kind"], row["model_id"], row["first_verified_at"])
+        return [LearnedModel(row["source_kind"], row["provider_ref"], row["model_id"],
+                             row["first_verified_at"])
                 for row in rows]
 
 
-def record_verified_model(base_path, *, source_kind, model_id, owner_user_id) -> bool:
+def record_verified_model(base_path, *, source_kind, provider_ref, model_id,
+                          owner_user_id) -> bool:
     """Best-effort record, for a caller that has already succeeded.
 
     The one place a failure is swallowed, because the caller is always a turn that has
@@ -174,7 +233,8 @@ def record_verified_model(base_path, *, source_kind, model_id, owner_user_id) ->
 
     try:
         return OwnModelHistory(base_path).record(
-            source_kind=source_kind, model_id=model_id, owner_user_id=owner_user_id)
+            source_kind=source_kind, provider_ref=provider_ref,
+            model_id=model_id, owner_user_id=owner_user_id)
     except Exception as exc:  # noqa: BLE001 - never fail a call that already worked
         logging.getLogger("universe_server.learned_models").warning(
             "could not record a verified model id: %s", type(exc).__name__)
