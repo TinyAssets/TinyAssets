@@ -136,24 +136,24 @@ def test_preference_home_change_between_validation_and_commit_is_refused(home, m
 
 
 def test_binding_read_uses_real_universe_scoped_storage(home):
-    from tests.test_custom_agents import _binding, _definition
-    from tinyassets.commons_catalog import create_binding, publish_definition
+    from tests.test_live_view import _seed_agent
+    from tinyassets.api.graph_reads import read_graph
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
 
-    definition = publish_definition(
-        home, author_id="owner-setup", payload=_definition("Setup fixture"),
-    )
-    bindings = [create_binding(home, universe_id=uid,
-                              definition_id=definition["agent_definition_id"],
-                              created_by="owner-setup", payload=_binding())
-                for uid in ("u-setup", "u-other")]
-    mine = json.loads(engine.read_graph(target="agent_binding",
-                                       agent_binding_id=bindings[0]["agent_binding_id"]))
-    assert mine["binding"]["agent_binding_id"] == bindings[0]["agent_binding_id"]
-    foreign = json.loads(engine.read_graph(target="agent_binding",
-                                          agent_binding_id=bindings[1]["agent_binding_id"]))
-    assert foreign == {"error": "not_found", "resource": "agent_binding"}
-    listed = json.loads(engine.read_graph(target="agent_bindings"))
-    assert [b["agent_binding_id"] for b in listed["bindings"]] == [bindings[0]["agent_binding_id"]]
+    _seed_agent(home / "u-setup", "owner-setup")
+    (home / "u-other").mkdir()
+    _seed_agent(home / "u-other", "other-owner")
+    with identity_context(Identity(user_id="owner-setup", username="owner-setup",
+                                   capabilities=["read", "list"])):
+        mine = json.loads(read_graph(target="agents", graph_id="u-setup", limit=30))
+        foreign = json.loads(read_graph(target="agents", graph_id="u-other", limit=30))
+    assert mine["agents"] == [
+        {"agent_id": "main", "name": "Your agent"},
+        {"agent_id": "mapper", "name": "Mapper"},
+    ]
+    assert mine["count"] == 2 and mine["universe_id"] == "u-setup"
+    assert foreign == {"error": "not_found"}
 
 
 @pytest.mark.parametrize("target,operation,payload", [

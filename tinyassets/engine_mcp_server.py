@@ -3740,7 +3740,7 @@ def write_graph(
 # gated by the same current-owner admission + rate-limit as run_graph.
 # PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
-_COMMONS_LIST_KINDS = frozenset({"branches", "goals", "packages", "systems"})
+_COMMONS_LIST_KINDS = frozenset({"agents", "branches", "goals", "packages", "systems"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
 #: branch catalog is global and unbounded, so cap the rows we return to the agent
 #: to protect its context window as the commons grows. (Cursor pagination is a
@@ -3980,7 +3980,7 @@ def browse_commons(
             ),
         })
 
-    if normalized not in {"packages", "systems"} and output_offset != 0:
+    if normalized not in {"agents", "packages", "systems"} and output_offset != 0:
         return json.dumps({"error": "output_offset is supported only for agents/packages/systems"})
 
     from tinyassets.auth.middleware import _current_identity
@@ -4018,7 +4018,7 @@ def browse_commons(
             # true for everything under `content`.
             foreign, own = _split_own_rows(raw)
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
-        if normalized == "systems":
+        if normalized in {"agents", "systems"}:
             from tinyassets.api.helpers import _base_path
             from tinyassets.api.system_copy_requests import SYSTEM_TAG
             from tinyassets.command_center_packages import PACKAGE_TAG
@@ -4030,8 +4030,9 @@ def browse_commons(
                 return json.dumps({"error": "output_offset must be a non-negative integer"})
             if type(limit) is not int or not 1 <= limit <= 100:
                 return json.dumps({"error": "limit must be between 1 and 100"})
-            filters = {"query": (query or "").strip(), "author_id": (author or "").strip(),
-                       "tags": [SYSTEM_TAG], "exclude_tags": [PACKAGE_TAG]}
+            filters = {"query": (query or "").strip(), "author_id": (author or "").strip()}
+            if normalized == "systems":
+                filters.update(tags=[SYSTEM_TAG], exclude_tags=[PACKAGE_TAG])
             base = _base_path()
             rows = list_definitions(base, **filters, limit=min(limit, _COMMONS_BROWSE_MAX),
                                     offset=output_offset)
@@ -4039,12 +4040,13 @@ def browse_commons(
                                          offset=output_offset + len(rows)))
             if output_offset and not rows and not list_definitions(
                     base, **filters, limit=1, offset=output_offset - 1):
-                return json.dumps({"error": "output_offset is past the system catalog"})
+                return json.dumps({"error": f"output_offset is past the {normalized} catalog"})
             result = project_agents(rows, offset=output_offset, more=more,
                                     budget=resolve_ceiling() - 2048)
             if "error" in result:
                 return json.dumps(result)
-            result["systems"] = result.pop("agents")
+            if normalized == "systems":
+                result["systems"] = result.pop("agents")
             foreign, own = _split_own_rows(json.dumps(result))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         if normalized == "packages":

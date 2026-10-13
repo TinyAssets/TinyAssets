@@ -59,7 +59,7 @@ import datetime as dt
 import re
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -510,12 +510,23 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                     delta.notes.append(Finding(f"{rel}:{line} ({name})", why))
 
         def key(m: inv.Marker, fm: FileModel) -> tuple:
-            return (m.kind, " ".join(m.reason.split()), _enclosing(m, fm), m.scope)
+            # Renewing only expires= is not a newly added skip. Keep the rest
+            # of the reason, owner, enclosing test and marker kind identical.
+            reason = inv.EXPIRY_RE.sub("expires=<date>", m.reason)
+            return (m.kind, " ".join(reason.split()), _enclosing(m, fm), m.scope)
 
-        had = Counter(key(m, b) for m in b.markers)
+        had: dict[tuple, list[inv.Marker]] = defaultdict(list)
+        for previous in b.markers:
+            had[key(previous, b)].append(previous)
         for m in a.markers:
             if had[key(m, a)]:
-                had[key(m, a)] -= 1
+                previous = had[key(m, a)].pop()
+                if previous.expires != m.expires:
+                    why = marker_problem(m, today)
+                    if why:
+                        delta.unexplained_markers.append(
+                            Finding(f"{rel}:{m.line}", f"renewed `{m.kind}` -- {why}"),
+                        )
                 continue
             target = _enclosing(m, a)
             existing = target in b.tests if target else bool(b.tests)

@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from starlette.requests import Request
 
-from tests.test_custom_agents import _definition
 from tinyassets.commons_catalog import publish_definition
 from tinyassets.onboarding.public_run import (
     handle_public_run,
@@ -13,6 +12,13 @@ from tinyassets.onboarding.public_run import (
     save_preview,
     share_url,
 )
+
+
+def _definition(name, *, components=None):
+    return {"schema_version": 1, "name": name,
+            "components": components or {"identity": {"kind": "soul", "config": {
+                "instructions": "Answer the user.",
+            }}}}
 
 
 def request(path, ident):

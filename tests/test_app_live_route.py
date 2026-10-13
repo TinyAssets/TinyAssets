@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_live_view import _seed_runs
+from tests.test_live_view import _seed_agent, _seed_runs
 from tests.test_turn_interrupt import _Request
 from tinyassets import agent_activities as acts
 from tinyassets import live_view, onboarding
@@ -18,22 +18,12 @@ from tinyassets.auth import middleware
 
 @pytest.fixture
 def live(monkeypatch, tmp_path):
-    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import initialize_author_server
 
     initialize_author_server(tmp_path)
     universe = tmp_path / "u-alpha"
     universe.mkdir()
-    definition = publish_definition(tmp_path, author_id="owner-secret", payload={
-        "schema_version": 1, "name": "Mapper", "components": {
-            "identity": {"kind": "soul", "config": {"instructions": "Map projects."}},
-        },
-    })
-    agent_id = create_binding(
-        tmp_path, universe_id=universe.name,
-        definition_id=definition["agent_definition_id"], created_by="owner-secret",
-        payload={"schema_version": 1, "name": "Mapper"},
-    )["agent_binding_id"]
+    agent_id = _seed_agent(universe, "owner-secret")
     record = acts.create(universe, owner_principal="owner-secret", title="map",
                          brief="private instructions", origin_kind="ask", agent_id=agent_id)
     activity_id = record["activity_id"]

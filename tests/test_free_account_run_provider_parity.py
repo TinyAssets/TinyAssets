@@ -685,7 +685,7 @@ def engine_tools(tmp_path, monkeypatch):
     )])
     # Persona generation is not this test's subject. The adapter overwrites
     # these deliberately wrong identities with the run's own.
-    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args: (
+    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args, **kwargs: (
         args[3], "work system", ModelConfig(
             engine_mcp_enabled=True, engine_mcp_actor_id="wrong-owner",
             engine_mcp_graph_id="wrong-universe", max_tokens=2048, absolute_cap_s=120,

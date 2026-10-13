@@ -86,7 +86,7 @@ def test_a_node_too_large_for_its_model_answers_on_one_that_fits(
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.router import ProviderRouter
 
-    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args: (
+    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args, **kwargs: (
         args[3], "work system", ModelConfig(
             engine_mcp_enabled=True, engine_mcp_actor_id="wrong-owner",
             engine_mcp_graph_id="wrong-universe", max_tokens=max_tokens, absolute_cap_s=120,
