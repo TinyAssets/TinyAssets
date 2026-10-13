@@ -74,7 +74,10 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
         },
     )
     assert anonymous.status_code == 401
-    assert anonymous.json() == {"error": "authentication_required"}
+    assert anonymous.json() == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
     assert anonymous.headers["www-authenticate"].startswith("Bearer ")
 
     initialize = _post_mcp(

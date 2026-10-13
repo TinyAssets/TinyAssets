@@ -61,7 +61,10 @@ def test_default_get_mcp_is_challenged_too(client):
     .well-known routes, which stay public."""
     response = client.get("/mcp", headers={"Accept": "*/*"})
     assert response.status_code == 401
-    assert response.json() == {"error": "authentication_required"}
+    assert response.json() == {
+        "error": "authentication_required",
+        "error_description": "Sign in to TinyAssets to continue.",
+    }
     well_known = client.get("/mcp/.well-known/oauth-protected-resource")
     assert well_known.status_code == 200
 

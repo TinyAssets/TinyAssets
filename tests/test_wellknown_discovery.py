@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 
 from tinyassets.auth.wellknown import (
     protected_resource_metadata,
+    resource_metadata_url,
     starlette_discovery_routes,
 )
 
@@ -53,6 +54,18 @@ def test_prm_workos_without_resource_falls_back_to_base(monkeypatch):
     prm = protected_resource_metadata()
     assert prm["authorization_servers"] == [AUTHKIT_ISSUER]
     assert prm["resource"] == "https://tinyassets.io"
+
+
+def test_resource_metadata_url_inserts_the_well_known_segment():
+    assert resource_metadata_url("https://tinyassets.io/mcp") == (
+        "https://tinyassets.io/.well-known/oauth-protected-resource/mcp"
+    )
+    assert resource_metadata_url("https://tinyassets.io/mcp/") == (
+        "https://tinyassets.io/.well-known/oauth-protected-resource/mcp"
+    )
+    assert resource_metadata_url("http://localhost:8001") == (
+        "http://localhost:8001/.well-known/oauth-protected-resource"
+    )
 
 
 def test_discovery_routes_include_prm_paths():
@@ -173,6 +186,7 @@ def test_prm_routes_served_200(monkeypatch):
     monkeypatch.setenv("WORKOS_MCP_RESOURCE", MCP_RESOURCE)
     app = Starlette(routes=starlette_discovery_routes())
     client = TestClient(app)
+    bodies = []
     for path in (
         "/.well-known/oauth-protected-resource",
         "/.well-known/oauth-protected-resource/mcp",
@@ -182,3 +196,5 @@ def test_prm_routes_served_200(monkeypatch):
         assert resp.status_code == 200, path
         body = resp.json()
         assert body["authorization_servers"] == [AUTHKIT_ISSUER]
+        bodies.append(body)
+    assert bodies[0] == bodies[1] == bodies[2]

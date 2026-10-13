@@ -708,24 +708,31 @@ def _browser_connect_page(scope: dict) -> bool:
     return "text/html" in accept
 
 
+#: Body copy for the two 401 shapes. The header stays a bare challenge when
+#: the token is absent (RFC 6750); ``invalid_token`` is only for a token we
+#: were given and refused.
+_MISSING_TOKEN_DESCRIPTION = "Sign in to TinyAssets to continue."
+_INVALID_TOKEN_DESCRIPTION = (
+    "The TinyAssets access token is invalid or expired; sign in again."
+)
+
+
 def _challenge_prm_url() -> str:
     """The ``resource_metadata`` URL to advertise in the 401 challenge.
 
-    Clients that follow the header fetch the ``/mcp``-prefixed document. That
-    path sits on the long-standing ``tinyassets.io/mcp*`` route, so it stays
-    reachable if a newer well-known route is not bound yet. RFC 9728 path
-    insertion is the same document at
-    ``/.well-known/oauth-protected-resource/mcp``. When ``WORKOS_MCP_RESOURCE``
-    is unset, the server root well-known is the right URL.
+    RFC 9728 inserts ``/.well-known/oauth-protected-resource`` between the
+    host and the resource path, so ``https://tinyassets.io/mcp`` is advertised
+    as ``https://tinyassets.io/.well-known/oauth-protected-resource/mcp``.
+    The older ``/mcp/.well-known/oauth-protected-resource`` path still serves
+    the same document. When ``WORKOS_MCP_RESOURCE`` is unset, the server URL
+    is inserted the same way.
     """
     import os
 
-    resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip().rstrip("/")
-    if resource:
-        return f"{resource}/.well-known/oauth-protected-resource"
-    from tinyassets.auth.wellknown import _server_url
+    from tinyassets.auth.wellknown import _server_url, resource_metadata_url
 
-    return f"{_server_url()}/.well-known/oauth-protected-resource"
+    resource = os.environ.get("WORKOS_MCP_RESOURCE", "").strip()
+    return resource_metadata_url(resource or _server_url())
 
 
 async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
@@ -744,22 +751,28 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
             rejection_description,
         )
 
-        description = rejection_description(rejection_category())
-        if description:
-            challenge = (
-                f'Bearer error="invalid_token", error_description="{description}", '
-                f'resource_metadata="{prm}"'
-            )
-            body = json.dumps(
-                {"error": "invalid_token", "error_description": description},
-                separators=(",", ":"),
-            ).encode()
-        else:
-            challenge = f'Bearer error="invalid_token", resource_metadata="{prm}"'
-            body = b'{"error":"invalid_token"}'
+        description = (
+            rejection_description(rejection_category()) or _INVALID_TOKEN_DESCRIPTION
+        )
+        challenge = (
+            f'Bearer error="invalid_token", error_description="{description}", '
+            f'resource_metadata="{prm}"'
+        )
+        body = json.dumps(
+            {"error": "invalid_token", "error_description": description},
+            separators=(",", ":"),
+        ).encode()
     else:
+        # No error code: RFC 6750 says a request that carries no token gets
+        # the challenge alone. The body still names why, for a person reading it.
         challenge = f'Bearer resource_metadata="{prm}"'
-        body = b'{"error":"authentication_required"}'
+        body = json.dumps(
+            {
+                "error": "authentication_required",
+                "error_description": _MISSING_TOKEN_DESCRIPTION,
+            },
+            separators=(",", ":"),
+        ).encode()
     await send(
         {
             "type": "http.response.start",
@@ -811,9 +824,7 @@ def _tool_linking_challenge_body(
 
     specific = rejection_description(rejection_category()) if invalid_token else None
     description = specific or (
-        "The TinyAssets access token is invalid or expired; sign in again."
-        if invalid_token
-        else "Sign in to TinyAssets to continue."
+        _INVALID_TOKEN_DESCRIPTION if invalid_token else _MISSING_TOKEN_DESCRIPTION
     )
     challenge = (
         f'Bearer resource_metadata="{prm}", error="{error}", '

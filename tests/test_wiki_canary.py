@@ -41,7 +41,10 @@ def _canary_boundary(monkeypatch):
         lambda url, payload, timeout, accepted_http_statuses=frozenset(): (
             401,
             {"www-authenticate": "Bearer realm=\"tinyassets\""},
-            b'{"error":"authentication_required"}',
+            (
+                b'{"error":"authentication_required",'
+                b'"error_description":"Sign in to TinyAssets to continue."}'
+            ),
         ),
     )
 
