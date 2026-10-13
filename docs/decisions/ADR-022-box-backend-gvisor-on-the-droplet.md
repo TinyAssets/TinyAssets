@@ -115,7 +115,7 @@ They need nothing P2b builds.
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
 | G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 700 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
-| G4 volume | project quotas enabled on the data volume; a write past a tree's quota is ENOSPC in that tree only |
+| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, see the amendment); a write past a project's `bhard` is ENOSPC in that project only; with the image full a write is ENOSPC inside the box and the root filesystem's free space is unchanged; data written with `fsync` survives detach and reattach of the loop device |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
 
 **P2b, acceptance on the cutover build.** `scripts/box_acceptance.py` runs
@@ -182,6 +182,44 @@ path, since its in-box tools are the same `boxd` operations P2b ships.
 - **Later, measured:** a larger droplet, a DO volume for box storage, or a
   bare-metal KVM host (Firecracker's precondition) is each a spending
   decision raised with the G3 or wake-queue numbers that need it.
+
+## Amendment 2026-10-13: where box trees live (G4)
+
+P2a run 38476716743 on production (kernel 6.1, `runsc` release-20260928.0,
+16.9 GiB free): **G4 failed**. The data volume is ext4 mounted without
+project quotas. Enabling `prjquota` on the root ext4 needs an offline
+`tune2fs` and a remount, that is a reboot of the only host; a DO block
+volume is new spending.
+
+**Decision: box trees live on one XFS image, loop-mounted with `pquota`.**
+
+- `/var/lib/boxhostd/boxes.img`, preallocated with `fallocate` (never
+  sparse) at 8 GiB, mounted at `/var/lib/boxhostd/owners` with
+  `pquota,noatime` by a systemd mount unit that `boxhostd.service`
+  requires; `boxhostd` refuses to start if the mount lacks `pquota`. The
+  loop device uses `--direct-io=on`, so pages are cached once.
+- **Durability.** XFS flushes reach the loop device, which fsyncs the
+  backing file: a box `fsync` is as durable as the host's ext4.
+- **Growth.** At 80 % used `boxhostd` raises a `docs/host-actions.md` row.
+  Growth is online (`fallocate` extend, `losetup --set-capacity`,
+  `xfs_growfs`) in 4 GiB steps while the root filesystem keeps ≥ 6 GiB
+  free. Past that, a DO block volume (about $0.10 per GiB-month) formatted
+  XFS `pquota` replaces the image: new spending, raised with the numbers.
+- **Full.** Per-owner `bhard` is the first bound; the image may be
+  oversubscribed. A write with the image full is ENOSPC inside the writing
+  box only. The root filesystem and the daemon's data are elsewhere, so a
+  box can never fill them (today `/data` shares the root disk).
+- **Backup.** `backup.sh` includes the mounted tree, file level per owner,
+  not the raw image. S27 later ships box snapshots on the one snapshot path.
+- **P2b window: owner bytes move.** For each owner the one-shot rsyncs the
+  tree into `owners/<uid>` under the same UID/GID, sets the project id and
+  `bhard`, verifies with `rsync --checksum`, then writes the layout marker.
+  The old trees are removed at the end of the window after the smoke
+  check; the verified full backup is the rollback. Design §11 step 2 and
+  "attached in place" are amended accordingly.
+
+Founder: nothing now (no spending, no reboot). Later: the block volume,
+when growth would breach the 6 GiB rule.
 
 ## Consequences
 

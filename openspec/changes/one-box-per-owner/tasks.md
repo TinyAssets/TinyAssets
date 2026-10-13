@@ -41,9 +41,14 @@ and the spec is synced.
         - the deploy workflow's SSH step installs the pinned `runsc` and
           the `boxhostd` systemd unit on the droplet, `--network=none`,
           cgroup v2 per box; both serve nothing until P2b;
+        - the box store: `/var/lib/boxhostd/boxes.img` (8 GiB,
+          `fallocate`), loop-mounted XFS `pquota` at
+          `/var/lib/boxhostd/owners` by a mount unit `boxhostd.service`
+          requires (ADR-022 amendment);
         - `scripts/box_preflight.py`: the host and platform gates G1, G3,
-          G4 and G6 of ADR-022 on raw `runsc` sandboxes, pass or fail
-          numbers, run in a quiet window. It needs nothing P2b builds.
+          G4 (against the mounted image) and G6 of ADR-022 on raw `runsc`
+          sandboxes, pass or fail numbers, run in a quiet window. It needs
+          nothing P2b builds.
       - **Deletes:** `.github/workflows/box-kvm-validation.yml` and
         `scripts/box_bench/` (one measurement path).
       - **Verify:** every gate number recorded in the P2b PR description.
@@ -62,8 +67,8 @@ and the spec is synced.
         - the gVisor driver behind `BoxProvider`, re-keyed per owner
           (`bind(owner)`); `boxd`, moved from the `boxes/local.py` core;
           the read-only harness rootfs with Node, the CLI packages'
-          install trees, Chromium and the media tools; per-owner project
-          quota;
+          install trees, Chromium and the media tools; per-owner XFS
+          project quota on the image;
         - `admit` once at session entry; every execution of the session is
           an exec on the one handle;
         - in the box: `read`, `write`, `edit`, `bash`, git, code nodes,
@@ -81,7 +86,8 @@ and the spec is synced.
           `apparmor` and `systempaths` unconfined lines leave
           `deploy/compose.yml` and the droplet's copy in the window.
       - **Window runbook:** the design §11 steps, with a verified full
-        backup first.
+        backup first; owner trees rsync into the image and are verified
+        by checksum before the old trees go.
       - **Deletes:**
         - all 33 `role_*` modules (design §8), the mapper
           (`deploy/role_owner_launcher.py`), `deploy/role_launcher.py`,
