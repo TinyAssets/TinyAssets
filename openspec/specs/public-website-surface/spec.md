@@ -36,7 +36,7 @@ The site SHALL present TinyAssets as one app on any device: the visitor's own ag
 
 ### Requirement: The Legal Operator Is One Setting
 
-The operating entity's name, the state whose law governs, and the public contact address SHALL be recorded only in `WebSite/site-react/lib/legal-info.json`. The site SHALL fill the operator line and the terms party from that record's brand, legal name, and phrase templates, and SHALL NOT retype the legal name, those phrases, or the governing-law state in any other file. `/legal` (page and metadata), the footer brand, the schema.org Organization, WebSite, and SoftwareApplication names, the Open Graph site name, and `SITE.contact` SHALL read this record. A site test SHALL fail when the legal name, a trade-name phrase, or the governing-law state is hard-coded outside that file.
+The operating entity's name, the state whose law governs, and the public contact address SHALL be recorded only in `WebSite/site-react/lib/legal-info.json`. The site SHALL fill the operator line and the terms party from that record's brand, legal name, and phrase templates, and SHALL NOT retype the legal name, those phrases, or the governing-law state in any other file under `WebSite/site-react`. `/legal` (page and metadata), the footer brand, the schema.org Organization, WebSite, and SoftwareApplication names, the Open Graph site name, and `SITE.contact` SHALL read this record. A site test SHALL fail when the legal name, a trade-name phrase, or the governing-law state is hard-coded in `WebSite/site-react` outside that file.
 
 #### Scenario: The operating entity is renamed
 

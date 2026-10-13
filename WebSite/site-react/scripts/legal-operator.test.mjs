@@ -5,8 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const siteRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = resolve(siteRoot, "../..");
-const SETTING = "WebSite/site-react/lib/legal-info.json";
+const SETTING = "lib/legal-info.json";
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -38,7 +37,7 @@ function fragments(template) {
     .filter((part) => part.length >= 8);
 }
 
-function repoFiles() {
+function siteFiles() {
   const found = [];
   const walk = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -52,7 +51,7 @@ function repoFiles() {
       found.push(path);
     }
   };
-  walk(repoRoot);
+  walk(siteRoot);
   return found;
 }
 
@@ -103,8 +102,8 @@ test("the legal operator record is one editable setting", () => {
 
 test("the owner string is not hard-coded outside the shared setting", () => {
   const offenders = [];
-  for (const path of repoFiles()) {
-    const rel = relative(repoRoot, path).split(sep).join("/");
+  for (const path of siteFiles()) {
+    const rel = relative(siteRoot, path).split(sep).join("/");
     if (rel === SETTING) continue;
     let text;
     try {
