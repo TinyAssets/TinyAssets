@@ -110,7 +110,9 @@ _token_facts: ContextVar[dict[str, Any] | None] = ContextVar("ta_obs_token", def
 _client: ContextVar[str] = ContextVar("ta_obs_client", default="other")
 _stashed: ContextVar[dict[str, Any] | None] = ContextVar("ta_obs_stashed", default=None)
 _db_depth: ContextVar[int] = ContextVar("ta_obs_db_depth", default=0)
-_db_totals: ContextVar[tuple[int, float]] = ContextVar("ta_obs_db_totals", default=(0, 0.0))
+# A mutable per-request tally, set once by the middleware: worker threads run
+# in a copied context, so they must mutate this object rather than re-set it.
+_db_totals: ContextVar[list[float] | None] = ContextVar("ta_obs_db_totals", default=None)
 
 _configured = False
 _commit_cache: str | None = None
@@ -437,8 +439,10 @@ def dependency(kind: str, target: str) -> Iterator[Span]:
 
 
 def _count_fast_db(duration_ms: float) -> None:
-    count, total_ms = _db_totals.get()
-    _db_totals.set((count + 1, total_ms + duration_ms))
+    tally = _db_totals.get()
+    if tally is not None:
+        tally[0] += 1
+        tally[1] += duration_ms
 
 
 def _dependency_target(kind: str, target: str) -> str:
@@ -640,7 +644,7 @@ class RequestLogMiddleware:
             _token_facts.set({}),
             _client.set(client),
             _stashed.set(holder),
-            _db_totals.set((0, 0.0)),
+            _db_totals.set([0, 0.0]),
         )
         started = time.perf_counter()
         status = 500
@@ -685,9 +689,9 @@ class RequestLogMiddleware:
                         "user_agent": _user_agent(scope),
                     },
                 }
-                db_calls, db_ms = _db_totals.get()
+                db_calls, db_ms = _db_totals.get() or (0, 0.0)
                 if db_calls:
-                    fields["http"]["db_calls"] = db_calls
+                    fields["http"]["db_calls"] = int(db_calls)
                     fields["http"]["db_ms"] = round(db_ms, 3)
                 if tool:
                     fields["tool"] = tool

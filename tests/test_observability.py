@@ -499,10 +499,16 @@ def test_admission_refuses_before_the_trail_reads_a_body(captured, monkeypatch):
 def test_db_trace_counts_fast_statements_on_the_request(captured):
     obs.install_db_trace()
 
-    async def query(scope, receive, send):
+    def run_queries(count: int) -> None:
         with sqlite3.connect(":memory:") as connection:
-            for _ in range(20):
+            for _ in range(count):
                 assert connection.execute("select 1").fetchone() == (1,)
+
+    async def query(scope, receive, send):
+        run_queries(10)
+        # Sync tools run in a worker thread with a copied context; their
+        # statements must still reach the request's tally.
+        await asyncio.to_thread(run_queries, 10)
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -514,7 +520,7 @@ def test_db_trace_counts_fast_statements_on_the_request(captured):
         assert first[0]["event"] == "session.step"
         assert first[0]["http"]["db_calls"] == 20
         assert first[0]["http"]["db_ms"] >= 0
-        assert obs._db_totals.get() == (0, 0.0)
+        assert obs._db_totals.get() is None
 
         async def no_query(scope, receive, send):
             await send({"type": "http.response.start", "status": 200, "headers": []})
