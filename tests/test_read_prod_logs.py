@@ -103,6 +103,12 @@ def test_timeline_joins_only_through_the_signed_cookie_and_the_account():
         events, since=START, until=END, trace="trace-tools",
     )
     assert [event["step"] for event in by_trace] == ["mcp.tools_list", "http"]
+    # With a session, the trace only narrows the seed; a colliding trace id
+    # from another trail is never admitted or expanded.
+    both, _ = reader.select_timeline(
+        events, since=START, until=END, session="mcp-session", trace="trace-tools",
+    )
+    assert "s_" + "9" * 32 not in {event["session_id"] for event in both}
     by_account, _ = reader.select_timeline(
         events, since=START, until=END, account="user_1",
     )

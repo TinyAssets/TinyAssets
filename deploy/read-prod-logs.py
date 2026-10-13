@@ -264,8 +264,8 @@ def _expand(
             marker = id(event)
             if marker in seen:
                 continue
-            same_trace = bool(trace) and event.get("trace_id") == trace
-            if not same_trace and not (keys & frontier):
+            # Only trusted keys grow a trail; a shared trace id never admits.
+            if not (keys & frontier):
                 continue
             seen.add(marker)
             selected.append(event)
