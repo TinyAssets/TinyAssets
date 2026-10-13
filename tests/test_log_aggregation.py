@@ -66,7 +66,7 @@ def test_runtime_containers_forward_logs_without_docker_socket():
         name for name, service in services.items()
         if name != "logs" and service.get("logging") is not None
     ]
-    assert set(forwarding_services) == {"daemon", "cloudflared", "slack-agent"}, (
+    assert set(forwarding_services) == {"daemon", "cloudflared"}, (
         f"unexpected forwarding service set: {sorted(forwarding_services)}"
     )
     for name in forwarding_services:
