@@ -279,8 +279,12 @@ class WorkOSAuthProvider(AuthProvider):
         clear_rejection_category()
         if not token or not token.strip():
             return None
+        from tinyassets.observability import dependency
+
         try:
-            signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+            with dependency("workos", self._jwks_uri) as span:
+                signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+                span.status = 200
         except jwt.DecodeError:
             _log_token_rejection("malformed")
             return None

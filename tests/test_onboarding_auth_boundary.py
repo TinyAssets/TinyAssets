@@ -362,6 +362,13 @@ def test_billing_webhook_carve_out_moved_with_the_app():
     assert mw._auth_challenge_path("/app/billing/webhook/x") is True
 
 
+def test_client_error_beacon_is_exactly_one_public_path():
+    # The marketing site reports page loads and uncaught errors before sign-in.
+    assert mw._auth_challenge_path("/app/client-error") is False
+    assert mw._auth_challenge_path("/app/client-errors") is True
+    assert mw._auth_challenge_path("/app/client-error/x") is True
+
+
 def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> int:
     """Like _drive but with request headers, to exercise the bearer path."""
     app = mw.AuthContextMiddleware(_ok_app)

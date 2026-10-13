@@ -265,6 +265,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ steps.image.outputs.tags }}
+          build-args: |
+            TINYASSETS_BUILD_SHA=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

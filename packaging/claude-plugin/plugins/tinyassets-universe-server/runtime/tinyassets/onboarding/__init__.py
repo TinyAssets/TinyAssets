@@ -2263,6 +2263,9 @@ async def _handle_billing_checkout(request: Any) -> Any:
                 # it rather than refusing: the URL stays valid while the session is
                 # active, so a second click is just the same checkout again. Refusing
                 # here is what locked an abandoned checkout out for the whole lease.
+                from tinyassets.observability import emit_checkout_attempt
+
+                emit_checkout_attempt(str(existing.get("attempt_id") or ""))
                 return {"url": str(existing["url"]), "resumed": True}
 
             if existing is not None:
@@ -2297,6 +2300,9 @@ async def _handle_billing_checkout(request: Any) -> Any:
                     return {"error": "checkout_already_in_progress"}
 
             attempt_id = str(attempt["attempt_id"])
+            from tinyassets.observability import emit_checkout_attempt
+
+            emit_checkout_attempt(attempt_id)
             try:
                 out = create_checkout_session(
                     universe_id=home,
@@ -2417,6 +2423,10 @@ async def _handle_billing_webhook(request: Any) -> Any:
         event = _json.loads(payload.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return JSONResponse({"error": "invalid_json"}, status_code=400)
+    if isinstance(event, dict):
+        from tinyassets.observability import emit_billing_event
+
+        emit_billing_event(event)
 
     from tinyassets.billing.stripe_adapter import (
         event_mode_matches_key,

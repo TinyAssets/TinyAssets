@@ -4099,6 +4099,10 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             sanitized_observation_fields(_admitted),
         )
 
+        from tinyassets.observability import emit_crash, emit_startup, install_serving
+
+        install_serving()
+
         from tinyassets.scoped_reset import prepare_service_writer_barrier
         from tinyassets.storage import data_dir
 
@@ -4149,7 +4153,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
                 await stack.enter_async_context(
                     canonical_app.router.lifespan_context(canonical_app),
                 )
+                emit_startup()
                 yield
+        except Exception as exc:
+            emit_crash(exc)
+            raise
         finally:
             stop_scheduler_for_serving()
             stop_workspace_sweepers_for_serving()
@@ -4268,9 +4276,14 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
             logger.exception("platform runtime provenance: pulse readback failed")
         return _PulseJSON(payload)
 
+    from tinyassets.observability import client_error
+
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            # Public beacon. Mounted here, not inside onboarding_routes, so it
+            # still accepts browser reports when the onboarding app is dark.
+            _PulseRoute("/app/client-error", client_error, methods=["POST"]),
             _PulseRoute("/mcp/pulse", _pulse_endpoint, methods=["GET"]),
             *_inbound_routes,
             # Onboarding SPA at /app — same-origin to /mcp, dark-flagged
@@ -4287,7 +4300,11 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # browser-style GETs on /mcp; pass MCP transport requests through unchanged.
     from tinyassets.auth.middleware import AuthContextMiddleware
     from tinyassets.ingress import AppIngressMiddleware
+    from tinyassets.observability import RequestLogMiddleware, StashExceptionMiddleware
 
+    # Inside Starlette's server-error wrapper, outside the exception middleware,
+    # so a route exception is stashed before it becomes an HTTP 500.
+    app.add_middleware(StashExceptionMiddleware)
     app = AuthContextMiddleware(AppIngressMiddleware(_MCPDiscoveryMiddleware(app), ingress))
     # Browser clients preflight OPTIONS /mcp with no bearer, and they can
     # read WWW-Authenticate and Mcp-Session-Id only when the response names
@@ -4298,6 +4315,10 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     from tinyassets.mcp_browser_cors import McpBrowserCors
 
     app = McpBrowserCors(app)
+    # The session trail records every admitted request. It sits directly
+    # inside admission so no request body is buffered before the origin is
+    # admitted; a refused origin leaves no event.
+    app = RequestLogMiddleware(app)
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no

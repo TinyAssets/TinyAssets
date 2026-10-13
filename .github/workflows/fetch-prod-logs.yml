@@ -1,0 +1,260 @@
+name: Fetch production logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Inclusive UTC start (YYYY-MM-DDTHH:MM:SSZ)
+        required: true
+        type: string
+      until:
+        description: Inclusive UTC end (YYYY-MM-DDTHH:MM:SSZ)
+        required: true
+        type: string
+      session_id:
+        description: One session trail
+        required: false
+        type: string
+        default: ""
+      account_id:
+        description: Every session for one opaque account id
+        required: false
+        type: string
+        default: ""
+      trace_id:
+        description: The session trail that contains this request
+        required: false
+        type: string
+        default: ""
+      grep:
+        description: Literal substring applied after the trail is joined
+        required: false
+        type: string
+        default: ""
+  repository_dispatch:
+    types: [fetch-prod-logs]
+
+permissions:
+  contents: read
+
+# Journal read only. It does not restart a service or edit host config, so it
+# keeps its own lock and leaves the host-mutation lock to installs and deploys.
+concurrency:
+  group: production-host-observation
+  cancel-in-progress: false
+
+env:
+  DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      # This repo, its artifacts and its job logs are public. The timeline is
+      # sealed to the committed recipient public key before it leaves the
+      # runner; only the founder's local private key decrypts it.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the sealing dependency
+        run: python -m pip install --disable-pip-version-check 'cryptography==46.0.3'
+
+      - name: Reject a missing or placeholder recipient
+        run: python mobile/scripts/review_evidence.py validate-recipient
+
+      # The job log is public and prints every step's env: block and any
+      # expression-substituted run: text. So the query never passes through
+      # env: or ${{ }}: this step reads the event file the runner already
+      # holds, masks each identifier the moment it is read, and only then
+      # hands the fields on through GITHUB_ENV.
+      - name: Resolve the log query
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from datetime import datetime, timedelta
+
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
+              event = json.load(handle)
+          if os.environ["GITHUB_EVENT_NAME"] == "repository_dispatch":
+              src = event.get("client_payload") or {}
+          else:
+              src = event.get("inputs") or {}
+          if not isinstance(src, dict):
+              sys.exit("log query payload is not an object")
+
+          def take(key, mask=False):
+              value = src.get(key, "")
+              if value is None:
+                  return ""
+              if not isinstance(value, str):
+                  sys.exit(f"{key} must be a string")
+              if "\n" in value or "\r" in value or "\x00" in value:
+                  sys.exit(f"{key} contains a newline")
+              value = value.strip()
+              if mask and value:
+                  # Masked before validation, so a rejected value is hidden too.
+                  print(f"::add-mask::{value}", flush=True)
+              return value
+
+          since = take("since")
+          until = take("until")
+          session = take("session_id", mask=True)
+          account = take("account_id", mask=True)
+          trace = take("trace_id", mask=True)
+          needle = take("grep", mask=True)
+          stamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+          if not stamp.fullmatch(since) or not stamp.fullmatch(until):
+              sys.exit("since and until must be YYYY-MM-DDTHH:MM:SSZ")
+          start = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ")
+          end = datetime.strptime(until, "%Y-%m-%dT%H:%M:%SZ")
+          if end < start or end - start > timedelta(days=7):
+              sys.exit("the window must be within 7 days")
+          ident = re.compile(r"^[A-Za-z0-9_|.-]{1,128}$")
+          for label, value in (("session_id", session), ("account_id", account)):
+              if value and (not ident.fullmatch(value) or "@" in value):
+                  sys.exit(f"{label} is not an opaque id")
+          if trace and not re.fullmatch(r"^[A-Za-z0-9_-]{8,64}$", trace):
+              sys.exit("trace_id is not a trace id")
+          if not (session or account or trace) and end - start > timedelta(hours=1):
+              sys.exit(
+                  "an unfiltered window must be within 1 hour; "
+                  "name a session_id, account_id or trace_id for up to 7 days"
+              )
+          if len(needle) > 80:
+              sys.exit("grep is longer than 80 characters")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              for name, value in (
+                  ("LOG_SINCE", since),
+                  ("LOG_UNTIL", until),
+                  ("LOG_SESSION_ID", session),
+                  ("LOG_ACCOUNT_ID", account),
+                  ("LOG_TRACE_ID", trace),
+                  ("LOG_GREP", needle),
+              ):
+                  handle.write(f"{name}<<EOF\n{value}\nEOF\n")
+          PY
+
+      - name: Install the deploy SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY}" ]; then
+            echo "DO_SSH_KEY is not set."
+            exit 1
+          fi
+          [ -n "${DO_DROPLET_HOST}" ]
+          [ -n "${DO_SSH_USER}" ]
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "${DO_DROPLET_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Fetch the timeline
+        run: |
+          set -euo pipefail
+          [[ "${DO_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                mktemp -d /tmp/tinyassets-read-logs.XXXXXX
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-read-logs[.][A-Za-z0-9]+$ ]]
+          cleanup() {
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "rm -rf -- $(printf '%q' "${remote_stage}")" || true
+          }
+          trap cleanup EXIT
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/read-prod-logs.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/read-prod-logs.py"
+          # The remote executable is python3 on this checked-in file. Query
+          # fields were pattern-checked above. printf %q quotes every argv
+          # token, so none of them is parsed as shell syntax.
+          cmd=(
+            python3
+            "${remote_stage}/read-prod-logs.py"
+            read-logs
+            --since "${LOG_SINCE}"
+            --until "${LOG_UNTIL}"
+          )
+          if [ -n "${LOG_SESSION_ID}" ]; then
+            cmd+=(--session "${LOG_SESSION_ID}")
+          fi
+          if [ -n "${LOG_ACCOUNT_ID}" ]; then
+            cmd+=(--account "${LOG_ACCOUNT_ID}")
+          fi
+          if [ -n "${LOG_TRACE_ID}" ]; then
+            cmd+=(--trace-id "${LOG_TRACE_ID}")
+          fi
+          if [ -n "${LOG_GREP}" ]; then
+            cmd+=(--grep "${LOG_GREP}")
+          fi
+          remote="$(printf '%q ' "${cmd[@]}")"
+          case "${remote}" in
+            python3\ *) ;;
+            *) echo "refusing a remote command that does not start with python3"; exit 1 ;;
+          esac
+          mkdir -p "${RUNNER_TEMP}/timeline"
+          set +e
+          ssh -i ~/.ssh/do_deploy \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "${remote}" \
+              > "${RUNNER_TEMP}/timeline/prod-logs.jsonl" \
+              2> "${RUNNER_TEMP}/prod-logs.summary"
+          status=$?
+          set -e
+          # The job log and the step summary are public. Only aggregates are
+          # printed: line count, truncation, error types by commit. No session
+          # id, account id, path or message leaves the sealed file.
+          python3 - "${RUNNER_TEMP}/prod-logs.summary" <<'PY' | tee -a "${GITHUB_STEP_SUMMARY}"
+          import json
+          import sys
+
+          print("### Production log timeline")
+          allowed = ("errors_by_commit", "lines", "truncated")
+          fixed = ("usage:", "read-logs ", "since ", "until ", "journalctl ", "the window ")
+          for line in open(sys.argv[1], encoding="utf-8"):
+              if line.startswith("TINYASSETS_SUMMARY "):
+                  payload = json.loads(line[len("TINYASSETS_SUMMARY "):])
+                  print(json.dumps({key: payload.get(key) for key in allowed}, sort_keys=True))
+              elif line.startswith(fixed):
+                  print(line.rstrip())
+              else:
+                  print("(a reader line that is not an aggregate was not printed)")
+          PY
+          if [ "${status}" -ne 0 ]; then
+            echo "read-only log fetch failed"
+            exit 1
+          fi
+
+      - name: Seal the timeline to the recipient key
+        run: |
+          set -euo pipefail
+          python mobile/scripts/review_evidence.py encrypt \
+              "${RUNNER_TEMP}/timeline" "${RUNNER_TEMP}/production-log-timeline.enc"
+          rm -rf "${RUNNER_TEMP}/timeline" "${RUNNER_TEMP}/prod-logs.summary"
+
+      - name: Upload the sealed timeline
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-log-timeline
+          path: ${{ runner.temp }}/production-log-timeline.enc
+          if-no-files-found: error

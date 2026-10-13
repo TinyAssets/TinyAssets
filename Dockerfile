@@ -378,10 +378,12 @@ COPY deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.
 COPY deploy/role_migrate.py /usr/local/libexec/ta-migrate.py
 COPY deploy/broker_main.py /app/broker_main.py
 
+ARG TINYASSETS_BUILD_SHA=unknown
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    TINYASSETS_BUILD_SHA=${TINYASSETS_BUILD_SHA}
 
 # Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;
