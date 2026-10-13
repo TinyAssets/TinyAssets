@@ -32,6 +32,27 @@ RUNSC_SHA256 = "88a87d5d6d06160d4c144f51f95ec6dd6fe0fc6b02697eb877876683c5b57a91
 CANARY = "http://127.0.0.1:8001/app"
 HARNESS_DEADLINE = 1800
 QUOTA_SCRATCH = ".box-preflight-scratch"
+QUOTA_TOOLS = {"xfs": ("xfs_quota",), "ext4": ("repquota", "chattr", "setquota")}
+MOUNTINFO = Path("/proc/self/mountinfo")
+
+
+class CleanupError(Exception):
+    def __init__(self, step: str, reason: str) -> None:
+        self.step = step
+        self.reason = reason
+        super().__init__(f"{step}:{reason}")
+
+
+def cleanup_reason(error: Exception) -> str:
+    if isinstance(error, FileNotFoundError):
+        return "path_missing"
+    if isinstance(error, PermissionError):
+        return "permission_denied"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(error, OSError) and error.errno in errno.errorcode:
+        return f"operation_failed:{errno.errorcode[error.errno]}"
+    return "operation_failed"
 
 
 def run(
@@ -493,8 +514,15 @@ def g4(volume: Path, work: Path | None = None) -> dict:
     }
     if not result["project_quota_mount"]:
         return {**result, "pass": False, "reason": "project quotas are not mounted on data volume"}
+    if filesystem not in QUOTA_TOOLS:
+        return {**result, "pass": False, "reason": "unsupported_project_quota_filesystem"}
+    for tool in QUOTA_TOOLS[filesystem]:
+        if shutil.which(tool) is None:
+            return {**result, "pass": False, "reason": f"missing_tool:{tool}"}
     # Only a new, disposable tree under the actual Docker data volume is
     # touched. No quota is applied to an owner directory.
+    if not volume.is_dir():
+        return {**result, "pass": False, "reason": "path_missing"}
     scratch_root = volume / QUOTA_SCRATCH
     scratch_root.mkdir(mode=0o700, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="quota-", dir=scratch_root) as scratch:
@@ -504,8 +532,6 @@ def g4(volume: Path, work: Path | None = None) -> dict:
             existing = run(["xfs_quota", "-x", "-c", "report -p -n", mount]).stdout
         elif filesystem == "ext4":
             existing = run(["repquota", "-P", "-n", mount]).stdout
-        else:
-            return {**result, "pass": False, "reason": "unsupported project quota filesystem"}
         # Never alter an existing project id. A fresh random id is also
         # checked against the filesystem's quota report before use.
         project = 1_000_000_000 + secrets.randbelow(1_000_000_000)
@@ -557,56 +583,114 @@ def g4(volume: Path, work: Path | None = None) -> dict:
         return result
 
 
+def valid_work_dir(work: Path) -> bool:
+    return (
+        work.parent == Path("/var/tmp")
+        and work.name.startswith("box-preflight-")
+        and not work.is_symlink()
+    )
+
+
+def unmount_beneath(tree: Path) -> None:
+    try:
+        mountinfo = MOUNTINFO.read_text()
+    except FileNotFoundError:
+        return
+    mounts = set()
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        target = Path(re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[4]))
+        if target == tree or tree in target.parents:
+            mounts.add(target)
+    for target in sorted(mounts, key=lambda path: len(path.parts), reverse=True):
+        try:
+            result = run(["umount", str(target)], timeout=20, check=False)
+            if result.returncode:
+                result = run(["umount", "-l", str(target)], timeout=20, check=False)
+            if result.returncode:
+                raise CleanupError("work_unmount", "umount_failed")
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise CleanupError("work_unmount", cleanup_reason(error)) from error
+
+
+def remove_cleanup_tree(tree: Path, step: str) -> None:
+    if not tree.exists():
+        return
+    unmount_beneath(tree)
+    try:
+        run(["chattr", "-R", "-ia", str(tree)], timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # Attributes may be unsupported; rmtree reports any real failure.
+    try:
+        shutil.rmtree(tree)
+    except OSError as error:
+        raise CleanupError(step, cleanup_reason(error)) from error
+
+
 def cleanup_scratch(work: Path) -> None:
     """Recover resources even when the measurement process was killed."""
     if not work.exists():
         return
-    errors = []
     state = work / "runsc-state"
-    if state.exists():
-        for name in ("cap3", "cap2", "cap1", "cap0", "g1"):
-            for action in (("kill", name, "KILL"), ("delete", "--force", name)):
-                try:
-                    run(
-                        [
-                            str(RUNSC),
-                            "--root",
-                            str(state),
-                            "--network=none",
-                            "--platform=systrap",
-                            *action,
-                        ],
-                        timeout=10,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired) as error:
-                    errors.append(f"sandbox cleanup: {error}")
+    if state.exists() and any(state.iterdir()):
+        names = {"cap3", "cap2", "cap1", "cap0", "g1"}
+        names.update(child.name for child in state.iterdir() if child.is_dir())
+        for name in sorted(names):
+            prefix = [str(RUNSC), "--root", str(state), "--network=none", "--platform=systrap"]
+            try:
+                run([*prefix, "kill", name, "KILL"], timeout=10, check=False)
+                deleted = run([*prefix, "delete", "--force", name], timeout=10, check=False)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise CleanupError("sandbox_delete", cleanup_reason(error)) from error
+            if deleted.returncode and not re.search(
+                r"not found|does not exist|no such (?:sandbox|container)",
+                deleted.stderr or "",
+                re.IGNORECASE,
+            ):
+                raise CleanupError("sandbox_delete", "runsc_delete_failed")
     quota_state = work / "quota-state.json"
     if quota_state.exists():
-        details = json.loads(quota_state.read_text())
-        project = details["project"]
-        mount = details["mount"]
-        if details["filesystem"] == "xfs":
+        try:
+            details = json.loads(quota_state.read_text())
+            project = details["project"]
+            mount = details["mount"]
+            filesystem = details["filesystem"]
+            tree = Path(details["tree"])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise CleanupError("quota_state", "invalid_state") from error
+        if (
+            tree.parent.name != QUOTA_SCRATCH
+            or not tree.name.startswith("quota-")
+            or tree.is_symlink()
+        ):
+            raise CleanupError("quota_state", "invalid_state")
+        if filesystem == "xfs":
             command = ["xfs_quota", "-x", "-c", f"limit -p bhard=0 {project}", mount]
-        elif details["filesystem"] == "ext4":
+        elif filesystem == "ext4":
             command = ["setquota", "-P", str(project), "0", "0", "0", "0", mount]
         else:
-            raise RuntimeError("unknown quota filesystem in cleanup state")
-        cleared = run(command, timeout=20, check=False)
+            raise CleanupError("quota_state", "invalid_state")
+        if shutil.which(command[0]) is None:
+            raise CleanupError("quota_clear", f"missing_tool:{command[0]}")
+        try:
+            cleared = run(command, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise CleanupError("quota_clear", cleanup_reason(error)) from error
         if cleared.returncode:
-            errors.append("quota cleanup failed")
+            raise CleanupError("quota_clear", "quota_clear_failed")
         else:
-            tree = Path(details["tree"])
-            if tree.exists():
-                shutil.rmtree(tree)
+            remove_cleanup_tree(tree, "quota_tree_remove")
             try:
                 tree.parent.rmdir()
             except OSError:
                 pass  # Another preflight scratch tree may still be present.
-            quota_state.unlink()
-    if errors:
-        raise RuntimeError("; ".join(errors))
-    shutil.rmtree(work)
+            try:
+                quota_state.unlink()
+            except OSError as error:
+                raise CleanupError("quota_state_remove", cleanup_reason(error)) from error
+    remove_cleanup_tree(work, "work_remove")
 
 
 def _deadline(_signum: int, _frame: object) -> None:
@@ -620,22 +704,29 @@ def main() -> int:
     parser.add_argument("--cleanup-only", action="store_true")
     args = parser.parse_args()
     if args.cleanup_only:
-        if (
-            args.work_dir is None
-            or args.work_dir.parent != Path("/var/tmp")
-            or not args.work_dir.name.startswith("box-preflight-")
-        ):
-            raise RuntimeError("cleanup requires a preflight work directory under /var/tmp")
-        cleanup_scratch(args.work_dir)
-        return 0
+        if args.work_dir is None or not valid_work_dir(args.work_dir):
+            failure = CleanupError("cleanup_guard", "invalid_work_dir")
+        else:
+            try:
+                cleanup_scratch(args.work_dir)
+                return 0
+            except CleanupError as error:
+                failure = error
+            except Exception as error:
+                failure = CleanupError("cleanup_process", cleanup_reason(error))
+        print(json.dumps({"step": failure.step, "reason": failure.reason}))
+        return 1
     if args.result is None:
         parser.error("--result is required")
     work = args.work_dir or Path(tempfile.mkdtemp(prefix="box-preflight-", dir="/var/tmp"))
+    if not valid_work_dir(work):
+        parser.error("--work-dir must be a /var/tmp/box-preflight-* directory")
     work.mkdir(mode=0o700, exist_ok=True)
     signal.signal(signal.SIGALRM, _deadline)
     signal.alarm(HARNESS_DEADLINE)
     report: dict = {"schema": 1, "gates": {}}
     boxes = None
+    step = "runsc_verify"
     try:
         report["runsc_version"] = run([str(RUNSC), "--version"]).stdout.strip().splitlines()[0]
         with RUNSC.open("rb") as binary:
@@ -643,6 +734,7 @@ def main() -> int:
         if RUNSC_RELEASE not in report["runsc_version"] or report["runsc_sha256"] != RUNSC_SHA256:
             raise RuntimeError("runsc release or binary checksum differs from P2a pin")
         report["kernel"] = os.uname().release
+        step = "host_probe"
         baseline = canary_p95()
         daemon_memory = int(
             run(
@@ -677,7 +769,9 @@ def main() -> int:
         report["scratch_required_mib"] = required // MIB
         if free < required:
             raise RuntimeError("insufficient scratch free for rootfs and owner tree")
+        step = "rootfs_export"
         boxes = Boxes(work, export_daemon_rootfs(work))
+        step = "sandbox_gates"
         report["gates"]["G1"] = gate(lambda: g1(boxes, baseline))
         boxes.stop("g1")
         trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
@@ -687,18 +781,20 @@ def main() -> int:
             report["gates"]["G3"] = trial
             report["gates"]["G6"] = {"pass": False, "reason": "workload trial failed"}
     except Exception as error:  # fail closed while still writing aggregate evidence
-        report["fatal"] = f"{type(error).__name__}: {error}"
+        report["fatal"] = f"{step}:{cleanup_reason(error)}"
     finally:
         signal.alarm(0)
         if boxes is not None:
             try:
                 boxes.stop_all()
             except Exception as error:
-                report["fatal"] = f"sandbox cleanup: {type(error).__name__}: {error}"
+                report["fatal"] = f"sandbox_stop:{cleanup_reason(error)}"
         try:
             cleanup_scratch(work)
+        except CleanupError as error:
+            report["fatal"] = f"cleanup.{error.step}:{error.reason}"
         except Exception as error:
-            report["fatal"] = f"scratch cleanup: {type(error).__name__}: {error}"
+            report["fatal"] = f"cleanup.cleanup_process:{cleanup_reason(error)}"
         for name in ("G1", "G3", "G4", "G6"):
             report["gates"].setdefault(name, {"pass": False, "reason": "not run"})
         report["pass"] = "fatal" not in report and all(
