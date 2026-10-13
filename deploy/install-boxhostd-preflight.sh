@@ -11,6 +11,10 @@ root=/opt/tinyassets/boxhostd
 target="${root}/${release}"
 source_dir="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$root"
+# G4 needs the project-quota tools (setquota, repquota); chattr ships with e2fsprogs.
+if ! command -v setquota >/dev/null || ! command -v repquota >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends quota >/dev/null
+fi
 archive="$(mktemp /tmp/boxhostd-runsc.XXXXXX)"
 stage="$(mktemp -d "${root}/.stage.XXXXXX")"
 trap 'rm -f -- "$archive"; [[ -n "${stage:-}" ]] && rm -rf -- "$stage"' EXIT

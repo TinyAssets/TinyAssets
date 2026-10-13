@@ -166,6 +166,7 @@ def test_ext4_project_inheritance_and_dedicated_scratch(monkeypatch, tmp_path: P
         return subprocess.CompletedProcess(args, 0, stdout=output)
 
     monkeypatch.setattr(box_preflight, "run", fake_run)
+    monkeypatch.setattr(box_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(box_preflight, "MIB", 1)
     volume = tmp_path / "volume"
     volume.mkdir()
@@ -203,6 +204,7 @@ def test_cleanup_pass_removes_killed_harness_quota_tree(monkeypatch, tmp_path: P
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(box_preflight, "run", fake_run)
+    monkeypatch.setattr(box_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     box_preflight.cleanup_scratch(work)
     assert ["setquota", "-P", "123", "0", "0", "0", "0", "/volume"] in commands
     assert not work.exists() and not tree.exists()
@@ -238,6 +240,145 @@ def test_boxhostd_parent_timeout_kills_group_and_runs_cleanup(monkeypatch, tmp_p
     assert kills == [(123, boxhostd_idle.signal.SIGKILL)]
     assert "--cleanup-only" in cleanups[0]
     assert json.loads(result.read_text())["pass"] is False
+
+
+def test_cleanup_fresh_host_is_noop_without_runtime(monkeypatch, tmp_path: Path) -> None:
+    work = tmp_path / "box-preflight-fresh"
+    monkeypatch.setattr(box_preflight, "run", lambda *_a, **_k: pytest.fail("called runsc"))
+    box_preflight.cleanup_scratch(work)
+    work.mkdir()
+    (work / "runsc-state").mkdir()
+    box_preflight.cleanup_scratch(work)
+    assert not work.exists()
+
+
+def test_cleanup_only_guard_reports_fixed_failure(monkeypatch, capsys, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        sys, "argv", ["box_preflight.py", "--cleanup-only", "--work-dir", str(tmp_path)]
+    )
+    assert box_preflight.main() == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "step": "cleanup_guard",
+        "reason": "invalid_work_dir",
+    }
+
+
+def test_g4_missing_optional_tool_is_gate_failure_without_quota_state(
+    monkeypatch, tmp_path: Path
+) -> None:
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+
+    def fake_run(args, **_kwargs):
+        assert args[0] == "findmnt"
+        return subprocess.CompletedProcess(args, 0, stdout="ext4 rw,prjquota")
+
+    monkeypatch.setattr(box_preflight, "run", fake_run)
+    monkeypatch.setattr(
+        box_preflight.shutil, "which", lambda tool: None if tool == "chattr" else f"/usr/bin/{tool}"
+    )
+    assert box_preflight.g4(volume, work)["reason"] == "missing_tool:chattr"
+    assert not (work / "quota-state.json").exists()
+    box_preflight.cleanup_scratch(work)
+
+
+def test_g4_creates_absent_scratch_directory(monkeypatch, tmp_path: Path) -> None:
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+
+    def fake_run(args, **_kwargs):
+        output = "ext4 rw,prjquota" if args[-1] == "FSTYPE,OPTIONS" else "/volume"
+        return subprocess.CompletedProcess(args, 0, stdout=output)
+
+    monkeypatch.setattr(box_preflight, "run", fake_run)
+    monkeypatch.setattr(box_preflight.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(box_preflight, "MIB", 1)
+    box_preflight.g4(volume, work)
+    assert (volume / box_preflight.QUOTA_SCRATCH).is_dir()
+    box_preflight.cleanup_scratch(work)
+
+
+def test_cleanup_quota_state_missing_tool_names_step(monkeypatch, tmp_path: Path) -> None:
+    work = tmp_path / "box-preflight-run"
+    work.mkdir()
+    (work / "quota-state.json").write_text(
+        json.dumps(
+            {
+                "filesystem": "xfs",
+                "mount": "/volume",
+                "project": 123,
+                "tree": str(tmp_path / "volume" / box_preflight.QUOTA_SCRATCH / "quota-run"),
+            }
+        )
+    )
+    monkeypatch.setattr(box_preflight.shutil, "which", lambda _tool: None)
+    with pytest.raises(box_preflight.CleanupError, match="quota_clear:missing_tool:xfs_quota"):
+        box_preflight.cleanup_scratch(work)
+    assert work.exists()
+
+
+def test_cleanup_nonexistent_sandboxes_are_success(monkeypatch, tmp_path: Path) -> None:
+    work = tmp_path / "box-preflight-run"
+    (work / "runsc-state").mkdir(parents=True)
+    (work / "runsc-state" / "metadata").touch()
+    commands = []
+
+    def fake_run(args, **_kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="sandbox not found")
+
+    monkeypatch.setattr(box_preflight, "run", fake_run)
+    box_preflight.cleanup_scratch(work)
+    assert sum("delete" in args for args in commands) == 5
+    assert not work.exists()
+
+
+def test_cleanup_failure_names_step_and_fixed_reason(monkeypatch, tmp_path: Path) -> None:
+    work = tmp_path / "box-preflight-run"
+    (work / "runsc-state").mkdir(parents=True)
+    (work / "runsc-state" / "metadata").touch()
+    monkeypatch.setattr(
+        box_preflight,
+        "run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(args, 1, stdout="", stderr="secret"),
+    )
+    with pytest.raises(box_preflight.CleanupError, match="sandbox_delete:runsc_delete_failed"):
+        box_preflight.cleanup_scratch(work)
+    assert (
+        boxhostd_idle.cleanup_failure('{"step":"sandbox_delete","reason":"runsc_delete_failed"}')
+        == "cleanup.sandbox_delete:runsc_delete_failed"
+    )
+    assert boxhostd_idle.cleanup_failure('{"step":"sandbox_delete","reason":"secret"}') == (
+        "cleanup.cleanup_process:operation_failed"
+    )
+
+
+def test_boxhostd_publishes_cleanup_step_and_reason(monkeypatch, tmp_path: Path) -> None:
+    class Process:
+        def wait(self, **_kwargs):
+            return 0
+
+    monkeypatch.setattr(
+        boxhostd_idle.tempfile, "mkdtemp", lambda **_k: str(tmp_path / "box-preflight-run")
+    )
+    monkeypatch.setattr(boxhostd_idle.subprocess, "Popen", lambda *_a, **_k: Process())
+    monkeypatch.setattr(
+        boxhostd_idle.subprocess,
+        "run",
+        lambda args, **_k: subprocess.CompletedProcess(
+            args, 1, stdout='{"step":"quota_clear","reason":"missing_tool:setquota"}'
+        ),
+    )
+    result = tmp_path / "result.json"
+    boxhostd_idle.run_preflight(result)
+    assert json.loads(result.read_text()) == {
+        "pass": False,
+        "fatal": "cleanup.quota_clear:missing_tool:setquota",
+    }
 
 
 def test_box_cgroups_stay_beneath_the_delegated_service() -> None:
