@@ -605,8 +605,18 @@ def test_saved_policy_on_connected_source_preserves_auto_and_explicit(
         saved = store.save("owner-1", universe.name, expected_generation=0, policy=preference,
                            require_current_home=True)
         if explicit:
-            with pytest.raises(ProviderAuthorityHeldError, match="absent from catalogue"):
+            from tinyassets.exceptions import SelectedModelUnavailableError
+            from tinyassets.universe_server import _served_failure_record
+
+            with pytest.raises(
+                ProviderAuthorityHeldError, match="absent from catalogue",
+            ) as raised:
                 apply_served_model_preferences(context)
+            assert isinstance(raised.value.__cause__, SelectedModelUnavailableError)
+            record = _served_failure_record(raised.value)
+            assert (record.code, record.stage, record.effects) == (
+                "model_unavailable", "before_send", "none",
+            )
         else:
             prepared = apply_served_model_preferences(context)
             assert prepared is not context
