@@ -101,11 +101,12 @@ def peer_uid(sock: socket.socket) -> int:
 def request_digest(*, grant_id: str, connection_id: str, verb: str, request: Any) -> str:
     """The request's identity for the op record: everything that shapes the effect.
 
-    Transport options (``reply_budget_s``) are excluded; the rest of the request
+    Transport options are excluded; the rest of the request
     document (url, headers, ``header_name``, body) is canonical JSON.
     """
     document = dict(request) if isinstance(request, dict) else {"request": request}
     document.pop("reply_budget_s", None)
+    document.pop("reply_idle_s", None)
     canonical = json.dumps(
         {"grant": grant_id, "connection": connection_id, "verb": str(verb).upper(),
          "request": document},
@@ -732,7 +733,9 @@ class _Connection:
                     namespace = _namespace(principal, command_center)
                     _, effect = await asyncio.to_thread(self._operation_state, namespace, op_id)
                 except rf.FrameError:
-                    effect = "none"  # no namespace: no operation it could name
+                    # An invalid namespace gives us no authority to query an
+                    # operation. It cannot prove that no prior send occurred.
+                    effect = "unknown"
             await self.send_async(rf.control(stream_id, {
                 "op": "END", "outcome": "refused", "error_class": error_class,
                 "stream_sent": False, "side_effect_state": effect}))
@@ -755,6 +758,11 @@ class _Connection:
             await refuse("refused")
             return
         try:
+            namespace = _namespace(principal, command_center)
+        except rf.FrameError:
+            await refuse("refused")
+            return
+        try:
             ledger = self._server._ledger_for(principal)
             _grant, resource = await asyncio.to_thread(
                 ledger.authorize_exact, universe_id=command_center, grant_id=grant_id,
@@ -767,7 +775,6 @@ class _Connection:
         if not self._server._fence.admits(generation, token):
             await refuse("fenced")
             return
-        namespace = _namespace(principal, command_center)
         digest = request_digest(grant_id=grant_id, connection_id=connection_id, verb=verb,
                                 request=request)
         credit = doc.get("credit")

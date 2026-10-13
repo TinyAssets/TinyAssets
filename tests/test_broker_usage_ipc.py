@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+import tinyassets.providers.served_model_plan  # noqa: F401 -- Bind real get_binding before patches.
 from tests.support.broker_ipc import discovery  # noqa: F401
 from tests.test_broker_server import broker  # noqa: F401
 from tests.test_broker_usage_source import source  # noqa: F401

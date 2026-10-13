@@ -341,6 +341,33 @@ def test_a_refusal_after_the_operation_sent_reports_unknown_not_none(broker):
     assert end["stream_sent"] is False
 
 
+def test_invalid_authority_cannot_claim_a_proven_unsent_operation(broker):
+    with _connect(broker) as sock:
+        sock.sendall(rf.control(1, {
+            "op": "OPEN", "op_id": new_op_id(), "principal": "invalid|principal",
+            "command_center": "cc-alice", "grant_id": "grant-a",
+            "connection_id": "conn-a", "verb": "POST", "request": {"url": "u"},
+            "credit": 0, **broker.state,
+        }))
+        end = rf.read_frame_blocking(sock).control()
+    assert end["outcome"] == "refused"
+    assert end["stream_sent"] is False
+    assert end["side_effect_state"] == "unknown"
+
+
+def test_transport_only_idle_setting_does_not_change_operation_identity():
+    from tinyassets.broker.server import request_digest
+
+    common = {"grant_id": "grant-a", "connection_id": "conn-a", "verb": "POST"}
+    first = request_digest(**common, request={"url": "u", "body": {"x": 1},
+                                              "reply_budget_s": 10, "reply_idle_s": 2})
+    second = request_digest(**common, request={"url": "u", "body": {"x": 1},
+                                               "reply_budget_s": 60, "reply_idle_s": 20})
+    changed = request_digest(**common, request={"url": "u", "body": {"x": 2}})
+    assert first == second
+    assert first != changed
+
+
 def test_a_finished_response_reaches_end_with_exactly_its_own_credit(broker):
     broker.upstreams["next"] = lambda: Script([b"abc"])
     with _connect(broker) as sock:
