@@ -51,6 +51,23 @@ def check_current_home(conn: sqlite3.Connection, owner: str, universe: str) -> N
         raise CurrentHomeChanged("current command center home changed")
 
 
+def current_home(conn: sqlite3.Connection, owner: str) -> str | None:
+    """The owner's bound home universe id in this transaction, or None.
+
+    Tolerates an installation that never initialized home storage, the same
+    way the deletion fence tolerates a missing tombstone table.
+    """
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'founder_home'",
+    ).fetchone() is None:
+        return None
+    home = conn.execute(
+        "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
+        (owner,),
+    ).fetchone()
+    return None if home is None or not home[0] else str(home[0])
+
+
 def check_plan_scope(
     conn: sqlite3.Connection, owner: str, universe: str, *, home_scoped: bool,
 ) -> None:
@@ -65,9 +82,5 @@ def check_plan_scope(
         check_current_home(conn, owner, universe)
         return
     check_principal_not_deleted(conn, owner)
-    home = conn.execute(
-        "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
-        (owner,),
-    ).fetchone()
-    if home is not None and home[0] == universe:
+    if current_home(conn, owner) == universe:
         raise CurrentHomeChanged("current command center home changed")

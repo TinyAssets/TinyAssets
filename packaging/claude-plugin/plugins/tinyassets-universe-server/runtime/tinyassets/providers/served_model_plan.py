@@ -41,7 +41,7 @@ from tinyassets.providers.model_policy import (
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
-from tinyassets.storage.current_home import check_plan_scope
+from tinyassets.storage.current_home import check_plan_scope, current_home
 from tinyassets.storage.learned_models import (
     LEARNED_SOURCE_KIND,
     OWN_VERIFIED_BASIS,
@@ -450,9 +450,6 @@ def prepare_owned_model_plan(
         raise ValueError("invalid conversation tool mode")
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
-    from tinyassets.daemon_server import get_founder_home
-    from tinyassets.provider_assignment import load_provider_assignment
-
     # Saved preferences, model choice and a confirmed model setup all belong to
     # the owner's current home: `apply_served_model_preferences` refuses a
     # choice anywhere else, the preference writers require the home, and model
@@ -461,10 +458,14 @@ def prepare_owned_model_plan(
     # has no manifest -- a second one the owner created, or a first connect
     # before any home row exists -- plans automatically over the owner's
     # connected sources with no preference read, which is what enabling serving
-    # there always did.
-    accepted = load_provider_assignment(base, universe_id=universe.name)
-    home_scoped = (get_founder_home(base, owner) == universe.name
-                   or bool(accepted is not None and accepted.manifest_digest))
+    # there always did. Read here, not through the serving-side home helper:
+    # planning is discovery configuration, which must not need a powered agent.
+    with store.connection() as conn:
+        conn.execute("BEGIN")
+        accepted = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
+        home_scoped = (current_home(conn, owner) == universe.name
+                       or bool(accepted is not None and accepted.manifest_digest))
+        conn.rollback()
     if preference_snapshot is None:
         preferences = ModelPreferenceStore(base).get(
             owner, universe.name, require_current_home=True,
