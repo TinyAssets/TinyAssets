@@ -98,6 +98,7 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # is created lazily on a first verified turn, so the unclassified-table gate would
     # otherwise fire in production rather than in CI.
     "learned_model_evidence": "preserve",
+    "learned_model_source_evidence": "preserve",
     # Retired fleet-era cloud-automation and background-branch stores (plan C1,
     # 2026-09-28). Nothing creates or reads these rows any more, but production
     # still holds them until a host-action drops the tables, and an unclassified

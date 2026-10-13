@@ -32,7 +32,14 @@ from pathlib import Path
 
 from tinyassets.storage import db_path
 
-_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
+_LEGACY_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_evidence (
+  source_kind TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  first_verified_at TEXT NOT NULL,
+  PRIMARY KEY(source_kind, model_id, owner_user_id))"""
+
+_SCHEMA = """CREATE TABLE IF NOT EXISTS learned_model_source_evidence (
   source_kind TEXT NOT NULL,
   provider_ref TEXT NOT NULL,
   model_id TEXT NOT NULL,
@@ -89,6 +96,39 @@ def _stamp(now: datetime | None) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _attribute_legacy(conn: sqlite3.Connection, owner: str) -> None:
+    """Copy attributable history without changing the old writer's four-column table."""
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+
+    services = set()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'llm_credential_deposit_owners'").fetchone():
+        services = {row[0] for row in conn.execute(
+            "SELECT DISTINCT service FROM llm_credential_deposit_owners "
+            "WHERE owner_user_id = ?", (owner,))}
+    providers = {provider for provider, service in _PROVIDER_SERVICE.items()
+                 if service in services}
+    subscription = next(iter(providers)) if len(providers) == 1 else None
+    for row in conn.execute(
+        "SELECT source_kind, model_id, first_verified_at "
+        "FROM learned_model_evidence WHERE owner_user_id = ?", (owner,)
+    ):
+        kind = row["source_kind"]
+        if kind.startswith("agent_"):
+            provider = kind.removeprefix("agent_").replace("_", "-") or None
+        elif kind == LEARNED_SOURCE_KIND:
+            provider = subscription
+        else:
+            provider = None
+        if provider is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO learned_model_source_evidence "
+                "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (kind, provider, row["model_id"], owner, row["first_verified_at"]),
+            )
+
+
 class OwnModelHistory:
     """One owner's verified model ids. Never shared, never published."""
 
@@ -130,15 +170,13 @@ class OwnModelHistory:
         conn = self._connect(create=True)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            # Old rows identify only a kind shared by multiple sources. No source
-            # can safely inherit them; the next successful turn records them anew.
-            columns = {row[1] for row in conn.execute(
-                "PRAGMA table_info(learned_model_evidence)")}
-            if columns and "provider_ref" not in columns:
-                conn.execute("DROP TABLE learned_model_evidence")
+            conn.execute(_LEGACY_SCHEMA)
             conn.execute(_SCHEMA)
+            _attribute_legacy(conn, owner)
             added = conn.execute(
-                "INSERT OR IGNORE INTO learned_model_evidence VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO learned_model_source_evidence "
+                "(source_kind, provider_ref, model_id, owner_user_id, first_verified_at) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (kind, provider, model, owner, when),
             ).rowcount == 1
             conn.commit()
@@ -160,17 +198,22 @@ class OwnModelHistory:
         if conn is None:
             return []
         try:
-            columns = {row[1] for row in conn.execute(
-                "PRAGMA table_info(learned_model_evidence)")}
-            if "provider_ref" not in columns:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'learned_model_evidence'"
+            ).fetchone():
                 return []
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_SCHEMA)
+            _attribute_legacy(conn, owner)
             rows = conn.execute(
                 "SELECT source_kind, provider_ref, model_id, first_verified_at "
-                "FROM learned_model_evidence "
+                "FROM learned_model_source_evidence "
                 "WHERE source_kind = ? AND provider_ref = ? AND owner_user_id = ? "
                 "ORDER BY first_verified_at, model_id",
                 (kind, provider, owner),
             ).fetchall()
+            conn.commit()
         finally:
             conn.close()
         return [LearnedModel(row["source_kind"], row["provider_ref"], row["model_id"],
