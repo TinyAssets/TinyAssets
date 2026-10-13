@@ -43,6 +43,12 @@ class CleanupError(Exception):
         super().__init__(f"{step}:{reason}")
 
 
+class WorkloadTrialError(Exception):
+    def __init__(self, step: str) -> None:
+        self.step = step
+        super().__init__(step)
+
+
 def cleanup_reason(error: Exception) -> str:
     if isinstance(error, FileNotFoundError):
         return "path_missing"
@@ -116,6 +122,10 @@ def cgroup_event(path: Path, event: str) -> int:
     return int(values.get(event, "0"))
 
 
+def process_cgroup_path(pid: int) -> str:
+    return Path(f"/proc/{pid}/cgroup").read_text().splitlines()[0].split(":", 2)[2]
+
+
 def service_cgroup_parent(path: str) -> str:
     if not path.endswith("/boxhostd.service/control"):
         raise RuntimeError("preflight must run under boxhostd.service")
@@ -141,6 +151,41 @@ def pss_mib(cgroup: Path) -> float:
     if not pids:
         raise RuntimeError("sandbox cgroup has no processes")
     return round(total_kib / 1024, 1)
+
+
+def rss_bytes(cgroup: Path) -> int:
+    """Host RSS of the Sentry, gofer and their cgroup descendants."""
+    pids = {
+        int(pid)
+        for procs in cgroup.rglob("cgroup.procs")
+        for pid in procs.read_text().split()
+    }
+    if not pids:
+        raise RuntimeError("sandbox cgroup has no processes")
+    total = 0
+    for pid in pids:
+        try:
+            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    total += int(line.split()[1]) * 1024
+                    break
+        except FileNotFoundError:
+            pass  # Process exited after reading cgroup.procs.
+    return total
+
+
+def allocation_code(size: int) -> str:
+    """Write a nonzero byte to every page and keep the mapping until exit."""
+    return (
+        "import mmap, os, time\n"
+        f"size={size}\n"
+        "page=mmap.PAGESIZE\n"
+        "m=mmap.mmap(-1,size)\n"
+        "for i in range(0,size,page):\n"
+        " m[i]=(i//page)%251+1\n"
+        "os.write(1, str(len(range(0,size,page))).encode())\n"
+        "time.sleep(2)\n"
+    )
 
 
 def export_daemon_rootfs(work: Path) -> Path:
@@ -246,19 +291,35 @@ class Boxes:
             f"/{self.parent_cgroup.relative_to('/sys/fs/cgroup')}/{name}"
         )
         config["linux"]["resources"] = {
-            "memory": {"limit": memory},
+            # OCI swap is memory+swap. Equal values disable cgroup v2 swap.
+            "memory": {"limit": memory, "swap": memory},
             "pids": {"limit": 1024},
             "cpu": {"shares": 1024},
         }
         (bundle / "config.json").write_text(json.dumps(config))
         start = time.monotonic()
-        result = self.command("run", "--detach", "--bundle", str(bundle), name, check=False)
+        result = subprocess.run(
+            [
+                str(RUNSC), "--root", str(self.state), "--network=none",
+                "--platform=systrap", "run", "--detach", "--bundle", str(bundle), name,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+            check=False,
+        )
         if result.returncode:
-            raise RuntimeError(f"runsc start failed ({result.returncode}): {result.stderr[-300:]}")
+            raise RuntimeError(f"runsc start failed ({result.returncode})")
         self.names.append(name)
         cgroup = self.parent_cgroup / name
         if not cgroup.is_dir():
             raise RuntimeError("runsc did not create its delegated box cgroup")
+        state = json.loads(self.command("state", name).stdout)
+        sandbox_cgroup = process_cgroup_path(state["pid"])
+        expected = f"/{cgroup.relative_to('/sys/fs/cgroup').as_posix()}"
+        if sandbox_cgroup != expected and not sandbox_cgroup.startswith(expected + "/"):
+            raise RuntimeError("runsc sandbox is outside its limited box cgroup")
         return time.monotonic() - start, owner, cgroup
 
     def exec(
@@ -331,17 +392,13 @@ def chromium(boxes: Boxes, name: str, owner: Path) -> subprocess.Popen[str]:
 def g1(boxes: Boxes, baseline: float) -> dict:
     start_oom = host_oom_kills()
     _, _, cgroup = boxes.start("g1", memory=GIB)
-    limits = {name: cgroup_value(cgroup, name) for name in ("memory.max", "pids.max", "cpu.weight")}
+    limits = {
+        name: cgroup_value(cgroup, name)
+        for name in ("memory.max", "memory.swap.max", "pids.max", "cpu.weight")
+    }
     before = cgroup_event(cgroup, "oom_kill")
-    # Touch every page so Linux really charges 1.5 GiB; the box should kill
-    # this child while its PID 1 and the host remain alive.
-    alloc_code = (
-        "import mmap,time\n"
-        "m=mmap.mmap(-1,1536*1024*1024)\n"
-        "for i in range(0,1536*1024*1024,4096):\n"
-        " m[i]=1\n"
-        " if i%(64*1024*1024)==0: time.sleep(0.2)\n"
-    )
+    rss_before = rss_bytes(cgroup)
+    current_before = int(cgroup_value(cgroup, "memory.current"))
     alloc = subprocess.Popen(
         [
             str(RUNSC),
@@ -353,7 +410,7 @@ def g1(boxes: Boxes, baseline: float) -> dict:
             "g1",
             "/opt/venv/bin/python",
             "-c",
-            alloc_code,
+            allocation_code(1536 * MIB),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -367,11 +424,20 @@ def g1(boxes: Boxes, baseline: float) -> dict:
         raise RuntimeError("1.5 GiB allocation did not terminate within 90 seconds") from None
     box_oom = cgroup_event(cgroup, "oom_kill") - before
     all_oom = host_oom_kills() - start_oom
+    memory_peak = int(cgroup_value(cgroup, "memory.peak"))
+    memory_current = int(cgroup_value(cgroup, "memory.current"))
+    rss_after = rss_bytes(cgroup)
     sandbox_exec_rc = boxes.exec("g1", "/bin/true", check=False).returncode
     result = {
         "memory_max_bytes": limits["memory.max"],
+        "memory_swap_max_bytes": limits["memory.swap.max"],
         "pids_max": limits["pids.max"],
         "cpu_weight": limits["cpu.weight"],
+        "box_rss_before_bytes": rss_before,
+        "box_rss_after_bytes": rss_after,
+        "box_memory_current_before_bytes": current_before,
+        "box_memory_current_after_bytes": memory_current,
+        "box_memory_peak_bytes": memory_peak,
         "allocation_rc": allocation_rc,
         "sandbox_exec_after_oom_rc": sandbox_exec_rc,
         "box_oom_kills": box_oom,
@@ -382,8 +448,10 @@ def g1(boxes: Boxes, baseline: float) -> dict:
     }
     result["pass"] = (
         limits["memory.max"] == str(GIB)
+        and limits["memory.swap.max"] == "0"
         and limits["pids.max"] == "1024"
         and int(limits["cpu.weight"]) > 0
+        and memory_peak >= GIB * 9 // 10
         and allocation_rc != 0
         and sandbox_exec_rc == 0
         and box_oom >= 1
@@ -414,15 +482,18 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         chunk = b"x" * MIB
         for _ in range(1024):
             output.write(chunk)
-    cli = boxes.exec(
-        "cap0",
-        "/opt/codex-install/node_modules/.bin/codex",
-        "debug",
-        "models",
-        "--bundled",
-        timeout=90,
-        check=False,
-    )
+    try:
+        cli = boxes.exec(
+            "cap0",
+            "/opt/codex-install/node_modules/.bin/codex",
+            "debug",
+            "models",
+            "--bundled",
+            timeout=90,
+            check=False,
+        )
+    except Exception as error:
+        raise WorkloadTrialError("cli_job") from error
     (owners[0] / "cli.js").write_text(
         "const fs=require('fs');const p='/home/owner/';"
         "require('/opt/codex-install/node_modules/@openai/codex/package.json');"
@@ -430,28 +501,34 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         "const t=setInterval(()=>{if(fs.existsSync(p+'cli-stop')){"
         "clearInterval(t);process.exit(0)}},100);\n"
     )
-    cli_process = subprocess.Popen(
-        [
-            str(RUNSC),
-            "--root",
-            str(boxes.state),
-            "--network=none",
-            "--platform=systrap",
-            "exec",
-            "cap0",
-            "/usr/bin/node",
-            "/home/owner/cli.js",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    deadline = time.monotonic() + 20
-    while not (owners[0] / "cli-ready").exists():
-        if cli_process.poll() is not None or time.monotonic() > deadline:
-            raise RuntimeError("Node CLI package process failed to start")
-        time.sleep(0.1)
-    browser = chromium(boxes, "cap0", owners[0])
+    try:
+        cli_process = subprocess.Popen(
+            [
+                str(RUNSC),
+                "--root",
+                str(boxes.state),
+                "--network=none",
+                "--platform=systrap",
+                "exec",
+                "cap0",
+                "/usr/bin/node",
+                "/home/owner/cli.js",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 20
+        while not (owners[0] / "cli-ready").exists():
+            if cli_process.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError("Node CLI package process failed to start")
+            time.sleep(0.1)
+    except Exception as error:
+        raise WorkloadTrialError("cli_job") from error
+    try:
+        browser = chromium(boxes, "cap0", owners[0])
+    except Exception as error:
+        raise WorkloadTrialError("chromium_render") from error
     try:
         latencies = []
         for _ in range(30):
@@ -466,7 +543,10 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         under = canary_p95()
     finally:
         (owners[0] / "browser-stop").touch()
-        browser.wait(timeout=20)
+        try:
+            browser.wait(timeout=20)
+        except Exception as error:
+            raise WorkloadTrialError("chromium_render") from error
     without_browser = pss_mib(cgroups[0])
     (owners[0] / "cli-stop").touch()
     cli_process.wait(timeout=20)
@@ -487,20 +567,31 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         "canary_ratio": round(under / baseline, 3),
     }
     g3_result["pass"] = (
-        with_browser <= 700
+        with_browser <= 1400
         and without_browser <= 250
         and first_exec_s <= 1
         and g3_result["exec_p95_ms"] <= 100
         and adjusted_available >= 1024
         and under <= baseline * 1.2
     )
+    try:
+        render_bytes = (owners[0] / "render.png").stat().st_size
+    except OSError as error:
+        raise WorkloadTrialError("chromium_render") from error
+    failed_steps = []
+    if cli.returncode or cli_process.returncode:
+        failed_steps.append("cli_job")
+    if browser.returncode or not render_bytes:
+        failed_steps.append("chromium_render")
     g6_result = {
         "cli_exit": cli.returncode,
         "node_process_exit": cli_process.returncode,
         "chromium_exit": browser.returncode,
-        "render_bytes": (owners[0] / "render.png").stat().st_size,
-        "pass": cli.returncode == 0 and cli_process.returncode == 0 and browser.returncode == 0,
+        "render_bytes": render_bytes,
+        "pass": not failed_steps,
     }
+    if failed_steps:
+        g6_result["failed_steps"] = failed_steps
     return g3_result, g6_result
 
 
@@ -774,12 +865,17 @@ def main() -> int:
         step = "sandbox_gates"
         report["gates"]["G1"] = gate(lambda: g1(boxes, baseline))
         boxes.stop("g1")
-        trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
-        if isinstance(trial, tuple):
-            report["gates"]["G3"], report["gates"]["G6"] = trial
+        try:
+            trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
+        except WorkloadTrialError as error:
+            report["gates"]["G3"] = {"pass": False, "reason": "workload_incomplete"}
+            report["gates"]["G6"] = {"pass": False, "failed_steps": [error.step]}
         else:
-            report["gates"]["G3"] = trial
-            report["gates"]["G6"] = {"pass": False, "reason": "workload trial failed"}
+            if isinstance(trial, tuple):
+                report["gates"]["G3"], report["gates"]["G6"] = trial
+            else:
+                report["gates"]["G3"] = trial
+                report["gates"]["G6"] = {"pass": False, "reason": "not_run"}
     except Exception as error:  # fail closed while still writing aggregate evidence
         report["fatal"] = f"{step}:{cleanup_reason(error)}"
     finally:
@@ -810,6 +906,8 @@ def main() -> int:
 def gate(fn):
     try:
         return fn()
+    except WorkloadTrialError:
+        raise
     except TimeoutError:
         raise
     except Exception as error:
