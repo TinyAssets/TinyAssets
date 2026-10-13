@@ -1166,6 +1166,19 @@ def accepted_connected_model_access(assignment, owner, provider):
     elif assignment.provider == provider and provider in _SERVED_PROVIDER_SERVICE:
         # A legacy native binding accepted only its provider default.
         return ModelAccess("explicit", ("",))
+    elif assignment.provider == provider and provider.startswith("api_key_http:"):
+        # A legacy single-provider HTTP binding accepted exactly the model the
+        # owner connected it with, free-only: what the legacy lane always ran
+        # and what the model picker shows as its `legacy_source`. Nothing
+        # discovered, nothing priced, until the owner confirms model access.
+        from tinyassets.providers.definition import get_definition
+
+        definition = get_definition(
+            assignment.universe_id, provider.removeprefix("api_key_http:"),
+        )
+        if (definition is not None and definition.owner_user_id == owner
+                and definition.access_method == "api_key_http" and definition.model):
+            return ModelAccess("explicit", (definition.model,), None)
     raise PermissionError("model source is outside accepted access")
 
 

@@ -2231,24 +2231,42 @@ def test_a_fence_write_failure_is_recorded_as_claim_error(
 # §9 -- tests that exercise the real thing
 
 
-def test_the_real_admission_records_connected_sources_on_the_receipt(
+def test_the_real_admission_records_the_current_assignment_on_the_receipt(
     tmp_path: Path,
     registered: Automation,
     monkeypatch,
 ) -> None:
-    """Automation admission snapshots connected sources independently of defaults."""
-    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    """The no-pin property, through the REAL session and its real receipt.
 
+    Runs the real path and reads what admission ACTUALLY wrote, then takes the
+    live accepted assignment away and shows the automation cannot run without
+    it: connected custody alone is not run authority.
+
+    Deliberately NOT a provider flip. Rewriting `provider` on the assignment row
+    is not a rebind: admission re-derives the agent binding and credential
+    custody, which a hand-edited row no longer matches, so the run would fail on
+    the binding rather than on the property under test.
+    """
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    live = load_provider_assignment(tmp_path, universe_id=UNIVERSE)
+    assert live is not None
     fake = _CountingProvider()
+
     with _real_providers(codex=fake):
         first = run_due_automation(
             tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
         )
     assert first.startswith("ok:ran:"), first
+    # What admission recorded is what the accepted ASSIGNMENT admitted, not
+    # what the automation said -- the automation says nothing about a provider.
+    assert live.provider == "codex"
     assert _receipt_sources(tmp_path, first.split("ok:ran:", 1)[1]) == ("codex",)
     assert len(fake.calls) == 1
 
-    # The serving assignment is a default preference, not admission authority.
+    # Take the accepted assignment away. The subscription stays connected, and
+    # a row carrying a pin would still run; neither is authority.
     with sqlite3.connect(db_path(tmp_path)) as conn:
         conn.execute(
             "DELETE FROM provider_assignments WHERE universe_id = ?", (UNIVERSE,)
@@ -2259,9 +2277,9 @@ def test_the_real_admission_records_connected_sources_on_the_receipt(
         second = run_due_automation(
             tmp_path, registered, "2026-08-29T12:20:00+00:00", now=NOW
         )
-    assert second.startswith("ok:ran:"), second
-    assert _receipt_sources(tmp_path, second.split("ok:ran:", 1)[1]) == ("codex",)
-    assert len(fake.calls) == 2
+
+    assert second == "no_serving_assignment"
+    assert len(fake.calls) == 1  # unchanged: nothing ran from custody or a pin
 
 
 def test_a_restart_into_a_new_period_cannot_overlap_the_old_process(

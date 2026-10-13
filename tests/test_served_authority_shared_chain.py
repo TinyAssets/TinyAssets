@@ -82,13 +82,21 @@ def test_execution_uses_live_connected_chain(tmp_path, monkeypatch, provider, co
         observed = _observe(
             authorize_served_provider_call, tmp_path, universe, context, **arguments,
         )
-        if condition in {"wrong-role", "revoked-carrier", "disabled-agent"}:
+        if condition in {"wrong-role", "revoked-carrier", "disabled-agent",
+                         "pending", "failed", "unassigned", "digest-tamper"} or (
+                condition == "binding-tamper" and provider == "http"):
+            # Connected custody alone is not run authority: the owner's READY,
+            # digest-valid accepted assignment is. A non-ready or tampered row
+            # cannot say what the owner accepted, so the turn is held. An
+            # accepted manifest also pins its anchor's binding digest, so a
+            # tampered binding digest on that row is a tampered acceptance.
             assert observed == "held"
         elif condition == "body-error":
             assert observed == "body-error"
         else:
-            # Saved assignment state and digests do not grant or deny a live
-            # source; the authenticated request and current custody do.
+            # A legacy single-provider row carries no manifest to cross-check,
+            # and the serving binding row is not authority: its tampered digest
+            # does not deny the live, accepted source.
             if provider == "subscription":
                 assert observed["provider"] == "codex"
             else:

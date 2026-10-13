@@ -54,6 +54,7 @@ def connect_owner_provider(home, owner, monkeypatch):
     """The owner's own connected, serving model source: what live chat turns ran on."""
     from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
+    from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
     from tinyassets.providers.definition import register_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
@@ -88,10 +89,13 @@ def connect_owner_provider(home, owner, monkeypatch):
     writer = create_binding(home.parent, universe_id=home.name,
                             definition_id=served["agent_definition_id"], created_by=owner,
                             payload={"schema_version": 1, "name": "Served", "role": "writer"})
+    # Connected custody is not run authority; the owner's accepted model list is
+    # (free-only), exactly as the connect answer records it.
     connected = bind_serving_provider(
         base_path=home.parent, universe_dir=home, owner_user_id=owner, universe_id=home.name,
         agent_binding_id=writer["agent_binding_id"], expected_revision=1,
-        provider=definition.id)
+        provider=definition.id,
+        model_access={definition.id: ModelAccess("explicit", ("moonshotai/kimi-k2",), None)})
     set_serving(base_path=home.parent, universe_dir=home, owner_user_id=owner,
                 universe_id=home.name, agent_binding_id=writer["agent_binding_id"],
                 expected_revision=connected["agent_binding"]["revision"], enabled=True)

@@ -180,8 +180,8 @@ def test_codex_auth_failure_with_claude_registered_ends_in_reconnect(tmp_path):
     router = ProviderRouter(providers={"codex": codex, "claude-code": claude})
     try:
         with pytest.raises(AllProvidersExhaustedError) as failure:
-            asyncio.run(router.call(
-                "writer", "hello", "system", universe_context=context,
+            asyncio.run(_model_call(
+                router, "writer", "hello", "system", universe_context=context,
                 operation="converse",
             ))
         assert codex.calls == 1 and claude.calls == 0

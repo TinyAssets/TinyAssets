@@ -64,6 +64,9 @@ def test_workflow_honors_accepted_native_id_without_rewriting_main(
     from tests.test_run_provider_session import _CountingProvider
     from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
 
+    # The owner accepted discovered scope on this executor; a named native pin
+    # is then admitted on the executor's fresh enumeration. Neither alone
+    # launches: an unaccepted executor is held, and so is an unenumerated id.
     monkeypatch.setattr("tinyassets.external_agents.registry.PACKAGES", {})
     monkeypatch.setattr(_CountingProvider, "native_credential_service", "codex", raising=False)
 
@@ -81,6 +84,7 @@ def test_workflow_honors_accepted_native_id_without_rewriting_main(
     before = branch.to_dict()
     response, provider, _ = _run_branch(
         tmp_path, monkeypatch, authenticate_request, branch,
+        model_access={"codex": ModelAccess("discovered")},
     )
     assert response["terminal_status"] == "completed", response["terminal_error"]
     assert branch.to_dict() == before

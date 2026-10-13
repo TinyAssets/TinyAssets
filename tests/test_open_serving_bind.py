@@ -104,6 +104,35 @@ def test_bind_open_provider_creates_ready_assignment(tmp_path, monkeypatch) -> N
     assert serving["status"] == "serving"
 
 
+def test_legacy_open_binding_accepts_only_its_configured_model_free_only(
+    tmp_path, monkeypatch,
+) -> None:
+    """A legacy single-provider HTTP binding is an acceptance of exactly the model
+    the owner connected it with, free-only: the legacy lane, not discovered scope."""
+    from tinyassets.provider_assignment import (
+        accepted_connected_model_access,
+        load_provider_assignment,
+    )
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    universe_dir, agent, definition = _setup(tmp_path, monkeypatch)
+    bind_serving_provider(
+        base_path=tmp_path, universe_dir=universe_dir, owner_user_id="owner-1",
+        universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],
+        expected_revision=1, provider=definition.id,
+    )
+    assignment = load_provider_assignment(tmp_path, universe_id="u-owner")
+    provider = f"api_key_http:{definition.id}"
+    assert not assignment.manifest_digest
+    assert accepted_connected_model_access(assignment, "owner-1", provider) == ModelAccess(
+        "explicit", ("moonshotai/kimi-k2",), None,
+    )
+    for owner, source in (("owner-2", provider), ("owner-1", "api_key_http:provdef_other")):
+        with pytest.raises(PermissionError):
+            accepted_connected_model_access(assignment, owner, source)
+
+
 def test_bind_open_provider_refuses_cross_universe_grant(tmp_path, monkeypatch) -> None:
     from tinyassets.provider_serving_binding import bind_serving_provider
     from tinyassets.storage.outbound_connections import ConnectionLedger
@@ -137,6 +166,13 @@ def test_bind_unknown_provider_rejected(tmp_path, monkeypatch) -> None:
         )
 
 
+def _accepted(definition):
+    """The owner's accepted model list for the open source: explicit, free-only."""
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    return {definition.id: ModelAccess("explicit", ("moonshotai/kimi-k2",), None)}
+
+
 def _bound_and_serving(tmp_path, monkeypatch):
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
@@ -144,7 +180,7 @@ def _bound_and_serving(tmp_path, monkeypatch):
     connected = bind_serving_provider(
         base_path=tmp_path, universe_dir=universe_dir, owner_user_id="owner-1",
         universe_id="u-owner", agent_binding_id=agent["agent_binding_id"],
-        expected_revision=1, provider=definition.id,
+        expected_revision=1, provider=definition.id, model_access=_accepted(definition),
     )
     serving = set_serving(
         base_path=tmp_path, universe_dir=universe_dir, owner_user_id="owner-1",

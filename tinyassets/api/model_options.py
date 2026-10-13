@@ -11,6 +11,7 @@ from tinyassets.credential_vault import current_llm_subscription_custody
 from tinyassets.custom_agents import serving_binding_candidates
 from tinyassets.exceptions import ProviderError
 from tinyassets.provider_assignment import (
+    accepted_connected_model_access,
     load_provider_assignment_in_transaction,
     provider_assignment_admission,
 )
@@ -147,6 +148,18 @@ def _collect(base, owner, uid):
     accepted = {} if assignment is None else {
         member.provider: member.access for member in assignment.candidates
     }
+    # What may run: the confirmed manifest, or the legacy single-provider lane
+    # (its configured model, free-only). `accepted_model_access` below stays the
+    # manifest alone: the legacy lane is reported as `legacy_source`, not as a
+    # confirmed model setup.
+    runnable = dict(accepted)
+    if legacy_provider is not None:
+        try:
+            runnable[legacy_provider] = accepted_connected_model_access(
+                assignment, owner, legacy_provider,
+            )
+        except PermissionError:
+            pass
     prepared = None
     if agent is not None and assignment is not None and assignment.manifest_digest:
         from tinyassets.config import load_universe_config
@@ -174,7 +187,7 @@ def _collect(base, owner, uid):
         provider = "api_key_http:" + item.id
         sources[provider] = {"provider_ref": provider, "bind_key": item.id,
                              "access_method": "api_key_http",
-                             "accepted": provider in live_sources, "reasons": []}
+                             "accepted": provider in runnable, "reasons": []}
         if provider in planned_sources:
             continue
         try:
@@ -183,10 +196,10 @@ def _collect(base, owner, uid):
             )
             snapshots[provider] = snapshot
             models.append(snapshot.models)
-            reason = "source_not_accepted" if provider not in accepted else binding_state
+            reason = "source_not_accepted" if provider not in runnable else binding_state
             rejected.append(Ineligible(ModelRef(provider, ""), reason, scope="source"))
             _, _, _, _, denied = _http_models(owner, uid, SimpleNamespace(
-                provider=provider, access=accepted.get(provider, ModelAccess("discovered")),
+                provider=provider, access=runnable.get(provider, ModelAccess("discovered")),
             ), snapshot=snapshot)
             rejected.extend(denied)
         except (ModelDiscoveryUnavailable, ModelSourceUnavailable) as exc:
@@ -198,7 +211,7 @@ def _collect(base, owner, uid):
         sources[provider] = {"provider_ref": provider, "bind_key": provider,
                              "access_method": "subscription_cli",
                              "enumeration": _native_enumeration(provider),
-                             "accepted": provider in live_sources, "reasons": []}
+                             "accepted": provider in runnable, "reasons": []}
         if provider in planned_sources:
             continue
         try:
@@ -210,7 +223,7 @@ def _collect(base, owner, uid):
                 # fresh execution authority. Keep the default visible as unknown.
                 models.append(replace(model, freshness="unknown"))
                 rejected.append(Ineligible(ModelRef(provider, ""),
-                                          "source_not_accepted" if provider not in accepted
+                                          "source_not_accepted" if provider not in runnable
                                           else "source_revoked", scope="source"))
                 continue
             models.append(model)
@@ -235,7 +248,7 @@ def _collect(base, owner, uid):
                             "model_access_optin_required"))
             else:
                 rejected.append(Ineligible(ModelRef(provider, ""),
-                                          "source_not_accepted" if provider not in accepted
+                                          "source_not_accepted" if provider not in runnable
                                           else binding_state, scope="source"))
         except (ModelSourceUnavailable, ServingProviderHeld) as exc:
             rejected.append(Ineligible(ModelRef(provider, ""), exc.reason, scope="source"))
@@ -247,7 +260,7 @@ def _collect(base, owner, uid):
         sources.setdefault(provider, {"provider_ref": provider,
                                       "access_method": None,
                                       "bind_key": provider.removeprefix("api_key_http:"),
-                                      "accepted": provider in live_sources, "reasons": []})
+                                      "accepted": provider in runnable, "reasons": []})
     failed = {}
     with provider_assignment_admission().shared(universe):
         current_bindings = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)

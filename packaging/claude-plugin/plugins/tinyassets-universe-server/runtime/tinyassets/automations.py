@@ -1384,6 +1384,7 @@ def register_automation(
         return existing
     from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.providers.served_model_plan import connected_sources
     from tinyassets.runtime.assigned_queue_consumer import (
         assigned_queue_consumer_enabled,
@@ -1402,7 +1403,12 @@ def register_automation(
     if get_founder_home(base, owner) != uid:
         raise AutomationUnavailable("not_owner_home")
     if not paused_reason:
-        if not connected_sources(base, base / uid, owner):
+        # Admission reads the owner's ready accepted assignment and launches on
+        # live custody; either one missing is the same hold.
+        assignment = load_provider_assignment(base, universe_id=uid)
+        if (assignment is None or assignment.state != "ready"
+                or assignment.owner_user_id != owner
+                or not connected_sources(base, base / uid, owner)):
             raise AutomationUnavailable("no_serving_assignment")
     resolved = _resolve_readable_branch(str(branch_def_id or "").strip(), str(base))
     if resolved is None:
@@ -1937,6 +1943,7 @@ def _runtime_authority_reason(base_path: Path, automation: Automation) -> str:
     """
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.outside_authority import automation_identity
+    from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.providers.served_model_plan import connected_sources
 
     try:
@@ -1951,7 +1958,9 @@ def _runtime_authority_reason(base_path: Path, automation: Automation) -> str:
     if get_founder_home(base_path, owner) != uid:
         return "not_owner_home"
     base = Path(base_path)
-    if not connected_sources(base, base / uid, owner):
+    assignment = load_provider_assignment(base, universe_id=uid)
+    if (assignment is None or assignment.state != "ready" or assignment.owner_user_id != owner
+            or not connected_sources(base, base / uid, owner)):
         return "no_serving_assignment"
     return ""
 
