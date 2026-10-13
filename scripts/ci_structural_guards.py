@@ -44,7 +44,7 @@ GUARDS = {
     ),
     'test_fastmcp_pin_matches_runtime': (
         'Align the FastMCP constraint in pyproject.toml and requirements.txt with the '
-        'installed runtime and regenerate the plugin mirror. '
+        'runtime source declarations, then rebuild the plugin. '
     ),
     'test_no_platform_github_push_credential': (
         'Remove the reported platform GitHub push credential reader, deployment input or '

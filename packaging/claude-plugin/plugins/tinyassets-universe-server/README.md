@@ -14,8 +14,6 @@ Sign-in is the server's OAuth flow. The plugin does not start a local server.
 ## Structure
 
 - `.claude-plugin/` - plugin metadata. Version matches `packaging/claude-plugin/VERSION`.
-- `runtime/` - packaged runtime files, kept for parity with the main tree. The
-  plugin manifest does not launch them.
 - `skills/` - plugin-local slash commands. Each name starts with `tinyassets-`.
 
 ## Notes

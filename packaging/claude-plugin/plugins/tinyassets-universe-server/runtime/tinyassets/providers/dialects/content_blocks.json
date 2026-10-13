@@ -1,9 +1,0 @@
-{
-  "dialect": "content_blocks",
-  "aliases": ["anthropic_messages"],
-  "message_dialect": "content_blocks",
-  "tool_dialect": "none",
-  "system": "top_level",
-  "text_path": "/v1/messages",
-  "headers": {"anthropic-version": "2023-06-01"}
-}

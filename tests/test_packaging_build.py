@@ -8,9 +8,7 @@ The load-bearing checks:
    bundle source dir (no shim, no fantasy_author/).
 2. The staged bundle's ``server.py`` imports
    ``tinyassets.universe_server`` cleanly (subprocess probe).
-3. The mirror script ``build_plugin.py`` does the same for the
-   claude-plugin runtime tree.
-4. Excluded patterns (``__pycache__``, ``*.db``, ``*.log``) don't end
+3. Excluded patterns (``__pycache__``, ``*.db``, ``*.log``) don't end
    up in the staged tree.
 
 These are smoke tests — actual ``--validate`` / ``--pack`` requires
@@ -37,17 +35,8 @@ MCPB_BUILD = REPO_ROOT / "packaging" / "mcpb" / "build_bundle.py"
 MCPB_MANIFEST = REPO_ROOT / "packaging" / "mcpb" / "manifest.json"
 MCPB_SERVER = REPO_ROOT / "packaging" / "mcpb" / "server.py"
 MCPB_ACCEPTANCE = REPO_ROOT / "packaging" / "mcpb" / "LOCAL_ACCEPTANCE.md"
-PLUGIN_BUILD = REPO_ROOT / "packaging" / "claude-plugin" / "build_plugin.py"
 DIST_STAGE = (
     REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server-src"
-)
-PLUGIN_RUNTIME = (
-    REPO_ROOT
-    / "packaging"
-    / "claude-plugin"
-    / "plugins"
-    / "tinyassets-universe-server"
-    / "runtime"
 )
 CANONICAL_MCPB_TOOLS = {
     "converse",
@@ -261,201 +250,17 @@ def test_bundle_server_imports_tinyassets_package(staged_bundle):
     assert "ok" in probe.stdout
 
 
-# ─── build_plugin.py ─────────────────────────────────────────────────
 
-
-def _build_plugin(runtime_root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
-    """Stage into ``runtime_root`` -- never the tracked mirror.
-
-    Building in place made the suite rewrite tracked files, and under xdist two
-    builds interleaved and left hundreds of mirror files deleted (2026-10-01).
-    """
-    return _run(PLUGIN_BUILD, ["--runtime-root", str(runtime_root), *extra])
-
-
-#: The runtime files the build must leave alone (venv bootstrap, launcher).
-_SCAFFOLDING = ("server.py", "bootstrap.py", "requirements.txt", "pyproject.toml")
-
-
-def _seeded_runtime(root: Path) -> Path:
-    """A runtime dir holding the tracked scaffolding, as the real one does."""
-    root.mkdir(parents=True, exist_ok=True)
-    for name in _SCAFFOLDING:
-        shutil.copy2(PLUGIN_RUNTIME / name, root / name)
-    return root
-
-
-def _entries(root: Path) -> list[str]:
-    """What is in a runtime dir, minus the build's own lock file."""
-    return sorted(p.name for p in root.iterdir() if p.name != ".build.lock")
-
-
-def test_build_plugin_stages_tinyassets_package(tmp_path):
-    """Plugin build re-stages tinyassets/ next to runtime/server.py, and leaves
-    the scaffolding beside it byte-for-byte."""
-    runtime = _seeded_runtime(tmp_path / "runtime")
-    result = _build_plugin(runtime)
-    assert result.returncode == 0, (
-        f"build_plugin.py failed:\nstdout={result.stdout}\n"
-        f"stderr={result.stderr}"
-    )
-    assert (runtime / "tinyassets" / "universe_server.py").is_file()
-    for name in _SCAFFOLDING:
-        assert (runtime / name).read_bytes() == (PLUGIN_RUNTIME / name).read_bytes()
-    assert _entries(runtime) == sorted([*_SCAFFOLDING, "models", "tinyassets"])
-    assert "probe-ok" in result.stdout
-
-
-def test_build_plugin_purges_legacy_fantasy_author_snapshot(tmp_path):
-    """The pre-shim fantasy_author/ snapshot must be removed."""
-    legacy_dir = tmp_path / "fantasy_author"
-    legacy_dir.mkdir(parents=True)
-    (legacy_dir / "universe_server.py").write_text("# stale\n")
-
-    result = _build_plugin(tmp_path, "--skip-probe")
-
-    assert result.returncode == 0, result.stderr
-    assert not legacy_dir.exists(), (
-        "Stale fantasy_author/ snapshot must be purged on build"
-    )
-
-
-def test_concurrent_plugin_builds_never_leave_a_partial_tree(tmp_path):
-    """Four builds at once end with the complete tree, every time."""
-    procs = [
-        subprocess.Popen(
-            [sys.executable, str(PLUGIN_BUILD), "--runtime-root", str(tmp_path),
-             "--skip-probe"],
-            cwd=str(REPO_ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(4)
-    ]
-    outcomes = [proc.communicate(timeout=300) + (proc.returncode,) for proc in procs]
-
-    assert [rc for _out, _err, rc in outcomes] == [0] * 4, outcomes
-    build = _load_module("tinyassets_plugin_build_test", PLUGIN_BUILD)
-    expected = {
-        src.relative_to(build.TINYASSETS_SRC)
-        for src in build.TINYASSETS_SRC.rglob("*")
-        if src.is_file() and not build._is_excluded(src)
-        and not any(build._is_excluded(parent) for parent in src.parents)
-    }
-    staged = {
-        path.relative_to(tmp_path / "tinyassets")
-        for path in (tmp_path / "tinyassets").rglob("*") if path.is_file()
-    }
-    assert staged == expected
-    assert _entries(tmp_path) == ["models", "tinyassets"]
-    models = {
-        path.relative_to(REPO_ROOT / "models"): path.read_bytes()
-        for path in (REPO_ROOT / "models").rglob("*") if path.is_file()
-    }
-    assert {
-        path.relative_to(tmp_path / "models"): path.read_bytes()
-        for path in (tmp_path / "models").rglob("*") if path.is_file()
-    } == models
-
-
-def test_a_failed_copy_keeps_the_previous_tree(tmp_path, monkeypatch):
-    """A copy that dies part-way (a full disk) must not delete the old tree."""
-    build = _load_module("tinyassets_plugin_build_fail_test", PLUGIN_BUILD)
-    old = tmp_path / "tinyassets"
-    old.mkdir()
-    (old / "kept.py").write_text("# previous build\n")
-
-    def dies_part_way(source, destination):
-        (destination / "half.py").write_text("partial")
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(build, "_copy_tree", dies_part_way)
-    with pytest.raises(OSError):
-        build._stage_runtime(tmp_path)
-
-    assert (old / "kept.py").read_text() == "# previous build\n"
-    assert _entries(tmp_path) == ["tinyassets"]
-
-
-def test_a_refused_publish_puts_the_previous_tree_back(tmp_path, monkeypatch):
-    """Windows refuses a rename while a scanner holds a handle in staging. The
-    old tree has already moved aside by then; it must come back."""
-    build = _load_module("tinyassets_plugin_build_swap_test", PLUGIN_BUILD)
-    old = tmp_path / "tinyassets"
-    old.mkdir()
-    (old / "kept.py").write_text("# previous build\n")
-    real_rename = Path.rename
-
-    def refuse_publish(self, target):
-        if ".staging-" in self.name and Path(target).name == "tinyassets":
-            raise PermissionError(32, "The process cannot access the file")
-        return real_rename(self, target)
-
-    monkeypatch.setattr(Path, "rename", refuse_publish)
-    with pytest.raises(PermissionError):
-        build._stage_runtime(tmp_path)
-
-    assert (old / "kept.py").read_text() == "# previous build\n"
-    assert _entries(tmp_path) == ["tinyassets"]
-    assert not [p for p in tmp_path.iterdir() if ".old-" in p.name or ".staging-" in p.name]
-
-
-def test_a_build_killed_between_renames_is_recovered(tmp_path):
-    """Killed after moving the old tree aside: the next build finds no
-    destination and an ``.old-*`` beside it, and ends with a complete tree."""
-    retired = tmp_path / ".tinyassets.old-4242"
-    retired.mkdir()
-    (retired / "kept.py").write_text("# previous build\n")
-    (tmp_path / ".tinyassets.staging-dead").mkdir()
-
-    assert _build_plugin(tmp_path, "--skip-probe").returncode == 0
-
-    assert (tmp_path / "tinyassets" / "universe_server.py").is_file()
-    assert _entries(tmp_path) == ["models", "tinyassets"]
-
-
-def test_plugin_server_imports_tinyassets_package(tmp_path):
-    assert _build_plugin(tmp_path, "--skip-probe").returncode == 0
-    probe = subprocess.run(
-        [
-            sys.executable, "-c",
-            f"import sys; sys.path.insert(0, {str(tmp_path)!r}); "
-            "import tinyassets.universe_server as us; "
-            "assert callable(us.main); print(us.__file__)",
-        ],
-        capture_output=True, text=True, check=False,
-    )
-    # Provenance: the STAGED copy imported, not the canonical package.
-    assert Path(probe.stdout.strip().splitlines()[-1]).is_relative_to(tmp_path), probe
-    assert probe.returncode == 0, (
-        f"Plugin import probe failed:\nstdout={probe.stdout}\n"
-        f"stderr={probe.stderr}"
-    )
-
-
-# ─── shape parity ────────────────────────────────────────────────────
-
-
-def test_bundle_and_plugin_tinyassets_trees_match(staged_bundle):
-    """Both build scripts stage the same set of files from tinyassets/."""
-    plugin_runtime = Path(tempfile.mkdtemp(prefix="tinyassets-plugin-"))
-    try:
-        assert _build_plugin(plugin_runtime, "--skip-probe").returncode == 0
-        plugin_files = {
-            p.relative_to(plugin_runtime / "tinyassets")
-            for p in (plugin_runtime / "tinyassets").rglob("*")
-            if p.is_file()
-        }
-    finally:
-        shutil.rmtree(plugin_runtime, ignore_errors=True)
-    bundle_files = {
-        p.relative_to(DIST_STAGE / "tinyassets")
-        for p in (DIST_STAGE / "tinyassets").rglob("*")
-        if p.is_file()
-    }
-    diff = bundle_files.symmetric_difference(plugin_files)
-    assert not diff, (
-        f"Bundle and plugin tinyassets/ trees diverged: {sorted(diff)}"
-    )
+def test_marketplace_installs_hosted_plugin_from_repo_folder():
+    marketplace = json.loads((
+        REPO_ROOT / "packaging/claude-plugin/.claude-plugin/marketplace.json"
+    ).read_text(encoding="utf-8"))
+    assert marketplace["plugins"][0]["source"] == "./plugins/tinyassets-universe-server"
+    workflow = (REPO_ROOT / ".github/workflows/build-bundle.yml").read_text()
+    assert "python packaging/mcpb/build_bundle.py --validate --pack" in workflow
+    assert "build_plugin.py" not in workflow
+    assert "tinyassets-claude-plugin.zip" not in workflow
+    assert "publish-claude-plugin:" not in workflow
 
 
 # ─── MCPB launcher + local configuration ─────────────────────────────

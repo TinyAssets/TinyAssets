@@ -241,7 +241,7 @@ Blockers:
 - `python -m pytest tests/test_directory_server.py tests/test_universe_server_directory_app.py tests/smoke/test_mcp_tools_list_non_empty.py tests/test_universe_server_metadata.py`
 - `node --test worker.test.js` in `deploy/cloudflare-worker`
 - `python packaging/registry/generate_server_json.py --check`
-- `python packaging/claude-plugin/build_plugin.py`
+- `python packaging/mcpb/build_bundle.py`
 - Local runtime smoke:
   - `python scripts/mcp_public_canary.py --url http://127.0.0.1:8017/mcp --timeout 10 --verbose`
   - `python scripts/mcp_public_canary.py --url http://127.0.0.1:8017/mcp-directory --timeout 10 --verbose`

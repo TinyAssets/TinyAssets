@@ -52,8 +52,7 @@ _TREE_EXCLUDES: tuple[str, ...] = (
     "*.pyc",
     ".pytest_cache",
     "*.tmp",
-    # Vendored custom-UI libraries are served only by the hosted app; the
-    # bundle runs no app. Same rule as the plugin mirror (build_plugin.py).
+    # The bundle runs no app; exclude hosted-only custom-UI libraries.
     "ui_libraries",
 )
 
@@ -118,6 +117,7 @@ def _stage_bundle() -> Path:
     # design-note Option 1. Excludes runtime artifacts (.db, __pycache__,
     # logs) that would bloat the bundle without adding value.
     file_count = _copy_tree(TINYASSETS_SRC, STAGE_ROOT / "tinyassets")
+    _copy_tree(REPO_ROOT / "models", STAGE_ROOT / "models")
     print(f"Staged tinyassets/ package: {file_count} files")
 
     return STAGE_ROOT

@@ -784,22 +784,3 @@ def test_host_local_countercase_preserves_future_provider_name(
     env = subprocess_env_for_provider("future-cli", universe_dir=None)
 
     assert env["FUTURE_PROVIDER_MASTER_TOKEN"] == "host-local-only"
-
-
-def test_provider_base_runtime_mirror_matches_canonical():
-    """The packaged runtime must not ship a weaker credential boundary."""
-    repo_root = Path(__file__).resolve().parents[1]
-    canonical = repo_root / "tinyassets" / "providers" / "base.py"
-    packaged = (
-        repo_root
-        / "packaging"
-        / "claude-plugin"
-        / "plugins"
-        / "tinyassets-universe-server"
-        / "runtime"
-        / "tinyassets"
-        / "providers"
-        / "base.py"
-    )
-
-    assert canonical.read_bytes() == packaged.read_bytes()

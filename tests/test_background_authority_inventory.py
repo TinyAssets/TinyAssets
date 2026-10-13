@@ -189,10 +189,12 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
         )
         in observed
     )
+
+
+
     assert (
         CallSite(
-            "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-            "runtime/tinyassets/graph_compiler.py",
+            "tinyassets/graph_compiler.py",
             "_build_invoke_branch_node._node_fn",
             "execute_branch",
         )
@@ -207,7 +209,6 @@ def test_sensitive_call_manifest_is_nonempty_and_duplicate_free() -> None:
 
 @pytest.mark.parametrize("path", [
     "tinyassets/activity_runner.py",
-    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/activity_runner.py",
 ])
 def test_activity_registration_refuses_an_extra_launch(tmp_path: Path, path: str) -> None:
     expected = {call for call in EXPECTED_SENSITIVE_CALL_SITES if call.path == path}
