@@ -1,18 +1,26 @@
-"""One structured event format for a person's session trail.
+"""One structured event format (``tinyassets.event.v1``) for a person's session trail.
 
-Every line is a single JSON object on stdout (``tinyassets.events``). The
-droplet already forwards that stdout through Vector into the host journal, so
-this module adds no second log pipeline. A later funnel count or an error
-digest reads the same objects; nothing here aggregates them.
+Every line is one JSON object on stdout (``tinyassets.events``), which Vector
+already forwards into the host journal; there is no second log pipeline.
+Fields: ``ts`` (UTC), ``event`` (``session.step``, ``session.link``,
+``dependency.call``, ``client.error``, ``process.startup``, ``process.crash``),
+``session_id``, ``trace_id`` (one HTTP request, echoed as ``X-Trace-Id``),
+``commit`` (``TINYASSETS_BUILD_SHA``), ``context`` (client kind from
+``mcp_client_kinds.json``, opaque ``account_id``, ``signed_in``, token
+``iss``/``iat``/``exp`` only), ``step``, ``http``, ``dependency`` (``kind``
+``workos``/``billing``/``db``/``other``, target, status, duration, SQL verb
+only), ``error`` (type and redacted stack; browser reports keep the type and
+top frames, never the message), ``links``, ``tool``, ``page``.
 
-The unit is the session, not the request. ``session_id`` is stable for one
-journey. ``trace_id`` is one HTTP request inside it. ``links`` joins a browser
-cookie, an MCP session, an OAuth state, and a checkout attempt once those
-identifiers show up together. The read-side timeline walks those links.
+Trust: a trail is named only by the server-signed ``ta_session`` cookie or,
+on ``/mcp`` routes, the transport's own session id. ``links`` record the
+other identifiers seen on a request as data; the reader joins trails only
+through the signed cookie and the authenticated account.
 
-No token, email, or other personal value is written. Account ids are opaque
-and are dropped when they do not look opaque. Stack text is passed through
-:func:`redact` before it is serialized.
+No token, email, cookie value, card number, payment-provider object id, query
+string or SQL parameter is written: :func:`redact` runs before serialization
+and again in the reader. Retention and the sealed fetch workflow are in
+``docs/ops/log-aggregation-runbook.md``.
 """
 
 from __future__ import annotations
@@ -73,7 +81,8 @@ _COOKIE_PAIR = re.compile(
 )
 _LONG_PAIR = re.compile(r"\b([A-Za-z_][A-Za-z0-9_.-]*)=([A-Za-z0-9_+/=.~%-]{16,})")
 _CARD = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
-_STRIPE_ID = re.compile(
+# Payment-provider object ids (customer, intent, key, ...): never log them.
+_PROVIDER_OBJECT_ID = re.compile(
     r"\b(?:cus|pi|pm|sub|in|ch|py|re|prod|price|acct|evt|cs|seti|si|txn|ba|card|src|"
     r"tok|whsec|sk|pk|rk)_(?=[A-Za-z0-9_]*[0-9A-Z])[A-Za-z0-9_]{8,}\b"
 )
@@ -188,7 +197,7 @@ def redact(text: str) -> str:
     cleaned = _BEARER.sub(lambda match: f"{match.group(1)} [redacted]", cleaned)
     cleaned = _JWT.sub("[redacted]", cleaned)
     cleaned = _SECRET_PREFIX.sub("[redacted]", cleaned)
-    cleaned = _STRIPE_ID.sub("[redacted]", cleaned)
+    cleaned = _PROVIDER_OBJECT_ID.sub("[redacted]", cleaned)
     cleaned = _CARD.sub("[redacted]", cleaned)
     cleaned = _LONG_TOKEN.sub("[redacted]", cleaned)
     return cleaned
@@ -361,7 +370,7 @@ def emit_checkout_attempt(attempt_id: str) -> None:
 
 
 def emit_billing_event(event: Mapping[str, Any]) -> None:
-    """A verified Stripe event, as a step on the webhook request's trail."""
+    """A verified billing event, as a step on the webhook request's trail."""
     if not _request_active.get():
         return
     kind = str(event.get("type") or "")
@@ -403,30 +412,29 @@ def dependency(kind: str, target: str) -> Iterator[Span]:
             span.error = type(exc).__name__
         raise
     finally:
+        # No `return` here: inside a generator it would swallow the exception.
         failed = bool(span.error)
-        if kind == "db" and not _request_active.get() and not failed:
-            return
-        if _db_depth.get() and kind == "db":
-            return
-        safe_kind = kind if kind in {"workos", "stripe", "db"} else "other"
-        emit(
-            "dependency.call",
-            dependency={
-                "kind": safe_kind,
-                "target": _dependency_target(safe_kind, target),
-                "status": int(span.status or 0),
-                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
-                "error": span.error or None,
-            },
-        )
+        quiet_db = kind == "db" and (_db_depth.get() or (not _request_active.get() and not failed))
+        if not quiet_db:
+            safe_kind = kind if kind in {"workos", "billing", "db"} else "other"
+            emit(
+                "dependency.call",
+                dependency={
+                    "kind": safe_kind,
+                    "target": _dependency_target(safe_kind, target),
+                    "status": int(span.status or 0),
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                    "error": span.error or None,
+                },
+            )
 
 
 def _dependency_target(kind: str, target: str) -> str:
-    if kind == "stripe":
+    if kind == "billing":
         segment = target.strip("/").split("/", 1)[0]
         if not re.fullmatch(r"[a-z_]{1,40}", segment):
             segment = "request"
-        return f"stripe:{segment}"
+        return f"billing:{segment}"
     if kind == "db":
         return target if target.startswith("sqlite:") else f"sqlite:{_db_label(target)}"
     parts = urlsplit(target)
@@ -545,23 +553,24 @@ def _traced(label: str, sql: str, fn: Callable[[], Any]) -> Any:
         error = type(exc).__name__
         raise
     finally:
+        # Never `return` here: it would replace the cursor with None and
+        # swallow the statement's own exception.
         _db_depth.reset(token)
-        if not error and not _request_active.get():
-            return
-        try:
-            emit(
-                "dependency.call",
-                dependency={
-                    "kind": "db",
-                    "target": label if str(label).startswith("sqlite:") else f"sqlite:{label}",
-                    "status": 0 if error else 1,
-                    "duration_ms": round((time.perf_counter() - started) * 1000, 3),
-                    "error": error or None,
-                    "operation": _sql_verb(sql),
-                },
-            )
-        except Exception:
-            return
+        if error or _request_active.get():
+            try:
+                emit(
+                    "dependency.call",
+                    dependency={
+                        "kind": "db",
+                        "target": label if str(label).startswith("sqlite:") else f"sqlite:{label}",
+                        "status": 0 if error else 1,
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                        "error": error or None,
+                        "operation": _sql_verb(sql),
+                    },
+                )
+            except Exception:
+                pass
 
 
 class StashExceptionMiddleware:
@@ -932,15 +941,21 @@ def route_for(path: str) -> str:
     return rendered or "/"
 
 
+_CLIENT_KINDS: tuple[tuple[str, tuple[str, ...], bool], ...] = tuple(
+    (str(row["kind"]), tuple(str(m) for m in row["match"]), bool(row.get("remember")))
+    for row in json.loads(
+        Path(__file__).with_name("mcp_client_kinds.json").read_text(encoding="utf-8")
+    )["kinds"]
+)
+_REMEMBERED_KINDS = frozenset(kind for kind, _match, remember in _CLIENT_KINDS if remember)
+
+
 def client_type(user_agent: str, client_name: str = "") -> str:
-    """Claude, ChatGPT, a browser, or something else. From names, not accounts."""
+    """The client kind from names, not accounts (mcp_client_kinds.json)."""
     blob = f"{client_name} {user_agent}".lower()
-    if "claude" in blob or "anthropic" in blob:
-        return "claude"
-    if "chatgpt" in blob or "openai" in blob:
-        return "chatgpt"
-    if any(token in blob for token in ("mozilla", "chrome", "safari", "firefox", "edg/")):
-        return "browser"
+    for kind, match, _remember in _CLIENT_KINDS:
+        if any(token in blob for token in match):
+            return kind
     return "other"
 
 
@@ -956,7 +971,7 @@ def _remember_client(
                 if remembered:
                     kind = remembered
                     break
-        elif client_name or kind in {"claude", "chatgpt"}:
+        elif client_name or kind in _REMEMBERED_KINDS:
             for key in keys:
                 _clients[key] = kind
                 _client_order.append(key)

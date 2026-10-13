@@ -537,3 +537,23 @@ def test_tools_list_step_and_client(captured):
     event = _events(captured)[-1]
     assert event["step"] == "mcp.tools_list"
     assert event["context"]["client"] == "claude"
+
+
+def test_db_trace_returns_the_cursor_and_keeps_the_error(captured):
+    import sqlite3
+
+    obs.install_db_trace()
+    try:
+        conn = sqlite3.connect(":memory:")
+        assert conn.execute("select 1").fetchone() == (1,)
+        conn.execute("create table t (x)")
+        assert conn.executemany("insert into t values (?)", [(1,), (2,)]).rowcount == 2
+        try:
+            conn.execute("select nope")
+        except sqlite3.OperationalError:
+            pass
+        else:
+            raise AssertionError("a failing statement must still raise")
+        conn.close()
+    finally:
+        obs.uninstall_db_trace()

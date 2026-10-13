@@ -47,7 +47,7 @@ _COOKIE_PAIR = re.compile(
 )
 _LONG_PAIR = re.compile(r"\b([A-Za-z_][A-Za-z0-9_.-]*)=([A-Za-z0-9_+/=.~%-]{16,})")
 _CARD = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
-_STRIPE_ID = re.compile(
+_PROVIDER_OBJECT_ID = re.compile(
     r"\b(?:cus|pi|pm|sub|in|ch|py|re|prod|price|acct|evt|cs|seti|si|txn|ba|card|src|"
     r"tok|whsec|sk|pk|rk)_(?=[A-Za-z0-9_]*[0-9A-Z])[A-Za-z0-9_]{8,}\b"
 )
@@ -74,7 +74,7 @@ def redact(text: str) -> str:
     cleaned = _BEARER.sub(lambda match: f"{match.group(1)} [redacted]", cleaned)
     cleaned = _JWT.sub("[redacted]", cleaned)
     cleaned = _SECRET_PREFIX.sub("[redacted]", cleaned)
-    cleaned = _STRIPE_ID.sub("[redacted]", cleaned)
+    cleaned = _PROVIDER_OBJECT_ID.sub("[redacted]", cleaned)
     cleaned = _CARD.sub("[redacted]", cleaned)
     return _LONG_TOKEN.sub("[redacted]", cleaned)
 

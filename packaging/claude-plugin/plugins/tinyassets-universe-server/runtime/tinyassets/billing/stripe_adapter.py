@@ -239,7 +239,7 @@ def _post(
     from tinyassets.observability import dependency
 
     try:
-        with dependency("stripe", path) as span:
+        with dependency("billing", path) as span:
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     span.status = int(getattr(response, "status", 200) or 200)
@@ -274,7 +274,7 @@ def _get(path: str, *, timeout: float = 20.0) -> dict:
     from tinyassets.observability import dependency
 
     try:
-        with dependency("stripe", path) as span:
+        with dependency("billing", path) as span:
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     span.status = int(getattr(response, "status", 200) or 200)

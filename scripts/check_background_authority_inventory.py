@@ -103,6 +103,9 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
     CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
+    # The public browser error beacon streams its body with a 4 KiB running
+    # cap (#4662); it only writes a log line and grants no execution authority.
+    CallSite("tinyassets/observability.py", "client_error", "request.stream"),
     CallSite(
         "tinyassets/universe_server.py",
         "create_streamable_http_app._hooks_endpoint",
