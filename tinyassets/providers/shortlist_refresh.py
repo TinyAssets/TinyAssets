@@ -209,6 +209,8 @@ class ShortlistCache:
                           "refreshing" if inflight else
                           "never_run" if not attempted else
                           "stale" if needs else "fresh")
+        if diagnostic == "fresh" and not usable:
+            diagnostic = "stale" if snapshot is not None else "refreshing"
         if usable:
             return snapshot, ("" if diagnostic == "fresh" else diagnostic) if display_only else ""
         # A failed attempt reports ITS reason; a cold one reports pending. The

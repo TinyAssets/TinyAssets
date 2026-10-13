@@ -125,7 +125,8 @@ def test_package_codex_does_not_offer_claude_subscription_ids(configured, monkey
 
     _learn(monkeypatch, configured, "claude-opus-5-5")
     OwnModelHistory(configured.rig.base).record(
-        source_kind="subscription", model_id="claude-haiku-5-5", owner_user_id="owner")
+        source_kind="subscription", provider_ref="claude-code",
+        model_id="claude-haiku-5-5", owner_user_id="owner")
     package = ExternalAgentProvider.__new__(ExternalAgentProvider)
     package.name = "codex"
     provider_calls.get_provider_router()._providers["codex"] = package
@@ -201,14 +202,24 @@ class _Coordinator:
         self.owner = owner
         self.context = SimpleNamespace(
             universe_dir=base / "u-models",
-            model_selection=SimpleNamespace(model_id=requested),
+            model_selection=SimpleNamespace(model_id=requested, connection_id="codex"),
         )
 
 
 def _own_evidence(base, owner):
     """One owner's own ids. There is no "published" counterpart any more."""
     return [row.model_id for row in
-            OwnModelHistory(base).ids_for("subscription", owner)]
+            OwnModelHistory(base).ids_for("subscription", "codex", owner)]
+
+
+def test_verified_candidates_do_not_cross_sources(tmp_path):
+    history = OwnModelHistory(tmp_path)
+    history.record(source_kind="subscription", provider_ref="codex",
+                   model_id="gpt-6-astra", owner_user_id="owner")
+    candidates = served_model_plan._own_verified_candidates
+    assert [row.model_id for row in candidates(
+        tmp_path, "subscription", "codex", "owner", already=())] == ["gpt-6-astra"]
+    assert candidates(tmp_path, "subscription", "claude-code", "owner", already=()) == ()
 
 
 def test_only_the_id_this_universe_REQUESTED_is_recorded(tmp_path):
@@ -346,7 +357,8 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
     # One owner only: nothing here is published, so this cannot pass via the
     # shared table.
     OwnModelHistory(configured.rig.base).record(
-        source_kind="subscription", model_id=SOLO_ID, owner_user_id="owner")
+        source_kind="subscription", provider_ref="codex", model_id=SOLO_ID,
+        owner_user_id="owner")
     document = _document(configured)
 
     row = _row(document, SOLO_ID)
@@ -361,4 +373,3 @@ def test_a_solo_owners_own_verified_id_stays_on_their_own_list(configured):
     from tinyassets.providers.public_model_lists import read_list
 
     assert SOLO_ID not in read_list("subscription")
-

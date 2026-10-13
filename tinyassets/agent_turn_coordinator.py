@@ -288,12 +288,11 @@ class AgentTurnCoordinator:
         ))
 
     def _learn_verified_model(self, response):
-        """Record a model id that just answered, for every universe on this KIND.
+        """Record a model id that just answered on this owner's source.
 
         Only reached from a committed success. It records the id on THIS OWNER's own
         list and nowhere else -- there is no shared store any more, so nothing here can
-        reach another user. See ``tinyassets/storage/learned_models.py``; sharing is a
-        reviewed file per source kind (``models/``), merged by a person.
+        reach another user. See ``tinyassets/storage/learned_models.py``.
 
         The id recorded is the one THIS UNIVERSE ASKED FOR and that then succeeded
         -- its own ``model_selection.model_id`` -- and never a string the source
@@ -310,24 +309,19 @@ class AgentTurnCoordinator:
         account-bearing selector on its own owner's list and nowhere else. Ids reach
         everyone by a different route entirely -- a reviewed file in the repo.
         """
-        from tinyassets.external_agents.registry import PACKAGES
         from tinyassets.storage.learned_models import LEARNED_SOURCE_KIND, record_verified_model
 
         selection = getattr(self.context, "model_selection", None)
         model_id = (getattr(selection, "model_id", "") or "").strip()
         provider = getattr(selection, "connection_id", "")
-        if not model_id:
+        if not model_id or not provider:
             return
-        # The OWNER, not the universe: the founder's threshold counts distinct
-        # owners, so one person's two universes must not promote an id between
-        # them. `self.owner` is the capability principal this turn ran under, which
-        # is the same identity the journal scopes its rows by.
+        # The owner and executed source are both part of the evidence identity.
+        # `self.owner` is the capability principal this turn ran under.
         record_verified_model(
             self.context.universe_dir.parent,
-            source_kind=("agent_" + provider.replace("-", "_")
-                         if provider in PACKAGES
-                         and getattr(response, "native_evidence", None) is not None
-                         else LEARNED_SOURCE_KIND),
+            source_kind=LEARNED_SOURCE_KIND,
+            provider_ref=provider,
             model_id=model_id,
             owner_user_id=self.owner,
         )
