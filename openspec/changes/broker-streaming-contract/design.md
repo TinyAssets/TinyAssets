@@ -435,6 +435,21 @@ caller: the loop's incremental SSE reader folds chunks with today's codec
 - 500 concurrent streams through one broker process, with no thread per
   stream.
 
+### Local Linux measurement (2026-10-13, Python 3.11.17)
+
+- `scripts/measure_broker_streams.py --streams 500`, with the 256 KiB default
+  credit window: broker RSS 28.0 to 78.5 MiB, or 103.5 KiB per open stream;
+  threads 1 to 503. The injected held upstream excludes real TLS sockets and
+  their buffers. The no-thread-per-stream target is still unmet.
+- One mock SSE upstream with a 750 ms pause between events: the synchronous
+  collected response took 767.5 ms; the async stream delivered its first body
+  bytes at 8.2 ms and completed at 765.5 ms. Both returned the same body.
+  This compares the current sync collector with the stream on a local Unix
+  socket, not a production provider or the historical worker process.
+- After merge, measure memory with real pinned HTTPS/TLS and repeat latency
+  through the deployed route. Keep task 2.10 open until the thread target and
+  spec sync are complete.
+
 ## Appendix R. Cross-family review (gpt-6-astra)
 
 - **Round 1 (a1c9ad07): ADAPT, 9 x P1/P2 acted on.**
