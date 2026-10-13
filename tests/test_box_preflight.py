@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import shutil
 import subprocess
@@ -244,7 +245,11 @@ def test_boxhostd_parent_timeout_kills_group_and_runs_cleanup(monkeypatch, tmp_p
 
 def test_cleanup_fresh_host_is_noop_without_runtime(monkeypatch, tmp_path: Path) -> None:
     work = tmp_path / "box-preflight-fresh"
-    monkeypatch.setattr(box_preflight, "run", lambda *_a, **_k: pytest.fail("called runsc"))
+    def fake_run(args, **_kwargs):
+        assert args[0] == "chattr"
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(box_preflight, "run", fake_run)
     box_preflight.cleanup_scratch(work)
     work.mkdir()
     (work / "runsc-state").mkdir()
@@ -272,7 +277,7 @@ def test_g4_missing_optional_tool_is_gate_failure_without_quota_state(
     work.mkdir()
 
     def fake_run(args, **_kwargs):
-        assert args[0] == "findmnt"
+        assert args[0] in {"findmnt", "chattr"}
         return subprocess.CompletedProcess(args, 0, stdout="ext4 rw,prjquota")
 
     monkeypatch.setattr(box_preflight, "run", fake_run)
@@ -335,6 +340,66 @@ def test_cleanup_nonexistent_sandboxes_are_success(monkeypatch, tmp_path: Path) 
     box_preflight.cleanup_scratch(work)
     assert sum("delete" in args for args in commands) == 5
     assert not work.exists()
+
+
+def test_cleanup_scans_state_and_unmounts_busy_tree(monkeypatch, tmp_path: Path) -> None:
+    work = tmp_path / "box-preflight-run"
+    state = work / "runsc-state" / "unexpected-box"
+    state.mkdir(parents=True)
+    nested = work / "rootfs" / "nested"
+    nested.mkdir(parents=True)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        f"1 0 0:1 / {work} rw - tmpfs tmpfs rw\n"
+        f"2 1 0:2 / {work / 'rootfs'} rw - overlay overlay rw\n"
+        f"3 2 0:3 / {nested} rw - tmpfs tmpfs rw\n"
+        "4 0 0:4 / /unrelated rw - tmpfs tmpfs rw\n"
+    )
+    monkeypatch.setattr(box_preflight, "MOUNTINFO", mountinfo)
+    commands = []
+    mounted = True
+    original_rmtree = shutil.rmtree
+
+    def fake_run(args, **_kwargs):
+        nonlocal mounted
+        commands.append(args)
+        if args[0] == "umount" and args[-1] == str(work):
+            if args[1:2] != ["-l"]:
+                return subprocess.CompletedProcess(args, 1)
+            mounted = False
+        return subprocess.CompletedProcess(args, 0)
+
+    def fake_rmtree(path):
+        if mounted:
+            raise OSError(errno.EBUSY, "busy")
+        original_rmtree(path)
+
+    monkeypatch.setattr(box_preflight, "run", fake_run)
+    monkeypatch.setattr(box_preflight.shutil, "rmtree", fake_rmtree)
+    box_preflight.cleanup_scratch(work)
+    assert [args[-1] for args in commands if args[0] == "umount"] == [
+        str(nested), str(work / "rootfs"), str(work), str(work)
+    ]
+    assert ["umount", "-l", str(work)] in commands
+    assert ["chattr", "-R", "-ia", str(work)] in commands
+    assert any("delete" in args and args[-1] == "unexpected-box" for args in commands)
+    assert not work.exists()
+
+
+def test_cleanup_busy_errno_is_public_token(monkeypatch, tmp_path: Path) -> None:
+    work = tmp_path / "box-preflight-run"
+    work.mkdir()
+    monkeypatch.setattr(box_preflight, "MOUNTINFO", tmp_path / "missing-mountinfo")
+    monkeypatch.setattr(
+        box_preflight, "run", lambda args, **_k: subprocess.CompletedProcess(args, 0)
+    )
+
+    def busy(_path):
+        raise OSError(errno.EBUSY, "private path")
+
+    monkeypatch.setattr(box_preflight.shutil, "rmtree", busy)
+    with pytest.raises(box_preflight.CleanupError, match="work_remove:operation_failed:EBUSY"):
+        box_preflight.cleanup_scratch(work)
 
 
 def test_cleanup_failure_names_step_and_fixed_reason(monkeypatch, tmp_path: Path) -> None:
@@ -409,6 +474,7 @@ def test_fatal_run_writes_all_four_failed_gates(monkeypatch, tmp_path: Path) -> 
 
     path = tmp_path / "results.json"
     monkeypatch.setattr(box_preflight, "run", broken)
+    monkeypatch.setattr(box_preflight, "valid_work_dir", lambda _work: True)
     monkeypatch.setattr(box_preflight.signal, "SIGALRM", 14, raising=False)
     monkeypatch.setattr(box_preflight.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(box_preflight.signal, "alarm", lambda *_args: None, raising=False)
