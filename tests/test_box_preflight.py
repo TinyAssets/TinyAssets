@@ -57,6 +57,58 @@ def test_gate_exception_is_a_failure() -> None:
     }
 
 
+def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path: Path) -> None:
+    boxes = box_preflight.Boxes.__new__(box_preflight.Boxes)
+    boxes.work = tmp_path
+    boxes.rootfs = tmp_path / "rootfs"
+    boxes.state = tmp_path / "runsc-state"
+    boxes.state.mkdir()
+    boxes.parent_cgroup = tmp_path / "cgroups"
+    boxes.parent_cgroup.mkdir()
+    boxes.names = []
+    starts = []
+    original_relative_to = Path.relative_to
+
+    def relative_to(path, other, *args, **kwargs):
+        if path == boxes.parent_cgroup and other == "/sys/fs/cgroup":
+            return Path("test")
+        return original_relative_to(path, other, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "relative_to", relative_to)
+
+    def spec(*args, **_kwargs):
+        bundle = Path(args[args.index("--bundle") + 1])
+        (bundle / "config.json").write_text(
+            json.dumps({"process": {}, "mounts": [], "linux": {}})
+        )
+        return subprocess.CompletedProcess(args, 0)
+
+    def detached_run(args, **kwargs):
+        assert args[args.index("run") + 1] == "--detach"
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["stdout"] == subprocess.DEVNULL
+        assert kwargs["stderr"] == subprocess.DEVNULL
+        assert kwargs.get("capture_output") is not True
+        starts.append(args[-1])
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(boxes, "command", spec)
+    monkeypatch.setattr(box_preflight.subprocess, "run", detached_run)
+    for name in ("g1", "cap0", "cap1", "cap2", "cap3"):
+        (boxes.parent_cgroup / name).mkdir()
+        boxes.start(name)
+    assert starts == ["g1", "cap0", "cap1", "cap2", "cap3"]
+
+
+def test_workload_error_preserves_fixed_step_category() -> None:
+    def fail():
+        raise box_preflight.WorkloadTrialError("cli_job")
+
+    with pytest.raises(box_preflight.WorkloadTrialError) as raised:
+        box_preflight.gate(fail)
+    assert raised.value.step == "cli_job"
+
+
 def test_harness_deadline_escapes_gate_for_outer_cleanup() -> None:
     with pytest.raises(TimeoutError, match="30-minute"):
         box_preflight.gate(lambda: box_preflight._deadline(0, None))
@@ -86,8 +138,17 @@ def test_g3_reserves_unused_daemon_allowance() -> None:
     assert box_preflight.adjusted_available_mib(3500, box_preflight.GIB, cap) < 1024
 
 
+@pytest.mark.parametrize(
+    ("cli_rc", "browser_rc", "failed_steps"),
+    [
+        (0, 0, []),
+        (1, 0, ["cli_job"]),
+        (0, 1, ["chromium_render"]),
+        (1, 1, ["cli_job", "chromium_render"]),
+    ],
+)
 def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, cli_rc: int, browser_rc: int, failed_steps: list[str]
 ) -> None:
     class Boxes:
         state = tmp_path
@@ -102,7 +163,7 @@ def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
             return 0.01, owner, owner
 
         def exec(self, *_args, **_kwargs):
-            return subprocess.CompletedProcess([], 0)
+            return subprocess.CompletedProcess([], cli_rc if "--bundled" in _args else 0)
 
     class Process:
         returncode = 0
@@ -126,15 +187,20 @@ def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
 
     monkeypatch.setattr(Path, "open", fake_open)
     monkeypatch.setattr(box_preflight.subprocess, "Popen", lambda *_a, **_k: Process())
-    monkeypatch.setattr(box_preflight, "chromium", lambda *_a: Process())
+    class Browser(Process):
+        returncode = browser_rc
+
+    monkeypatch.setattr(box_preflight, "chromium", lambda *_a: Browser())
     monkeypatch.setattr(box_preflight, "canary_p95", lambda: 10)
     monkeypatch.setattr(box_preflight, "pss_mib", lambda _c: 100)
     monkeypatch.setattr(box_preflight, "daemon_current_bytes", lambda: box_preflight.GIB)
     monkeypatch.setattr(box_preflight, "mem_available_mib", lambda: 3500)
-    g3, _ = box_preflight.g3_g6(Boxes(), 10, 4 * box_preflight.GIB)
+    g3, g6 = box_preflight.g3_g6(Boxes(), 10, 4 * box_preflight.GIB)
     assert g3["mem_available_mib"] == 3500
     assert g3["mem_available_at_daemon_cap_mib"] < 1024
     assert g3["pass"] is False
+    assert g6["pass"] is (not failed_steps)
+    assert g6.get("failed_steps", []) == failed_steps
 
 
 def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:

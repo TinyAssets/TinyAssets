@@ -44,6 +44,12 @@ class CleanupError(Exception):
         super().__init__(f"{step}:{reason}")
 
 
+class WorkloadTrialError(Exception):
+    def __init__(self, step: str) -> None:
+        self.step = step
+        super().__init__(step)
+
+
 def cleanup_reason(error: Exception) -> str:
     if isinstance(error, FileNotFoundError):
         return "path_missing"
@@ -256,9 +262,19 @@ class Boxes:
         }
         (bundle / "config.json").write_text(json.dumps(config))
         start = time.monotonic()
-        result = self.command("run", "--detach", "--bundle", str(bundle), name, check=False)
+        result = subprocess.run(
+            [
+                str(RUNSC), "--root", str(self.state), "--network=none",
+                "--platform=systrap", "run", "--detach", "--bundle", str(bundle), name,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+            check=False,
+        )
         if result.returncode:
-            raise RuntimeError(f"runsc start failed ({result.returncode}): {result.stderr[-300:]}")
+            raise RuntimeError(f"runsc start failed ({result.returncode})")
         self.names.append(name)
         cgroup = self.parent_cgroup / name
         if not cgroup.is_dir():
@@ -418,15 +434,18 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         chunk = b"x" * MIB
         for _ in range(1024):
             output.write(chunk)
-    cli = boxes.exec(
-        "cap0",
-        "/opt/codex-install/node_modules/.bin/codex",
-        "debug",
-        "models",
-        "--bundled",
-        timeout=90,
-        check=False,
-    )
+    try:
+        cli = boxes.exec(
+            "cap0",
+            "/opt/codex-install/node_modules/.bin/codex",
+            "debug",
+            "models",
+            "--bundled",
+            timeout=90,
+            check=False,
+        )
+    except Exception as error:
+        raise WorkloadTrialError("cli_job") from error
     (owners[0] / "cli.js").write_text(
         "const fs=require('fs');const p='/home/owner/';"
         "require('/opt/codex-install/node_modules/@openai/codex/package.json');"
@@ -434,28 +453,34 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         "const t=setInterval(()=>{if(fs.existsSync(p+'cli-stop')){"
         "clearInterval(t);process.exit(0)}},100);\n"
     )
-    cli_process = subprocess.Popen(
-        [
-            str(RUNSC),
-            "--root",
-            str(boxes.state),
-            "--network=none",
-            "--platform=systrap",
-            "exec",
-            "cap0",
-            "/usr/bin/node",
-            "/home/owner/cli.js",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    deadline = time.monotonic() + 20
-    while not (owners[0] / "cli-ready").exists():
-        if cli_process.poll() is not None or time.monotonic() > deadline:
-            raise RuntimeError("Node CLI package process failed to start")
-        time.sleep(0.1)
-    browser = chromium(boxes, "cap0", owners[0])
+    try:
+        cli_process = subprocess.Popen(
+            [
+                str(RUNSC),
+                "--root",
+                str(boxes.state),
+                "--network=none",
+                "--platform=systrap",
+                "exec",
+                "cap0",
+                "/usr/bin/node",
+                "/home/owner/cli.js",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 20
+        while not (owners[0] / "cli-ready").exists():
+            if cli_process.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError("Node CLI package process failed to start")
+            time.sleep(0.1)
+    except Exception as error:
+        raise WorkloadTrialError("cli_job") from error
+    try:
+        browser = chromium(boxes, "cap0", owners[0])
+    except Exception as error:
+        raise WorkloadTrialError("chromium_render") from error
     try:
         latencies = []
         for _ in range(30):
@@ -470,7 +495,10 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         under = canary_p95()
     finally:
         (owners[0] / "browser-stop").touch()
-        browser.wait(timeout=20)
+        try:
+            browser.wait(timeout=20)
+        except Exception as error:
+            raise WorkloadTrialError("chromium_render") from error
     without_browser = pss_mib(cgroups[0])
     (owners[0] / "cli-stop").touch()
     cli_process.wait(timeout=20)
@@ -498,13 +526,24 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         and adjusted_available >= 1024
         and under <= baseline * 1.2
     )
+    try:
+        render_bytes = (owners[0] / "render.png").stat().st_size
+    except OSError as error:
+        raise WorkloadTrialError("chromium_render") from error
+    failed_steps = []
+    if cli.returncode or cli_process.returncode:
+        failed_steps.append("cli_job")
+    if browser.returncode or not render_bytes:
+        failed_steps.append("chromium_render")
     g6_result = {
         "cli_exit": cli.returncode,
         "node_process_exit": cli_process.returncode,
         "chromium_exit": browser.returncode,
-        "render_bytes": (owners[0] / "render.png").stat().st_size,
-        "pass": cli.returncode == 0 and cli_process.returncode == 0 and browser.returncode == 0,
+        "render_bytes": render_bytes,
+        "pass": not failed_steps,
     }
+    if failed_steps:
+        g6_result["failed_steps"] = failed_steps
     return g3_result, g6_result
 
 
@@ -770,12 +809,17 @@ def main() -> int:
         report["gates"]["G4"] = gate(lambda: g4(BOX_STORE, boxes, work))
         report["gates"]["G1"] = gate(lambda: g1(boxes, baseline))
         boxes.stop("g1")
-        trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
-        if isinstance(trial, tuple):
-            report["gates"]["G3"], report["gates"]["G6"] = trial
+        try:
+            trial = gate(lambda: g3_g6(boxes, baseline, daemon_memory))
+        except WorkloadTrialError as error:
+            report["gates"]["G3"] = {"pass": False, "reason": "workload_incomplete"}
+            report["gates"]["G6"] = {"pass": False, "failed_steps": [error.step]}
         else:
-            report["gates"]["G3"] = trial
-            report["gates"]["G6"] = {"pass": False, "reason": "workload trial failed"}
+            if isinstance(trial, tuple):
+                report["gates"]["G3"], report["gates"]["G6"] = trial
+            else:
+                report["gates"]["G3"] = trial
+                report["gates"]["G6"] = {"pass": False, "reason": "not_run"}
     except Exception as error:  # fail closed while still writing aggregate evidence
         report["fatal"] = f"{step}:{cleanup_reason(error)}"
     finally:
@@ -806,6 +850,8 @@ def main() -> int:
 def gate(fn):
     try:
         return fn()
+    except WorkloadTrialError:
+        raise
     except TimeoutError:
         raise
     except Exception as error:
