@@ -17,7 +17,7 @@ _PATHS = (
     "/.well-known/oauth-protected-resource/mcp",
     "/.well-known/oauth-authorization-server",
     "/.well-known/oauth-authorization-server/mcp",
-    "/oauth/register",
+    "/mcp/oauth/register",
 )
 
 

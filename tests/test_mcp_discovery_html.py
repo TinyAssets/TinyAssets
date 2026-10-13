@@ -34,7 +34,7 @@ def client(app):
         yield test_client
 
 
-def test_browser_get_mcp_explains_how_to_connect(client):
+def test_browser_get_mcp_is_challenged_like_everything_under_mcp(client):
     """A footer visitor with Accept: text/html and no MCP headers gets the
     connect page. The page is static: it names no principal and holds no data."""
     response = client.get("/mcp", headers={"Accept": "text/html"})

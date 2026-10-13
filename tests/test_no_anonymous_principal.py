@@ -191,7 +191,7 @@ def test_initialize_without_a_bearer_is_challenged_through_the_app(client):
     assert response.json() == {"error": "authentication_required"}
 
 
-def test_browser_get_of_the_endpoint_is_a_static_connect_page(client):
+def test_browser_get_of_the_endpoint_is_challenged_too(client):
     # A human following the site footer gets the connect page. It is not an
     # anonymous principal: the body is static instructions, and a transport
     # request on the same path is still the bearer challenge.
@@ -405,6 +405,9 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
         "/.well-known/oauth-authorization-server",
         "/.well-known/oauth-authorization-server/mcp",
         "/mcp/.well-known/oauth-authorization-server",
+        "/mcp/oauth/register",
+        "/mcp/oauth/authorize",
+        "/mcp/oauth/token",
     ):
         assert _auth_challenge_path(exempt) is False, exempt
     for challenged in (
@@ -412,6 +415,8 @@ def test_the_discovery_exemption_is_a_table_not_a_substring():
         "/mcp/.well-known/../secret",
         "/mcp/.well-known/oauth-protected-resource/extra",
         "/mcp/x.well-known.y",
+        "/mcp/oauth",
+        "/mcp/oauth/register/extra",
     ):
         assert _auth_challenge_path(challenged) is True, challenged
 

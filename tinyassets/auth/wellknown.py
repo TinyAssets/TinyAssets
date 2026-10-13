@@ -48,9 +48,10 @@ def authorization_server_metadata() -> dict[str, Any]:
 
     return {
         "issuer": base,
-        "authorization_endpoint": f"{base}/oauth/authorize",
-        "token_endpoint": f"{base}/oauth/token",
-        "registration_endpoint": f"{base}/oauth/register",
+        # Under /mcp so this is the existing public door, not a new /oauth prefix.
+        "authorization_endpoint": f"{base}/mcp/oauth/authorize",
+        "token_endpoint": f"{base}/mcp/oauth/token",
+        "registration_endpoint": f"{base}/mcp/oauth/register",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_methods_supported": ["none"],
@@ -152,9 +153,9 @@ def starlette_discovery_routes() -> list[Any]:
             _handle_authz_server_metadata,
             methods=["GET"],
         ),
-        Route("/oauth/register", _handle_register, methods=["POST"]),
-        Route("/oauth/authorize", _handle_authorize, methods=["GET"]),
-        Route("/oauth/token", _handle_token, methods=["POST"]),
+        Route("/mcp/oauth/register", _handle_register, methods=["POST"]),
+        Route("/mcp/oauth/authorize", _handle_authorize, methods=["GET"]),
+        Route("/mcp/oauth/token", _handle_token, methods=["POST"]),
     ]
 
 
@@ -182,19 +183,19 @@ def create_wellknown_routes() -> list[dict[str, Any]]:
             "description": "OAuth Protected Resource Metadata (RFC 9728)",
         },
         {
-            "path": "/oauth/register",
+            "path": "/mcp/oauth/register",
             "method": "POST",
             "handler": _handle_register,
             "description": "Dynamic Client Registration (RFC 7591)",
         },
         {
-            "path": "/oauth/authorize",
+            "path": "/mcp/oauth/authorize",
             "method": "GET",
             "handler": _handle_authorize,
             "description": "Authorization endpoint",
         },
         {
-            "path": "/oauth/token",
+            "path": "/mcp/oauth/token",
             "method": "POST",
             "handler": _handle_token,
             "description": "Token endpoint",
@@ -264,7 +265,7 @@ async def _handle_authz_server_metadata(request: Any) -> Any:
 
     In WorkOS mode we are NOT the authorization server — AuthKit is. Proxy
     AuthKit's published AS metadata as JSON (per WorkOS AuthKit MCP docs)
-    rather than advertising self-hosted ``/oauth/*`` endpoints this Resource
+    rather than advertising self-hosted ``/mcp/oauth/*`` endpoints this Resource
     Server does not implement. If the proxy fetch fails, fall back to a
     redirect so discovery still resolves.
     """

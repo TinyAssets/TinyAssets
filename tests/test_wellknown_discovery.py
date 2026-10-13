@@ -65,6 +65,9 @@ def test_discovery_routes_include_prm_paths():
     # /mcp-prefixed AS metadata too — prod routes only /mcp*, so the apex path
     # 404s there and a client would lose the AuthKit proxy fallback.
     assert "/mcp/.well-known/oauth-authorization-server" in paths
+    assert "/mcp/oauth/register" in paths
+    assert "/mcp/oauth/authorize" in paths
+    assert "/mcp/oauth/token" in paths
 
 
 def test_authz_server_metadata_proxies_authkit_json_in_workos(monkeypatch):
@@ -125,7 +128,42 @@ def test_authz_server_metadata_self_hosted_when_not_workos(monkeypatch):
         follow_redirects=False,
     )
     assert r.status_code == 200
-    assert r.json()["issuer"] == "https://tinyassets.io"
+    body = r.json()
+    assert body["issuer"] == "https://tinyassets.io"
+    assert body["authorization_endpoint"] == "https://tinyassets.io/mcp/oauth/authorize"
+    assert body["token_endpoint"] == "https://tinyassets.io/mcp/oauth/token"
+    assert body["registration_endpoint"] == "https://tinyassets.io/mcp/oauth/register"
+
+
+def test_workos_answers_local_oauth_with_501():
+    from tinyassets.auth.middleware import set_provider
+    from tinyassets.auth.provider import DevAuthProvider
+    from tinyassets.auth.workos_provider import WorkOSAuthProvider
+
+    set_provider(
+        WorkOSAuthProvider(
+            issuer=AUTHKIT_ISSUER,
+            jwks_uri=f"{AUTHKIT_ISSUER}/oauth2/jwks",
+            audience=MCP_RESOURCE,
+            jwks_client=object(),
+        )
+    )
+    try:
+        client = TestClient(Starlette(routes=starlette_discovery_routes()))
+        registered = client.post(
+            "/mcp/oauth/register",
+            json={"redirect_uris": ["http://127.0.0.1/cb"]},
+        )
+        assert registered.status_code == 501
+        assert registered.json()["error"] == "not_implemented"
+        authorized = client.get(
+            "/mcp/oauth/authorize",
+            params={"client_id": "c", "redirect_uri": "http://127.0.0.1/cb"},
+            follow_redirects=False,
+        )
+        assert authorized.status_code == 501
+    finally:
+        set_provider(DevAuthProvider())
 
 
 def test_prm_routes_served_200(monkeypatch):

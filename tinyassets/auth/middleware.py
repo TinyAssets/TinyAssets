@@ -536,6 +536,17 @@ _DISCOVERY_PATHS = frozenset({
 })
 
 
+#: Local authorization server, mounted under the ``/mcp`` door. Exact paths
+#: only: registration, authorize, and token run before a bearer exists. A
+#: sibling such as ``/mcp/oauth/register/extra`` stays challenged. WorkOS mode
+#: still answers these three with 501.
+_LOCAL_OAUTH_PATHS = frozenset({
+    "/mcp/oauth/register",
+    "/mcp/oauth/authorize",
+    "/mcp/oauth/token",
+})
+
+
 #: Characters that end the ``/app`` segment. ``/`` is the only one an ASGI
 #: ``scope["path"]`` can actually carry -- the server splits the query and the
 #: client never sends the fragment -- but a predicate that decides an auth
@@ -581,7 +592,7 @@ def _auth_challenge_path(path: str) -> bool:
     retired path answer a "clean" 404 would be a special case *for* the retired
     path, which is the back-compat the move removes.
     """
-    if path in _DISCOVERY_PATHS:
+    if path in _DISCOVERY_PATHS or path in _LOCAL_OAUTH_PATHS:
         return False
     from tinyassets.onboarding.public_run import public_path
 

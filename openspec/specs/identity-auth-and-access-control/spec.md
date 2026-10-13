@@ -19,6 +19,11 @@ and that carries no MCP session id, no MCP protocol version, and no
 `text/event-stream`. That request SHALL receive the static connect page and
 SHALL NOT bind a principal. POST, HEAD, and every streamable-HTTP request
 on `/mcp` stay challenged.
+Local OAuth mode serves dynamic client registration, authorization, and token
+exchange at exactly `/mcp/oauth/register`, `/mcp/oauth/authorize`, and
+`/mcp/oauth/token`. Those three paths SHALL be exempt from the bearer
+challenge. Any other path under `/mcp/oauth/` SHALL stay challenged. WorkOS
+mode SHALL answer the three paths with 501 and SHALL NOT bind a principal.
 The modes differ only in how a bearer is validated and whether named action
 scopes are enforced on writes. The dev provider SHALL require
 `UNIVERSE_SERVER_DEV_USER` and resolve every bearer to that named identity.

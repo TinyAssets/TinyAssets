@@ -103,13 +103,13 @@ def test_oauth_discovery_through_one_tool_call(client: TestClient) -> None:
     assert as_meta.status_code == 200, as_meta.text
     assert inserted_as.json() == as_meta.json()
     meta = as_meta.json()
-    assert meta["authorization_endpoint"] == f"{SERVER}/oauth/authorize"
-    assert meta["token_endpoint"] == f"{SERVER}/oauth/token"
-    assert meta["registration_endpoint"] == f"{SERVER}/oauth/register"
+    assert meta["authorization_endpoint"] == f"{SERVER}/mcp/oauth/authorize"
+    assert meta["token_endpoint"] == f"{SERVER}/mcp/oauth/token"
+    assert meta["registration_endpoint"] == f"{SERVER}/mcp/oauth/register"
     assert meta["code_challenge_methods_supported"] == ["S256"]
 
     registered = client.post(
-        "/oauth/register",
+        "/mcp/oauth/register",
         json={
             "client_name": "remote-journey",
             "redirect_uris": [REDIRECT],
@@ -123,7 +123,7 @@ def test_oauth_discovery_through_one_tool_call(client: TestClient) -> None:
 
     verifier, code_challenge = _pkce()
     authorized = client.get(
-        "/oauth/authorize",
+        "/mcp/oauth/authorize",
         params={
             "response_type": "code",
             "client_id": client_id,
@@ -143,7 +143,7 @@ def test_oauth_discovery_through_one_tool_call(client: TestClient) -> None:
     code = query["code"][0]
 
     token_response = client.post(
-        "/oauth/token",
+        "/mcp/oauth/token",
         data={
             "grant_type": "authorization_code",
             "code": code,

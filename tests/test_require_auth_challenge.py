@@ -166,10 +166,16 @@ def test_discovery_routes_stay_public():
         "/.well-known/oauth-protected-resource",
         "/mcp/.well-known/oauth-protected-resource",
         "/.well-known/oauth-authorization-server",
+        "/mcp/oauth/register",
+        "/mcp/oauth/authorize",
+        "/mcp/oauth/token",
     ):
         sent, app_called = _drive(path, token=None)
         assert app_called, f"{path} must not be challenged"
         assert _status(sent) == 200
+    sent, app_called = _drive("/mcp/oauth/register/extra", token=None, method="POST")
+    assert not app_called
+    assert _status(sent) == 401
 
 
 def test_valid_token_on_mcp_passes_through():
