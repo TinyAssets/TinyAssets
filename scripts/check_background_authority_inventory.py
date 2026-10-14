@@ -271,10 +271,6 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     "event_subscription": (
         SourceReference("tinyassets/control_plane/events.py", "def register_subscription("),
     ),
-    "request_admission": (
-        SourceReference("tinyassets/storage/request_admissions.py", "class RequestAdmissionStore:"),
-        SourceReference("tinyassets/api/universe.py", "def _action_admit_request_v2("),
-    ),
     "graph_enqueue": (
         SourceReference("tinyassets/graph_compiler.py", "def _node_enqueue_branch_run("),
     ),

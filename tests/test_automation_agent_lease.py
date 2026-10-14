@@ -190,6 +190,59 @@ def test_slots_go_one_agent_per_universe_before_a_second(
         consumer.stop(timeout=10)
 
 
+def test_two_long_automations_do_not_delay_owner_continuations(
+    home: Path, monkeypatch,
+) -> None:
+    _automate(home, WRITER)
+    _automate(home, READER)
+    graph = _Blocking()
+    reached = threading.Event()
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    monkeypatch.setattr(
+        "tinyassets.control_plane.continuations.tick",
+        lambda _base: reached.set(),
+    )
+    consumer = _threaded_consumer(home, concurrency=2)
+    try:
+        assert consumer.poll_once() == 2
+        graph.wait_for(2)
+        assert len(graph.entered) == 2
+        assert reached.wait(2), "both automation workers delayed the owner scan"
+    finally:
+        graph.release.set()
+        consumer.stop(timeout=10)
+
+
+def test_unstarted_automation_cannot_spend_a_skip(
+    home: Path, monkeypatch,
+) -> None:
+    continuation_release = threading.Event()
+    continuation_started = threading.Event()
+
+    def hold_continuation(_base):
+        continuation_started.set()
+        assert continuation_release.wait(10)
+
+    monkeypatch.setattr("tinyassets.control_plane.continuations.tick", hold_continuation)
+    graph = _Blocking()
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    consumer = _threaded_consumer(home, concurrency=1)
+    try:
+        assert consumer.poll_once() == 0
+        assert continuation_started.wait(2)
+        first = _automate(home, WRITER, name="first")
+        assert consumer.poll_once() == 1
+        graph.wait_for(1)
+        assert graph.entered == [first.automation_id], "submission was queued, not started"
+        cadence = _automate(home, WRITER, overlap="skip", name="cadence")
+        assert consumer.poll_once() == 0
+        assert _attempt_statuses(home, cadence.automation_id) == ["skipped"]
+    finally:
+        continuation_release.set()
+        graph.release.set()
+        consumer.stop(timeout=10)
+
+
 # -- One agent never overlaps itself -----------------------------------------------
 
 

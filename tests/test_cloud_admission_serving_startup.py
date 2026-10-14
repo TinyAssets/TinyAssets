@@ -179,10 +179,11 @@ def test_serving_boot_refuses_unadmitted_with_a_nonzero_exit(
     )
 
 
-def test_serving_boot_refuses_an_unobserved_process_that_resolves_not_cloud(
-    unresolved, boot_sentinels
+@pytest.mark.parametrize("transport", ["stdio", "sse"])
+def test_local_transport_boots_without_starting_consumer_when_not_cloud(
+    unresolved, boot_sentinels, monkeypatch, transport,
 ):
-    """No observation exists yet: boot must resolve one and refuse on it."""
+    """Local transport remains usable without cloud owner-tick admission."""
     calls: list[int] = []
 
     def _resolver():
@@ -190,12 +191,16 @@ def test_serving_boot_refuses_an_unobserved_process_that_resolves_not_cloud(
         return UNADMITTED
 
     unresolved(_resolver)
+    monkeypatch.setattr(
+        us.mcp, "run",
+        lambda **_kwargs: boot_sentinels.append("local-listener"),
+    )
 
-    with pytest.raises(SystemExit):
-        us.main(transport="stdio")
+    us.main(transport=transport)
 
     assert calls == [1], "boot must resolve exactly once"
-    assert boot_sentinels == ["seal-arm"]
+    assert "local-listener" in boot_sentinels
+    assert "queue-worker-start" not in boot_sentinels
 
 
 def test_the_seal_is_armed_before_admission_resolves_anything(

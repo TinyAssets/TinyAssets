@@ -1,7 +1,7 @@
 """Read-only priority policy for the persisted v2 request queue.
 
-The API and reconciliation read this policy to explain queued requests. The
-owner tick starts executable work; this module has no polling or run path.
+The API and reconciliation read this policy to explain persisted requests.
+The owner tick does not claim v2 requests; this module has no run path.
 
 Priority scoring starts with the minimum viable tier model:
 
@@ -112,8 +112,8 @@ def paid_market_enabled() -> bool:
 def get_request_type_priorities() -> list[str]:
     """Read ``TINYASSETS_REQUEST_TYPE_PRIORITIES``.
 
-    Returns ordered list of request_type strings this daemon will claim.
-    Empty list = accept all types (no filtering, backward-compatible default).
+    Returns request types selected for operational queue reads. No worker claims
+    them. Empty list means no read filter.
     Format: comma-separated, e.g. ``bug_investigation,paid_market,branch_run``.
     """
     raw = os.environ.get("TINYASSETS_REQUEST_TYPE_PRIORITIES", "").strip()
@@ -123,11 +123,9 @@ def get_request_type_priorities() -> list[str]:
 
 
 def prefers_request_type(request_type: str) -> bool:
-    """Return True if this daemon will claim tasks of the given request_type.
+    """Return True if operational reads include this request type.
 
-    When ``TINYASSETS_REQUEST_TYPE_PRIORITIES`` is unset or empty, all
-    types are accepted (backward-compatible). When set, only listed
-    types are accepted.
+    An unset or empty filter includes all types; otherwise only listed types.
     """
     priorities = get_request_type_priorities()
     if not priorities:
