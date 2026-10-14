@@ -777,6 +777,10 @@ class KnowledgeGraph:
             res = c.resolution if hasattr(c, "resolution") else c.get("resolution", 1.0)
             summary = c.summary if hasattr(c, "summary") else c.get("summary", "")
             for eid in entities:
+                if self._conn.forgotten("communities", {
+                    "community_id": cid, "entity_id": eid,
+                }):
+                    continue
                 self._conn.execute(
                     "INSERT OR REPLACE INTO communities "
                     "(community_id, entity_id, resolution, summary) "

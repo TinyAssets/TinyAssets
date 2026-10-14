@@ -55,6 +55,15 @@ consent. Missing broker enforcement SHALL never become a portable grant.
 - **THEN** the projection conservatively applies its behavior to that action class
 - **AND** no source grant or identifier appears in the portable policy.
 
+#### Scenario: A source policy cannot be translated without widening permission
+- **WHEN** scoped tables, record kinds, qualifiers or egress/spend limits lack a mapping
+- **THEN** export refuses instead of silently omitting them.
+
+#### Scenario: An exported agent loses its policy file
+- **WHEN** the runner cannot load the selected agent policy
+- **THEN** it refuses even if the roster omitted the policy declaration
+- **AND** generated roster entries always declare the policy path.
+
 ### Requirement: Portable agent roster
 Export SHALL include selected root harness files without collisions and derive
 its roster from included instructions and settings. Settings SHALL use the
@@ -62,6 +71,10 @@ canonical bounded parser, replace source model/connection identifiers with local
 references and omit source owner bindings. Other credentials SHALL stay blocked.
 Import SHALL verify the roster against files; a per-agent endpoint override
 SHALL never inherit the global endpoint's credential.
+
+#### Scenario: A process credential has no matching process endpoint
+- **WHEN** only the file environment supplies the selected model URL
+- **THEN** a nonempty inherited process key refuses instead of reaching that URL.
 
 #### Scenario: Main agent exports from its actual root
 - **WHEN** the owner selects root AGENTS.md, settings.yaml and a skill

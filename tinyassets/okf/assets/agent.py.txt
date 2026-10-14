@@ -74,13 +74,10 @@ class LocalTools:
             has_policy = False
         if not has_policy:
             try:
-                manifest = json.loads(self.read("command-center.json"))
+                self.read("command-center.json")
             except FileNotFoundError:
-                manifest = {}
-            if not isinstance(manifest, dict) or not isinstance(manifest.get("roster", []), list):
-                raise ValueError("Invalid command-center manifest")
-            if any(isinstance(row, dict) and row.get("agent") == agent and row.get("rules")
-                   for row in manifest.get("roster", [])):
+                pass
+            else:
                 raise ValueError("Exported agent policy is missing")
         self.behaviours = {}
         if has_policy:
@@ -430,6 +427,10 @@ def model_environment(root, agent):
         raise ValueError("Invalid local model environment reference")
     fields = ("MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY")
     values = [environment.get(f"{prefix}_{field}", "") for field in fields] if prefix else []
+    selected_prefix = prefix + "_" if any(values) else ""
+    if (process.get(selected_prefix + "MODEL_API_KEY")
+            and not process.get(selected_prefix + "MODEL_BASE_URL")):
+        raise ValueError("A process model key requires its process endpoint")
     if any(values):
         if not values[0] or not values[1]:
             raise ValueError("Set the agent's MODEL_BASE_URL and MODEL_NAME together")

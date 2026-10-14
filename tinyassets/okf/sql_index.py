@@ -18,6 +18,7 @@ from tinyassets.boxes.provider import BoxOperationRefused, WriteConflict
 from tinyassets.okf.bundle import InvalidBundle
 from tinyassets.okf.migration import _quoted, restore_scalar, scalar
 from tinyassets.okf.records import SourceRecords, record_entry, source_census
+from tinyassets.storage_accounting import StorageRefused
 
 
 def require_source(source, name):
@@ -186,7 +187,9 @@ class CanonicalConnection:
                 self._operation = operation_id or uuid.uuid4().hex
                 if not isinstance(self._operation, str) or len(self._operation) > 128:
                     raise InvalidBundle("Name a bounded canonical operation ID")
-                if self.source.bundle.operation_committed(self.before, self._operation):
+                if operation_id is not None and self.source.bundle.operation_committed(
+                    self.before, self._operation
+                ):
                     raise InvalidBundle("Operation already committed; read its canonical result")
             self._depth += 1
             try:
@@ -207,6 +210,14 @@ class CanonicalConnection:
 
     def cursor(self):
         return self._db.cursor()
+
+    def forgotten(self, table, row):
+        definition = source_census(self.before, self.source.source)["tables"][table]
+        if any(column["pk"] and column["name"] not in row for column in definition["columns"]):
+            raise InvalidBundle("A forgotten-identity lookup requires every primary key")
+        identity_row = {column["name"]: row.get(column["name"]) for column in definition["columns"]}
+        entry = record_entry(self.source.source, table, identity_row, definition["columns"])
+        return self.source.bundle.forgotten(self.before, [entry.id])
 
     def _flush(self):
         definitions = source_census(self.before, self.source.source)["tables"]
@@ -248,7 +259,7 @@ class CanonicalConnection:
                 result = self.source.write(
                     before, upserts=upserts, deletions=deletions, operation_id=operation
                 )
-            except (InvalidBundle, BoxOperationRefused, WriteConflict):
+            except (InvalidBundle, BoxOperationRefused, WriteConflict, StorageRefused):
                 # A failed validation/CAS may leave unreachable staging files,
                 # but must not poison the cached consumer. Unknown I/O outcomes
                 # retain the exact pending transaction and still require retry.

@@ -22,6 +22,9 @@ def folder(tmp_path):
     (tmp_path / "run").mkdir()
     (tmp_path / "agents/main").mkdir(parents=True)
     (tmp_path / "agents/main/AGENTS.md").write_text("Use files to finish the user's task.")
+    (tmp_path / "agents/main/rules.json").write_text(json.dumps({
+        "schema_version": 1, "behaviours": dict.fromkeys(RUNNER["ACTION_CLASSES"], "do"),
+    }))
     return tmp_path
 
 
@@ -82,6 +85,7 @@ def test_malformed_exported_policy_does_not_use_defaults(folder, raw):
 
 
 def test_declared_policy_must_exist_and_selected_agent_uses_own_policy(folder):
+    (folder / "agents/main/rules.json").unlink()
     (folder / "command-center.json").write_text(json.dumps({"roster": [
         {"agent": "main", "rules": "agents/main/rules.json"},
     ]}))
@@ -98,6 +102,9 @@ def test_declared_policy_must_exist_and_selected_agent_uses_own_policy(folder):
         return next(answers)
     RUNNER["run"](folder, "read", agent="main", model_call=model)
     assert captured[-1]["content"].startswith("Refused:")
+    (folder / "agents/editor/rules.json").write_text(json.dumps({
+        "schema_version": 1, "behaviours": dict.fromkeys(RUNNER["ACTION_CLASSES"], "do"),
+    }))
     editor = RUNNER["LocalTools"](folder, agent="editor")
     assert editor.call("read", {"path": "note.txt"}) == "original"
 
@@ -328,12 +335,24 @@ def test_process_model_overrides_keep_credentials_with_their_endpoint(
         monkeypatch.setenv(prefix + "MODEL_BASE_URL", endpoint)
     if process_key is not None:
         monkeypatch.setenv(prefix + "MODEL_API_KEY", process_key)
+    if process_key and endpoint is None:
+        with pytest.raises(ValueError, match="process endpoint"):
+            RUNNER["model_environment"](folder, "main")
+        return
     expected_key = process_key if process_key is not None else (
         "" if endpoint == "https://second.example/v1" else "first-endpoint-key"
     )
     assert RUNNER["model_environment"](folder, "main") == (
         endpoint or "https://first.example/v1", "process-model", expected_key,
     )
+
+
+@pytest.mark.parametrize("row", [{"agent": "main"}, {"agent": "main", "rules": ""}])
+def test_manifest_cannot_omit_policy_declaration_to_enable_all_actions(folder, row):
+    (folder / "agents/main/rules.json").unlink()
+    (folder / "command-center.json").write_text(json.dumps({"roster": [row]}))
+    with pytest.raises(ValueError, match="policy is missing"):
+        RUNNER["LocalTools"](folder)
 
 
 @pytest.mark.parametrize("raw", [

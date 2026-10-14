@@ -31,17 +31,37 @@ def portable_rules(projection, *, owner, center, agents):
     document = projection.get("policy")
     if not isinstance(document, dict) or not isinstance(document.get("entries"), list):
         raise InvalidBundle("Invalid owner policy entries")
+    if set(document) - {"entries", "egress", "spend"}:
+        raise InvalidBundle("Unsupported owner policy section")
+    egress = document.get("egress", {"mode": "open", "allowlist": []})
+    spend = document.get("spend", {"daily": None, "monthly": None, "transaction": None,
+                                   "ask_above": None, "source_ceilings": {}})
+    if egress != {"mode": "open", "allowlist": []} or spend != {
+        "daily": None, "monthly": None, "transaction": None,
+        "ask_above": None, "source_ceilings": {},
+    }:
+        raise InvalidBundle("Scoped egress/spend limits need a local enforcement mapping")
     matches = {agent: {} for agent in agents}
     for entry in document["entries"]:
         if not isinstance(entry, dict):
             raise InvalidBundle("Invalid owner policy entry")
-        if entry.get("scope") not in ("account", center) or entry.get("table") != "rules":
+        if entry.get("scope") not in ("account", center):
             continue
+        if entry.get("table") == "approval_grants":
+            continue  # Standing grants are source authority, never portable permission.
+        if entry.get("table") != "rules":
+            raise InvalidBundle("Unsupported scoped owner policy table")
         values = entry.get("values")
         if not isinstance(values, dict):
             raise InvalidBundle("Invalid owner policy rule")
-        if values.get("record_kind", "behavior") != "behavior":
+        kind = values.get("record_kind", "behavior")
+        if kind == "preapproval":
             continue
+        if kind != "behavior":
+            raise InvalidBundle("Unsupported owner policy record kind")
+        if set(values) - {"id", "agent", "action_class", "behaviour", "record_kind",
+                          "connection", "operation", "created_at", "updated_at"}:
+            raise InvalidBundle("Unsupported owner policy qualifier")
         targets = [slug for slug, identity in agents.items()
                    if identity == values.get("agent", "main")]
         if not targets:

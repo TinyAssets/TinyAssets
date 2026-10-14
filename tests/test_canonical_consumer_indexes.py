@@ -168,6 +168,51 @@ def test_reclustering_can_restore_a_derived_natural_key(migrated):
     assert len(migrated["knowledge"].rows(migrated["knowledge"].snapshot())["communities"]) == 2
 
 
+def test_reclustering_respects_an_explicit_owner_forget(migrated):
+    source = migrated["knowledge"]
+    graph = KnowledgeGraph(source)
+    graph.store_communities([{"community_id": 0, "entities": ["a", "b"]}])
+    before = source.snapshot()
+    key = next(
+        key for key, row in source.rows(before)["communities"].items() if row["entity_id"] == "b"
+    )
+    source.bundle.commit(before, {key: None}, operation_id="owner-forgets-membership")
+    graph.store_communities([{"community_id": 0, "entities": ["a", "b"]}])
+    assert [row["entity_id"] for row in source.rows(source.snapshot())["communities"].values()] == [
+        "a"
+    ]
+
+
+def test_read_only_consumer_does_not_scan_history_for_a_generated_id(migrated, monkeypatch):
+    source = migrated["promises"]
+    store = SeriesPromiseTracker(source, universe_id="a")
+    store.create_promise("p", "Remember", 1, 1)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("A read does not need to check generated operation IDs")
+
+    monkeypatch.setattr(source.bundle, "operation_committed", unexpected)
+    assert len(store.get_all_promises()) == 1
+
+
+def test_quota_refusal_releases_a_cached_consumer(migrated, monkeypatch):
+    from tinyassets.storage_accounting import StorageRefused
+
+    source = migrated["promises"]
+    store = SeriesPromiseTracker(source, universe_id="a")
+    real = source.bundle.provider.write
+
+    def refuse(*args, **kwargs):
+        raise StorageRefused({"failure_class": "storage_quota_exceeded", "error": "quota"})
+
+    monkeypatch.setattr(source.bundle.provider, "write", refuse)
+    with pytest.raises(StorageRefused):
+        store.create_promise("p", "Refused", 1, 1)
+    monkeypatch.setattr(source.bundle.provider, "write", real)
+    store.create_promise("p", "Permitted after capacity returns", 1, 1)
+    assert len(store.get_all_promises()) == 1
+
+
 def test_daemon_search_and_packet_do_not_write_canonical_telemetry(migrated, monkeypatch):
     from tinyassets.daemon_brain import (
         build_daemon_brain_packet,

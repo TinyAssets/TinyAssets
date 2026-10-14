@@ -430,3 +430,19 @@ under another current owner's context. The module's non-memory configuration
 remains separate; memory services have no process-global default or fallback.
 C7 production scope entry and C6 quota enforcement remain activation gates. The
 six consumers and real scoped graph test fixtures do not establish those gates.
+
+History lookup authenticates bounded immutable pages by content hash and caches
+verified pages within the owner-bound bundle. Unrelated box generations cannot
+invalidate those immutable reads; generated read-operation IDs do not scan the
+commit history. Bulk forget pages split at the history target, with deletion
+counters folded before archival. Explicitly forgotten graph memberships are
+excluded from later derived clustering. Malformed history heads/counters refuse
+as InvalidBundle. StorageRefused remains a deterministic pre-admission refusal,
+not proof that the C6 provider currently enforces account quotas.
+
+Portable policy translation refuses unknown scoped tables/kinds/qualifiers and
+unmapped egress/spend limits. Standing grants never transfer. Missing agent
+identities preserve the broker's explicit main default. Every generated roster
+names a local policy, and a manifest-bearing runner refuses a missing file even
+when the declaration was omitted. A selected inherited nonempty process model
+key requires its endpoint in that same process environment.

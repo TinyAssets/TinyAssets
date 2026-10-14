@@ -78,7 +78,6 @@ def test_omitted_center_uses_binding_without_a_host_home_directory(
     records(bundle, tmp_path)
     signed_in("owner-a")
     monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
-    monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(
         "tinyassets.agent_loop.served_chat.configured_box_provider",
         lambda: (bundle.provider, "test"),

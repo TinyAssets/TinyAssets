@@ -115,6 +115,69 @@ def test_history_page_retry_and_integrity_are_fenced(bundle, monkeypatch):
         bundle.commit(bundle.snapshot(), {"note": entry(body="bad")}, operation_id="new-op")
 
 
+def test_verified_history_is_cached_and_ignores_unrelated_generations(bundle, monkeypatch):
+    import tinyassets.okf.bundle as module
+
+    monkeypatch.setattr(module, "HISTORY_PAGE_BYTES", 100)
+    for i in range(12):
+        bundle.commit(bundle.snapshot(), {"note": entry(body=str(i))}, operation_id=f"history-{i}")
+    before = bundle.snapshot()
+    bundle._history_cache.clear()
+    real = bundle.provider.read
+    calls = []
+
+    def concurrent(handle, path, **kwargs):
+        value = real(handle, path, **kwargs)
+        if "/history/" in path:
+            calls.append(path)
+            bundle.provider.write(
+                handle, f"concurrent-{len(calls)}", "/cc/unrelated", b"x", max_bytes=1
+            )
+        return value
+
+    monkeypatch.setattr(bundle.provider, "read", concurrent)
+    assert bundle.operation_committed(before, "history-0")
+    count = len(calls)
+    assert count > 5
+    assert bundle.operation_committed(before, "history-0")
+    assert len(calls) == count
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("deletion_sequences", []),
+        ("deletion_sequences", {"x": "bad"}),
+        ("log_history", []),
+        ("tombstones_history", "bad"),
+    ],
+)
+def test_malformed_history_manifest_refuses_as_invalid_bundle(bundle, field, value):
+    bundle.commit(bundle.snapshot(), {"note": entry()}, operation_id="manifest")
+    manifest = bundle.snapshot().manifest | {field: value}
+    raw = json.dumps(manifest).encode()
+    bundle.provider.write(bundle.handle, "malformed", INDEX, raw, max_bytes=len(raw))
+    with pytest.raises(InvalidBundle):
+        bundle.snapshot()
+
+
+def test_bulk_forget_splits_markers_into_bounded_history_pages(bundle, monkeypatch):
+    import tinyassets.okf.bundle as module
+
+    entries = {str(i): entry(str(i)) for i in range(60)}
+    bundle.commit(bundle.snapshot(), entries, operation_id="bulk-seed")
+    before = bundle.snapshot()
+    monkeypatch.setattr(module, "HISTORY_PAGE_BYTES", 512)
+    monkeypatch.setattr(module, "PAGE_BYTES", 1800)
+    bundle.commit(before, dict.fromkeys(entries), operation_id="bulk-forget")
+    current = bundle.snapshot()
+    pages = list(bundle._history(current, "tombstones"))
+    assert len(pages) > 5
+    assert sum(len(page) for page in pages) == len(entries)
+    assert not current.entries
+    assert bundle.forgotten(current, entries)
+
+
 def test_failed_staging_never_changes_visible_knowledge(bundle, monkeypatch):
     bundle.commit(bundle.snapshot(), {"note": entry()}, operation_id="initial")
     before = bundle.snapshot()

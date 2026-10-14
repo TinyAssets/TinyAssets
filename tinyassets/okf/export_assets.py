@@ -47,6 +47,8 @@ The runner reads .env as literal data, never as shell code. Shell environment
 values override .env; duplicate/unknown keys and malformed values fail startup.
 A shell endpoint override drops the file's old endpoint key unless you also
 set the key in the shell.
+A nonempty shell key requires that endpoint in the shell too; a file URL cannot
+silently acquire an unrelated inherited shell credential.
 The manifest roster names each agent's optional AGENT_n model environment group.
 Set that group's MODEL_BASE_URL and MODEL_NAME together to override the global
 endpoint for that agent; its MODEL_API_KEY is separate and never inherited from

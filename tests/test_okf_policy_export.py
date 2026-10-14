@@ -52,3 +52,48 @@ def test_agent_derivation_does_not_select_arbitrary_paths():
     paths = ["AGENTS.md", "agents/main/AGENTS.md", "agents/editor/AGENTS.md",
              "workspace/AGENTS.md", "agents/other/sub/AGENTS.md"]
     assert preview_agents(paths) == ["editor", "main"]
+
+
+@pytest.mark.parametrize("extra", [{"amount_cap": 10}, {"recipient": "someone"},
+                                    {"expires_at": 1}, {"disabled": True}, {"path": "/narrow"}])
+def test_unknown_qualifier_cannot_become_a_class_wide_permission(extra):
+    with pytest.raises(InvalidBundle, match="qualifier"):
+        portable_rules(projection(entries=[rule("do", action="people.message", **extra)]),
+                       owner="owner-a", center="a", agents={"main": "main"})
+
+
+@pytest.mark.parametrize("entry", [rule("do", record_kind="future-deny"),
+                                   {"scope": "a", "table": "future-limits", "values": {}}])
+def test_unknown_scoped_policy_records_refuse_instead_of_disappearing(entry):
+    with pytest.raises(InvalidBundle, match="Unsupported"):
+        portable_rules(projection(entries=[entry]), owner="owner-a", center="a",
+                       agents={"main": "main"})
+
+
+def test_missing_agent_matches_broker_main_semantics():
+    record = rule("hand_off")
+    del record["values"]["agent"]
+    files = portable_rules(projection(entries=[record]), owner="owner-a", center="a",
+                           agents={"main": "main", "editor": "editor"})
+    main = json.loads(files["agents/main/rules.json"])["behaviours"]
+    assert main["workspace.files"] == "hand_off"
+    assert json.loads(files["agents/editor/rules.json"])["behaviours"]["workspace.files"] == "do"
+
+
+@pytest.mark.parametrize("section,value", [
+    ("egress", {"mode": "allowlist", "allowlist": ["limited.example"]}),
+    ("spend", {"transaction": 1}),
+    ("future_limits", {}),
+])
+def test_unmapped_document_limits_cannot_disappear(section, value):
+    doc = projection()
+    doc["policy"][section] = value
+    with pytest.raises(InvalidBundle):
+        portable_rules(doc, owner="owner-a", center="a", agents={"main": "main"})
+
+
+def test_content_only_roster_still_declares_required_local_policy():
+    from tinyassets.okf.agent_export import roster
+
+    row = roster({"agents/main/AGENTS.md": b"Help"}, ["main"])[0]
+    assert row["rules"] == "agents/main/rules.json"

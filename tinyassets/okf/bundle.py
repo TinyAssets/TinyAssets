@@ -236,6 +236,18 @@ def _paths(manifest):
     paths = manifest.get("entries")
     if not isinstance(paths, dict):
         raise InvalidBundle("Bundle entries must map ids to source files")
+    sequences = manifest.get("deletion_sequences", {})
+    if not isinstance(sequences, dict) or any(
+        not isinstance(key, str) or type(value) is not int or not 0 <= value < 2**63
+        for key, value in sequences.items()
+    ):
+        raise InvalidBundle("Invalid canonical deletion sequences")
+    for kind in ("log", "tombstones"):
+        head = manifest.get(kind + "_history")
+        if head is not None and (
+            not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{64}", head)
+        ):
+            raise InvalidBundle("Invalid canonical history reference")
     tombstones = manifest.get("tombstones", {})
     if (
         not isinstance(tombstones, dict)
@@ -271,6 +283,7 @@ class KnowledgeBundle:
     def __init__(self, provider: BoxProvider, handle: BoxHandle, *, read_bytes=64 * 1024 * 1024):
         self.provider, self.handle, self.read_bytes = provider, handle, read_bytes
         self.access_check = None  # Optional trusted session lifetime guard.
+        self._history_cache = {}  # Content hashes are immutable within this bound session.
 
     @property
     def scope(self):
@@ -283,12 +296,16 @@ class KnowledgeBundle:
         while digest is not None:
             if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise InvalidBundle("Invalid canonical history reference")
-            path = ROOT + "/history/" + digest + ".json"
-            view = capture_files(self.provider, self.handle, [path], max_total=PAGE_BYTES)
-            raw = view.files.get(path)
-            if raw is None or hashlib.sha256(raw).hexdigest() != digest:
-                raise InvalidBundle("Canonical history is missing or changed")
-            page = json.loads(raw, object_pairs_hook=_unique_pairs)
+            page = self._history_cache.get(digest)
+            if page is None:
+                path = ROOT + "/history/" + digest + ".json"
+                # The digest, not the live box generation, authenticates immutable
+                # history. An unrelated concurrent write must not break this read.
+                view = self.provider.read(self.handle, path, max_bytes=PAGE_BYTES)
+                raw = view.data
+                if view.size != len(raw) or hashlib.sha256(raw).hexdigest() != digest:
+                    raise InvalidBundle("Canonical history is missing or changed")
+                page = json.loads(raw, object_pairs_hook=_unique_pairs)
             if (
                 not isinstance(page, dict)
                 or set(page) != {"previous", "values", "kind"}
@@ -297,6 +314,7 @@ class KnowledgeBundle:
                 raise InvalidBundle("Invalid canonical history page")
             if not isinstance(page["values"], str if kind == "log" else dict):
                 raise InvalidBundle("Invalid canonical history values")
+            self._history_cache[digest] = page
             yield page["values"]
             digest = page["previous"]
 
@@ -322,6 +340,25 @@ class KnowledgeBundle:
         digest = hashlib.sha256(raw).hexdigest()
         files["history/" + digest + ".json"] = raw
         manifest[kind + "_history"] = digest
+
+    @staticmethod
+    def _remember_sequence(sequences, metadata):
+        identity = metadata.get("identity")
+        if (
+            isinstance(identity, list)
+            and len(identity) == 1
+            and isinstance(identity[0], list)
+            and len(identity[0]) == 2
+            and identity[0][0] == "integer"
+        ):
+            try:
+                value = int(identity[0][1])
+            except (TypeError, ValueError):
+                raise InvalidBundle("Invalid deleted integer identity") from None
+            if str(value) != identity[0][1] or not -(2**63) <= value < 2**63:
+                raise InvalidBundle("Invalid deleted integer identity")
+            key = json.dumps([metadata.get("source"), metadata.get("table")])
+            sequences[key] = max(sequences.get(key, 0), value)
 
     def snapshot(self) -> BundleSnapshot:
         if self.access_check is not None:
@@ -404,6 +441,8 @@ class KnowledgeBundle:
             raise InvalidBundle("Cannot revive a forgotten canonical identity")
         tombstones = dict(before.manifest.get("tombstones", {}))
         sequences = dict(before.manifest.get("deletion_sequences", {}))
+        for marker in tombstones.values():
+            self._remember_sequence(sequences, marker["metadata"])
         final = dict(before.entries)
         for key, entry in changes.items():
             if not isinstance(key, str) or not key or (entry is not None and entry.id != key):
@@ -421,17 +460,7 @@ class KnowledgeBundle:
                         "type": prior.type,
                         "metadata": metadata,
                     }
-                    identity = metadata.get("identity")
-                    if (
-                        isinstance(identity, list)
-                        and len(identity) == 1
-                        and isinstance(identity[0], list)
-                        and len(identity[0]) == 2
-                        and identity[0][0] == "integer"
-                    ):
-                        value = int(identity[0][1])
-                        sequence_key = json.dumps([metadata.get("source"), metadata.get("table")])
-                        sequences[sequence_key] = max(sequences.get(sequence_key, 0), value)
+                    self._remember_sequence(sequences, metadata)
             else:
                 if key in tombstones:
                     raise InvalidBundle("Cannot revive a forgotten canonical identity")
@@ -457,7 +486,16 @@ class KnowledgeBundle:
         log += f"{len(changes)} changes; {len(final)} current entries.\n"
         files[revision + "/log.md"] = log.encode("utf-8")
         if len(json.dumps(tombstones).encode()) > HISTORY_PAGE_BYTES:
-            self._archive(manifest, files, "tombstones", tombstones)
+            page, size = {}, 0
+            for key, marker in tombstones.items():
+                item_size = len(json.dumps({key: marker}, ensure_ascii=False).encode())
+                if page and size + item_size > HISTORY_PAGE_BYTES:
+                    self._archive(manifest, files, "tombstones", page)
+                    page, size = {}, 0
+                page[key] = marker
+                size += item_size
+            if page:
+                self._archive(manifest, files, "tombstones", page)
             tombstones = {}
         manifest.update(
             {
