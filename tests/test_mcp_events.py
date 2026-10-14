@@ -299,3 +299,23 @@ def test_filters_reject_nonfinite_and_nested():
     for invalid in ({"x": float("nan")}, {"x": {}}, {str(i): i for i in range(17)}):
         with pytest.raises(EventError):
             arguments(params()["arguments"] | {"input_equals": invalid})
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_reactivation_cannot_bypass_owner_subscription_limit(harness, expired):
+    factory, now, _, _ = harness
+    store = factory()
+    store.subscribe("alice", params(ttlMs=1000))
+    if expired:
+        now[0] += 2
+    else:
+        store.unsubscribe("alice", params())
+    for index in range(128):
+        active = params()
+        active["arguments"]["branch_def_id"] = f"save-{index}"
+        store.subscribe("alice", active)
+    # An existing active subscription may refresh at capacity.
+    store.subscribe("alice", active)
+    with pytest.raises(EventError) as error:
+        store.subscribe("alice", params())
+    assert error.value.code == -32025

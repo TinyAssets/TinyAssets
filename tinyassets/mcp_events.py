@@ -213,7 +213,7 @@ class EventStore:
                 "SELECT * FROM subscriptions WHERE id=? AND owner=?", (ident, owner)
             ).fetchone()
             if (
-                not previous
+                not (previous and previous["active"] and previous["expires"] > now)
                 and conn.execute(
                     "SELECT COUNT(*) FROM subscriptions WHERE owner=? AND active=1 AND expires>?",
                     (owner, now),
@@ -242,7 +242,7 @@ class EventStore:
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if (
-                not previous
+                not (previous and previous["active"] and previous["expires"] > now)
                 and conn.execute(
                     "SELECT COUNT(*) FROM subscriptions WHERE owner=? AND active=1 AND expires>?",
                     (owner, now),
