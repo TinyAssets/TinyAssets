@@ -79,11 +79,10 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
     ".idempotency.db", "rules.db", "steering.db",
 })
 
-#: Locks a creator writes as an entry OF a home: the admission lock
-#: provider_assignment.py joins onto the universe directory, and
-#: SOUL_LOCK_FILENAME (soul_edit.py), and the queue, auto-ship ledger,
-#: subscription and bid execution-log locks (branch_tasks.py / auto_ship_ledger.py /
-#: subscriptions.py LOCK_FILENAME, bid/execution_log.py). Bare lock is NOT here: its creator puts it
+#: Locks written as entries OF a home: current admission, soul, auto-ship and
+#: bid locks, plus historical v1 queue and goal-subscription lock names. The
+#: retired names remain classified so existing owner data stays intelligible.
+#: Bare lock is NOT here: its creator puts it
 #: inside a credential snapshot directory beside auth.json (credential_vault.py),
 #: so a home holding one at the top level is something nobody writes, and stays
 #: unknown. (Spelled without a path join on purpose -- test_storage_registry

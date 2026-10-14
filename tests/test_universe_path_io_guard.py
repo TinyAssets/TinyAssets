@@ -368,9 +368,6 @@ PINNED: dict[str, list[str]] = {
         "_publish_marker: os.replace()",
         "apply: .unlink()",
     ],
-    "tinyassets/subscriptions.py": [
-        "_read_raw: .read_text()",
-    ],
     # Fixed owner-cell supervisor reads only kernel /proc/<pid>/stat records.
     "tinyassets/role_preview_cell.py": ["_proc_snapshot: open()"],
     "tinyassets/ui_preview.py": [

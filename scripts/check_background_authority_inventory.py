@@ -268,8 +268,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
             'self._run_fn(sub["branch_def_id"], actor, inputs, run_name)',
         ),
     ),
-    "goal_subscription": (
-        SourceReference("tinyassets/subscriptions.py", "def subscribe("),
+    "event_subscription": (
         SourceReference("tinyassets/control_plane/events.py", "def register_subscription("),
     ),
     "request_admission": (
@@ -354,8 +353,7 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
     "filing_only_wiki_negative": (
         SourceReference("tinyassets/api/wiki.py", "def _wiki_file_bug("),
     ),
-    "goal_subscription": (
-        SourceReference("tinyassets/subscriptions.py", "def list_subscriptions("),
+    "event_subscription": (
         SourceReference("tinyassets/control_plane/events.py", "def list_scheduler_subscriptions("),
     ),
     "queue": (

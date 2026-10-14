@@ -507,7 +507,7 @@ def test_the_origin_backstop_reads_only_the_cache() -> None:
     assert _REFUSAL_BODY == b'{"error":"platform_not_cloud"}'
 
 
-def test_admission_sites_consume_the_one_resolver() -> None:
+def test_surviving_admission_sites_consume_the_one_resolver() -> None:
     """Flipped from the record-only pin: these paths MUST consume provenance.
 
     Its predecessor asserted the opposite ("...do_not_consume_provenance_yet")
@@ -519,7 +519,6 @@ def test_admission_sites_consume_the_one_resolver() -> None:
         "branch_tasks_v2.py",
         "daemon_registry.py",
         "foreground_run_provider.py",
-        "background_served_provider.py",
         "universe_server.py",
         "origin_admission.py",
     ):

@@ -22,8 +22,6 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 @pytest.fixture
 def http_wire(tmp_path, monkeypatch):
-    from tinyassets.background_served_provider import _BackgroundAssignedProviderSession
-
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
     reads, writes, errors = [], [], []
     original_call = _ForegroundRunProviderSession._call
@@ -38,19 +36,6 @@ def http_wire(tmp_path, monkeypatch):
             raise
 
     monkeypatch.setattr(_ForegroundRunProviderSession, "_call", call)
-    original_background = _BackgroundAssignedProviderSession._call
-
-    def background_call(*args, **kwargs):
-        try:
-            return original_background(*args, **kwargs)
-        except Exception as exc:
-            import traceback
-
-            errors.append("".join(traceback.format_exception(exc)))
-            raise
-
-    monkeypatch.setattr(_BackgroundAssignedProviderSession, "_call", background_call)
-
     def check_unlocked():
         with provider_assignment_admission().exclusive(tmp_path / "universe_alice"):
             with sqlite3.connect(db_path(tmp_path), timeout=0.1) as conn:

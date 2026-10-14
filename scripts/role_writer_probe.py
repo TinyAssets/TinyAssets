@@ -82,7 +82,6 @@ def exercise(base, center, principal):
         from tinyassets.auto_ship_ledger import _file_lock
         from tinyassets.bid.execution_log import append_execution_log_entry
         from tinyassets.config import write_universe_config_fields
-        from tinyassets.subscriptions import subscribe
 
         check('config', lambda: write_universe_config_fields(root, oracle=True))
 
@@ -144,13 +143,9 @@ def exercise(base, center, principal):
         ('workspace-sweep', sweep_data_root),
     ):
         check(name, lambda operation=operation: operation(base))
-    check('subscriptions', lambda: subscribe(root, 'oracle'),
-          produces=('subscriptions.json',))
     check('execution-log', lambda: append_execution_log_entry(root, {'oracle': True}),
           produces=('bid_execution_log.json',))
     check('execution-log-append', lambda: append_execution_log_entry(root, {'second': True}))
-    from tinyassets.subscriptions import unsubscribe
-    check('subscriptions-remove', lambda: unsubscribe(root, 'oracle'))
     from tinyassets.auto_ship_ledger import ShipAttempt, record_attempt, update_attempt
     check('auto-ship-content', lambda: record_attempt(root, ShipAttempt(
         ship_attempt_id='oracle', created_at='', updated_at='', ship_status='skipped')),
