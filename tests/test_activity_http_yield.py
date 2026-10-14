@@ -13,7 +13,6 @@ from tests import test_workflow_http_agent as workflow_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets import activity_runner, agent_activities, engine_mcp_server, shared_self
-from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
@@ -22,6 +21,13 @@ from tinyassets.storage.provider_work_authority import db_path
 from tinyassets.workflow_agent import WorkAgentAdapter
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
+@pytest.fixture(autouse=True)
+def run_cancel_ledger(tmp_path):
+    from tinyassets.runs import initialize_runs_db
+
+    initialize_runs_db(tmp_path)
+
+
 http_wire = workflow_tests.http_wire
 work_agent = workflow_tests.work_agent
 
@@ -39,20 +45,25 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
     )
     aid = record["activity_id"]
     generation = agent_activities.claim(universe, aid, replaceable=lambda _: False)
-    prepare = _ForegroundRunProviderSession.prepare
+    from tinyassets import runs
+    from tinyassets.control_plane.activity_session import enqueue
+
     run_ids = []
 
-    def bind_before_start(session, **kwargs):
-        prepare(session, **kwargs)
-        run_ids.append(kwargs["run_id"])
-        assert agent_activities.bind_run(universe, aid, generation, kwargs["run_id"])
+    def enqueue_activity(base, **kwargs):
+        from tinyassets.foreground_run_provider import close_foreground_run_provider
 
-    monkeypatch.setattr(_ForegroundRunProviderSession, "prepare", bind_before_start)
+        close_foreground_run_provider(kwargs.get("provider_call"))
+        run_id = enqueue(base, universe.name, record, generation)
+        run_ids.append(run_id)
+        return SimpleNamespace(run_id=run_id, status="queued", output={}, error=None)
+
+    monkeypatch.setattr(runs, "execute_branch_async", enqueue_activity)
     shared_turn = shared_self.prepare_shared_self_turn
 
     def prepare_activity(*args, activity, agent):
         assert activity["activity_id"] == aid and activity["runner_generation"] == generation
-        assert activity["runner_token"] == run_ids[0]
+        assert activity["runner_token"]
         return shared_turn(*args, activity=activity, agent=agent)
 
     monkeypatch.setattr(shared_self, "prepare_shared_self_turn", prepare_activity)
@@ -102,13 +113,12 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
 
     work_agent.after_tool = yield_after_ask
     branch = _branch(node_count=1)
-    branch.branch_def_id = activity_runner.branch_def_id(universe.name)
     branch.node_defs[0].tools_allowed = ["universe_self"]
     branch.node_defs[0].llm_policy = {"preferred": {"model": "synthetic-model"},
                                     "fallback_chain": []}
     result = _run_branch(tmp_path, monkeypatch, authenticate_request, branch,
                          open_provider=True, model_access=ModelAccess("discovered"))[0]
-    assert result["terminal_status"] == "completed", result
+    assert result["terminal_status"] == "cancelled", result
     assert len(work_agent.wires) == 1 and len(work_agent.tools) == 1 and work_agent.closed
     turn = work_agent.latest()
     assert len(turn.rounds) == 1 and turn.rounds[0].tools[0].state == "completed"
@@ -193,6 +203,9 @@ def _live_activity_adapter(tmp_path, *, name, with_binding=True):
     staging and re-authorization all succeed, so a round reaches
     ``_LaunchRecorder`` unless the adapter itself refuses it.
     """
+    from tinyassets.runs import initialize_runs_db
+
+    initialize_runs_db(tmp_path)
     universe = tmp_path / name
     universe.mkdir(exist_ok=True)
     record = agent_activities.create(

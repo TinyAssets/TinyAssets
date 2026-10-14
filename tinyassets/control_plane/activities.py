@@ -8,7 +8,7 @@ created or answered. For each activity that needs attention it:
   run's result; a failed run fails it; an interrupted run (its owner process
   provably died -- run recovery's rule) is resumed by a new run;
 * claims a queued one (or one whose dispatcher died between claiming and
-  binding), starts a run of the Activities branch and binds it.
+  binding), binds a durable run before starting its agent session.
 
 A live run -- queued, running, or owned by a process that is alive or unknown --
 is never replaced. Every step is a compare-and-set in the activity store, so

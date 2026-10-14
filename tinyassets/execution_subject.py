@@ -12,6 +12,7 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 class ExecutionSubjectKind(str, Enum):
     BRANCH_VERSION = "branch_version"
+    AGENT_ACTIVITY = "agent_activity"
 
 
 def _required(value: object, name: str) -> str:

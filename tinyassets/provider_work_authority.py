@@ -368,13 +368,16 @@ def _validate_work_lineage(
     agent_invocation_command_digest: str | None,
     agent_invocation_generation: int | None,
 ) -> None:
-    # The agent runtime (and its ``agent_invocation`` receipts) is retired; the
-    # three ``agent_invocation_*`` fields stay in the persisted receipt payload,
-    # always None, so existing receipt digests still verify.
-    if execution_subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
-        raise ValueError("Branch provider work requires a branch version subject")
-    _reference(branch_def_id, "branch_def_id")
-    _reference(branch_version_id, "branch_version_id")
+    if execution_subject.kind is ExecutionSubjectKind.AGENT_ACTIVITY:
+        if work_item_kind != "run" or branch_def_id is not None or branch_version_id is not None:
+            raise ValueError("Activity provider work cannot carry branch lineage")
+        if not re.fullmatch(r"act_[0-9a-f]{16}:[1-9][0-9]*:[0-9a-f]{16}", execution_subject.ref):
+            raise ValueError("Activity subject requires exact activity, generation and run")
+    else:
+        if execution_subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
+            raise ValueError("Branch provider work requires a branch version subject")
+        _reference(branch_def_id, "branch_def_id")
+        _reference(branch_version_id, "branch_version_id")
     if any(
         value is not None
         for value in (
