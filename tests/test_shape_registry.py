@@ -67,7 +67,9 @@ def test_c5_host_domain_and_spawn_guards(tmp_path: Path):
     assert check_shapes.dead_entry_problems(tmp_path) == []
     host = tmp_path / "tinyassets" / "host_pool"
     host.mkdir(parents=True)
+    (host / "__init__.py").write_text("", encoding="utf-8")
     assert "host-paths: tinyassets/host_pool" in check_shapes.dead_entry_problems(tmp_path)
+    (host / "__init__.py").unlink()
     host.rmdir()
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
