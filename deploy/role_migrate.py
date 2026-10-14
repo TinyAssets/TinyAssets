@@ -63,7 +63,7 @@ DAEMON_DB = ".tinyassets.db"
 SETGID_PLATFORM_DIRS = frozenset({BROKER_DIR, BROKER_DIR + "/" + PROXY})
 DELETION_INTENTS = ".role-owner-delete"  # tinyassets.role_owner_tree_deletion.INTENT_DIR
 STAGING = ".role-admission"  # role_admission_contract.STAGING
-VAULT_NAMES = frozenset({".credentials", ".credential-vault.json", "provider_definitions.json"})
+VAULT_NAMES = frozenset({".credentials", "provider_definitions.json"})
 # Hidden center entries are platform metadata (hidden_root_masks), except the
 # agent workspace, which the owner's tool cells mount as owner content.
 OWNER_HIDDEN = frozenset({".agent-workspace"})
@@ -380,6 +380,10 @@ def target(path, info, bindings, modes):
         if len(parts) == 1:
             return (DAEMON, machine, 0o750, canonical_root_acl(machine), None)
         entry = parts[1]
+        if entry == ".credential-vault.json":
+            # The sealed store is the only runtime path. A leftover cleartext
+            # file is left untouched for the one-shot cutover, which deletes it.
+            return "skip"
         if entry in OWNER_HIDDEN or not (entry.startswith(".") or entry in VAULT_NAMES):
             _require_plain(path, kind)
             # The daemon still serves this tree for its owner (design section 1),

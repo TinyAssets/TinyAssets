@@ -133,7 +133,7 @@ def test_vault_round_trips_typed_credentials_without_secret_summary(tmp_path):
         ],
     )
 
-    assert summary["path"].endswith(VAULT_FILENAME)
+    assert summary["path"].startswith("broker-sealed/")
     assert summary["credential_count"] == 3
     assert summary["credential_types"] == ["llm_subscription", "social", "vcs"]
     assert "ghs_secret" not in str(summary)

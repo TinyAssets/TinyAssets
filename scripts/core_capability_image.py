@@ -528,8 +528,9 @@ def image_check(args):
             path.chmod(0o644)
         try:
             image.stage_migrate(options)
-            # The migration fixture deliberately contains malformed vault bytes.
-            # Replace only those synthetic inputs before starting the application.
+            # The migration fixture plants synthetic cleartext vault bytes.
+            # The sealed store starts empty: those files are removed before the
+            # broker boots, or every credential write refuses the legacy file.
             seed = image._posture(
                 prefix + "-seed",
                 args.image,
@@ -544,8 +545,7 @@ def image_check(args):
                 + [
                     "-c",
                     "from pathlib import Path; "
-                    '[(p.write_text(\'{"schema_version":1,"credentials":[]}\')) '
-                    "for p in Path('/data').glob('*/.credential-vault.json')]; "
+                    "[p.unlink() for p in Path('/data').glob('*/.credential-vault.json')]; "
                     "import os, pwd; uid=pwd.getpwnam('tinyassets').pw_uid; "
                     "[(p.write_text('{}'), os.chown(p,uid,uid)) for i in range(300) "
                     "for p in [Path('/data/u-alice') / ('.capability-sidecar-'+str(i))]]",
@@ -612,6 +612,7 @@ def image_check(args):
                 TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED="1",
                 TINYASSETS_ASSIGNED_QUEUE_CONSUMER="1",
                 TINYASSETS_WIKI_CANARY_TOKEN=secrets.token_hex(32),
+                TINYASSETS_VAULT_TEST_DOUBLE="1",
                 SSL_CERT_FILE="/fixture/ca.pem",
                 REQUESTS_CA_BUNDLE="/fixture/ca.pem",
             )

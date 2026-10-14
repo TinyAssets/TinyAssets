@@ -156,8 +156,14 @@ def credential_vault_path(universe_dir: str | Path) -> Path:
 
 
 def vault_exists(universe_dir: str | Path | None) -> bool:
-    """Return True when a vault file exists for *universe_dir*."""
-    return universe_dir is not None and credential_vault_path(universe_dir).is_file()
+    """Return True when this center has sealed records or a legacy file."""
+    if universe_dir is None:
+        return False
+    if credential_vault_path(universe_dir).is_file():
+        return True
+    from tinyassets.broker.credential_store import has_center
+
+    return has_center(universe_dir)
 
 
 def _chmod_best_effort(path: Path, mode: int) -> None:
@@ -445,33 +451,27 @@ def _merge_single_record(
 
 
 def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
-    """Load and validate the per-universe vault.
+    """Open sealed records for one command center through the broker key service.
 
-    Missing vaults are treated as empty. Malformed vaults raise ValueError so a
-    daemon cannot silently grant or lose authority due to a bad secret file.
+    Missing stores are empty. An unreachable key service raises, so a caller
+    cannot mistake an outage for an empty vault. A legacy cleartext file is
+    not read.
     """
-    path = credential_vault_path(universe_dir)
-    if not path.is_file():
-        return []
-    payload = None
-    malformed = ""
+    from tinyassets.broker.credential_store import load_center
+    from tinyassets.broker.root_key import KeyServiceUnavailable
+
+    universe = Path(universe_dir)
+    legacy = credential_vault_path(universe)
+    if legacy.is_file():
+        raise ValueError(
+            "legacy credential vault is still present; run the vault cutover "
+            f"before reading {universe.name}"
+        )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
-        # `UnicodeDecodeError.object` is the whole file too — a second channel
-        # with the same consequence as JSONDecodeError.doc, found only because
-        # a reviewer tried invalid UTF-8 rather than invalid JSON.
-        malformed = "an undecodable byte"
-    except json.JSONDecodeError as exc:
-        # `exc.doc` is the ENTIRE vault file — every token for every service.
-        # Chaining it, or interpolating `exc`, hands the whole thing to any
-        # traceback, log, or error collector. Keep only the position, and raise
-        # after this handler exits so no chain survives (`from None` clears
-        # __cause__ but leaves __context__).
-        malformed = f"line {exc.lineno} column {exc.colno}"
-    if malformed:
-        raise ValueError(f"credential vault is not valid JSON at {malformed}")
-    return _records_from_payload(payload)
+        records = load_center(universe)
+    except KeyServiceUnavailable as exc:
+        raise ValueError("key service unavailable") from exc
+    return _records_from_payload(records)
 
 
 def _prepare_credential_write(
@@ -494,12 +494,19 @@ def _prepare_credential_write(
     single-record upsert; nothing is written. The summary is non-secret and
     suitable for logs/status surfaces.
     """
+    from tinyassets.broker.credential_store import has_center
+
     universe = Path(universe_dir)
     records = _records_from_payload(credentials)
-    path = credential_vault_path(universe)
+    legacy = credential_vault_path(universe)
+    if legacy.is_file():
+        raise ValueError(
+            "legacy credential vault is still present; run the vault cutover "
+            f"before writing {universe.name}"
+        )
     collapsed_credential_count = 0
     dropped_credential_slots: list[dict[str, Any]] = []
-    if len(records) == 1 and path.is_file():
+    if len(records) == 1 and has_center(universe):
         incoming = records[0]
         existing = load_credential_vault(universe)
         matching = [
@@ -537,7 +544,7 @@ def _prepare_credential_write(
         }
     )
     summary = {
-        "path": str(path),
+        "path": f"broker-sealed/{universe.name}",
         "credential_count": len(records),
         "credential_types": credential_types,
         "services": services,
@@ -547,96 +554,35 @@ def _prepare_credential_write(
     return records, summary
 
 
-def _fsync_file(path: Path) -> None:
-    """fsync a file's contents to disk. May raise OSError.
-
-    Opened ``r+b`` (writable): Windows' ``os.fsync`` requires a handle open for
-    writing and raises ``EBADF`` on a read-only one. No bytes are written.
-    """
-    with open(path, "r+b") as handle:
-        os.fsync(handle.fileno())
-
-
-def _fsync_directory(path: Path) -> None:
-    """fsync a directory so a rename inside it is persisted. May raise OSError.
-
-    No-op on Windows, which has no portable directory-fsync via ``os.open`` here.
-    """
-    if os.name == "nt":
-        return
-    fd = os.open(str(path), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _post_commit_durability(vault_file: Path, universe: Path) -> None:
-    """Best-effort durability AFTER the commit point (fsync file + directory).
-
-    Kept as one seam so the caller can treat any failure here as non-fatal — the
-    deposit has already taken effect once the vault file is replaced.
-    """
-    _fsync_file(vault_file)
-    _fsync_directory(universe)
-
-
 def _persist_credential_vault_file(
     universe_dir: str | Path,
     records: list[dict[str, Any]],
+    *,
+    owner: str = "",
 ) -> None:
-    """Atomically replace the vault file with *records*.
+    """Seal *records* in the broker store. Nothing cleartext is written.
 
     This is the LAST mutation of a deposit — the owner-row DB commit has already
-    landed — so a concurrent unlocked reader never observes a credential before
-    its ownership row exists.
-
-    The publication inside :func:`_persist_role_vault` is the COMMIT POINT.
-    Everything before it may raise, and such a pre-commit failure leaves the
-    prior file intact so the caller compensates the owner rows.
+    landed. A failure before the sealed replace commits leaves the previous
+    sealed records in place so the caller can compensate the owner rows.
     """
+    from tinyassets.broker.credential_store import owner_for_center, replace_center
+    from tinyassets.broker.root_key import KeyServiceUnavailable, ReconnectRequired, RootKeyError
+
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
-    path = credential_vault_path(universe)
-    data = (
-        json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
-        + "\n"
-    )
-    _persist_role_vault(path, data)
-
-
-def _persist_role_vault(path: Path, data: str) -> None:
-    """Assign the read-only broker group before publishing a replacement inode."""
-    import tempfile
-
-    from tinyassets.role_modes import BROKER_READ_GID, VAULT_FILE_MODE
-
-    fd, name = tempfile.mkstemp(prefix=".vault-", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)
+    if not owner:
+        owner = owner_for_center(universe)
+    if not owner:
+        owner = f"unowned:{universe.name}"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
-            os.fchmod(handle.fileno(), VAULT_FILE_MODE)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except BaseException:
-        from tinyassets.universe_files import unlink_universe_file
-
-        try:
-            unlink_universe_file(
-                temporary.anchor, temporary.relative_to(temporary.anchor).as_posix())
-        except FileNotFoundError:
-            pass
-        raise
-    # Publication is the existing vault commit point. Never compensate owner
-    # rows after it, even if a subsequent durability flush reports a failure.
-    try:
-        _post_commit_durability(path, path.parent)
-    except Exception as exc:  # noqa: BLE001 - committed deposit must not be compensated
-        logger.warning("credential vault durability flush failed after commit (%s); "
-                       "deposit already took effect", type(exc).__name__)
+        replace_center(universe, records, owner=owner)
+    except KeyServiceUnavailable as exc:
+        raise ValueError("key service unavailable") from exc
+    except ReconnectRequired as exc:
+        raise ValueError("reconnect_required") from exc
+    except RootKeyError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _restore_owner_rows(
@@ -937,7 +883,7 @@ def _write_credential_vault_locked(
         #    (the vault file was NOT replaced — Path.replace is atomic — so the
         #    prior file is intact); it never raises once the file is visible.
         try:
-            _persist_credential_vault_file(universe, final_records)
+            _persist_credential_vault_file(universe, final_records, owner=owner)
         except BaseException as persist_error:
             # 3. Pre-commit failure: the file did not change. Compensate by
             #    restoring the prior owner rows so no committed-but-ineffective
@@ -1224,8 +1170,8 @@ def _usable_subscription_record(
     universe_dir: Path,
     service: str,
 ) -> dict[str, Any]:
-    vault_path = credential_vault_path(universe_dir)
-    if vault_path.is_symlink() or not vault_path.is_file():
+    legacy = credential_vault_path(universe_dir)
+    if legacy.is_symlink() or legacy.is_file():
         raise PermissionError("exactly one usable subscription credential is required")
     records = _llm_records(universe_dir, service)
     if len(records) != 1:

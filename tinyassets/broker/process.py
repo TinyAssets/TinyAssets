@@ -144,11 +144,56 @@ async def serve(args: argparse.Namespace) -> None:
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
+    probe = asyncio.create_task(_key_service_probe(Path(args.data_root), stop))
     async with listener:
         await stop.wait()
+    probe.cancel()
+
+
+async def _key_service_probe(data_root: Path, stop: asyncio.Event) -> None:
+    """Sustained KMS failure raises the uptime alarm. A green probe clears it."""
+    from tinyassets.broker.key_service import KeyServiceUnavailable, broker_service
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
+            return
+        except TimeoutError:
+            pass
+        service = broker_service(data_root)
+        try:
+            await asyncio.to_thread(service.probe)
+            _key_service_alarm(False)
+        except KeyServiceUnavailable:
+            if service.health_snapshot().get("alarm"):
+                _key_service_alarm(True)
+
+
+def _key_service_alarm(active: bool) -> None:
+    from datetime import datetime, timezone
+
+    path = Path(
+        os.environ.get(
+            "TINYASSETS_UPTIME_ALARM_LOG",
+            "/var/log/tinyassets-uptime-alarms.log",
+        )
+    )
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    line = (
+        f"{stamp} ALARM KEY_SERVICE reason=key_service\n"
+        if active
+        else f"{stamp} RECOVERED KEY_SERVICE\n"
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError:
+        return
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.environ["TINYASSETS_BROKER_PROCESS"] = "1"
     parser = argparse.ArgumentParser(prog="tinyassets.broker.process")
     parser.add_argument("--socket", required=True)
     parser.add_argument("--state", required=True)
