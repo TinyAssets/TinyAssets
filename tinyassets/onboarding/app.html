@@ -11181,7 +11181,9 @@
       // Re-read the active app_ui. Remounting AppUI.active kept the revision
       // that was on screen when the page loaded.
       AppUI.reloadFromServer().catch(error=>AppRecovery.fail(error));
-      return true;
+      // A bundle that already failed while booting still needs the page
+      // retry. A frame that has not reported a fault is this reload.
+      return !AppUI.bootFault;
     },
     browse:()=>{
       if(!AppUI.enabled)return false;
