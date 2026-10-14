@@ -271,18 +271,12 @@ def converse_turn(base, *, owner, universe, message, input_method, model_choice,
 
 
 def initialize(base):
-    """Explicit schema setup and the one storage cutover; never inside a request
-    or worker fence. Every serving path calls this before it serves (the HTTP
-    lifespan, the sse/stdio main, the assigned consumer), so the agent-file
-    migration below has run before any turn, wake or activity can look for an
-    agent. Individual invalid legacy rows remain in SQL with ledger reasons
-    while the daemon serves the other agents."""
-    from tinyassets.agent_file_migration import migrate
-
+    """Explicit schema setup; never inside a request or worker fence. Every
+    serving path calls this before it serves (the HTTP lifespan, the sse/stdio
+    main, the assigned consumer)."""
     canonical.initialize(base)
     with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
         run_input_admissions.ensure_schema(conn)
-    migrate(base)
 
 
 def _mapped_inputs(selection, intent, context):

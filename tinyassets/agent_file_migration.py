@@ -1,95 +1,84 @@
-"""C8 cutover: every agent binding leaves SQL for ``agents/<name>/``.
+"""C8 cutover: every addressable agent binding leaves SQL for ``agents/<name>/``.
 
-The daemon runs :func:`migrate` itself, once, before anything serves
-(``consumer_runtime.initialize``), so a deploy and the cutover are one event:
-no turn, wake or activity can look for an agent between the code that stopped
-reading the table and the files that replaced it. ``scripts/migrate_agent_files.py``
-runs the same function on a restored backup for a rehearsal.
+One shot, all or nothing, run as a deploy step (``deploy/deploy_fail_safe.sh``
+section 3c) from the candidate image with the daemon stopped, after the
+full-volume snapshot that is the rollback point::
 
-What moves. Every binding main's addressability rule let an owner talk to
-(``addressed_agents.is_conversable`` on main, 2026-10-12: a configured binding
-that is neither the conversation-design installation nor a turn consumer),
-plus a retired one of those so its thread, activities and wakes keep their id.
-Each becomes a directory beside the main agent: ``AGENTS.md`` holds the
-instructions the agent spoke with and ``settings.yaml`` names it (``agent.id``
-keeps the binding id, ``agent.name`` the owner's name for it, ``agent.owner``
-the account that created it, ``retired: true`` for a retired row, any other
-configuration verbatim). A binding whose package install already landed
-``agents/<slug>/`` is written into that directory; the package's inert copy of
-``AGENTS.md`` gives way to the instructions the agent actually spoke with, and
-the backup keeps the old bytes.
+    python -m tinyassets.agent_file_migration check /data
+    python -m tinyassets.agent_file_migration apply /data --backup /backup/<snapshot>
 
-What stays. Serving bindings, the conversation-design installation, turn
-consumers and catalogue definitions with no configured binding stay in SQL.
+``check`` exits 10 while the volume holds bindings to move and 0 once it holds
+none, so a deploy of a migrated volume runs nothing. ``apply`` verifies the
+backup, takes the data-layout lock exclusively (a running daemon holds it
+shared for its lifetime: stop it first), writes ``"migrating"`` to the marker,
+and in ONE catalogue transaction reads every addressable binding, writes each
+agent's files into its owner's command center and deletes the rows; commit,
+then ``"stable"``. Any error raises: the transaction rolls back, the files this
+run wrote are removed, and the marker stays ``"migrating"``, which every image
+refuses to serve (``storage_layout``) and the deploy refuses to roll back onto
+(``rollback_needs_restore``): restore the snapshot. Nothing is retried and
+nothing is recorded; a later run on the migrated volume finds no rows.
 
-Replay. One catalogue transaction serializes migrations. Every planned file
-is staged privately before the binding deletion and ledger commit; publication
-follows that commit. The ledger retains staged paths until all renames finish,
-so a crash replays the same id and file bytes. Bad rows keep their SQL records
-and fixed ledger reasons, and are retried on a later start.
+What moves: main's ``addressed_agents.is_conversable`` rule (2026-10-12) minus
+its per-caller parts -- a configured binding that is neither the
+conversation-design installation nor a turn consumer, of any owner, in any
+command center, retired or not (a retired one keeps its id for its thread).
+Each becomes ``agents/<slug>/`` in its command center: ``AGENTS.md`` holds the
+instructions it spoke with and ``settings.yaml`` names it (``agent.id`` the
+binding id, ``agent.name``, ``agent.owner`` the account that created it,
+``retired: true`` for a retired row, other configuration verbatim). Slugs are
+unique among the center's existing ``agents/`` names and each other. Serving
+bindings, the installation, turn consumers and catalogue definitions stay.
+
+On an owner-labelled command center (the owner split) the files are created
+by this root process through ``role_content.publish_as_root``, labelled exactly
+as the owner-content cell leaves new content, so the owner's agent reads and
+edits them as its own.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
+import argparse
 import json
-import logging
 import os
-import re
-import threading
+import sqlite3
+import stat
+import sys
 import time
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
+from tinyassets import storage_layout as layout
 from tinyassets.agent_definition import (
-    AGENT_NAME,
     AGENTS_DIR,
     INSTRUCTIONS_FILE,
-    MAX_SETTINGS_BYTES,
     SETTINGS_FILE,
-    SettingsError,
     parse_settings,
 )
-from tinyassets.storage import DB_FILENAME, db_path
+from tinyassets.storage import db_path
+from tinyassets.storage.platform_state_move import MIGRATING
 from tinyassets.universe_files import (
     list_universe_dir,
-    publish_staged_universe_file,
-    read_universe_file,
+    unlink_universe_file,
     write_universe_file,
 )
 
-LEDGER_NAME = "agent-files-c8"
+MIGRATION = "agent-files"
 NOT_AN_AGENT_ROLES = frozenset({"app_experience"})
-_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_log = logging.getLogger(__name__)
-_LOCK = threading.Lock()
-_DONE: set[str] = set()
+#: ``check``'s exit status while the volume still holds bindings to move.
+PENDING = 10
+#: A rollback point older than this is not the one this run restores to.
+MAX_BACKUP_AGE_S = 3600
 
 
 @dataclass
-class _File:
-    path: str
-    new: bytes
-    old: bytes | None
-    #: ``create`` (nothing there), ``replace`` (an inert package copy) or
-    #: ``keep`` (already these bytes).
-    action: str
-
-
-@dataclass
-class _Placement:
-    binding: dict
-    definition: dict | None
+class _Agent:
+    universe_id: str
+    binding_id: str
     directory: str
-    files: list[_File] = field(default_factory=list)
-
-
-def _text(raw: bytes) -> bytes:
-    return raw.replace(b"\r\n", b"\n")  # a CRLF host wrote the same text
+    files: list[tuple[str, bytes]]
 
 
 def _instructions(definition: dict | None) -> str:
@@ -106,7 +95,7 @@ def _instructions(definition: dict | None) -> str:
 
 
 def _is_agent(binding: dict) -> bool:
-    """Main's ``is_conversable`` without owner, universe or retirement filters."""
+    """Main's ``is_conversable`` without its owner, universe and retirement filters."""
     configuration = binding.get("configuration")
     return bool(
         binding.get("status") == "configured"
@@ -116,99 +105,9 @@ def _is_agent(binding: dict) -> bool:
     )
 
 
-def _installed_slug(base: Path, binding: dict) -> str | None:
-    """The package directory a template install landed for this binding, if any."""
-    from tinyassets.command_center_packages import _db, database_path
-
-    if not database_path(base).exists():
-        return None
-    uid, owner, wanted = binding["universe_id"], binding["created_by"], binding["agent_binding_id"]
-    with _db(base) as conn:
-        rows = conn.execute(
-            "SELECT pin_id, record_json, progress_json FROM pins "
-            "WHERE universe_id = ? AND owner_id = ? AND kind = 'install' "
-            "AND state = 'activated'", (uid, owner),
-        ).fetchall()
-    for row in rows:
-        progress = json.loads(row["progress_json"])
-        plan = json.loads(row["record_json"]).get("action", {}).get("plan", {})
-        for template in plan.get("agent_templates", []):
-            encoded = json.dumps([uid, owner, row["pin_id"], template["key"]],
-                                 separators=(",", ":")).encode()
-            if (progress.get("agents", {}).get(template["key"]) != wanted
-                    or "agent_binding_" + hashlib.sha256(encoded).hexdigest() != wanted):
-                continue
-            slug = plan.get("placement", {}).get("agent_slug")
-            if isinstance(slug, str) and _SLUG.fullmatch(slug):
-                return slug
-    return None
-
-
-def _read(universe_dir: Path, relpath: str) -> bytes | None:
-    try:
-        return read_universe_file(universe_dir, relpath)
-    except FileNotFoundError:
-        return None
-
-
-def _index(universe_dir: Path) -> tuple[set[str], dict[str, list[str]]]:
-    """Every name under ``agents/`` and, by ``agent.id``, the directories claiming it.
-
-    A directory whose settings cannot be read is occupied, not claimed: the
-    roster will refuse it visibly; the migration must not write into it.
-    """
-    try:
-        names = set(list_universe_dir(universe_dir, AGENTS_DIR))
-    except FileNotFoundError:
-        return set(), {}
-    claims: dict[str, list[str]] = {}
-    for slug in sorted(names):
-        if not AGENT_NAME.fullmatch(slug):
-            continue
-        try:
-            raw = read_universe_file(universe_dir, f"{AGENTS_DIR}/{slug}/{SETTINGS_FILE}",
-                                     max_bytes=MAX_SETTINGS_BYTES)
-            identity = parse_settings(raw).agent
-        except (OSError, SettingsError):
-            continue
-        if identity.id:
-            claims.setdefault(identity.id, []).append(slug)
-    return names, claims
-
-
-def _settings(universe_dir: Path, relpath: str, identity: dict) -> tuple[bytes | None, bytes]:
-    """The directory's settings as they are and with the ``agent`` block merged in."""
-    raw = _read(universe_dir, relpath)
-    if raw is None:
-        doc = {"schema_version": 1}
-    else:
-        parsed = parse_settings(raw)
-        if parsed.agent.id not in (None, identity["id"]):
-            raise ValueError(f"{relpath} already names another agent")
-        if parsed.legacy_model is not None:
-            raise ValueError(f"{relpath} is a legacy model-only file; give it schema_version: 1")
-        doc = yaml.safe_load(raw.decode("utf-8")) or {}
-        if doc.get("agent") == identity:
-            return raw, raw
-    doc["agent"] = {**(doc.get("agent") or {}), **identity}
-    text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True).encode("utf-8")
-    parse_settings(text)  # the file must read back as settings
-    return raw, text
-
-
-def _file(path: str, old: bytes | None, new: bytes, *, claimed: bool) -> _File | None:
-    if old is None:
-        return None if not new else _File(path, new, None, "create")
-    if _text(old) == _text(new):
-        return _File(path, new, old, "keep")
-    if claimed:
-        raise ValueError(f"agent file already edited or conflicts: {path}")
-    return _File(path, new, old, "replace")
-
-
-def _plan_universe(base: Path, universe_id: str, rows: list, conn,
-                   failures: dict[str, str],
-                   reserved: frozenset[str] = frozenset()) -> list[_Placement]:
+def _plan(conn: sqlite3.Connection, base: Path) -> tuple[list[_Agent], set[str]]:
+    """Every agent to write, with its unique directory, and the command centers
+    whose ``agents/`` directory does not exist yet."""
     from tinyassets.command_center_packages import slug as slugify
     from tinyassets.commons_catalog import (
         _binding_from_row,
@@ -216,173 +115,147 @@ def _plan_universe(base: Path, universe_id: str, rows: list, conn,
         _read_definition_row,
     )
 
-    universe_dir = base / universe_id
-    missing = not universe_dir.is_dir()
-    taken, claims = _index(universe_dir) if not missing else (set(), {})
-    # Directories an earlier start staged but has not yet published are taken
-    # too: a re-planned row must never be given the same path.
-    taken |= reserved
-    placements = []
+    taken: dict[str, set[str]] = {}
+    without_agents_dir: set[str] = set()
+    agents: list[_Agent] = []
+    rows = conn.execute(
+        "SELECT * FROM agent_bindings ORDER BY universe_id, created_at, agent_binding_id",
+    ).fetchall()
     for row in rows:
-        binding_id = str(row["agent_binding_id"])
-        try:
-            placement = _plan_agent(base, universe_dir, row, conn, taken, claims, slugify,
-                                    _binding_from_row, _definition_from_row,
-                                    _read_definition_row, missing)
-        except Exception as exc:  # noqa: BLE001 -- one bad row never blocks startup
-            failures[binding_id] = f"{type(exc).__name__}: {exc}"
+        binding = _binding_from_row(row)
+        if not _is_agent(binding):
             continue
-        if placement is not None:
-            placements.append(placement)
-    return placements
-
-
-def _plan_agent(base, universe_dir, row, conn, taken, claims, slugify,
-            binding_from_row, definition_from_row, read_definition_row, missing):
-    binding = binding_from_row(row)
-    definition_row = read_definition_row(conn, binding["agent_definition_id"])
-    definition = (definition_from_row(conn, definition_row)
-                  if definition_row is not None else None)
-    if not _is_agent(binding):
-        return None
-    if missing:
-        raise ValueError(f"command center directory {binding['universe_id']!r} is missing")
-    binding_id = binding["agent_binding_id"]
-    configuration = dict(binding["configuration"])
-    name = str(configuration.pop("name", "") or (definition or {}).get("name")
-               or "").strip() or "Unnamed agent"
-    configuration.pop("schema_version", None)
-    claimed = claims.get(binding_id, [])
-    if len(claimed) > 1:
-        raise ValueError(f"agent {binding_id!r} is claimed by more than one directory: "
-                         + ", ".join(claimed))
-    installed = _installed_slug(base, binding)
-    slug = claimed[0] if claimed else installed
-    if slug is None:
+        uid = binding["universe_id"]
+        if uid not in taken:
+            if not (base / uid).is_dir():
+                raise FileNotFoundError(f"command center directory {uid!r} is missing")
+            try:
+                taken[uid] = set(list_universe_dir(base / uid, AGENTS_DIR))
+            except FileNotFoundError:
+                taken[uid] = set()
+                without_agents_dir.add(uid)
+        definition_row = _read_definition_row(conn, binding["agent_definition_id"])
+        definition = (_definition_from_row(conn, definition_row)
+                      if definition_row is not None else None)
+        configuration = dict(binding["configuration"])
+        name = str(configuration.pop("name", "") or (definition or {}).get("name")
+                   or "").strip() or "Unnamed agent"
+        configuration.pop("schema_version", None)
         stem = slugify(name)
         slug, n = stem, 1
-        while slug in taken:
+        while slug in taken[uid]:
             n += 1
             slug = f"{stem}-{n}"
-    taken.add(slug)
-    claims.setdefault(binding_id, [slug])
-    directory = f"{AGENTS_DIR}/{slug}"
-    identity = {"id": binding_id, "name": name, "owner": binding["created_by"]}
-    if binding.get("retired"):
-        identity["retired"] = True
-    if configuration:
-        identity["configuration"] = configuration
-    placement = _Placement(binding, definition, directory)
-    settings_path = f"{directory}/{SETTINGS_FILE}"
-    old, new = _settings(universe_dir, settings_path, identity)
-    for file in (
-        _file(settings_path, old, new, claimed=bool(claimed)),
-        _file(f"{directory}/{INSTRUCTIONS_FILE}",
-              _read(universe_dir, f"{directory}/{INSTRUCTIONS_FILE}"),
-              _instructions(definition).encode("utf-8"),
-              claimed=bool(claimed) and slug != installed),
-    ):
-        if file is not None:
-            placement.files.append(file)
-    return placement
+        taken[uid].add(slug)
+        identity = {"id": binding["agent_binding_id"], "name": name,
+                    "owner": binding["created_by"]}
+        if binding["retired"]:
+            identity["retired"] = True
+        if configuration:
+            identity["configuration"] = configuration
+        settings = yaml.safe_dump({"schema_version": 1, "agent": identity}, sort_keys=False,
+                                  allow_unicode=True).encode("utf-8")
+        parse_settings(settings)  # the file must read back as settings
+        directory = f"{AGENTS_DIR}/{slug}"
+        files = [(f"{directory}/{SETTINGS_FILE}", settings)]
+        instructions = _instructions(definition)
+        if instructions:
+            files.append((f"{directory}/{INSTRUCTIONS_FILE}", instructions.encode("utf-8")))
+        agents.append(_Agent(uid, binding["agent_binding_id"], directory, files))
+    return agents, without_agents_dir
 
 
-def _write_backup(base: Path, plan: dict[str, list[_Placement]]) -> str:
-    """Every row about to be deleted and every file about to be replaced, first."""
-    record = {
-        "migration": LEDGER_NAME,
-        "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "bindings": [p.binding for placements in plan.values() for p in placements],
-        "definitions": {p.definition["agent_definition_id"]: p.definition
-                        for placements in plan.values() for p in placements
-                        if p.definition is not None},
-        "replaced_files": [
-            {"universe_id": uid, "path": file.path,
-             "sha256": hashlib.sha256(file.old).hexdigest(),
-             "base64": base64.b64encode(file.old).decode("ascii")}
-            for uid, placements in plan.items() for p in placements
-            for file in p.files if file.action == "replace"
-        ],
-    }
-    data = json.dumps(record, sort_keys=True, indent=1).encode("utf-8")
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    private = _private_dir(base)
-    for counter in range(1000):
-        name = f"{DB_FILENAME}.agent-bindings-{stamp}" + (f"-{counter}" if counter else "")
-        try:
-            write_universe_file(private, name + ".json", data, mode="exclusive")
-        except FileExistsError:
-            continue
-        os.chmod(private / (name + ".json"), 0o600)
-        return f"{private.name}/{name}.json"
-    raise RuntimeError("could not allocate a backup file name")
+# ---------------------------------------------------------------------------
+# Files: plain directories get the one writer; owner-labelled centers get the
+# label the owner-content cell would have given new content.
+# ---------------------------------------------------------------------------
 
 
-def _private_dir(base: Path) -> Path:
-    private = base / ".agent-file-migration"
-    if private.is_symlink():
-        raise ValueError("migration private directory is a link")
-    private.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(private, 0o700)
-    return private
+def _machine(universe_dir: Path) -> int | None:
+    """The owner uid of an owner-labelled command center; None for a plain
+    directory (a test root, Windows, a local install)."""
+    if os.name != "posix":
+        return None
+    from tinyassets import role_center_admission as admission
+    from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    fd = open_dir_nofollow(universe_dir)
+    try:
+        gid = os.fstat(fd).st_gid
+        if not OWNER_ID_FIRST <= gid <= OWNER_ID_LAST:
+            return None
+        if admission.read_label(fd) != admission.canonical_label(gid):
+            raise PermissionError(f"{universe_dir.name}: owner content root has a "
+                                  "noncanonical label")
+        return gid
+    finally:
+        os.close(fd)
 
 
-def _stage(base: Path, plan: dict[str, list[_Placement]]) -> list[dict]:
-    batch = _private_dir(base) / uuid.uuid4().hex
-    batch.mkdir(mode=0o700)
-    pending = []
-    for uid, placements in plan.items():
-        for placement in placements:
-            for file in placement.files:
-                if file.action == "keep":
-                    continue
-                source = f"{batch.name}/{len(pending)}"
-                write_universe_file(batch.parent, source, file.new, mode="exclusive")
-                pending.append({"universe_id": uid, "path": file.path,
-                                "source": f"{batch.parent.name}/{source}",
-                                "sha256": hashlib.sha256(file.new).hexdigest(),
-                                "old_sha256": (hashlib.sha256(file.old).hexdigest()
-                                               if file.old is not None else None)})
-    return pending
+class _Writer:
+    """Writes files and remembers them, so a failure can take back every one."""
+
+    def __init__(self, base: Path, without_agents_dir: set[str]) -> None:
+        self.base = base
+        self.files: list[tuple[Path, str]] = []
+        self.directories: list[Path] = [base / uid / AGENTS_DIR for uid in without_agents_dir]
+        self._machines: dict[str, int | None] = {}
+
+    def write(self, agent: _Agent) -> None:
+        universe_dir = self.base / agent.universe_id
+        if agent.universe_id not in self._machines:
+            self._machines[agent.universe_id] = _machine(universe_dir)
+        machine = self._machines[agent.universe_id]
+        self.directories.append(universe_dir / agent.directory)
+        for relpath, data in agent.files:
+            self.files.append((universe_dir, relpath))
+            if machine is None:
+                write_universe_file(universe_dir, relpath, data, mode="exclusive")
+            else:
+                from tinyassets.role_content import publish_as_root
+
+                publish_as_root(universe_dir, relpath.split("/"), data, machine=machine)
+
+    def undo(self) -> None:
+        """Best effort, on a path that is already failing: the snapshot is the backstop."""
+        for universe_dir, relpath in reversed(self.files):
+            try:
+                unlink_universe_file(universe_dir, relpath)
+            except OSError:
+                pass
+        for path in reversed(self.directories):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
 
-def _publish(base: Path, pending: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Publish each staged file; return (conflicts, still pending). Never raises.
-
-    A file someone else wrote since staging keeps their bytes: it is a conflict,
-    its staged copy stays at ``item["source"]`` for a person to reconcile. Any
-    other error leaves the item pending for the next start. Every other file
-    still lands, so one file cannot hold startup or other agents.
-    """
-    conflicts: list[dict] = []
-    retry: list[dict] = []
-    for item in pending:
-        target = base / item["universe_id"]
-        try:
-            current = _read(target, item["path"])
-            if current is not None and hashlib.sha256(current).hexdigest() == item["sha256"]:
-                continue
-            if ((hashlib.sha256(current).hexdigest() if current is not None else None)
-                    != item["old_sha256"]):
-                conflicts.append({**item, "reason": "edited_since_staging"})
-                continue
-            publish_staged_universe_file(base, item["source"], target, item["path"])
-        except Exception as exc:  # noqa: BLE001 -- one file never blocks startup
-            retry.append({**item, "last_error": type(exc).__name__})
-    return conflicts, retry
+# ---------------------------------------------------------------------------
+# The run
+# ---------------------------------------------------------------------------
 
 
-def _delete(conn, binding_ids: list[str]) -> None:
-    for binding_id in binding_ids:
-        conn.execute("DELETE FROM agent_bindings WHERE agent_binding_id = ?", (binding_id,))
+def _verify_backup(path: Path) -> None:
+    """The rollback point: a fresh, complete full-volume snapshot
+    (``deploy/backup.sh``, ``BACKUP_MODE=snapshot``) with its digest beside it."""
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"backup {path} does not exist; take the full backup "
+                                "first") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+        raise ValueError(f"backup {path} is not a non-empty file")
+    if time.time() - info.st_mtime > MAX_BACKUP_AGE_S:
+        raise ValueError(f"backup {path} is older than {MAX_BACKUP_AGE_S}s; take a fresh one")
+    digest = path.with_name(path.name + ".sha256")
+    if not digest.is_file() or digest.stat().st_size == 0:
+        raise ValueError(f"{digest} is missing: not a snapshot deploy/backup.sh completed")
 
 
 def _catalogue_exists(base: Path) -> bool:
     """Whether the binding table was ever created here. A fresh installation
-    has nothing to migrate and must not grow the catalogue at startup; the
-    first binding creates it, and the next start runs the migration then."""
-    import sqlite3
-
+    has nothing to migrate and must not grow a catalogue from this process."""
     path = db_path(base)
     if not path.is_file():
         return False
@@ -392,82 +265,126 @@ def _catalogue_exists(base: Path) -> bool:
         ).fetchone() is not None
 
 
-def migrate(base_path: str | Path) -> dict[str, list[str]]:
-    """Stage all files, commit SQL, publish files, and retry failed rows later."""
+def _mark(base: Path, document: dict, state: str) -> None:
+    """Write the marker's state durably, keeping the marker's owner and mode:
+    this process is root on the owner-split volume; the daemon reads it as itself."""
+    path = layout.marker_path(base)
+    try:
+        before = path.stat()
+    except FileNotFoundError:
+        before = None
+    marked = {**document, "state": state}
+    if state == MIGRATING:
+        marked["migration"] = MIGRATION
+    else:
+        marked.pop("migration", None)
+    layout._write_atomically(path, marked)
+    if before is not None:
+        if hasattr(os, "chown"):
+            os.chown(path, before.st_uid, before.st_gid)
+        os.chmod(path, stat.S_IMODE(before.st_mode))
+
+
+def _keep_sidecars_readable(base: Path) -> None:
+    """SQLite sidecars this root process may have left beside the catalogue
+    belong to the daemon, like the database."""
+    if not hasattr(os, "chown"):
+        return
+    database = db_path(base)
+    owner = database.stat()
+    for suffix in ("-wal", "-shm", "-journal"):
+        side = database.with_name(database.name + suffix)
+        try:
+            info = side.lstat()
+        except FileNotFoundError:
+            continue
+        if (info.st_uid, info.st_gid) != (owner.st_uid, owner.st_gid):
+            os.chown(side, owner.st_uid, owner.st_gid)
+
+
+def pending(base_path: str | Path) -> int:
+    """How many bindings ``apply`` would move. Read-only; opens no schema."""
+    from tinyassets.commons_catalog import _binding_from_row
+
+    base = Path(base_path)
+    if not _catalogue_exists(base):
+        return 0
+    conn = sqlite3.connect(db_path(base), timeout=30.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM agent_bindings").fetchall()
+    finally:
+        conn.close()
+    return sum(1 for row in rows if _is_agent(_binding_from_row(row)))
+
+
+def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
+    """Move every addressable binding, or nothing. ``{universe_id: [directories]}``."""
     from tinyassets.commons_catalog import _agent_connect
 
     base = Path(base_path)
-    key = str(db_path(base))
-    if key in _DONE or not _catalogue_exists(base):
+    _verify_backup(Path(backup))
+    if not _catalogue_exists(base):
         return {}
-    with _LOCK, _agent_connect(base) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        ledger = conn.execute(
-            "SELECT backup, detail_json FROM agent_file_migration WHERE name = ?",
-            (LEDGER_NAME,),
-        ).fetchone()
-        detail = json.loads(ledger["detail_json"]) if ledger else {}
-        pending = detail.get("_pending", [])
-        if pending:
-            conflicts, pending = _publish(base, pending)
-            detail.setdefault("_conflicts", []).extend(conflicts)
-            detail["_pending"] = pending
-            conn.execute("UPDATE agent_file_migration SET detail_json = ? WHERE name = ?",
-                         (json.dumps(detail, sort_keys=True), LEDGER_NAME))
-        if ledger and not detail.get("_failed"):
-            _DONE.add(key)
-            return {}
-        rows = conn.execute(
-            "SELECT * FROM agent_bindings ORDER BY universe_id, created_at, agent_binding_id",
-        ).fetchall()
-        by_universe: dict[str, list] = {}
-        for row in rows:
-            by_universe.setdefault(str(row["universe_id"]), []).append(row)
-        failures: dict[str, str] = {}
-        reserved: dict[str, set[str]] = {}
-        for item in detail.get("_pending", []):
-            parts = Path(item["path"]).parts
-            if len(parts) >= 2 and parts[0] == "agents":
-                reserved.setdefault(item["universe_id"], set()).add(parts[1])
-        plan = {uid: _plan_universe(base, uid, rows, conn, failures,
-                                    frozenset(reserved.get(uid, ())))
-                for uid, rows in by_universe.items()}
-        plan = {uid: placements for uid, placements in plan.items() if placements}
-        backup = _write_backup(base, plan) if plan else ""
-        # Items still waiting from an earlier start keep their place: their SQL
-        # rows are already gone, so the ledger is their only record.
-        pending = list(detail.get("_pending", [])) + (_stage(base, plan) if plan else [])
-        _delete(conn, [p.binding["agent_binding_id"]
-                       for placements in plan.values() for p in placements])
-        result = {uid: [p.directory for p in placements] for uid, placements in plan.items()}
-        for uid, directories in result.items():
-            detail.setdefault(uid, []).extend(directories)
-        detail["_failed"] = failures
-        detail["_pending"] = pending
-        if backup:
-            detail.setdefault("_backups", []).append(backup)
-        conn.execute(
-            "INSERT INTO agent_file_migration (name, applied_at, backup, detail_json) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
-            "applied_at = excluded.applied_at, backup = excluded.backup, "
-            "detail_json = excluded.detail_json",
-            (LEDGER_NAME, time.time(), backup or (ledger["backup"] if ledger else ""),
-             json.dumps(detail, sort_keys=True)),
-        )
-    if pending:
-        with _agent_connect(base) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            fresh = conn.execute("SELECT detail_json FROM agent_file_migration WHERE name = ?",
-                                 (LEDGER_NAME,)).fetchone()
-            detail = json.loads(fresh["detail_json"])
-            conflicts, retry = _publish(base, detail.get("_pending", []))
-            detail.setdefault("_conflicts", []).extend(conflicts)
-            detail["_pending"] = retry
-            conn.execute("UPDATE agent_file_migration SET detail_json = ? WHERE name = ?",
-                         (json.dumps(detail, sort_keys=True), LEDGER_NAME))
-    if not failures:
-        _DONE.add(key)
-    if result:
-        _log.warning("agent files: migrated %d binding(s) in %d command center(s); backup %s",
-                     sum(len(v) for v in result.values()), len(result), backup)
+    fd = layout._open_lock(base)
+    try:
+        try:
+            layout._lock(fd, exclusive=True, blocking=False)
+        except BlockingIOError:
+            raise RuntimeError("the data-layout lock is held: stop the daemon before "
+                               "migrating") from None
+        try:
+            document = layout.read_marker(base) or {"layout": layout.LAYOUT,
+                                                    "state": layout.STABLE}
+            layout._validated(base, document)
+            result: dict[str, list[str]] = {}
+            writer = None
+            try:
+                with _agent_connect(base) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    agents, without_agents_dir = _plan(conn, base)
+                    if not agents:
+                        return {}
+                    _mark(base, document, MIGRATING)
+                    writer = _Writer(base, without_agents_dir)
+                    for agent in agents:
+                        writer.write(agent)
+                        result.setdefault(agent.universe_id, []).append(agent.directory)
+                    for agent in agents:
+                        conn.execute("DELETE FROM agent_bindings WHERE agent_binding_id = ?",
+                                     (agent.binding_id,))
+            except BaseException:
+                if writer is not None:
+                    writer.undo()
+                raise
+            _mark(base, document, layout.STABLE)
+        finally:
+            layout._unlock(fd)
+    finally:
+        os.close(fd)
+    _keep_sidecars_readable(base)
     return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tinyassets.agent_file_migration",
+                                     description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    check = commands.add_parser("check", help="exit 10 while bindings remain to move, 0 "
+                                              "when none")
+    check.add_argument("base", help="the data root")
+    run = commands.add_parser("apply", help="move every addressable binding, all or nothing")
+    run.add_argument("base", help="the data root")
+    run.add_argument("--backup", required=True,
+                     help="the fresh full-volume snapshot this run restores to")
+    args = parser.parse_args(argv)
+    if args.command == "check":
+        count = pending(args.base)
+        print(json.dumps({"pending": count}))
+        return PENDING if count else 0
+    print(json.dumps(apply(args.base, backup=args.backup), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

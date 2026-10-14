@@ -127,10 +127,11 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       only starter for chat, agent nodes, queued runs and `ta agent run`;
       it resolves the agent from its files once, among the admitted account's
       agents (`settings.agent.owner`; a shared home's co-admin keeps their own).
-      `tinyassets/agent_file_migration.py` runs once at daemon startup before
-      anything serves: backup first, files by binding id (replay-safe), rows
-      deleted and the ledger row written in one commit; the script is its
-      rehearsal on a restored backup.
+      `tinyassets/agent_file_migration.py` is a one-shot, all-or-nothing deploy
+      step (`deploy/deploy_fail_safe.sh` section 3c): daemon stopped, full-volume
+      snapshot, then files written and rows deleted in one transaction under
+      the data-layout lock; a failure leaves the marker "migrating" for the
+      existing restore path.
       **Deleted:** the SQL agent definitions as agents (the catalogue of
       published systems stays as `commons_catalog.py`), all of
       `agent_interchange.py`, the agent templates, portable copies, binding

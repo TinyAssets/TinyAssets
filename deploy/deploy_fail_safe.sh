@@ -94,6 +94,8 @@
 #     data layout marker (tinyassets/storage_layout.py) records: when it says
 #     anything but layout 1 / stable, the image rollback is refused
 #     (`rollback_needs_restore`) and the fix is restore-from-backup.
+#     A one-shot storage migration the candidate carries runs as step 3c, with
+#     the daemon stopped, after a full-volume snapshot, under the same marker.
 #
 # Usage:
 #   sudo deploy_fail_safe.sh <new_image_ref>
@@ -1618,52 +1620,156 @@ else
   esac
 fi
 
-# --- 4. swap + restart ----------------------------------------------------
-log "swapping TINYASSETS_IMAGE and converging the stack"
-if ! set_image "$NEW_IMAGE"; then
-  err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}"
+# --- 3c. the one-shot storage migration the candidate carries -------------
+# C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
+# A read-only probe from the candidate, as the service user, says whether this
+# volume still holds rows to move. A migrated volume says no and the block ends
+# here, which is every deploy after the cutover. When it says yes, the cutover
+# IS this deploy (Direction 5: one migration, one window, after a full backup):
+#   stop the daemon        a running daemon holds the data-layout lock shared
+#                          for its lifetime, and the snapshot needs every
+#                          writer on the volume stopped;
+#   full-volume snapshot   deploy/backup.sh BACKUP_MODE=snapshot, the rollback
+#                          point (numeric owners, ACLs, xattrs), kept under
+#                          ${MIGRATION_BACKUP_DIR} and uploaded;
+#   migrate                a one-shot container from the candidate image in the
+#                          owner-split posture (docs/ops/owner-split-cutover-
+#                          runbook.md section 4): the data volume, the snapshot
+#                          directory read-only, no network, root with only the
+#                          three capabilities the service never holds. It
+#                          verifies the snapshot, takes the layout lock
+#                          exclusively, writes "migrating" to the marker, moves
+#                          everything in ONE transaction and writes "stable".
+# A refusal before the first change (the stop, the snapshot, a precondition of
+# the move: the marker still says stable) puts the box back where it started:
+# the daemon restarts on the running image, a bundle this run installed is
+# restored, `migration_refused`, exit 1. A move that failed after writing
+# "migrating" committed nothing and removed its files, but the marker is the
+# authority: MIGRATION_OK=0 falls through to step 6, which restores the bundle
+# and then refuses to start any image on it (`rollback_needs_restore`); the
+# remedy is the snapshot this block took, via deploy/backup-restore.sh.
+MIGRATION_OK=1
+MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
+BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
+MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-1800}"   # seconds for one container run
+migration_container() {  # $1 = check|apply, then its arguments
+  local posture=()
+  [ "$1" = "apply" ] && posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE)
+  timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
+    --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
+    -v tinyassets-data:/data -v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.agent_file_migration "$@"
+}
+migration_snapshot() {  # prints the archive name backup.sh took
+  local out
+  if [ ! -f "$BACKUP_SCRIPT" ]; then
+    err "migration: ${BACKUP_SCRIPT} is missing (deploy/install-host-uptime-services.sh installs it)"
+    return 1
+  fi
+  if ! out="$( (set -a; . "$ENV_FILE"; set +a; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"; then
+    printf '%s\n' "$out" >&2
+    err "migration: the full-volume snapshot failed"
+    return 1
+  fi
+  printf '%s\n' "$out" | sed -n 's/.*SNAPSHOT id=\([^ ]*\).*/\1/p' | tail -n 1 | grep .
+}
+migration_refused() {  # $1 = why; nothing on the volume changed
+  err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
+  docker start "$DAEMON_CONTAINER" >/dev/null 2>&1 \
+    || err "migration: ${DAEMON_CONTAINER} did not restart; run: systemctl start ${UNIT}"
   if [ "$INSTALLED_THIS_RUN" = "1" ]; then
-    err "restoring the runtime bundle so the box is not left on a new config under the old image"
-    if ! restore_bundle_from "$SNAPSHOT_PATH"; then
-      err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
-      mark_dirty "$SNAPSHOT_PATH" || true
-      echo "deploy_result=rollback_failed"
-      exit 3
+    recover_from_failed_install migration_refused
+  fi
+  echo "deploy_result=migration_refused"
+  exit 1
+}
+if [ "$RESTORE_BUNDLE" = "1" ]; then
+  MIGRATION_RC=0  # a rollback never migrates; the layout guard above governs it
+else
+  log "migration: asking ${NEW_IMAGE} whether this volume still holds agent bindings"
+  mkdir -p "$MIGRATION_BACKUP_DIR" && chmod 0700 "$MIGRATION_BACKUP_DIR"
+  migration_container check /data
+  MIGRATION_RC=$?
+fi
+case "$MIGRATION_RC" in
+  0)
+    log "migration: nothing to move"
+    ;;
+  10)
+    log "migration: this deploy is the agent-files cutover; stopping ${DAEMON_CONTAINER} for the snapshot and the move"
+    if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ] \
+        && ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" >/dev/null; then
+      migration_refused "could not stop ${DAEMON_CONTAINER}"
+    fi
+    MIGRATION_SNAPSHOT="$(migration_snapshot)" || migration_refused "the full-volume snapshot was not taken"
+    if migration_container apply /data --backup "/backup/${MIGRATION_SNAPSHOT}"; then
+      log "migration: landed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
+    elif layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"; then
+      migration_refused "the move refused before its first change"
+    else
+      err "migration: the move failed and the marker is not stable; restore ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT} with deploy/backup-restore.sh"
+      MIGRATION_OK=0
+    fi
+    ;;
+  *)
+    migration_refused "the probe failed (rc=${MIGRATION_RC}); an image whose data it did not check does not converge"
+    ;;
+esac
+
+CONVERGED=0
+ACCEPTED=0
+if [ "$MIGRATION_OK" = "1" ]; then
+  # --- 4. swap + restart ----------------------------------------------------
+  log "swapping TINYASSETS_IMAGE and converging the stack"
+  if ! set_image "$NEW_IMAGE"; then
+    err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}"
+    if [ "$INSTALLED_THIS_RUN" = "1" ]; then
+      err "restoring the runtime bundle so the box is not left on a new config under the old image"
+      if ! restore_bundle_from "$SNAPSHOT_PATH"; then
+        err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
+        mark_dirty "$SNAPSHOT_PATH" || true
+        echo "deploy_result=rollback_failed"
+        exit 3
+      fi
+    fi
+    echo "deploy_result=failed_env_write"
+    exit 1
+  fi
+  # A failed converge is NOT recoverable by waiting: compose may have brought up
+  # some services and not others, and accept() on a partially converged stack is
+  # how a mixed state earns a success receipt (Codex round 2, §1).
+  CONVERGED=1
+  restart_stack || CONVERGED=0
+  if [ "$CONVERGED" = "1" ] && [ "$VECTOR_CHANGED" = "1" ]; then
+    recreate_logs || CONVERGED=0
+  fi
+
+  # --- 5. accept the new image (healthy + RUNNING it + tunnel + logs up) -----
+  # Scoping is checked on a FORWARD deploy only. A rollback accepts the previous
+  # state as it ran, platform secrets included if that is how it ran: refusing it
+  # would leave prod on the image being rolled away from. That covers BOTH
+  # rollbacks: step 6 below, and `--restore-bundle`, which restores the previous
+  # bundle (whose compose may still load the host env file) and converges the
+  # image it was given. Checking that path re-converged the failing image the
+  # public canary had just rejected (Codex on the first draft).
+  ACCEPTED=0
+  if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE"; then
+    if [ "$RESTORE_BUNDLE" = "1" ] || daemon_env_scoped; then
+      ACCEPTED=1
     fi
   fi
-  echo "deploy_result=failed_env_write"
-  exit 1
-fi
-# A failed converge is NOT recoverable by waiting: compose may have brought up
-# some services and not others, and accept() on a partially converged stack is
-# how a mixed state earns a success receipt (Codex round 2, §1).
-CONVERGED=1
-restart_stack || CONVERGED=0
-if [ "$CONVERGED" = "1" ] && [ "$VECTOR_CHANGED" = "1" ]; then
-  recreate_logs || CONVERGED=0
-fi
-
-# --- 5. accept the new image (healthy + RUNNING it + tunnel + logs up) -----
-# Scoping is checked on a FORWARD deploy only. A rollback accepts the previous
-# state as it ran, platform secrets included if that is how it ran: refusing it
-# would leave prod on the image being rolled away from. That covers BOTH
-# rollbacks: step 6 below, and `--restore-bundle`, which restores the previous
-# bundle (whose compose may still load the host env file) and converges the
-# image it was given. Checking that path re-converged the failing image the
-# public canary had just rejected (Codex on the first draft).
-ACCEPTED=0
-if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE"; then
-  if [ "$RESTORE_BUNDLE" = "1" ] || daemon_env_scoped; then
-    ACCEPTED=1
+  if [ "$ACCEPTED" = "1" ]; then
+    log "deploy healthy on ${NEW_IMAGE}"
+    finish deployed "$NEW_IMAGE" 0
   fi
-fi
-if [ "$ACCEPTED" = "1" ]; then
-  log "deploy healthy on ${NEW_IMAGE}"
-  finish deployed "$NEW_IMAGE" 0
 fi
 
 # --- 6. unhealthy -> restore the bundle, then roll back the image ---------
-err "new image did not become acceptable; rolling back"
+if [ "${MIGRATION_OK:-1}" = "1" ]; then
+  err "new image did not become acceptable; rolling back"
+else
+  err "the storage migration did not complete; rolling back (the marker decides below whether the previous image may start)"
+fi
 if [ -z "$PREV_IMAGE" ]; then
   err "no previous image recorded; cannot roll back automatically"
   echo "deploy_result=failed_no_rollback_target"

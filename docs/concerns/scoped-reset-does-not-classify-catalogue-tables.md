@@ -7,11 +7,10 @@ summary: MAIN_DB_TABLE_CLASSIFICATIONS lists no catalogue table, and the catalog
 
 # Scoped reset does not classify the commons catalogue
 
-Found on C8 (#4744, floor round 1) while wiring the agent-file migration into
-daemon startup. `tinyassets/commons_catalog.py` creates `agent_definitions`,
+Found on C8 (#4744, floor round 1). `tinyassets/commons_catalog.py` creates `agent_definitions`,
 `agent_component_lineage`, `agent_bindings`, `commons_bundles`,
 `commons_bundle_versions`, `commons_bundle_sources`, `universe_app_ui`,
-`universe_app_ui_asset` and (C8) `agent_file_migration` in the root
+`universe_app_ui_asset` in the root
 `.tinyassets.db` (`storage.db_path`). `tinyassets/scoped_reset.py`
 `MAIN_DB_TABLE_CLASSIFICATIONS` names none of them, and
 `inspect_reset_scope` raises `ScopedResetSchemaError` for any table it does
@@ -25,6 +24,6 @@ catalogue only when it already exists, which keeps that test honest but does
 not close the gap.
 
 Close by classifying each catalogue table (bindings and app UIs carry
-`universe_id`, so `reset_home`; definitions, lineage, bundles, assets and the
-migration ledger are shared or content-free, so `preserve`) and asserting the
-inventory against a store that has created a binding.
+`universe_id`, so `reset_home`; definitions, lineage, bundles and assets are
+shared or content-free, so `preserve`) and asserting the inventory against a
+store that has created a binding.

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -16,10 +17,6 @@ from tinyassets.agent_definition import (
     read_settings,
 )
 from tinyassets.providers.model_preferences import ModelPreferences
-
-
-class _Crash(BaseException):
-    """A process dying mid-publish: not an error the migration may catch."""
 
 
 def test_absent_sparse_and_empty_are_distinct():
@@ -325,23 +322,53 @@ def _migration_fixture(tmp_path):
     return alice, bob, kinds
 
 
+def _backup(tmp_path):
+    """A fresh full-volume snapshot with its digest beside it (deploy/backup.sh)."""
+    archive = tmp_path / "backups" / "tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
+    archive.parent.mkdir(exist_ok=True)
+    archive.write_bytes(b"tar")
+    archive.with_name(archive.name + ".sha256").write_text(f"{'0' * 64}  {archive.name}\n",
+                                                          encoding="utf-8")
+    return archive
+
+
+def _marker_state(tmp_path):
+    from tinyassets import storage_layout as layout
+
+    marker = tmp_path / layout.MARKER
+    return json.loads(marker.read_text(encoding="utf-8"))["state"] if marker.exists() else None
+
+
+def _bindings(tmp_path):
+    import sqlite3
+
+    from tinyassets.commons_catalog import db_path
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        return {row[0] for row in conn.execute("SELECT agent_binding_id FROM agent_bindings")}
+
+
 def test_migration_lands_every_addressable_binding_as_its_owners_directory(tmp_path):
     from tinyassets import addressed_agents
-    from tinyassets.agent_file_migration import LEDGER_NAME, migrate
-    from tinyassets.commons_catalog import _agent_connect, get_binding, list_bindings
+    from tinyassets import agent_file_migration as m
+    from tinyassets.commons_catalog import get_binding, list_bindings
     from tinyassets.conversation_store import load_recent_readonly, record_turn
 
     alice, bob, kinds = _migration_fixture(tmp_path)
     session = addressed_agents.memory_session(alice, kinds["custom"])
     record_turn(tmp_path / "u-home", session, "founder", "Earlier question", ts=1)
     record_turn(tmp_path / "u-home", session, "universe", "Earlier answer", ts=2)
+    backup = _backup(tmp_path)
+    assert m.pending(tmp_path) == 7
+    assert m.main(["check", str(tmp_path)]) == m.PENDING
 
-    assert migrate(tmp_path) == {
+    assert m.apply(tmp_path, backup=backup) == {
         "u-bob": ["agents/private", "agents/your-agent"],
         "u-home": ["agents/evidence-weaver", "agents/evidence-weaver-2", "agents/quiet",
                    "agents/private", "agents/your-agent"],
     }
 
+    assert _marker_state(tmp_path) == "stable"
     home = tmp_path / "u-home"
     assert (home / "agents/evidence-weaver/AGENTS.md").read_text(encoding="utf-8") == (
         "Weigh every claim.\n")
@@ -371,7 +398,7 @@ def test_migration_lands_every_addressable_binding_as_its_owners_directory(tmp_p
     assert addressed_agents.resolve(
         tmp_path, universe_id="u-home", owner=bob, agent_id=kinds["co_admin"]).agent_slug == (
         "private")
-    assert [m.text for m in load_recent_readonly(home, session)] == [
+    assert [turn.text for turn in load_recent_readonly(home, session)] == [
         "Earlier question", "Earlier answer"]
     assert addressed_agents.roster(tmp_path, universe_id="u-bob", owner=bob)[1:] == [
         {"agent_id": kinds["elsewhere"], "name": "Private"},
@@ -381,395 +408,125 @@ def test_migration_lands_every_addressable_binding_as_its_owners_directory(tmp_p
     assert remaining == {kinds[k] for k in ("serving", "installation", "consumer")}
     assert get_binding(tmp_path, universe_id="u-bob", binding_id=kinds["bootstrap"]) is None
     assert get_binding(tmp_path, universe_id="u-home", binding_id=kinds["custom"]) is None
-    # Recorded as done, with its backup: a later start reads nothing else.
-    with _agent_connect(tmp_path) as conn:
-        ledger = conn.execute("SELECT backup, detail_json FROM agent_file_migration "
-                              "WHERE name = ?", (LEDGER_NAME,)).fetchone()
-    backup = json.loads((tmp_path / ledger["backup"]).read_text(encoding="utf-8"))
-    assert {b["agent_binding_id"] for b in backup["bindings"]} == {
-        kinds[k] for k in ("custom", "retired", "no_instructions", "co_admin", "elsewhere",
-                           "paused_provider", "bootstrap")}
-    assert json.loads(ledger["detail_json"])["u-bob"] == ["agents/private",
-                                                           "agents/your-agent"]
 
-    # Replay is a no-op and never touches an edited file.
+    # The migrated volume has nothing to move: a rerun is a no-op that touches
+    # no file, and the deploy's probe says so.
     (home / "agents/evidence-weaver/AGENTS.md").write_text("Edited.\n", encoding="utf-8")
-    assert migrate(tmp_path) == {}
+    assert m.apply(tmp_path, backup=backup) == {}
+    assert m.main(["check", str(tmp_path)]) == 0
     assert (home / "agents/evidence-weaver/AGENTS.md").read_text(encoding="utf-8") == "Edited.\n"
-
-
-@pytest.mark.parametrize("step", ["stage:0", "stage:1", "delete", "publish:0",
-                                  "publish:1", "after_publish"])
-def test_an_interrupted_migration_resumes_by_id_with_one_directory_per_agent(tmp_path,
-                                                                           monkeypatch, step):
-    from tinyassets import agent_file_migration as m
-    from tinyassets.commons_catalog import get_binding
-
-    home = tmp_path / "u"
-    home.mkdir()
-    bid = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
-    if step.startswith("stage:"):
-        real = m.write_universe_file
-        count = 0
-
-        def crash_stage(root, relpath, data, **kwargs):
-            nonlocal count
-            if relpath.endswith(("/0", "/1")):
-                if count == int(step.split(":")[1]):
-                    raise OSError("crash during staging")
-                count += 1
-            return real(root, relpath, data, **kwargs)
-
-        monkeypatch.setattr(m, "write_universe_file", crash_stage)
-    elif step == "delete":
-        monkeypatch.setattr(m, "_delete", lambda conn, ids: (_ for _ in ()).throw(
-            OSError("crash before SQL commit")))
-    elif step == "after_publish":
-        real = m._publish
-
-        def crash_after(*args):
-            real(*args)
-            raise OSError("crash before ledger acknowledgement")
-
-        monkeypatch.setattr(m, "_publish", crash_after)
-    else:
-        real = m.publish_staged_universe_file
-        count = 0
-
-        def crash_publish(*args):
-            nonlocal count
-            if count == int(step.split(":")[1]):
-                raise _Crash("crash during publication")
-            count += 1
-            return real(*args)
-
-        monkeypatch.setattr(m, "publish_staged_universe_file", crash_publish)
-    with pytest.raises((OSError, _Crash)):
-        m.migrate(tmp_path)
-    monkeypatch.undo()
-    if step.startswith("stage:") or step == "delete":
-        assert not (home / "agents/scout").exists()
-        assert get_binding(tmp_path, universe_id="u", binding_id=bid) is not None
-    else:
-        assert get_binding(tmp_path, universe_id="u", binding_id=bid) is None
-    m._DONE.clear()
-    expected = {} if step.startswith("publish:") or step == "after_publish" else {
-        "u": ["agents/scout"]}
-    assert m.migrate(tmp_path) == expected
-    assert sorted(p.name for p in (home / "agents").iterdir()) == ["scout"]
-    assert read_settings(home, agent_slug="scout").agent.id == bid
-    assert (home / "agents/scout/AGENTS.md").read_text(encoding="utf-8") == "Mine.\n"
-    assert m.migrate(tmp_path) == {}
-
-
-def test_a_file_edited_after_an_interrupted_run_refuses_rather_than_overwrites(tmp_path,
-                                                                            monkeypatch):
-    from tinyassets import agent_file_migration as m
-    from tinyassets.commons_catalog import get_binding
-
-    (tmp_path / "u").mkdir()
-    bid = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
-    real = m.publish_staged_universe_file
-    count = 0
-
-    def crash_second(*args):
-        nonlocal count
-        count += 1
-        if count == 2:
-            raise _Crash("crash after settings")
-        return real(*args)
-
-    monkeypatch.setattr(m, "publish_staged_universe_file", crash_second)
-    with pytest.raises(_Crash):
-        m.migrate(tmp_path)
-    monkeypatch.undo()
-    settings = tmp_path / "u/agents/scout/settings.yaml"
-    settings.write_text("Edited meanwhile.\n", encoding="utf-8")
-    # A conflict is recorded and skipped: startup is never held, the person's
-    # edit keeps its bytes, and the staged copy waits to be reconciled.
-    m.migrate(tmp_path)
-    assert settings.read_text(encoding="utf-8") == "Edited meanwhile.\n"
-    assert get_binding(tmp_path, universe_id="u", binding_id=bid) is None
-    assert (tmp_path / "u/agents/scout/settings.yaml").read_text(encoding="utf-8") == (
-        "Edited meanwhile.\n")
-
-
-def test_the_daemon_runs_the_migration_before_it_serves(tmp_path):
-    """``consumer_runtime.initialize`` is every serving path's storage setup."""
-    from tinyassets.consumer_runtime import initialize
-
-    (tmp_path / "u").mkdir()
-    bid = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
-    initialize(tmp_path)
-    assert read_settings(tmp_path / "u", agent_slug="scout").agent.id == bid
-    initialize(tmp_path)  # once: the ledger row, then the process guard
-
-
-def _installed_template_agent(base, owner, universe, name, *, instructions, slug):
-    """A chat agent a package install bound from a public template (the old path).
-
-    Its binding id is derived from the install pin, exactly as the retired
-    template installer minted it, and the pin records which package directory
-    the install landed.
-    """
-    import time
-
-    from tinyassets.command_center_packages import _db, pin
-    from tinyassets.commons_catalog import _agent_connect, publish_definition
-
-    definition = publish_definition(base, author_id="publisher", payload={
-        "schema_version": 1, "name": name,
-        "components": {"identity": {"kind": "soul", "config": {"instructions": instructions}}},
-    })
-    key = "scout"
-    record = {"action": {"plan": {
-        "agent_templates": [{"key": key, "name": name,
-                             "agent_definition_id": definition["agent_definition_id"]}],
-        "placement": {"agent_slug": slug, "land": [{"path": "AGENTS.md",
-                                                     "to": f"agents/{slug}/AGENTS.md"}]},
-    }}}
-    pin(base, universe_id=universe, kind="install", agent="main", digest="d", record=record,
-        owner_id=owner)
-    with _db(base) as conn:
-        pin_id = conn.execute("SELECT pin_id FROM pins").fetchone()[0]
-    encoded = json.dumps([universe, owner, pin_id, key], separators=(",", ":")).encode()
-    bid = "agent_binding_" + hashlib.sha256(encoded).hexdigest()
-    with _db(base) as conn:
-        conn.execute("UPDATE pins SET state = 'activated', progress_json = ? WHERE pin_id = ?",
-                     (json.dumps({"agents": {key: bid}, "files": [f"agents/{slug}/AGENTS.md"]}),
-                      pin_id))
-    with _agent_connect(base) as conn:
-        conn.execute(
-            "INSERT INTO agent_bindings (agent_binding_id, universe_id, agent_definition_id, "
-            "configuration_json, revision, status, created_by, updated_by, created_at, "
-            "updated_at) VALUES (?, ?, ?, ?, 1, 'configured', ?, ?, ?, ?)",
-            (bid, universe, definition["agent_definition_id"],
-             json.dumps({"schema_version": 1, "name": name}), owner, owner, time.time(),
-             time.time()))
-    return bid
-
-
-def test_migration_adds_the_identity_to_an_installed_package_directory(tmp_path):
-    from tinyassets.agent_file_migration import migrate
-
-    (tmp_path / "u").mkdir()
-    # The package already landed this agent's harness files; the migration must
-    # name the agent inside them rather than beside them.
-    _agent_dir(tmp_path / "u", "scout", instructions="Scout ahead.\n",
-               settings="schema_version: 1\ntools: {allow: [read]}\n")
-    bid = _installed_template_agent(tmp_path, "alice", "u", "Scout",
-                                    instructions="Scout ahead.", slug="scout")
-    assert migrate(tmp_path) == {"u": ["agents/scout"]}
-    settings = read_settings(tmp_path / "u", agent_slug="scout")
-    assert settings.tools == ("read",) and settings.agent.id == bid
-
-
-def test_migration_gives_an_installed_directory_the_text_the_agent_spoke_with(tmp_path):
-    """The package landed the publisher's root AGENTS.md there, inert for this
-    agent on main (its turns used the definition); the live text replaces it
-    and the backup keeps the old bytes."""
-    from tinyassets.agent_file_migration import LEDGER_NAME, migrate
-    from tinyassets.commons_catalog import _agent_connect, get_binding
-
-    (tmp_path / "u").mkdir()
-    _agent_dir(tmp_path / "u", "scout", instructions="Instructions the package wrote.\n")
-    bid = _installed_template_agent(tmp_path, "alice", "u", "Scout",
-                                    instructions="What the agent actually spoke with.",
-                                    slug="scout")
-    assert migrate(tmp_path) == {"u": ["agents/scout"]}
-    assert get_binding(tmp_path, universe_id="u", binding_id=bid) is None
-    assert (tmp_path / "u/agents/scout/AGENTS.md").read_text(encoding="utf-8") == (
-        "What the agent actually spoke with.\n")
-    with _agent_connect(tmp_path) as conn:
-        backup = conn.execute("SELECT backup FROM agent_file_migration WHERE name = ?",
-                              (LEDGER_NAME,)).fetchone()[0]
-    replaced = json.loads((tmp_path / backup).read_text(encoding="utf-8"))["replaced_files"]
-    assert [(f["universe_id"], f["path"]) for f in replaced] == [("u", "agents/scout/AGENTS.md")]
-    assert base64.b64decode(replaced[0]["base64"]).replace(b"\r\n", b"\n") == (
-        b"Instructions the package wrote.\n")
+    assert sorted(p.name for p in (home / "agents").iterdir()) == [
+        "evidence-weaver", "evidence-weaver-2", "private", "quiet", "your-agent"]
 
 
 def test_migration_keeps_an_unrelated_directory_of_the_same_name(tmp_path):
-    from tinyassets.agent_file_migration import migrate
+    from tinyassets.agent_file_migration import apply
 
     (tmp_path / "u").mkdir()
     _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
     _agent_dir(tmp_path / "u", "scout", instructions="Another agent entirely.")
-    assert migrate(tmp_path) == {"u": ["agents/scout-2"]}
+    assert apply(tmp_path, backup=_backup(tmp_path)) == {"u": ["agents/scout-2"]}
     assert (tmp_path / "u" / "agents" / "scout" / "AGENTS.md").read_text(
         encoding="utf-8") == "Another agent entirely."
 
 
-def test_migration_completes_a_half_applied_package_by_id(tmp_path):
-    from tinyassets.agent_file_migration import migrate
+@pytest.mark.parametrize("failure", ["second_file", "delete", "missing_center",
+                                     "missing_backup", "stale_backup", "lock_held"])
+def test_any_failure_leaves_sql_untouched_and_publishes_no_file(tmp_path, monkeypatch,
+                                                                failure):
+    """All or nothing: the rows stay, every file this run wrote is gone, and a
+    marker left "migrating" sends the deploy to the restore path."""
+    import sqlite3
+
+    from tinyassets import agent_file_migration as m
+    from tinyassets import storage_layout as layout
+    from tinyassets.commons_catalog import db_path
+
+    _, _, kinds = _migration_fixture(tmp_path)
+    before = _bindings(tmp_path)
+    backup = _backup(tmp_path)
+    expected_marker = "migrating"
+    if failure == "second_file":
+        real = m.write_universe_file
+        calls = []
+
+        def crash(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(m, "write_universe_file", crash)
+        error = OSError
+    elif failure == "delete":
+        with sqlite3.connect(db_path(tmp_path)) as conn:
+            conn.execute("CREATE TRIGGER refuse BEFORE DELETE ON agent_bindings "
+                         "BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        error = sqlite3.IntegrityError
+    elif failure == "missing_center":
+        _sql_agent(tmp_path, "alice", "u-gone", "Later", instructions="Later.")
+        before = _bindings(tmp_path)
+        error, expected_marker = FileNotFoundError, None  # refused while planning
+    elif failure == "missing_backup":
+        backup.unlink()
+        error, expected_marker = FileNotFoundError, None
+    elif failure == "stale_backup":
+        old = time.time() - m.MAX_BACKUP_AGE_S - 1
+        os.utime(backup, (old, old))
+        error, expected_marker = ValueError, None
+    else:
+        layout.require_layout(tmp_path)  # the running daemon's lifetime shared lock
+        error, expected_marker = RuntimeError, "stable"
+    try:
+        with pytest.raises(error):
+            m.apply(tmp_path, backup=backup)
+    finally:
+        layout.release_for_tests()
+    assert _bindings(tmp_path) == before
+    assert not (tmp_path / "u-home" / "agents").exists()
+    assert not (tmp_path / "u-bob" / "agents").exists()
+    assert _marker_state(tmp_path) == expected_marker
+    if expected_marker == "migrating":
+        with pytest.raises(layout.LayoutRefused, match="did not finish"):
+            layout.check(tmp_path)
+
+
+def test_a_fresh_installation_has_nothing_to_migrate(tmp_path):
+    from tinyassets import agent_file_migration as m
+
+    assert m.main(["check", str(tmp_path)]) == 0
+    assert m.apply(tmp_path, backup=_backup(tmp_path)) == {}
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["backups"]
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
+                    reason="owner labels need root and POSIX ACLs")
+def test_migration_labels_files_on_an_owner_labelled_center_as_the_owner_cell_would(tmp_path):
+    from tinyassets import agent_file_migration as m
+    from tinyassets import role_center_admission as admission
 
     home = tmp_path / "u"
     home.mkdir()
-    bid = _installed_template_agent(tmp_path, "alice", "u", "Scout",
-                                    instructions="Live instructions.", slug="scout")
-    _agent_dir(home, "scout", instructions="Original package copy.\n",
-               settings=f"schema_version: 1\nagent: {{id: {bid}, name: Scout, owner: alice}}\n")
-    assert migrate(tmp_path) == {"u": ["agents/scout"]}
-    assert sorted(p.name for p in (home / "agents").iterdir()) == ["scout"]
-    assert read_settings(home, agent_slug="scout").agent.id == bid
-    assert (home / "agents/scout/AGENTS.md").read_text(encoding="utf-8") == (
-        "Live instructions.\n")
-
-
-def test_bad_rows_are_recorded_without_stopping_startup_and_can_retry(tmp_path):
-    import sqlite3
-
-    from tinyassets.agent_file_migration import LEDGER_NAME, migrate
-    from tinyassets.commons_catalog import db_path, get_binding
-    from tinyassets.consumer_runtime import initialize
-
-    (tmp_path / "good").mkdir()
-    good = _sql_agent(tmp_path, "alice", "good", "Good", instructions="Good.")
-    malformed = _sql_agent(tmp_path, "alice", "good", "Broken", instructions="Broken.")
-    missing = _sql_agent(tmp_path, "alice", "missing", "Later", instructions="Later.")
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        original = conn.execute("SELECT configuration_json FROM agent_bindings "
-                                "WHERE agent_binding_id = ?", (malformed,)).fetchone()[0]
-        conn.execute("UPDATE agent_bindings SET configuration_json = ? "
-                     "WHERE agent_binding_id = ?", ("{bad json", malformed))
-    initialize(tmp_path)
-    assert read_settings(tmp_path / "good", agent_slug="good").agent.id == good
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        assert conn.execute("SELECT 1 FROM agent_bindings WHERE agent_binding_id = ?",
-                            (malformed,)).fetchone() is not None
-    assert get_binding(tmp_path, universe_id="missing", binding_id=missing) is not None
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        first = json.loads(conn.execute("SELECT detail_json FROM agent_file_migration "
-                                        "WHERE name = ?", (LEDGER_NAME,)).fetchone()[0])
-    assert set(first["_failed"]) == {malformed, missing}
-    assert "missing" in first["_failed"][missing]
-    initialize(tmp_path)
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        again = json.loads(conn.execute("SELECT detail_json FROM agent_file_migration "
-                                        "WHERE name = ?", (LEDGER_NAME,)).fetchone()[0])
-        conn.execute("UPDATE agent_bindings SET configuration_json = ? "
-                     "WHERE agent_binding_id = ?", (original, malformed))
-    assert again["_failed"] == first["_failed"]
-    (tmp_path / "missing").mkdir()
-    assert migrate(tmp_path) == {"good": ["agents/broken"],
-                                 "missing": ["agents/later"]}
-    assert get_binding(tmp_path, universe_id="good", binding_id=malformed) is None
-    assert get_binding(tmp_path, universe_id="missing", binding_id=missing) is None
-
-
-def test_any_row_error_is_recorded_not_raised(tmp_path, monkeypatch):
-    """A malformed row raising an unexpected type (AttributeError, sqlite3.Error)
-    is recorded and skipped like any other bad row; startup still serves."""
-    import sqlite3
-
-    import tinyassets.agent_file_migration as m
-    from tinyassets.commons_catalog import db_path
-    from tinyassets.consumer_runtime import initialize
-
-    (tmp_path / "u").mkdir()
-    good = _sql_agent(tmp_path, "alice", "u", "Good", instructions="Good.")
-    bad = _sql_agent(tmp_path, "alice", "u", "Bad", instructions="Bad.")
-    real = m._plan_agent
-
-    def plan(base, universe_dir, row, *args):
-        if str(row["agent_binding_id"]) == bad:
-            raise AttributeError("'list' object has no attribute 'items'")
-        return real(base, universe_dir, row, *args)
-
-    monkeypatch.setattr(m, "_plan_agent", plan)
-    initialize(tmp_path)
-    assert read_settings(tmp_path / "u", agent_slug="good").agent.id == good
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        detail = json.loads(conn.execute("SELECT detail_json FROM agent_file_migration "
-                                         "WHERE name = ?", (m.LEDGER_NAME,)).fetchone()[0])
-        assert conn.execute("SELECT 1 FROM agent_bindings WHERE agent_binding_id = ?",
-                            (bad,)).fetchone() is not None
-    assert detail["_failed"][bad].startswith("AttributeError")
-
-
-def test_a_pending_publish_survives_a_retry_of_another_failed_row(tmp_path, monkeypatch):
-    """A file that failed to publish stays pending even when a later start
-    re-plans a different failed row; it lands once publishing works again."""
-    import sqlite3
-
-    import tinyassets.agent_file_migration as m
-    from tinyassets.commons_catalog import db_path
-    from tinyassets.consumer_runtime import initialize
-
-    (tmp_path / "u").mkdir()
-    good = _sql_agent(tmp_path, "alice", "u", "Good", instructions="Good.")
-    _sql_agent(tmp_path, "alice", "missing", "Later", instructions="Later.")
-    real = m.publish_staged_universe_file
-
-    def refuse(*args):
-        raise OSError("disk busy")
-
-    monkeypatch.setattr(m, "publish_staged_universe_file", refuse)
-    m._DONE.clear()
-    initialize(tmp_path)
-    m._DONE.clear()
-    initialize(tmp_path)  # re-plans the still-failed "missing" row
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        detail = json.loads(conn.execute("SELECT detail_json FROM agent_file_migration "
-                                         "WHERE name = ?", (m.LEDGER_NAME,)).fetchone()[0])
-    assert detail["_pending"], "the unpublished agent must stay pending"
-    monkeypatch.setattr(m, "publish_staged_universe_file", real)
-    m._DONE.clear()
-    initialize(tmp_path)
-    assert read_settings(tmp_path / "u", agent_slug="good").agent.id == good
-
-
-def test_a_replanned_row_never_takes_a_pending_agents_directory(tmp_path, monkeypatch):
-    """Two same-named agents: one staged but unpublished, one failed then
-    re-planned. They land in different directories and both survive."""
-    import tinyassets.agent_file_migration as m
-    from tinyassets.consumer_runtime import initialize
-
-    (tmp_path / "u").mkdir()
-    first = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="First.")
-    second = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Second.")
-    real_plan, real_publish = m._plan_agent, m.publish_staged_universe_file
-    fail_second = {"on": True}
-
-    def plan(base, universe_dir, row, *args):
-        if fail_second["on"] and str(row["agent_binding_id"]) == second:
-            raise OSError("transient")
-        return real_plan(base, universe_dir, row, *args)
-
-    def refuse(*args):
-        raise OSError("disk busy")
-
-    monkeypatch.setattr(m, "_plan_agent", plan)
-    monkeypatch.setattr(m, "publish_staged_universe_file", refuse)
-    m._DONE.clear()
-    initialize(tmp_path)          # first staged, not published; second failed
-    fail_second["on"] = False
-    m._DONE.clear()
-    initialize(tmp_path)          # second re-planned while first still pending
-    monkeypatch.setattr(m, "publish_staged_universe_file", real_publish)
-    m._DONE.clear()
-    initialize(tmp_path)
-    ids = {read_settings(tmp_path / "u", agent_slug=d.name).agent.id
-           for d in (tmp_path / "u" / "agents").iterdir() if d.is_dir()}
-    assert {first, second} <= ids
-
-
-@pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
-def test_migration_backup_is_private_even_with_umask_022(tmp_path):
-    import stat
-
-    from tinyassets.agent_file_migration import LEDGER_NAME, migrate
-    from tinyassets.commons_catalog import _agent_connect
-
-    (tmp_path / "u").mkdir()
-    _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Private.")
-    previous = os.umask(0o022)
+    bid = _sql_agent(tmp_path, "alice", "u", "Scout", instructions="Mine.")
+    machine = 300001
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        migrate(tmp_path)
+        os.setxattr(fd, admission.ACCESS, admission.canonical_root_acl(machine))
+        os.fchown(fd, 1001, machine)
+        os.fchmod(fd, 0o750)
+        assert admission.read_label(fd) == admission.canonical_label(machine)
     finally:
-        os.umask(previous)
-    with _agent_connect(tmp_path) as conn:
-        backup = conn.execute("SELECT backup FROM agent_file_migration WHERE name = ?",
-                              (LEDGER_NAME,)).fetchone()[0]
-    assert stat.S_IMODE((tmp_path / backup).stat().st_mode) == 0o600
-    assert stat.S_IMODE((tmp_path / backup).parent.stat().st_mode) == 0o700
+        os.close(fd)
+    assert m.apply(tmp_path, backup=_backup(tmp_path)) == {"u": ["agents/scout"]}
+    content = (machine, machine, 0o660, admission._acl(6, {1001: 7}, mask=6), None)
+    for relpath, expected in (("agents", admission.seed_label(machine)),
+                              ("agents/scout", admission.seed_label(machine)),
+                              ("agents/scout/settings.yaml", content),
+                              ("agents/scout/AGENTS.md", content)):
+        fd = os.open(home / relpath, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            assert admission.read_label(fd) == expected, relpath
+        finally:
+            os.close(fd)
+    assert read_settings(home, agent_slug="scout").agent.id == bid
+    assert (home / "agents/scout/AGENTS.md").read_text(encoding="utf-8") == "Mine.\n"
