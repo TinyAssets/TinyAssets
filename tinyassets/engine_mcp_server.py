@@ -1953,9 +1953,15 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
 _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     CODE NODES. A node with ``source_code`` instead of ``prompt_template`` runs
     deterministic Python in an OS sandbox - no network, no credentials, no
-    ambient filesystem - with your data and every earlier call's response. The
-    only file bytes it can read are the run's BOUND file inputs, through the
-    authorized read_run_file RPC (FILE INPUTS below). Use one whenever
+    ambient filesystem - with your data and every earlier call's response.
+    Bound user-attachment bytes are read with read_run_file (FILE INPUTS
+    below). The same node can also call the served folder tools on /u:
+    ``invoke_mcp_action("read", path="notes.md", offset=1, limit=200)``,
+    ``invoke_mcp_action("write", path="notes.md", content="...")``,
+    ``invoke_mcp_action("edit", path="notes.md", old_text="...", new_text="...")``,
+    and ``invoke_mcp_action("bash", command="...", timeout=30)``. An empty
+    ``tools_allowed`` grants every served tool; a list grants exactly those
+    names. An unknown action name is refused with that real set. Use one whenever
     the step is mechanical (change a line, parse a page, compute a body): the
     model designs the branch once; nothing is re-typed at run time. Contract::
 

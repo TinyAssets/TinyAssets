@@ -33,6 +33,44 @@ from tinyassets.storage_accounting import StorageRefused
 
 #: ``read_app_ui(ui_id=INDEX)`` is the row without any UI body.
 INDEX = "index"
+
+#: The public authoring page ``read_page page="app_ui"`` returns. The seven
+#: component fields and ``version`` 1 are the contract ``add_ui`` stores.
+APP_UI_AUTHORING_PAGE = """\
+# App UI
+
+One private library per person and command center. Read and write one UI at a
+time. `read_page page="app_ui"` is this page.
+
+Read:
+
+- `read_graph target="app_ui" query="index"` — the index: each UI's ui_id,
+  name, etag and size, plus ui_selection and revision. No markup, style or
+  script.
+- `read_graph target="app_ui" query="<ui_id>"` — that one UI.
+- `read_graph target="app_ui" query="<ui_id>" field_name="script" output_offset=0`
+  — one chunk of one field, with next_offset when more remains.
+
+Write with `write_graph target="app_ui"`. `operation="add_ui"` takes exactly:
+
+```
+{"component": {"kind": "tinyassets.app-ui.v1", "version": 1,
+ "ui_id": "office-tower", "name": "Office tower",
+ "markup": "<div id=lobby></div>", "style": "", "script": ""}}
+```
+
+`version` is the format version and must be 1. It is not a revision or a
+cache-buster; anything else is refused and the UI cannot be shown.
+`ui_id` is lowercase letters, digits and dashes, starting with a letter or
+digit, at most 64 characters. `markup` is body markup only (no html or head).
+`replace_ui` takes the same `{"component": {...}}`.
+
+Optional component fields, and no others: `assets`, `libraries`,
+`script_type`, `workflow_refs`, `agent_refs`.
+
+Other operations: `activate` `{"ui_id": "..."}`, `use_default` `{}`,
+`edit_ui` `{"ui_id", "set" and/or "edits"}`, `remove_ui` `{"ui_id"}`.
+"""
 #: Chunk bound for one field of one UI, the unit a bounded model reads.
 _MAX_FIELD_CHUNK = 32768
 
