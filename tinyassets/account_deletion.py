@@ -118,6 +118,7 @@ OWNER_ONLY_TABLES = MappingProxyType({
     "extension_ui_projections": "owner_id",
     "extension_hook_events": "owner_id",
     "outside_families": "owner",
+    "authenticated_connections": "owner",
     "outside_effects": "owner",
     "outside_grants": "owner",
     "outside_audit": "owner",

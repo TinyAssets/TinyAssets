@@ -272,7 +272,6 @@ def resolve_identity(token: str):
     last_used_at = bound.pop("last_used_at")
     if not store.admit_request(key_id, owner):
         return None
-    store._touch(key_id, last_used_at)
     try:
         with outside_store().db() as conn:
             row = conn.execute("SELECT authenticated_at FROM outside_families WHERE owner=? "
@@ -284,6 +283,7 @@ def resolve_identity(token: str):
         bound = outside_store().admit(owner, bound)
     except (OutsideRefused, sqlite3.Error, OSError):
         return None
+    store._touch(key_id, last_used_at)
     return Identity(
         user_id=owner,
         username=owner,

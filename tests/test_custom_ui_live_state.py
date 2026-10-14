@@ -267,6 +267,27 @@ def test_main_agent_live_name_is_its_own_name_not_the_command_center(tmp_path):
     assert "main agent name checks passed" in out
 
 
+def test_external_authentication_is_separate_from_addressable_agents_and_live_turns(tmp_path):
+    out = _run(tmp_path, "external_connections.js", r'''
+(async()=>{
+ AppUI.home=HOME; AppUI.principal=PRINCIPAL;
+ const original=Owner.read;
+ const external=[{connection_id:'api:fixture',name:'Fixture agent',protocol:'api',
+  state:'previously_authenticated',last_authenticated_at:123,messaging_ready:false}];
+ Owner.read=async args=>({...await original(args),
+  external_agents:external.map(a=>({...a,private_future_field:'do not disclose'}))});
+ const roster=await AppUI.listAgents();
+ const live=await AppUI.readLive();
+ assert.deepEqual(roster.external_agents,external);
+ assert.deepEqual(live.external_agents,external);
+ assert(!live.agents.some(a=>a.agent_id==='api:fixture'));
+ await assert.rejects(()=>AppUI.agentNamed('Fixture agent'),/no agent/);
+ console.log('external connections stay separate');
+})().catch(e=>{console.error(e);process.exit(1);});
+''')
+    assert "external connections stay separate" in out
+
+
 @pytest.mark.parametrize("failure", ["throw new Error('status offline')", "return {error:'status offline'}", "return null"])
 def test_status_failure_keeps_the_agent_roster_available(tmp_path, failure):
     out = _run(tmp_path, "agent_name_unavailable.js", r'''

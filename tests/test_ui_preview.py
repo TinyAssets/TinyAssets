@@ -647,7 +647,7 @@ def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
     startup = _startup_actions(masked)
     assert {"whoami", "read_live", "list_agents", "list_automations",
             "conversation_design", "packages.list_tryable"} <= startup, sorted(startup)
-    assert _handler_return_keys(masked, "readLive") == {"as_of", "agents"}
+    assert _handler_return_keys(masked, "readLive") == {"as_of", "agents", "external_agents"}
     assert _handler_return_keys(masked, "whoami") == {
         "protocol", "command_center_id", "command_center_name",
         "workflow_refs", "agent_refs"}
@@ -698,7 +698,7 @@ def test_the_parity_check_catches_the_drifts_that_slipped_past_it():
         "      const turn=(doc.active_turn", 1)
     assert nested != source
     assert _handler_return_keys(_masked(nested), "readLive") == {
-        "as_of", "agents", "degraded"}, "a conditional return is one of the shapes"
+        "as_of", "agents", "external_agents", "degraded"}, "a conditional return is one of the shapes"
     assert any("degraded" in problem for problem in _parity_violations(nested, preview)), \
         _parity_violations(nested, preview)
 

@@ -80,6 +80,8 @@
     .chat-title{display:flex;align-items:center;gap:.55rem;font-weight:600}
     .universe-name{max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .chat-actions{display:flex;gap:.3rem}
+    #external-agent-roster{padding:.4rem .8rem;font-size:.85rem;max-height:16rem;overflow:auto;flex-shrink:0}
+    #external-agent-roster summary{cursor:pointer}
     .dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--ink-dim);flex:none}
     .dot--ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
     .dot--warn{background:var(--warn)}
@@ -480,6 +482,10 @@
                 aria-expanded="true" title="Shrink">&#8211;</button>
       </div>
       <div id="chat-cloud-body" class="chat-cloud-body">
+      <details id="external-agent-roster" hidden>
+        <summary id="external-agent-summary">External agents</summary>
+        <div id="external-agent-list" role="status"></div>
+      </details>
       <div id="history-error" class="muted history-error" role="status" hidden></div>
       <div id="notify-prompt" class="notify-prompt" role="status" hidden>
         <span id="notify-prompt-text" class="notify-prompt-text"></span>
@@ -4426,11 +4432,16 @@
   // the bridge's own (the viewer's agents in their verified home), so it needs
   // the custom-UI controller enabled; an unreadable list keeps what is shown.
   async function refreshAgentSwitcher(){
-    if(typeof AppUI==="undefined"||!AppUI.enabled) return;
+    if(typeof AppUI==="undefined"||!AppUI.enabled){clearExternalAgents();return;}
     const gen=refreshAgentSwitcher.gen=(refreshAgentSwitcher.gen||0)+1;
-    let agents;
-    try{ agents=(await AppUI.listAgents()).agents; }catch(_e){ return; }
-    if(gen!==refreshAgentSwitcher.gen) return;
+    const epoch=AppUI.epoch,home=AppUI.home;
+    let roster;
+    try{ roster=await AppUI.listAgents(); }catch(_e){
+      if(gen===refreshAgentSwitcher.gen&&AppUI.fence(epoch,home))clearExternalAgents();return;
+    }
+    if(gen!==refreshAgentSwitcher.gen||!AppUI.fence(epoch,home)) return;
+    const agents=roster.agents;
+    renderExternalAgents(roster.external_agents||[]);
     let pick=$("agent-switcher");
     if(!pick){
       const home=$("chat-cloud-bar")||document.querySelector("#view-chat .chat-actions");
@@ -4457,6 +4468,32 @@
       try{ await addressAgent({agent_id:"main",name:"Your agent"}); }catch(_e){ /* busy: next refresh */ }
     }
     pick.value=addressedAgent.agent_id;
+  }
+  function clearExternalAgents(){
+    refreshAgentSwitcher.gen=(refreshAgentSwitcher.gen||0)+1;
+    const box=$("external-agent-roster"),list=$("external-agent-list");
+    if(box)box.hidden=true;if(list)list.replaceChildren();
+  }
+  function renderExternalAgents(connections){
+    const box=$("external-agent-roster"),list=$("external-agent-list"),summary=$("external-agent-summary");
+    if(!box||!list||!summary)return;
+    list.replaceChildren();box.hidden=false;
+    summary.textContent="External agents ("+connections.length+")";
+    if(!connections.length){
+      const p=document.createElement("p");
+      p.textContent="Tell your agents to connect to your TinyAssets MCP or API.";list.appendChild(p);return;
+    }
+    for(const connection of connections){
+      const p=document.createElement("p"),name=document.createElement("strong"),detail=document.createElement("span");
+      name.textContent=String(connection.name||"Unknown client");
+      const at=new Date(Number(connection.last_authenticated_at)*1000);
+      const source=connection.name_source==="owner_supplied"?"Owner-named":connection.name_source==="unknown"?"Unknown identity":"Client-reported name";
+      detail.textContent=" · "+String(connection.protocol||"").toUpperCase()+" · "+source+" · Last authenticated "+
+        (Number.isFinite(at.getTime())?at.toLocaleString():"at an unknown time")+".";
+      p.append(name,detail);list.appendChild(p);
+    }
+    const note=document.createElement("p");note.className="muted";
+    note.textContent="Online status and message delivery are not established.";list.appendChild(note);
   }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
   // alone does not answer it: two accounts can sign in on one browser and the
@@ -5522,6 +5559,7 @@
     try{
       const s=await Owner.getStatus();
       if(!current()) return;
+      if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
       const conv=s&&s.recent_conversation;
       if(conv&&!conv.error){
         drawHistoryTurns([...(conv.turns||[]),...(conv.pending||[])]);

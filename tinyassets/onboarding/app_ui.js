@@ -255,6 +255,7 @@
     // ---- lifecycle and fencing ---------------------------------------------
     fence(epoch,home){ return this.enabled&&epoch===this.epoch&&home===this.home; },
     reset(){
+      if(typeof clearExternalAgents==="function") clearExternalAgents();
       this.closeUpdates();
       this.deferredUpdates.clear();
       this.closePreview();
@@ -734,7 +735,14 @@
         agents.push({agent_id:id,name:id==="main"?(name||"Your agent"):String(a.name||id),selected:current===id});
       }
       if(!agents.length||agents[0].agent_id!=="main") throw new Error("your agents are unavailable");
-      return {agents};
+      // Project the same safe receipt fields for custom screens. A future
+      // backend field is not implicitly handed to an untrusted iframe.
+      const external=(Array.isArray(doc.external_agents)?doc.external_agents:[])
+        .filter(a=>a&&typeof a==="object")
+        .map(a=>Object.fromEntries(["connection_id","name","protocol","name_source",
+          "identity_source","last_authenticated_at","state","messaging_ready"]
+          .filter(k=>Object.prototype.hasOwnProperty.call(a,k)).map(k=>[k,a[k]])));
+      return {agents,external_agents:external};
     },
     // One of the viewer's own agents, by id or by name. Anything else is refused
     // by name: never quietly answered by a different agent.
@@ -916,7 +924,7 @@
         ? {agent_id:a.agent_id,name:a.name,state:"working",
            since:typeof turn.started_at==="string"?turn.started_at:null,steps}
         : {agent_id:a.agent_id,name:a.name,state:"idle",since:null,steps:[]});
-      return {as_of:new Date().toISOString(),agents};
+      return {as_of:new Date().toISOString(),agents,external_agents:roster.external_agents};
     },
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");

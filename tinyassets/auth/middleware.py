@@ -1274,7 +1274,15 @@ class AuthContextMiddleware:
                     # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
-            await self.app(scope, receive, send)
+            if (identity is not None and not canary_authorized
+                    and path in {"/mcp", "/mcp/"} and method == "POST"
+                    and identity.metadata.get("oauth_connection")
+                    and not identity.metadata.get("first_party_client")):
+                from tinyassets.connected_agents import serve_mcp
+
+                await serve_mcp(self.app, scope, receive, send, identity)
+            else:
+                await self.app(scope, receive, send)
         finally:
             try:
                 from tinyassets.observability import observe_identity
