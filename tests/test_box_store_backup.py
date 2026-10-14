@@ -49,7 +49,11 @@ def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool
         '"ps -q") :;; *) :;; esac\n',
     )
     _shim(bin_dir, "findmnt", '''
-if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; else echo rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota; fi
+if [[ "${@: -1}" == FSTYPE ]]; then
+    echo xfs
+else
+    echo rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota
+fi
 ''')
     _shim(bin_dir, "xfs_freeze", 'echo "$1" >> "$TEST_COMMAND_LOG"\n')
     _shim(bin_dir, "xfs_quota", '''
@@ -171,9 +175,8 @@ def test_store_unit_contract_and_installer_guards() -> None:
     mount = (ROOT / "deploy/var-lib-boxhostd-owners.mount").read_text()
     prepare = (ROOT / "deploy/box-store-device.service").read_text()
     device = (ROOT / "deploy/box-store-device.sh").read_text()
-    # The idle service survives G4's controlled unmount; ExecStartPre still
-    # refuses to start unless the store is mounted and healthy.
-    assert "Wants=var-lib-boxhostd-owners.mount" in unit
+    # The box service requires the mounted store and checks its quota options.
+    assert "Requires=var-lib-boxhostd-owners.mount" in unit
     assert "ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh" in unit
     assert "Options=pquota,noatime,nodiscard" in mount
     assert "DefaultDependencies=no" in prepare
