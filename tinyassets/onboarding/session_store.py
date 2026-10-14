@@ -100,6 +100,7 @@ _KIND_SESSION = "session"
 _KIND_TOMBSTONE = "tombstone"
 
 _key: bytes | None = None
+_durable_key = False
 _initialised: set[str] = set()
 _last_sweep: float = 0.0
 
@@ -121,8 +122,9 @@ def _reset_for_tests() -> None:
     the first test's key would seal records the next test cannot open, and the
     one-time legacy discard would be skipped for every directory after the first.
     """
-    global _key, _last_sweep
+    global _key, _last_sweep, _durable_key
     _key = None
+    _durable_key = False
     _last_sweep = 0.0
     _initialised.clear()
 
@@ -145,6 +147,7 @@ def _decode_key(raw: str) -> bytes | None:
 
 
 def _load_key() -> bytes:
+    global _durable_key
     # Pop, do not get: this runs at import, and everything after it in the
     # process — including every provider subprocess — sees an environment
     # without the key. Popping BEFORE the parse means even a rejected value
@@ -163,6 +166,7 @@ def _load_key() -> bytes:
                 "Generate one with: python -c \"import secrets,base64; "
                 'print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"'
             )
+        _durable_key = True
         return key
     _LOG.warning(
         "%s is not configured: app refresh sessions are sealed with an ephemeral "
@@ -180,6 +184,14 @@ def seal_key() -> bytes:
     if _key is None:
         _key = _load_key()
     return _key
+
+
+def durable_seal_key() -> bytes:
+    """Persistent consumers must not silently accept the ephemeral fallback."""
+    key = seal_key()
+    if not _durable_key:
+        raise SessionStoreUnavailable("a durable app-session seal key is required")
+    return key
 
 
 def arm() -> None:

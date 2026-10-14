@@ -49,6 +49,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "bounded dependency stage inside one owner cell; ends with the call",
     ),
     # -- always-on duties of the execution owner ------------------------------
+    "tinyassets/mcp_events_http.py::delivery_lifespan.run": (
+        CONTROL_PLANE,
+        "deliver durable owner-authorized webhook receipts; no model or agent execution",
+    ),
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
         "the owner tick: pumps due automations and control-plane triggers, under "
