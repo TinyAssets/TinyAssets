@@ -18,7 +18,7 @@ import tempfile
 import time
 import unicodedata
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -26,6 +26,7 @@ from typing import Mapping
 from tinyassets.boxes.provider import BoxHandle, BoxProvider, WriteConflict
 from tinyassets.credential_shape import looks_like_credential
 from tinyassets.okf.bundle import InvalidBundle
+from tinyassets.okf.manifest import build_manifest
 
 MANIFEST = "command-center.json"
 LIMITATIONS = "Credential detection cannot prove a file is free of personal data."
@@ -86,6 +87,18 @@ def _never(path):
     )
 
 
+def _empty_environment_example(path, data):
+    return path == ".env.example" and bool(re.fullmatch(rb"(?:[A-Z][A-Z0-9_]*=\n)+", data))
+
+
+def _agents(paths):
+    return [
+        path.split("/")[1]
+        for path in sorted(paths)
+        if re.fullmatch(r"agents/[^/]+/AGENTS\.md", path)
+    ]
+
+
 @dataclass(frozen=True)
 class Preview:
     scope: tuple[str, str, int]
@@ -94,14 +107,14 @@ class Preview:
     blocked: Mapping[str, str]
     binary: frozenset[str]
     limitations: str = LIMITATIONS
+    contacts: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limits=Limits()):
     """Capture arbitrary content for review; nothing is included automatically.
 
-    Contacts are conservatively blocked in this first ingestion slice. Item-level
-    private contact inclusion and structured reference serialization belong to
-    the owner-door integration, not a boolean bypass in this layer.
+    Contacts are indexed within the captured bytes and redacted unless the
+    owner selects that occurrence for a private export. Secrets stay blocked.
     """
     if len(paths) > limits.files or len(set(paths)) != len(paths):
         raise InvalidBundle("Too many or duplicate preview paths")
@@ -116,7 +129,7 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
     view = provider.read_many(handle, ["/cc/" + path for path in paths], max_total=limits.expanded)
     if view.missing:
         raise InvalidBundle("Preview source file is missing")
-    files, blocked, binary = {}, {}, set()
+    files, blocked, binary, contacts = {}, {}, set(), {}
     for path in paths:
         data = view.files["/cc/" + path]
         files[path] = data
@@ -129,14 +142,20 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
             content = data.decode("utf-8", errors="replace")
         if looks_like_credential(path) or looks_like_credential(content):
             blocked[path] = "detected credential"
-        elif CONTACT.search(content):
-            blocked[path] = "contact details require item-level private review"
+        elif CONTACT.search(path):
+            blocked[path] = "contact details in a file path"
+        elif matches := tuple(match.group() for match in CONTACT.finditer(content)):
+            if path in binary:
+                blocked[path] = "contact details in an uninspectable binary"
+            else:
+                contacts[path] = matches
     return Preview(
         _scope(handle),
         view.generation,
         MappingProxyType(files),
         MappingProxyType(blocked),
         frozenset(binary),
+        contacts=MappingProxyType(contacts),
     )
 
 
@@ -147,6 +166,7 @@ def export_zip(
     *,
     selected: list[str],
     named_binaries: list[str] = (),
+    included_contacts: Mapping[str, list[int]] | None = None,
     profile="export",
 ):
     """Export only approved, unchanged preview bytes. Never a publishing action."""
@@ -167,15 +187,38 @@ def export_zip(
         raise InvalidBundle("An uninspectable binary requires named approval")
     if profile == "share" and any(p.split("/")[0] not in {"agents", "ui"} for p in selected):
         raise InvalidBundle("Share includes only the harness and layouts")
+    included_contacts = {} if included_contacts is None else included_contacts
+    if not isinstance(included_contacts, dict) or not set(included_contacts) <= set(selected):
+        raise InvalidBundle("Contact approval must name a selected file")
+    if profile == "share" and included_contacts:
+        raise InvalidBundle("Share cannot include private contacts")
+    for path, indices in included_contacts.items():
+        if (
+            not isinstance(indices, list)
+            or any(type(i) is not int for i in indices)
+            or len(set(indices)) != len(indices)
+            or not set(indices) <= set(range(len(reviewed.contacts.get(path, ()))))
+        ):
+            raise InvalidBundle("Select only named contact occurrences once")
     files = {path: reviewed.files[path] for path in sorted(selected)}
-    manifest = {
-        "format_version": 1,
-        "profile": profile,
-        "files": {
-            path: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-            for path, data in files.items()
-        },
-    }
+    for path in set(files) & reviewed.contacts.keys():
+        approved = set(included_contacts.get(path, ()))
+        occurrence = iter(range(len(reviewed.contacts[path])))
+        files[path] = CONTACT.sub(
+            lambda match: match.group() if next(occurrence) in approved else "[contact removed]",
+            files[path].decode("utf-8"),
+        ).encode("utf-8")
+    if profile == "export":
+        from tinyassets.okf.export_assets import generated_files
+
+        generated = generated_files()
+        if set(files) & set(generated):
+            raise InvalidBundle("Selected content conflicts with generated export files")
+        files.update(generated)
+    manifest = build_manifest(
+        profile=profile, name="Command center", description="", files=files,
+        agents=_agents(files), workflows=[], ui="", automations=[], model="", connections=[],
+    )
     # Hashes and sizes are schema-generated integrity fields, not user content.
     files[MANIFEST] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
     if profile == "share" and sum(map(len, files.values())) > 256 * 1024:
@@ -252,19 +295,32 @@ def ingest_zip(raw: bytes, *, limits=Limits()) -> ValidatedBundle:
         if (
             manifest.get("format_version") != 1
             or manifest.get("profile") not in {"share", "export"}
-            or set(manifest) != {"format_version", "profile", "files"}
+            or set(manifest) != {
+                "format_version", "profile", "name", "description", "agents", "files",
+                "workflows", "ui", "automations", "needs",
+            }
         ):
             raise InvalidBundle("Unsupported bundle manifest")
-        expected = manifest["files"]
-        if not isinstance(expected, dict) or set(expected) != set(files) - {MANIFEST}:
+        listed = manifest["files"]
+        if not isinstance(listed, list) or any(
+            not isinstance(item, dict) or set(item) != {"path", "size", "sha256"}
+            or not isinstance(item["path"], str) or type(item["size"]) is not int
+            for item in listed
+        ):
+            raise InvalidBundle("Invalid manifest file descriptors")
+        expected = {item["path"]: item for item in listed}
+        if len(expected) != len(listed) or set(expected) != set(files) - {MANIFEST}:
             raise InvalidBundle("Manifest must describe exactly the imported files")
+        if "agents" in manifest and manifest["agents"] != _agents(expected):
+            raise InvalidBundle("Manifest roster differs from included agent instructions")
         for path, descriptor in expected.items():
             if descriptor != {
+                "path": path,
                 "size": len(files[path]),
                 "sha256": hashlib.sha256(files[path]).hexdigest(),
             }:
                 raise InvalidBundle("Imported file differs from manifest")
-            if _never(path):
+            if _never(path) and not _empty_environment_example(path, files[path]):
                 raise InvalidBundle("Bundle contains a never-exported path")
         if manifest["profile"] == "share" and (
             expanded > 256 * 1024 or any(p.split("/")[0] not in {"agents", "ui"} for p in expected)

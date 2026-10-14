@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import stat
@@ -11,6 +10,7 @@ import pytest
 from tinyassets.boxes.local import LocalBoxProvider
 from tinyassets.boxes.provider import WriteConflict
 from tinyassets.okf.bundle import InvalidBundle
+from tinyassets.okf.manifest import build_manifest
 from tinyassets.okf.transfer import (
     MANIFEST,
     Limits,
@@ -39,19 +39,12 @@ def write(box, path, data, op="write"):
 
 
 def archive(files, *, profile="export", extra=(), manifest=None):
-    manifest = (
-        manifest
-        or json.dumps(
-            {
-                "format_version": 1,
-                "profile": profile,
-                "files": {
-                    path: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                    for path, data in files.items()
-                },
-            }
-        ).encode()
-    )
+    manifest = manifest or json.dumps(build_manifest(
+        profile=profile, name="Test", description="", files=files,
+        agents=sorted(p.split("/")[1] for p in files
+                      if p.startswith("agents/") and p.endswith("/AGENTS.md")),
+        workflows=[], ui="", automations=[], model="", connections=[],
+    )).encode()
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as output:
         output.writestr(MANIFEST, manifest)
@@ -67,7 +60,8 @@ def test_private_preview_export_and_inert_quarantine_round_trip(box, tmp_path):
     assert "cannot prove" in view.limitations
     assert not view.blocked
     empty = ingest_zip(export_zip(*box, view, selected=[]))
-    assert set(empty.files) == {MANIFEST}
+    assert "agents/main/AGENTS.md" not in empty.files
+    assert {MANIFEST, "run/agent.py", ".env.example", "README.md"} <= empty.files.keys()
     raw = export_zip(*box, view, selected=["agents/main/AGENTS.md"])
     imported = ingest_zip(raw)
     root = tmp_path / "platform-quarantine"
@@ -113,10 +107,18 @@ def test_binary_needs_exact_named_approval(box, content):
     assert ingest_zip(raw).files["workspace/image.bin"] == content
 
 
-def test_contact_is_blocked_and_share_cannot_export_workspace(box):
+def test_contacts_are_redacted_unless_individually_selected_and_share_is_restricted(box):
     write(box, "workspace/private.md", b"Contact person@example.com")
     view = preview(*box, ["workspace/private.md"])
-    assert "contact details" in view.blocked["workspace/private.md"]
+    assert not view.blocked
+    assert view.contacts["workspace/private.md"] == ("person@example.com",)
+    redacted = ingest_zip(export_zip(*box, view, selected=["workspace/private.md"]))
+    assert b"example.com" not in redacted.files["workspace/private.md"]
+    included = ingest_zip(export_zip(
+        *box, view, selected=["workspace/private.md"],
+        included_contacts={"workspace/private.md": [0]},
+    ))
+    assert included.files["workspace/private.md"] == b"Contact person@example.com"
     write(box, "workspace/note.md", b"A useful note", "note")
     view = preview(*box, ["workspace/note.md"])
     with pytest.raises(InvalidBundle, match="harness"):
@@ -233,3 +235,21 @@ def test_quarantine_removes_only_its_fresh_directory_on_failed_copy(tmp_path, mo
         quarantine(imported, platform_root=tmp_path)
     assert list(tmp_path.iterdir()) == [existing]
     assert existing.read_text() == "preserve"
+
+
+@pytest.mark.parametrize("data", [
+    b"MODEL_API_KEY=actual-value\n", b"X=$(touch proof)\n", b"X=\nexport Y=\n",
+])
+def test_environment_example_cannot_carry_values_or_shell_code(data):
+    with pytest.raises(InvalidBundle, match="never-exported"):
+        ingest_zip(archive({".env.example": data}))
+
+
+def test_share_contacts_always_redacted_and_private_selections_refused(box):
+    path = "agents/main/AGENTS.md"
+    write(box, path, b"Contact a@example.com or b@example.com")
+    view = preview(*box, [path])
+    raw = export_zip(*box, view, selected=[path], profile="share")
+    assert b"example.com" not in ingest_zip(raw).files[path]
+    with pytest.raises(InvalidBundle, match="private contacts"):
+        export_zip(*box, view, selected=[path], profile="share", included_contacts={path: [0]})

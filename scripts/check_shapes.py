@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs/architecture.md"
-EXPORT_RUNTIME = "packaging/command-center/run/agent.py"
+EXPORT_RUNTIME = "tinyassets/okf/assets/agent.py.txt"
 # ADR-018's account-free local runner is shipped as bytes, never a hosted caller.
 # This is one exact artifact, not a directory allowance or an S1 ceiling change.
 EXPORT_STDLIB = frozenset({
@@ -42,11 +42,30 @@ def export_runtime_problems(root: Path) -> list[str]:
             problems.append("export-runtime: only declared standard-library imports are allowed")
         if isinstance(node, ast.Name) and node.id in {"__import__", "exec", "eval", "compile"}:
             problems.append("export-runtime: dynamic Python loading is not allowed")
-    # The artifact is not in the wheel and has no production caller. The eventual
-    # exporter must serialize bytes without importing or executing this artifact.
+    # This is package data, not an importable Python module. The one serializer
+    # reads it as bytes; hosted code must never load it as Python.
     for hosted in files("tinyassets/**/*.py", root):
         source = hosted.read_text(encoding="utf-8")
-        if "command-center/run" in source or "command_center.run" in source:
+        if hosted.relative_to(root).as_posix() == "tinyassets/okf/export_assets.py":
+            tree = ast.parse(source)
+            allowed_calls = {
+                "files", "files('tinyassets.okf').joinpath",
+                "files('tinyassets.okf').joinpath('assets', 'agent.py.txt').read_bytes",
+                "_README.encode",
+            }
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) or (
+                    isinstance(node, ast.ImportFrom)
+                    and (node.module != "importlib.resources" or node.level
+                         or [(a.name, a.asname) for a in node.names] != [("files", None)])
+                ):
+                    problems.append("export-runtime: serializer imports only the resource reader")
+                if isinstance(node, ast.Call) and ast.unparse(node.func) not in allowed_calls:
+                    problems.append("export-runtime: serializer must only read fixed asset bytes")
+            continue
+        if any(marker in source for marker in (
+            "agent.py.txt", "command-center/run", "command_center.run",
+        )):
             problems.append(f"export-runtime: hosted caller {hosted.relative_to(root)}")
     return sorted(set(problems))
 

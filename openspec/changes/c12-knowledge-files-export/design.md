@@ -13,7 +13,7 @@ approval and execution records remain platform state, not knowledge indexes.
 ## Independent local runner slice
 
 The standalone artifact lives outside the platform runtime under
-`packaging/command-center/run/agent.py`; it is copied verbatim into `run/agent.py` by
+`tinyassets/okf/assets/agent.py.txt`; it is copied verbatim into `run/agent.py` by
 the eventual exporter. It imports only the Python standard library and has no
 TinyAssets account, import or network dependency. It accepts a chat-completions
 endpoint supplied by the owner. Model output can invoke only read/write/edit/bash.
@@ -104,3 +104,46 @@ schema-aware serialization must resolve that without allowing secrets through.
 The quarantine caller must resolve its root outside every agent box. There is
 no production caller yet. These limitations must be resolved before cutover;
 the passing ingestion tests are not evidence of a shipped export feature.
+
+## Owner transfer integration
+
+`POST /app/api/transfer` is the one owner transfer door. Preview uses the named
+owner identity and the configured BoxProvider's ownership-checked binding;
+there is no host-path fallback. Both preview and download require the existing exact-origin protected owner
+session for that same account; bearer access alone cannot reveal preview bytes. The server retains
+immutable previews for a short lifetime, bound to owner, center, provider
+instance, placement epoch and generation. A process restart invalidates a
+preview; it never reconstructs approval from caller-supplied bytes. Capacity
+refusal is explicit, and only one preview per owner is retained. Download checks
+ownership and generation again and returns an opaque private attachment.
+
+The owner selects exact preview paths and names binary files explicitly.
+Contact occurrences have stable per-file indices in the captured preview;
+default output redacts them. Private export may include individually selected
+occurrences; share rejects all such selections. Credential detection runs on
+original bytes before any redaction and cannot be overridden. These are content
+selections, never authorization to publish or execute an import.
+
+The C6 production resolver remains the prerequisite for this route to operate
+in production. An absent provider is an explicit service-unavailable response.
+The route must not instantiate the development LocalBoxProvider.
+
+## Distribution of the standalone runner
+
+The single runner source is inert package data at `tinyassets/okf/assets/agent.py.txt`,
+so the wheel and existing Docker package copy both contain the exact artifact.
+Only `okf/export_assets.py` serializes these bytes into `run/agent.py`; hosted
+code never imports or executes them. The exact-artifact stdlib and dynamic-code
+guard follows the move; no directory or hosted model-call exemption is added.
+Generated files cannot collide with selected content. The export includes a
+blank-key environment example, conservative policy, a license-choice placeholder
+and instructions that distinguish supported local behavior from outstanding
+schedule/rule integration. Import accepts only blank variable assignments in
+`.env.example`, never real `.env` content or executable shell lines.
+
+The public package and private zip now use the existing package manifest shape
+through `okf/manifest.py`, preserving the public `publish` profile's byte layout.
+The zip adds the `share`/`export` profiles to that same serializer. Existing
+published definitions are not rewritten. Current private metadata describes the
+included instruction folders; structured workflow/schedule/model-reference
+capture and the command-center responsibility still need production integration.

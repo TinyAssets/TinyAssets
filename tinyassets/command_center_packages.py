@@ -978,19 +978,13 @@ def build_manifest(*, profile: str, name: str, description: str, files: dict[str
                    workflows: list[dict[str, Any]], ui: str, automations: list[dict[str, Any]],
                    connections: list[str]) -> dict[str, Any]:
     """``command-center.json``: one manifest for every profile (§4.17, D1)."""
-    return {
-        "format_version": FORMAT_VERSION,
-        "profile": profile,
-        "name": name,
-        "description": description,
-        "agents": agents_in(files),
-        "files": [{"path": p, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
-                  for p, b in sorted(files.items())],
-        "workflows": workflows,
-        "ui": ui,
-        "automations": automations,
-        "needs": {"model": model_need(files), "connections": connections},
-    }
+    from tinyassets.okf.manifest import build_manifest as serialize
+
+    return serialize(
+        profile=profile, name=name, description=description, files=files,
+        agents=agents_in(files), workflows=workflows, ui=ui, automations=automations,
+        model=model_need(files), connections=connections,
+    )
 
 
 def build_blob(manifest: dict[str, Any], files: dict[str, bytes]) -> bytes:

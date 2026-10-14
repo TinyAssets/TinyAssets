@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-SOURCE = Path(__file__).resolve().parents[1] / "packaging/command-center/run/agent.py"
+SOURCE = Path(__file__).resolve().parents[1] / "tinyassets/okf/assets/agent.py.txt"
 RUNNER = runpy.run_path(str(SOURCE))
 
 
