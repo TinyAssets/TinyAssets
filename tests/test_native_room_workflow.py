@@ -1,0 +1,159 @@
+import contextlib
+import io
+import json
+
+import pytest
+
+from tests.native_room_fixture import ROOM_SOURCE, Dispatch, Room, builder
+
+CONFIG = dict(
+    author="fixture-owner",
+    command_center_id="fixture-center",
+    storage_workflow_id="fixture-storage",
+    room_id="fixture-room",
+    room_source=ROOM_SOURCE,
+)
+
+
+@pytest.fixture
+def wired(tmp_path):
+    room = Room(tmp_path)
+    room.init()
+    receipt = room.post(
+        {
+            "client_message_id": "fixture_owner_01",
+            "text": "Fixture question",
+            "requested_responders": ["village_elder"],
+        }
+    )
+    dispatcher = Dispatch(tmp_path)
+    dispatcher.configure(enabled=True)
+    reads, commands = [], []
+    actual = {"run_id": "fixture-run", "branch_def_id": "fixture-storage", "status": "completed"}
+    output = {
+        "run_id": "fixture-run",
+        "status": "completed",
+        "truncated": False,
+        "value": json.dumps(receipt),
+    }
+
+    def invoke(action, **args):
+        if action == "read_graph":
+            reads.append(args)
+            assert args["graph_id"] == "fixture-center" and args["run_id"] == "fixture-run"
+            return json.dumps(actual if args["target"] == "run" else output)
+        assert action == "bash"
+        commands.append(args)
+        command = args["command"]
+        assert command.startswith("python3 - <<'NATIVE_DISPATCH_PY'\n")
+        code = command.split("\n", 1)[1].rsplit("\nNATIVE_DISPATCH_PY", 1)[0]
+        code = code.replace("execute_stage('/u',", "execute_stage(" + repr(str(tmp_path)) + ",")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exec(compile(code, "<fixture-owner-shell>", "exec"), {})
+        return {"text": stdout.getvalue() + "\n[exit code 0]"}
+
+    branch = builder.build(**CONFIG)
+    functions = {}
+    for node in branch.node_defs:
+        if node.source_code:
+            namespace = {"invoke_mcp_action": invoke}
+            exec(compile(node.source_code, "<fixture-code-node>", "exec"), namespace)
+            functions[node.node_id] = namespace["run"]
+    event = {
+        "type": "run_completed",
+        "branch_def_id": "fixture-storage",
+        "outcome": "completed",
+        "run_id": "fixture-run",
+    }
+    return branch, functions, room, dispatcher, actual, output, event, reads, commands
+
+
+def test_real_generated_stages_commit_actual_result_once(wired):
+    branch, functions, room, _, _, _, event, reads, _ = wired
+    assert branch.validate() == []
+    state = functions["claim"]({"event": event})
+    assert state["route"] == "generate" and len(reads) == 2
+    answer = functions["commit"]({**state, "native_reply": "Fixture provider output"})
+    assert json.loads(answer["result"])["status"] == "done"
+    assert room.load()["messages"][-1]["text"] == "Fixture provider output"
+    assert functions["claim"]({"event": event})["route"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("branch_def_id", "foreign"),
+        ("status", "failed"),
+        ("cancel_requested", True),
+        ("run_id", "foreign"),
+    ],
+)
+def test_actual_source_run_must_match_before_storage(wired, field, value):
+    _, functions, _, _, actual, _, event, _, commands = wired
+    actual[field] = value
+    with pytest.raises(PermissionError):
+        functions["claim"]({"event": event})
+    assert not commands
+
+
+@pytest.mark.parametrize(
+    "field,value", [("status", "running"), ("truncated", True), ("run_id", "foreign")]
+)
+def test_incomplete_receipt_refused_before_storage(wired, field, value):
+    _, functions, _, _, _, output, event, _, commands = wired
+    output[field] = value
+    with pytest.raises(ValueError):
+        functions["claim"]({"event": event})
+    assert not commands
+
+
+def test_foreign_room_and_owner_read_denial_refused(wired):
+    _, functions, _, _, actual, output, event, _, commands = wired
+    value = json.loads(output["value"])
+    value["room_id"] = "foreign-room"
+    output["value"] = json.dumps(value)
+    with pytest.raises(PermissionError):
+        functions["claim"]({"event": event})
+    actual["error"] = "access revoked"
+    with pytest.raises(RuntimeError):
+        functions["claim"]({"event": event})
+    assert not commands
+
+
+def test_graph_routes_one_native_node_then_commit_and_stops_replay(wired, monkeypatch):
+    from tinyassets import graph_compiler
+    from tinyassets.served_tools import node_tool_grant
+
+    branch, functions, room, _, _, _, event, _, _ = wired
+    assert node_tool_grant(branch.node_defs[1].tools_allowed) == ("read",)
+    calls = []
+
+    def source_node(node, **kwargs):
+        return functions[node.node_id]
+
+    def provider(prompt, system, **kwargs):
+        calls.append(prompt)
+        return "Actual fixture native output"
+
+    # Only replace the process sandbox with the same generated functions and a
+    # fixture owner RPC. The real compiler handles routing and the prompt node.
+    monkeypatch.setattr(graph_compiler, "_build_source_code_node", source_node)
+    compiled = graph_compiler.compile_branch(branch, provider_call=provider)
+    graph = compiled.graph.compile()
+    graph.invoke({"event": event})
+    graph.invoke({"event": event})
+    assert len(calls) == 1 and len(room.load()["messages"]) == 2
+    assert branch.node_defs[1].retry_policy["max_retries"] == 0
+    assert branch.node_defs[1].timeout_seconds == 120
+
+
+def test_builder_literals_do_not_reexpand_placeholder_like_identifiers():
+    source = builder.source(
+        "claim",
+        **{k: v for k, v in CONFIG.items() if k != "author"},
+    )
+    compile(source, "<generated>", "exec")
+    weird = dict(CONFIG, room_id="ROOM_PROGRAM_CENTER")
+    branch = builder.build(**weird)
+    assert "'ROOM_PROGRAM_CENTER'" in branch.node_defs[0].source_code
