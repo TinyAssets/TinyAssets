@@ -109,22 +109,6 @@ def test_revoking_connection_invalidates_all_grants_and_cap_evaluation(tmp_path)
         )
 
 
-def test_migration_010_persists_connections_grants_and_connector_artifacts():
-    migration = (
-        ROOT
-        / "prototype"
-        / "full-platform-v0"
-        / "migrations"
-        / "010_outbound_boundary.sql"
-    )
-    sql = migration.read_text(encoding="utf-8")
-
-    assert "CREATE TABLE boundary.connections" in sql
-    assert "CREATE TABLE boundary.connection_grants" in sql
-    assert "CREATE TABLE boundary.connector_artifacts" in sql
-    assert "CREATE TABLE boundary.connector_artifact_edges" in sql
-
-
 def _grant_github_connection(
     ledger: ConnectionLedger,
     *,

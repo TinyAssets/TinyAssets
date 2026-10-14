@@ -3413,11 +3413,6 @@ def _main_unfenced() -> None:
         help="Enable verbose logging",
     )
     parser.add_argument(
-        "--mcp",
-        action="store_true",
-        help="Start the MCP server instead of the writing daemon",
-    )
-    parser.add_argument(
         "--serve",
         action="store_true",
         help="Start the daemon + FastAPI HTTP server",
@@ -3515,13 +3510,6 @@ def _main_unfenced() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-
-    if args.mcp:
-        os.environ.setdefault("TINYASSETS_UNIVERSE", args.universe)
-        from fantasy_daemon.mcp_server import main as mcp_main
-
-        mcp_main()
-        return
 
     if args.universe_server:
         # Set base path for the TinyAssets MCP server (resolves universe directories)

@@ -16,8 +16,7 @@ Usage:
     python scripts/tab_watchdog.py --once      # single pass for testing
 
 If the CDP endpoint is unreachable (Chrome not launched), the watchdog
-sleeps and retries — it never raises. Intended to be launched by
-tinyassets_tray at session start, but safe to run standalone too.
+sleeps and retries — it never raises. Run it standalone when needed.
 """
 
 from __future__ import annotations

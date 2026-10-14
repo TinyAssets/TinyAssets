@@ -2213,65 +2213,8 @@ class TestEditorialVerdict:
 # =====================================================================
 
 
-def _import_tray_headless(monkeypatch, tmp_path):
-    """Import the real ``tinyassets_tray`` with only its GUI deps stubbed.
-
-    Same technique as the ``tray_manager`` fixture in
-    ``tests/test_runtime_status_bridge.py``: stand-ins for ``pystray``/``PIL``
-    are installed only when the real package cannot be imported here, so a dev
-    box with a usable display exercises the real import and headless Linux CI
-    runs the module under test instead of skipping it.
-
-    ``LOG_DIR`` is redirected into ``tmp_path`` so tray writes cannot land in
-    the repository's ``logs/``.
-    """
-    import importlib
-    import sys
-    import types
-
-    for name in ("pystray", "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont"):
-        if name in sys.modules:
-            continue
-        try:
-            importlib.import_module(name)
-        except Exception:
-            # Substitution, not a skip: the body under test still runs. The
-            # broad except is deliberate -- a headless box does not fail with
-            # ImportError. pystray is installed on Linux CI and picks its X11
-            # backend at import, raising Xlib.error.DisplayNameError when
-            # DISPLAY is unset.
-            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
-
-    pystray = sys.modules["pystray"]
-    if not hasattr(pystray, "Icon"):
-        pystray.Icon = object
-        pystray.Menu = type("Menu", (), {"SEPARATOR": object()})
-        pystray.MenuItem = object
-    pil = sys.modules["PIL"]
-    for attr in ("Image", "ImageDraw", "ImageFont"):
-        if not hasattr(pil, attr):
-            setattr(pil, attr, sys.modules[f"PIL.{attr}"])
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
-    tray_mod = importlib.import_module("tinyassets_tray")
-    monkeypatch.setattr(tray_mod, "LOG_DIR", tmp_path / "logs")
-    return tray_mod
 
 
-@pytest.fixture(
-    params=[
-        {"TINYASSETS_TRAY_ENABLE_TUNNEL": "1"},
-        {
-            "TINYASSETS_TRAY_ENABLE_TUNNEL": "1",
-            "CLOUDFLARE_TUNNEL_TOKEN": "not-a-real-token",
-        },
-        {"TUNNEL_TOKEN": "legacy-not-a-real-token"},
-    ],
-    ids=["flag-only", "flag-and-token", "legacy-token-only"],
-)
-def tray_env(request):
-    """Every way the removed tray tunnel used to be armed, legacy env included."""
-    return request.param
 
 
 @pytest.fixture
@@ -2311,10 +2254,6 @@ def guarded_cli(monkeypatch, tmp_path):
     us_stub = types.ModuleType("fantasy_daemon.universe_server")
     us_stub.main = lambda **kw: reached.append("universe_server.main")
     monkeypatch.setitem(sys.modules, "fantasy_daemon.universe_server", us_stub)
-
-    mcp_stub = types.ModuleType("fantasy_daemon.mcp_server")
-    mcp_stub.main = lambda *a, **kw: reached.append("mcp_server.main")
-    monkeypatch.setitem(sys.modules, "fantasy_daemon.mcp_server", mcp_stub)
 
     monkeypatch.setattr(
         fa_main, "_run_tray_mode", lambda args: reached.append("tray_mode")
@@ -2364,24 +2303,11 @@ class TestLocalTunnelCapabilityRemoved:
         for rel in (
             "fantasy_daemon/__main__.py",
             "tinyassets/__main__.py",
-            "tinyassets_tray.py",
-            "tinyassets.pyw",
         ):
             text = (root / rel).read_text(encoding="utf-8")
             assert '"cloudflared"' not in text, rel
             assert "shutil.which(" not in text or "cloudflared" not in text, rel
 
-    def test_one_click_startup_does_not_provision_cloudflared(self):
-        """The packaged one-click .bat must not install or invoke cloudflared.
-
-        Shipping the connector binary as a startup prerequisite keeps the
-        ingress capability one command away on a machine that must never
-        serve platform traffic.
-        """
-        root = Path(__file__).resolve().parent.parent
-        text = (root / "start-tinyassets-server.bat").read_text(encoding="utf-8")
-        assert "cloudflared" not in text
-        assert "winget install Cloudflare" not in text
 
     def test_tunnel_flag_refuses_instead_of_starting(self):
         """--tunnel exits with a migration message; it is never silently accepted."""
@@ -2392,164 +2318,11 @@ class TestLocalTunnelCapabilityRemoved:
         assert "tinyassets.io/mcp" in str(exc.value)
         assert fa_main.LOCAL_TUNNEL_REMOVED_MESSAGE in str(exc.value)
 
-    def test_tray_mode_refuses_a_tunnel_request_before_starting_anything(self):
-        """_run_tray_mode refuses a tunnel request before any startup work."""
-        import argparse
 
-        import fantasy_daemon.__main__ as fa_main
 
-        args = argparse.Namespace(tunnel=True, tunnel_name="", port=8321)
-        with pytest.raises(SystemExit):
-            fa_main._run_tray_mode(args)
 
-        args = argparse.Namespace(tunnel=False, tunnel_name="prod", port=8321)
-        with pytest.raises(SystemExit):
-            fa_main._run_tray_mode(args)
 
-    def test_tray_start_tunnel_never_spawns_even_when_env_armed(
-        self, tray_env, monkeypatch, tmp_path
-    ):
-        """The old arming env vars spawn nothing -- checked on every platform.
 
-        This loads the real ``tinyassets_tray`` with only its GUI deps stubbed
-        (same shape as ``tests/test_runtime_status_bridge.py``), so the removal
-        is exercised in headless Linux CI rather than skipped there: a skip on
-        the one platform CI runs is no protection at all. ``LOG_DIR`` is pinned
-        into ``tmp_path`` so the refusal record cannot land in the repo's
-        ``logs/``.
-        """
-        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
-
-        for name in (
-            "TINYASSETS_TRAY_ENABLE_TUNNEL",
-            "CLOUDFLARE_TUNNEL_TOKEN",
-            "TUNNEL_TOKEN",
-        ):
-            monkeypatch.delenv(name, raising=False)
-        for name, value in tray_env.items():
-            monkeypatch.setenv(name, value)
-
-        spawned: list[Any] = []
-
-        def _trip_popen(cmd, *args, **kwargs):
-            spawned.append(cmd)
-            raise AssertionError(f"tray spawned a process: {cmd}")
-
-        monkeypatch.setattr(tray_mod.subprocess, "Popen", _trip_popen)
-
-        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
-        manager.tunnel_proc = object()
-        manager._tunnel_alive = True
-        manager._tunnel_ok = True
-
-        manager.start_tunnel()
-
-        assert spawned == []
-        assert manager.tunnel_proc is None
-        assert manager._tunnel_alive is False
-        assert manager._tunnel_ok is False
-
-        # The refusal is recorded, and recorded under tmp_path: an empty log
-        # would mean the body never ran, and a missing file would mean LOG_DIR
-        # still pointed at the repo.
-        log_text = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
-        assert "REFUSED" in log_text
-        assert "no tunnel was started" in log_text
-        assert "https://tinyassets.io/mcp" in log_text
-
-    def test_tray_start_tunnel_records_a_skip_when_nothing_is_armed(
-        self, monkeypatch, tmp_path
-    ):
-        """With no env arming the tray still starts nothing and says so.
-
-        Guards the discriminator for the test above: the refusal branch must be
-        reachable only via the env vars, so an always-REFUSED log would not
-        prove the arming path was taken.
-        """
-        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
-        for name in (
-            "TINYASSETS_TRAY_ENABLE_TUNNEL",
-            "CLOUDFLARE_TUNNEL_TOKEN",
-            "TUNNEL_TOKEN",
-        ):
-            monkeypatch.delenv(name, raising=False)
-
-        def _trip_popen(cmd, *args, **kwargs):
-            raise AssertionError(f"tray spawned a process: {cmd}")
-
-        monkeypatch.setattr(tray_mod.subprocess, "Popen", _trip_popen)
-
-        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
-        manager.tunnel_proc = None
-        manager._tunnel_alive = False
-        manager._tunnel_ok = False
-
-        manager.start_tunnel()
-
-        log_text = (tmp_path / "logs" / "tunnel.log").read_text(encoding="utf-8")
-        assert "nothing started" in log_text
-        assert "REFUSED" not in log_text
-
-    def test_cloud_app_menu_does_not_depend_on_any_local_process(self, monkeypatch, tmp_path):
-        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
-
-        class Menu(list):
-            SEPARATOR = object()
-
-            def __init__(self, *items):
-                super().__init__(items)
-
-        monkeypatch.setattr(tray_mod, "Menu", Menu)
-        monkeypatch.setattr(tray_mod, "MenuItem", lambda name, action, **kw: {
-            "name": name, "action": action, **kw,
-        })
-        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
-        manager._mcp_serving = manager._tunnel_ok = False
-        menu = manager._build_menu()
-        item = next(item for item in menu if isinstance(item, dict)
-                    and item["name"] == "Open tinyassets.io/mcp")
-        enabled = item.get("enabled", True)
-        assert enabled(None) if callable(enabled) else enabled
-
-    def test_local_readiness_does_not_claim_cloud_health(self, monkeypatch, tmp_path):
-        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
-        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
-        manager._running_providers = lambda: ["codex"]
-        manager._mcp_serving = True
-        manager._tunnel_ok = manager._tunnel_alive = False
-        manager._active_universe = "fixture"
-        manager._watchdog_alive = False
-        assert manager.icon_color == tray_mod.GREEN
-        assert "Local tools ready" in manager.hover_text
-        assert "Live at" not in manager.hover_text
-        assert "Tunnel:" not in manager.status_text
-
-    def test_healthy_local_monitor_uses_normal_interval_without_tunnel(
-        self, monkeypatch, tmp_path
-    ):
-        tray_mod = _import_tray_headless(monkeypatch, tmp_path)
-        manager = tray_mod.UniverseServerManager.__new__(tray_mod.UniverseServerManager)
-
-        class StopEvent:
-            def __init__(self):
-                self.waits = []
-
-            def is_set(self):
-                return len(self.waits) == 2
-
-            def wait(self, seconds):
-                self.waits.append(seconds)
-
-        manager._stop_event = StopEvent()
-        manager._running_providers = lambda: ["codex"]
-        manager._mcp_serving = manager._mcp_alive = True
-        manager._tunnel_ok = manager._watchdog_alive = False
-        manager.watchdog_proc = None
-        manager.check_health = lambda: None
-        manager._update_icon = lambda: None
-        manager._check_universe_switch = lambda: False
-        manager._monitor_loop()
-        assert manager._stop_event.waits == [3, 10]
 
     # -- real CLI parsing -------------------------------------------------
     #
@@ -2589,7 +2362,6 @@ class TestLocalTunnelCapabilityRemoved:
     @pytest.mark.parametrize(
         ("mode", "expected"),
         [
-            ("--tray", ["tray_mode"]),
             ("--universe-server", ["universe_server.main"]),
             ("--serve", ["api.configure", "uvicorn.run"]),
         ],
@@ -2621,40 +2393,3 @@ class TestLocalTunnelCapabilityRemoved:
 # =====================================================================
 # Tray Mode
 # =====================================================================
-
-
-class TestTrayMode:
-    """Tests for the --tray mode entry point."""
-
-    def test_tray_flag_accepted(self):
-        """The --tray flag should be accepted by the argument parser."""
-        import argparse
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--tray", action="store_true")
-        args = parser.parse_args(["--tray"])
-        assert args.tray is True
-
-    def test_run_tray_mode_importable(self):
-        """_run_tray_mode should be importable."""
-        from tinyassets.__main__ import _run_tray_mode
-        assert callable(_run_tray_mode)
-
-    def test_pyw_contains_tray_flag(self):
-        """tinyassets.pyw should pass --tray to main()."""
-        pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
-        text = pyw.read_text(encoding="utf-8")
-        assert "--tray" in text
-
-    def test_pyw_uses_port_8321(self):
-        """tinyassets.pyw should use port 8321."""
-        pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
-        text = pyw.read_text(encoding="utf-8")
-        assert "8321" in text
-
-    def test_pyw_does_not_request_a_tunnel(self):
-        """tinyassets.pyw must not ask for a public ingress."""
-        pyw = Path(__file__).resolve().parent.parent / "tinyassets.pyw"
-        text = pyw.read_text(encoding="utf-8")
-        assert '"--tunnel"' not in text
-

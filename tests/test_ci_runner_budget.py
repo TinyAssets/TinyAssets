@@ -23,14 +23,6 @@ def _triggers(name: str) -> dict:
     return wf[True] if True in wf else wf["on"]
 
 
-def test_desktop_installer_matrix_does_not_run_on_pull_requests() -> None:
-    triggers = _triggers("desktop-release.yml")
-    assert "pull_request" not in triggers and "pull_request_target" not in triggers
-    # The cut moves the work, it does not delete it: landed changes still build.
-    assert triggers["push"]["branches"] == ["main"]
-    assert "workflow_dispatch" in triggers
-
-
 def test_docker_smoke_push_runs_only_on_main() -> None:
     triggers = _triggers("docker-build.yml")
     assert triggers["push"].get("branches") == ["main"], (

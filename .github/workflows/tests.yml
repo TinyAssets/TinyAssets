@@ -802,10 +802,4 @@ jobs:
           mkdir -p "$TINYASSETS_DATA_DIR"
           # Serial on purpose: these assert cross-process/locking behaviour and
           # sharing a worker pool with them would test the pool, not the code.
-          # Both ignores are tray imports that die at COLLECTION on a headless
-          # runner (Xlib "Bad display name") and take the whole job down with
-          # an Interrupted — required-tests survives the same files only via
-          # --continue-on-collection-errors.
-          pytest -m slow -q --no-header -rfE --durations=10 \
-            --ignore=tests/test_tinyassets_tray.py \
-            --ignore=tests/desktop_install/test_packaged_runtime.py
+          pytest -m slow -q --no-header -rfE --durations=10

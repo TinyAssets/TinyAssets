@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -130,7 +131,7 @@ SHAPES: dict[str, Shape] = {
         forbid=(r"from\s+tinyassets\.model_door\b",),
     ),
     "S12": Shape(
-        ("tinyassets/universe_server.py",), (("tinyassets/mcp_server.py", ""),), ceiling=1
+        ("tinyassets/universe_server.py",), (("tinyassets/mcp_server.py", ""),), ceiling=0
     ),
     "S13": Shape(
         ("tinyassets/providers/owner_binding.py",),
@@ -187,7 +188,7 @@ SHAPES: dict[str, Shape] = {
         (("tinyassets/**/universe_*.py", ""),),
         ceiling=10,
     ),
-    "S23": Shape(("domains/fantasy_daemon/state/book_state.py",)),
+    "S23": Shape(("tinyassets/graph_compiler.py",)),
     "S24": Shape(("tinyassets/owner_door/**",)),
     "S25": Shape(
         ("tinyassets/universe_server.py", "tinyassets/onboarding/**", "tinyassets/api/**")
@@ -263,6 +264,53 @@ DOC_HOMES = (
     "docs/getting-started/",
     "docs/ops/",
 )
+
+HOST_PATHS = (
+    "tinyassets/host_pool",
+    "tinyassets/mcp_server.py",
+    "fantasy_daemon/mcp_server.py",
+    "tinyassets_tray.py",
+    "tinyassets.pyw",
+    "tinyassets/desktop/launcher.py",
+    "create-desktop-shortcut.bat",
+    "start-tinyassets-server.bat",
+    "start-tinyassets-server.vbs",
+)
+LIVE_SCRIPTS = {
+    "tinyassets-cli": "tinyassets.__main__:main",
+    "tinyassets-universe-server": "tinyassets.universe_server:main",
+    "tinyassets-probe": "tinyassets.probe:entry_point",
+}
+LIVE_DOMAIN_ENTRY_POINTS = {
+    # tinyassets-cli still loads these domains; remove this pin with its domain-loading follow-up.
+    "fantasy_daemon": "domains.fantasy_daemon.skill:FantasyAuthorDomain",
+    "research_probe": "domains.research_probe.skill:ResearchProbeDomain",
+}
+
+
+def dead_entry_problems(root: Path = ROOT) -> list[str]:
+    """Keep removed host paths and extra start surfaces out of the package."""
+    problems = [f"host-paths: {path}" for path in HOST_PATHS if (root / path).exists()]
+    if (root / "prototype").exists():
+        problems.append("host-paths: prototype/ fixture tree returned")
+    compose = root / "deploy/compose.yml"
+    if compose.is_file() and re.search(
+        r"(?m)^  slack-agent:\s*$", compose.read_text(encoding="utf-8")
+    ):
+        problems.append("host-paths: compose slack-agent returned")
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    scripts = project.get("scripts", {})
+    if scripts != LIVE_SCRIPTS or project.get("gui-scripts"):
+        problems.append(f"spawn-entry: expected live scripts only, got {scripts!r}")
+    domains = project.get("entry-points", {}).get("tinyassets.domains", {})
+    if domains != LIVE_DOMAIN_ENTRY_POINTS:
+        problems.append(f"domain-entry-points: changed registered domains {domains!r}")
+    runner = root / "fantasy_daemon/__main__.py"
+    if runner.is_file() and re.search(
+        r'"--mcp"|from fantasy_daemon\.mcp_server\b', runner.read_text(encoding="utf-8")
+    ):
+        problems.append("spawn-entry: local MCP runner returned")
+    return problems
 
 
 def registry_rows(text: str) -> dict[str, str]:
@@ -688,6 +736,7 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
 
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
+    problems.extend(dead_entry_problems(root))
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())
     extra = sorted(SHAPES.keys() - rows.keys())
