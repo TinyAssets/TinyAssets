@@ -84,6 +84,26 @@ def test_real_generated_stages_commit_actual_result_once(wired):
     assert functions["claim"]({"event": event})["route"] == "stop"
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_unicode_line_separators_preserve_claim_and_reply(wired, separator):
+    _, functions, room, _, _, output, event, _, _ = wired
+    peer_text = "Earlier participant text" + separator + "continues here"
+    room.post({"client_message_id": "fixture_peer_01", "text": peer_text},
+              participant="fixture_peer")
+    receipt = room.post({
+        "client_message_id": "fixture_owner_02", "text": "Addressed question",
+        "requested_responders": ["village_elder"],
+    })
+    output["value"] = json.dumps(receipt)
+    state = functions["claim"]({"event": event})
+    assert state["route"] == "generate" and peer_text in state["prompt"]
+    reply = "Actual native reply" + separator + "continues here"
+    answer = functions["commit"]({**state, "native_reply": reply})
+    assert json.loads(answer["result"])["status"] == "done"
+    assert room.load()["messages"][-1]["text"] == reply
+    assert functions["claim"]({"event": event})["route"] == "stop"
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

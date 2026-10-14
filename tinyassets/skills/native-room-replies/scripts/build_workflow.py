@@ -73,8 +73,9 @@ def run(state):
         payload["native_reply"] = state.get("native_reply")
     import base64
     wire = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode()).decode()
+    # ASCII JSON escapes Unicode line separators so stdout is one receipt line.
     code = (PROGRAM + "\\nimport base64\\nprint(json.dumps(execute_stage('/u'," + repr(stage)
-            + ",json.loads(base64.b64decode(" + repr(wire) + "))),ensure_ascii=False))\\n")
+            + ",json.loads(base64.b64decode(" + repr(wire) + "))),ensure_ascii=True))\\n")
     answer = invoke_mcp_action("bash", command=(
         "python3 - <<'NATIVE_DISPATCH_PY'\\n" + code + "\\nNATIVE_DISPATCH_PY"), timeout=40)
     if isinstance(answer, dict):
