@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/boxes/gvisor_files.py::GvisorFileBackend._wake": (
+        CALL_SCOPED, "host capacity FIFO waits only until this admitted request's deadline",
+    ),
     'tinyassets/browser_sessions.py::owner_action [Timer]': (
         CALL_SCOPED, 'One protected login capture expires and destroys its owner browser cell.'),
     "tinyassets/role_preview_cell.py::supervised": (

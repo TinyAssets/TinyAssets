@@ -88,3 +88,54 @@ def test_stop_failure_keeps_owner_marked_awake():
     with pytest.raises(BoxError):
         instance.stop(300001)
     assert 300001 in instance._awake
+
+
+def test_file_wakes_share_capacity_and_evict_only_idle_boxes():
+    instance = backend()
+    started, stopped = [], []
+    instance.runtime.start = lambda uid, gid, **kwargs: started.append(uid)
+    instance.runtime.stop = stopped.append
+    instance.wake(300001)
+    instance.wake(300002)
+    instance._busy.add(300001)
+    instance.wake(300003)
+    assert started == [300001, 300002, 300003]
+    assert stopped == [300002]
+    assert set(instance._awake) == {300001, 300003}
+
+
+def test_failed_launch_cleanup_keeps_its_capacity_reservation():
+    instance = backend()
+
+    def fail(*args, **kwargs):
+        raise BoxError("uncertain sandbox")
+
+    instance.runtime.start = fail
+    instance.runtime.stop = fail
+    with pytest.raises(BoxError):
+        instance.wake(300001)
+    assert 300001 in instance._awake
+
+
+def test_busy_capacity_waits_until_an_owner_is_proven_stopped():
+    import threading
+
+    instance = backend()
+    instance.runtime.start = lambda *args, **kwargs: None
+    instance.runtime.stop = lambda *args: None
+    instance.wake(300001)
+    instance.wake(300002)
+    instance._busy.update({300001, 300002})
+    completed = threading.Event()
+    thread = threading.Thread(target=lambda: (instance.wake(300003), completed.set()))
+    thread.start()
+    try:
+        with instance._capacity:
+            assert instance._capacity.wait_for(lambda: bool(instance._waiting), timeout=1)
+        assert not completed.is_set() and len(instance._awake) == 2
+        instance.stop(300001)
+        assert completed.wait(2)
+        assert set(instance._awake) == {300002, 300003}
+    finally:
+        thread.join(3)
+        assert not thread.is_alive()

@@ -28,7 +28,7 @@ class HostService:
         self.host, self.admission, self.quota, self.relays = host, admission, quota, relays
         self._broker_lock = threading.Lock()
         self._broker = None
-        self._slots = threading.BoundedSemaphore(128)
+        self._slots = threading.BoundedSemaphore(32)
 
     def register(self, sock):
         identity = peer(sock)
