@@ -66,9 +66,6 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
     ),
     "CLOUDFLARE_ACCOUNT_ID": "Cloudflare account identifier, not a credential",
     "CLOUDFLARE_ZONE_ID": "Cloudflare zone identifier, not a credential",
-    "CLOUDFLARE_PREVIEW_API_TOKEN": (
-        "preview-only Worker token, already in the `react-preview` environment"
-    ),
     # Store release pipelines: these sign and upload artifacts, never reach the host,
     # and run on tag/release refs that a main-only environment would refuse.
     "APPLE_DISTRIBUTION_CERT_P12_B64": (
