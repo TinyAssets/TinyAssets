@@ -23,13 +23,15 @@ no configuration under which these roles share a uid.
 
 ### Requirement: One owner-box migration with snapshot restore after interruption
 The box cutover SHALL convert the production volume once, with every writer stopped, after a
-verified full backup whose digest is checked. It SHALL refuse before any write when any of
-these holds: the volume lacks the `owner-split` marker, no backup id is given, the digest
-fails, project quotas are unavailable on the box store, or an inode belongs to two owners.
+verified full backup whose digest is checked.
 It SHALL copy admitted owner trees to the XFS box store under their permanent UID/GID,
 verify checksums, and write the `owner-box` layout marker last. A failure after the first
 write SHALL require restoring the verified snapshot with its paired runtime bundle.
 There SHALL be no automatic retry, reverse migration or previous-image fallback after commit.
+
+#### Scenario: A precondition fails
+- **WHEN** the volume lacks the `owner-split` marker, no backup id is given, the digest fails, or project quotas are unavailable on the box store
+- **THEN** the migration refuses before any write
 
 #### Scenario: An interrupted copy requires snapshot restore
 - **WHEN** the cutover is killed at any step and the same command is run again

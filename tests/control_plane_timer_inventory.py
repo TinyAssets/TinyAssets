@@ -138,6 +138,15 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/bid/execution_log.py::_exec_log_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/bid/node_bid.py::_bid_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/boxes/host_service.py::_serve": (
+        CONTROL_PLANE,
+        "root box host reaps idle sandboxes; no owner task or inference scheduling",
+    ),
+    "tinyassets/boxes/production_files.py::ProductionFileProvider.stream": (
+        CALL_SCOPED,
+        "caller consumes one bounded host execution; ends at terminal receipt, "
+        "unknown outcome or caller deadline",
+    ),
     "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
         CALL_SCOPED,
         "host-side thread for one exec; stops at leader exit, cancel, wall or "

@@ -9,13 +9,13 @@ import threading
 from pathlib import Path
 
 from tinyassets import rpc_frames as rf
-from tinyassets.boxes.admission import Admission
+from tinyassets.boxes.admission import OwnerRegistry
 from tinyassets.boxes.bootstrap import peer
 from tinyassets.boxes.provider import BoxAuthError
 
 
 class OwnerRelays:
-    def __init__(self, directory: Path, admission: Admission) -> None:
+    def __init__(self, directory: Path, admission: OwnerRegistry) -> None:
         self.directory, self.admission = directory, admission
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._bindings = {}

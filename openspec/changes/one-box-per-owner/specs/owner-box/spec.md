@@ -6,14 +6,13 @@ own kernel boundary, behind `BoxProvider`, run by a box host service outside
 the daemon container. The agent loop, its tools, child sessions, resident
 processes, the browser and native CLIs packaged as external agents SHALL run
 inside the owner's box. Every command center of the owner SHALL be a
-directory inside that box. Credentials, owner policy, the control plane, the
-turn journal and platform stores SHALL stay outside every box. Owner-scoped
-work SHALL NOT run in any other sandbox or cell kind.
+directory inside that box. Owner-scoped work SHALL NOT run in any other sandbox or cell kind.
 
 #### Scenario: A turn and its tools run in the owner's box
 - **WHEN** an owner's session runs a turn that calls `bash`, `git` and the browser
 - **THEN** each of these runs as a process inside that owner's box
 - **AND** no `role_*` cell or per-path jail is started
+- **AND** credentials, owner policy, the control plane, the turn journal and platform stores remain outside every box
 
 #### Scenario: Owners never share a box
 - **WHEN** owner A's box tries to read, write or signal anything belonging to owner B
@@ -24,10 +23,12 @@ The box SHALL have no network interface and no credential, except a
 file-OAuth CLI token leased into its owner's box for one run. Its only
 channel out SHALL be one socket to the box host. The box's identity SHALL be
 taken from that channel, never from a request payload. Every request that
-leaves the box SHALL cross that channel to the broker's gate. This covers
-model calls, connector and `ta` calls, network connections, spend,
-child-session starts, and messages and notifications. The platform SHALL
+leaves the box SHALL cross that channel to the broker's gate. The platform SHALL
 reach box content only through `BoxProvider`, as untrusted input.
+
+#### Scenario: Every outbound action crosses the gate
+- **WHEN** a box makes model, connector or `ta` calls, network connections, spend, child-session starts, messages or notifications
+- **THEN** the action crosses the one channel and the broker gate
 
 #### Scenario: A box names another owner in a payload
 - **WHEN** a request from owner A's box carries owner B's account or connection id
@@ -58,10 +59,13 @@ A box SHALL stay awake while any session, resident process or owner view is
 live, and SHALL suspend only after it has been idle. Closing every client
 SHALL NOT cancel a session. A daemon deploy SHALL NOT stop a box or its
 running loops. A box host restart SHALL checkpoint and then restore every
-awake box. When a checkpoint or restore fails, the box SHALL cold-boot, and
-its sessions SHALL resume from the turn journal, with operations whose
-outcome is unknown held, never replayed. Only the control plane SHALL wake a
+awake box. Only the control plane SHALL wake a
 box. No owner or founder machine SHALL be on any path.
+
+#### Scenario: Checkpoint or restore fails
+- **WHEN** a checkpoint or restore fails
+- **THEN** the box cold-boots and its sessions resume from the turn journal
+- **AND** operations whose outcome is unknown are held, never replayed
 
 #### Scenario: Two-hour task with every device off
 - **WHEN** the owner starts a multi-step task, closes every app and turns the phone off

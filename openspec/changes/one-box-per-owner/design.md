@@ -497,6 +497,8 @@ The new image serves only from boxes. There is no flag back to cells.
 The production file adapter must not treat the in-box `BoxdCore` journal as
 authority: the owner can edit every writable byte in that sandbox. `boxhostd`
 owns epochs, operation digests, outcomes and generations in its private state.
+The production receipt database has a 16 MiB ceiling and bounded WAL retention;
+exhaustion refuses further writes rather than expiring receipts into replay permission.
 All centers of an owner share that state and one lock. A center is a path
 projection within the owner's box, never a second sandbox. The host receives
 an `OwnerGrant` from authenticated admission; neither an account string nor a

@@ -331,7 +331,9 @@ def _connect(broker):
 
 
 @pytest.mark.parametrize("attempt", ["policy", "foreign", "valid"])
-def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(broker, monkeypatch, attempt):
+def test_box_channel_uses_host_identity_and_cannot_enter_owner_control(
+    broker, monkeypatch, attempt,
+):
     from types import SimpleNamespace
 
     from tinyassets.broker import box_admission

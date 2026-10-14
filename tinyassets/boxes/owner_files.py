@@ -44,10 +44,12 @@ class FileBackend(Protocol):
 class OwnerFileHost:
     def __init__(self, *, state_dir: Path, backend: FileBackend,
                  authorize: Callable[[OwnerGrant, str], bool],
-                 authorize_destroy: Callable[[OwnerGrant, str], bool] | None = None) -> None:
+                 authorize_destroy: Callable[[OwnerGrant, str], bool] | None = None,
+                 bound_for: Callable[[OwnerGrant, str], int] | None = None) -> None:
         self.backend = backend
         self.authorize = authorize
         self.authorize_destroy = authorize_destroy
+        self.bound_for = bound_for
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = state_dir.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
@@ -232,6 +234,9 @@ class OwnerFileHost:
                     result = unproject(center, operation, result, args)
                     if operation in {"read", "read_many", "write", "usage"}:
                         result["result"]["generation"] = self.state.generation(owner)
+                    if operation == "usage":
+                        result["result"]["bound_bytes"] = (
+                            self.bound_for(grant, center) if self.bound_for else None)
                 if mutation:
                     response = encode(result).decode()
                     self.backend.stop(grant.uid)
