@@ -183,7 +183,7 @@ def test_unknown_target_is_reported() -> None:
     } <= set(payload["allowed_targets"])
 
 
-def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
+def test_catalog_agent_reads_route_through_graph_handle(monkeypatch) -> None:
     observed: list[dict[str, object]] = []
 
     def fake_custom_agents(**kwargs):
@@ -225,7 +225,7 @@ def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
     assert observed[2]["binding_id"] == "agent_binding_123"
 
 
-def test_custom_agent_writes_route_through_graph_handle(monkeypatch) -> None:
+def test_catalog_agent_writes_route_through_graph_handle(monkeypatch) -> None:
     observed: list[dict[str, object]] = []
 
     def fake_custom_agents(**kwargs):
