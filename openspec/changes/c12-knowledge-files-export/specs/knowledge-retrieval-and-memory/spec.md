@@ -19,6 +19,11 @@ SHALL perform no host-path I/O, add no MCP action and never mutate source files.
 - **THEN** the unselected page's title and content do not enter the index or log
 - **AND** the link is reported as unresolved.
 
+#### Scenario: Export target cannot be nested in the source wiki
+- **WHEN** export runs through the owner transfer door
+- **THEN** the wiki writer returns in-memory bytes and accepts no filesystem target directory
+- **AND** the source wiki cannot be overwritten by an export target.
+
 #### Scenario: Generated content conflicts with selected content
 - **WHEN** a selected path collides with a generated wiki path, or a selected curated page has a reserved name
 - **THEN** export refuses instead of overwriting or silently discarding selected bytes.
