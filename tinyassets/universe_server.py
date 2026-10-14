@@ -4487,20 +4487,13 @@ def main(
         host, port, transport,
     )
 
-    # Serving admission (openspec change cloud-only-runtime-admission,
-    # enforcement site C). The serving process refuses to boot unless it is an
-    # admitted cloud runtime: NOT_CLOUD, an unobserved process and a failed or
-    # unreachable resolution are all refusals, and there is no degraded local
-    # mode to fall back to. Foreground and served provider execution never reach
-    # the queue, so startup plus the last provider-authority boundary is the only
-    # pair of gates that covers them.
+    # HTTP serving admission (openspec change cloud-only-runtime-admission,
+    # enforcement site C). The public HTTP service refuses to boot without
+    # cloud admission. Local stdio and sse can boot without the owner tick;
+    # their work paths retain their own provider-authority checks.
     #
-    # Placed exactly here on purpose. After the session-seal arm, which stays the
-    # first statement in this function (anything spawned before it inherits the
-    # seal key), and before every other thing boot does: no maintenance, thread,
-    # queue worker, provider child, engine-MCP child, listener or storage writer
-    # runs ahead of it, and it is outside every database transaction, so the one
-    # bounded link-local read can never happen under the SQLite write lock.
+    # Placed after the session-seal arm and outside every database transaction,
+    # so the bounded metadata read never holds a SQLite write lock.
     #
     # Resolves at most once per process; the logged shape is sanitized (verdict +
     # reason token + booleans, never an id, address or secret). A cached refusal
@@ -4510,23 +4503,32 @@ def main(
         sanitized_observation_fields,
     )
 
-    try:
-        _provenance = require_process_cloud_admission(surface="platform serving startup")
-    except PermissionError as exc:
-        # Loud, sanitized, non-zero. Not swallowed: an admission failure that
-        # let boot continue would be the opt-out this gate exists to remove.
-        logger.error("refusing to serve: %s", exc)
-        raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
-    except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
-        logger.exception(
-            "refusing to serve: platform runtime provenance could not be resolved"
+    cloud_admitted = False
+    if transport == "streamable-http":
+        try:
+            _provenance = require_process_cloud_admission(surface="platform serving startup")
+        except PermissionError as exc:
+            logger.error("refusing to serve: %s", exc)
+            raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+        except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
+            logger.exception(
+                "refusing to serve: platform runtime provenance could not be resolved"
+            )
+            raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+        cloud_admitted = True
+        logger.info(
+            "platform runtime provenance (serving admitted): %s",
+            sanitized_observation_fields(_provenance),
         )
-        raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+    elif transport in ("stdio", "sse"):
+        from tinyassets.platform_runtime_provenance import process_is_cloud_admitted
 
-    logger.info(
-        "platform runtime provenance (serving admitted): %s",
-        sanitized_observation_fields(_provenance),
-    )
+        try:
+            cloud_admitted = process_is_cloud_admitted()
+        except Exception:  # noqa: BLE001 - local transport can serve without the owner tick
+            logger.exception("local transport has no cloud admission; owner tick disabled")
+        if not cloud_admitted:
+            logger.info("local transport has no cloud admission; owner tick disabled")
 
     # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
     # boot reconcile + the lease reconciler were streamable-http-only, so sse/
@@ -4721,13 +4723,13 @@ def main(
     )
 
     try:
-        from tinyassets.consumer_runtime import initialize as initialize_consumer
+        if cloud_admitted:
+            from tinyassets.consumer_runtime import initialize as initialize_consumer
 
-        # Do not rely on best-effort boot maintenance: storage must be ready
-        # before the assigned consumer can open the same database.
-        initialize_consumer(data_dir())
-        assigned_consumer = AssignedQueueConsumer(data_dir())
-        assigned_consumer.start()
+            # Storage must be ready before the owner tick opens its database.
+            initialize_consumer(data_dir())
+            assigned_consumer = AssignedQueueConsumer(data_dir())
+            assigned_consumer.start()
         run_visibility_startup_gate()
         start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):

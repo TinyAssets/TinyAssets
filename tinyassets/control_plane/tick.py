@@ -218,6 +218,10 @@ class AssignedQueueConsumer:
             max_workers=self.max_concurrency,
             thread_name_prefix="assigned-queue-task",
         )
+        self._continuation_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="owner-continuation",
+        )
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
         self._automation_runs: set[str] = set()
@@ -384,6 +388,7 @@ class AssignedQueueConsumer:
         if self._thread is not None:
             self._thread.join(timeout=max(0.0, timeout))
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self._continuation_executor.shutdown(wait=False, cancel_futures=True)
         # Retire only after the actual coordinator exits. A timed-out join must
         # remain visible as stopping, not disappear from expected execution.
         if self._thread is None or not self._thread.is_alive():
@@ -406,13 +411,7 @@ class AssignedQueueConsumer:
             self._stop.wait(self.poll_seconds)
 
     def poll_once(self) -> int:
-        """Beat for every serving universe and submit its due automations.
-
-        User-owned automations are the only background work this consumer runs.
-        The epoch-2 claim pass it used to run after them executed only slices of
-        fleet-era cloud automations, which nothing produces since that pump was
-        retired (plan C1); it went with them (plan C2).
-        """
+        """Beat for serving universes, automations, and owner continuations."""
 
         # A copied runtime row or cached receipt cannot authorize recovery,
         # automatic work submission or publication of compatible capacity.
@@ -496,8 +495,8 @@ class AssignedQueueConsumer:
     def _submit_continuations(self) -> None:
         """Run durable request and agent wakes from this owner tick.
 
-        A continuation can perform a model turn, so it uses the consumer's
-        executor without blocking the heartbeat. Only one scan is pending.
+        A continuation can perform a model turn, so it has a dedicated worker
+        outside the automation capacity. Only one scan is pending.
         The per-home lock remains the cross-process fence.
         """
         with self._lock:
@@ -511,7 +510,9 @@ class AssignedQueueConsumer:
                     logger.exception("request continuation tick failed")
             from tinyassets.control_plane.continuations import tick
 
-            self._continuation_future = self._executor.submit(tick, self.base_path)
+            self._continuation_future = self._continuation_executor.submit(
+                tick, self.base_path
+            )
 
     def _release_universe(self, universe_id: str) -> None:
         from tinyassets.automations import AutomationStore

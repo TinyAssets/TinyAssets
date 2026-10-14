@@ -126,7 +126,6 @@ def test_inventory_covers_every_required_source_family() -> None:
         "activities",
         "schedule_and_event",
         "event_subscription",
-        "request_admission",
         "graph_enqueue",
         "direct_live_and_versioned_run",
         "resume_and_recovery",

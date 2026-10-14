@@ -2049,273 +2049,12 @@ def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -
     })
 
 
-def _lookup_operator_request_replay(
-    store: Any,
-    *,
-    universe_id: str,
-    idempotency_key_hash: str,
-    body_digest: str,
-    body_digest_version: str,
-) -> dict[str, Any] | None:
-    """Reauthorize ordinary access before consulting idempotency state."""
-
-    verdict = permissions.operator_request_replay_verdict(universe_id)
-    if not verdict.allowed:
-        # Reveal no stored identifier, digest, receipt, replay status, or
-        # key-existence evidence.
-        return {"error": "universe_access_denied"}
-    access_check, _priority_check = (
-        permissions.operator_request_transaction_checks(verdict)
-    )
-    return store.lookup_replay(
-        tenant_id=verdict.tenant_id,
-        actor_id=verdict.actor_id,
-        universe_id=verdict.universe_id,
-        idempotency_key_hash=idempotency_key_hash,
-        body_digest=body_digest,
-        body_digest_version=body_digest_version,
-        access_check=access_check,
-    )
-
-
-_REQUEST_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
-_REQUEST_BODY_DIGEST_VERSION = "rfc8785-v1"
-_REQUEST_BODY_SCHEMA_VERSION = "request-admission-v2"
-_REQUEST_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
-_REQUEST_TYPES = frozenset({
-    "scene_direction",
-    "revision",
-    "canon_change",
-    "branch_proposal",
-    "general",
-})
-
-
-def _request_validation_error() -> str:
-    return json.dumps({"error": "request_validation_error"})
-
-
-def _request_idempotency_key_hash(raw_key: str) -> str:
-    # `_REQUEST_IDEMPOTENCY_KEY_RE` already restricts the key to ASCII, so
-    # delegating to the shared minter is byte-identical to the old
-    # ascii-encoded HMAC.
-    from tinyassets.storage.request_admissions import (
-        mint_idempotency_key_hash,
-    )
-
-    return mint_idempotency_key_hash(raw_key)
-
-
-def _request_body_digest(
-    *,
-    universe_id: str,
-    text: str,
-    request_type: str,
-    branch_id: str,
-    pickup_incentive: str,
-    directed_daemon_id: str,
-    directed_daemon_instruction: str,
-    priority_weight: int | float,
-) -> str:
-    import rfc8785
-
-    canonical = rfc8785.dumps({
-        "branch_id": branch_id,
-        "directed_daemon_id": directed_daemon_id,
-        "directed_daemon_instruction": directed_daemon_instruction,
-        "pickup_incentive": pickup_incentive,
-        "priority_weight": priority_weight,
-        "request_type": request_type,
-        "schema_version": _REQUEST_BODY_SCHEMA_VERSION,
-        "text": text,
-        "universe_id": universe_id,
+def _action_refuse_request(**_kwargs: Any) -> str:
+    """Refuse requests while no worker claims the persisted v2 queue."""
+    return json.dumps({
+        "error": "request_execution_unavailable",
+        "message": "Request submission is unavailable: no worker starts admitted requests.",
     })
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
-
-
-def _action_admit_request_v2(
-    *,
-    idempotency_key: str = "",
-    graph_id: str = "",
-    universe_id: str = "",
-    text: str = "",
-    request_type: str = "general",
-    branch_id: str = "",
-    pickup_incentive: str = "",
-    directed_daemon_id: str = "",
-    directed_daemon_instruction: str = "",
-    priority_weight: int | float = 0.0,
-    **_kwargs: Any,
-) -> str:
-    """Validate and atomically admit one canonical protocol-v2 request."""
-
-    if not idempotency_key:
-        # The universe MCP action has no caller key. It shares the v2 write
-        # path while retaining that action's at-most-one-call semantics.
-        import uuid
-
-        idempotency_key = uuid.uuid4().hex
-
-    string_fields = (
-        idempotency_key,
-        graph_id,
-        universe_id,
-        text,
-        request_type,
-        branch_id,
-        pickup_incentive,
-        directed_daemon_id,
-        directed_daemon_instruction,
-    )
-    if (
-        not all(isinstance(value, str) for value in string_fields)
-        or _REQUEST_IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key) is None
-        or isinstance(priority_weight, bool)
-        or not isinstance(priority_weight, (int, float))
-        or not 0 <= priority_weight <= 100
-        or request_type not in _REQUEST_TYPES
-    ):
-        return _request_validation_error()
-    try:
-        encoded_fields = tuple(value.encode("utf-8") for value in string_fields)
-    except UnicodeEncodeError:
-        return _request_validation_error()
-    if len(encoded_fields[3]) > _SUBMIT_REQUEST_MAX_BYTES:
-        return _request_validation_error()
-
-    if graph_id and universe_id and graph_id != universe_id:
-        return _request_validation_error()
-    uid = _request_universe(graph_id or universe_id)
-    try:
-        idempotency_key_hash = _request_idempotency_key_hash(
-            idempotency_key
-        )
-    except RuntimeError:
-        logger.error("request admission HMAC key is not configured")
-        return json.dumps({"error": "request_admission_unavailable"})
-    body_digest = _request_body_digest(
-        universe_id=uid,
-        text=text,
-        request_type=request_type,
-        branch_id=branch_id,
-        pickup_incentive=pickup_incentive,
-        directed_daemon_id=directed_daemon_id,
-        directed_daemon_instruction=directed_daemon_instruction,
-        priority_weight=priority_weight,
-    )
-
-    from tinyassets.storage.request_admissions import (
-        IdempotencyKeyBodyConflict,
-        RequestAdmissionStore,
-    )
-
-    store = RequestAdmissionStore(_base_path())
-    try:
-        replay = _lookup_operator_request_replay(
-            store,
-            universe_id=uid,
-            idempotency_key_hash=idempotency_key_hash,
-            body_digest=body_digest,
-            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
-        )
-    except IdempotencyKeyBodyConflict:
-        return json.dumps({"error": "idempotency_key_body_conflict"})
-    except PermissionError:
-        return json.dumps({"error": "universe_access_denied"})
-    if replay is not None:
-        return json.dumps(replay, default=str)
-
-    udir = _universe_dir(uid)
-    if not udir.is_dir():
-        return json.dumps({"error": "universe_not_found"})
-    loop_branch_def_id, _loop_dispatch = _universe_loop_dispatch(udir)
-    if not loop_branch_def_id:
-        return json.dumps({
-            "error": "universe_loop_not_declared",
-            "universe_id": uid,
-        })
-
-    verdict = permissions.operator_request_admission_verdict(
-        uid,
-        requested_priority_weight=float(priority_weight),
-        directed=bool(directed_daemon_id),
-    )
-    if not verdict.allowed:
-        return json.dumps({"error": verdict.error_code})
-
-    directed_receipt: dict[str, Any] = {}
-    if directed_daemon_id:
-        from tinyassets.daemon_registry import (
-            build_requester_directed_daemon_assignment,
-        )
-
-        assignment = build_requester_directed_daemon_assignment(
-            _base_path(),
-            daemon_id=directed_daemon_id,
-            requester_id=verdict.actor_id,
-            patch_request_id="pending-request-admission",
-            instruction=directed_daemon_instruction,
-        )
-        if assignment.get("effect") == "refused":
-            return json.dumps({"error": "directed_daemon_not_authorized"})
-        directed_receipt = {
-            "daemon_id": str(assignment.get("daemon_id") or ""),
-            "daemon_soul_hash": str(
-                assignment.get("daemon_soul_hash") or ""
-            ),
-            "authority_scope": str(
-                assignment.get("authority_scope") or ""
-            ),
-        }
-
-    access_check, priority_check = (
-        permissions.operator_request_transaction_checks(verdict)
-    )
-    receipt = {
-        "authority": "request-local",
-        "grant_generation": int(verdict.grant_generation or 0),
-        "priority_policy_version": verdict.priority_policy_version,
-        "directed_assignment": directed_receipt,
-    }
-    try:
-        result = store.commit_admission(
-            tenant_id=verdict.tenant_id,
-            actor_id=verdict.actor_id,
-            universe_id=uid,
-            idempotency_key_hash=idempotency_key_hash,
-            body_digest=body_digest,
-            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
-            request_type=request_type,
-            text=text,
-            branch_id=branch_id,
-            branch_def_id=loop_branch_def_id,
-            trigger_source=verdict.trigger_source,
-            accepted_priority_weight=verdict.accepted_priority_weight,
-            policy_version=verdict.priority_policy_version,
-            grant_generation=int(verdict.grant_generation or 0),
-            receipt=receipt,
-            directed_daemon_id=directed_daemon_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            pickup_incentive=pickup_incentive,
-            directed_daemon_instruction=directed_daemon_instruction,
-            access_check=access_check,
-            authority_check=priority_check,
-        )
-    except IdempotencyKeyBodyConflict:
-        return json.dumps({"error": "idempotency_key_body_conflict"})
-    except PermissionError:
-        return json.dumps({"error": "universe_access_denied"})
-    except Exception as exc:
-        from tinyassets.storage.accounts import (
-            CapabilityGrantAuthorizationError,
-        )
-
-        if isinstance(exc, CapabilityGrantAuthorizationError):
-            return json.dumps({"error": "priority_authorization_required"})
-        logger.exception("request admission transaction failed")
-        return json.dumps({"error": "request_admission_failed"})
-    return json.dumps(result, default=str)
-
 
 def admit_request_v2(
     *,
@@ -2329,7 +2068,7 @@ def admit_request_v2(
     directed_daemon_instruction: str = "",
     priority_weight: int | float = 0.0,
 ) -> str:
-    """Public request writer with one mutation-ledger entry per commit."""
+    """Refuse a request until an execution path can claim it."""
 
     kwargs = {
         "idempotency_key": idempotency_key,
@@ -2344,15 +2083,10 @@ def admit_request_v2(
     }
     return _dispatch_with_ledger(
         "submit_request",
-        _action_admit_request_v2,
+        _action_refuse_request,
         kwargs,
         scope_response=False,
     )
-
-
-_SUBMIT_REQUEST_MAX_BYTES = 8192
-
-
 
 
 def _safe_epoch2_queue_row(
@@ -5587,7 +5321,7 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "get_activity": _action_get_activity,
     "get_recent_events": _action_get_recent_events,
     "get_ledger": _action_get_ledger,
-    "submit_request": _action_admit_request_v2,
+    "submit_request": _action_refuse_request,
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,

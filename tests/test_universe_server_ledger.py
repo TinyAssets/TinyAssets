@@ -50,7 +50,7 @@ def _call(action: str, **kwargs) -> dict:
         "query_world": us._action_query_world,
         "get_activity": us._action_get_activity,
         "get_ledger": us._action_get_ledger,
-        "submit_request": us._action_submit_request,
+        "submit_request": us.UNIVERSE_ACTIONS["submit_request"],
         "give_direction": us._action_give_direction,
         "read_premise": us._action_read_premise,
         "set_premise": us._action_set_premise,
@@ -190,8 +190,6 @@ def test_write_actions_table_is_exhaustive() -> None:
         "add_canon",
         "control_daemon", "switch_universe", "create_universe",
         "queue_cancel",
-        "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",
-        "submit_node_bid",  # Phase G
         "set_tier_config",  # Phase H
         "set_engine",
         "soul.edit",  # the learn/write path (OpenSpec universe-creation 1.8)
@@ -260,7 +258,7 @@ def test_give_direction_accepts_line_anchor(universe: str) -> None:
     assert entries[0]["payload"]["anchor"] == anchor
 
 
-def test_submit_request_appends_ledger(
+def test_submit_request_refuses_without_a_ledger_mutation(
     universe: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -271,16 +269,9 @@ def test_submit_request_appends_ledger(
     )
 
     out = _call("submit_request", text="Please add a dragon.", request_type="scene_direction")
-    assert out["status"] == "pending"
+    assert out["error"] == "request_execution_unavailable"
 
-    entries = _ledger(universe)
-    assert len(entries) == 1
-    assert entries[0]["action"] == "submit_request"
-    assert entries[0]["target"] == out["request_id"]
-    assert entries[0]["payload"]["request_type"] == "scene_direction"
-    assert entries[0]["payload"]["loop_dispatch"]["source"] == (
-        "legacy_program_fantasy_compat"
-    )
+    assert not (us._base_path() / universe / "ledger.json").exists()
 
 
 def test_idempotent_request_replay_is_access_only_not_a_second_mutation(
@@ -447,7 +438,7 @@ def test_ledger_survives_across_mixed_writes(
 
     entries = _ledger(universe)
     actions = [e["action"] for e in entries]
-    assert actions == ["set_premise", "give_direction", "submit_request", "add_canon"]
+    assert actions == ["set_premise", "give_direction", "add_canon"]
     for entry in entries:
         assert entry["actor"] == "test-user"
         assert entry["timestamp"]
