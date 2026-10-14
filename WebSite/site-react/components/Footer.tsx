@@ -1,6 +1,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { TinyAssetsMark } from "./TinyAssetsMark";
+import { legal } from "../lib/legal";
 import { SITE } from "../lib/site";
 import styles from "./Footer.module.css";
 
@@ -11,7 +12,7 @@ export function Footer() {
         <div className={styles.brand}>
           <TinyAssetsMark size={26} />
           <p className={styles.line}>
-            <strong>TinyAssets</strong> is one app for your own agents. The code is open source under MIT on{" "}
+            <strong>{legal.brand}</strong> is one app for your own agents. The code is open source under MIT on{" "}
             <a href={SITE.repo} target="_blank" rel="noreferrer">
               GitHub
             </a>
@@ -49,7 +50,7 @@ export function Footer() {
       </div>
 
       <div className={`container ${styles.bottom}`}>
-        <span className="ev">© 2026 TinyAssets · MIT code · CC0 public shapes</span>
+        <span className="ev">© 2026 {legal.brand} · MIT code · CC0 public shapes</span>
         <span className="ev">
           <a href={SITE.mcp}>tinyassets.io/mcp</a> is the only public endpoint
         </span>

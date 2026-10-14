@@ -34,6 +34,17 @@ The site SHALL present TinyAssets as one app on any device: the visitor's own ag
 - **THEN** ChatGPT/Codex is described as one tap and Claude as the person pasting their own setup token into the deposit form
 - **AND** no page presents a "Connect Claude" OAuth control
 
+### Requirement: The Site Names TinyAssets Only
+
+The public site SHALL name the operator as TinyAssets and SHALL NOT publish a separate legal-entity name, a trade-name phrase, or a doing-business-as phrase. `brand`, `governing_law`, and `contact` SHALL stay in `WebSite/site-react/lib/legal-info.json`. `/legal` (page and metadata), the footer brand, the schema.org Organization, WebSite, and SoftwareApplication names, the Open Graph site name, and `SITE.contact` SHALL read this record. A site test that scans only `WebSite/site-react` SHALL fail when `Simkal`, `Holdings LLC`, `trade name of`, `doing business as`, or a `{legal_name}` placeholder appears there.
+
+#### Scenario: A visitor reads the terms
+
+- **WHEN** a visitor opens `/legal`
+- **THEN** the terms say the agreement is between them and TinyAssets
+- **AND** the page names the governing law and the contact address from `lib/legal-info.json`
+- **AND** the page does not name another legal entity
+
 ### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
 The site SHALL describe plans in the `Plans` section of `/fine-print` (anchor `#plans`). Free and any later paid tier SHALL be the same app and the same security. The only differences the copy may name are simultaneous runs and storage. The section SHALL NOT print a price, a run cap, or a storage cap until the owner publishes those numbers; unfinished numbers SHALL be a visible owner-decision note, not a guessed figure. Because enforcement is not refusing work today, the section SHALL say usage is metered and the gate is not switched on. It SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/` MAY summarise the same two differences and MUST NOT name a price. `/start` MAY carry one sentence that links to the section. No public text asset (`llms.txt`, `robots.txt`) states a price.
