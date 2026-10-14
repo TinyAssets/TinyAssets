@@ -53,6 +53,8 @@ class Dispatch:
             if not ledger["enabled"]:
                 return {"route": "stop", "reason": "disabled"}
             doc = self.room.load()
+            if receipt.get("room_id") != doc.get("room_id"):
+                raise PermissionError("Receipt does not belong to the loaded room")
             dispatch = prepare(doc, receipt, include_completed=True)
             if dispatch is None:
                 return {"route": "stop", "reason": "not_addressed_or_already_replied"}

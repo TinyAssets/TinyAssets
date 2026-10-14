@@ -27,6 +27,14 @@ def test_disabled_by_default(setup):
     assert not dispatcher.path.exists()
 
 
+def test_loaded_room_must_match_receipt(setup):
+    dispatcher, _, receipt = setup
+    dispatcher.configure(enabled=True)
+    with pytest.raises(PermissionError, match="loaded room"):
+        dispatcher.claim({**receipt, "room_id": "foreign-room"})
+    assert not dispatcher._load()["records"]
+
+
 def test_one_claim_concurrent_and_no_uncertain_generation_retry(setup):
     dispatcher, _, receipt = setup
     dispatcher.configure(enabled=True)

@@ -120,6 +120,7 @@ def build(*, author, command_center_id, storage_workflow_id, room_id, room_sourc
         room_id=room_id,
         room_source=room_source,
     )
+    compile(program(room_source), "<owner-room-adapter>", "exec")
     nodes = [
         NodeDefinition(
             node_id="claim",
