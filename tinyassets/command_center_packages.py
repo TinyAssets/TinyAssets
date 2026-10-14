@@ -1288,12 +1288,17 @@ def quarantine_import(base_path, *, owner, command_center, epoch, bundle):
             with author_connection(base_path) as author:
                 author.execute("BEGIN IMMEDIATE")
                 check_principal_not_deleted(author, owner)
-                store_blob(base_path, author_id=owner, blob=blob)
                 import_id = "import_" + secrets.token_urlsafe(24)
+                # _db is autocommit: make the owner-scoped erasure inventory
+                # durable BEFORE any bytes can land. If storage fails or this
+                # process stops, retain the inert quarantine record for retry
+                # or account erasure, including when no blob ownership row
+                # was committed. No receipt is returned until custody succeeds.
                 conn.execute(
                     "INSERT INTO bundle_imports VALUES (?,?,?,?,?,'quarantined',?)",
                     (import_id, owner, command_center, epoch, sha, time.time()),
                 )
+                store_blob(base_path, author_id=owner, blob=blob)
     return {"import_id": import_id, "state": "quarantined", "sha256": sha}
 
 
