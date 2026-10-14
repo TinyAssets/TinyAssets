@@ -232,3 +232,20 @@ and stable per-file operation IDs for explicit recovery.
 #### Scenario: Owner or destination changes before confirmation
 - **WHEN** confirmation has a different owner, center, placement epoch or destination generation
 - **THEN** the initial copy refuses without installing files.
+
+### Requirement: Local terminal rule decisions
+The standalone runner SHALL map every portable action class to its configured
+behavior, using trusted owner classification for restricted shell effects and
+fresh consent for ask-first or nonportable preapprovals. Hand-off SHALL solicit
+an owner-reported result without executing. Missing terminal authority SHALL
+refuse. Explicit all-do policy plus bash allow MAY enable unattended execution.
+
+#### Scenario: Shell command attempts model self-classification
+- **WHEN** the model adds an action classification to its tool arguments
+- **THEN** the tool rejects those undeclared fields
+- **AND** only the local owner can choose the applicable classes.
+
+#### Scenario: Owner classifies an action as a hand-off
+- **WHEN** any applicable rule requires hand-off
+- **THEN** the command does not execute even if ordinary approval would succeed
+- **AND** the response labels any supplied result as owner-reported.

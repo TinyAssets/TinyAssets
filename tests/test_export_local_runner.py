@@ -63,7 +63,9 @@ def test_exported_workspace_rules_require_fresh_local_authority(
         "edit": {"path": "note.txt", "old": "original", "new": "changed"},
         "bash": {"command": "printf changed > note.txt"},
     }[name]
-    result = RUNNER["LocalTools"](folder, approve=approve).call(name, arguments)
+    result = RUNNER["LocalTools"](
+        folder, approve=approve, classify=lambda _: {"workspace.shell"},
+    ).call(name, arguments)
     assert result.startswith("Refused:") is not allowed
     if name == "read":
         assert (result == "original") is allowed

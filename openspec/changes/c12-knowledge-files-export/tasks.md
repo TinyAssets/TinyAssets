@@ -12,10 +12,12 @@
 - [x] 2.2d Capture owned structured workflows and disabled schedules, fence source changes, and execute the supported linear prompt subset with whole-graph refusal for unsupported semantics.
 - [x] 2.2e Integrate C6 destruction-only provider admission and durable receipts into account deletion; verify unknown-outcome retries and concurrent requests without production mutation.
 - [x] 2.2f Add separate protected import review/copy confirmation using existing package pins, per-file journalled CREATE and verified final bytes; active native harness adoption remains separate.
+- [x] 2.2g Map every D1 action class and behavior to trusted terminal classification/consent, refusal or owner handoff; model-supplied classifications are rejected and unattended ambiguity refuses.
 - [ ] 2.3 Independent cross-family review and trusted receipt.
 
 ## 3. Knowledge cutover and export
 - [x] 3.0 Implement/test atomic owner-box revisions, lossless scoped snapshot planning and verified projection, private file preview and bounded inert zip ingestion.
+- [x] 3.0a Add provider-bound canonical source read/write adapters with atomic related-table updates and offline restore into fresh verified backup copies; test all seven real schemas and peer preservation. Production consumer wiring remains in 3.2.
 - [ ] 3.1 Complete source census and lossless staged migration under one snapshot transaction.
 - [ ] 3.2 Bundle-authoritative reads/writes; rebuildable indexes; delete canonical duplicates.
 - [ ] 3.3 One owner export door, preview, manifest, secret exclusions, download and import quarantine.

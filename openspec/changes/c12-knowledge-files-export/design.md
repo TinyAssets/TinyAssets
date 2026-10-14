@@ -301,3 +301,36 @@ and command-center mapping. NULL legacy knowledge scopes likewise need explicit
 resolution under the backup snapshot. Neither is inferred from the last editor,
 current session, or an arbitrary first owner. Preparing adapters and restore
 verification does not authorize a production migration with unresolved scopes.
+
+## Canonical source adapters and offline restore
+
+`SourceRecords` binds the configured C6 provider using the explicit owner and
+command center. It reads only the current OKF revision, validates the original
+source census and every complete typed row, and commits related table changes
+atomically. Migration and ongoing writes use one identity/body encoder. Unknown
+frontmatter survives updates; deleted Markdown records never reappear from a
+legacy database. There is no SQLite fallback in the adapter. Existing legacy
+consumer APIs still require explicit wiring and verified ownership context.
+
+Restore creates a new exclusive destination from the original checksum-verified
+backup. Owner-editable frontmatter supplies values, never executable DDL. Only
+the verified scope is replaced, triggers are temporarily disabled, conflicts
+abort regardless of schema defaults, and peer/excluded rows must remain equal
+before commit. Foreign keys, integrity, canonical typed values and the original
+backup checksum are checked before a receipt. Failed copies are retained for
+inspection. The receipt explicitly does not activate the copy and lists excluded
+stores that may require derived-index rebuilding. Tests exercise edits and a
+real SQLite restore for daemon, project, episodic, KG, promises, versions and
+temporal schemas; these are fixtures, not a production migration proof.
+
+## Complete terminal rule decisions
+
+The local shell dispatcher asks the terminal owner to classify all applicable
+D1 action classes whenever any effect class has a restrictive behavior. The
+strictest selected behavior governs; the model cannot supply classification or
+consent. Missing interactive classification refuses. `hand_off` asks the owner
+to perform the action and report the result, and never executes it on approval.
+Files and workflows follow the same handoff semantics. This maps every D1
+class/behavior to a terminal decision, but human classification is not a broker
+or OS sandbox guarantee. Explicit all-do policy plus the separate bash enable
+flag permits unattended shell execution.

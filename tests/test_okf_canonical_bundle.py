@@ -465,6 +465,27 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         if entry.metadata["source"] == "temporal" and row["fact_id"].endswith("-old"):
             assert row["valid_until"] is not None
         assert "owner-b" not in entry.body
+    from tinyassets.okf.records import SourceRecords
+    from tinyassets.okf.restore import restore_copy
+
+    # Exercise the actual seven schemas through the canonical production adapter,
+    # then restore real standalone databases from the verified backup snapshots.
+    for source in sources:
+        adapter = SourceRecords(bundle, source.source)
+        before = adapter.snapshot()
+        rows = adapter.rows(before)
+        entry = next(item for item in before.entries.values()
+                     if item.metadata.get("source") == source.source
+                     and item.metadata["body_field"])
+        row = dict(rows[entry.metadata["table"]][entry.id])
+        row[entry.metadata["body_field"]] += " [canonical owner edit]"
+        adapter.write(before, upserts={entry.metadata["table"]: [row]},
+                      operation_id="edit-" + source.source)
+        assert adapter.rows(adapter.snapshot())[entry.metadata["table"]][entry.id] == row
+        restored = restore_copy(adapter.snapshot(), source,
+                                tmp_path / (source.source + "-restore.db"))
+        assert restored["rows"] == sum(len(table) for table in rows.values())
+        assert restored["activated"] is False
     for path, original in originals.items():
         assert path.read_bytes() == original
         assert not Path(str(path) + "-wal").exists()

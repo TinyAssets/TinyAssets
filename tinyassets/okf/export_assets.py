@@ -59,17 +59,22 @@ You may change run/rules.json's bash policy to ask, deny or allow. The agent's
 file tools cannot edit policies, settings, runtime, schedule state or manifest.
 agents/<agent>/rules.json carries that agent's action behaviors. File tools
 enforce workspace.files; bash enforces workspace.shell and the local bash policy.
-hand_off refuses; ask_first and do_if_preapproved require fresh local consent.
-Source preapprovals never travel. Connection/operation-specific behaviors are
-conservatively applied to the whole action class, so local rules can be stricter.
+ask_first and do_if_preapproved require fresh local consent; source preapprovals
+never travel. hand_off asks you to perform the action yourself and describe the
+result to the model; the agent does not execute it. Without a terminal these
+requests refuse. Connection/operation-specific behaviors are conservatively
+applied to the whole action class, so local rules can be stricter.
 Review imported run/
 code before executing it; its own prompts are not proof it is trustworthy.
 
 Hosted jail, egress checks, auto-review, browser broker, delivery, phone push,
-quota accounting and always-on execution are absent. Full platform action-rule mapping is not yet
-supported. Other action behaviors are shown to the model, but arbitrary host
-shell commands have no broker to classify their effects. Keep bash on ask and
-review each command; this runner is not an OS sandbox. Windows is not supported yet.
+quota accounting and always-on execution are absent. All portable action classes
+have terminal decisions, but arbitrary host shell commands have no broker to
+classify their effects. When other classes have restrictions, you must select
+all applicable classes before a shell command can proceed; model-provided labels
+cannot authorize it. Any hand-off rule keeps execution with you. An all-do policy
+plus bash allow is an explicit opt-in to unattended execution. Keep bash on ask
+and review each command; this runner is not an OS sandbox. Windows is not supported yet.
 
 Selected workflows are data in workflows/exported/. The runner supports linear
 prompt graphs with one text output per node, explicit str/overwrite state, and

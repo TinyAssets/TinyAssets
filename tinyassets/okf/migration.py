@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -125,50 +124,10 @@ def read_snapshot(
                 )
             ]
             table_entries = []
+            from tinyassets.okf.records import record_entry
+
             for row in rows:
-                identity = (
-                    [scalar(row[key]) for key in pk] if pk else [scalar(row["__migration_rowid__"])]
-                )
-                encoded = {name: scalar(value) for name, value in row.items()}
-                key = json.dumps(
-                    [source, table, identity], ensure_ascii=False, separators=(",", ":")
-                )
-                entry_id = hashlib.sha256(key.encode()).hexdigest()
-                body_field = next(
-                    (
-                        field
-                        for field in (
-                            "content",
-                            "summary",
-                            "text",
-                            "value",
-                            "reflection",
-                            "observation",
-                            "public_description",
-                            "prose",
-                            "description",
-                        )
-                        if isinstance(row.get(field), str)
-                    ),
-                    None,
-                )
-                body = row[body_field] if body_field else ""
-                if body_field:
-                    del encoded[body_field]
-                table_entries.append(
-                    Entry(
-                        entry_id,
-                        "sqlite-record",
-                        body,
-                        {
-                            "source": source,
-                            "table": table,
-                            "identity": identity,
-                            "body_field": body_field,
-                            "fields": encoded,
-                        },
-                    )
-                )
+                table_entries.append(record_entry(source, table, row, columns))
             table_entries.sort(key=lambda entry: entry.id)
             digest = hashlib.sha256(b"".join(entry.encode() for entry in table_entries)).hexdigest()
             inventory["tables"][table] = {

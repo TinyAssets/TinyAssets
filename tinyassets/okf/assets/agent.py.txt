@@ -50,11 +50,13 @@ ACTION_CLASSES = {
 
 
 class LocalTools:
-    def __init__(self, root: Path, *, approve=None, agent="main"):
+    def __init__(self, root: Path, *, approve=None, agent="main", classify=None, handoff=None):
         if os.name != "posix":
             raise RuntimeError("This runner currently requires POSIX file-descriptor operations")
         self.root = root.resolve(strict=True)
         self.approve = approve or self._ask
+        self.classify = classify or self._classify
+        self.handoff = handoff or self._handoff
         try:
             rules = json.loads(self.read("run/rules.json"))
         except FileNotFoundError:
@@ -95,9 +97,37 @@ class LocalTools:
         if not sys.stdin.isatty():
             return False
         try:
-            return input(f"Allow this local action with your host privileges?\n{command}\nType yes: ") == "yes"
+            return input("Allow this local action with your host privileges?\n"
+                         + json.dumps(command) + "\nType yes: ") == "yes"
         except (EOFError, KeyboardInterrupt):
             return False
+
+    @staticmethod
+    def _classify(command):
+        if not sys.stdin.isatty():
+            return None
+        try:
+            answer = input("Review the command and select ALL action classes it performs.\n"
+                           + json.dumps(command) + "\n" + ", ".join(sorted(ACTION_CLASSES))
+                           + "\nComma-separated classes (blank refuses): ")
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return {part.strip() for part in answer.split(",") if part.strip()}
+
+    @staticmethod
+    def _handoff(action):
+        if not sys.stdin.isatty():
+            return "Refused: hand-off needs the local owner"
+        try:
+            result = input("Perform this action yourself if appropriate; the agent will not run it.\n"
+                           + json.dumps(action)
+                           + "\nDescribe the result to send to the model, without credentials"
+                           + " (blank refuses): ")
+        except (EOFError, KeyboardInterrupt):
+            return "Refused: hand-off was not completed"
+        if not result or len(result.encode()) > MAX_FILE_BYTES:
+            return "Refused: hand-off needs a bounded owner result"
+        return "Owner-reported result (agent did not execute): " + result
 
     def _parent(self, path, *, writing=False):
         if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
@@ -176,10 +206,24 @@ class LocalTools:
         return self.write(path, current.replace(old, new, 1))
 
     def bash(self, command):
+        if self.bash_policy == "deny":
+            return "Refused: command lacks owner consent"
         behavior = self.behaviours.get("workspace.shell", "do")
-        if self.bash_policy == "deny" or behavior == "hand_off" or (
-            (self.bash_policy == "ask" or behavior != "do") and not self.approve(command)
-        ):
+        if behavior == "hand_off":
+            return self.handoff("workspace.shell: " + command)
+        # A host shell has no broker to classify its effects. Only the local
+        # owner may narrow the applicable classes; model tool arguments cannot.
+        if any(value != "do" for key, value in self.behaviours.items()
+               if key != "workspace.shell"):
+            classes = self.classify(command)
+            if (not isinstance(classes, set) or not classes or not classes <= ACTION_CLASSES
+                    or not all(isinstance(action, str) for action in classes)):
+                return "Refused: shell effects need local owner classification"
+            classes = classes | {"workspace.shell"}
+            behavior = max((self.behaviours[action] for action in classes), key=BEHAVIOURS.index)
+            if behavior == "hand_off":
+                return self.handoff(", ".join(sorted(classes)) + ": " + command)
+        if ((self.bash_policy == "ask" or behavior != "do") and not self.approve(command)):
             return "Refused: command lacks owner consent"
         process = subprocess.Popen(["bash", "-lc", command], cwd=self.root,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -230,8 +274,10 @@ class LocalTools:
             raise ValueError("Tool arguments must match the declared string fields")
         if name != "bash":
             behavior = self.behaviours.get("workspace.files", "do")
-            if behavior == "hand_off" or (behavior != "do" and not self.approve(
-                    f"{name} {json.dumps(arguments, ensure_ascii=False)}")):
+            action = f"{name} {json.dumps(arguments, ensure_ascii=False)}"
+            if behavior == "hand_off":
+                return self.handoff("workspace.files: " + action)
+            if behavior != "do" and not self.approve(action):
                 return "Refused: file action lacks owner consent"
         return getattr(self, name)(**arguments)
 
@@ -264,12 +310,13 @@ def complete(base_url, model, messages, *, api_key=""):
     return json.loads(body)["choices"][0]["message"]
 
 
-def run(root, message, *, agent="main", model_call, max_calls=20, approve=None):
+def run(root, message, *, agent="main", model_call, max_calls=20, approve=None,
+        classify=None, handoff=None):
     if not agent or len(PurePosixPath(agent).parts) != 1 or agent in (".", ".."):
         raise ValueError("agent must be one directory name")
     if not 1 <= max_calls <= 100:
         raise ValueError("max_calls must be between 1 and 100")
-    tools = LocalTools(Path(root), approve=approve, agent=agent)
+    tools = LocalTools(Path(root), approve=approve, agent=agent, classify=classify, handoff=handoff)
     instructions = tools.read(f"agents/{agent}/AGENTS.md")
     context = f"Your harness is in agents/{agent}/. File paths are relative to the export root.\n"
     if tools.behaviours:
@@ -480,13 +527,19 @@ def workflow_plan(root, path, inputs):
     return ordered, state, hashlib.sha256(raw.encode()).hexdigest()
 
 
-def workflow(root, path, inputs, *, agent="main", model_call, approve=None, expected_digest=None):
+def workflow(root, path, inputs, *, agent="main", model_call, approve=None, expected_digest=None,
+             handoff=None):
     ordered, state, digest = workflow_plan(root, path, inputs)
     if expected_digest is not None and digest != expected_digest:
         raise ValueError("Workflow configuration changed before execution")
-    tools = LocalTools(Path(root), agent=agent, approve=approve)
+    tools = LocalTools(Path(root), agent=agent, approve=approve, handoff=handoff)
     behavior = tools.behaviours.get("workspace.workflows", "do")
-    if behavior == "hand_off" or (behavior != "do" and not tools.approve("Run workflow " + path)):
+    if behavior == "hand_off":
+        result = tools.handoff("workspace.workflows: " + path + " inputs=" + json.dumps(inputs))
+        if result.startswith("Refused:"):
+            raise PermissionError(result)
+        return {"owner_handoff": result}
+    if behavior != "do" and not tools.approve("Run workflow " + path):
         raise PermissionError("Workflow lacks fresh local owner consent")
     for node, template in ordered:
         prompt = re.sub(r"(?<!\\){([a-zA-Z_][a-zA-Z0-9_]*)}",

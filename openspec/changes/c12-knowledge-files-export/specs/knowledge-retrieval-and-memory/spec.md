@@ -70,3 +70,35 @@ be reported but SHALL NOT independently make `conformant` false.
 
 - **WHEN** a bundle has valid generated reserved files and parseable concept frontmatter with non-empty types but also has unresolved links or privacy exclusions
 - **THEN** the local `conformant` flag remains true and does not claim complete upstream OKF or canonical-store conformance
+
+## ADDED Requirements
+
+### Requirement: Canonical source record adapter
+Source-record readers and writers SHALL bind the configured owner BoxProvider
+and use only committed OKF revisions. They SHALL fail on an absent provider or
+unmigrated source, without opening legacy SQLite. Updates SHALL preserve unknown
+columns and metadata, validate declared scope and primary-key identities, and
+commit related tables atomically with the original snapshot and operation ID.
+
+#### Scenario: An owner edits canonical prose
+- **WHEN** the record adapter reads after a Markdown body edit
+- **THEN** the edited body is the row's only prose value and no legacy database is consulted.
+
+#### Scenario: A write crosses scope or loses a race
+- **WHEN** an update changes a scope column or uses a stale owner snapshot
+- **THEN** the write refuses without replacing committed knowledge.
+
+### Requirement: Offline verified restore preparation
+Restore preparation SHALL use a verified backup and a committed owner snapshot,
+write only a new destination, and retain every unselected backup row. It SHALL
+verify restored scoped values before returning a receipt. It SHALL explicitly
+identify derived stores needing rebuild and SHALL NOT activate restored state.
+
+#### Scenario: Restore input is changed or a destination already exists
+- **WHEN** backup checksums differ, scoped identities are invalid, or the target exists
+- **THEN** restore refuses without overwriting the backup or existing destination.
+
+#### Scenario: A canonical key collides with another owner
+- **WHEN** a canonical record conflicts with a preserved row even under a schema REPLACE or IGNORE policy
+- **THEN** restore aborts and rolls back the destination transaction
+- **AND** no successful receipt is issued and both original owners' rows remain.
