@@ -13,6 +13,7 @@ import socket
 import stat
 import struct
 import threading
+import time
 import traceback
 import weakref
 from types import SimpleNamespace
@@ -207,6 +208,12 @@ class OwnerLaunchRefused(RuntimeError):
     """One completed authenticated exchange was refused; channel remains usable."""
 
 
+#: How long start_cell keeps asking after the mapper says every slot is taken.
+#: Each ask also waits inside the mapper while it reaps finished cells.
+_CELL_SLOT_RETRY_S = 20.0
+_CELL_SLOT_PAUSE_S = 0.2
+
+
 def _pipe():
     """(read end, write end) of one anonymous pipe, both close-on-exec."""
     read_fd, write_fd = os.pipe()
@@ -349,40 +356,58 @@ class OwnerLauncherClient:
         else:
             data, child = socket.socketpair()
         try:
-            with self._lock:
-                self._check()
-                self._channel.settimeout(5)
-                handles = [child.fileno()]
-                if directory_fd is not None:
-                    handles.append(directory_fd)
-                handles.extend(socket_fds)
-                if extension_fd is not None:
-                    handles.append(extension_fd)
-                if child_stdout is not None:
-                    handles.append(child_stdout.fileno())
-                    handles.append(child_stderr.fileno())
-                handles.append(child_status.fileno())
-                try:
-                    self._channel.sendmsg([json.dumps(document).encode()], [(
-                        socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', handles))])
-                    reply = self._reply()
-                    self._refusal(reply)
-                    if (set(reply) != {'op', 'uid', 'gid'} or reply['op'] != 'STARTED'
-                            or type(reply['uid']) is not int or type(reply['gid']) is not int
-                            or reply['uid'] != reply['gid']
-                            or not OWNER_ID_FIRST <= reply['uid'] <= OWNER_ID_LAST):
-                        raise RuntimeError('invalid owner launcher start receipt')
-                    if reply['uid'] != identity.uid:
-                        actual = OwnerIdentity(reply['uid'], reply['gid'])
-                        with OwnerCell(self, data, status, actual, stderr=stderr,
-                                       stdin=stdin, kind=kind) as refused:
-                            refused.cancel()  # Reap before returning a reusable refusal.
-                        raise OwnerLaunchRefused('owner launcher refused cell identity')
-                except OwnerLaunchRefused:
-                    raise
-                except BaseException:
-                    self._close()
-                    raise
+            deadline = time.monotonic() + _CELL_SLOT_RETRY_S
+            while True:
+                with self._lock:
+                    self._check()
+                    # Covers the mapper's reap wait plus the receipt.
+                    self._channel.settimeout(8)
+                    handles = [child.fileno()]
+                    if directory_fd is not None:
+                        handles.append(directory_fd)
+                    handles.extend(socket_fds)
+                    if extension_fd is not None:
+                        handles.append(extension_fd)
+                    if child_stdout is not None:
+                        handles.append(child_stdout.fileno())
+                        handles.append(child_stderr.fileno())
+                    handles.append(child_status.fileno())
+                    try:
+                        self._channel.sendmsg([json.dumps(document).encode()], [(
+                            socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', handles))])
+                        reply = self._reply()
+                        self._refusal(reply)
+                        if (set(reply) != {'op', 'uid', 'gid'} or reply['op'] != 'STARTED'
+                                or type(reply['uid']) is not int or type(reply['gid']) is not int
+                                or reply['uid'] != reply['gid']
+                                or not OWNER_ID_FIRST <= reply['uid'] <= OWNER_ID_LAST):
+                            raise RuntimeError('invalid owner launcher start receipt')
+                        if reply['uid'] != identity.uid:
+                            actual = OwnerIdentity(reply['uid'], reply['gid'])
+                            with OwnerCell(self, data, status, actual, stderr=stderr,
+                                           stdin=stdin, kind=kind) as refused:
+                                refused.cancel()  # Reap before returning a reusable refusal.
+                            raise OwnerLaunchRefused('owner launcher refused cell identity')
+                    except OwnerLaunchRefused as exc:
+                        if 'concurrency is exhausted' not in str(exc):
+                            raise
+                        if time.monotonic() >= deadline:
+                            raise OwnerLaunchRefused(
+                                'owner launcher: owner cell concurrency is exhausted; '
+                                'waited for a running cell to finish and none did'
+                            ) from exc
+                        refused = exc
+                    except BaseException:
+                        # A slot refusal leaves the channel usable for the next
+                        # ask. Any other failure leaves it unread; close it so
+                        # the next caller does not sit on a half-open socket.
+                        self._close()
+                        raise
+                    else:
+                        refused = None
+                    if refused is None:
+                        break
+                time.sleep(_CELL_SLOT_PAUSE_S)
             return OwnerCell(self, data, status, identity, stderr=stderr, stdin=stdin, kind=kind)
         except BaseException:
             for endpoint in (data, status, stderr, stdin):

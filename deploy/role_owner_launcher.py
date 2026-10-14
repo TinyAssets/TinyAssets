@@ -24,6 +24,13 @@ FIRST, COUNT = 300000, 100000
 MAPPING = f"0 {FIRST} {COUNT}\n"
 CAPS = (1 << 6) | (1 << 7)
 MAX_CELLS, MAX_OWNER_CELLS = 32, 4
+#: How long one START waits, reaping finished cells, before it refuses.
+#: The daemon's start receipt timeout is longer than this.
+CELL_SLOT_WAIT_S = 3.0
+
+
+class CellSlotUnavailable(ValueError):
+    """A start waited for a free owner cell and none finished."""
 _diagnostic_path = Path(__file__).resolve().parent.parent / 'tinyassets/cell_diagnostics.py'
 _diagnostics = runpy.run_path(str(_diagnostic_path if _diagnostic_path.is_file()
                                 else Path('/app/tinyassets/cell_diagnostics.py')))
@@ -502,6 +509,12 @@ class OwnerLauncher:
                 self.channel.sendall(b'{"op":"STOPPED"}')
                 return False
             self._decoder(request, received)
+        except CellSlotUnavailable as exc:
+            reason = str(exc)
+            if (not reason.isascii() or not reason.isprintable() or len(reason) > 256):
+                reason = 'owner cell concurrency is exhausted'
+            os.write(2, ('owner cell refused: ' + reason + '\n').encode())
+            self.channel.sendall(json.dumps(dict(op='REFUSED', reason=reason)).encode())
         except (ValueError, TypeError, KeyError, OSError) as exc:
             reason = _diagnostics['failure_reason'](exc, 'mapper')
             os.write(2, ('owner cell refused: ' + reason + '\n').encode())
@@ -602,9 +615,7 @@ class OwnerLauncher:
         self._check_delete_fence(machine, request)
         inner = machine - FIRST
         if streaming:
-            if (len(self.jobs) >= MAX_CELLS or sum(
-                    job[1] == machine for job in self.jobs.values()) >= MAX_OWNER_CELLS):
-                raise ValueError('owner cell concurrency is exhausted')
+            self._await_owner_cell_slot(machine)
             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)
         if kind in ('provider-exec', 'external-agent'):
             # Ordinary pipes, as a local subprocess would get: stdin's read end
@@ -1156,6 +1167,25 @@ class OwnerLauncher:
             os.write(2, (f'owner cell ended: {reason} kind={kind} exit={code} '
                          f'stderr_tail={tail.decode("utf-8", "replace")!r}\n').encode())
         return reason
+
+    def _owner_cell_full(self, machine):
+        return (len(self.jobs) >= MAX_CELLS or sum(
+            job[1] == machine for job in self.jobs.values()) >= MAX_OWNER_CELLS)
+
+    def _await_owner_cell_slot(self, machine):
+        """Reap finished cells, then start. A unit double with no channel refuses at once."""
+        if not self._owner_cell_full(machine):
+            return
+        if not hasattr(self, 'channel'):
+            raise ValueError('owner cell concurrency is exhausted')
+        deadline = time.monotonic() + CELL_SLOT_WAIT_S
+        while self._owner_cell_full(machine):
+            if time.monotonic() >= deadline:
+                raise CellSlotUnavailable(
+                    'owner cell concurrency is exhausted; waited for a running '
+                    'cell to finish and none did')
+            self._service_jobs()
+            time.sleep(0.05)
 
     def _service_jobs(self):
         for pid, (inner, machine, deadline, channel) in list(self.jobs.items()):

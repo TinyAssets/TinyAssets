@@ -1474,7 +1474,9 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
     limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
-    wakes it with ``inputs.event``.
+    wakes it with ``inputs.event``. The same event again does not start another
+    run: the subscription records ``deduplicated:<wake id>`` for the wake
+    already stored.
     None cancels an already-running job. Read back the trigger and its last run
     before claiming work has stopped.
 

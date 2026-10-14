@@ -108,6 +108,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "one owner-key acquisition waits for a live holder only until wait_s; "
         "it returns a lease or refuses, without scheduling work",
     ),
+    "tinyassets/owner_launcher_client.py::OwnerLauncherClient.start_cell": (
+        CALL_SCOPED,
+        "one cell start retries while the owner's cell slots are full, until "
+        "its deadline, then refuses; it does not schedule another start",
+    ),
     "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
         CALL_SCOPED,
         "bad-reply backoff bounded by the remaining turn deadline; polls Stop "

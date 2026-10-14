@@ -198,14 +198,16 @@ def _video_frames(data, universe_dir):
 
 def _tool_run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds,
               output_bytes, on_wait, egress_socket, ta_socket, stop=None,
-              extension_root=None):
+              extension_root=None, reuse_maintenance=False):
     """The tool cell: the real bubblewrap jail and supervisor, run here.
 
     This is ``role_tools.run``'s daemon-side work (queueing, the seed
     boundary, the disk budget) followed by the cell's own work (the jail argv
     and ``_supervise``) in one process, which is what the jail looked like
-    before the owner hand-off existed.
+    before the owner hand-off existed. ``reuse_maintenance`` is the read-path
+    flag on ``role_tools.run``; this double does not walk the center.
     """
+    del reuse_maintenance
     from dataclasses import replace
 
     from tinyassets import universe_tools as tools

@@ -101,16 +101,27 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from tinyassets.providers.base import (
-    SandboxUnavailableError,
-    probe_sandbox_available,
-)
+from tinyassets.providers.base import SandboxUnavailableError
 
 logger = logging.getLogger("universe_server.sandbox")
 
-#: Sandbox availability probe. Module-level so tests can substitute it —
-#: production always resolves the real bwrap probe.
-_probe = probe_sandbox_available
+
+def _bwrap_on_path() -> dict[str, object]:
+    """Whether ``bwrap`` is on PATH.
+
+    Every code-node cell resolves its launcher through this. The functional
+    probe (``bwrap --version`` plus a full jail of ``python -c ""``) is what
+    status checks run once. Paying it again inside the cell, before the real
+    jail, is a start delay, and that jail is the check that matters.
+    """
+    found = shutil.which("bwrap")
+    if found:
+        return {"bwrap_available": True, "reason": None, "bwrap_path": found}
+    return {"bwrap_available": False, "reason": "bwrap not found on PATH"}
+
+
+#: Sandbox availability probe. Module-level so tests can substitute it.
+_probe = _bwrap_on_path
 
 #: Maximum encoded stdin message (design D2).
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -2098,7 +2109,8 @@ def _default_launcher() -> Launcher:
     """Resolve the production launcher, or refuse to run at all."""
     probe = _probe() or {}
     if probe.get("bwrap_available"):
-        return BwrapLauncher()
+        path = probe.get("bwrap_path")
+        return BwrapLauncher(None if path is None else str(path))
     reason = probe.get("reason") or "bwrap unavailable"
     raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
 
