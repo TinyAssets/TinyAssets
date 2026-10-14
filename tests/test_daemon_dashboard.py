@@ -273,7 +273,7 @@ def test_set_tier_config_invalid_tier_rejects(universe_harness):
 
 def test_set_tier_config_persists_across_load(universe_harness):
     """Invariant 4: toggle → load_dispatcher_config sees it."""
-    from tinyassets.dispatcher import load_dispatcher_config
+    from tinyassets.control_plane.queue_policy import load_dispatcher_config
     _action_set_tier_config(
         universe_id=universe_harness["uid"],
         tier="paid_bids", enabled=True,

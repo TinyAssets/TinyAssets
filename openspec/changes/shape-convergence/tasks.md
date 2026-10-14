@@ -82,7 +82,9 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       builder, and ZIP release; retain the independent `.mcpb` build.
       `scripts/check_mirror_parity.py` and the pre-commit hook reject a tracked
       plugin runtime. Guard: S19 converged. Parallel to C3.
-- **C5 Dead limbs and dead spawn paths.**
+- [x] **C5 Dead limbs and dead spawn paths.** The remaining v1 runner,
+      cloud continuation, root fantasy runner and domain CLI entries were
+      folded into C7.
       **Deletes:**
       - `cloud_automation_continuation.py` (3027) and
         `background_served_provider.py` (1790) with their tests.
@@ -110,7 +112,7 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Floor (cross-user): its own rounds.
       Guard: `role-cells` ceiling falls to one backend;
       `test_universe_path_io_guard` at 0. Net about −5k. Depends on C3, C5.
-- **C7 Control plane only.** Wakes, continuations, automations,
+- [x] **C7 Control plane only.** Wakes, continuations, automations,
       activities and event triggers become control-plane wake handlers on
       one tick.
       **Deletes:** the `scheduler.py` thread, `dispatcher.py`, `producers/`,

@@ -214,12 +214,6 @@ PINNED: dict[str, list[str]] = {
         "exclusive_refresh: os.open()",
         "materialize: os.open()",
     ],
-    "tinyassets/idle_cycle.py": [
-        "_read_stamp: .read_text()",
-        "_try_lock_nonblocking: os.open()",
-        "try_acquire_idle_cycle_slot: .write_text()",
-        "try_acquire_idle_cycle_slot: os.replace()",
-    ],
     "tinyassets/ingestion/extractors.py": [
         "synthesize_source: .read_text()",
     ],

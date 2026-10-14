@@ -32,8 +32,8 @@ USER_NAMES = frozenset({
     # agent-editable settings; its authority fields move out (design E6)
     "config.yaml",
     # content the agent or a run wrote, uploads, permanent workspaces:
-    # `workspace` is where fantasy_daemon/api.py writes uploaded files, and
-    # `.agent-workspace` is the agent's own (provider_jail.py AGENT_WORKSPACE_DIR;
+    # `workspace` includes historical uploads, and `.agent-workspace` is the
+    # agent's own (provider_jail.py AGENT_WORKSPACE_DIR;
     # storage_accounting calls it user bytes, harness W2)
     "workspace", "workspaces", ".agent-workspace",
     "canon", "output", "artifacts", "PROGRAM.md", "progress.md",

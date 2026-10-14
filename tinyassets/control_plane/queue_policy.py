@@ -1,9 +1,7 @@
-"""Tier-aware BranchTask dispatcher.
+"""Read-only priority policy for the persisted v2 request queue.
 
-Stateless selection function over ``branch_tasks.json``. Called
-exactly twice per ``_run_graph`` invocation — once at daemon startup
-(before first graph compile) and once at each cycle boundary (between
-wrapper returns). No internal timer, no continuous polling loop.
+The API and reconciliation read this policy to explain queued requests. The
+owner tick starts executable work; this module has no polling or run path.
 
 Priority scoring starts with the minimum viable tier model:
 
@@ -16,8 +14,7 @@ zero. Their coefficients sit in :class:`DispatcherConfig` so later
 market and goal-affinity work can wire them in without re-shaping
 ``score_task``.
 
-The dispatcher reads the queue only. Producers run inside the graph's
-review gates; the dispatcher does not invoke them.
+The policy reads the v2 queue only and does not claim or start tasks.
 """
 
 from __future__ import annotations
@@ -159,7 +156,7 @@ def score_task(
     """Deterministic BranchTask priority score.
 
     ``tier_weight + recency_decay + user_boost``. Other coefficients
-    multiply zero in v1 but remain wired for later market and goal terms.
+    multiply zero but remain in the persisted configuration's read contract.
     """
     tier = config.tier_weights.get(task.trigger_source, 0.0)
 
@@ -185,16 +182,6 @@ def score_task(
     cost_term = -config.cost_penalty_coefficient
 
     return tier + recency + boost + pickup_signal + bid_term + goal_term + cost_term
-
-
-
-
-
-
-
-
-
-
 
 
 def load_dispatcher_config(universe_path: Path) -> DispatcherConfig:

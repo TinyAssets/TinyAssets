@@ -424,10 +424,8 @@ class AssignedQueueConsumer:
 
         prep_store = AssignedQueueRefusalStore(self.base_path)
         # `.pause` is the universe's pause sentinel -- the owner's control and the
-        # P0 provider_exhaustion repair both write it. Every other loop honours it
-        # at its boundary (fantasy_daemon, branch_registrations); before the fleet
-        # was deleted the repair also `docker stop`ped the worker, so this consumer
-        # is now the only background executor and must halt on it too. A run
+        # P0 provider_exhaustion repair both write it. This owner tick must halt
+        # new background work on pause. A run
         # already in flight finishes; nothing new is pumped or claimed.
         #
         # Liveness is not activity: a paused universe STILL publishes its heartbeat.

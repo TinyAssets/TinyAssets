@@ -49,8 +49,7 @@ def _subscriptions_path(universe_path: Path) -> Path:
 
 @contextlib.contextmanager
 def _file_lock(universe_path: Path) -> Iterator[None]:
-    """Mirrors ``tinyassets.branch_tasks._file_lock`` but on a separate
-    sidecar file. Cross-platform exclusive lock, opened link-free through
+    """Cross-platform exclusive lock on a dedicated sidecar file, opened link-free through
     ``universe_files.open_lock_file``.
     """
     from tinyassets.universe_files import open_lock_file
