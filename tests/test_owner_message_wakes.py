@@ -183,13 +183,16 @@ def test_an_app_event_wakes_the_subscribed_agent_through_the_pump(
     assert emit_app_event(home, universe_id=UNIVERSE, principal_id=OWNER,
                           name="other", data={}) == []
     [wake_id] = emit_app_event(home, universe_id=UNIVERSE, principal_id=OWNER,
-                               name="tap", data={"x": 1})
+                               name="tap", data={"x": 1, "account_id": "someone-else"})
     graph = _Graph()
     monkeypatch.setattr(automations_module, "_execute", graph)
     _poll(home)
     assert [(branch, inputs["event"]["name"]) for branch, inputs in graph.calls] == [
         (FOLLOWER, "tap"),
     ]
+    event = graph.calls[0][1]["event"]
+    assert event["viewer"] == {"account_id": OWNER}
+    assert event["data"]["account_id"] == "someone-else"
     assert AutomationStore(home).get(wake_id).retired_at
 
 

@@ -731,11 +731,14 @@
         this.refuse(id,(err&&err.message)||"unavailable");
       }finally{ if(gen===this.frameGen) this.pending--; }
     },
-    // The viewer's identity, reduced to what a UI needs to greet them. No
-    // principal id, no token, no provider or credential material.
+    // The viewer's identity, reduced to what a UI needs. account_id is the
+    // signed-in account (the same id an app_event stamps as event.viewer), so a
+    // screen can apply per-account rules. No token and no provider or
+    // credential material. Arguments are ignored: a bundle cannot name an account.
     async whoami(){
       return {protocol:this.PROTOCOL,command_center_id:this.home,
         command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim(),
+        account_id:String(this.principal||""),
         workflow_refs:Object.assign({},this.active&&this.active.workflow_refs||{}),
         agent_refs:Object.assign({},this.active&&this.active.agent_refs||{})};
     },
@@ -1641,7 +1644,7 @@
     },
     previewRead(action){
       // No owner calls here. Unknown methods and EVERY mutation are refused.
-      const reads={whoami:{protocol:1,command_center_id:"preview",command_center_name:"Visual preview",workflow_refs:{},agent_refs:{}},
+      const reads={whoami:{protocol:1,command_center_id:"preview",command_center_name:"Visual preview",account_id:"",workflow_refs:{},agent_refs:{}},
         list_agents:{agents:[]},read_conversation:{turns:[]},list_automations:{automations:[]},
         list_runs:{runs:[]},list_files:{files:[]},read_live:{agents:[],preview:true},
         conversation_design:{state:"default",preview:true}};

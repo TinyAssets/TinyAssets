@@ -22,8 +22,8 @@ them from ``blob:`` URLs. Only the parent is a stand-in, playing the app's part:
   nonce-only policy; the UI arrives as a JSON document it fetches, never as text
   spliced into its HTML (Codex, 2026-10-02: a ``</script>`` in stored markup
   would otherwise have run in the unrestricted parent).
-* **Read-only bridge.** ``whoami`` answers with the command center's id and the
-  component's own alias maps, and the reads answer with every key the live
+* **Read-only bridge.** ``whoami`` answers with the command center's id, an
+  empty account id, and the component's own alias maps, and the reads answer with every key the live
   bridge returns and no data behind them, so a UI renders its empty state rather
   than failing on a missing key. Every call that would act (``sendMessage``,
   ``emit``, ``setConversationDesign``) is refused as a preview, and each call is
@@ -116,7 +116,7 @@ window.__preview={calls:Object.create(null),dropped:0,delivered:false,error:""};
 // resolves its aliases here exactly as it will in the app. Keep every key here
 // spelled out rather than computed: tests derive the key sets by parsing this.
 const EMPTY_FOR=spec=>({whoami:{protocol:1,command_center_id:spec.universe_id,
-    command_center_name:'Preview',
+    command_center_name:'Preview',account_id:'',
     workflow_refs:Object.assign({},spec.workflow_refs||{}),
     agent_refs:Object.assign({},spec.agent_refs||{})},
   list_agents:{agents:[],external_agents:[]},read_conversation:{turns:[],has_more:false,next_before:null},
