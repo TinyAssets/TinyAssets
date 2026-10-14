@@ -71,12 +71,6 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
     ),
     # Store release pipelines: these sign and upload artifacts, never reach the host,
     # and run on tag/release refs that a main-only environment would refuse.
-    "APPLE_APP_PASSWORD": "notarization app password (desktop-release.yml)",
-    "APPLE_CERTIFICATE_P12": "Developer ID signing certificate (desktop-release.yml)",
-    "APPLE_CERTIFICATE_PASSWORD": "password for APPLE_CERTIFICATE_P12",
-    "APPLE_DEVELOPER_ID_APPLICATION": "Developer ID signing identity name",
-    "APPLE_ID": "Apple account used for notarization",
-    "APPLE_TEAM_ID": "Apple team identifier",
     "APPLE_DISTRIBUTION_CERT_P12_B64": (
         "iOS distribution certificate (ios-release.yml, `app-store` env)"
     ),
@@ -96,15 +90,7 @@ NON_PRODUCTION_SECRETS: dict[str, str] = {
     "ANDROID_UPLOAD_KEY_ALIAS": "alias inside the Play upload keystore",
     "ANDROID_UPLOAD_KEY_PASSWORD": "key password inside the Play upload keystore",
     "ANDROID_GOOGLE_SERVICES_JSON_B64": "Firebase client config baked into the Android build",
-    "WINDOWS_SIGNING_CERTIFICATE_BASE64": "Windows code-signing certificate",
-    "WINDOWS_SIGNING_CERTIFICATE_PASSWORD": "password for the Windows certificate",
-    "WINDOWS_SIGNING_IDENTITY": "Windows signing identity name",
-    "LINUX_SIGNING_KEY_BASE64": "Linux artifact signing key",
-    "LINUX_SIGNING_IDENTITY": "Linux signing identity name",
-    "DESKTOP_UPDATE_SIGNING_KEY_BASE64": "desktop auto-update manifest signing key",
-    # Not GitHub secrets at all: Python's stdlib `secrets` module inside run scripts.
     "TOKEN_HEX": "python `secrets.token_hex(...)` in a run script",
-    "TOKEN_URLSAFE": "python `secrets.token_urlsafe(...)` in a run script",
 }
 
 # `secrets.NAME`, `secrets['NAME']`, `secrets["NAME"]`, `secrets[NAME]`,
