@@ -12,10 +12,11 @@ import struct
 import subprocess
 import threading
 import time
+from collections import deque
 
 from tinyassets.boxes.file_wire import MAX_MESSAGE, decode, encode
 from tinyassets.boxes.gvisor_runtime import GvisorRuntime
-from tinyassets.boxes.provider import BoxError
+from tinyassets.boxes.provider import BoxBusy, BoxError
 
 
 class GvisorFileBackend:
@@ -32,6 +33,8 @@ class GvisorFileBackend:
         self._guard = threading.RLock()
         self._locks: dict[int, threading.RLock] = {}
         self._busy: set[int] = set()
+        self._capacity = threading.Condition(self._guard)
+        self._waiting = deque()
 
     def _lock(self, uid: int) -> threading.RLock:
         self.runtime.box_id(uid)
@@ -63,20 +66,52 @@ class GvisorFileBackend:
         self._awake.clear()
 
     def _wake(self, uid: int) -> None:
-        if uid not in self._awake:
+        # Caller holds this owner's backend lock. Never wait for another
+        # owner's lock while holding the capacity lock: eviction is try-only.
+        with self._capacity:
+            if uid in self._awake:
+                self._awake[uid] = time.monotonic()
+                return
+            self._waiting.append(uid)
+            deadline = time.monotonic() + self.request_timeout
             try:
-                self.runtime.start(uid, uid, relay=self.relay_for(uid),
-                                   memory_bytes=self.memory_for(uid))
-            except BaseException:
-                # start may have launched a sandbox before discovering a failure.
-                # A failed stop is an error, never permission to accept another call.
-                self.runtime.stop(uid)
-                raise
-        self._awake[uid] = time.monotonic()
+                while True:
+                    if self._waiting[0] == uid:
+                        if len(self._awake) >= 2:
+                            for candidate in sorted(self._awake, key=self._awake.get):
+                                lock = self._locks[candidate]
+                                if candidate in self._busy or not lock.acquire(blocking=False):
+                                    continue
+                                try:
+                                    self.runtime.stop(candidate)
+                                    self._awake.pop(candidate)
+                                    break
+                                finally:
+                                    lock.release()
+                        if len(self._awake) < 2:
+                            # Reserve before launch. Failed cleanup retains the
+                            # slot, so an uncertain sandbox cannot exceed capacity.
+                            self._awake[uid] = time.monotonic()
+                            break
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise BoxBusy("owner sandbox capacity wait exceeded request deadline")
+                    self._capacity.wait(left)
+            finally:
+                self._waiting.remove(uid)
+                self._capacity.notify_all()
+        try:
+            self.runtime.start(uid, uid, relay=self.relay_for(uid),
+                               memory_bytes=self.memory_for(uid))
+        except BaseException:
+            self.stop(uid)
+            raise
 
     def wake(self, uid: int) -> None:
         with self._lock(uid):
             self._wake(uid)
+        with self._capacity:
+            self._capacity.notify_all()
 
     def execute(self, uid: int, args: dict, running) -> dict:
         from tinyassets.boxes.gvisor_runtime import OVERLAY
@@ -178,12 +213,15 @@ class GvisorFileBackend:
         with self._lock(uid):
             self._wake(uid)
             try:
-                result = self._invoke(uid, body)
+                answer = decode(self._invoke(uid, body))
             except BaseException:
                 self.stop(uid)
                 raise
-            self._awake[uid] = time.monotonic()
-            return decode(result)
+            with self._capacity:
+                self._awake[uid] = time.monotonic()
+        with self._capacity:
+            self._capacity.notify_all()
+        return answer
 
     def _invoke(self, uid: int, body: bytes) -> bytes:
         from tinyassets.boxes.gvisor_runtime import OVERLAY
@@ -243,7 +281,9 @@ class GvisorFileBackend:
     def stop(self, uid: int) -> None:
         with self._lock(uid):
             self.runtime.stop(uid)
-            self._awake.pop(uid, None)
+            with self._capacity:
+                self._awake.pop(uid, None)
+                self._capacity.notify_all()
 
     def reap_idle(self) -> None:
         with self._guard:

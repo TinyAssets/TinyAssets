@@ -552,6 +552,11 @@ bounded. The guest loopback proxy carries no platform credential. Connector
 streams use the existing broker scanner/grant path; authenticated git and CLI
 credential lease/refresh wiring remain cutover dependencies.
 
+The backend also caps awake sandboxes at two, including file-only wakes;
+idle boxes yield their slot and unquiesced boxes retain it. New wakes wait
+in FIFO order within the request deadline. The root service bounds admitted
+control connections at 32.
+
 Execution uses a bounded FIFO per owner, with two host execution slots and
 sixteen admitted jobs across all owners. Queued work holds the owner generation
 closed, can be cancelled without waking a sandbox, and yields a slot to other
