@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import runpy
+import shlex
 import subprocess
 import sys
 import threading
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-SOURCE = Path(__file__).resolve().parents[1] / "tinyassets/export_runtime/agent.py"
+SOURCE = Path(__file__).resolve().parents[1] / "packaging/command-center/run/agent.py"
 RUNNER = runpy.run_path(str(SOURCE))
 
 
@@ -36,6 +37,7 @@ def tool_call(name="read", arguments=None):
     "../outside", "/tmp/outside", "a/../outside", "a//b", "./note", "a\\b",
     ".env", ".env.production", ".ssh/key", ".aws/config", ".git/config",
     "run/rules.json", "run/agent.py", "command-center.json",
+    "RUN/agent.py", "RUN/rules.json", "COMMAND-CENTER.JSON",
 ])
 def test_file_tools_refuse_escape_credentials_and_policy(folder, path):
     tools = RUNNER["LocalTools"](folder)
@@ -168,3 +170,23 @@ def test_copied_runner_uses_four_tools_over_http_without_platform(folder):
     assert {tool["function"]["name"] for tool in received[0]["tools"]} == {
         "read", "write", "edit", "bash"}
     assert received[1]["messages"][-1]["content"] == "Written"
+
+
+def test_bash_output_is_bounded_and_process_group_is_stopped(folder):
+    tools = RUNNER["LocalTools"](folder, approve=lambda _: True)
+    command = shlex.join([sys.executable, "-c", "import os; os.write(1, b'x' * 1000000)"])
+    result = json.loads(tools.bash(command))
+    assert result["stopped"] == "output_limit"
+    assert len(result["output"]) == RUNNER["MAX_COMMAND_BYTES"]
+
+
+def test_bash_timeout_stops_background_descendants(folder, monkeypatch):
+    tools = RUNNER["LocalTools"](folder, approve=lambda _: True)
+    monkeypatch.setitem(tools.bash.__globals__, "COMMAND_SECONDS", 0.2)
+    script = "import time; from pathlib import Path; time.sleep(0.8); Path('escaped').touch()"
+    command = shlex.join([sys.executable, "-c", script]) + " & wait"
+    result = json.loads(tools.bash(command))
+    assert result["stopped"] == "timeout"
+    # A separate subprocess keeps the assertion independent of runner internals.
+    subprocess.run([sys.executable, "-c", "import time; time.sleep(1)"], check=True)
+    assert not (folder / "escaped").exists()

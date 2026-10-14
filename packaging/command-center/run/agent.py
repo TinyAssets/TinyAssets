@@ -10,8 +10,11 @@ import argparse
 import json
 import os
 import secrets
+import selectors
+import signal
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
@@ -31,6 +34,8 @@ TOOLS = [
     )
 ]
 MAX_FILE_BYTES = 1024 * 1024
+MAX_COMMAND_BYTES = 64 * 1024
+COMMAND_SECONDS = 120
 
 
 class LocalTools:
@@ -67,7 +72,7 @@ class LocalTools:
         if any(p.lower() in (".env", ".git", ".ssh", ".aws", ".credentials")
                or p.lower().startswith((".env.", ".credential-vault")) for p in parts):
             raise PermissionError("Credential and repository-private files are excluded")
-        if writing and (parts[0] == "run" or path == "command-center.json"):
+        if writing and (parts[0].casefold() == "run" or path.casefold() == "command-center.json"):
             raise PermissionError("Runner policy, code and manifest are read-only to tools")
         fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -136,10 +141,45 @@ class LocalTools:
             self.bash_policy == "ask" and not self.approve(command)
         ):
             return "Refused: command lacks owner consent"
-        result = subprocess.run(["bash", "-lc", command], cwd=self.root,
-                                capture_output=True, text=True, timeout=120, check=False)
-        return json.dumps({"exit_code": result.returncode,
-                           "stdout": result.stdout[-32000:], "stderr": result.stderr[-32000:]})
+        process = subprocess.Popen(["bash", "-lc", command], cwd=self.root,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        output = bytearray()
+        stopped = None
+        deadline = time.monotonic() + COMMAND_SECONDS
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        stopped = "timeout"
+                        break
+                    if not selector.select(remaining):
+                        continue
+                    chunk = os.read(process.stdout.fileno(), 8192)
+                    if not chunk:
+                        break
+                    available = MAX_COMMAND_BYTES - len(output)
+                    output.extend(chunk[:available])
+                    if len(chunk) > available:
+                        stopped = "output_limit"
+                        break
+                if stopped is None:
+                    try:
+                        process.wait(timeout=max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        stopped = "timeout"
+        finally:
+            # Also stop background descendants when their shell has exited.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.stdout.close()
+            process.wait()
+        return json.dumps({"exit_code": process.returncode, "stopped": stopped,
+                           "output": output.decode("utf-8", errors="replace")})
 
     def call(self, name, arguments):
         schemas = {tool["function"]["name"]: tool["function"]["parameters"] for tool in TOOLS}

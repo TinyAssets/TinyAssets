@@ -12,7 +12,8 @@ approval and execution records remain platform state, not knowledge indexes.
 
 ## Independent local runner slice
 
-`tinyassets/export_runtime/agent.py` is copied verbatim into `run/agent.py` by
+The standalone artifact lives outside the platform runtime under
+`packaging/command-center/run/agent.py`; it is copied verbatim into `run/agent.py` by
 the eventual exporter. It imports only the Python standard library and has no
 TinyAssets account, import or network dependency. It accepts a chat-completions
 endpoint supplied by the owner. Model output can invoke only read/write/edit/bash.
@@ -55,3 +56,12 @@ explicit tasks, not simulated successes.
 - Claude CLI absent; no cross-family review receipt can be manufactured.
 - Every PR requires a trusted exact-head receipt. Builders may not self-stamp
   one (lead handoff); independent review must be supplied by the review lane.
+
+## Guard conflict requiring reconciliation
+
+The unchanged S1 second-path guard rejects the standalone runner's model_call
+callback even under packaging/. D11 explicitly requires a standalone loop with
+a local model, while S1 currently scans this artifact as a hosted call path.
+This branch retains the failing guard: no callback rename or guard allowance
+has been used to manufacture a pass. A gate-owner decision and independent
+review are required before this slice can merge.

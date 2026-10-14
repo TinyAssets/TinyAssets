@@ -1,7 +1,7 @@
 # Local export runner
 
 This is the standalone chat component for C12. The export door is not wired yet;
-this directory does not mean C12 is live. Copy `agent.py` into an exported
+this directory does not mean C12 is live. Copy `run/agent.py` into an exported
 folder's `run/` directory. It needs Python 3.11+ on POSIX and no Python packages.
 
 The folder needs `agents/main/AGENTS.md`. Existing subdirectories may contain
