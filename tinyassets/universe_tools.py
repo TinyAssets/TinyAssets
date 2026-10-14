@@ -676,6 +676,7 @@ def run_jailed(
     ta_socket: Path | None = None,
     stop: Callable[[], str | None] | None = None,
     extension_root: Path | None = None,
+    reuse_maintenance: bool = False,
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
@@ -688,6 +689,7 @@ def run_jailed(
     with a user in front of it can surface a waiting state. ``stop`` is polled
     while the cell runs; once it names a reason the cell is killed
     (``activity_stopped``): an activity that yielded, paused or stopped.
+    ``reuse_maintenance`` skips a repeated file-tree walk on a read.
     """
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
@@ -698,6 +700,7 @@ def run_jailed(
         limits=limits, wall_seconds=wall_seconds, output_bytes=output_bytes,
         on_wait=on_wait, egress_socket=egress_socket, ta_socket=ta_socket,
         stop=stop, extension_root=extension_root,
+        reuse_maintenance=reuse_maintenance,
     )
 
 
@@ -973,7 +976,7 @@ def read_file(
     )
     run = RUNNER(
         universe_dir, ["/bin/sh", "-c", script, "sh", target, str(start), str(count)],
-        agent_id=agent_id, limits=limits,
+        agent_id=agent_id, limits=limits, reuse_maintenance=True,
     )
     note = _waited_note(run)
     if run.killed == "output_limit":
@@ -997,7 +1000,7 @@ def _read_image(
     image_limits = replace(limits, output_bytes=MAX_IMAGE_SOURCE_BYTES)
     run = RUNNER(
         universe_dir, ["/bin/sh", "-c", script, "sh", target],
-        agent_id=agent_id, limits=image_limits,
+        agent_id=agent_id, limits=image_limits, reuse_maintenance=True,
     )
     note = _waited_note(run)
     if run.killed == "output_limit":

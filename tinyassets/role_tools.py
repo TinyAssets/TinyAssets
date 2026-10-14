@@ -35,6 +35,36 @@ def _center_lock(center):
         return _center_locks.setdefault(center, threading.Lock())
 
 
+_clean_centers: set[str] = set()
+_clean_guard = threading.Lock()
+
+
+def _center_token(center) -> str:
+    return str(Path(center))
+
+
+def _note_maintenance(center, *, clean: bool) -> None:
+    token = _center_token(center)
+    with _clean_guard:
+        if clean:
+            _clean_centers.add(token)
+        else:
+            _clean_centers.discard(token)
+
+
+def _skip_maintenance(center, *, reuse: bool) -> bool:
+    """A read skips the tree walk once this process has maintained the center.
+
+    A write clears that and walks before and after the jail. The walk is a
+    tool-files cell with a 20s deadline; a file-only node was paying it twice
+    per read.
+    """
+    if not reuse:
+        return False
+    with _clean_guard:
+        return _center_token(center) in _clean_centers
+
+
 @contextlib.contextmanager
 def _tool_cell(client, **kwargs):
     """Keep the authenticated completion before closing a failed tool stream."""
@@ -176,7 +206,8 @@ def _validate(request):
 
 
 def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_bytes,
-        on_wait, egress_socket, ta_socket, stop=None, extension_root=None):
+        on_wait, egress_socket, ta_socket, stop=None, extension_root=None,
+        reuse_maintenance=False):
     """Run one jailed tool call in this owner's tool cell.
 
     ``stop`` stays on the DAEMON side: the cell's supervisor asks for a budget
@@ -185,6 +216,10 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
     kill like any other limit. ``extension_root`` is a daemon-materialised
     directory; its descriptor is handed to the launcher, which mounts it
     read-only in the cell for the nested jail to re-bind at ``/ta/extensions``.
+
+    ``reuse_maintenance`` is for a read. This process walks the center once,
+    then skips both walks until a write clears it. A write always walks before
+    the jail and again after it.
     """
     from tinyassets import role_decoder
     from tinyassets.broker import supervisor
@@ -244,15 +279,20 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                                fd=fd, agent_id=agent_id)
             maintenance_warnings = set()
 
-            def maintain_files():
+            def maintain_files(*, record=False):
                 result = _files(client, **maintenance)
                 if result['truncated']:
                     maintenance_warnings.add('Tool file recovery reached its bounded walk limit.')
                 if result['skipped']:
                     maintenance_warnings.add('Brain publication skipped: '
                                              + ', '.join(result['skipped']) + '.')
+                if record:
+                    _note_maintenance(center, clean=True)
 
-            maintain_files()
+            if not reuse_maintenance:
+                _note_maintenance(center, clean=False)
+            if not _skip_maintenance(center, reuse=reuse_maintenance):
+                maintain_files(record=reuse_maintenance)
             try:
                 budget = tools.jail_disk.open_budget(center,
                     min_free_bytes=limits.min_free_disk_bytes,
@@ -285,8 +325,10 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                                     and type(answer['force']) is bool):
                                 if answer['force']:
                                     # The trusted supervisor has reaped its payload.
-                                    # Restore ACL masks before the final daemon walk.
-                                    maintain_files()
+                                    # A write restores ACL masks before the final
+                                    # daemon walk. A read did not change them.
+                                    if not reuse_maintenance:
+                                        maintain_files()
                                     verdict = budget.breach(force=True)
                                 else:
                                     # The owner's stop is a daemon fact: poll it
@@ -314,7 +356,8 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                                            disk_bound=budget.bound)
             finally:
                 try:
-                    maintain_files()
+                    if not _skip_maintenance(center, reuse=reuse_maintenance):
+                        maintain_files(record=True)
                 finally:
                     budget.settle()
     finally:

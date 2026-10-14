@@ -13,6 +13,7 @@ import time
 import uuid
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures.thread import _threads_queues, _worker
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,42 @@ logger = logging.getLogger(__name__)
 #: (founder, 2026-09-30), so there is no run duration to derive a TTL from, and a
 #: TTL is not the place to invent one.
 _LEASE_TTL_FLOOR_S = 900.0
+
+
+class _ReleaseOnExitPool(ThreadPoolExecutor):
+    """Automation workers are daemons.
+
+    A deploy has to be able to exit while a run is inside a provider call.
+    ``ThreadPoolExecutor`` starts non-daemon workers, so a process that did
+    not cancel those runs would stay up until they finished. Daemon workers
+    die with the process; boot recovery then marks the still-running row
+    interrupted, which is the announcement a cancelled row does not make.
+    """
+
+    def _adjust_thread_count(self) -> None:
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def weakref_cb(_, q=self._work_queue):
+            q.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads < self._max_workers:
+            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            thread = threading.Thread(
+                name=thread_name,
+                target=_worker,
+                daemon=True,
+                args=(
+                    weakref.ref(self, weakref_cb),
+                    self._work_queue,
+                    self._initializer,
+                    self._initargs,
+                ),
+            )
+            thread.start()
+            self._threads.add(thread)
+            _threads_queues[thread] = self._work_queue
 
 
 def _lease_ttl_seconds() -> float:
@@ -184,7 +221,7 @@ class AssignedQueueConsumer:
         self.poll_seconds = resolved_poll_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._executor = ThreadPoolExecutor(
+        self._executor = _ReleaseOnExitPool(
             max_workers=self.max_concurrency,
             thread_name_prefix="assigned-queue-task",
         )
@@ -340,13 +377,16 @@ class AssignedQueueConsumer:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
-        # Cancel in-flight automation runs BEFORE tearing the executor down.
-        # `shutdown(cancel_futures=True)` cancels only futures that have not
-        # STARTED; an automation blocked in `wait_for` keeps its worker and its
-        # provider authority claim (Codex ADAPT 2026-08-29 §1). The runs cancel
-        # flag is cooperative and is checked between nodes, so the graph unwinds
-        # and the foreground session releases its claim.
-        self._cancel_automation_runs()
+        # Do not cancel in-flight automation runs. Live 2026-10-14: runs
+        # 23f1b54612ff4b9c and 921801c8bb924092, different branches, both
+        # ended in the same millisecond with "cancelled between nodes" and
+        # cancel_requested set. That is this method's request_cancel on every
+        # run it still holds, during process shutdown. A cancelled run
+        # announces nothing, so the owner's follow-up loop dies with the
+        # deploy. Leaving the row running lets the next boot's
+        # recover_in_flight_runs mark it interrupted ("The process running
+        # this run stopped before it finished.") and deliver that event.
+        # The universe lease expires when this process stops refreshing it.
         if self._thread is not None:
             self._thread.join(timeout=max(0.0, timeout))
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -356,18 +396,6 @@ class AssignedQueueConsumer:
             with _CONSUMER_REGISTRY_LOCK:
                 _STARTED_CONSUMERS.discard(self)
         self._release_liveness()
-
-    def _cancel_automation_runs(self) -> None:
-        from tinyassets.runs import request_cancel
-
-        with self._lock:
-            run_ids = sorted(self._automation_runs)
-            self._automation_runs.clear()
-        for run_id in run_ids:
-            try:
-                request_cancel(self.base_path, run_id)
-            except Exception:  # noqa: BLE001 - shutdown must not raise
-                logger.exception("automation run cancel failed run=%s", run_id)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -908,7 +936,11 @@ class AssignedQueueConsumer:
                 )
 
     def _note_automation_run(self, run_id: str) -> None:
-        """Remember an in-flight automation run so `stop()` can cancel it."""
+        """Remember an in-flight automation run.
+
+        ``stop`` does not cancel it. Shutdown leaves the row running so the
+        next boot can mark it interrupted and deliver that event.
+        """
         with self._lock:
             self._automation_runs.add(run_id)
 
