@@ -262,6 +262,31 @@ def test_consumer_disabled_refuses_loudly(tmp_path: Path, env, monkeypatch) -> N
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
+def test_consumer_disabled_refuses_resume_without_mutating_row(
+    tmp_path: Path, env, monkeypatch,
+) -> None:
+    created = _create()["automation"]
+    paused = api.automations(
+        action="pause", universe_id=UNIVERSE,
+        automation_id=created["automation_id"], expected_revision=1,
+    )
+    assert paused["status"] == "automation_paused"
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "0")
+
+    refused = api.automations(
+        action="resume", universe_id=UNIVERSE,
+        automation_id=created["automation_id"], expected_revision=2,
+    )
+
+    assert refused["error"] == "automation_unavailable"
+    assert refused["reason"] == "consumer_disabled"
+    assert refused["detail"]
+    stored = AutomationStore(tmp_path).get(created["automation_id"])
+    assert stored is not None
+    assert stored.desired_state == "paused"
+    assert stored.revision == 2
+
+
 # -- 3. Payload and action validation -----------------------------------------
 
 

@@ -170,6 +170,15 @@ def test_owner_tick_and_account_limit_guards(tmp_path: Path):
         "opt-in-flags: tinyassets/legacy.py gates the owner tick",
         "limit-names: tinyassets/legacy.py contains a retired account meter",
     ]
+    for rel in check_shapes.CONSUMER_DISABLE_SITES:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('TINYASSETS_ASSIGNED_QUEUE_CONSUMER = "off"\n', encoding="utf-8")
+        assert check_shapes.added_line_problems({rel: path.read_text()}) == []
+    assert check_shapes.control_plane_policy_problems(tmp_path) == [
+        "opt-in-flags: tinyassets/legacy.py gates the owner tick",
+        "limit-names: tinyassets/legacy.py contains a retired account meter",
+    ]
 
 
 def test_base_pin_parser_records_ceiling_and_probes():

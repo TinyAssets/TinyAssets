@@ -1,5 +1,7 @@
 """Rendered app proof of callback-only native completion and launch failures."""
 
+import time
+
 import pytest
 
 from tests.test_app_chat_cloud_browser import app_url as app_url_fixture
@@ -65,7 +67,10 @@ def test_native_waits_for_matching_return_then_enters_chat(app_url, platform):
         page.goto(app_url)
         expect(page.locator("#view-signin")).to_be_visible()
         page.locator("#btn-signin").click()
-        page.wait_for_function("launches.length===1")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and page.evaluate("launches.length") != 1:
+            page.wait_for_timeout(10)
+        assert page.evaluate("launches.length") == 1
         page.evaluate("window.dispatchEvent(new Event('focus'))")
         assert exchanges == []
         scheme = "tinyassets-desktop" if platform == "desktop" else "tinyassets"

@@ -61,6 +61,7 @@ def env(tmp_path: Path, monkeypatch, authenticate_request):
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     from tinyassets.control_plane.events import shutdown_scheduler
     from tinyassets.daemon_server import initialize_author_server
     from tinyassets.runs import initialize_runs_db

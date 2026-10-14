@@ -119,8 +119,8 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       `branch_tasks.py` (merged into v2), `request_continuations` and
       `agent_wakes` threads, and the limit code outside `usage_policy.py`
       (the folded limits change).
-      Guard: `test_control_plane_inventory`, `limit-names`, and
-      `opt-in-flags` for `TINYASSETS_ASSIGNED_QUEUE_CONSUMER`. Net about
+      Guard: `test_control_plane_inventory`, `limit-names`, and one
+      `TINYASSETS_ASSIGNED_QUEUE_CONSUMER` reader with disabled-mode refusals. Net about
       −3k. Depends on C3, C6.
 - **C8 Agents are files; one starter.** (#4744, done) `agents/<name>/`
       holds `AGENTS.md` and `settings.yaml` (the same layout a package lands;

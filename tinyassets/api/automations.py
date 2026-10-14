@@ -68,8 +68,8 @@ ALLOWED_ACTIONS = tuple(sorted(READ_ACTIONS | WRITE_ACTIONS))
 #: ``_unavailable``) rather than silently rendering as nothing.
 _UNAVAILABLE_DETAIL = {
     "consumer_disabled": (
-        "This daemon is not running automations right now, so nothing was "
-        "stored. Ask the host to enable the assigned-queue consumer."
+        "The execution owner is disabled, so this automation cannot run. "
+        "Ask the host to enable the assigned-queue consumer."
     ),
     "authentication_required": (
         "Sign in before creating an automation: an automation is owned by a "
@@ -604,6 +604,12 @@ def _control(
             "expected_revision": revision,
             "current_revision": automation.revision,
         }
+
+    if action == "resume":
+        from tinyassets.control_plane.tick import assigned_queue_consumer_enabled
+
+        if not assigned_queue_consumer_enabled():
+            return _unavailable("consumer_disabled", automation_id=automation.automation_id)
 
     now = datetime.now(timezone.utc)
     try:

@@ -58,7 +58,6 @@ def test_real_dockerfile_context_copies_are_all_runtime():
         "pyproject.toml",
         "tinyassets",
         "domains",
-        "fantasy_daemon",
         "data/world_rules.lp",
         "deploy/native/ta_op.c",
         "deploy/codex-flock-wrapper.sh",
@@ -68,6 +67,7 @@ def test_real_dockerfile_context_copies_are_all_runtime():
         "scripts/_canary_common.py",
         "scripts/workspace_bwrap_oracle.py",
     } <= set(sources)
+    assert "fantasy_daemon" not in sources
     # Stage-to-stage copies read no build context.
     assert not any(src.startswith(("build/", "opt/", "tmp/")) for src in sources)
 

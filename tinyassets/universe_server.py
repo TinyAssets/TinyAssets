@@ -1911,18 +1911,21 @@ def _inbound_event_run_fn(
 
 
 def start_scheduler_for_serving() -> bool:
-    """Start the process scheduler because the daemon is now serving.
+    """Start the event source while the execution owner is enabled.
 
-    UNCONDITIONAL — it does not consult ``TINYASSETS_INBOUND_ENABLED``. That flag
-    gates the inbound HTTP surface (the ``/hooks/*`` route and publishing Source
-    events onto the bus), not whether the event loop runs.
+    ``TINYASSETS_INBOUND_ENABLED`` gates the inbound HTTP surface; the event
+    source also needs a running owner tick to dispatch anything it accepts.
 
     Returns whether the scheduler is running afterwards. A scheduler fault must not
     block boot, so a failure is logged and reported, never raised.
     """
     from tinyassets.control_plane.events import get_or_create_scheduler
+    from tinyassets.control_plane.tick import assigned_queue_consumer_enabled
     from tinyassets.storage import data_dir
 
+    if not assigned_queue_consumer_enabled():
+        logger.info("scheduler not started: execution owner disabled")
+        return False
     try:
         get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
     except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
@@ -4675,12 +4678,14 @@ def main(
         from tinyassets.consumer_runtime import initialize as initialize_consumer
         from tinyassets.control_plane.tick import (
             AssignedQueueConsumer,
+            assigned_queue_consumer_enabled,
         )
         from tinyassets.storage import data_dir as assigned_data_dir
 
-        initialize_consumer(assigned_data_dir())
-        assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
-        assigned_consumer.start()
+        if assigned_queue_consumer_enabled():
+            initialize_consumer(assigned_data_dir())
+            assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
+            assigned_consumer.start()
         try:
             socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
             if socket_path:
@@ -4707,15 +4712,17 @@ def main(
     assigned_consumer = None
     from tinyassets.control_plane.tick import (
         AssignedQueueConsumer,
+        assigned_queue_consumer_enabled,
     )
 
     try:
         from tinyassets.consumer_runtime import initialize as initialize_consumer
 
         # Storage must be ready before the owner tick opens its database.
-        initialize_consumer(data_dir())
-        assigned_consumer = AssignedQueueConsumer(data_dir())
-        assigned_consumer.start()
+        if assigned_queue_consumer_enabled():
+            initialize_consumer(data_dir())
+            assigned_consumer = AssignedQueueConsumer(data_dir())
+            assigned_consumer.start()
         run_visibility_startup_gate()
         start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):

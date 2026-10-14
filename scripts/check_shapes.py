@@ -247,9 +247,10 @@ MIRROR_ROOT = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtim
 VENDOR_NAMES = re.compile(
     r"anthropic|chatgpt|claude|codex|gemini|grok|groq|kimi|mistral|ollama|openai|openrouter", re.I
 )
-DUAL_FLAGS = re.compile(
-    r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING|ASSIGNED_QUEUE_CONSUMER)\b"
-)
+DUAL_FLAGS = re.compile(r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING)\b")
+CONSUMER_DISABLE_SITES = frozenset({
+    "tinyassets/control_plane/tick.py",
+})
 RETIRED_ACCOUNT_LIMITS = re.compile(
     r"\b(?:RUN_WRITE_LIMIT|RUN_TOTAL_LIMIT|RUN_DAY_LIMIT|DISPATCHES_PER_HOUR|"
     r"BYTES_PER_HOUR|BUDGET_WINDOW_S|usage_notice|charge_dispatch|"
@@ -725,7 +726,10 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
     for rel, source in changes.items():
         if not rel.startswith("tinyassets/") or not rel.endswith(".py"):
             continue
-        if DUAL_FLAGS.search(source) or re.search(
+        if (DUAL_FLAGS.search(source) or (
+            "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source
+            and rel not in CONSUMER_DISABLE_SITES
+        )) or re.search(
             r"(?:getenv|environ|if)\b[^\n]*TINYASSETS_\w*(?:LOOP|LEGACY|V2|FALLBACK)\b", source
         ):
             problems.append(f"opt-in-flags: {rel} selects a second path")
@@ -740,14 +744,14 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
 
 
 def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
-    """The owner tick is unconditional and account limits have two names only."""
+    """Only the explicit consumer-off boundary may gate the owner tick."""
     problems: list[str] = []
     for path in files("tinyassets/**/*.py", root) + files("scripts/**/*.py", root):
         if path.name == "check_shapes.py":
             continue
         source = path.read_text(encoding="utf-8", errors="replace")
         rel = path.relative_to(root).as_posix()
-        if "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source:
+        if "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source and rel not in CONSUMER_DISABLE_SITES:
             problems.append(f"opt-in-flags: {rel} gates the owner tick")
         if rel.startswith("tinyassets/") and RETIRED_ACCOUNT_LIMITS.search(source):
             problems.append(f"limit-names: {rel} contains a retired account meter")

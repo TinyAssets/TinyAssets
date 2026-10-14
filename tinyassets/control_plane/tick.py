@@ -79,6 +79,7 @@ def _lease_ttl_seconds() -> float:
     return run_timeout_seconds() or _LEASE_TTL_FLOOR_S
 _DEFAULT_GLOBAL_CONCURRENCY = 2
 _DEFAULT_POLL_SECONDS = 2.0
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _CONSUMER_REGISTRY_LOCK = threading.Lock()
 _STARTED_CONSUMERS: weakref.WeakSet[AssignedQueueConsumer] = weakref.WeakSet()
 
@@ -155,6 +156,10 @@ def assigned_queue_refusal_freshness_seconds() -> float:
     return 5 * _configured_poll_seconds()
 
 
+def assigned_queue_consumer_enabled() -> bool:
+    return os.environ.get("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "").strip().lower() in _TRUTHY
+
+
 def _global_concurrency() -> int:
     raw = os.environ.get("TINYASSETS_ASSIGNED_QUEUE_GLOBAL_CONCURRENCY", "").strip()
     value = _DEFAULT_GLOBAL_CONCURRENCY if not raw else int(raw)
@@ -170,6 +175,8 @@ def current_consumer_liveness(base_path: Path) -> dict[str, Any]:
     succeeded. Per-universe heartbeat/queue descriptor readers keep their own
     scope and authority. No identity, path, tenant count or task data escapes.
     """
+    if not assigned_queue_consumer_enabled():
+        return {"present": False, "phase": "disabled"}
     if os.environ.get("TINYASSETS_ENGINE_GRAPH_ID", "").strip():
         # Engine MCP children inherit the enable flag but do not own the daemon
         # coordinator. Their process-local registry cannot attest its liveness.
@@ -247,6 +254,8 @@ class AssignedQueueConsumer:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
         # start()ing a consumer must spin up NO coordinator thread — the dark guarantee
         # is "no side effect when off", not merely "no DB writes".
+        if not assigned_queue_consumer_enabled():
+            return
         require_process_cloud_admission(surface="assigned queue consumer")
         if self._thread is not None:
             return
@@ -1159,5 +1168,6 @@ class AssignedQueueConsumer:
 
 __all__ = [
     "AssignedQueueConsumer",
+    "assigned_queue_consumer_enabled",
     "assigned_queue_refusal_freshness_seconds",
 ]
