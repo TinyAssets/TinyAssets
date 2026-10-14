@@ -91,7 +91,9 @@ def test_supervisor_cannot_recycle_stdin_during_an_inflight_reply(tmp_path, monk
     )
     output = tmp_path / "output"
     output.write_bytes(b"")
-    real_select = local.select.select
+    from tinyassets.boxes import boxd
+
+    real_select = boxd.select.select
 
     def after_ready(read, write, error, timeout):
         result = real_select(read, write, error, timeout)
@@ -107,8 +109,8 @@ def test_supervisor_cannot_recycle_stdin_during_an_inflight_reply(tmp_path, monk
         except BaseException as exc:
             supervisor_errors.append(exc)
 
-    monkeypatch.setattr(local.select, "select", after_ready)
-    monkeypatch.setattr(local, "_kill_group", lambda _: None)
+    monkeypatch.setattr(boxd.select, "select", after_ready)
+    monkeypatch.setattr(boxd, "_kill_group", lambda _: None)
     supervisor = threading.Thread(target=supervise)
     try:
         supervisor.start()
@@ -243,7 +245,7 @@ def test_a_restart_reaps_what_the_crashed_host_left_running(tmp_path):
 
 
 def test_a_failed_partial_destroy_stales_every_handle_and_is_recorded(tmp_path, monkeypatch):
-    from tinyassets.boxes import local as local_mod
+    from tinyassets.boxes import boxd as local_mod
 
     host = _local(tmp_path)
     handle = host.bind("cc-a", account_id="acct-a")
@@ -387,3 +389,25 @@ def test_a_failed_write_that_created_directories_is_recorded(tmp_path, monkeypat
     with pytest.raises(BoxError):  # recorded as a partial failure: never re-run
         host.write(handle, "w1", "/cc/new/dir/a.txt", b"x", max_bytes=10)
     host.close()
+
+
+def test_owner_boxd_opens_only_its_mounted_owner_tree(tmp_path):
+    from tinyassets.boxes import BoxAuthError, BoxOperationRefused
+    from tinyassets.boxes.boxd import OwnerBoxd
+
+    owner_root = tmp_path / "owner"
+    owner_root.mkdir()
+    worker = OwnerBoxd(owner_id="owner-a", owner_root=owner_root,
+                       state_dir=tmp_path / "state")
+    try:
+        handle = worker.bind("owner-a", session_id="session-a")
+        assert handle.account_id == "owner-a" and handle.turn_id == "session-a"
+        worker.write(handle, "write-a", "/cc/file.txt", b"owner bytes", max_bytes=32)
+        assert (owner_root / "file.txt").read_bytes() == b"owner bytes"
+        assert not (owner_root / "owner-a").exists()
+        with pytest.raises(BoxAuthError):
+            worker.bind("owner-b", session_id="session-b")
+        with pytest.raises(BoxOperationRefused):
+            worker.destroy(handle, "destroy-a")
+    finally:
+        worker.close()

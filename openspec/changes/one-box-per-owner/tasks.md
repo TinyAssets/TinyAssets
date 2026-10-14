@@ -117,6 +117,46 @@ and the spec is synced.
       - **Verify:** a production-copy turn runs real tools, a CLI package
         and a preview in the box.
       - **Net:** about −9.5k.
+
+      **P2b delivery stack (2026-10-14).** Each part is a separate branch and
+      PR, based on the previous part. The first four parts are deployable
+      preparation: they leave the production cell path serving until the
+      final part commits the one layout move. The final part is the only
+      maintenance-window deploy. Count changed paths with the exact
+      `SENSITIVE_RE` in `.github/workflows/pr-scope-guard.yml` against each
+      part's immediate base; the hard limit is eight per part.
+
+      1. `conv/c6-p2b-1`: owner-keyed box contract, descriptor-safe `boxd`
+         operations, driver protocol and acceptance scaffolding. No serving
+         route changes. Release-critical target: 0.
+      2. `conv/c6-p2b-2`: pinned gVisor host driver, owner-bound socket,
+         quota and lifecycle, read-only harness image, and host installer.
+         Install these idle until the `owner-box` marker. Release-critical
+         target: at most 8.
+      3. `conv/c6-p2b-3`: broker egress floor and lease wiring; additive
+         backup/archive/restore and the one-shot layout migration invoked
+         through `deploy/deploy_fail_safe.sh`. The old image keeps serving.
+         Release-critical target: at most 8.
+      4. `conv/c6-p2b-4`: image packaging and entrypoint prepared to select
+         the new path only after the committed layout marker; prepare the
+         structural guards. Preserve the current image's runtime behavior.
+         Release-critical target: at most 8.
+      5. `conv/c6-p2b-cutover`: admit once in `control_plane/session.py`, route
+         every owner operation through its box, remove all cells, jails,
+         probes and old rules files, and remove container privileges. The
+         seven `deploy/role_*.py` deletions plus `deploy/compose.yml` consume
+         the eight release-critical slots. G2 and G5 must pass in
+         `linux_oracle.py` and on a production copy before opening the window.
+
+      The layout migration is one all-or-nothing apply container after a
+      verified full snapshot, with every writer stopped. It checks the
+      `owner-split` marker, copies owner trees into the mounted XFS store,
+      applies project quotas, verifies checksums, and writes `owner-box` only
+      after the copy is complete. No startup migration, ledger, retry, or
+      fallback is permitted. Once `MIGRATION_COMMITTED` is set, the deploy
+      script must never start the previous image; failure prints the exact
+      restore command. A verified backup containing the box store and a
+      restore test precede deletion of the old trees.
 - [ ] 1.4 **P3 Loop in the box.** **Floor:** credential custody. Depends
       on P2b, C3 (`one-model-call-path`) and C8 (`session.start`).
       The same `boxd` operations, run by a loop process inside the box
