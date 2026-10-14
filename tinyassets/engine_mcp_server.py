@@ -830,29 +830,27 @@ def read_graph(
         # branch of another universe reads as not found), so passing the caller's
         # branch_id widens nothing this agent could not already run.
         if normalized == "branch":
-            from tinyassets.api.graph_reads import read_graph as _domain_read
-            from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_branch
-            from tinyassets.engine_result_bounds import resolve_ceiling
-
             bid = (branch_id or "").strip()
-            # The domain read, paged HERE. The connector also pages, and paging
-            # its page again would hide nodes. The envelope is part of the
-            # measured text: a foreign branch's cursor has to survive the wrap.
-            payload = _domain_read(
-                target=normalized, graph_id=_GRAPH_ID, branch_id=bid,
-            )
+            # universe_server.read_graph pages node_defs and leaves headroom
+            # for this envelope. Paging that page again would hide nodes.
+            # output_offset stays off a first read so the call is the three
+            # keys a one-branch read has always been.
+            selectors = {
+                "target": normalized,
+                "graph_id": _GRAPH_ID,
+                "branch_id": bid,
+            }
+            if output_offset:
+                selectors["output_offset"] = output_offset
+            payload = _impl(**selectors)
+            # A PUBLIC branch authored by somebody else reads fine here (the
+            # target is deliberately not author-gated), so it is another user's
+            # content and carries the untrusted envelope. A branch this founder
+            # authored is their own work and is returned bare.
             foreign, origin = _foreign_branch_origin(bid)
-
-            def _render_branch(text: str) -> str:
-                return _untrusted(origin, text) if foreign else text
-
-            if type(output_offset) is not int or output_offset < 0:
-                return json.dumps({"error": "output_offset must be a non-negative integer"})
-            return project_branch(
-                payload, offset=output_offset,
-                budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
-                render_text=_render_branch, branch_id=bid,
-            )
+            if foreign:
+                return _untrusted(origin, payload)
+            return payload
         if normalized in {"run", "run_output"}:
             # get_run is scoped to the caller's own runs; the pinned graph_id keeps
             # the universe scope, run_id only selects within it.
