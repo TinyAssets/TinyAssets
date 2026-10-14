@@ -64,9 +64,7 @@ ALLOWED = {
         "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
     ("tinyassets/universe_tools.py", "_try_lock_one"):
         "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
-    ("tinyassets/wiki/okf_export.py", "_conformance_report"):
-        "reads the bundle this export just wrote into target_dir, which is refused "
-        "when inside the wiki root; not an agent-written file",
+
 }
 
 _READ_ATTRS = {"read_text", "read_bytes", "open"}

@@ -5,7 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.wiki.okf_export import export_universe_okf_bundle
+from tinyassets.wiki.okf_export import render_okf_files
+
+
+def render_fixture(wiki_root, bundle_dir):
+    files, report = render_okf_files({
+        p.relative_to(wiki_root).as_posix(): p.read_bytes()
+        for p in wiki_root.rglob("*.md")
+    })
+    for path, data in files.items():
+        target = bundle_dir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return report
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -82,9 +94,9 @@ def fixture_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
 def test_export_universe_okf_bundle_exports_curated_pages_only(
     fixture_wiki: tuple[Path, Path],
 ) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    report = export_universe_okf_bundle("alpha", bundle_dir)
+    report = render_fixture(wiki_root, bundle_dir)
 
     json.dumps(report)
     assert report["conformant"] is True
@@ -101,9 +113,9 @@ def test_export_universe_okf_bundle_exports_curated_pages_only(
 def test_export_converts_wikilinks_to_absolute_okf_links_and_flags_unresolved(
     fixture_wiki: tuple[Path, Path],
 ) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    report = export_universe_okf_bundle("alpha", bundle_dir)
+    report = render_fixture(wiki_root, bundle_dir)
     body = (bundle_dir / "concepts" / "alpha.md").read_text(encoding="utf-8")
 
     assert "[related](/concepts/related.md)" in body
@@ -120,9 +132,9 @@ def test_export_converts_wikilinks_to_absolute_okf_links_and_flags_unresolved(
 def test_export_guarantees_type_title_timestamp_and_workflow_keys(
     fixture_wiki: tuple[Path, Path],
 ) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    export_universe_okf_bundle("alpha", bundle_dir)
+    render_fixture(wiki_root, bundle_dir)
     alpha_meta, _ = _split_frontmatter(
         (bundle_dir / "concepts" / "alpha.md").read_text(encoding="utf-8")
     )
@@ -145,9 +157,9 @@ def test_export_guarantees_type_title_timestamp_and_workflow_keys(
 
 
 def test_reserved_files_follow_okf_structure(fixture_wiki: tuple[Path, Path]) -> None:
-    _, bundle_dir = fixture_wiki
+    wiki_root, bundle_dir = fixture_wiki
 
-    report = export_universe_okf_bundle("alpha", bundle_dir)
+    report = render_fixture(wiki_root, bundle_dir)
     index_text = (bundle_dir / "index.md").read_text(encoding="utf-8")
     log_text = (bundle_dir / "log.md").read_text(encoding="utf-8")
 

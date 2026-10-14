@@ -406,12 +406,6 @@ PINNED: dict[str, list[str]] = {
         "_supervise: .write_text()",
         "_try_lock_one: os.open()",
     ],
-    "tinyassets/wiki/okf_export.py": [
-        "_conformance_report: .read_text()",
-        "_write_index: .write_text()",
-        "_write_log: .write_text()",
-        "export_okf_bundle: .write_text()",
-    ],
     "tinyassets/workspace_family.py": [
         "try_family_fence: os.open()",
     ],

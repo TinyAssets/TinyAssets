@@ -284,3 +284,43 @@ def test_discovery_refuses_changed_tree(box, monkeypatch):
 def test_wiki_private_sources_cannot_be_selected_directly(box, path):
     with pytest.raises(InvalidBundle, match="cannot be exported"):
         preview(*box, [path])
+
+
+def test_selected_wiki_uses_one_curated_writer_without_unselected_metadata(box):
+    write(box, "wiki/pages/one.md", b"# One\nSee [[two]] and person@example.com")
+    write(box, "wiki/pages/two.md", b"# Private unselected title", "second")
+    view = preview(*box, ["wiki/pages/one.md"])
+    bundle = ingest_zip(export_zip(*box, view, selected=["wiki/pages/one.md"]))
+    assert "wiki/pages/one.md" not in bundle.files
+    assert {"wiki/one.md", "wiki/index.md", "wiki/log.md"} <= bundle.files.keys()
+    all_wiki = b"".join(data for path, data in bundle.files.items() if path.startswith("wiki/"))
+    assert b"Private unselected title" not in all_wiki
+    assert b"person@example.com" not in all_wiki
+    assert b"[contact removed]" in bundle.files["wiki/one.md"]
+    assert b"[[two]]" not in bundle.files["wiki/one.md"]
+    assert b"type: note" in bundle.files["wiki/one.md"]
+
+
+@pytest.mark.parametrize("other", ["wiki/one.md", "wiki/ONE.md", "wiki/index.md"])
+def test_generated_wiki_does_not_overwrite_selected_content(box, other):
+    write(box, "wiki/pages/one.md", b"# One")
+    write(box, other, b"Another selected file", "second")
+    view = preview(*box, ["wiki/pages/one.md", other])
+    with pytest.raises(InvalidBundle, match="conflicts"):
+        export_zip(*box, view, selected=list(view.files))
+
+
+def test_selected_binary_with_markdown_suffix_is_not_parsed_as_wiki(box):
+    path = "wiki/pages/image.md"
+    write(box, path, b"\xff\x00binary")
+    view = preview(*box, [path])
+    result = ingest_zip(export_zip(*box, view, selected=[path], named_binaries=[path]))
+    assert result.files[path] == b"\xff\x00binary"
+
+
+def test_reserved_curated_source_is_not_silently_dropped(box):
+    path = "wiki/pages/log.md"
+    write(box, path, b"# My selected log")
+    view = preview(*box, [path])
+    with pytest.raises(InvalidBundle, match="reserved"):
+        export_zip(*box, view, selected=[path])

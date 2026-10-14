@@ -99,7 +99,7 @@ before writing a fresh platform-owned quarantine with no activation record.
 
 The owner door, shared manifest, private contact choices and standalone files
 are implemented below. Structured configuration, roster, complete D1 policy and
-schedule mapping, curated wiki conversion and hosted activation remain open.
+schedule mapping, hosted activation remain open. Curated wiki conversion is integrated below.
 The arbitrary-file scanner conservatively excludes canonical records containing
 generated hashes; schema-aware serialization must resolve that without allowing
 secrets through. Passing ingestion tests do not establish a shipped feature.
@@ -181,3 +181,17 @@ nodes, never HTML; binaries are named rather than rendered. The same control
 accepts a local zip and reports durable quarantine without claiming activation.
 All asynchronous UI responses are discarded after identity/center/login changes.
 The account-clear boundary also closes and clears an already visible private preview.
+
+## Single wiki writer
+
+The existing wiki exporter is now a pure writer called inside private transfer,
+using captured and scrubbed selected bytes. Its unused host-path entrypoints,
+filesystem copying and associated I/O guard exemptions are removed. Concept
+metadata, wikilink conversion, root index and dated log remain one implementation.
+Only selected pages enter link resolution and generated metadata; no source is
+read again. Source timestamps win; missing timestamps use the explicit export
+time. Wiki-private exclusions are shared with preview/discovery, including nested
+workspace wiki trees. Generated path collisions or selected reserved names fail
+rather than overwrite or silently drop approved content. Named binary files with
+Markdown suffixes retain their exact bytes without parsing. Existing behavioral
+wiki tests now exercise this same writer, and transfer tests cover its integration.

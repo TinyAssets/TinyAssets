@@ -1,17 +1,18 @@
-"""Read-only OKF v0.1 export for promoted TinyAssets wiki pages."""
+"""The curated wiki writer inside the protected command-center export.
 
+Input is already captured, reviewed and scrubbed by the owner transfer door.
+This module performs no filesystem I/O and supplies no second export route.
+"""
 from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from pathlib import PurePosixPath as Path
+from typing import Any, Mapping
 
-from tinyassets.api.wiki import _parse_frontmatter, _wiki_root_for_universe
-from tinyassets.universe_files import read_universe_text
+from tinyassets.api.wiki import _parse_frontmatter
 
 OKF_VERSION = "0.1"
-
 _RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
 _EXCLUDED_ROOTS = frozenset({"drafts", "raw", "daemon-wiki"})
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
@@ -19,115 +20,64 @@ _H1_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 _SAFE_PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./:@+\-]*$")
 
 
-def export_universe_okf_bundle(universe_id: str, target_dir: str | Path) -> dict[str, Any]:
-    """Export one universe's promoted wiki pages as an OKF v0.1 bundle.
+def private_source(path: str) -> bool:
+    """Apply the same wiki exclusions even when wiki is nested in workspace."""
+    parts = path.casefold().split("/")
+    return "soul.md" in parts or bool(set(parts) & _EXCLUDED_ROOTS)
 
-    ``universe_id`` is resolved by ``tinyassets.api.wiki._wiki_root_for_universe``
-    so this exporter follows the same ``<universe_dir>/wiki`` convention as the
-    chatbot-facing wiki API without adding an MCP action or write path.
+
+def render_okf_files(sources: Mapping[str, bytes], *, exported_at: str | None = None):
+    """Convert selected wiki-relative pages into one in-memory OKF bundle.
+
+    Unselected sources cannot contribute content, titles, links or metadata.
+    Non-curated files are the transfer caller's separately reviewed content.
     """
-    wiki_root = _wiki_root_for_universe(universe_id)
-    return export_okf_bundle(wiki_root, target_dir)
+    exported_at = exported_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    excluded, reserved, eligible = [], [], []
+    for path in sorted(sources):
+        if private_source(path):
+            excluded.append({"path": path, "reason": "private wiki source"})
+        elif path.startswith("pages/") and path.endswith(".md"):
+            if Path(path).name.casefold() in _RESERVED_FILENAMES:
+                reserved.append(path)
+            else:
+                eligible.append(path)
+    link_index = _build_link_index(eligible)
+    concepts, unresolved, files = [], [], {}
+    for source in eligible:
+        relative = source.removeprefix("pages/")
+        meta, body = _parse_frontmatter(sources[source].decode("utf-8"))
+        concept = _concept_frontmatter(meta, body, source, relative, exported_at)
+        body = _convert_wikilinks(body, source=relative, link_index=link_index,
+                                 unresolved_links=unresolved)
+        files[relative] = _render_markdown(concept, body).encode("utf-8")
+        concepts.append({"id": relative.removesuffix(".md"), "path": relative,
+                         "title": str(concept["title"]),
+                         "description": str(concept.get("description", "")),
+                         "timestamp": str(concept["timestamp"])})
+    files["index.md"] = _render_index(concepts).encode("utf-8")
+    files["log.md"] = _render_log(concepts).encode("utf-8")
+    valid_index, index_meta = _validate_index("index.md", files["index.md"].decode())
+    valid_log = _validate_log(files["log.md"].decode())
+    return files, {
+        "okf_version": OKF_VERSION, "conformant": valid_index and valid_log,
+        "counts": {"concepts_exported": len(concepts),
+                   "excluded_by_privacy": len(excluded), "unresolved_links": len(unresolved)},
+        "concepts": concepts, "excluded_files": excluded, "unresolved_links": unresolved,
+        "reserved_files": {"index.md": {"valid": valid_index, **index_meta},
+                           "log.md": {"valid": valid_log}},
+        "issues": [f"{path}: source reserved filename was not exported as a concept"
+                   for path in reserved],
+    }
 
 
-def export_okf_bundle(wiki_root: str | Path, target_dir: str | Path) -> dict[str, Any]:
-    """Export a resolved wiki root's curated ``pages/**/*.md`` to ``target_dir``."""
-    source_root = Path(wiki_root).resolve()
-    bundle_root = Path(target_dir).resolve()
-    if not source_root.is_dir():
-        raise FileNotFoundError(f"Wiki root not found: {source_root}")
-    if _is_relative_to(bundle_root, source_root):
-        raise ValueError("target_dir must not be inside the source wiki root")
-
-    exported_sources, reserved_sources = _collect_exported_sources(source_root)
-    link_index = _build_link_index(exported_sources, source_root)
-    excluded_files = _collect_excluded_files(source_root)
-    concepts: list[dict[str, str]] = []
-    unresolved_links: list[dict[str, str]] = []
-
-    bundle_root.mkdir(parents=True, exist_ok=True)
-    for source_path in exported_sources:
-        source_rel = _source_rel_path(source_root, source_path)
-        bundle_rel = _bundle_rel_path(source_root, source_path)
-        raw = read_universe_text(source_root, source_path.relative_to(source_root).as_posix())
-        meta, body = _parse_frontmatter(raw)
-        concept_meta = _concept_frontmatter(meta, body, source_rel, bundle_rel, source_path)
-        converted_body = _convert_wikilinks(
-            body,
-            source=bundle_rel,
-            link_index=link_index,
-            unresolved_links=unresolved_links,
-        )
-        target_path = bundle_root / bundle_rel
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(
-            _render_markdown(concept_meta, converted_body),
-            encoding="utf-8",
-        )
-        concepts.append({
-            "id": bundle_rel.removesuffix(".md"),
-            "path": bundle_rel,
-            "title": str(concept_meta["title"]),
-            "description": str(concept_meta.get("description", "")),
-            "timestamp": str(concept_meta["timestamp"]),
-        })
-
-    _write_index(bundle_root, concepts)
-    _write_log(bundle_root, concepts)
-
-    report = _conformance_report(
-        bundle_root=bundle_root,
-        source_root=source_root,
-        concepts=concepts,
-        excluded_files=excluded_files,
-        unresolved_links=unresolved_links,
-        reserved_sources=reserved_sources,
-    )
-    return report
-
-
-def _collect_exported_sources(wiki_root: Path) -> tuple[list[Path], list[str]]:
-    pages_dir = wiki_root / "pages"
-    if not pages_dir.is_dir():
-        return [], []
-    exported: list[Path] = []
-    reserved_sources: list[str] = []
-    for path in sorted(pages_dir.rglob("*.md")):
-        if not path.is_file():
-            continue
-        if path.name.lower() == "soul.md":
-            continue
-        if path.name.lower() in _RESERVED_FILENAMES:
-            reserved_sources.append(_source_rel_path(wiki_root, path))
-            continue
-        exported.append(path)
-    return exported, reserved_sources
-
-
-def _collect_excluded_files(wiki_root: Path) -> list[dict[str, str]]:
-    excluded: list[dict[str, str]] = []
-    for path in sorted(wiki_root.rglob("*.md")):
-        if not path.is_file():
-            continue
-        rel = _source_rel_path(wiki_root, path)
-        parts = Path(rel).parts
-        reason = ""
-        if path.name.lower() == "soul.md":
-            reason = "soul.md"
-        elif parts and parts[0] in _EXCLUDED_ROOTS:
-            reason = parts[0]
-        if reason:
-            excluded.append({"path": rel, "reason": reason})
-    return excluded
-
-
-def _build_link_index(sources: list[Path], wiki_root: Path) -> dict[str, str]:
+def _build_link_index(sources: list[str]) -> dict[str, str]:
     index: dict[str, str] = {}
     for source in sources:
-        bundle_rel = _bundle_rel_path(wiki_root, source)
+        bundle_rel = source.removeprefix("pages/")
         concept_id = bundle_rel.removesuffix(".md")
         keys = {
-            source.stem,
+            Path(source).stem,
             concept_id,
             f"pages/{concept_id}",
             bundle_rel,
@@ -145,11 +95,11 @@ def _concept_frontmatter(
     body: str,
     source_rel: str,
     bundle_rel: str,
-    source_path: Path,
+    exported_at: str,
 ) -> dict[str, Any]:
     concept_type = _first_nonempty(meta.get("type", ""), meta.get("kind", ""), "note")
     title = _first_nonempty(meta.get("title", ""), _first_h1(body), _title_from_slug(bundle_rel))
-    timestamp = _first_nonempty(meta.get("updated", ""), _mtime_iso(source_path))
+    timestamp = _first_nonempty(meta.get("updated", ""), exported_at)
 
     output: dict[str, Any] = {
         "type": concept_type,
@@ -196,17 +146,17 @@ def _convert_wikilinks(
     return _WIKILINK_RE.sub(replace, body)
 
 
-def _write_index(bundle_root: Path, concepts: list[dict[str, str]]) -> None:
+def _render_index(concepts: list[dict[str, str]]) -> str:
     lines = ["---", f'okf_version: "{OKF_VERSION}"', "---", "", "# Index", ""]
     for concept in sorted(concepts, key=lambda item: item["path"]):
         description = concept.get("description", "")
         suffix = f" - {description}" if description else ""
         lines.append(f"- [{concept['title']}]({concept['path']}){suffix}")
     lines.append("")
-    (bundle_root / "index.md").write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)
 
 
-def _write_log(bundle_root: Path, concepts: list[dict[str, str]]) -> None:
+def _render_log(concepts: list[dict[str, str]]) -> str:
     by_date: dict[str, list[dict[str, str]]] = {}
     for concept in concepts:
         date = _timestamp_date(concept.get("timestamp", ""))
@@ -227,66 +177,7 @@ def _write_log(bundle_root: Path, concepts: list[dict[str, str]]) -> None:
         else:
             lines.append("* **Creation**: Created empty OKF export bundle.")
         lines.append("")
-    (bundle_root / "log.md").write_text("\n".join(lines), encoding="utf-8")
-
-
-def _conformance_report(
-    *,
-    bundle_root: Path,
-    source_root: Path,
-    concepts: list[dict[str, str]],
-    excluded_files: list[dict[str, str]],
-    unresolved_links: list[dict[str, str]],
-    reserved_sources: list[str],
-) -> dict[str, Any]:
-    issues: list[str] = []
-    reserved_files: dict[str, dict[str, Any]] = {}
-
-    for path in sorted(bundle_root.rglob("*.md")):
-        rel = path.relative_to(bundle_root).as_posix()
-        text = path.read_text(encoding="utf-8")
-        if path.name == "index.md":
-            valid, meta = _validate_index(rel, text)
-            reserved_files[rel] = {"valid": valid, **meta}
-            if not valid:
-                issues.append(f"{rel}: invalid index.md structure")
-            continue
-        if path.name == "log.md":
-            valid = _validate_log(text)
-            reserved_files[rel] = {"valid": valid}
-            if not valid:
-                issues.append(f"{rel}: invalid log.md structure")
-            continue
-
-        meta = _parse_yamlish_frontmatter(text)
-        if meta is None:
-            issues.append(f"{rel}: missing or unparseable frontmatter")
-        elif not meta.get("type", "").strip():
-            issues.append(f"{rel}: missing non-empty type")
-
-    for rel in reserved_sources:
-        issues.append(f"{rel}: source reserved filename was not exported as a concept")
-
-    return {
-        "okf_version": OKF_VERSION,
-        "source_wiki_root": source_root.as_posix(),
-        "target_dir": bundle_root.as_posix(),
-        "conformant": not any(
-            issue
-            for issue in issues
-            if "source reserved filename" not in issue
-        ),
-        "counts": {
-            "concepts_exported": len(concepts),
-            "excluded_by_privacy": len(excluded_files),
-            "unresolved_links": len(unresolved_links),
-        },
-        "concepts": concepts,
-        "excluded_files": excluded_files,
-        "unresolved_links": unresolved_links,
-        "reserved_files": reserved_files,
-        "issues": issues,
-    }
+    return "\n".join(lines)
 
 
 def _validate_index(rel: str, text: str) -> tuple[bool, dict[str, str]]:
@@ -393,13 +284,6 @@ def _first_nonempty(*values: str) -> str:
     return ""
 
 
-def _mtime_iso(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat().replace(
-        "+00:00",
-        "Z",
-    )
-
-
 def _timestamp_date(timestamp: str) -> str:
     match = re.match(r"^(\d{4}-\d{2}-\d{2})", timestamp.strip())
     if match:
@@ -414,19 +298,3 @@ def _workflow_key(key: str) -> str:
 def _normalize_wikilink_target(target: str) -> str:
     normalized = target.strip().removeprefix("/").removesuffix(".md").replace("\\", "/")
     return normalized.lower()
-
-
-def _source_rel_path(wiki_root: Path, path: Path) -> str:
-    return path.relative_to(wiki_root).as_posix()
-
-
-def _bundle_rel_path(wiki_root: Path, path: Path) -> str:
-    return path.relative_to(wiki_root / "pages").as_posix()
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True

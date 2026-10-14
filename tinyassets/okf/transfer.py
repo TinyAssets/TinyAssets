@@ -86,7 +86,9 @@ def _never(path):
     parts = [part.casefold() for part in path.split("/")]
     if "wiki" in parts:
         wiki = parts[parts.index("wiki") + 1:]
-        if "soul.md" in wiki or any(part in {"raw", "drafts", "daemon-wiki"} for part in wiki):
+        from tinyassets.wiki.okf_export import private_source
+
+        if private_source("/".join(wiki)):
             return True
     return any(
         part in NEVER or part.startswith(".env.") for part in parts
@@ -252,6 +254,25 @@ def export_zip(
         ).encode("utf-8")
     if profile == "export":
         from tinyassets.okf.export_assets import generated_files
+        from tinyassets.wiki.okf_export import render_okf_files
+
+        curated = {path: data for path, data in files.items()
+                   if path.startswith("wiki/pages/") and path.endswith(".md")
+                   and path not in reviewed.binary}
+        if curated:
+            converted, report = render_okf_files({p[5:]: b for p, b in curated.items()})
+            if report["issues"]:
+                raise InvalidBundle("A selected wiki page uses a reserved OKF filename")
+            for path in curated:
+                del files[path]
+            occupied = {safe_path(p) for p in files}
+            for path, data in converted.items():
+                target = "wiki/" + path
+                key = safe_path(target)
+                if key in occupied:
+                    raise InvalidBundle("Selected wiki content conflicts with the OKF bundle")
+                occupied.add(key)
+                files[target] = data
 
         generated = generated_files()
         if set(files) & set(generated):
