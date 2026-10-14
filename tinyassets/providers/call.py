@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -49,17 +48,18 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     if _router is None:
         raise ProviderAuthorityHeldError("interactive agent requires a provider router")
     register_open_providers_for(universe_context)
-    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter, thin_loop_selected
+    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter
 
-    thin = {"adapter": ThinLoopChatAdapter()} if thin_loop_selected() else {}
     return InteractiveHttpAgentTurn(
         router=_router, prompt=prompt, system=system,
-        universe_context=universe_context, config=config, **thin,
+        universe_context=universe_context, config=config, adapter=ThinLoopChatAdapter(),
     )
 
 
 def call_interactive_agent_turn(turn, *, response_observer=None) -> str:
-    result = asyncio.run(turn.run())
+    from tinyassets.agent_loop.execution import execution_owner
+
+    result = execution_owner().run(turn.run())
     if response_observer is not None:
         response_observer(result)
     return result.text
