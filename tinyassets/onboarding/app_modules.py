@@ -1,10 +1,10 @@
 """The web app's ES modules, served as static files from ``tinyassets/onboarding/app/``.
 
-app.html carries the whole web app in one inline script. The split
-(docs/architecture.md) moves that
-script into native ES modules the page imports from ``/app/m/<build>/<name>.js``.
-This module is S0: the route, its allowlist and the CSP grant, with nothing
-loaded yet.
+The shell sources are separate packaged JavaScript modules. ``shell_source``
+assembles the trusted shell and send modules into its existing nonce-protected
+script so its shared lexical scope and browser adapters remain compatible.
+Independent ES modules (such as transfer and Mermaid) load from the same
+content-keyed route; these static files never contain request credentials.
 
 * **Allowlist, not a path.** Only basenames of ``.js`` files present in the
   module directory are served (``[a-z0-9_]+.js``); there is no path join of
@@ -63,6 +63,19 @@ def build_segment() -> str:
 
 def module_url(name: str) -> str:
     return f"/app/m/{build_segment()}/{name}"
+
+
+def shell_source(html_path: Path) -> str:
+    """Assemble only packaged source; owner-authored UI never enters this scope."""
+    source = html_path.read_text(encoding="utf-8")
+    if "__TA_APP_MAIN__" not in source:
+        return source
+    main = (MODULE_DIR / "main.js").read_text(encoding="utf-8")
+    for marker, name in (("__TA_MODEL_STREAM__", "model_stream.js"),
+                         ("__TA_SEND_JOURNAL__", "send_journal.js"),
+                         ("__TA_DURABLE_SEND__", "durable_send.js")):
+        main = main.replace(marker, (MODULE_DIR / name).read_text(encoding="utf-8"))
+    return source.replace("__TA_APP_MAIN__", main)
 
 
 def shell_version(html_path: Path) -> str:

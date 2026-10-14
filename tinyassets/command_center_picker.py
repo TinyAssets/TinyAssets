@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -11,87 +12,12 @@ BUILD_PROMPT = (
     "Help me design my own command center: ask me what I want it to do, then build it."
 )
 
-PLATFORM_DEFAULT_UI = {
-    "kind": "tinyassets.app-ui.v1",
-    "version": 1,
-    "ui_id": "platform:blank",
-    "name": "Blank command center",
-    "markup": """<main id="offer">
-<h1>Your command center is empty</h1>
-<p>Talk to your agent to build or change this space, or browse a design someone has shared.
-Browsing and visual previews do not send a message or use a model.</p>
-<button id="build">Build your own</button>
-<button id="try-one">Try someone else's</button>
-<section id="packages" hidden aria-label="Published command centers"></section>
-<p id="message" role="status"></p>
-</main>""",
-    "style": """*{box-sizing:border-box}html,body{margin:0;min-height:100%;}
-body{min-height:100vh;display:grid;place-items:center;background:#101419;
-color:#edf0f3;font:16px system-ui,sans-serif;padding:32px}
-main{width:min(760px,100%);text-align:center}h1{font-size:clamp(24px,4vw,36px)}
-p{line-height:1.6;color:#b9c3ce}button{font:inherit;cursor:pointer;border:1px solid
-#667789;border-radius:8px;padding:12px 18px;margin:6px;background:#233344;color:inherit}
-button:disabled{opacity:.6;cursor:wait}a{color:#b9c3ce}section{text-align:left;
-margin:24px 0}article{border:1px solid #43505f;border-radius:12px;padding:16px;
-margin:12px 0}h2{margin:0;font-size:20px}[hidden]{display:none!important}""",
-    "script": """(async()=>{
-const el=id=>document.getElementById(id),message=el('message');
-const say=error=>{message.textContent=error.message||String(error);};
-el('try-one').onclick=()=>{el('packages').hidden=false;};
-el('build').onclick=async()=>{
-  try{await tinyassets.call('chat.prefill',{text:BUILD_PROMPT});}catch(error){say(error);}
-};
-try{
-  const doc=await tinyassets.call('packages.list_tryable',{});
-  if(!doc.packages.length&&!(doc.systems||[]).length)
-    el('packages').textContent='No shared command centers are available yet. '+
-      'You can build your own.';
-  if(doc.can_try)for(const p of doc.packages){
-    const card=document.createElement('article'),name=document.createElement('h2');
-    name.textContent=p.name;card.appendChild(name);
-    const description=document.createElement('p');description.textContent=p.description;
-    card.appendChild(description);
-    const detail=document.createElement('p');
-    detail.textContent=p.author_id+' · Version '+p.version+' · '+p.size+
-      ' · Model: '+(p.needs.model||'None specified')+
-      ' · Connections: '+(p.needs.connections.join(', ')||'None');
-    card.appendChild(detail);
-    const button=document.createElement('button');button.textContent='Preview';
-    button.onclick=async()=>{
-      button.disabled=true;
-      try{await tinyassets.call('packages.preview',{agent_definition_id:p.agent_definition_id});
-        message.textContent='Visual preview is open. '+
-          'Nothing installs before you choose Copy and confirm.';
-      }catch(error){say(error);}finally{button.disabled=false;}
-    };
-    card.appendChild(button);el('packages').appendChild(card);
-  }
-  for(const p of doc.systems||[]){
-    const card=document.createElement('article'),name=document.createElement('h2');
-    name.textContent=p.name;card.appendChild(name);
-    const description=document.createElement('p');description.textContent=p.description;
-    card.appendChild(description);
-    const detail=document.createElement('p');
-    detail.textContent=p.author_id+' · Public system · Components only; no files · '+
-      p.workflow_count+' workflows · '+p.automation_count+' paused automations';
-    card.appendChild(detail);
-    const button=document.createElement('button');button.textContent='Preview copy';
-    button.disabled=!p.available;
-    button.onclick=async()=>{
-      button.disabled=true;
-      try{await tinyassets.call('packages.preview',{agent_definition_id:p.agent_definition_id});
-        message.textContent='Visual preview is open. '+
-          'Choose Copy to review and confirm; nothing installs yet.';
-      }catch(error){say(error);}finally{button.disabled=!p.available;}
-    };
-    card.appendChild(button);
-    if(!p.available){const why=document.createElement('p');
-      why.textContent=p.unavailable_reason;card.appendChild(why);}
-    el('packages').appendChild(card);
-  }
-}catch(error){say(error);}
-})();""".replace("BUILD_PROMPT", json.dumps(BUILD_PROMPT)),
-}
+# The built-in fallback reads the same card bytes an owner may install as an
+# ordinary extension. Package metadata grants no trusted-shell capabilities;
+# extension projection replaces this reserved fallback id with its revision id.
+PLATFORM_DEFAULT_UI = json.loads(
+    (Path(__file__).parent / "starter" / "default-layout" / "layout.json").read_text("utf-8")
+)
 
 
 def working_packages() -> list[dict]:
