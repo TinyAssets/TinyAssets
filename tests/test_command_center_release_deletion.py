@@ -43,17 +43,23 @@ def test_inflight_consent_pin_refuses_after_account_deletion(published, monkeypa
 
     entered, resume = threading.Event(), threading.Event()
     original_db = packages._db
+    writer_thread = None
 
     @contextmanager
     def paused_db(base):
         # The real adapter has already retained its caller and captured link.
         # Pause before acquiring any database/admission fence, without sleeps.
-        entered.set()
-        assert resume.wait(20), "test did not resume pin writer"
+        # Erasure also opens this store for private-import custody; its thread
+        # must proceed while the consent writer remains paused.
+        if threading.get_ident() == writer_thread:
+            entered.set()
+            assert resume.wait(20), "test did not resume pin writer"
         with original_db(base) as conn:
             yield conn
 
     def write():
+        nonlocal writer_thread
+        writer_thread = threading.get_ident()
         with _as(data["publisher"]):
             tab = record["tab"]
             return _pin_consent(data["publisher_home"], record["action"],
@@ -125,11 +131,14 @@ def test_consent_pin_holds_tombstone_exclusion_through_commit(published, monkeyp
         with original_db(base) as conn:
             yield ObservedConnection(conn)
 
-    monkeypatch.setattr(packages, "_db", observed_db)
-    request_id = packages.pin(
-        data["base"], universe_id=data["publisher_home"], owner_id=data["publisher"],
-        kind=kind, agent="main", digest="in-flight", record={"private": "evidence"},
-    )
+    # This observer instruments the pin's INSERT, not erasure's independent
+    # package transaction. Keep the real connection in place for deletion.
+    with monkeypatch.context() as patch:
+        patch.setattr(packages, "_db", observed_db)
+        request_id = packages.pin(
+            data["base"], universe_id=data["publisher_home"], owner_id=data["publisher"],
+            kind=kind, agent="main", digest="in-flight", record={"private": "evidence"},
+        )
     assert observed == ["excluded", "excluded"]
     gc.collect()
     receipt = account_deletion.delete_account(
