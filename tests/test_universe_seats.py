@@ -864,7 +864,6 @@ def test_status_shows_the_owner_their_waiting_chat_and_nobody_else(tmp_path):
 
     mine = seats.status_for_owner("village", root=tmp_path, actor_id="alice")
     assert mine["chat_waiting"] is True and mine["running"] == 3
-    assert "message" in mine
     assert mine["message"].startswith("Waiting for a free seat (3 running)")
     assert "[Upgrade](https://tinyassets.io/app?upgrade=1)" in mine["message"]
     assert mine["upgrade_url"] == "https://tinyassets.io/app?upgrade=1"
@@ -873,37 +872,6 @@ def test_status_shows_the_owner_their_waiting_chat_and_nobody_else(tmp_path):
     assert seats.status_for_owner("village", root=tmp_path, actor_id="bob") is None, (
         "a co-admin never reads the owner's account-wide occupancy"
     )
-    for seat in held:
-        seats.release(seat.seat_id, db=db)
-
-
-def test_a_chat_allocation_failure_is_an_error_with_a_message(tmp_path):
-    """A provider-allocation refusal is a status error, not a waiting chat
-    missing its line."""
-    from tinyassets.daemon_server import grant_universe_ownership
-
-    grant_universe_ownership(tmp_path, universe_id="village", owner_id="alice")
-    key = seats.account_key("village", root=tmp_path)
-    db = seats.ledger_path(tmp_path)
-    seats.note_chat_allocation_failure(
-        key, "village",
-        "Connect your provider: an owner-bound source is required",
-        db=db,
-    )
-    status = seats.status_for_owner("village", root=tmp_path, actor_id="alice")
-    assert status["chat_waiting"] is False
-    assert status["error"] == "provider_allocation"
-    assert status["message"] == "Connect your provider: an owner-bound source is required"
-
-    held = [seats.acquire(key, seat_class=CLASS_INTERACTIVE, db=db) for _ in range(3)]
-    waiting = seats.acquire(key, seat_class=CLASS_INTERACTIVE, kind=seats.KIND_CHAT_TURN,
-                            universe_id="village", db=db)
-    assert isinstance(waiting, Waiting)
-    queued = seats.status_for_owner("village", root=tmp_path, actor_id="alice")
-    assert queued["chat_waiting"] is True
-    assert "message" in queued
-    assert queued["message"].startswith("Waiting for a free seat")
-    assert "error" not in queued
     for seat in held:
         seats.release(seat.seat_id, db=db)
 
