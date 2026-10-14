@@ -21,8 +21,12 @@ currently differs). Events and tools share the existing bearer and Origin bounda
 
 ## Subscription contract
 
-- Require an authenticated named principal with admin access to the selected
-  command center and read access to the selected workflow. Outside clients retain
+- Require an authenticated named principal recorded by the canonical owner resolver
+  as the selected command center's owner, with admin access when the center is
+  private, and read access to the selected workflow. Public visibility alone and
+  another owner's delegated admin grant do not confer subscription ownership.
+  All of a person's explicitly owned centers are eligible, not only their home.
+  Outside clients retain
   their existing `read_graph` scope; subscriptions do not create or broaden grants.
 - Require exact `command_center_id` and `branch_def_id`; optional scalar equality
   filters on workflow inputs and outputs narrow successful storage receipts.
@@ -40,6 +44,8 @@ currently differs). Events and tools share the existing bearer and Origin bounda
   nonpublic address, pin the connected IP with original-host TLS verification,
   reject redirects, and bound time and response size. Verify a signed random
   single-use challenge before activating; cache verified owner+URL+key briefly.
+  Limit uncached verification attempts (including failures) to 32 per owner per
+  60-second window in durable storage; enforce before network I/O across restarts.
 - Default/max lifetime is one day; honor shorter positive `ttlMs`. `null` is granted
   a finite lifetime. Refresh rotates keys with a short dual-signature window.
 - Recheck owner/resource and saved outside-client authority at capture and delivery.
@@ -55,6 +61,11 @@ after remote receipt can duplicate a delivery; consumers deduplicate by event ID
 410 revokes the subscription; 413 and other permanent failures stop that delivery.
 A 2xx acknowledges receipt only. Processing and replies are asynchronous and may be
 batched by ChatGPT; there is no latency SLA.
+
+An undecryptable subscription is revoked without blocking unrelated fanout;
+non-scalar or non-finite run fields cannot match scalar filters. Transient storage
+or seal-key unavailability retains the source event only within the existing
+one-day delivery horizon; restoring service cannot revive expired source events.
 
 Tests must cover protocol/legacy compatibility and per-request identity; cross-owner
 refusal; callback rebinding/redirects/signatures; restart, rotation, expiry,

@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets.mcp_event_webhooks import (
@@ -33,6 +34,8 @@ NAME = "workflow.succeeded"
 MAX_TTL = 86400
 MAX_ATTEMPTS = 8
 DELIVERY_TTL = 86400
+VERIFICATION_LIMIT = 32
+VERIFICATION_WINDOW = 60
 logger = logging.getLogger(__name__)
 _IDENTIFIER = {"type": "string", "minLength": 1, "maxLength": 256}
 _FILTER = {
@@ -71,6 +74,15 @@ def _iso(stamp):
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _scalar_matches(actual, expected):
+    if not isinstance(actual, (str, int, float, bool, type(None))):
+        return False
+    try:
+        return canonical(actual) == canonical(expected)
+    except (ValueError, TypeError):
+        return False
+
+
 def arguments(value):
     if not isinstance(value, dict) or set(value) - {
         "command_center_id",
@@ -107,14 +119,22 @@ def authorize(base, owner, args, authority=None):
     """Re-evaluate the persisted owner and exact resource grant; never use a fallback actor."""
     from tinyassets.auth.provider import Identity
     from tinyassets.branch_versions import branch_readable_by
-    from tinyassets.daemon_server import get_branch_definition, universe_access_permission
+    from tinyassets.daemon_server import (
+        get_branch_definition,
+        universe_access_permission,
+        universe_is_private,
+    )
     from tinyassets.outside_authority import OutsideClientAuthority
     from tinyassets.principals import named_principal
+    from tinyassets.universe_owner import owner_of
 
     if not named_principal(owner) or owner.startswith("universe:"):
         raise PermissionError("Named owner required")
     uid = args["command_center_id"]
-    if universe_access_permission(base, universe_id=uid, actor_id=owner) != "admin":
+    if owner_of(base, uid) != owner or (
+        universe_is_private(base, universe_id=uid)
+        and universe_access_permission(base, universe_id=uid, actor_id=owner) != "admin"
+    ):
         raise PermissionError("Owned command center required")
     branch = get_branch_definition(base, branch_def_id=args["branch_def_id"])
     if not branch_readable_by(
@@ -164,6 +184,8 @@ class EventStore:
                     state TEXT NOT NULL DEFAULT 'pending', lease TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(subscription,event_id));
                 CREATE INDEX IF NOT EXISTS event_delivery_due ON deliveries(state,due);
+                CREATE TABLE IF NOT EXISTS verification_budget (
+                    owner TEXT PRIMARY KEY, started REAL NOT NULL, attempts INTEGER NOT NULL);
             """)
             with conn:
                 yield conn
@@ -194,6 +216,25 @@ class EventStore:
         url = callback_url(delivery.get("url"))
         ident = "sub_" + hashlib.sha256(canonical([owner, url, NAME, args]).encode()).hexdigest()
         return ident, args, url
+
+    def _admit_verification(self, owner):
+        """Charge failed attempts too, before I/O, across processes and restarts."""
+        now = self.clock()
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM verification_budget WHERE started<?", (now - MAX_TTL,))
+            row = conn.execute(
+                "SELECT started,attempts FROM verification_budget WHERE owner=?", (owner,)
+            ).fetchone()
+            started, attempts = (row["started"], row["attempts"]) if row else (now, 0)
+            if now >= started + VERIFICATION_WINDOW:
+                started, attempts = now, 0
+            if attempts >= VERIFICATION_LIMIT:
+                raise EventError(-32025, "Verification limit reached", limit="verifications")
+            conn.execute(
+                "INSERT OR REPLACE INTO verification_budget VALUES (?,?,?)",
+                (owner, started, attempts + 1),
+            )
 
     def subscribe(self, owner, params, *, authority=None):
         ident, args, url = self._identity(owner, params)
@@ -229,6 +270,7 @@ class EventStore:
             and previous["verified"] > now - 300
             and old["secret"] == secret
         ):
+            self._admit_verification(owner)
             verify(ident, url, secret, sender=self.sender)
         else:
             verified = previous["verified"]
@@ -333,7 +375,11 @@ class EventStore:
                 scope = json.loads(row["arguments"])
                 if scope != {"command_center_id": universe, "branch_def_id": branch}:
                     continue
-                config = self._open(row)
+                try:
+                    config = self._open(row)
+                except (InvalidTag, ValueError):
+                    self._revoke(conn, row["id"], owner)
+                    continue
                 args = config["arguments"]
                 try:
                     self.authorizer(self.base, owner, args, config["authority"])
@@ -341,7 +387,7 @@ class EventStore:
                     self._revoke(conn, row["id"], owner)
                     continue
                 if not all(
-                    k in actual and canonical(actual[k]) == canonical(v)
+                    k in actual and _scalar_matches(actual[k], v)
                     for field, actual in (("input_equals", inputs), ("output_equals", outputs))
                     for k, v in args.get(field, {}).items()
                 ):

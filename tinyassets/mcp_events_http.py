@@ -125,7 +125,16 @@ class MCPEventsMiddleware:
                         chunks.append(message.get("body", b""))
 
                 await self.modern_tools(forwarded, _replay_receive(messages, receive), capture)
-                answer = json.loads(b"".join(chunks))
+                raw_answer = b"".join(chunks)
+                try:
+                    answer = json.loads(raw_answer)
+                except ValueError:
+                    if response_status >= 400:
+                        return await Response(
+                            raw_answer, status_code=response_status, media_type="text/plain",
+                            headers={"Cache-Control": "no-store"},
+                        )(scope, receive, send)
+                    raise
                 if "result" in answer:
                     answer["result"]["resultType"] = "complete"
                     if method.endswith("/list"):

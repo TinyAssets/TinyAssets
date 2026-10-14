@@ -168,3 +168,24 @@ async def test_subscribe_uses_request_owner_not_body():
             )
     assert answer.status_code == 200
     assert observed == [("alice", None)]
+
+
+@pytest.mark.asyncio
+async def test_forwarded_non_json_transport_error_keeps_original_status():
+    async def forbidden(*args):
+        pytest.fail("request reached legacy dispatcher")
+
+    async def transport_error(scope, receive, send):
+        from starlette.responses import PlainTextResponse
+
+        await PlainTextResponse("Not Acceptable", status_code=406)(scope, receive, send)
+
+    app = MCPEventsMiddleware(forbidden, transport_error)
+    with auth.identity_context(Identity("alice", "alice")):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://tinyassets.io"
+        ) as client:
+            answer = await client.post(
+                "/mcp", headers=headers("tools/list"), json=request("tools/list"))
+    assert answer.status_code == 406 and answer.text == "Not Acceptable"
+    assert answer.headers["cache-control"] == "no-store"

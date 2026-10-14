@@ -276,6 +276,8 @@ def test_verification_fails_closed(status, response):
 def test_real_authorizer_cross_owner_and_revoked_branch(monkeypatch, tmp_path):
     from tinyassets import daemon_server as ds
 
+    monkeypatch.setattr("tinyassets.universe_owner.owner_of", lambda *a: "alice")
+    monkeypatch.setattr(ds, "universe_is_private", lambda *a, **k: True)
     monkeypatch.setattr(
         ds,
         "universe_access_permission",
@@ -311,6 +313,7 @@ def test_reactivation_cannot_bypass_owner_subscription_limit(harness, expired):
     else:
         store.unsubscribe("alice", params())
     for index in range(128):
+        now[0] += 2  # Respect the separate durable verification rate limit.
         active = params()
         active["arguments"]["branch_def_id"] = f"save-{index}"
         store.subscribe("alice", active)
@@ -319,3 +322,123 @@ def test_reactivation_cannot_bypass_owner_subscription_limit(harness, expired):
     with pytest.raises(EventError) as error:
         store.subscribe("alice", params())
     assert error.value.code == -32025
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), {}, [True]])
+def test_noncanonical_output_is_nonmatch_not_outbox_poison(harness, value):
+    factory, _, _, _ = harness
+    store = factory()
+    store.subscribe("alice", params())
+    capture(store, outputs={"saved": value})
+    assert rows(store, "deliveries") == []
+    assert rows(store, "subscriptions")[0]["active"] == 1
+
+
+def test_corrupt_subscription_revoked_without_starving_other_subscriptions(harness):
+    factory, _, _, _ = harness
+    store = factory()
+    first = store.subscribe("alice", params())["id"]
+    second = params()
+    second["delivery"]["url"] += "/other"
+    good = store.subscribe("alice", second)["id"]
+    with store.db() as conn:
+        conn.execute("UPDATE subscriptions SET sealed=? WHERE id=?", (b"corrupted", first))
+    capture(factory())
+    records = {r["id"]: r for r in rows(store, "subscriptions")}
+    assert records[first]["active"] == 0 and records[first]["sealed"] == b""
+    assert records[good]["active"] == 1
+    assert [r["subscription"] for r in rows(store, "deliveries")] == [good]
+
+
+def test_rotated_seal_key_revokes_unreadable_subscription(harness):
+    factory, _, _, _ = harness
+    store = factory()
+    store.subscribe("alice", params())
+    store.key_provider = lambda: b"z" * 32
+    capture(store)
+    assert rows(store, "subscriptions")[0]["active"] == 0
+    assert rows(store, "deliveries") == []
+
+
+def test_verification_failures_are_bounded_across_restart_and_owner_scoped(harness):
+    from tinyassets.mcp_events import VERIFICATION_LIMIT
+
+    factory, now, _, _ = harness
+    calls = []
+
+    def failing(*args):
+        calls.append(args)
+        return 500, b"{}"
+
+    for _ in range(VERIFICATION_LIMIT):
+        with pytest.raises(EventError) as error:
+            factory(sender=failing).subscribe("alice", params())
+        assert error.value.code == -32015
+    with pytest.raises(EventError) as error:
+        factory(sender=failing).subscribe("alice", params())
+    assert error.value.code == -32025 and len(calls) == VERIFICATION_LIMIT
+    with pytest.raises(EventError) as error:
+        factory(sender=failing).subscribe("bob", params())
+    assert error.value.code == -32015 and len(calls) == VERIFICATION_LIMIT + 1
+    now[0] += 60
+    factory().subscribe("alice", params())
+    assert len(rows(factory(), "subscriptions")) == 1
+
+
+def test_cached_verified_refresh_needs_no_new_verification_budget(harness):
+    factory, _, sent, _ = harness
+    store = factory()
+    store.subscribe("alice", params())
+    with store.db() as conn:
+        conn.execute("UPDATE verification_budget SET attempts=32 WHERE owner='alice'")
+    factory().subscribe("alice", params())
+    assert len(sent) == 1
+
+
+def test_concurrent_verifications_cannot_overdraw_budget(harness, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr("tinyassets.mcp_events.VERIFICATION_LIMIT", 4)
+    factory, _, _, _ = harness
+    attempted = []
+
+    def sender(*args):
+        attempted.append(1)
+        return 500, b"{}"
+
+    def subscribe(_):
+        try:
+            factory(sender=sender).subscribe("alice", params())
+        except EventError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(subscribe, range(16)))
+    assert len(attempted) == codes.count(-32015) == 4
+    assert codes.count(-32025) == 12
+
+
+def test_canonical_owner_allows_owned_centers_but_not_delegated_admin(tmp_path, monkeypatch):
+    from tinyassets import daemon_server as ds
+
+    ds.grant_universe_ownership(tmp_path, universe_id="center", owner_id="alice")
+    ds.grant_universe_access(tmp_path, universe_id="center", actor_id="bob",
+                             permission="admin", granted_by="alice")
+    monkeypatch.setattr(ds, "get_branch_definition", lambda *a, **k: {
+        "author": "alice", "visibility": "public"})
+    authorize(tmp_path, "alice", params()["arguments"])
+    with pytest.raises(PermissionError):
+        authorize(tmp_path, "bob", params()["arguments"])
+    # Ownership is not inferred from admin or restricted to one founder home.
+    ds.grant_universe_access(tmp_path, universe_id="unattributed", actor_id="alice",
+                             permission="admin", granted_by="alice")
+    with pytest.raises(PermissionError):
+        authorize(tmp_path, "alice", params()["arguments"] | {"command_center_id": "unattributed"})
+    ds.grant_universe_ownership(tmp_path, universe_id="second", owner_id="alice")
+    authorize(tmp_path, "alice", params()["arguments"] | {"command_center_id": "second"})
+    # A public owned center has no ACL rows; the canonical owner still qualifies.
+    with ds._connect(tmp_path) as conn:
+        conn.execute("DELETE FROM universe_acl WHERE universe_id='center'")
+    authorize(tmp_path, "alice", params()["arguments"])
+    with pytest.raises(PermissionError):
+        authorize(tmp_path, "bob", params()["arguments"])
