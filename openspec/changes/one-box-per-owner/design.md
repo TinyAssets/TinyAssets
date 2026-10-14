@@ -446,26 +446,33 @@ Each PR ships alone and deletes in the same PR (ADR-022).
 - `boxhostd` and gVisor are installed and every P2a gate has passed; they
   serve nothing.
 
-**The window (P2b, short).** One forward-only one-shot runs with every writer
-stopped:
+**The window (P2b, short).** `deploy/deploy_fail_safe.sh` runs exactly one
+forward-only migration container with every writer stopped, after its verified
+full snapshot. The migration is not a startup hook and has no retry ledger or
+fallback path:
 
 1. It refuses unless the volume carries the `owner-split` marker, a backup
    id is given and the digest verifies.
 2. For each owner, it creates the box record in the broker log, rsyncs
    the tree into `/var/lib/boxhostd/owners/<uid>` under the same UID/GID,
    sets the project id and `bhard`, and verifies with `rsync --checksum`.
-   A post-cutover verified backup that includes the box store is taken and
-   restore-tested on the production copy; only then are the old trees
-   removed (ADR-022 amendment).
 3. It does not touch policy: legacy `rules.db` and `approval_grants` are
    not imported (owners re-grant; P1 decision).
 4. It writes the `owner-box` layout marker last.
-5. It is re-runnable after a crash. A second run changes nothing, and
-   `--check` reports zero diffs.
+5. After the candidate serves successfully, a post-cutover verified backup
+   including the box store is taken and restore-tested on the production
+   copy. Only then are the old trees removed (ADR-022 amendment).
+
+Any apply failure after mutation requires restoring the verified snapshot;
+the deploy cannot retry the migration or restart the previous image after
+`MIGRATION_COMMITTED`. It prints the exact `backup-restore.sh` command. A
+read-only preflight check may report that an already committed `owner-box`
+layout needs no move, but it cannot apply again.
 
 The new image serves only from boxes. There is no flag back to cells.
 
-**Rollback.**
+**Rollback.** The deploy script never starts the previous image after
+`MIGRATION_COMMITTED`; restoration is a separate, explicit recovery action.
 
 - Restore the previous image and its pinned runtime bundle.
 - Before the old trees are removed they are intact, and the old image
