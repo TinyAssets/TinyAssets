@@ -196,52 +196,30 @@ def test_daemon_overview_cache_invalidated_on_set_tier_config(universe_harness):
     """Writing set_tier_config busts the cache for that universe."""
     r1 = _action_daemon_overview(universe_id=universe_harness["uid"])
     d1 = json.loads(r1)
-    assert d1["dispatcher"]["config"]["accept_paid_bids"] in (True, False)
+    assert d1["dispatcher"]["config"]["accept_external_requests"] in (True, False)
 
-    before_state = d1["dispatcher"]["config"]["accept_paid_bids"]
+    before_state = d1["dispatcher"]["config"]["accept_external_requests"]
     new_state = not before_state
     _action_set_tier_config(
         universe_id=universe_harness["uid"],
-        tier="paid_bids", enabled=new_state,
+        tier="external_requests", enabled=new_state,
     )
     r2 = _action_daemon_overview(universe_id=universe_harness["uid"])
     d2 = json.loads(r2)
-    assert d2["dispatcher"]["config"]["accept_paid_bids"] == new_state
+    assert d2["dispatcher"]["config"]["accept_external_requests"] == new_state
 
 
 
 
-def test_daemon_overview_flag_off_shows_paid_bid_not_live(
-    universe_harness, monkeypatch,
-):
-    """With flag off AND no config override, paid_bid reports non-live
-    (landed dispatcher uses "disabled"; older spec drafts said
-    "stubbed"). Either is acceptable; test pins "not live" so the
-    real invariant — flag-off must not misadvertise a live market —
-    is enforced regardless of the naming choice."""
-    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "off")
-    # Clear any pre-existing config from other tests in the class
-    udir = universe_harness["base"] / universe_harness["uid"]
-    cfg_path = udir / "dispatcher_config.yaml"
-    if cfg_path.exists():
-        cfg_path.unlink()
-    from tinyassets.api.universe import _OVERVIEW_CACHE
-    _OVERVIEW_CACHE.clear()
-    resp = json.loads(_action_daemon_overview(
-        universe_id=universe_harness["uid"],
+def test_daemon_overview_does_not_advertise_retired_paid_market(universe_harness, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
+    resp = json.loads(_action_daemon_overview(universe_id=universe_harness["uid"]))
+    assert "paid_bid" not in resp["dispatcher"]["tier_status_map"]
+    assert "accept_paid_bids" not in resp["dispatcher"]["config"]
+    refused = json.loads(_action_set_tier_config(
+        universe_id=universe_harness["uid"], tier="paid_bids", enabled=True,
     ))
-    status = resp["dispatcher"]["tier_status_map"]["paid_bid"]
-    assert status != "live"
-    assert status.lower() in {"disabled", "stubbed", "stubbed (phase g)"}
-
-
-
-
-
-
-# ───────────────────────────────────────────────────────────────────────
-# set_tier_config action (6 tests)
-# ───────────────────────────────────────────────────────────────────────
+    assert refused["error"] == "unknown_tier"
 
 
 def test_set_tier_config_valid_tier_writes_yaml(universe_harness):
@@ -276,11 +254,11 @@ def test_set_tier_config_persists_across_load(universe_harness):
     from tinyassets.control_plane.queue_policy import load_dispatcher_config
     _action_set_tier_config(
         universe_id=universe_harness["uid"],
-        tier="paid_bids", enabled=True,
+        tier="external_requests", enabled=True,
     )
     udir = universe_harness["base"] / universe_harness["uid"]
     cfg = load_dispatcher_config(udir)
-    assert cfg.accept_paid_bids is True
+    assert cfg.accept_external_requests is True
 
 
 def test_set_tier_config_preserves_other_yaml_fields(universe_harness):
@@ -300,9 +278,9 @@ def test_set_tier_config_preserves_other_yaml_fields(universe_harness):
     assert data["accept_goal_pool"] is True
 
 
-def test_set_tier_config_all_four_tiers(universe_harness):
-    """All four tier keys are accepted."""
-    for tier in ("external_requests", "goal_pool", "paid_bids", "opportunistic"):
+def test_set_tier_config_surviving_tiers(universe_harness):
+    """All surviving tier keys are accepted."""
+    for tier in ("external_requests", "goal_pool", "opportunistic"):
         resp = json.loads(_action_set_tier_config(
             universe_id=universe_harness["uid"],
             tier=tier, enabled=True,
@@ -361,29 +339,10 @@ def test_dashboard_adds_exactly_two_actions_to_universe():
 # ───────────────────────────────────────────────────────────────────────
 
 
-def test_bid_execution_log_import_works():
-    from tinyassets.bid.execution_log import (  # noqa: F401
-        append_execution_log_entry,
-        read_execution_log,
-    )
 
 
-def test_bid_ledger_shim_still_works():
-    """Deprecated alias continues to re-export during transition."""
-    from tinyassets.bid.execution_log import (  # noqa: F401
-        append_ledger_entry,
-        read_ledger,
-    )
 
 
-def test_bid_execution_log_reads_legacy_filename(tmp_path):
-    """Transition: if only bid_ledger.json exists, read from it."""
-    from tinyassets.bid.execution_log import read_execution_log
-    (tmp_path / "bid_ledger.json").write_text(
-        json.dumps([{"k": "v"}]), encoding="utf-8",
-    )
-    entries = read_execution_log(tmp_path)
-    assert entries == [{"k": "v"}]
 
 
 # ───────────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 """Tests for tinyassets.gates schema layer.
 
-Spec: openspec/specs/paid-market-economy/spec.md.
+Spec: openspec/changes/package-runtime-convergence/ (historical schema preserved).
 Topic: Gate bonuses — staked payouts attached to gate milestones.
 
 Covers:

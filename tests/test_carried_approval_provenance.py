@@ -270,68 +270,6 @@ class TestForkCopyReconcilesCarriedApproval:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestBidExecutorFailsClosed:
-    """``execute_node_bid`` ``exec()``s source directly. It must enforce the
-    same hash-provenance invariant as the compiler.
-    """
-
-    def _node(self, *, source_code, approved, approved_source_hash):
-        from tinyassets.branches import NodeDefinition
-
-        nd = NodeDefinition(
-            node_id="bidn", display_name="BidN", source_code=source_code,
-        )
-        nd.approved = approved
-        nd.approved_source_hash = approved_source_hash
-        return nd
-
-    def test_bid_executor_rejects_empty_hash(self, tmp_path):
-        from tinyassets.bid.node_bid import NodeBid
-        from tinyassets.executors.node_bid import execute_node_bid
-
-        src = "def run(state):\n    return {'ok': 1}\n"
-        node = self._node(source_code=src, approved=True, approved_source_hash="")
-        bid = NodeBid(node_bid_id="nb_x", node_def_id="bidn", status="open")
-        result = execute_node_bid(
-            bid, node_lookup_fn=lambda _nid: node, output_dir=tmp_path,
-        )
-        assert result.status == "failed"
-        assert "approval_provenance_invalid" in result.error
-
-    def test_bid_executor_rejects_mismatched_hash(self, tmp_path):
-        from tinyassets.bid.node_bid import NodeBid
-        from tinyassets.executors.node_bid import execute_node_bid
-
-        approved_src = "def run(state):\n    return {'ok': 1}\n"
-        running_src = "def run(state):\n    return {'ok': 2}\n"
-        node = self._node(
-            source_code=running_src, approved=True,
-            approved_source_hash=_hash(approved_src),
-        )
-        bid = NodeBid(node_bid_id="nb_y", node_def_id="bidn", status="open")
-        result = execute_node_bid(
-            bid, node_lookup_fn=lambda _nid: node, output_dir=tmp_path,
-        )
-        assert result.status == "failed"
-        assert "approval_provenance_invalid" in result.error
-
-    def test_bid_executor_runs_with_matching_hash(self, tmp_path):
-        from tinyassets.bid.node_bid import NodeBid
-        from tinyassets.executors.node_bid import execute_node_bid
-
-        src = "def run(state):\n    return {'ok': state.get('x', 0) + 1}\n"
-        node = self._node(
-            source_code=src, approved=True, approved_source_hash=_hash(src),
-        )
-        bid = NodeBid(
-            node_bid_id="nb_z", node_def_id="bidn",
-            inputs={"x": 41}, status="open",
-        )
-        result = execute_node_bid(
-            bid, node_lookup_fn=lambda _nid: node, output_dir=tmp_path,
-        )
-        assert result.status == "succeeded", result.error
-        assert result.output == {"ok": 42}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

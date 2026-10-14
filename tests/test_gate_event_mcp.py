@@ -1,6 +1,6 @@
 """Tests for gate_event MCP wiring in extensions action group.
 
-Spec: openspec/specs/paid-market-economy/spec.md.
+Spec: openspec/specs/evaluation-outcomes-and-attribution/spec.md.
 Topic: gate_event — real-world outcome attestation primitive.
 Implementation: tinyassets/universe_server.py _action_*_gate_event functions.
 """

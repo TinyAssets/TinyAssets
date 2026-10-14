@@ -373,7 +373,6 @@ _EXTENSION_STANDALONE_WRITE_ACTIONS = frozenset({
 _UNIVERSE_COSTLY_ACTIONS = frozenset({
     "create_universe",
     "post_to_goal_pool",
-    "submit_node_bid",
     "daemon_create",
     "daemon_summon",
     "daemon_memory_promote",
@@ -396,9 +395,6 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "rollback_merge",
     "rollback_node",
     "subscribe_branch",
-    "escrow_lock",
-    "escrow_release",
-    "escrow_refund",
     "record_outcome",
     "record_remix",
 })
@@ -414,13 +410,10 @@ _EXTENSIONS_ADMIN_ACTIONS = frozenset({
 _GATES_COSTLY_ACTIONS = frozenset({
     "claim",
     "claim_from_branch_run",
-    "stake_bonus",
-    "release_bonus",
 })
 _GATES_ADMIN_ACTIONS = frozenset({
     "define_ladder",
     "retract",
-    "unstake_bonus",
 })
 
 
@@ -488,7 +481,6 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     from tinyassets.api.extensions_leaderboard_actions import _LEADERBOARD_ACTIONS
     from tinyassets.api.market import (
         _ATTRIBUTION_ACTIONS,
-        _ESCROW_ACTIONS,
         _GATE_EVENT_ACTIONS,
         _GATES_ACTIONS,
         _GOAL_ACTIONS,
@@ -542,7 +534,6 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         _BRANCH_VERSION_ACTIONS,
         _PROJECT_MEMORY_ACTIONS,
         _MESSAGING_ACTIONS,
-        _ESCROW_ACTIONS,
         _GATE_EVENT_ACTIONS,
         _INSPECT_DRY_ACTIONS,
         _AUTO_SHIP_ACTIONS,
@@ -561,14 +552,6 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
     extension_writes.update({"publish_version"})
     extension_writes.update(_PROJECT_MEMORY_WRITE_ACTIONS)
     extension_writes.update({"messaging_send", "messaging_ack"})
-    extension_writes.update({
-        # Money WRITE actions — these mutate balances / move funds out and MUST
-        # require write authorization, never derive as read-scope. escrow_fund,
-        # escrow_set_wallet, and escrow_withdraw were silently read-classified
-        # before (slice1a review CRITICAL 2).
-        "escrow_lock", "escrow_release", "escrow_refund",
-        "escrow_fund", "escrow_set_wallet", "escrow_withdraw",
-    })
     extension_writes.update({
         "attest_gate_event", "verify_gate_event", "dispute_gate_event",
         "retract_gate_event",
@@ -606,9 +589,6 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         "claim_from_branch_run",
         "record_conformance_pack",
         "retract",
-        "stake_bonus",
-        "unstake_bonus",
-        "release_bonus",
     }
     _extend_scope_rows(
         rows,

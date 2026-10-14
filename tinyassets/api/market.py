@@ -1,57 +1,7 @@
-"""Paid-market subsystem — extracted from tinyassets/universe_server.py
-(Task #14 — decomp Step 7).
+"""Workflow goals, outcome evidence and attribution used by the app handles.
 
-Houses the 5 paid-market economy primitives: escrow, outcomes, attribution
-chain, goals, and outcome gates. The MCP tool decorations for `goals()` and
-`gates()` stay in `tinyassets/universe_server.py` (Pattern A2 from the decomp
-plan); plain `goals(...)` and `gates(...)` callables are exposed here, and
-the wrappers there delegate to them.
-
-Public surface (back-compat re-exported via ``tinyassets.universe_server``):
-    Dispatch tables:
-        _ESCROW_ACTIONS / _OUTCOME_ACTIONS / _ATTRIBUTION_ACTIONS
-        _GOAL_ACTIONS / _GOAL_WRITE_ACTIONS / _dispatch_goal_action
-        _GATES_ACTIONS / _GATE_EVENT_ACTIONS
-
-    Plain MCP-tool callables (Pattern A2):
-        goals(action, ...)  / gates(action, ...)
-
-    Escrow handlers:
-        _action_escrow_lock / _action_escrow_release / _action_escrow_refund /
-        _action_escrow_inspect
-
-    Outcome handlers:
-        _action_record_outcome / _action_list_outcomes / _action_get_outcome
-
-    Attribution handlers:
-        _action_record_remix / _action_get_provenance
-
-    Goal handlers (10):
-        _action_goal_propose / _action_goal_update / _action_goal_bind /
-        _action_goal_list / _action_goal_get / _action_goal_search /
-        _action_goal_leaderboard / _action_goal_common_nodes /
-        _action_goal_archive_consultation / _action_goal_set_canonical
-
-    Gates handlers (10 + 6 gate_event):
-        _action_gates_define_ladder / _action_gates_get_ladder /
-        _action_gates_claim / _action_gates_claim_from_branch_run /
-        _action_gates_retract / _action_gates_list_claims /
-        _action_gates_leaderboard / _action_gates_stake_bonus /
-        _action_gates_unstake_bonus / _action_gates_release_bonus
-        _action_attest_gate_event / _action_verify_gate_event /
-        _action_dispute_gate_event / _action_retract_gate_event /
-        _action_get_gate_event / _action_list_gate_events
-
-    Internal helper:
-        _current_actor_or_anon (goals-internal wrapper around _current_actor)
-
-Cross-module note: ``_append_global_ledger``, ``_truncate``, ``_current_actor``,
-``_ensure_workflow_db``, ``_storage_backend``, ``_format_commit_failed``,
-``_format_dirty_file_conflict``, ``_filter_claims_by_branch_visibility``,
-``_filter_leaderboard_by_branch_visibility``, ``_split_csv`` all live in
-their owning API/helper modules and are lazy-imported inside the functions that
-use them. Same pattern as Tasks
-#11/#12/#13 used for their cross-module symbols.
+The retired paid-market execution and money-moving routes are not part of this
+API. Existing outcome/attribution records retain their storage and ACL rules.
 """
 
 from __future__ import annotations
@@ -70,10 +20,6 @@ logger = logging.getLogger("universe_server.market")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
-def paid_market_enabled() -> bool:
-    return os.environ.get("TINYASSETS_PAID_MARKET", "off").strip().lower() in {
-        "on", "1", "true", "yes",
-    }
 
 
 def _current_actor_grants() -> tuple[str, ...]:
@@ -411,319 +357,7 @@ def normalize_patch_request_incentive(
     }
 
 
-# ── Escrow MCP handlers ────────────────────────────────────────────────────────
-
-
-def _escrow_host_user() -> str:
-    """The host identity allowed to act on behalf of other actors' escrow."""
-    return (os.environ.get("UNIVERSE_SERVER_HOST_USER") or "host").strip()
-
-
-def _resolve_escrow_actor(
-    kwargs: dict[str, Any], *, payload_key: str = "staker_id"
-) -> tuple[str | None, str | None]:
-    """Resolve the actor a money-escrow action operates on, from auth context.
-
-    Financial-integrity rule (slice1a review CRITICAL 1): money actions
-    (fund / set_wallet / withdraw) act on the AUTHENTICATED actor, never a
-    caller-supplied identity, so a caller cannot fund/withdraw/redirect another
-    actor's escrow. A caller-supplied ``staker_id`` is only honored when it
-    matches the authenticated actor, or when the authenticated actor is the
-    configured host (``UNIVERSE_SERVER_HOST_USER``) acting on behalf of another.
-
-    Returns ``(actor, None)`` on success, or ``(None, error_message)`` when a
-    cross-actor attempt is rejected.
-    """
-    from tinyassets.api.engine_helpers import _current_actor
-
-    authed = (_current_actor() or "").strip()
-    requested = (kwargs.get(payload_key) or "").strip()
-
-    if not requested or requested == authed:
-        return (authed, None)
-
-    if authed == _escrow_host_user():
-        # Host may act on behalf of another actor's escrow explicitly.
-        return (requested, None)
-
-    return (
-        None,
-        (
-            f"Cross-actor escrow is not permitted: authenticated actor "
-            f"{authed!r} cannot act on {payload_key}={requested!r}. Money "
-            f"actions operate on your own escrow only."
-        ),
-    )
-
-
-def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
-    """Lock escrow for a node request. Requires TINYASSETS_PAID_MARKET=on."""
-    from tinyassets.payments.actions import action_escrow_lock
-    from tinyassets.storage import _connect
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Escrow actions require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    from tinyassets.api.engine_helpers import _current_actor
-
-    node_id = (kwargs.get("node_id") or "").strip()
-    # Lock reserves the caller's OWN funded budget — always the authenticated
-    # actor, never a caller-supplied identity (slice1a review CRITICAL 1).
-    claimer = _current_actor().strip()
-    currency = (kwargs.get("currency") or "MicroToken").strip()
-    raw_amount = kwargs.get("amount", 0)
-    try:
-        amount = int(raw_amount)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": f"amount must be an integer, got {raw_amount!r}.",
-        })
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_lock(
-            conn,
-            node_id=node_id,
-            amount=amount,
-            claimer=claimer,
-            currency=currency,
-        )
-    return json.dumps(result)
-
-
-def _action_escrow_release(kwargs: dict[str, Any]) -> str:
-    """Release locked escrow to a recipient on completion verdict."""
-    from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.payments.actions import action_escrow_release
-    from tinyassets.storage import _connect
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Escrow actions require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    lock_id = (kwargs.get("lock_id") or "").strip()
-    recipient_id = (kwargs.get("recipient_id") or "").strip()
-    evidence = (kwargs.get("evidence") or "").strip()
-    # Only the lock's staker (or host) may release it — pass the authenticated
-    # actor so action_escrow_release can authorize ownership (CRITICAL 1).
-    caller_id = _current_actor().strip()
-
-    if not recipient_id:
-        return json.dumps({
-            "status": "rejected",
-            "error": "recipient_id is required for escrow_release.",
-        })
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_release(
-            conn,
-            lock_id=lock_id,
-            recipient_id=recipient_id,
-            evidence=evidence,
-            caller_id=caller_id,
-            host_id=_escrow_host_user(),
-        )
-    return json.dumps(result)
-
-
-def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
-    """Refund locked escrow to staker on abandonment or rejection."""
-    from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.payments.actions import action_escrow_refund
-    from tinyassets.storage import _connect
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Escrow actions require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    lock_id = (kwargs.get("lock_id") or "").strip()
-    reason = (kwargs.get("reason") or "").strip()
-    # Only the lock's staker (or host) may refund it — pass the authenticated
-    # actor so action_escrow_refund can authorize ownership (CRITICAL round 2).
-    # A write-scoped caller cannot cancel another actor's escrow by lock_id.
-    caller_id = _current_actor().strip()
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_refund(
-            conn,
-            lock_id=lock_id,
-            reason=reason,
-            caller_id=caller_id,
-            host_id=_escrow_host_user(),
-        )
-    return json.dumps(result)
-
-
-def _action_escrow_inspect(kwargs: dict[str, Any]) -> str:
-    """Read-only inspection of escrow lock(s). No paid-market gate."""
-    from tinyassets.payments.actions import action_escrow_inspect
-    from tinyassets.storage import _connect
-
-    node_id = (kwargs.get("node_id") or "").strip()
-    lock_id = (kwargs.get("lock_id") or "").strip()
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_inspect(conn, node_id=node_id, lock_id=lock_id)
-    return json.dumps(result)
-
-
-def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
-    """Credit a staker's escrow budget (off-chain / testnet faucet).
-
-    Requires TINYASSETS_PAID_MARKET=on. Funds the authenticated actor's own
-    budget; a supplied staker_id is honored only when it is the authenticated
-    actor (or the host acting on behalf of another).
-    """
-    from tinyassets.payments.actions import action_escrow_fund
-    from tinyassets.storage import _connect
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Escrow actions require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    staker_id, err = _resolve_escrow_actor(kwargs, payload_key="staker_id")
-    if err is not None:
-        return json.dumps({"status": "rejected", "error": err})
-    currency = (kwargs.get("currency") or "MicroToken").strip()
-    raw_amount = kwargs.get("amount", 0)
-    try:
-        amount = int(raw_amount)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": f"amount must be an integer, got {raw_amount!r}.",
-        })
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_fund(
-            conn, staker_id=staker_id, amount=amount, currency=currency
-        )
-    return json.dumps(result)
-
-
-def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
-    """Read-only — a staker's escrow budget (total / reserved / spendable)."""
-    # A balance is read FOR a principal. Falling back to an env var read one
-    # stranger's escrow for another (and, unset, read an unowned bucket).
-    from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.payments.actions import action_escrow_balance
-    from tinyassets.principals import named_principal
-    from tinyassets.storage import _connect
-
-    staker_id = named_principal(kwargs.get("staker_id")) or _current_actor()
-    currency = (kwargs.get("currency") or "MicroToken").strip()
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_balance(conn, staker_id=staker_id, currency=currency)
-    return json.dumps(result)
-
-
-def _action_escrow_set_wallet(kwargs: dict[str, Any]) -> str:
-    """Register an actor's on-chain payout address (where withdrawals land).
-
-    Requires TINYASSETS_PAID_MARKET=on. Operates on the authenticated actor; a
-    supplied staker_id is honored only when it is the authenticated actor (or
-    the host acting on behalf of another) — a caller cannot redirect another
-    actor's payout address (slice1a review CRITICAL 1).
-    """
-    from tinyassets.payments.actions import action_escrow_set_wallet
-    from tinyassets.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
-    from tinyassets.storage import _connect
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Escrow actions require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    actor_id, err = _resolve_escrow_actor(kwargs, payload_key="staker_id")
-    if err is not None:
-        return json.dumps({"status": "rejected", "error": err})
-    address = (kwargs.get("wallet_address") or "").strip()
-    raw_chain = kwargs.get("chain_id") or BASE_SEPOLIA_CHAIN_ID
-    try:
-        chain_id = int(raw_chain)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": f"chain_id must be an integer, got {raw_chain!r}.",
-        })
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_set_wallet(
-            conn, actor_id=actor_id, address=address, chain_id=chain_id
-        )
-    return json.dumps(result)
-
-
-def _action_escrow_withdraw(kwargs: dict[str, Any]) -> str:
-    """Withdraw spendable balance to the actor's payout wallet via the
-    configured settlement backend. Requires TINYASSETS_PAID_MARKET=on."""
-    from tinyassets.payments.actions import action_escrow_withdraw
-    from tinyassets.payments.settlement_backend import BASE_SEPOLIA_CHAIN_ID
-    from tinyassets.storage import _connect
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Escrow actions require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    # Withdraw moves funds OUT — only against the authenticated actor's own
-    # balance/wallet (slice1a review CRITICAL 1).
-    actor_id, err = _resolve_escrow_actor(kwargs, payload_key="staker_id")
-    if err is not None:
-        return json.dumps({"status": "rejected", "error": err})
-    currency = (kwargs.get("currency") or "MicroToken").strip()
-    raw_amount = kwargs.get("amount", 0)
-    raw_chain = kwargs.get("chain_id") or BASE_SEPOLIA_CHAIN_ID
-    try:
-        amount = int(raw_amount)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": f"amount must be an integer, got {raw_amount!r}.",
-        })
-    try:
-        chain_id = int(raw_chain)
-    except (TypeError, ValueError):
-        return json.dumps({
-            "status": "rejected",
-            "error": f"chain_id must be an integer, got {raw_chain!r}.",
-        })
-    # Optional client-supplied idempotency key — a retry MUST reuse the same key
-    # so the withdrawal is not paid out twice (slice1a review HIGH 4).
-    idempotency_key = (kwargs.get("idempotency_key") or "").strip() or None
-
-    with _connect(_base_path()) as conn:
-        result = action_escrow_withdraw(
-            conn, actor_id=actor_id, amount=amount, currency=currency,
-            chain_id=chain_id, idempotency_key=idempotency_key,
-        )
-    return json.dumps(result)
-
-
-_ESCROW_ACTIONS: dict[str, Any] = {
-    "escrow_lock": _action_escrow_lock,
-    "escrow_release": _action_escrow_release,
-    "escrow_refund": _action_escrow_refund,
-    "escrow_inspect": _action_escrow_inspect,
-    "escrow_fund": _action_escrow_fund,
-    "escrow_balance": _action_escrow_balance,
-    "escrow_set_wallet": _action_escrow_set_wallet,
-    "escrow_withdraw": _action_escrow_withdraw,
-}
-
-# ── Outcome event MCP actions ─────────────────────────────────────────────
+# Workflow outcome history.
 
 
 def _outcome_db_path(base_path: "Path") -> "Path":
@@ -3640,225 +3274,6 @@ def _action_gates_leaderboard(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
-def _action_gates_stake_bonus(kwargs: dict[str, Any]) -> str:
-    """Lock a bonus stake on an existing gate claim.
-
-    Requires: claim_id, bonus_stake (int), node_id.
-    Rejected when TINYASSETS_PAID_MARKET is off, claim is retracted,
-    or claim already has a bonus staked.
-    """
-    from tinyassets.api.branches import _ensure_workflow_db
-    from tinyassets.gates.actions import stake_bonus, validate_stake_amount
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": (
-                "Gate bonuses require TINYASSETS_PAID_MARKET=on. "
-                "Enable the paid-market flag to use bonus staking."
-            ),
-        })
-
-    claim_id = (kwargs.get("claim_id") or "").strip()
-    node_id = (kwargs.get("node_id") or "").strip()
-    attachment_scope = (kwargs.get("attachment_scope") or "node").strip()
-    raw_stake = kwargs.get("bonus_stake", 0)
-
-    if not claim_id:
-        return json.dumps({"status": "rejected", "error": "claim_id is required."})
-    if not node_id:
-        return json.dumps({"status": "rejected", "error": "node_id is required."})
-
-    stake, err = validate_stake_amount(raw_stake)
-    if err:
-        return json.dumps({"status": "rejected", "error": err})
-    if stake == 0:
-        return json.dumps({
-            "status": "rejected",
-            "error": "bonus_stake must be > 0 to stake a bonus.",
-        })
-
-    _ensure_workflow_db()
-    from tinyassets.gates.actions import ensure_bonus_columns
-    from tinyassets.gates.schema import GateBonusClaim
-    from tinyassets.storage import _connect as _storage_connect
-    with _storage_connect(_base_path()) as conn:
-        # Authorization (slice1a review CRITICAL — round 4): staking a bonus
-        # mutates an existing gate claim, and its refund leg always returns to
-        # the recorded claimer (``claimed_by``). Only the claim owner or the
-        # configured host may stake a bonus on a claim — a write-scoped caller
-        # who merely knows a ``claim_id`` must not be able to attach a stake to
-        # another actor's claim. Mirrors the ``unstake_bonus`` staker check.
-        ensure_bonus_columns(conn)
-        row = conn.execute(
-            "SELECT * FROM gate_claims WHERE claim_id = ?", (claim_id,)
-        ).fetchone()
-        if row is None:
-            return json.dumps({
-                "status": "rejected",
-                "error": f"Claim '{claim_id}' not found.",
-            })
-        claim = GateBonusClaim.from_row(row)
-        actor = _current_actor_or_anon()
-        recorded_claimer = (claim.claimed_by or "").strip()
-        host_user = _escrow_host_user()
-        if actor != recorded_claimer and actor != host_user:
-            return json.dumps({
-                "status": "rejected",
-                "error": (
-                    "Cross-actor bonus staking is not permitted: only the claim "
-                    f"owner ('{recorded_claimer}') or the host ('{host_user}') "
-                    f"may stake a bonus on claim '{claim_id}'. Authenticated "
-                    f"actor '{actor}' is not authorized."
-                ),
-            })
-        # The bonus belongs to the claim owner-of-record, recorded immutably as
-        # bonus_staker_id; even when the host initiates the stake, ownership
-        # stays with the claimer so a later re-claim cannot transfer it.
-        result = stake_bonus(
-            conn,
-            claim_id=claim_id,
-            bonus_stake=stake,
-            node_id=node_id,
-            staker_id=recorded_claimer,
-            attachment_scope=attachment_scope,
-        )
-    return json.dumps(result, default=str)
-
-
-def _action_gates_unstake_bonus(kwargs: dict[str, Any]) -> str:
-    """Remove a bonus stake from a gate claim (refund to original staker).
-
-    Requires: claim_id. Only the original staker can unstake.
-    """
-    from tinyassets.api.branches import _ensure_workflow_db
-    from tinyassets.gates.actions import unstake_bonus
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Gate bonuses require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    claim_id = (kwargs.get("claim_id") or "").strip()
-    if not claim_id:
-        return json.dumps({"status": "rejected", "error": "claim_id is required."})
-
-    actor = _current_actor_or_anon()
-    _ensure_workflow_db()
-    from tinyassets.storage import _connect as _storage_connect
-    with _storage_connect(_base_path()) as conn:
-        result = unstake_bonus(conn, claim_id=claim_id, actor=actor)
-    return json.dumps(result, default=str)
-
-
-def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
-    """Release or refund a bonus based on an evaluator verdict.
-
-    Requires: claim_id, eval_verdict ("pass"|"fail"|"skip"),
-    node_last_claimer (who gets the payout on pass).
-    Rejected when no verdict supplied or bonus_stake is 0.
-
-    Authorization (slice1a review CRITICAL — round 3): releasing/refunding a gate
-    bonus moves staked value. Only the legitimate gate-outcome authority may do
-    it — the Goal owner (who owns the ladder that defines the gate), the
-    configured host (``UNIVERSE_SERVER_HOST_USER``), or an actor holding the
-    gate-claim capability (``CAP_RETRACT_GATE_CLAIM``). An arbitrary write-scoped
-    caller who knows a ``claim_id`` cannot settle another actor's bonus to a
-    caller-supplied recipient, nor refund another actor's stake to themselves.
-    """
-    from tinyassets.api.branches import _ensure_workflow_db
-    from tinyassets.daemon_server import CAP_RETRACT_GATE_CLAIM, get_goal
-    from tinyassets.gates.actions import release_bonus
-    from tinyassets.gates.schema import GateBonusClaim
-
-    if not paid_market_enabled():
-        return json.dumps({
-            "status": "not_available",
-            "error": "Gate bonuses require TINYASSETS_PAID_MARKET=on.",
-        })
-
-    claim_id = (kwargs.get("claim_id") or "").strip()
-    eval_verdict = (kwargs.get("eval_verdict") or "").strip()
-    node_last_claimer = (kwargs.get("node_last_claimer") or "").strip()
-
-    if not claim_id:
-        return json.dumps({"status": "rejected", "error": "claim_id is required."})
-    if not eval_verdict:
-        return json.dumps({
-            "status": "rejected",
-            "error": (
-                "eval_verdict is required ('pass', 'fail', or 'skip'). "
-                "Use the Evaluator protocol to obtain a verdict before releasing."
-            ),
-        })
-    if not node_last_claimer:
-        return json.dumps({
-            "status": "rejected",
-            "error": (
-                "node_last_claimer is required "
-                "(the actor holding the node at gate-pass time)."
-            ),
-        })
-
-    _ensure_workflow_db()
-    from tinyassets.storage import _connect as _storage_connect
-    with _storage_connect(_base_path()) as conn:
-        # Load the claim BEFORE any disbursement so authorization can be checked
-        # against recorded state (goal owner, recorded staker), never against
-        # caller-supplied identities.
-        row = conn.execute(
-            "SELECT * FROM gate_claims WHERE claim_id = ?", (claim_id,)
-        ).fetchone()
-        if row is None:
-            return json.dumps({
-                "status": "rejected",
-                "error": f"Claim '{claim_id}' not found.",
-            })
-        claim = GateBonusClaim.from_row(row)
-
-        # Authorization: only the gate-outcome authority may release/refund.
-        actor = _current_actor_or_anon()
-        goal_owner = ""
-        if claim.goal_id:
-            try:
-                goal = get_goal(_base_path(), goal_id=claim.goal_id)
-                goal_owner = (goal.get("author") or "").strip()
-            except KeyError:
-                goal_owner = ""
-        host_user = _escrow_host_user()
-        allowed = {a for a in (goal_owner, host_user) if a}
-        if actor not in allowed and not _current_actor_has_capability(
-            CAP_RETRACT_GATE_CLAIM,
-        ):
-            return json.dumps({
-                "status": "rejected",
-                "error": (
-                    "Cross-actor bonus release is not permitted: only the Goal "
-                    f"owner ('{goal_owner}'), the host ('{host_user}'), or an "
-                    f"actor with {CAP_RETRACT_GATE_CLAIM!r} can release/refund a "
-                    f"gate bonus. Authenticated actor '{actor}' is not the "
-                    "gate-outcome authority for this claim."
-                ),
-            })
-
-        # The refund recipient is always the IMMUTABLE recorded staker — pass it
-        # as an assertion so release_bonus rejects any mismatch (defense in
-        # depth). It must be bonus_staker_id, NOT claimed_by: a gate re-claim
-        # rewrites claimed_by, so asserting claimed_by would make the legitimate
-        # owner/host release fail against the immutable staker and strand the
-        # bonus (round-6 finding). Falls back to claimed_by for pre-migration rows.
-        assertion_staker = (claim.bonus_staker_id or claim.claimed_by or "").strip()
-        result = release_bonus(
-            conn,
-            claim_id=claim_id,
-            eval_verdict=eval_verdict,
-            node_last_claimer=node_last_claimer,
-            staker=assertion_staker,
-        )
-    return json.dumps(result, default=str)
-
-
 def _action_attest_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events import attest_gate_event
@@ -4159,9 +3574,6 @@ _GATES_ACTIONS: dict[str, Any] = {
     "retract": _action_gates_retract,
     "list_claims": _action_gates_list_claims,
     "leaderboard": _action_gates_leaderboard,
-    "stake_bonus": _action_gates_stake_bonus,
-    "unstake_bonus": _action_gates_unstake_bonus,
-    "release_bonus": _action_gates_release_bonus,
 }
 _GATES_WRITE_ACTIONS: frozenset[str] = frozenset({
     "define_ladder",
@@ -4169,9 +3581,6 @@ _GATES_WRITE_ACTIONS: frozenset[str] = frozenset({
     "claim_from_branch_run",
     "record_conformance_pack",
     "retract",
-    "stake_bonus",
-    "unstake_bonus",
-    "release_bonus",
 })
 
 
@@ -4208,12 +3617,6 @@ def gates(
     include_retracted: bool = False,
     limit: int = 50,
     force: bool = False,
-    claim_id: str = "",
-    bonus_stake: int = 0,
-    attachment_scope: str = "node",
-    eval_verdict: str = "",
-    node_last_claimer: str = "",
-    node_id: str = "",
     run_id: str = "",
     conformance_pack_json: str = "",
     conformance_pack_id: str = "",
@@ -4226,8 +3629,7 @@ def gates(
     reached, with an evidence URL.
 
     All actions require GATES_ENABLED=1 on the server; the tool returns
-    {"status": "not_available"} when the flag is off. Bonus actions
-    additionally require TINYASSETS_PAID_MARKET=on.
+    {"status": "not_available"} when the flag is off.
 
     Actions (all live when GATES_ENABLED=1):
       list          Discover supported gates actions.
@@ -4259,19 +3661,6 @@ def gates(
                     reached. Tiebreak: earliest claim wins. Also
                     callable as `goals leaderboard metric=outcome`.
 
-    Bonus actions (live when GATES_ENABLED=1 + TINYASSETS_PAID_MARKET=on):
-      stake_bonus   Lock a bonus stake on a claim. Needs claim_id,
-                    bonus_stake (int > 0), node_id. attachment_scope
-                    controls what the stake attaches to ("node" default).
-      unstake_bonus Remove a bonus stake and refund the staker. Needs
-                    claim_id. Only the original staker can unstake.
-      release_bonus Resolve a bonus payout via evaluator verdict. Needs
-                    claim_id, eval_verdict ("pass"|"fail"|"skip"),
-                    node_last_claimer (recipient on pass). Only the Goal
-                    owner, the host, or an actor with the gate-claim
-                    capability may release/refund — refunds always return
-                    to the recorded staker.
-
     Evidence URL must be http(s) with a host or a TinyAssets run
     evidence handle such as ``workflow:run:<run_id>``; content is not
     fetched (local-first). Social accountability handles fraud in v1.
@@ -4291,19 +3680,6 @@ def gates(
       force: bypass the dirty-file guard on the target YAML when a
              user has uncommitted local edits. Same ergonomics as
              `goals propose/update/bind` and `branch` mutations.
-      claim_id: target claim for stake_bonus / unstake_bonus /
-                release_bonus.
-      bonus_stake: integer token amount for stake_bonus (must be > 0).
-                   Harmless when TINYASSETS_PAID_MARKET is off — the
-                   action returns not_available before reading this arg.
-      attachment_scope: what the stake attaches to; "node" (default)
-                        or "branch". Used by stake_bonus.
-      eval_verdict: evaluator decision for release_bonus —
-                    "pass" (payout to node_last_claimer), "fail"
-                    (refund to staker), or "skip" (no-op).
-      node_last_claimer: actor_id of the node fulfiller who receives
-                         payout on a "pass" release_bonus verdict.
-      node_id: node target for stake_bonus.
       run_id: completed-run target for claim_from_branch_run; the run's
               final-state ``recommended_rung_claim`` selects the rung
               and (optionally) the supporting evidence URL. When no
@@ -4356,12 +3732,6 @@ def gates(
         "include_retracted": include_retracted,
         "limit": limit,
         "force": force,
-        "claim_id": claim_id,
-        "bonus_stake": bonus_stake,
-        "attachment_scope": attachment_scope,
-        "eval_verdict": eval_verdict,
-        "node_last_claimer": node_last_claimer,
-        "node_id": node_id,
         "run_id": run_id,
         "conformance_pack_json": conformance_pack_json,
         "conformance_pack_id": conformance_pack_id,

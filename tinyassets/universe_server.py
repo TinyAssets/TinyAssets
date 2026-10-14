@@ -78,6 +78,7 @@ from tinyassets.command_center_names import (
     public_response,
     verbatim,
 )
+from tinyassets.control_plane.registration import register_handle
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 from tinyassets.mcp_tool_annotations import annotations_for
@@ -521,7 +522,7 @@ def _register_structured_tool(fn, *, tags, name=None):
         meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
     )
-    mcp.add_tool(tool)
+    register_handle(mcp, tool)
     return tool
 
 

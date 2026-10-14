@@ -37,16 +37,12 @@ Enabled per-deploy by the dark ``TINYASSETS_ENGINE_MCP_TOOLS`` flag (see
 from __future__ import annotations
 
 import os
+import sys as _sys
 
-from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
-from tinyassets.activity_fence import ActivityFence
-from tinyassets.command_center_names import CommandCenterNames
-from tinyassets.engine_conversation_attention import ConversationAttention
+from tinyassets.control_plane.registration import engine_server as _engine_server
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
-from tinyassets.engine_steering import OwnerSteering
-from tinyassets.engine_tool_activity import ToolActivity
 from tinyassets.starter_skills import capabilities_skill, connect_skill, share_skill
 from tinyassets.untrusted import UNTRUSTED_NOTICE
 
@@ -299,9 +295,6 @@ def _binding_error() -> str | None:
     return None
 
 
-mcp = FastMCP("tinyassets")
-
-
 class BoundedResults(Middleware):
     """Cap every tool result at one ceiling, and say so when one is capped.
 
@@ -514,27 +507,6 @@ class ExtensionHookEvents(Middleware):
         return result
 
 
-# First added is OUTERMOST: new tools default to refused in research.
-mcp.add_middleware(ResearchReadOnly())
-# An activity that yielded, paused or stopped runs no further tool, on any
-# provider: every model-visible tool crosses this route (activity_fence).
-mcp.add_middleware(ActivityFence(lambda: _universe_dir_for_fence()))
-mcp.add_middleware(ModelInventory())
-mcp.add_middleware(OutsideClientScope())
-mcp.add_middleware(ExtensionHookEvents())
-# Attention acknowledges only the final bounded
-# result, then the ceiling wraps the refusal flag.
-mcp.add_middleware(OwnerSteering())
-mcp.add_middleware(ToolActivity())
-mcp.add_middleware(ConversationAttention())
-mcp.add_middleware(BoundedResults())
-mcp.add_middleware(RefusalsAreErrors())
-# Innermost: the rename's public edge -- a retired name is refused naming its
-# replacement, and every result is respelled before the ceiling measures it.
-mcp.add_middleware(CommandCenterNames())
-
-
-@mcp.tool
 def read_graph(
     target: str = "status",
     branch_id: str = "",
@@ -886,7 +858,6 @@ def read_graph(
         _current_identity.reset(token)
 
 
-@mcp.tool
 def get_status() -> str:
     """A factual snapshot of your command center's daemon identity + routing config.
 
@@ -911,7 +882,6 @@ def get_status() -> str:
         _current_identity.reset(token)
 
 
-@mcp.tool
 def run_graph(
     branch_def_id: str = "",
     run_name: str = "",
@@ -3228,7 +3198,6 @@ def _write_served_webhook(*, operation: str, branch_id: str, payload_json: str) 
     return _webhook_call("revoke_webhook", token=token, token_prefix=prefix)
 
 
-@mcp.tool
 def write_graph(
     target: str = "",
     operation: str = "",
@@ -3966,7 +3935,6 @@ def _foreign_agent_origin(agent_definition_id: str) -> tuple[bool, str]:
     return True, f"commons:{aid} by {author or 'another author'}"
 
 
-@mcp.tool
 def browse_commons(
     kind: str = "branches",
     query: str = "",
@@ -4127,7 +4095,6 @@ def browse_commons(
         _current_identity.reset(token)
 
 
-@mcp.tool
 def read_commons_shape(branch_id: str = "", agent_definition_id: str = "",
                        field_name: str = "", output_offset: int = 0,
                        output_max_chars: int = 8192) -> str:
@@ -4191,7 +4158,6 @@ def read_commons_shape(branch_id: str = "", agent_definition_id: str = "",
         _current_identity.reset(token)
 
 
-@mcp.tool
 def remix_shape(
     fork_from: str = "",
     name: str = "",
@@ -4312,7 +4278,6 @@ _BRAIN_MAX_NAME_BYTES = 256
 _BRAIN_WRITE_CAPABILITIES = ("read", "list", "write")
 
 
-@mcp.tool
 def read_brain(section: str = "") -> str:
     """Read YOUR OWN brain — the durable files that ARE your system prompt every
     turn: who you are, who your founder is, where you came from, and your body /
@@ -4403,7 +4368,6 @@ def _acting_agent() -> str:
     return agent if agent and agent != MAIN_AGENT else "unresolved-agent"
 
 
-@mcp.tool
 def write_brain(
     identity: str = "",
     founder: str = "",
@@ -4534,7 +4498,6 @@ def write_brain(
 _CONNECT_CAPABILITIES = ("write",)
 
 
-@mcp.tool
 def connect_compute(
     access_method: str = "",
     protocol: str = "",
@@ -4655,7 +4618,6 @@ def connect_compute(
 _SOURCE_CHANNEL_CAPABILITIES = ("write",)
 
 
-@mcp.tool
 def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> str:
     """Approve an outbound CHANNEL for YOUR OWN command center (no secret).
 
@@ -4840,7 +4802,6 @@ async def _universe_tool(op, /, **kwargs) -> str:
 
 # No output schema: an image comes back as [text, image] content, which a str
 # schema would make the client report as an error (tinyassets/tool_images.py).
-@mcp.tool(name="read", output_schema=None)
 async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     """Read a file in your folder /u (relative paths are under /u); an image
     (.png .jpg .webp .gif) is shown to you, scaled to fit.
@@ -4854,7 +4815,6 @@ async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     return result.tool_result() if isinstance(result, ToolImage) else result
 
 
-@mcp.tool(name="write")
 async def write_file(path: str, content: str) -> str:
     """Create or replace a file in /u, making parent folders."""
     from tinyassets import universe_tools
@@ -4864,7 +4824,6 @@ async def write_file(path: str, content: str) -> str:
     )
 
 
-@mcp.tool(name="edit")
 async def edit_file(path: str, old_text: str, new_text: str) -> str:
     """In a file in /u, replace old_text (must match exactly once) with new_text."""
     from tinyassets import universe_tools
@@ -4875,7 +4834,6 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     )
 
 
-@mcp.resource("ta-bridge://request/{payload}")
 async def remote_ta_request(payload: str) -> str:
     """Private turn-bound ta transport; never part of the agent tool inventory."""
     import sys
@@ -4885,7 +4843,6 @@ async def remote_ta_request(payload: str) -> str:
     return await engine_resource(sys.modules[__name__], payload)
 
 
-@mcp.tool(name="bash", output_schema=None)
 async def run_bash(command: str, timeout: int = 0) -> str:
     """Run a bash command in /u. Public internet goes through HTTP(S)_PROXY
     (pip, npm, git, urllib); memory, processes and time are limited.
@@ -4941,6 +4898,11 @@ async def run_bash(command: str, timeout: int = 0) -> str:
         content=[TextContent(type="text", text=text)],
         structured_content={"completed_capabilities": sorted(set(completed))},
     )
+
+
+# Both public and owner-pinned endpoints use the control-plane registration.
+# Construct only after all implementations exist; no handler registers itself.
+mcp = _engine_server(_sys.modules[__name__])
 
 
 if __name__ == "__main__":

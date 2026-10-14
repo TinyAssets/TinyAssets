@@ -154,9 +154,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/automation_context.py": [
         "_brain: .open()",
     ],
-    "tinyassets/bid/execution_log.py": [
-        "read_execution_log: .read_text()",
-    ],
     "tinyassets/billing/stripe_adapter.py": [
         "last_verified_delivery: .read_text()",
         "record_verified_delivery: .write_text()",

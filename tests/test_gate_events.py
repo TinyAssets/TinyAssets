@@ -1,6 +1,6 @@
 """Tests for tinyassets/gate_events/ — real-world outcome attestation.
 
-Spec: openspec/specs/paid-market-economy/spec.md §gate_event.
+Spec: openspec/specs/evaluation-outcomes-and-attribution/spec.md §gate_event.
 
 Attribution language invariant: tests assert "cited by" / "contributed to"
 semantics, never causal. Status flow: attested → verified | disputed → retracted.

@@ -29,15 +29,12 @@ _VALID_OVERVIEW: dict = {
         "tier_status_map": {
             "external_requests": "enabled",
             "goal_pool": "disabled",
-            "paid_bids": "disabled",
             "opportunistic": "enabled",
         },
         "config": {
             "accept_external_requests": True,
             "accept_goal_pool": False,
-            "accept_paid_bids": False,
             "allow_opportunistic": True,
-            "bid_coefficient": 1.0,
         },
     },
     "queue": {
@@ -65,7 +62,6 @@ _VALID_OVERVIEW: dict = {
         "open_count": 3,
         "claimed_count": 1,
         "top_open": [{"bid_id": "b1", "node_def_id": "n1"}],
-        "daemon_capabilities": {"paid_market_enabled": False},
     },
     "gates": {"ladder_count_on_bound_goal": 5, "claims_on_this_universe": 2},
     "activity_tail": ["2026-04-14T00:00:00 [orient] started", "scene complete"],
@@ -264,7 +260,7 @@ class TestTrayAppPhaseH:
 
     def test_tier_names_constant(self):
         assert set(TrayApp.TIER_NAMES) == {
-            "external_requests", "goal_pool", "paid_bids", "opportunistic"
+            "external_requests", "goal_pool", "opportunistic"
         }
 
     def test_update_tier_states_updates_internal_state(self):
@@ -281,9 +277,9 @@ class TestTrayAppPhaseH:
 
     def test_handle_tier_toggle_updates_local_state(self):
         tray, *_ = self._make_tray()
-        tray._handle_tier_toggle("paid_bids", False)
+        tray._handle_tier_toggle("opportunistic", False)
         with tray._lock:
-            assert tray._tier_states["paid_bids"] is False
+            assert tray._tier_states["opportunistic"] is False
 
     def test_handle_pause_all_tiers_calls_callback(self):
         tray, _, pause_log, _ = self._make_tray()

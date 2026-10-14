@@ -1135,7 +1135,6 @@ def get_status(
         from tinyassets.control_plane.queue_policy import (
             DispatcherConfig,
             load_dispatcher_config,
-            paid_market_enabled,
         )
         cfg: DispatcherConfig = load_dispatcher_config(udir)
     except Exception as exc:
@@ -1159,9 +1158,7 @@ def get_status(
         "served_llm_type": served_llm_type or "any",
         "accept_external_requests": cfg.accept_external_requests,
         "accept_goal_pool": cfg.accept_goal_pool,
-        "accept_paid_bids": cfg.accept_paid_bids,
         "allow_opportunistic": cfg.allow_opportunistic,
-        "paid_market_flag_on": paid_market_enabled(),
         "tier_status_map": cfg.tier_status_map(),
     }
 

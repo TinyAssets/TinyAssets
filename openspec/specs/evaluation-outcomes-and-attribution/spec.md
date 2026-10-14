@@ -65,7 +65,7 @@ Conformance packs (`tinyassets.conformance_packs`) SHALL record standards/readin
 - **THEN** the claim is rejected with `conformance_pack_not_ready`
 
 ### Requirement: The outcome-gates surface is flag-gated and enforces evidence, rebinding, and conformance
-The outcome-gates surface in `tinyassets.api.market` SHALL be gated behind `GATES_ENABLED=1` and disabled by default. When enabled it SHALL support gate ladders and evidence-backed rung claims, where each claim SHALL require a valid evidence URL (an http(s) URL with a host, or a TinyAssets run evidence handle), SHALL be rejected as `branch_rebound` when a non-retracted claim for the same branch and rung exists under a different Goal, and SHALL require a matching `ready` conformance pack for any rung that demands one. Monetary gate bonus actions SHALL additionally require `TINYASSETS_PAID_MARKET=on` and SHALL reject with an explicit error when the paid market is off.
+The outcome-gates surface in `tinyassets.api.market` SHALL be gated behind `GATES_ENABLED=1` and disabled by default. When enabled it SHALL support gate ladders and evidence-backed rung claims, where each claim SHALL require a valid evidence URL (an http(s) URL with a host, or a TinyAssets run evidence handle), SHALL be rejected as `branch_rebound` when a non-retracted claim for the same branch and rung exists under a different Goal, and SHALL require a matching `ready` conformance pack for any rung that demands one. Monetary gate bonus actions SHALL NOT be registered or executable. Existing bonus columns and stored history SHALL remain untouched by runtime retirement.
 
 #### Scenario: an invalid evidence URL is rejected
 - **WHEN** a gate claim is submitted with an evidence value that is neither an http(s) URL with a host nor a TinyAssets run evidence handle
@@ -75,9 +75,9 @@ The outcome-gates surface in `tinyassets.api.market` SHALL be gated behind `GATE
 - **WHEN** a branch already has a non-retracted claim for a rung under one Goal and a new claim for the same rung is made after the branch was rebound to a different Goal
 - **THEN** the claim is rejected with `branch_rebound` and the caller is told to retract the original claim first
 
-#### Scenario: gate bonuses require the paid market
-- **WHEN** a gate stake/unstake/release bonus action is invoked while `TINYASSETS_PAID_MARKET` is off
-- **THEN** the action is rejected with a message requiring `TINYASSETS_PAID_MARKET=on`
+#### Scenario: retired gate bonuses cannot be reenabled by configuration
+- **WHEN** a gate stake/unstake/release bonus action is invoked, including with `TINYASSETS_PAID_MARKET=on`
+- **THEN** the action is unavailable and no stake, payout, refund or settlement is written
 
 ### Requirement: Gate events are cited-in outcome attestations with a controlled verification lifecycle
 Gate events (`tinyassets.gate_events`) SHALL record real-world outcome attestations whose relationship to a branch version is expressed as "cited in" a gate event and never as having "caused" the outcome. A gate event's verification status SHALL be one of `attested`, `verified`, `disputed`, or `retracted`, and a record SHALL start `attested`. Verification SHALL only be applied to an `attested` event by a verifier who is not the attester; a retracted event SHALL not be disputed; and retraction SHALL preserve the record as an audit trail rather than deleting it.
