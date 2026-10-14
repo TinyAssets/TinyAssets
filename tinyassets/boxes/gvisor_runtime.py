@@ -177,7 +177,15 @@ class GvisorRuntime:
             self._command("kill", box, "KILL", timeout=10)
         except subprocess.CalledProcessError:
             pass  # delete --force must still run for an already exited box.
-        self._command("delete", "--force", box, timeout=10)
+        try:
+            self._command("delete", "--force", box, timeout=10)
+        except subprocess.CalledProcessError:
+            # A repeated stop is safe only after the runtime proves absence.
+            # An unavailable runtime is never interpreted as an absent sandbox.
+            states = json.loads(self._command("list", "--format=json", timeout=10).stdout)
+            if not isinstance(states, list) or any(item["id"] == box for item in states):
+                raise BoxError("cannot prove the owner sandbox stopped") from None
         bundle = self.bundle_root / box
-        (bundle / "config.json").unlink()
-        bundle.rmdir()
+        (bundle / "config.json").unlink(missing_ok=True)
+        if bundle.exists():
+            bundle.rmdir()
