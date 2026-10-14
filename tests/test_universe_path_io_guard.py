@@ -263,9 +263,6 @@ PINNED: dict[str, list[str]] = {
         "remove_if_dead: .unlink()",
         "remove_if_dead: os.open()",
     ],
-    "tinyassets/provider_assignment.py": [
-        "_file_lock: .open()",
-    ],
     # Inherited main operations, NOT certified link-safe. Parent-path lookup
     # remains ordinary I/O; preserve atomic migration publication when fixing.
     # docs/concerns/2026-10-03-provider-authority-parent-links.md

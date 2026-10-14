@@ -801,16 +801,16 @@ class ProviderAssignmentAdmission:
             return self._states.setdefault(key, _AdmissionState())
 
     @staticmethod
-    def _lock_path(universe_dir):
-        universe = Path(universe_dir).resolve(strict=False)
-        directory = universe.parent / ".agent-sessions" / universe.name
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory / ".provider-assignment-admission.lock"
+    def _open_lock_file(universe_dir):
+        from tinyassets.workspace_fs import open_assignment_lock
+
+        universe = Path(universe_dir).absolute()
+        return open_assignment_lock(universe.parent, universe.name)
 
     @staticmethod
     @contextmanager
     def _file_lock(universe_dir: str | Path, *, exclusive: bool) -> Iterator[None]:
-        handle = ProviderAssignmentAdmission._lock_path(universe_dir).open("a+b")
+        handle = ProviderAssignmentAdmission._open_lock_file(universe_dir)
         try:
             if os.name == "nt":
                 import msvcrt
@@ -876,7 +876,7 @@ class ProviderAssignmentAdmission:
             # scope even when cancellation arrives during its creation.
             def open_lock():
                 nonlocal handle
-                handle = self._lock_path(universe_dir).open("a+b")
+                handle = self._open_lock_file(universe_dir)
                 if os.name == "nt":
                     handle.seek(0, os.SEEK_END)
                     if not handle.tell():

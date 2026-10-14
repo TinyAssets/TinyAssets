@@ -201,6 +201,12 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_admission.py::_acquire_waiting": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::blocking_provider_child": (CALL_SCOPED, "slot wait"),
     "tinyassets/provider_admission.py::provider_slot_async": (CALL_SCOPED, "slot wait"),
+    "tinyassets/provider_assignment.py::ProviderAssignmentAdmission._async_admission": (
+        CALL_SCOPED, "task admission waits for readers/writer; cancellation removes its wait",
+    ),
+    "tinyassets/provider_assignment.py::ProviderAssignmentAdmission._async_admission#2": (
+        CALL_SCOPED, "nonblocking platform flock retry, owned by the awaiting admission task",
+    ),
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.exclusive": (
         CALL_SCOPED, "admission wait",
     ),
