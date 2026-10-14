@@ -25,7 +25,7 @@ requirement for live readings.
 1. Edit `WebSite/site-react/**` (tokens and shared vocabulary live in
    `WebSite/design-system/`; rebuild it after a token change).
 2. Review the hot-reload preview at `http://localhost:3000/`.
-3. `npm test` (authenticated-read boundary, preview trust boundary, public boundary).
+3. `npm test` (authenticated-read boundary, public boundary).
 4. `npm run build`, then `python scripts/sweep.py` for the rendered check
    (every route and alias, phone and desktop, zero console errors).
 5. Open a pull request. Merging does not deploy.
@@ -50,8 +50,8 @@ or `.github/workflows/deploy-site-react.yml` runs
 | File | Role |
 |---|---|
 | `WebSite/site-react/` | The site source (Next.js static export) |
-| `WebSite/site-react/PREVIEW.md` | Local and hosted preview details |
-| `WebSite/site-react/scripts/` | Node test suites, the snapshot baker, the Playwright sweep, the preview validators |
+| `WebSite/site-react/PREVIEW.md` | Local preview details |
+| `WebSite/site-react/scripts/` | Node test suites, the snapshot baker, the Playwright sweep |
 | `WebSite/design-system/` | Tokens, base styles, components (`@tiny/design-system`) |
 | `WebSite/brand/` | The mark and its exporters |
 | `WebSite/shared/mcp/public-read-contract.js` | Snapshot baker's public projection contract |

@@ -11,8 +11,7 @@ _WORKFLOW = (
 )
 
 # The folders the site build reads, plus this workflow so a change to the
-# publisher itself publishes the tree on main. preview-worker.yml uses the
-# same three folders.
+# publisher itself publishes the tree on main.
 _PUSH_PATHS = [
     "WebSite/site-react/**",
     "WebSite/design-system/**",
@@ -45,6 +44,20 @@ def test_site_source_on_main_publishes_and_a_manual_run_still_confirms() -> None
     concurrency = _load()["concurrency"]
     assert concurrency["group"] == "deploy-site-react"
     assert concurrency["cancel-in-progress"] is False
+
+
+def test_per_pr_preview_worker_pipeline_is_absent() -> None:
+    """The Cloudflare preview worker never published; it must not return."""
+    root = Path(__file__).resolve().parents[1]
+    absent = (
+        ".github/workflows/preview-worker.yml",
+        ".github/workflows/preview-worker-deploy.yml",
+        ".github/workflows/preview-security.yml",
+        "WebSite/site-react/wrangler.preview.toml",
+        "WebSite/site-react/cf-worker/worker.js",
+    )
+    present = [path for path in absent if (root / path).exists()]
+    assert not present, present
 
 
 def test_push_does_not_skip_deploy_when_build_succeeds() -> None:

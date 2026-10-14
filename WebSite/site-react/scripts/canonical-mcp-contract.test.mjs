@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -869,7 +869,7 @@ test("the home page renders no live goal reader", () => {
   assert.doesNotMatch(home, /\bfetchPublicGoals?\b/);
 });
 
-test("the authenticated boundary gates both preview and deploy", () => {
+test("the authenticated boundary is gated on the production site deploy", () => {
   // The proxy remains available to authenticated application work, while the
   // public browser module is statically prevented from calling it.
   const nextConfig = readFileSync(nextConfigPath, "utf8");
@@ -879,10 +879,8 @@ test("the authenticated boundary gates both preview and deploy", () => {
   );
 
   const reactDeploy = readFileSync(reactDeployWorkflowPath, "utf8");
-  const preview = readFileSync(previewWorkflowPath, "utf8");
   assert.match(reactDeploy, /working-directory:\s*WebSite\/site-react[\s\S]*npm test/);
-  assert.match(preview, /working-directory:\s*WebSite\/site-react[\s\S]*npm test/);
-  assert.match(preview, /WebSite\/shared\/\*\*/);
+  assert.equal(existsSync(previewWorkflowPath), false);
 
   const reactLive = readFileSync(resolve(here, "../lib/live.ts"), "utf8");
   assert.match(reactLive, /authRequired:\s*true/);
