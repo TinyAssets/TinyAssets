@@ -1661,6 +1661,17 @@ MIGRATION_SNAPSHOT=""
 MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
 MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-1800}"   # seconds for one container run
+# The workflow echoes this script's stdout as the deploy log and leaves stderr
+# as annotations. A refusal reason has to be on stdout or the echoed log shows
+# the stop and the restore with no check between them (incident #4826).
+MIGRATION_DETAIL_FILE="$(mktemp)"
+one_line() {  # stdin -> one capped line, so a tar listing cannot flood the log
+  tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//' | head -c 1500
+  printf '\n'
+}
+migration_detail() {  # $1 = the check that failed; a subshell can still record it
+  printf '%s\n' "$1" > "$MIGRATION_DETAIL_FILE"
+}
 migration_container() {  # $1 = check|apply, then its arguments
   local posture=()
   [ "$1" = "apply" ] && posture=(--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE)
@@ -1670,38 +1681,66 @@ migration_container() {  # $1 = check|apply, then its arguments
     --entrypoint python "$NEW_IMAGE" -B -m tinyassets.agent_file_migration "$@"
 }
 migration_snapshot() {  # prints the archive name backup.sh took
-  local out
+  local out backup_rc notes tools detail id last
   if [ ! -f "$BACKUP_SCRIPT" ]; then
-    err "migration: ${BACKUP_SCRIPT} is missing (deploy/install-host-uptime-services.sh installs it)"
+    migration_detail "check=backup_script path=${BACKUP_SCRIPT} present=no"
     return 1
   fi
-  if ! out="$( (set -a; . "$ENV_FILE"; set +a; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"; then
+  out="$( (set -a; . "$ENV_FILE"; set +a; BACKUP_MODE=snapshot BACKUP_SNAPSHOT_DIR="$MIGRATION_BACKUP_DIR" bash "$BACKUP_SCRIPT") 2>&1 )"
+  backup_rc=$?
+  if [ "$backup_rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
-    err "migration: the full-volume snapshot failed"
+    # backup.sh's own ERROR line, plus anything it did not prefix (the census
+    # names the socket or the differing members; tar and rclone name theirs).
+    notes="$(printf '%s\n' "$out" | grep -E 'ERROR:|unrecognized socket|missing from archive|extra in archive' || true)"
+    tools="$(printf '%s\n' "$out" | grep -v '^\[' | grep -v '^$' \
+      | grep -v -E 'ERROR:|unrecognized socket|missing from archive|extra in archive' || true)"
+    if [ -z "$notes" ] && [ -z "$tools" ]; then
+      notes="$(printf '%s\n' "$out" | awk 'NF{line=$0} END{print line}')"
+    fi
+    [ -n "$notes$tools" ] || notes="backup.sh produced no output"
+    detail="$(printf '%s\n%s\n' "$tools" "$notes" | one_line)"
+    migration_detail "check=full_volume_snapshot rc=${backup_rc} detail=${detail}"
     return 1
   fi
-  printf '%s\n' "$out" | sed -n 's/.*SNAPSHOT id=\([^ ]*\).*/\1/p' | tail -n 1 | grep .
+  id="$(printf '%s\n' "$out" | sed -n 's/.*SNAPSHOT id=\([^ ]*\).*/\1/p' | tail -n 1)"
+  if [ -z "$id" ]; then
+    printf '%s\n' "$out" >&2
+    last="$(printf '%s\n' "$out" | awk 'NF{line=$0} END{print line}' | one_line)"
+    [ -n "$last" ] || last="<empty>"
+    migration_detail "check=snapshot_id present=no last=${last}"
+    return 1
+  fi
+  printf '%s\n' "$id"
 }
 migration_restore_command() {  # the exact remedy for the snapshot this run took
   printf 'restore it with: BACKUP_FILE=%s/%s sudo bash deploy/backup-restore.sh' "$MIGRATION_BACKUP_DIR" "$MIGRATION_SNAPSHOT"
 }
-migration_refused() {  # $1 = why; nothing on the volume changed
+migration_refused() {  # $1 = which check failed, with its values; volume unchanged
+  log "migration refused: $1"
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
-  docker start "$DAEMON_CONTAINER" >/dev/null 2>&1 \
-    || err "migration: ${DAEMON_CONTAINER} did not restart; run: systemctl start ${UNIT}"
+  start_out="$(docker start "$DAEMON_CONTAINER" 2>&1)" || {
+    start_line="$(printf '%s\n' "$start_out" | one_line)"
+    [ -n "$start_line" ] || start_line="<none>"
+    log "migration refused: check=daemon_restart container=${DAEMON_CONTAINER} output=${start_line}"
+    err "migration: ${DAEMON_CONTAINER} did not restart (output: ${start_line}); run: systemctl start ${UNIT}"
+  }
   if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     recover_from_failed_install migration_refused
   fi
+  rm -f "$MIGRATION_DETAIL_FILE"
   echo "deploy_result=migration_refused"
   exit 1
 }
 if [ "$RESTORE_BUNDLE" = "1" ]; then
   MIGRATION_RC=0  # a rollback never migrates; the layout guard above governs it
+  probe_out=""
 else
   log "migration: asking ${NEW_IMAGE} whether this volume still holds agent bindings"
   mkdir -p "$MIGRATION_BACKUP_DIR" && chmod 0700 "$MIGRATION_BACKUP_DIR"
-  migration_container check /data
+  probe_out="$(migration_container check /data 2>&1)"
   MIGRATION_RC=$?
+  [ -z "$probe_out" ] || printf '%s\n' "$probe_out"
 fi
 case "$MIGRATION_RC" in
   0)
@@ -1709,35 +1748,53 @@ case "$MIGRATION_RC" in
     ;;
   10)
     log "migration: this deploy is the agent-files cutover; stopping ${DAEMON_CONTAINER} for the snapshot and the move"
-    if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ] \
-        && ! docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" >/dev/null; then
-      migration_refused "could not stop ${DAEMON_CONTAINER}"
+    if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+      stop_out="$(docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" 2>&1)"
+      stop_rc=$?
+      if [ "$stop_rc" -ne 0 ]; then
+        stop_line="$(printf '%s\n' "$stop_out" | one_line)"
+        [ -n "$stop_line" ] || stop_line="<none>"
+        migration_refused "check=daemon_stopped container=${DAEMON_CONTAINER} grace_s=${MAX_DAEMON_STOP_GRACE_S} rc=${stop_rc} output=${stop_line}"
+      fi
     fi
-    MIGRATION_SNAPSHOT="$(migration_snapshot)" || migration_refused "the full-volume snapshot was not taken"
-    if migration_container apply /data --backup "/backup/${MIGRATION_SNAPSHOT}"; then
+    MIGRATION_SNAPSHOT="$(migration_snapshot)" || migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+    apply_out="$(migration_container apply /data --backup "/backup/${MIGRATION_SNAPSHOT}" 2>&1)"
+    apply_rc=$?
+    [ -z "$apply_out" ] || printf '%s\n' "$apply_out"
+    apply_line="$(printf '%s\n' "$apply_out" | one_line)"
+    [ -n "$apply_line" ] || apply_line="<none>"
+    if [ "$apply_rc" -eq 0 ]; then
       MIGRATION_COMMITTED=1
       log "migration: landed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
     else
-      migration_container check /data
+      recheck_out="$(migration_container check /data 2>&1)"
       MIGRATION_RECHECK_RC=$?
+      [ -z "$recheck_out" ] || printf '%s\n' "$recheck_out"
+      recheck_line="$(printf '%s\n' "$recheck_out" | one_line)"
+      [ -n "$recheck_line" ] || recheck_line="<none>"
       case "$MIGRATION_RECHECK_RC" in
-        10) migration_refused "the move refused before its commit" ;;
+        10) migration_refused "check=move_committed apply_rc=${apply_rc} apply_output=${apply_line} recheck_rc=${MIGRATION_RECHECK_RC} recheck_output=${recheck_line}" ;;
         0)
           MIGRATION_COMMITTED=1
-          err "migration: apply failed after its SQL commit; $(migration_restore_command)"
+          log "migration: apply failed after its SQL commit (apply_rc=${apply_rc} apply_output=${apply_line}); $(migration_restore_command)"
+          err "migration: apply failed after its SQL commit (apply_rc=${apply_rc} apply_output=${apply_line}); $(migration_restore_command)"
           ;;
         *)
           MIGRATION_COMMIT_UNVERIFIED=1
-          err "migration: could not verify SQL after apply failed (rc=${MIGRATION_RECHECK_RC}); $(migration_restore_command)"
+          log "migration: could not verify SQL after apply failed (rc=${MIGRATION_RECHECK_RC} output=${recheck_line} apply_rc=${apply_rc} apply_output=${apply_line}); $(migration_restore_command)"
+          err "migration: could not verify SQL after apply failed (rc=${MIGRATION_RECHECK_RC} output=${recheck_line}); $(migration_restore_command)"
           ;;
       esac
       MIGRATION_OK=0
     fi
     ;;
   *)
-    migration_refused "the probe failed (rc=${MIGRATION_RC}); an image whose data it did not check does not converge"
+    probe_line="$(printf '%s\n' "$probe_out" | one_line)"
+    [ -n "$probe_line" ] || probe_line="<none>"
+    migration_refused "check=agent_bindings_probe image=${NEW_IMAGE} rc=${MIGRATION_RC} output=${probe_line}"
     ;;
 esac
+rm -f "$MIGRATION_DETAIL_FILE"
 
 CONVERGED=0
 ACCEPTED=0
