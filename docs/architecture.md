@@ -47,6 +47,7 @@ beside `cloudflared` and a log shipper.
 |---|---|
 | `tinyassets/serve.py` | Container entry point. Keeps spawn children light, then starts the server. |
 | `tinyassets/universe_server.py` | The remote MCP server: canonical handles, prompts, `/app` mounting. |
+| `tinyassets/mcp_events_http.py`, `tinyassets/mcp_events.py` | MCP 2.0 adapter, owner-scoped webhook subscriptions and durable terminal-run notifications. |
 | `tinyassets/engine_mcp_server.py` | The same handles, served locally to the command-center agent's own turn. |
 | `tinyassets/__main__.py` | The domain CLI (`tinyassets-cli`). |
 | `tinyassets/desktop/` | The mark geometry, plus dashboard and tray helpers still imported by the shipped domain CLI. |

@@ -13,7 +13,7 @@
   ],
   "loopback_hosts": ["localhost", "127.0.0.1"],
   "allow_methods": "GET, POST, DELETE, OPTIONS",
-  "allow_headers": "authorization, content-type, accept, mcp-session-id, mcp-protocol-version, last-event-id",
+  "allow_headers": "authorization, content-type, accept, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name, last-event-id",
   "expose_headers": "www-authenticate, mcp-session-id",
   "max_age": "600"
 }
