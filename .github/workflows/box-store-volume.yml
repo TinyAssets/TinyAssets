@@ -1,0 +1,26 @@
+name: Box store volume
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-host-mutation
+  cancel-in-progress: false
+
+jobs:
+  attach:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure 20 GiB volume on production droplet
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ensure_box_store_volume.py
