@@ -10,7 +10,7 @@ Build an editable owner workflow, not a platform feature editor or new agent run
 
 The builder accepts owner-selected center, source workflow, room identity and adapter source. Claim reads the actual completed source run through existing read_graph authority before accepting its receipt. Under a durable lock it selects explicitly addressed root owner messages, reserves a turn and marks generation uncertain before the native node. A saved result is committed with one stable message ID. A generation never times out into a retry. Interrupted runs are terminal in the existing engine; explicit replay starts at the claim guard.
 
-The graph routes unknown/empty route values to stop; only generate enters one native main-agent node, with read-only tools,120-second node timeout and no node retry. Saved results route directly to commit. Replies request no further responders. Owner revocation closes the ledger and marks in-flight claims revoked; current platform owner/provider admission still applies on each action.
+The graph routes unknown/empty route values to stop; only generate enters one native main-agent node, with read-only tools and no node retry. Native turns use the owner's served `absolute_cap_s` configuration rather than the ordinary node timeout; without that cap the engine treats the turn as unbounded. This workflow does not impose a 120-second limit, and activation must inspect the effective owner cap. Saved results route directly to commit. Replies request no further responders. Owner revocation closes the ledger and marks in-flight claims revoked; current platform owner/provider admission still applies on each action.
 
 ## Risks / Trade-offs
 

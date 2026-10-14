@@ -1,10 +1,12 @@
 import contextlib
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from tests.native_room_fixture import ROOM_SOURCE, Dispatch, Room, builder
+from tinyassets.engine_mcp_server import _untrusted
 
 CONFIG = dict(
     author="fixture-owner",
@@ -42,7 +44,8 @@ def wired(tmp_path):
             reads.append(args)
             assert args["graph_id"] == "fixture-center" and args["run_id"] == "fixture-run"
             data = actual if args["target"] == "run" else output
-            return {"is_error": False, "text": json.dumps(data), "data": data}
+            text = _untrusted("run:fixture-run", json.dumps(data))
+            return {"is_error": False, "text": text, "data": json.loads(text)}
         assert action == "bash"
         commands.append(args)
         command = args["command"]
@@ -122,7 +125,8 @@ def test_foreign_room_and_owner_read_denial_refused(wired):
     assert not commands
 
 
-def test_graph_routes_one_native_node_then_commit_and_stops_replay(wired, monkeypatch):
+@pytest.mark.parametrize("owner_cap", [None, 43])
+def test_graph_routes_one_native_node_then_commit_and_stops_replay(wired, monkeypatch, owner_cap):
     from tinyassets import graph_compiler
     from tinyassets.served_tools import node_tool_grant
 
@@ -135,18 +139,23 @@ def test_graph_routes_one_native_node_then_commit_and_stops_replay(wired, monkey
 
     def provider(prompt, system, **kwargs):
         calls.append(prompt)
+        from tinyassets.universe_intelligence import UNBOUNDED_TURN_SECONDS
+
+        assert kwargs["config"].absolute_cap_s == (owner_cap or UNBOUNDED_TURN_SECONDS)
         return "Actual fixture native output"
 
     # Only replace the process sandbox with the same generated functions and a
     # fixture owner RPC. The real compiler handles routing and the prompt node.
     monkeypatch.setattr(graph_compiler, "_build_source_code_node", source_node)
-    compiled = graph_compiler.compile_branch(branch, provider_call=provider)
+    compiled = graph_compiler.compile_branch(
+        branch, provider_call=provider,
+        universe_context=SimpleNamespace(config=SimpleNamespace(absolute_cap_s=owner_cap)),
+    )
     graph = compiled.graph.compile()
     graph.invoke({"event": event})
     graph.invoke({"event": event})
     assert len(calls) == 1 and len(room.load()["messages"]) == 2
     assert branch.node_defs[1].retry_policy["max_retries"] == 0
-    assert branch.node_defs[1].timeout_seconds == 120
 
 
 def test_builder_literals_do_not_reexpand_placeholder_like_identifiers():
@@ -161,8 +170,6 @@ def test_builder_literals_do_not_reexpand_placeholder_like_identifiers():
 
 
 def test_production_node_invoker_envelope_and_owner_fence(monkeypatch):
-    from types import SimpleNamespace
-
     from tinyassets import engine_tool_client, graph_compiler
 
     branch = builder.build(**CONFIG)
@@ -173,7 +180,8 @@ def test_production_node_invoker_envelope_and_owner_fence(monkeypatch):
         async def call(self, name, arguments):
             assert name == "read_graph" and arguments["target"] == "run"
             return SimpleNamespace(
-                isError=False, content=[SimpleNamespace(text=json.dumps(result))]
+                isError=False, content=[SimpleNamespace(
+                    text=_untrusted("run:fixture-run", json.dumps(result)))],
             )
 
     @contextlib.asynccontextmanager
@@ -196,7 +204,7 @@ def test_production_node_invoker_envelope_and_owner_fence(monkeypatch):
     envelope = invoke("read_graph", target="run", run_id="fixture-run")
     namespace = {}
     exec(compile(branch.node_defs[0].source_code, "<generated>", "exec"), namespace)
-    assert namespace["object_result"](envelope) == result
+    assert namespace["object_result"](envelope, source="run:fixture-run") == result
     assert opened == [
         {
             "actor_id": "fixture-owner",
@@ -212,3 +220,30 @@ def test_production_node_invoker_envelope_and_owner_fence(monkeypatch):
         namespace["object_result"]({"is_error": True, "text": "refused", "data": result})
     with pytest.raises(RuntimeError):
         namespace["object_result"]({"is_error": False, "text": "invalid", "data": None})
+
+
+@pytest.mark.parametrize("content", [None, [], "not an object", {"error": "revoked"},
+                                     {"is_error": True}])
+def test_invalid_inner_engine_content_refused(content):
+    namespace = {}
+    exec(compile(builder.build(**CONFIG).node_defs[0].source_code, "<generated>", "exec"),
+         namespace)
+    inner = {"untrusted": True, "source": "run:fixture-run", "content": content}
+    with pytest.raises(RuntimeError, match="invalid content"):
+        namespace["object_result"](
+            {"is_error": False, "text": json.dumps(inner), "data": inner},
+            source="run:fixture-run",
+        )
+
+
+@pytest.mark.parametrize("changes", [{"source": "run:foreign"}, {"untrusted": False}])
+def test_foreign_inner_engine_envelope_refused(changes):
+    namespace = {}
+    exec(compile(builder.build(**CONFIG).node_defs[0].source_code, "<generated>", "exec"),
+         namespace)
+    inner = {"untrusted": True, "source": "run:fixture-run", "content": {}, **changes}
+    with pytest.raises(RuntimeError, match="foreign envelope"):
+        namespace["object_result"](
+            {"is_error": False, "text": json.dumps(inner), "data": inner},
+            source="run:fixture-run",
+        )

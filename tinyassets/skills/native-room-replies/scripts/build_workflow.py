@@ -25,7 +25,7 @@ def source(stage, *, command_center_id, storage_workflow_id, room_id, room_sourc
     # Literal source/payload serialization, never interpolation into shell syntax.
     template = """import json
 
-def object_result(value):
+def object_result(value, *, source=None):
     if isinstance(value, str): value = json.loads(value)
     if not isinstance(value, dict) or value.get("error") or value.get("is_error"):
         raise RuntimeError("Owner-scoped workflow read refused")
@@ -34,6 +34,14 @@ def object_result(value):
         value = value.get("data")
         if not isinstance(value, dict) or value.get("error"):
             raise RuntimeError("Owner-scoped workflow returned invalid data")
+    # Engine run reads mark generated content as untrusted data. Unwrap only
+    # the requested run's envelope; the run/receipt checks below still apply.
+    if source is not None and "untrusted" in value:
+        if value.get("untrusted") is not True or value.get("source") != source:
+            raise RuntimeError("Owner-scoped workflow returned a foreign envelope")
+        value = value.get("content")
+        if not isinstance(value, dict) or value.get("error") or value.get("is_error"):
+            raise RuntimeError("Owner-scoped workflow returned invalid content")
     return value
 
 def run(state):
@@ -47,12 +55,12 @@ def run(state):
         if not isinstance(rid, str) or not rid:
             raise ValueError("Missing source run")
         actual = object_result(invoke_mcp_action(
-            "read_graph", target="run", graph_id=CENTER, run_id=rid))
+            "read_graph", target="run", graph_id=CENTER, run_id=rid), source="run:" + rid)
         if (actual.get("run_id") != rid or actual.get("branch_def_id") != STORAGE
                 or actual.get("status") != "completed" or actual.get("cancel_requested")):
             raise PermissionError("Source run does not match room event")
         output = object_result(invoke_mcp_action("read_graph", target="run_output", graph_id=CENTER,
-            run_id=rid, field_name="result", output_max_chars=8192))
+            run_id=rid, field_name="result", output_max_chars=8192), source="run:" + rid)
         if (output.get("status") != "completed" or output.get("run_id") != rid
                 or output.get("truncated") is not False or "value" not in output):
             raise ValueError("Incomplete source receipt")
@@ -144,7 +152,8 @@ def build(*, author, command_center_id, storage_workflow_id, room_id, room_sourc
             output_keys=["native_reply"],
             model_hint="writer",
             tools_allowed=["agent", "read"],
-            timeout_seconds=120,
+            # Native turns use the owner's served absolute cap, not this
+            # schema's ordinary prompt-node timeout (graph_compiler).
             retry_policy={"max_retries": 0, "backoff_seconds": 1},
         ),
         NodeDefinition(

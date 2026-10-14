@@ -23,3 +23,13 @@ The example SHALL build a private native-agent workflow without installing an ac
 #### Scenario: Non-addressed or invalid source
 - **WHEN** the event, actual source run, receipt or room post does not match the configured owner workflow
 - **THEN** it is refused or stopped before generation
+
+#### Scenario: Engine run response envelope
+- **WHEN** the owner-scoped engine returns an untrusted content envelope for the requested source run
+- **THEN** the workflow decodes that envelope as data and still verifies the run, source workflow, completion and receipt before claiming
+- **AND** malformed, refused or foreign-run envelopes cannot reach storage or generation
+
+#### Scenario: Native turn runtime limit
+- **WHEN** the native agent node executes
+- **THEN** its runtime cap follows the owner's served absolute-cap configuration, including the engine's unbounded default
+- **AND** the example does not claim that an ordinary node timeout imposes a 120-second native-turn limit
