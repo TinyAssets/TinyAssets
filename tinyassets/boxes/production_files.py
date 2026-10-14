@@ -100,6 +100,21 @@ class ProductionFileProvider:
         result = self._call(handle, "exec_status", {"op_id": op_id})
         return ExecStatus(**{**result, "state": ExecState(result["state"])})
 
+    def start_cli(self, handle, op_id, argv, *, env, cli, limits=ExecLimits(600, MAX_DATA)):
+        return self._call(handle, "start_cli", {
+            "argv": list(argv), "stdin": b"", "env": dict(env), "cwd": "/cc",
+            "wall_seconds": limits.wall_seconds, "output_bytes": limits.output_bytes,
+            "interactive_stdin": True, "cli": cli}, op_id=op_id)
+
+    def cli_result(self, handle, exec_id):
+        return self._call(handle, "cli_result", {"exec_id": exec_id})
+
+    def ack_cli(self, handle, exec_id):
+        return self._call(handle, "ack_cli", {"exec_id": exec_id})
+
+    def close_stdin(self, handle, exec_id):
+        return self._call(handle, "close_stdin", {"exec_id": exec_id})
+
     def stream(self, handle, exec_id, *, from_offset=0, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:

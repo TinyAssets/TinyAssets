@@ -659,6 +659,33 @@ starts.
 
 ### C7 and C12 integration contracts still required
 
+CLI execution uses the existing exclusive refresh lease and compare-and-swap
+custody owner. Its immutable guest worker materializes only declared auth files
+under guest tmpfs. A framed worker transport separates CLI output from private
+writeback; root never puts writeback bytes in the output stream or receipt DB.
+The host holds at most sixteen unacknowledged private results in memory, bound
+to owner, center, session and operation. It releases a result only after whole
+box quiescence, and discards it after explicit acknowledgement. A lost host or
+acknowledged result refuses refresh recovery; an execution is never replayed to
+reconstruct credentials. This transport does not grant custody: the integration
+must retain the broker lease through writeback CAS and acknowledge afterwards.
+A durable custody-pin lease blocks a fresh operation ID while writeback remains
+unsettled, including after host restart. A newer owner deposit has a new pin.
+Restore resets CLI acknowledgements because the credential store may predate a
+completed refresh. Explicit session cancellation erases in-memory writeback but
+does not authorize reuse of that custody pin.
+
+The in-box git bridge projects selected grant IDs, connection incarnations,
+repository scopes and the agent into invocation-local URL rewrites. Its socket
+handshake uses `BOX_CONNECT` and the existing `broker/git_http` smart-HTTP path.
+The broker derives owner/center/fence from root admission, rechecks grants and
+injects credentials itself. The host overwrites the guest owner environment;
+the guest never receives a broker fence token or git credential. The existing
+URL registry/parser remains the single implementation and expires when that
+invocation's box is quiesced. Integration must pass the already selected grants
+with `boxes.git_bridge.environment(connections, agent)`; no new catalogue reader
+or unscoped grant discovery is introduced.
+
 C7 PR #4845 (`conv/c7-control-plane-only`, inspected head
 `c1eb3d446909b5cdc534053d8d784701c0eaed70`) owns
 `control_plane/session.py`, `control_plane/tick.py` and `universe_server.py`.
@@ -680,8 +707,35 @@ host before dispatch. C6 does not overwrite those files. Integration needs:
 - CLI dispatch must pass broker custody references plus the admitted binding to
   the existing exclusive-refresh/CAS owner. Leased auth files belong in guest
   memory, and writeback needs a separate private channel; ordinary execution
-  stdout is durable and must never carry credential writeback. C6's public
-  network bridge does not complete this credential-lease contract.
+  stdout is durable and must never carry credential writeback. The integration
+  constructs `BoxLauncher(provider, handle, custody, operation_id=stable_id)`
+  and passes it to the existing `run_job`/`run_catalogue` runner. The runner now
+  acknowledges its private result only after successful CAS. Existing provider
+  factory callsites remain unchanged until C7 supplies this binding.
+
+One additional inventory row is required in C7-owned
+`scripts/check_background_authority_inventory.py`: the `CallSite` for
+`tinyassets/boxes/cli_launcher.py`, `Process._output`, `self.stream`. It only
+reads bounded output of an already admitted execution, like `BoxExecutor._collect`.
+C6 does not rename the method to evade the guard or claim cross-family review.
+
+Parallel child completion needs a proven per-execution descendant boundary.
+`runsc exec` waits on the invoked PID; a process-group kill does not contain a
+child that changes its group. Whole-box stop is the current conservative proof
+and cannot be used while another child must survive. Before enabling concurrency,
+the pinned runtime must prove a nested PID-namespace init/parent-death design (or
+an equivalent kernel boundary) with detached grandchildren and concurrent siblings.
+This execution environment has no pinned runtime/kernel proof and cannot provide
+the required G1/G2 evidence. Do not replace whole-box stop with a guessed PID kill.
+
+Online paired backup also needs the C7 integration boundary: stop admission of
+new platform/owner writes, drain or explicitly interrupt every current writer,
+and acknowledge one barrier covering broker DBs, frontend platform stores and
+root receipts before owner-store freezing/staging. Release only after both
+members and their manifest are durable. The lifetime shared layout lock protects
+migrations but is not that barrier; independently backing up SQLite files while
+owner writes continue would not prove one logical generation. C7's session/tick
+owner must provide this writer barrier before C6 can replace the offline refusal.
 
 C12 retains sole ownership of `account_deletion.py` and its integration. In
 addition to the stable-ID destroy receipt contract above, forward restore must
