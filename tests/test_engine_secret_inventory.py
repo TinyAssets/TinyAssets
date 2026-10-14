@@ -110,11 +110,11 @@ def test_catalogued_daemon_credentials_are_in_deployment_inventory():
 
 def test_daemon_auth_inventory_has_only_the_audited_readers():
     # This records the grep proof independently of CHILD_FORBIDDEN_ENV. Importing
-    # a module is not a secret read: only admission minting / interchange import
-    # consume the HMAC keys; the engine exposes neither operation.
+    # a module is not a secret read: request-admission minting consumes the
+    # request HMAC key; the engine exposes no such operation.
     expected = {
         "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY": {
-            "api/universe.py", "storage/request_admissions.py",
+            "storage/request_admissions.py",
         },
         "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": set(),
         "TINYASSETS_APP_INGRESS_HMAC_KEY": set(),

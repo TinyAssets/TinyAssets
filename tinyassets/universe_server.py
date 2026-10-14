@@ -4487,10 +4487,9 @@ def main(
         host, port, transport,
     )
 
-    # HTTP serving admission (openspec change cloud-only-runtime-admission,
-    # enforcement site C). The public HTTP service refuses to boot without
-    # cloud admission. Local stdio and sse can boot without the owner tick;
-    # their work paths retain their own provider-authority checks.
+    # Serving admission (openspec change cloud-only-runtime-admission,
+    # enforcement site C). Every transport refuses to boot unless this is an
+    # admitted cloud runtime. No maintenance, worker, or listener runs first.
     #
     # Placed after the session-seal arm and outside every database transaction,
     # so the bounded metadata read never holds a SQLite write lock.
@@ -4503,32 +4502,20 @@ def main(
         sanitized_observation_fields,
     )
 
-    cloud_admitted = False
-    if transport == "streamable-http":
-        try:
-            _provenance = require_process_cloud_admission(surface="platform serving startup")
-        except PermissionError as exc:
-            logger.error("refusing to serve: %s", exc)
-            raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
-        except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
-            logger.exception(
-                "refusing to serve: platform runtime provenance could not be resolved"
-            )
-            raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
-        cloud_admitted = True
-        logger.info(
-            "platform runtime provenance (serving admitted): %s",
-            sanitized_observation_fields(_provenance),
+    try:
+        _provenance = require_process_cloud_admission(surface="platform serving startup")
+    except PermissionError as exc:
+        logger.error("refusing to serve: %s", exc)
+        raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+    except Exception as exc:  # noqa: BLE001 - fail closed on an unexpected failure
+        logger.exception(
+            "refusing to serve: platform runtime provenance could not be resolved"
         )
-    elif transport in ("stdio", "sse"):
-        from tinyassets.platform_runtime_provenance import process_is_cloud_admitted
-
-        try:
-            cloud_admitted = process_is_cloud_admitted()
-        except Exception:  # noqa: BLE001 - local transport can serve without the owner tick
-            logger.exception("local transport has no cloud admission; owner tick disabled")
-        if not cloud_admitted:
-            logger.info("local transport has no cloud admission; owner tick disabled")
+        raise SystemExit(PLATFORM_NOT_CLOUD_EXIT_CODE) from exc
+    logger.info(
+        "platform runtime provenance (serving admitted): %s",
+        sanitized_observation_fields(_provenance),
+    )
 
     # Served-budget maintenance for ALL transports (Codex re-review 2026-08-19:
     # boot reconcile + the lease reconciler were streamable-http-only, so sse/
@@ -4723,13 +4710,12 @@ def main(
     )
 
     try:
-        if cloud_admitted:
-            from tinyassets.consumer_runtime import initialize as initialize_consumer
+        from tinyassets.consumer_runtime import initialize as initialize_consumer
 
-            # Storage must be ready before the owner tick opens its database.
-            initialize_consumer(data_dir())
-            assigned_consumer = AssignedQueueConsumer(data_dir())
-            assigned_consumer.start()
+        # Storage must be ready before the owner tick opens its database.
+        initialize_consumer(data_dir())
+        assigned_consumer = AssignedQueueConsumer(data_dir())
+        assigned_consumer.start()
         run_visibility_startup_gate()
         start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):
