@@ -39,13 +39,13 @@ from tinyassets.bid.node_bid import (
     write_node_bid_post,
 )
 from tinyassets.branch_tasks import BranchTask
-from tinyassets.dispatcher import (
+from tinyassets.control_plane.queue_policy import (
     DispatcherConfig,
     load_dispatcher_config,
     score_task,
     select_next_task,
 )
-from tinyassets.dispatcher import (
+from tinyassets.control_plane.queue_policy import (
     paid_market_enabled as dispatcher_paid_market_enabled,
 )
 from tinyassets.executors.node_bid import execute_node_bid

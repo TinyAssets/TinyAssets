@@ -28,7 +28,7 @@ from tinyassets.branch_tasks import (
     read_queue,
     reclaim_expired_leases,
 )
-from tinyassets.runtime.assigned_queue_consumer import (
+from tinyassets.control_plane.tick import (
     SUPERVISOR_HEARTBEAT_FILENAME,
     supervisor_heartbeat_filename,
 )

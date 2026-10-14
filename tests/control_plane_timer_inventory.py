@@ -49,16 +49,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "bounded dependency stage inside one owner cell; ends with the call",
     ),
     # -- always-on duties of the execution owner ------------------------------
-    "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
+    "tinyassets/control_plane/tick.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
         "the owner tick: pumps due automations and control-plane triggers, under "
         "the owner lease; per-universe heartbeat/.pause still touch the universe "
         "directory until the cutover (#4262) moves them to .platform/",
-    ),
-    "tinyassets/universe_server.py::main._resume_request_loop": (
-        CONTROL_PLANE,
-        "server-owned protected request recovery and due owner-bound continuations; "
-        "per-home control/attempt locks serialize work, not a box timer",
     ),
     "tinyassets/universe_server.py::main._served_budget_lease_loop": (
         CONTROL_PLANE,
@@ -109,7 +104,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "bad-reply backoff bounded by the remaining turn deadline; polls Stop "
         "at most every 0.25 seconds and ends with this turn",
     ),
-    "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._refresh_lease": (
+    "tinyassets/control_plane/tick.py::AssignedQueueConsumer._refresh_lease": (
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),

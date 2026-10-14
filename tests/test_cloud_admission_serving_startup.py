@@ -106,7 +106,7 @@ def boot_sentinels(monkeypatch, tmp_path):
     """
     from tinyassets import engine_mcp_http, provider_assignment
     from tinyassets.onboarding import session_store
-    from tinyassets.runtime import assigned_queue_consumer
+    from tinyassets.control_plane import tick as assigned_queue_consumer
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     reached: list[str] = []
@@ -135,10 +135,17 @@ def boot_sentinels(monkeypatch, tmp_path):
         "create_streamable_http_app",
         lambda *a, **k: (reached.append("app-build"), object())[1],
     )
-    monkeypatch.setattr(
-        assigned_queue_consumer, "assigned_queue_consumer_enabled",
-        lambda: (reached.append("queue-worker-check"), False)[1],
-    )
+    class _Consumer:
+        def __init__(self, *_a, **_k):
+            reached.append("queue-worker-create")
+
+        def start(self):
+            reached.append("queue-worker-start")
+
+        def stop(self):
+            reached.append("queue-worker-stop")
+
+    monkeypatch.setattr(assigned_queue_consumer, "AssignedQueueConsumer", _Consumer)
     monkeypatch.setattr(
         us.uvicorn, "run", lambda *a, **k: reached.append("listener"),
     )

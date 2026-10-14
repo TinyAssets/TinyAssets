@@ -30,7 +30,7 @@ CATALOG = [
 
 
 def call(backend, name, arguments):
-    from tinyassets import agent_wakes
+    from tinyassets.control_plane import agent_wakes
 
     context = backend.context
     if not backend.wakes_granted:

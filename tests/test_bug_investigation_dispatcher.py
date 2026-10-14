@@ -6,7 +6,7 @@ import json
 
 from tinyassets.branch_tasks import BranchTask, append_task, read_queue
 from tinyassets.bug_investigation import REQUEST_TYPE_BUG_INVESTIGATION
-from tinyassets.dispatcher import (
+from tinyassets.control_plane.queue_policy import (
     get_request_type_priorities,
     load_dispatcher_config,
     prefers_request_type,

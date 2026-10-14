@@ -249,7 +249,7 @@ def test_a_hook_records_its_owner_and_hands_it_back(tmp_path):
 
 
 def test_a_scheduler_event_carries_its_owner():
-    from tinyassets.scheduler import SchedulerEvent
+    from tinyassets.control_plane.events import SchedulerEvent
 
     event = SchedulerEvent(event_type="source.fired", payload={}, owner_principal_id="owner-3")
     assert event.owner_principal_id == "owner-3"
@@ -438,15 +438,15 @@ def test_a_source_event_carries_its_hook_owner_to_the_run(monkeypatch, tmp_path)
     request identity, so if the owner does not ride on the event the run has no
     principal at all (Codex asked for the propagation, not the field)."""
     from tinyassets import webhook_inbound as wh
-    from tinyassets.scheduler import SchedulerEvent
+    from tinyassets.control_plane.events import SchedulerEvent
 
     emitted: list[SchedulerEvent] = []
     monkeypatch.setattr(wh, "_emit_source_event", wh._emit_source_event)
     monkeypatch.setattr(
-        "tinyassets.scheduler.is_running", lambda: True, raising=False,
+        "tinyassets.control_plane.events.is_running", lambda: True, raising=False,
     )
     monkeypatch.setattr(
-        "tinyassets.scheduler.emit_event", emitted.append, raising=False,
+        "tinyassets.control_plane.events.emit_event", emitted.append, raising=False,
     )
     wh._emit_source_event(
         source_id="s-1",
@@ -459,7 +459,7 @@ def test_a_source_event_carries_its_hook_owner_to_the_run(monkeypatch, tmp_path)
     assert emitted and emitted[0].owner_principal_id == "owner-7"
 
     # ...and the dispatcher hands it to the run function as the principal.
-    from tinyassets import scheduler
+    from tinyassets.control_plane import events as scheduler
 
     seen: list[dict] = []
 

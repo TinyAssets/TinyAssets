@@ -128,7 +128,6 @@ def test_inventory_covers_every_required_source_family() -> None:
         "goal_subscription",
         "soul_and_compiled_cycle",
         "request_admission",
-        "goal_pool_and_paid_market",
         "branch_task_and_graph_enqueue",
         "direct_live_and_versioned_run",
         "resume_and_recovery",

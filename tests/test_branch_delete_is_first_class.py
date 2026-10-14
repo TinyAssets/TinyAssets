@@ -273,7 +273,7 @@ def test_an_ACTIVE_subscription_is_named_and_a_retired_schedule_is_not(
 ):
     """Schedules are retired: a leftover row that was active is stamped retired
     by the scheduler migration, so it no longer holds the branch."""
-    from tinyassets import scheduler
+    from tinyassets.control_plane import events as scheduler
 
     us, _actor = universe_surface
     bid = _create(us, "scheduled")

@@ -524,8 +524,8 @@ def test_the_tick_never_opens_a_command_center_directory(tmp_path, handler):
 @pytest.mark.usefixtures("cloud_runtime")
 def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, monkeypatch):
     from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
-    from tinyassets import activity_dispatcher
-    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+    from tinyassets.control_plane import activities as activity_dispatcher
+    from tinyassets.control_plane.tick import AssignedQueueConsumer
     from tinyassets.storage import db_path
     from tinyassets.storage.request_admissions import migrate_request_admission_schema
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from tinyassets.runs import initialize_runs_db
-from tinyassets.scheduler import (
+from tinyassets.control_plane.events import (
     Scheduler,
     SchedulerEvent,
     _is_valid_event_type,
@@ -85,7 +85,7 @@ def test_a_source_event_with_no_subscription_fires_nothing(base_path):
 
 
 def test_a_deactivated_source_subscription_does_not_fire(base_path):
-    from tinyassets.scheduler import list_scheduler_subscriptions, unregister_subscription
+    from tinyassets.control_plane.events import list_scheduler_subscriptions, unregister_subscription
 
     calls: list = []
     register_subscription(
@@ -101,7 +101,7 @@ def test_a_deactivated_source_subscription_does_not_fire(base_path):
 
 
 def test_subscription_active_reflects_a_deactivation(base_path):
-    from tinyassets.scheduler import list_scheduler_subscriptions, unregister_subscription
+    from tinyassets.control_plane.events import list_scheduler_subscriptions, unregister_subscription
 
     register_subscription(
         base_path, branch_def_id="b-1", owner_actor="universe:u-a", event_type="source:src-1",

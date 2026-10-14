@@ -42,7 +42,7 @@ from tinyassets.branches import (
     GraphNodeRef,
     NodeDefinition,
 )
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.control_plane.tick import AssignedQueueConsumer
 from tinyassets.storage import db_path
 
 OWNER = "acct_alice"
@@ -611,19 +611,6 @@ def _registration_kwargs(**overrides):
     return kwargs
 
 
-def test_registration_refuses_when_the_consumer_is_dark(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
-    _seed_serving_assignment(tmp_path)
-    _seed_owner(tmp_path)
-    _seed_branch(tmp_path)
-
-    with pytest.raises(AutomationUnavailable) as caught:
-        register_automation(tmp_path, **_registration_kwargs())
-
-    assert caught.value.reason == "consumer_disabled"
-    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
 @pytest.mark.parametrize("principal", ["", "   ", "anonymous"])
@@ -1067,7 +1054,7 @@ def test_poll_once_leaves_a_paused_universe_alone(
         consumer.stop()
 
     assert scanned == []
-    assert inline.submissions == []
+    assert not any(args[0] == UNIVERSE for args in inline.submissions)
 
 
 def test_one_universes_scan_failure_does_not_stop_the_poll(
@@ -1121,27 +1108,6 @@ def test_one_universes_scan_failure_does_not_stop_the_poll(
     )
 
 
-def test_a_dark_consumer_scans_no_automations_at_all(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
-    scanned: list[str] = []
-    monkeypatch.setattr(
-        automations_module,
-        "due_automations",
-        lambda base, *, universe_id, now: scanned.append(universe_id) or [],
-    )
-    consumer, inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        assert consumer.poll_once() == 0
-    finally:
-        consumer.stop()
-
-    assert scanned == []
-    assert inline.submissions == []
 
 
 # -- Codex ADAPT 2026-08-29 folds ---------------------------------------------
@@ -2345,7 +2311,7 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     by backdating it and polling again. `ts` is asserted too because that is the
     field human readers and `_classify_epoch2_workers` consume.
     """
-    from tinyassets.runtime.assigned_queue_consumer import (
+    from tinyassets.control_plane.tick import (
         supervisor_heartbeat_filename,
     )
 
@@ -2403,7 +2369,7 @@ def test_a_paused_universe_still_beats(
 ) -> None:
     """Skipping the beat while paused turns the P0 pause repair into a restart
     loop: a restart preserves `.pause`, so the daemon would never beat again."""
-    from tinyassets.runtime.assigned_queue_consumer import (
+    from tinyassets.control_plane.tick import (
         supervisor_heartbeat_filename,
     )
 

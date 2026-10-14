@@ -250,6 +250,11 @@ VENDOR_NAMES = re.compile(
 DUAL_FLAGS = re.compile(
     r"\bTINYASSETS_(?:AGENT_LOOP|ALLOW_CLAUDE_SERVING|ASSIGNED_QUEUE_CONSUMER)\b"
 )
+RETIRED_ACCOUNT_LIMITS = re.compile(
+    r"\b(?:RUN_WRITE_LIMIT|RUN_TOTAL_LIMIT|RUN_DAY_LIMIT|DISPATCHES_PER_HOUR|"
+    r"BYTES_PER_HOUR|BUDGET_WINDOW_S|usage_notice|charge_dispatch|"
+    r"dispatch_window_usage)\b"
+)
 PUBLIC_ROUTE = re.compile(
     r"(?:mount|route|Route|Mount|include_router|add_api_route|@app\.(?:get|post|put|patch|delete))"
     r"\s*\(\s*['\"](/[^'\"]*)"
@@ -734,8 +739,24 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
     return problems
 
 
+def control_plane_policy_problems(root: Path = ROOT) -> list[str]:
+    """The owner tick is unconditional and account limits have two names only."""
+    problems: list[str] = []
+    for path in files("tinyassets/**/*.py", root) + files("scripts/**/*.py", root):
+        if path.name == "check_shapes.py":
+            continue
+        source = path.read_text(encoding="utf-8", errors="replace")
+        rel = path.relative_to(root).as_posix()
+        if "TINYASSETS_ASSIGNED_QUEUE_CONSUMER" in source:
+            problems.append(f"opt-in-flags: {rel} gates the owner tick")
+        if rel.startswith("tinyassets/") and RETIRED_ACCOUNT_LIMITS.search(source):
+            problems.append(f"limit-names: {rel} contains a retired account meter")
+    return problems
+
+
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
+    problems.extend(control_plane_policy_problems(root))
     problems.extend(dead_entry_problems(root))
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())

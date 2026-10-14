@@ -133,7 +133,7 @@ def exercise(base, center, principal):
     from tinyassets.command_center_update_maintenance import tick as update_centers
     from tinyassets.delivery_runtime import reconcile_deliveries
     from tinyassets.provider_assignment import reconcile_served_budget_leases
-    from tinyassets.request_continuations import tick as resume_requests
+    from tinyassets.control_plane.continuations import tick as resume_requests
     from tinyassets.run_file_retention import reconcile_run_files
     from tinyassets.run_input_origins import reconcile_admitted_runs
     from tinyassets.workspace_staging import sweep_data_root

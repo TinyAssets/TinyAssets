@@ -319,7 +319,7 @@ def _emit_source_event(
     event thread (authenticated-owner boundary D2). The in-flight reservation id rides
     under a private inputs key so the fired run can link + release it.
     """
-    from tinyassets.scheduler import SchedulerEvent, emit_event, is_running
+    from tinyassets.control_plane.events import SchedulerEvent, emit_event, is_running
 
     if not is_running():
         # Fail loud internally; the caller sees the uniform 404 (Codex #7). A Source hook

@@ -84,7 +84,7 @@ with claim(Path(sys.argv[1]), 'turn') as token:
 
 
 def test_failed_activity_reason_reaches_chat_and_next_agent_turn(tmp_path, monkeypatch):
-    from tinyassets import activity_dispatcher as dispatcher
+    from tinyassets.control_plane import activities as dispatcher
     from tinyassets import agent_activities as activities
     from tinyassets.conversation_store import load_recent
 

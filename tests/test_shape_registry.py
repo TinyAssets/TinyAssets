@@ -157,6 +157,19 @@ def test_new_model_call_entry_symbol_is_detected_outside_registered_path():
     )
 
 
+def test_owner_tick_and_account_limit_guards(tmp_path: Path):
+    code = tmp_path / "tinyassets" / "legacy.py"
+    code.parent.mkdir()
+    code.write_text(
+        'TINYASSETS_ASSIGNED_QUEUE_CONSUMER = "on"\nRUN_WRITE_LIMIT = 10\n',
+        encoding="utf-8",
+    )
+    assert check_shapes.control_plane_policy_problems(tmp_path) == [
+        "opt-in-flags: tinyassets/legacy.py gates the owner tick",
+        "limit-names: tinyassets/legacy.py contains a retired account meter",
+    ]
+
+
 def test_base_pin_parser_records_ceiling_and_probes():
     baseline = (
         "SHAPES: dict[str, Shape] = {"

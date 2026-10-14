@@ -200,12 +200,6 @@ CLASSIFICATION: tuple[CallSite, ...] = (
         "_ensure_runs_recovery",
         "recover_in_flight_runs",
     ),
-    CallSite("tinyassets/api/universe.py", "_action_submit_request", "append_task"),
-    CallSite(
-        "tinyassets/dispatcher.py",
-        "run_branch_task_producers_into_queue",
-        "append_task",
-    ),
     CallSite(
         "tinyassets/graph_compiler.py",
         "_build_invoke_branch_node._node_fn",
@@ -236,7 +230,7 @@ CLASSIFICATION: tuple[CallSite, ...] = (
     # non-universe actor or an empty principal, so the no-principal call is
     # reachable only with a test double (Codex 2026-10-01).
     CallSite(
-        "tinyassets/scheduler.py",
+        "tinyassets/control_plane/events.py",
         "Scheduler._dispatch_event",
         "_run_fn",
         count=2,
@@ -290,13 +284,13 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     ),
     "schedule_and_event": (
         SourceReference(
-            "tinyassets/scheduler.py",
+            "tinyassets/control_plane/events.py",
             'self._run_fn(sub["branch_def_id"], actor, inputs, run_name)',
         ),
     ),
     "goal_subscription": (
         SourceReference("tinyassets/subscriptions.py", "def subscribe("),
-        SourceReference("tinyassets/scheduler.py", "def register_subscription("),
+        SourceReference("tinyassets/control_plane/events.py", "def register_subscription("),
     ),
     "soul_and_compiled_cycle": (
         SourceReference(
@@ -311,11 +305,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     ),
     "request_admission": (
         SourceReference("tinyassets/storage/request_admissions.py", "class RequestAdmissionStore:"),
-        SourceReference("tinyassets/api/universe.py", "def _action_submit_request("),
-    ),
-    "goal_pool_and_paid_market": (
-        SourceReference("tinyassets/producers/goal_pool.py", "class GoalPoolProducer:"),
-        SourceReference("tinyassets/producers/node_bid.py", "class NodeBidProducer:"),
+        SourceReference("tinyassets/api/universe.py", "def _action_admit_request_v2("),
     ),
     "branch_task_and_graph_enqueue": (
         SourceReference("tinyassets/branch_tasks.py", "def append_task("),
@@ -342,7 +332,7 @@ REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
         # supervisor was deleted (nothing runs outside a user's universe --
         # ADR-009). The served consumer is now the only background claim root.
         SourceReference(
-            "tinyassets/runtime/assigned_queue_consumer.py",
+            "tinyassets/control_plane/tick.py",
             "class AssignedQueueConsumer:",
         ),
         SourceReference("tinyassets/execution_authority/records.py", "class ExecutionGrantV1:"),
@@ -400,7 +390,7 @@ CANONICAL_READ_INTERFACES: Mapping[str, tuple[SourceReference, ...]] = {
     ),
     "goal_subscription": (
         SourceReference("tinyassets/subscriptions.py", "def list_subscriptions("),
-        SourceReference("tinyassets/scheduler.py", "def list_scheduler_subscriptions("),
+        SourceReference("tinyassets/control_plane/events.py", "def list_scheduler_subscriptions("),
     ),
     "queue": (
         SourceReference("tinyassets/branch_tasks.py", "def read_queue("),

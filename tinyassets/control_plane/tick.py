@@ -40,7 +40,6 @@ def _lease_ttl_seconds() -> float:
     from tinyassets.automations import run_timeout_seconds
 
     return run_timeout_seconds() or _LEASE_TTL_FLOOR_S
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _DEFAULT_GLOBAL_CONCURRENCY = 2
 _DEFAULT_POLL_SECONDS = 2.0
 _CONSUMER_REGISTRY_LOCK = threading.Lock()
@@ -119,10 +118,6 @@ def assigned_queue_refusal_freshness_seconds() -> float:
     return 5 * _configured_poll_seconds()
 
 
-def assigned_queue_consumer_enabled() -> bool:
-    return os.environ.get("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "").strip().lower() in _TRUTHY
-
-
 def _global_concurrency() -> int:
     raw = os.environ.get("TINYASSETS_ASSIGNED_QUEUE_GLOBAL_CONCURRENCY", "").strip()
     value = _DEFAULT_GLOBAL_CONCURRENCY if not raw else int(raw)
@@ -138,8 +133,6 @@ def current_consumer_liveness(base_path: Path) -> dict[str, Any]:
     succeeded. Per-universe heartbeat/queue descriptor readers keep their own
     scope and authority. No identity, path, tenant count or task data escapes.
     """
-    if not assigned_queue_consumer_enabled():
-        return {"present": False, "phase": "disabled"}
     if os.environ.get("TINYASSETS_ENGINE_GRAPH_ID", "").strip():
         # Engine MCP children inherit the enable flag but do not own the daemon
         # coordinator. Their process-local registry cannot attest its liveness.
@@ -191,6 +184,7 @@ class AssignedQueueConsumer:
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
         self._automation_runs: set[str] = set()
+        self._continuation_future: Future[Any] | None = None
         # Universes whose automation run ignored cancellation at timeout, with
         # the runs of that batch. The universe stays leased AND busy until they
         # are terminal: re-acquiring our own lease must not admit new work
@@ -212,8 +206,6 @@ class AssignedQueueConsumer:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
         # start()ing a consumer must spin up NO coordinator thread — the dark guarantee
         # is "no side effect when off", not merely "no DB writes".
-        if not assigned_queue_consumer_enabled():
-            return
         require_process_cloud_admission(surface="assigned queue consumer")
         if self._thread is not None:
             return
@@ -300,7 +292,9 @@ class AssignedQueueConsumer:
             busy = bool(self._unstopped) or any(
                 not future.done() for future in self._active.values()
             )
-        if busy or (self._thread is not None and self._thread.is_alive()):
+        if busy or (self._continuation_future is not None
+                    and not self._continuation_future.done()) or (
+                        self._thread is not None and self._thread.is_alive()):
             return
         release_singleton_lock(self._liveness)
         self._liveness = None
@@ -392,8 +386,6 @@ class AssignedQueueConsumer:
         retired (plan C1); it went with them (plan C2).
         """
 
-        if not assigned_queue_consumer_enabled():
-            return 0
         # A copied runtime row or cached receipt cannot authorize recovery,
         # automatic work submission or publication of compatible capacity.
         require_process_cloud_admission(surface="assigned queue consumer")
@@ -427,10 +419,11 @@ class AssignedQueueConsumer:
             automation_submitted, _automation_universes = self._submit_due_automations(
                 serving_universes, prep_store
             )
+            self._submit_continuations()
             # The owner also settles ended activities and starts queued ones.
             # Dispatch runs on its own thread so heartbeats need not wait.
             try:
-                from tinyassets.activity_dispatcher import tick_in_background
+                from tinyassets.control_plane.activities import tick_in_background
 
                 tick_in_background(self.base_path)
             except Exception:  # noqa: BLE001 - activities never stop the pump
@@ -466,7 +459,33 @@ class AssignedQueueConsumer:
                 self._control_plane.tick()
             except Exception:  # noqa: BLE001 - triggers never stop the pump
                 logger.exception("control-plane trigger tick failed")
+            try:
+                from tinyassets.control_plane.events import tick_events
+
+                tick_events()
+            except Exception:  # noqa: BLE001 - one source event never stops the pump
+                logger.exception("source event tick failed")
         return automation_submitted
+
+    def _submit_continuations(self) -> None:
+        """Run durable request and agent wakes from this owner tick.
+
+        A continuation can perform a model turn, so it uses the consumer's
+        executor without blocking the heartbeat. Only one scan is pending.
+        The per-home lock remains the cross-process fence.
+        """
+        with self._lock:
+            previous = self._continuation_future
+            if previous is not None and not previous.done():
+                return
+            if previous is not None:
+                try:
+                    previous.result()
+                except Exception:  # noqa: BLE001 - another tick can recover it
+                    logger.exception("request continuation tick failed")
+            from tinyassets.control_plane.continuations import tick
+
+            self._continuation_future = self._executor.submit(tick, self.base_path)
 
     def _release_universe(self, universe_id: str) -> None:
         from tinyassets.automations import AutomationStore
@@ -1109,6 +1128,5 @@ class AssignedQueueConsumer:
 
 __all__ = [
     "AssignedQueueConsumer",
-    "assigned_queue_consumer_enabled",
     "assigned_queue_refusal_freshness_seconds",
 ]

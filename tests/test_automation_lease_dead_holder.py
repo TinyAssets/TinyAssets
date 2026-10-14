@@ -41,7 +41,7 @@ from tinyassets.automations import (
     automation_lease_key,
 )
 from tinyassets.process_liveness import liveness_path as holder_liveness_path
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.control_plane.tick import AssignedQueueConsumer
 
 
 def holder_is_provably_dead(base, holder) -> bool:
