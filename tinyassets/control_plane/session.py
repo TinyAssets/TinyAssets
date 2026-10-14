@@ -14,12 +14,12 @@ selects how the turn executes:
 * :class:`OwnerTurn` -- the owner's conversation turn, already admitted by
   ``universe_server.converse`` (seat, recorded message, live turn). Runs the
   served writer turn on the owner's thread and returns the reply text.
-* :class:`RunStep` -- a step of an admitted workflow run (an agent node, or
-  the Activities branch continuing an activity). Runs the shared-self turn on
-  the run's provider session and returns the provider's response.
+* :class:`RunStep` -- an agent node of an admitted workflow run.
+  :class:`Activity` uses the same provider session for a durable activity
+  without constructing a workflow. Both run the shared-self turn.
 * :class:`ChildOf` -- an agent starting another agent from inside its own
   turn. The child is a durable activity of the named agent; it runs on the
-  owner's normal budget as a run step of the Activities branch, so the parent
+  owner's normal budget as a durable activity session, so the parent
   turn is never blocked and the child's lineage is its activity record.
 
 The executors underneath (the served writer turn, the workflow agent turn)
@@ -67,6 +67,11 @@ class RunStep:
     activity: dict | None = None
     response_observer: Callable | None = None
     metadata_observer: Callable | None = None
+
+
+@dataclass(frozen=True)
+class Activity(RunStep):
+    """A durable activity generation, admitted without a workflow branch."""
 
 
 @dataclass(frozen=True)

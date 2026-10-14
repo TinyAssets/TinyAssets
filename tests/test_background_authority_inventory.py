@@ -176,9 +176,9 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
     observed = set(EXPECTED_SENSITIVE_CALL_SITES)
     assert (
         CallSite(
-            "tinyassets/activity_runner.py",
-            "start",
-            "execute_branch_async",
+            "tinyassets/control_plane/activity_session.py",
+            "execute",
+            "prepare_activity",
         )
         in observed
     )
@@ -200,43 +200,35 @@ def test_sensitive_call_manifest_is_nonempty_and_duplicate_free() -> None:
     assert len(EXPECTED_SENSITIVE_CALL_SITES) == len(set(EXPECTED_SENSITIVE_CALL_SITES))
 
 
-@pytest.mark.parametrize("path", [
-    "tinyassets/activity_runner.py",
-])
-def test_activity_registration_refuses_an_extra_launch(tmp_path: Path, path: str) -> None:
+def test_activity_registration_refuses_an_extra_launch(tmp_path: Path) -> None:
+    path = "tinyassets/control_plane/activity_session.py"
     expected = {call for call in EXPECTED_SENSITIVE_CALL_SITES if call.path == path}
-    assert expected == {CallSite(path, "start", "execute_branch_async")}
+    assert expected == {CallSite(path, "execute", "prepare_activity")}
     source = tmp_path / path
     source.parent.mkdir(parents=True)
     original = (REPO_ROOT / path).read_text(encoding="utf-8")
     source.write_text(original, encoding="utf-8")
     assert scan_python_calls(source, SENSITIVE_EXECUTION_CALLS, relative_to=tmp_path) == expected
-    # A second call in the registered function must not inherit its registration.
     source.write_text(original.replace(
-        "    outcome = execute_branch_async(",
-        "    execute_branch_async(base_path, branch=branch)\n"
-        "        outcome = execute_branch_async(",
-        1,
-    ), encoding="utf-8")
+        "                record = provider.prepare_activity(",
+        "                provider.prepare_activity()\n"
+        "                record = provider.prepare_activity(", 1), encoding="utf-8")
     observed = scan_python_calls(source, SENSITIVE_EXECUTION_CALLS, relative_to=tmp_path)
-    assert CallSite(path, "start", "execute_branch_async", count=2) in observed
+    assert CallSite(path, "execute", "prepare_activity", count=2) in observed
     assert any("unreviewed sensitive callsite" in error
                for error in compare_call_sites(observed, expected))
 
 
 @pytest.mark.parametrize(("guard", "replacement"), [
-    ("_bind_automation_provider_call(base_path, who)", "None"),
-    ("owner_run_identity(base_path, universe_id, owner)", "unrelated_context()"),
-    ("if not bound:", "if False:"),
+    ("with owner_run_identity(base, universe, owner) as bound:\n        if not bound:",
+     "with unrelated_context() as bound:\n        if not bound:"),
+    ("if not bound:\n            raise activities.ActivityRefused(",
+     "if False:\n            raise activities.ActivityRefused("),
     ("owner_user_id=owner,", "owner_user_id=None,"),
-    ("on_node_status=_authority_guard(base_path, who),", "on_node_status=None,"),
-    ('activities.bind_run(universe_dir, record["activity_id"], generation, run_id)', "True"),
-    ("stop(base_path, run_id)", "pass"),
-    ("activities.activity_for_run(universe_dir, run_id)", "None"),
-    ("raise PermissionError(\n                \"activity_run_unlinked:",
-     "raise RuntimeError(\n                \"activity_run_unlinked:"),
-    ("activity_runner.linked_activity(", "activity_runner.unrelated_lookup("),
-    ("activity_runner.is_activities_branch(", "activity_runner.unrelated_branch_check("),
+    ('activities.bind_run(root, stored["activity_id"], generation, run_id)', "True"),
+    ("runs.request_cancel(base, run_id)", "pass"),
+    ("provider.prepare_activity(", "provider.unrelated_prepare("),
+    ("self._activity_binding.check()", "pass"),
 ])
 def test_activity_guard_removal_fails_inventory(
     tmp_path: Path, monkeypatch, guard: str, replacement: str,

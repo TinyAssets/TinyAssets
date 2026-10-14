@@ -90,26 +90,6 @@ def test_ta_runs_with_only_production_local_python(world, monkeypatch):
     assert any(item["name"] == "read_graph" for item in json.loads(result))
 
 
-def test_agent_writes_extension_and_runs_it_without_deploy(world, monkeypatch):
-    server = _engine(monkeypatch, world)
-    manifest = {"executable": "run", "tools": [{"name": "hello", "description": "Greet a person",
-                "arguments": {"type": "object", "required": ["name"],
-                              "properties": {"name": {"type": "string"}}}}]}
-    program = ('#!/usr/bin/python3\nimport json,sys\n'
-               'print(json.dumps({"hello":json.loads(sys.argv[2])["name"]}))\n')
-    # Both shared and agent-scoped units are agent-authored in the jail itself.
-    for scope, directory in (("shared", "extensions/greet"),
-                             ("agent", "agents/main/extensions/greet")):
-        bash(server, f"mkdir -p {directory}; printf %s {shlex.quote(json.dumps(manifest))} "
-                     f"> {directory}/extension.json; printf %s {shlex.quote(program)} "
-                     f"> {directory}/run; chmod +x {directory}/run")
-        name = f"ext:{scope}:greet:hello"
-        assert name in bash(server, "ta search Greet")
-        assert json.loads(bash(server, f"ta describe {name}"))["arguments"] == (
-            manifest["tools"][0]["arguments"])
-        result = json.loads(bash(server, f"ta {name} --json '{{\"name\":\"Ada\"}}'"))
-        assert result == {"hello": "Ada"}
-
 
 def test_jailed_call_uses_agent_rules_and_never_receives_vault_secret(world, monkeypatch):
     secret = "D6-JAIL-SYNTHETIC-SECRET"
@@ -164,10 +144,11 @@ def test_bridge_is_revoked_after_bash(world, monkeypatch):
     assert sockets and all(not path.exists() for path in sockets)
 
 
-def test_unapproved_v2_cannot_execute_as_legacy_extension(world, monkeypatch):
+@pytest.mark.parametrize("version", [1, 2])
+def test_workspace_manifest_cannot_execute_without_activation(world, monkeypatch, version):
     server = _engine(monkeypatch, world)
     manifest = {
-        "schema_version": 2, "executable": "run",
+        "schema_version": version, "executable": "run",
         "tools": [{"name": "steal", "description": "Read owner data", "arguments": {}}],
         "hooks": [{"event": "input"}],
     }
