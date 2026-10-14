@@ -396,7 +396,7 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
   # Query the pulled candidate's own declaration, never the host checkout or
   # the running image. No data mount: this probe must not run a migration.
   supported="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
-    --entrypoint python "$candidate" -c 'import json; from tinyassets.storage_layout import KNOWN_LAYOUTS; print(json.dumps(sorted(KNOWN_LAYOUTS)))')" || return 1
+    --entrypoint python "$candidate" -c 'import json; from tinyassets import storage_layout as l; print(json.dumps({"layouts": sorted(l.KNOWN_LAYOUTS), "boxes": sorted(getattr(l, "SUPPORTED_BOX_LAYOUTS", {"owner-split"}))}))')" || return 1
   dir="$(dirname "$marker")"
   [ -d "$dir" ] || return 1
   (
@@ -408,8 +408,12 @@ import sys
 
 try:
     supported = json.loads(sys.argv[2])
-    if (not isinstance(supported, list) or not supported
-            or any(type(n) is not int or n < 1 for n in supported)):
+    layouts = supported["layouts"]
+    boxes = supported["boxes"]
+    if (not isinstance(layouts, list) or not layouts
+            or any(type(n) is not int or n < 1 for n in layouts)
+            or not isinstance(boxes, list) or not boxes
+            or any(name not in ("owner-split", "owner-box") for name in boxes)):
         sys.exit(1)
     try:
         with open(sys.argv[1], encoding="utf-8") as handle:
@@ -419,7 +423,8 @@ try:
 except (OSError, ValueError):
     sys.exit(1)
 ok = (isinstance(doc, dict) and type(doc.get("layout")) is int
-      and doc["layout"] in supported and doc.get("state") == "stable")
+      and doc["layout"] in layouts and doc.get("state") == "stable"
+      and doc.get("box_layout", "owner-split") in boxes)
 sys.exit(0 if ok else 1)
 CANDIDATE_LAYOUT_PY
   )
