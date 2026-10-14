@@ -294,9 +294,11 @@ def served_absolute_cap_s(config) -> float | None:
     and a half minutes, which hid the indicator for exactly the long turns it was
     added for. Granted turns now default to no cap; a positive finite owner
     override loaded from config.yaml supplies the same bound to runtime and
-    activity readers. Ordinary node timeouts are not this served-turn policy.
+    activity readers, at most the platform-safe unbounded horizon above.
+    Ordinary node timeouts are not this served-turn policy.
     """
-    return _served_knob(config, "absolute_cap_s", None)
+    value = _served_knob(config, "absolute_cap_s", None)
+    return None if value is None else min(value, UNBOUNDED_TURN_SECONDS)
 
 
 def _sandboxed_config(

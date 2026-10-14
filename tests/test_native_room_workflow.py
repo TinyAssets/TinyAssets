@@ -175,7 +175,7 @@ def test_foreign_room_and_owner_read_denial_refused(wired):
     assert not commands
 
 
-@pytest.mark.parametrize("owner_cap", [None, 43])
+@pytest.mark.parametrize("owner_cap", [None, 43, 1e10, 315360000])
 def test_graph_routes_one_native_node_then_commit_and_stops_replay(
     wired, monkeypatch, tmp_path, owner_cap,
 ):
@@ -194,7 +194,9 @@ def test_graph_routes_one_native_node_then_commit_and_stops_replay(
         calls.append(prompt)
         from tinyassets.universe_intelligence import UNBOUNDED_TURN_SECONDS
 
-        assert kwargs["config"].absolute_cap_s == (owner_cap or UNBOUNDED_TURN_SECONDS)
+        assert kwargs["config"].absolute_cap_s == min(
+            owner_cap or UNBOUNDED_TURN_SECONDS, UNBOUNDED_TURN_SECONDS,
+        )
         return "Actual fixture native output"
 
     # Only replace the process sandbox with the same generated functions and a

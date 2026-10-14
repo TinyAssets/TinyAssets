@@ -89,7 +89,8 @@ class UniverseConfig:
     absolute_cap_s: float | None = None
     """Optional owner-selected served-turn cap in seconds; absent means no cap.
 
-    The served runtime accepts only positive finite values. This preference
+    The served runtime accepts positive finite values up to its 30-day safe
+    wait horizon (larger values are clamped to that horizon). This preference
     does not grant provider access or replace provider spending admission.
     """
 

@@ -597,6 +597,7 @@ interactive-deadline outcome, not as provider unavailability.
 - **GIVEN** a granted served founder turn or native agent node
 - **WHEN** the owner's config.yaml supplies a positive finite `absolute_cap_s`
 - **THEN** the real configuration loader exposes that value to the shared served-cap resolver and runtime stream profile
+- **AND** values above the runtime's 30-day safe wait horizon are clamped to that horizon so finite values cannot overflow executor waits
 - **AND** an absent, nonpositive, boolean, nonnumeric or nonfinite value retains the unbounded served default; numeric strings remain accepted
 - **AND** non-granted paths (the learning extractor) keep the library default profile
 - **AND** this preference grants no provider access or spending authority
