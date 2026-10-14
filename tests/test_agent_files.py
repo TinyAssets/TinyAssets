@@ -430,12 +430,15 @@ def test_migration_keeps_an_unrelated_directory_of_the_same_name(tmp_path):
         encoding="utf-8") == "Another agent entirely."
 
 
-@pytest.mark.parametrize("failure", ["second_file", "delete", "missing_center",
-                                     "missing_backup", "stale_backup", "lock_held"])
+@pytest.mark.parametrize("failure", ["second_file", "delete", "sidecar", "stable_marker",
+                                     "missing_center", "missing_backup", "stale_backup",
+                                     "lock_held"])
 def test_any_failure_leaves_sql_untouched_and_publishes_no_file(tmp_path, monkeypatch,
                                                                 failure):
     """All or nothing: the rows stay, every file this run wrote is gone, and a
-    marker left "migrating" sends the deploy to the restore path."""
+    marker left "migrating" sends the deploy to the restore path. The steps
+    after the row deletions (the sidecar ownership, the prepared stable
+    marker) fail before the commit like every other step."""
     import sqlite3
 
     from tinyassets import agent_file_migration as m
@@ -463,6 +466,22 @@ def test_any_failure_leaves_sql_untouched_and_publishes_no_file(tmp_path, monkey
             conn.execute("CREATE TRIGGER refuse BEFORE DELETE ON agent_bindings "
                          "BEGIN SELECT RAISE(ABORT, 'refused'); END")
         error = sqlite3.IntegrityError
+    elif failure == "sidecar":
+        def refuse(base):
+            raise PermissionError("chown refused")
+
+        monkeypatch.setattr(m, "_keep_sidecars_readable", refuse)
+        error = PermissionError
+    elif failure == "stable_marker":
+        real_prepare = m._prepare_marker
+
+        def refuse(base, document, state):
+            if state == layout.STABLE:
+                raise OSError("disk full")
+            return real_prepare(base, document, state)
+
+        monkeypatch.setattr(m, "_prepare_marker", refuse)
+        error = OSError
     elif failure == "missing_center":
         _sql_agent(tmp_path, "alice", "u-gone", "Later", instructions="Later.")
         before = _bindings(tmp_path)
@@ -486,6 +505,7 @@ def test_any_failure_leaves_sql_untouched_and_publishes_no_file(tmp_path, monkey
     assert not (tmp_path / "u-home" / "agents").exists()
     assert not (tmp_path / "u-bob" / "agents").exists()
     assert _marker_state(tmp_path) == expected_marker
+    assert not list(tmp_path.glob(layout.MARKER + ".*.tmp")), "no prepared marker is left"
     if expected_marker == "migrating":
         with pytest.raises(layout.LayoutRefused, match="did not finish"):
             layout.check(tmp_path)

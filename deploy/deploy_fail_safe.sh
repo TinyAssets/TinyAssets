@@ -426,8 +426,12 @@ CANDIDATE_LAYOUT_PY
 }
 # Refuse and leave the service DOWN: the remedy is restore-from-backup, and an
 # older image serving on newer data is the failure this guard exists to stop.
-refuse_on_layout() {  # $1 = what was about to start
-  err "the data layout marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+refuse_on_layout() {  # $1 = what was about to start; $2 = why (default: the marker)
+  local why
+  if [ $# -ge 2 ]; then why="$2"; else
+    why="the data layout marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+  fi
+  err "$why"
   docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
   echo "deploy_result=rollback_needs_restore"
   exit 3
@@ -1640,15 +1644,21 @@ fi
 #                          verifies the snapshot, takes the layout lock
 #                          exclusively, writes "migrating" to the marker, moves
 #                          everything in ONE transaction and writes "stable".
-# A refusal before the first change (the stop, the snapshot, a precondition of
-# the move: the marker still says stable) puts the box back where it started:
-# the daemon restarts on the running image, a bundle this run installed is
-# restored, `migration_refused`, exit 1. A move that failed after writing
-# "migrating" committed nothing and removed its files, but the marker is the
-# authority: MIGRATION_OK=0 falls through to step 6, which restores the bundle
-# and then refuses to start any image on it (`rollback_needs_restore`); the
-# remedy is the snapshot this block took, via deploy/backup-restore.sh.
+# The move runs everything that can fail before its commit, so a failed apply
+# that left the marker stable changed nothing: the daemon restarts on the
+# running image, a bundle this run installed is restored, `migration_refused`,
+# exit 1 (the stop, the snapshot and the move's preconditions refuse the same
+# way). A move that failed after writing "migrating" committed nothing and
+# removed its files, but the marker is the authority: MIGRATION_OK=0 falls
+# through to step 6, which restores the bundle and then refuses to start any
+# image on it (`rollback_needs_restore`). Once apply has COMMITTED
+# (MIGRATION_COMMITTED=1) the previous image never starts again in this run:
+# its rows are gone, so a candidate that then fails to converge or accept
+# leaves the service down with the exact restore command for the snapshot this
+# block took (`rollback_needs_restore`), never the image-only rollback.
 MIGRATION_OK=1
+MIGRATION_COMMITTED=0
+MIGRATION_SNAPSHOT=""
 MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
 MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-1800}"   # seconds for one container run
@@ -1672,6 +1682,9 @@ migration_snapshot() {  # prints the archive name backup.sh took
     return 1
   fi
   printf '%s\n' "$out" | sed -n 's/.*SNAPSHOT id=\([^ ]*\).*/\1/p' | tail -n 1 | grep .
+}
+migration_restore_command() {  # the exact remedy for the snapshot this run took
+  printf 'restore it with: BACKUP_FILE=%s/%s sudo bash deploy/backup-restore.sh' "$MIGRATION_BACKUP_DIR" "$MIGRATION_SNAPSHOT"
 }
 migration_refused() {  # $1 = why; nothing on the volume changed
   err "migration: $1; the volume is unchanged, refusing (prod back where it started)"
@@ -1703,11 +1716,12 @@ case "$MIGRATION_RC" in
     fi
     MIGRATION_SNAPSHOT="$(migration_snapshot)" || migration_refused "the full-volume snapshot was not taken"
     if migration_container apply /data --backup "/backup/${MIGRATION_SNAPSHOT}"; then
+      MIGRATION_COMMITTED=1
       log "migration: landed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
     elif layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"; then
-      migration_refused "the move refused before its first change"
+      migration_refused "the move refused before its commit"
     else
-      err "migration: the move failed and the marker is not stable; restore ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT} with deploy/backup-restore.sh"
+      err "migration: the move failed and the marker is not stable; $(migration_restore_command)"
       MIGRATION_OK=0
     fi
     ;;
@@ -1731,6 +1745,9 @@ if [ "$MIGRATION_OK" = "1" ]; then
         echo "deploy_result=rollback_failed"
         exit 3
       fi
+    fi
+    if [ "$MIGRATION_COMMITTED" = "1" ]; then
+      err "the agent-files migration committed and ${DAEMON_CONTAINER} is stopped: deploy ${NEW_IMAGE} again, or $(migration_restore_command); never start ${PREV_IMAGE} on this data"
     fi
     echo "deploy_result=failed_env_write"
     exit 1
@@ -1794,6 +1811,11 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
   clear_dirty || true
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
+fi
+# This run's migration committed: the previous image would serve with its
+# bindings gone from SQL. The snapshot step 3c took is the only way back.
+if [ "$MIGRATION_COMMITTED" = "1" ]; then
+  refuse_on_layout "$PREV_IMAGE" "the agent-files migration committed in this run and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE} on migrated data. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
 fi
 # The failed candidate may have migrated (or begun migrating) the data while it
 # booted: re-check before the previous image starts on it.

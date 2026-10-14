@@ -12,12 +12,16 @@ none, so a deploy of a migrated volume runs nothing. ``apply`` verifies the
 backup, takes the data-layout lock exclusively (a running daemon holds it
 shared for its lifetime: stop it first), writes ``"migrating"`` to the marker,
 and in ONE catalogue transaction reads every addressable binding, writes each
-agent's files into its owner's command center and deletes the rows; commit,
-then ``"stable"``. Any error raises: the transaction rolls back, the files this
-run wrote are removed, and the marker stays ``"migrating"``, which every image
-refuses to serve (``storage_layout``) and the deploy refuses to roll back onto
-(``rollback_needs_restore``): restore the snapshot. Nothing is retried and
-nothing is recorded; a later run on the migrated volume finds no rows.
+agent's files into its owner's command center, deletes the rows, hands the
+SQLite sidecars back to the daemon and prepares the ``"stable"`` marker beside
+the live one; then the commit, and after it only the rename that publishes
+``"stable"``. Everything that can fail runs before the commit, so a non-zero
+exit with a stable marker means nothing changed. Any error raises: the
+transaction rolls back, the files this run wrote are removed, and the marker
+stays ``"migrating"``, which every image refuses to serve (``storage_layout``)
+and the deploy refuses to roll back onto (``rollback_needs_restore``): restore
+the snapshot. Nothing is retried and nothing is recorded; a later run on the
+migrated volume finds no rows.
 
 What moves: main's ``addressed_agents.is_conversable`` rule (2026-10-12) minus
 its per-caller parts -- a configured binding that is neither the
@@ -44,6 +48,7 @@ import os
 import sqlite3
 import stat
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -265,9 +270,10 @@ def _catalogue_exists(base: Path) -> bool:
         ).fetchone() is not None
 
 
-def _mark(base: Path, document: dict, state: str) -> None:
-    """Write the marker's state durably, keeping the marker's owner and mode:
-    this process is root on the owner-split volume; the daemon reads it as itself."""
+def _prepare_marker(base: Path, document: dict, state: str) -> Path:
+    """Write the marker's next state to a file beside the marker, with the
+    marker's owner and mode (this process is root on the owner-split volume;
+    the daemon reads the marker as itself), so publishing it is one rename."""
     path = layout.marker_path(base)
     try:
         before = path.stat()
@@ -278,11 +284,36 @@ def _mark(base: Path, document: dict, state: str) -> None:
         marked["migration"] = MIGRATION
     else:
         marked.pop("migration", None)
-    layout._write_atomically(path, marked)
-    if before is not None:
-        if hasattr(os, "chown"):
-            os.chown(path, before.st_uid, before.st_gid)
-        os.chmod(path, stat.S_IMODE(before.st_mode))
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(marked, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if before is not None:
+            if hasattr(os, "chown"):
+                os.chown(tmp, before.st_uid, before.st_gid)
+            os.chmod(tmp, stat.S_IMODE(before.st_mode))
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return Path(tmp)
+
+
+def _publish_marker(base: Path, prepared: Path) -> None:
+    """The one rename that makes a prepared marker the marker, durably."""
+    path = layout.marker_path(base)
+    os.replace(prepared, path)
+    if hasattr(os, "O_DIRECTORY"):
+        dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+
+
+def _mark(base: Path, document: dict, state: str) -> None:
+    _publish_marker(base, _prepare_marker(base, document, state))
 
 
 def _keep_sidecars_readable(base: Path) -> None:
@@ -338,7 +369,7 @@ def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
                                                     "state": layout.STABLE}
             layout._validated(base, document)
             result: dict[str, list[str]] = {}
-            writer = None
+            writer = stable = None
             try:
                 with _agent_connect(base) as conn:
                     conn.execute("BEGIN IMMEDIATE")
@@ -353,16 +384,21 @@ def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
                     for agent in agents:
                         conn.execute("DELETE FROM agent_bindings WHERE agent_binding_id = ?",
                                      (agent.binding_id,))
+                    # Everything else that can fail, still inside the transaction:
+                    # after the commit only the rename below remains.
+                    _keep_sidecars_readable(base)
+                    stable = _prepare_marker(base, document, layout.STABLE)
             except BaseException:
+                if stable is not None:
+                    stable.unlink(missing_ok=True)
                 if writer is not None:
                     writer.undo()
                 raise
-            _mark(base, document, layout.STABLE)
+            _publish_marker(base, stable)
         finally:
             layout._unlock(fd)
     finally:
         os.close(fd)
-    _keep_sidecars_readable(base)
     return result
 
 
