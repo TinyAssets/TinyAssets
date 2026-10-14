@@ -16,7 +16,7 @@ from tests.test_provider_served_router import (
     _served_context,
 )
 from tinyassets.auth.middleware import revoke_provider_request
-from tinyassets.custom_agents import set_binding_serving_in_transaction
+from tinyassets.commons_catalog import set_binding_serving_in_transaction
 from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
 from tinyassets.provider_assignment import authorize_served_provider_call
 from tinyassets.provider_assignment_manifest import ModelAccess

@@ -163,7 +163,7 @@ def _render(spec, wall_seconds):
     """The preview cell: the real browser child supervisor, run here."""
     import base64
 
-    from tinyassets.custom_agents import read_app_ui_asset
+    from tinyassets.app_ui_store import read_app_ui_asset
     from tinyassets.role_preview_cell import supervised
 
     assets = {}

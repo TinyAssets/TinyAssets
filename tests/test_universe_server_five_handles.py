@@ -183,7 +183,7 @@ def test_unknown_target_is_reported() -> None:
     } <= set(payload["allowed_targets"])
 
 
-def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
+def test_catalog_agent_reads_route_through_graph_handle(monkeypatch) -> None:
     observed: list[dict[str, object]] = []
 
     def fake_custom_agents(**kwargs):
@@ -199,16 +199,10 @@ def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
     # Patched by import path, not a module object held here: a test that reloads
     # tinyassets modules earlier in the run leaves a stale object behind, and the
     # connector resolves the dispatch from sys.modules on every call.
-    monkeypatch.setattr("tinyassets.api.graph_reads._custom_agents_impl", fake_custom_agents)
+    monkeypatch.setattr("tinyassets.api.graph_reads._commons_catalog_impl", fake_custom_agents)
 
-    listed = json.loads(
-        complete_read(target="agents", query="coding", tags="agent,coding", limit=5)
-    )
     exact = json.loads(
         complete_read(target="agent", agent_definition_id="agent_123")
-    )
-    stage = json.loads(
-        read_graph(target="agent", agent_stage_id="agent_stage_123")
     )
     bindings = json.loads(
         read_graph(target="agent_bindings", graph_id="universe-a", limit=7)
@@ -221,21 +215,17 @@ def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
         )
     )
 
-    assert [listed, exact, stage, bindings, binding] == [
-        {"routed": "list_agents"},
+    assert [exact, bindings, binding] == [
         {"routed": "get_agent"},
-        {"routed": "get_import_stage"},
         {"routed": "list_bindings"},
         {"routed": "get_binding"},
     ]
-    assert observed[0]["query"] == "coding"
-    assert observed[1]["definition_id"] == "agent_123"
-    assert observed[2]["stage_id"] == "agent_stage_123"
-    assert observed[3]["universe_id"] == "universe-a"
-    assert observed[4]["binding_id"] == "agent_binding_123"
+    assert observed[0]["definition_id"] == "agent_123"
+    assert observed[1]["universe_id"] == "universe-a"
+    assert observed[2]["binding_id"] == "agent_binding_123"
 
 
-def test_custom_agent_writes_route_through_graph_handle(monkeypatch) -> None:
+def test_catalog_agent_writes_route_through_graph_handle(monkeypatch) -> None:
     observed: list[dict[str, object]] = []
 
     def fake_custom_agents(**kwargs):
@@ -244,7 +234,7 @@ def test_custom_agent_writes_route_through_graph_handle(monkeypatch) -> None:
 
     monkeypatch.setattr(
         universe_server,
-        "_custom_agents_impl",
+        "_commons_catalog_impl",
         fake_custom_agents,
         raising=False,
     )
@@ -256,38 +246,6 @@ def test_custom_agent_writes_route_through_graph_handle(monkeypatch) -> None:
             operation="remix",
             payload_json='{"schema_version":1}',
             idempotency_key="agent-publish-request-1",
-        )
-    )
-    imported = json.loads(
-        write_graph(
-            target="agent",
-            operation="import",
-            payload_json='{"schema_version":1}',
-        )
-    )
-    staged = json.loads(
-        write_graph(
-            target="agent",
-            operation="stage_import",
-            payload_json='{"source_json":{},"adapter":{}}',
-            idempotency_key="agent-stage-request-1",
-        )
-    )
-    published_stage = json.loads(
-        write_graph(
-            target="agent",
-            operation="publish_stage",
-            agent_stage_id="agent_stage_123",
-            idempotency_key="agent-stage-publish-1",
-        )
-    )
-    exported = json.loads(
-        write_graph(
-            target="agent",
-            operation="convert_export",
-            agent_definition_id="agent_123",
-            payload_json='{"adapter_ref":"commons:foreign-export"}',
-            idempotency_key="agent-export-1",
         )
     )
     bound = json.loads(
@@ -311,22 +269,15 @@ def test_custom_agent_writes_route_through_graph_handle(monkeypatch) -> None:
         )
     )
 
-    assert [published, imported, staged, published_stage, exported, bound, updated] == [
+    assert [published, bound, updated] == [
         {"routed": "publish_agent"},
-        {"routed": "import_agent"},
-        {"routed": "stage_import"},
-        {"routed": "publish_stage"},
-        {"routed": "convert_export"},
         {"routed": "create_binding"},
         {"routed": "update_binding"},
     ]
     assert observed[0]["idempotency_key"] == "agent-publish-request-1"
-    assert observed[2]["idempotency_key"] == "agent-stage-request-1"
-    assert observed[3]["stage_id"] == "agent_stage_123"
-    assert observed[4]["definition_id"] == "agent_123"
-    assert observed[5]["definition_id"] == "agent_123"
-    assert observed[6]["binding_id"] == "agent_binding_123"
-    assert observed[6]["expected_revision"] == 4
+    assert observed[1]["definition_id"] == "agent_123"
+    assert observed[2]["binding_id"] == "agent_binding_123"
+    assert observed[2]["expected_revision"] == 4
 
 
 def test_unknown_custom_agent_operation_is_reported(monkeypatch) -> None:
@@ -338,14 +289,7 @@ def test_unknown_custom_agent_operation_is_reported(monkeypatch) -> None:
 
     assert payload["error"] == "unknown_agent_operation"
     assert payload["target"] == "agent"
-    assert payload["allowed_operations"] == [
-        "publish",
-        "remix",
-        "import",
-        "stage_import",
-        "publish_stage",
-        "convert_export",
-    ]
+    assert payload["allowed_operations"] == ["publish", "remix"]
 
 
 def test_custom_agent_definition_and_binding_round_trip(monkeypatch, tmp_path) -> None:

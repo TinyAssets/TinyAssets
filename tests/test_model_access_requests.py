@@ -75,7 +75,7 @@ def test_model_request_is_non_authorizing_until_owner_answers(rig):
 @pytest.mark.parametrize("router", [None, SimpleNamespace(_providers={}),
     SimpleNamespace(_providers={"codex": SimpleNamespace(is_available=lambda: False)})])
 def test_missing_executor_keeps_approved_setup_pending(rig, monkeypatch, router):
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
 
     monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
     row = ask(rig)
@@ -238,7 +238,7 @@ def test_missing_agent_binding_is_an_expected_authority_refusal(rig, monkeypatch
 
 
 def test_another_binding_cannot_replace_the_assignment_under_an_old_ask(rig):
-    from tinyassets.custom_agents import create_binding
+    from tinyassets.commons_catalog import create_binding
     from tinyassets.provider_serving_binding import bind_serving_provider
 
     row = ask(rig)

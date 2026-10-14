@@ -49,7 +49,7 @@ def test_bundle_index_assets_and_no_resident_prompt_growth(package):
         assert files[key] == (source / rel).read_text(encoding="utf-8")
     for rel in ("settings.json", "goals.json", "monitors.json", "ideas.json", "workflows.json"):
         json.loads(files[f"starter/{rel}"])
-    from tinyassets.custom_agents import app_ui_renderability
+    from tinyassets.app_ui_store import app_ui_renderability
 
     assert app_ui_renderability(json.loads(files["starter/command-center.json"])) == {}
 

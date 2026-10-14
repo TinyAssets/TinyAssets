@@ -5,7 +5,8 @@ import copy
 import pytest
 
 from tinyassets.api import command_center_updates as api
-from tinyassets.custom_agents import get_app_ui, get_definition, publish_definition, save_app_ui
+from tinyassets.app_ui_store import get_app_ui, save_app_ui
+from tinyassets.commons_catalog import get_definition, publish_definition
 
 
 @pytest.fixture
@@ -168,7 +169,8 @@ def test_private_edits_block_update_without_loss(installed, monkeypatch, when):
                 row = document(installed)
                 library = copy.deepcopy(row["ui_library"])
                 library[0]["markup"] = "MY PRIVATE EDIT"
-                from tinyassets.custom_agents import _canonical_json, _save_app_ui_row
+                from tinyassets.app_ui_store import _save_app_ui_row
+                from tinyassets.commons_catalog import _canonical_json
 
                 _save_app_ui_row(
                     installed["base"],
@@ -236,7 +238,7 @@ def test_failure_after_ui_statement_rolls_back_ui_baseline_and_request(installed
 
 def test_concurrent_workflow_policy_change_invalidates_preview(installed):
     request = preview(installed, replacement(installed))
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(installed["base"]) as conn:
         conn.execute(
@@ -287,7 +289,7 @@ def test_owner_revoked_between_reservation_and_commit_cannot_write(installed, mo
     request = preview(installed, replacement(installed))
     before = document(installed)
     from tinyassets import storage_accounting
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     reserve = storage_accounting.reserve
 
@@ -314,7 +316,7 @@ def test_missing_target_refuses_even_with_matching_source_name(installed):
 
 def test_legacy_private_edit_cannot_be_registered_as_clean(installed):
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(installed["base"]) as conn:
         conn.execute("DELETE FROM command_center_adoptions")
@@ -376,7 +378,7 @@ def test_manual_adapter_never_calls_install_or_inference(installed, monkeypatch)
     monkeypatch.setattr(provider_serving_binding, "bind_serving_provider", forbidden)
     # Removing all synthetic recipient provider bindings makes this an unpowered
     # recipient. The UI-only adapter has no provider dependency.
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(installed["base"]) as conn:
         conn.execute("DELETE FROM agent_bindings WHERE universe_id=?", (installed["uid"],))

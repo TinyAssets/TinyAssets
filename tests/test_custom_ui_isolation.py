@@ -233,22 +233,22 @@ def test_bundle_bounds_are_the_servers_bounds() -> None:
     bounded is one UI, on both sides, and the two sets of numbers must agree so
     raising either without the other fails here instead of at a user's write.
     """
-    from tinyassets import custom_agents
+    from tinyassets import app_ui_store
 
     def constant(name: str) -> int:
         found = re.search(rf"\b{name}:(\d+)", APP_UI)
         assert found, name
         return int(found.group(1))
 
-    assert constant("MAX_TEXT_BYTES") == custom_agents.APP_UI_MAX_COMPONENT_TEXT_BYTES
-    assert constant("MAX_ASSET_BYTES") == custom_agents.APP_UI_MAX_ASSET_BYTES
-    assert constant("MAX_UI_ASSET_BYTES") == custom_agents.APP_UI_MAX_UI_ASSET_BYTES
-    assert constant("MAX_ASSET_FILES") == custom_agents.APP_UI_MAX_ASSET_FILES
+    assert constant("MAX_TEXT_BYTES") == app_ui_store.APP_UI_MAX_COMPONENT_TEXT_BYTES
+    assert constant("MAX_ASSET_BYTES") == app_ui_store.APP_UI_MAX_ASSET_BYTES
+    assert constant("MAX_UI_ASSET_BYTES") == app_ui_store.APP_UI_MAX_UI_ASSET_BYTES
+    assert constant("MAX_ASSET_FILES") == app_ui_store.APP_UI_MAX_ASSET_FILES
     # The 49,152-byte bundle bound that made a game impossible is gone.
     assert "MAX_BUNDLE_BYTES" not in APP_UI and "49152" not in APP_UI
 
     # No library-wide ceiling on either side, by bytes or by count.
-    assert not hasattr(custom_agents, "MAX_APP_UI_LIBRARY_BYTES")
+    assert not hasattr(app_ui_store, "MAX_APP_UI_LIBRARY_BYTES")
     assert "MAX_LIBRARY_BYTES" not in APP_UI
     assert "LIBRARY_LIMIT" not in APP_UI
     assert "remove one first" not in APP_UI

@@ -210,11 +210,12 @@ def _unrecorded_owner(home, agent, request_id):
     """The unambiguous owner of an ask with no recorded asker, else ``None``.
 
     An admin recorded by the ask's continuation or waiting activity, else the
-    sole admin, else the admin who created the asking binding. Being any admin
-    is not enough: another admin's attempt must never stamp itself as owner.
+    sole admin, else (for one of the command center's own agents, which are
+    its files) the command center's owner. Being any admin is not enough:
+    another admin's attempt must never stamp itself as owner.
     """
-    from tinyassets.custom_agents import _agent_connect
-    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.addressed_agents import AgentNotAddressable, resolve
+    from tinyassets.daemon_server import get_founder_home, list_universe_acl
 
     admins = {row.get("actor_id") for row in list_universe_acl(home.parent, universe_id=home.name)
               if row.get("permission") == "admin"}
@@ -225,12 +226,15 @@ def _unrecorded_owner(home, agent, request_id):
         return next(iter(admins))
     if agent == "main":
         return None
-    with _agent_connect(home.parent) as conn:
-        binding = conn.execute("SELECT created_by,universe_id FROM agent_bindings "
-                               "WHERE agent_binding_id=?", (agent,)).fetchone()
-    if binding and binding[1] == home.name and binding[0] in admins:
-        return binding[0]
-    return None
+    owners = {admin for admin in admins if get_founder_home(home.parent, admin) == home.name}
+    if len(owners) != 1:
+        return None
+    owner = next(iter(owners))
+    try:
+        resolve(home.parent, universe_id=home.name, owner=owner, agent_id=agent)
+    except AgentNotAddressable:
+        return None
+    return owner
 
 
 def check(home, row):

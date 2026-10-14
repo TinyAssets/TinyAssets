@@ -33,8 +33,9 @@ from tests.test_command_center_packages import (
 from tests.test_custom_ui_bridge import HARNESS
 from tests.test_in_platform_agent_systems import _wakes
 from tinyassets.api.automations import automations
+from tinyassets.app_ui_store import get_app_ui, save_app_ui
 from tinyassets.automations import STATE_PAUSED, AutomationStore, register_automation
-from tinyassets.custom_agents import get_app_ui, get_definition, save_app_ui
+from tinyassets.commons_catalog import get_definition
 from tinyassets.daemon_server import get_branch_definition
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime", "_pin_data_dir")

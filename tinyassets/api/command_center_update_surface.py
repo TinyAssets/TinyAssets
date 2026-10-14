@@ -18,7 +18,7 @@ def read_updates(*, universe_id: str = "") -> dict:
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.pending_requests import _owner_gate
     from tinyassets.api.system_copy_requests import SYSTEM_TAG
-    from tinyassets.custom_agents import get_definition, list_definitions
+    from tinyassets.commons_catalog import get_definition, list_definitions
 
     uid, _, denial = _owner_gate(universe_id)
     if denial is not None:
@@ -53,7 +53,7 @@ def read_updates(*, universe_id: str = "") -> dict:
                 "content_fingerprint": row["content_fingerprint"],
             } for row in candidates if row["agent_definition_id"] != item["ui_definition_id"]]
         from tinyassets import command_center_update_registry as registry
-        from tinyassets.api.custom_agents import _authenticated_actor
+        from tinyassets.api.commons_catalog import _authenticated_actor
         from tinyassets.command_center_packages import completed_system_copies
 
         with registry.connect(_base_path()) as conn:

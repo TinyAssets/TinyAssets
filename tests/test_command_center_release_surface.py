@@ -17,7 +17,7 @@ from tests.test_command_center_packages import _pin_data_dir as _pin_data_dir
 from tests.test_command_center_packages import home as home
 from tinyassets import command_center_release_series as releases
 from tinyassets.command_center_packages import database_path, pin_for_request
-from tinyassets.custom_agents import get_definition
+from tinyassets.commons_catalog import get_definition
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 

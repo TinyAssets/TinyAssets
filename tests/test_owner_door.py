@@ -349,7 +349,7 @@ def test_a_heavy_ui_library_reaches_the_app_whole(door):
     (unexpected app UI reply). Default chat is in use." -- the installed-UI read
     crossed the connector's ceiling too. A library is the owner's own bytes."""
     from tinyassets import universe_server as us
-    from tinyassets.custom_agents import save_app_ui
+    from tinyassets.app_ui_store import save_app_ui
 
     client, base = door
     library = [{"ui_id": f"ui-{i}", "name": f"Screen {i}",

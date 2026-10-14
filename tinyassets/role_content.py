@@ -371,3 +371,54 @@ def promote_brains(center, root_fd, identity, result, *, agent_id):
             result['promoted'].append(name)
     finally:
         os.close(workspace)
+
+
+def _label_as_root(fd, wanted):
+    uid, gid, mode, access, default = wanted
+    for name, value in ((admission.DEFAULT, default), (admission.ACCESS, access)):
+        if value is not None:
+            os.setxattr(fd, name, value)
+    os.fchown(fd, uid, gid)
+    os.fchmod(fd, mode)  # after the chown: a file's chown clears its set-id bits
+    if admission.read_label(fd) != wanted:
+        raise PermissionError('owner label readback differs')
+
+
+def publish_as_root(center: Path, parts: list[str], data: bytes, *, machine: int) -> None:
+    """Publication by the one-shot migration container (agent_file_migration),
+    where no owner cell exists: root creates the inode and gives it exactly the
+    label the cell leaves (``_materialize``), so the owner's agent reads and
+    edits it as its own. Every parent is pinned and no link is followed; a
+    missing parent is made with the seed label; the name must not exist."""
+    if os.geteuid() != 0:
+        raise PermissionError('root publication needs root')
+    if not parts or not _owner_entry(parts[0]):
+        raise ValueError('invalid owner content write')
+    fd = open_dir_nofollow(center)
+    try:
+        for name in parts[:-1]:
+            try:
+                child = _directory(fd, name)
+            except FileNotFoundError:
+                os.mkdir(name, 0o770, dir_fd=fd)
+                child = _directory(fd, name)
+                try:
+                    _label_as_root(child, admission.seed_label(machine))
+                except BaseException:
+                    os.close(child)
+                    raise
+            os.close(fd)
+            fd = child
+        out = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                      | os.O_CLOEXEC, 0o660, dir_fd=fd)
+        try:
+            from tinyassets.universe_files import _write_all
+            _write_all(out, data)
+            os.fsync(out)
+            _label_as_root(out, (machine, machine, 0o660,
+                                 admission._acl(6, {admission.DAEMON_UID: 7}, mask=6), None))
+        finally:
+            os.close(out)
+        os.fsync(fd)
+    finally:
+        os.close(fd)

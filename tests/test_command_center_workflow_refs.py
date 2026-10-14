@@ -3,12 +3,8 @@
 import pytest
 
 from tests.test_command_center_packages import UI
-from tinyassets.custom_agents import (
-    AgentValidationError,
-    _edited_entry,
-    app_ui_renderability,
-    app_ui_workflow_refs,
-)
+from tinyassets.app_ui_store import _edited_entry, app_ui_renderability, app_ui_workflow_refs
+from tinyassets.commons_catalog import AgentValidationError
 
 
 @pytest.mark.parametrize("refs", [None, [], {"bad.alias": "branch"}, {"_private": "branch"},

@@ -115,7 +115,7 @@ def test_serving_broker_outage_has_no_local_fallback(case, monkeypatch):
 
 
 def test_real_bind_and_set_serving_use_broker_custody(case):
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
 
     home = case.root / "cc-alice"

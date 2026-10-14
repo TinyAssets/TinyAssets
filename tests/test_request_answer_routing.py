@@ -11,7 +11,6 @@ from tinyassets import request_answers, request_continuations, turn_interrupt
 from tinyassets.api.pending_requests import request_from_user
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
-from tinyassets.custom_agents import create_binding, publish_definition
 from tinyassets.storage import pending_requests as store
 
 OWNER = "answer-owner"
@@ -23,17 +22,24 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     home = _home(tmp_path, "answer-home", OWNER)
     _home(tmp_path, "other-home", OTHER)
-    definition = publish_definition(tmp_path, author_id=OWNER, payload={
-        "schema_version": 1, "name": "Social Media Manager", "components": {
-            "identity": {"kind": "soul", "config": {"instructions": "Manage social drafts."}},
-        },
-    })
-    binding = create_binding(tmp_path, universe_id=home.name,
-                             definition_id=definition["agent_definition_id"], created_by=OWNER,
-                             payload={"schema_version": 1, "name": "Social Media Manager"})
+    _agent_files(home, name="Social Media Manager", instructions="Manage social drafts.")
     with identity_context(Identity(user_id=OWNER, username=OWNER,
                                    capabilities=["tinyassets.universe.write"])):
-        yield home, binding["agent_binding_id"]
+        yield home, AGENT
+
+
+AGENT = "agent_social_media_manager"
+
+
+def _agent_files(home, *, name, instructions="", retired=False):
+    """One of the owner's agents, as its files (C8); ``AGENT`` is its id."""
+    folder = home / "agents" / "social-media-manager"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "AGENTS.md").write_text(instructions, encoding="utf-8")
+    (folder / "settings.yaml").write_text(json.dumps({
+        "schema_version": 1,
+        "agent": {"id": AGENT, "name": name, **({"retired": True} if retired else {})},
+    }), encoding="utf-8")
 
 
 def ask(home, agent="main", **extra):
@@ -93,11 +99,8 @@ def test_cross_owner_refused_before_answer_mutation(world, attack):
     home, agent = world
     row = ask(home, agent)
     if attack == "binding_owner":
-        from tinyassets.custom_agents import _agent_connect
-
-        with _agent_connect(home.parent) as conn:
-            conn.execute("UPDATE agent_bindings SET created_by=? WHERE agent_binding_id=?",
-                         (OTHER, agent))
+        # The asking agent is gone from the owner's roster (retired) meanwhile.
+        _agent_files(home, name="Social Media Manager", retired=True)
     if attack == "home_owner":
         with closing(store._db(home)) as conn, conn:
             origin = {**row["asking_context"], "owner": OTHER}
@@ -113,12 +116,11 @@ def test_cross_owner_refused_before_answer_mutation(world, attack):
 
 
 def test_removed_asking_agent_falls_back_with_note(world):
-    from tinyassets.custom_agents import _agent_connect
+    import shutil
 
     home, agent = world
     row = ask(home, agent)
-    with _agent_connect(home.parent) as conn:
-        conn.execute("DELETE FROM agent_bindings WHERE agent_binding_id=?", (agent,))
+    shutil.rmtree(home / "agents" / "social-media-manager")
     assert not answer_request(universe_id=home.name, payload={
         "request_id": row["request_id"], "values": {"reply": "Keep this feedback"}}).get("error")
     received, = drain(home)
@@ -306,16 +308,13 @@ def unrecorded(home, row):
 @pytest.mark.parametrize("unrecorded_origin", [False, True])
 @pytest.mark.parametrize("decision", ["answer", "reply", "dismiss"])
 def test_recorded_owner_can_settle_old_foreign_binding(world, unrecorded_origin, decision):
-    from tinyassets.custom_agents import _agent_connect
-
     home, agent = world
     row = ask(home, agent)
     if unrecorded_origin:
         connection_owned(home, row)
         unrecorded(home, row)
-    with _agent_connect(home.parent) as conn:
-        conn.execute("UPDATE agent_bindings SET created_by=? WHERE agent_binding_id=?",
-                     (OTHER, agent))
+    # The asking agent is no longer one the owner can address.
+    _agent_files(home, name="Social Media Manager", retired=True)
     co_admin(home)
     payload = {"answer": {"values": {"reply": "Keep my answer"}},
                "reply": {"reply": "Keep my answer", "reply_id": "legacy"},

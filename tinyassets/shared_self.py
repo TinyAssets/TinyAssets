@@ -103,7 +103,7 @@ def require_founder_home(base_path: Path, universe_id: str, principal_id: str) -
 
 
 def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, config=None,
-                             node=None, activity=None):
+                             node=None, activity=None, agent=None):
     """Use the SAME persona, memory formatter and tool config as converse.
 
     No learning extractor runs: a scheduled direction is not a new founder fact.
@@ -113,6 +113,9 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
     ``activity`` is the record the run session found naming this run (harness
     D2): the turn continues that activity's own session instead of the node's,
     without the owner's conversation, which is not part of the activity.
+    ``agent`` is the :class:`~tinyassets.addressed_agents.AddressedAgent` the
+    turn speaks as when it is not the main agent (an activity of one of the
+    owner's other agents): its own instructions, the same shared brain.
     """
     from tinyassets import universe_intelligence as intelligence
     from tinyassets.api.permissions import owner_run_identity
@@ -128,6 +131,7 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
     with owner_run_identity(Path(base_path), universe_id, principal_id):
         system = intelligence._build_persona_system_prompt(
             root, universe_id=universe_id, tier=intelligence.interlocutor.FOUNDER,
+            addressed_agent=agent,
         )
     history = [] if activity else load_recent_readonly(root, f"principal:{principal_id}")
     history_block = intelligence._conversation_history_block(history) if history else ""

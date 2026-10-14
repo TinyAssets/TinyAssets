@@ -181,7 +181,7 @@ def _seed_universe(
     (it never opened a model picker) and the state the live defect needed.
     """
     from tests.support.broker_double import seed_owner_admission
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import (
         grant_universe_access,
         initialize_author_server,
@@ -685,7 +685,7 @@ def engine_tools(tmp_path, monkeypatch):
     )])
     # Persona generation is not this test's subject. The adapter overwrites
     # these deliberately wrong identities with the run's own.
-    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args: (
+    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args, **kwargs: (
         args[3], "work system", ModelConfig(
             engine_mcp_enabled=True, engine_mcp_actor_id="wrong-owner",
             engine_mcp_graph_id="wrong-universe", max_tokens=2048, absolute_cap_s=120,

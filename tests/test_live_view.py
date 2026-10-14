@@ -24,6 +24,17 @@ def _seed_runs(base: Path, rows):
                 (run_id, branch, run_id, status, actor, started, finished))
 
 
+def _seed_agent(universe: Path, owner: str) -> str:
+    agent = universe / "agents" / "mapper"
+    agent.mkdir(parents=True)
+    (agent / "AGENTS.md").write_text("Map projects.\n", encoding="utf-8")
+    (agent / "settings.yaml").write_text(
+        f"schema_version: 1\nagent: {{id: mapper, name: Mapper, owner: {owner}}}\n",
+        encoding="utf-8",
+    )
+    return "mapper"
+
+
 def test_projects_count_every_run_of_this_command_center(tmp_path):
     from tinyassets.daemon_server import initialize_author_server
 
@@ -43,20 +54,9 @@ def test_projects_count_every_run_of_this_command_center(tmp_path):
 
 
 def test_activities_and_agent_states_show_who_waits_on_the_owner(tmp_path):
-    from tinyassets.custom_agents import create_binding, publish_definition
-
     universe = tmp_path / "u-alpha"
     universe.mkdir()
-    definition = publish_definition(tmp_path, author_id="o", payload={
-        "schema_version": 1, "name": "Mapper", "components": {
-            "identity": {"kind": "soul", "config": {"instructions": "Map projects."}},
-        },
-    })
-    agent_id = create_binding(
-        tmp_path, universe_id=universe.name,
-        definition_id=definition["agent_definition_id"], created_by="o",
-        payload={"schema_version": 1, "name": "Mapper"},
-    )["agent_binding_id"]
+    agent_id = _seed_agent(universe, "o")
     working = acts.create(universe, owner_principal="o", title="map", brief="b",
                           origin_kind="ask", agent_id=agent_id)["activity_id"]
     gen = acts.claim(universe, working, replaceable=lambda r: False)

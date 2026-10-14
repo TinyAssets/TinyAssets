@@ -289,7 +289,7 @@ class ProviderSeamTests(unittest.TestCase):
             )
             session._branch_snapshot["node_defs"][0]["tools_allowed"] = ["universe_self"]
             shared = ModelConfig(engine_mcp_enabled=True)
-            def build(*args):
+            def build(*args, **kwargs):
                 order.append("assemble")
                 return "history+direction", "persona", shared
             assemble.side_effect = build
@@ -313,6 +313,7 @@ class ProviderSeamTests(unittest.TestCase):
                 ), None, {})
             self.assertEqual(order, ["admit", "assemble", "agent"])
             self.assertEqual(assemble.call_args.args[5]["node_id"], "n")
+            self.assertIsNone(assemble.call_args.kwargs["agent"])
             self.assertEqual(received[-1], ("history+direction", "persona", shared))
 
     def test_failed_admission_never_reads_persona(self):

@@ -12,7 +12,7 @@ from tests.test_http_connection_provisioning import (  # noqa: F401
 )
 from tests.test_onboarding_openai_device import _drive_get, _home, _user
 from tinyassets.api.http_connection import remove_http
-from tinyassets.custom_agents import create_binding, get_binding, publish_definition
+from tinyassets.commons_catalog import create_binding, get_binding, publish_definition
 from tinyassets.provider_assignment import load_provider_assignment
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import bind_serving_provider
@@ -87,7 +87,7 @@ def bind(rig, definitions):
     agent = result["agent_binding"]
     # Seed serving intent, not network model discovery: this cohort tests the
     # real assignment/custody withdrawal boundary independently of a remote API.
-    from tinyassets.custom_agents import set_binding_serving_in_transaction
+    from tinyassets.commons_catalog import set_binding_serving_in_transaction
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     with SQLiteProviderWorkAuthorityStore(rig[0]).connection() as db:

@@ -2525,14 +2525,16 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
 """
 
 _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
-    **Retire or restore one of your agents.** Read `agent_bindings` for active
-    bindings, or `agent_binding` with its ID for the current revision (including
-    retired bindings). Call write_graph target="agent_binding" operation="retire"
-    or "restore", expected_revision=<revision>, payload_json={"agent_binding_id":"<id>"}.
-    The same call works through `ta write_graph --json '<arguments>'`.
-    Retirement hides the agent from the switcher and stops its work; history and
-    files remain. Restore brings back the same agent, without replaying stopped
-    work. Keep the returned ID and revision for undo. Main cannot be retired.
+    **Your other agents are directories.** Every `agents/<name>/` folder with an
+    `AGENTS.md` (its instructions) or a `settings.yaml` is one of your agents: it
+    appears in the switcher, answers on its own thread, and shares this brain.
+    Make one by writing `agents/<name>/AGENTS.md` with the four tools; its
+    `settings.yaml` may carry `agent: {name: ..., retired: true|false}` plus the
+    same model, tools, skills and extensions keys the root settings take. Set
+    `retired: true` to take an agent out of the switcher and stop its work
+    without losing its files or history; delete the key to bring it back. The
+    main agent is this folder's root and cannot be retired. Hand an agent work
+    with `ta agent run --json '{"agent":"<name>","input":"..."}'`.
 
     **Personal memory and forgetting.**
     The owner's Account screen exposes soul.md, identity.md and MEMORY.md.
@@ -3560,35 +3562,13 @@ def write_graph(
             ))
         finally:
             _current_identity.reset(token)
-    if t == "agent_binding":
-        from tinyassets.api.custom_agents import custom_agents
-        from tinyassets.auth.middleware import _current_identity
-
-        if operation not in {"retire", "restore"}:
-            return json.dumps({"error": "unknown_agent_operation",
-                               "allowed_operations": ["retire", "restore"]})
-        try:
-            document = json.loads(payload_json or "{}")
-        except (ValueError, TypeError):
-            return json.dumps({"error": "payload_json must be a JSON object"})
-        if (not isinstance(document, dict) or set(document) != {"agent_binding_id"}
-                or not isinstance(document["agent_binding_id"], str)):
-            return json.dumps({"error": "payload requires exactly agent_binding_id"})
-        token = _bind_founder_identity(("write",))
-        try:
-            return json.dumps(custom_agents(
-                action=operation + "_binding", universe_id=_GRAPH_ID,
-                binding_id=document["agent_binding_id"], expected_revision=expected_revision,
-            ))
-        finally:
-            _current_identity.reset(token)
     if t == "app_ui":
         # The founder's own UI library + choice. The row is keyed by the bound
         # founder identity, so there is no universe or person to name. ``save``
         # is the whole-row compare-and-set; every other operation changes ONE UI
-        # or only the choice and needs no revision (custom_agents.change_app_ui_entry).
+        # or only the choice and needs no revision (commons_catalog.change_app_ui_entry).
         op = (operation or "save").strip().lower()
-        from tinyassets.custom_agents import APP_UI_ENTRY_OPERATIONS
+        from tinyassets.app_ui_store import APP_UI_ENTRY_OPERATIONS
 
         if op != "save" and op not in APP_UI_ENTRY_OPERATIONS:
             return json.dumps({
@@ -3760,7 +3740,7 @@ def write_graph(
 # gated by the same current-owner admission + rate-limit as run_graph.
 # PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
-_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals", "packages", "systems"})
+_COMMONS_LIST_KINDS = frozenset({"agents", "branches", "goals", "packages", "systems"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
 #: branch catalog is global and unbounded, so cap the rows we return to the agent
 #: to protect its context window as the commons grows. (Cursor pagination is a
@@ -3945,7 +3925,7 @@ def _foreign_agent_origin(agent_definition_id: str) -> tuple[bool, str]:
         return False, ""
     try:
         from tinyassets.api.branches import _base_path
-        from tinyassets.custom_agents import get_definition
+        from tinyassets.commons_catalog import get_definition
 
         definition = get_definition(_base_path(), aid)
     except Exception:  # noqa: BLE001 - never break a read on a resolver error
@@ -4038,11 +4018,11 @@ def browse_commons(
             # true for everything under `content`.
             foreign, own = _split_own_rows(raw)
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
-        if normalized == "systems":
+        if normalized in {"agents", "systems"}:
             from tinyassets.api.helpers import _base_path
             from tinyassets.api.system_copy_requests import SYSTEM_TAG
             from tinyassets.command_center_packages import PACKAGE_TAG
-            from tinyassets.custom_agents import list_definitions
+            from tinyassets.commons_catalog import list_definitions
             from tinyassets.engine_read_views import project_agents
             from tinyassets.engine_result_bounds import resolve_ceiling
 
@@ -4050,8 +4030,9 @@ def browse_commons(
                 return json.dumps({"error": "output_offset must be a non-negative integer"})
             if type(limit) is not int or not 1 <= limit <= 100:
                 return json.dumps({"error": "limit must be between 1 and 100"})
-            filters = {"query": (query or "").strip(), "author_id": (author or "").strip(),
-                       "tags": [SYSTEM_TAG], "exclude_tags": [PACKAGE_TAG]}
+            filters = {"query": (query or "").strip(), "author_id": (author or "").strip()}
+            if normalized == "systems":
+                filters.update(tags=[SYSTEM_TAG], exclude_tags=[PACKAGE_TAG])
             base = _base_path()
             rows = list_definitions(base, **filters, limit=min(limit, _COMMONS_BROWSE_MAX),
                                     offset=output_offset)
@@ -4059,12 +4040,13 @@ def browse_commons(
                                          offset=output_offset + len(rows)))
             if output_offset and not rows and not list_definitions(
                     base, **filters, limit=1, offset=output_offset - 1):
-                return json.dumps({"error": "output_offset is past the system catalog"})
+                return json.dumps({"error": f"output_offset is past the {normalized} catalog"})
             result = project_agents(rows, offset=output_offset, more=more,
                                     budget=resolve_ceiling() - 2048)
             if "error" in result:
                 return json.dumps(result)
-            result["systems"] = result.pop("agents")
+            if normalized == "systems":
+                result["systems"] = result.pop("agents")
             foreign, own = _split_own_rows(json.dumps(result))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         if normalized == "packages":
@@ -4110,7 +4092,6 @@ def browse_commons(
                 query=(query or "").strip(),
                 author=(author or "").strip(),
                 limit=limit,
-                **({"output_offset": output_offset} if normalized == "agents" else {}),
             )
         )
         return _untrusted(f"commons:browse:{normalized}", foreign, own=own)

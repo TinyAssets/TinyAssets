@@ -15,7 +15,7 @@ from tinyassets import command_center_release_series as series
 from tinyassets import command_center_update_registry as registry
 from tinyassets.api.command_center_updates import _pin, _prepare, _scope
 from tinyassets.command_center_updates import digest
-from tinyassets.custom_agents import get_definition
+from tinyassets.commons_catalog import get_definition
 
 POLICY = "presentation-updates-v1"
 _SCHEMA = (

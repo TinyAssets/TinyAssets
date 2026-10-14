@@ -728,19 +728,8 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
         }
     if decision.behaviour == policy_rules.DO or (preapproved and decision.behaviour in (
             policy_rules.ASK_FIRST, policy_rules.DO_IF_PREAPPROVED)):
-        # Only an explicit owner-configured review adds a model check. Grants,
-        # consent and cross-user isolation remain independent mandatory checks.
-        from tinyassets.agent_review import review_refusal
-
-        for candidate in agents:
-            refusal = review_refusal(
-                universe_dir,
-                action={"action_class": action_class, "connection": connection_id,
-                        "operation": operation, "path": path},
-                rule=decision.reason, evidence=evidence, agent=candidate,
-            )
-            if refusal is not None:
-                return refusal
+        # Grants, consent and cross-user isolation are the independent checks;
+        # a model check before an action is an agent's own skill, not the platform's.
         return None
     if decision.behaviour == policy_rules.HAND_OFF:
         return {

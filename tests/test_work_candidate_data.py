@@ -212,10 +212,3 @@ def test_a_graph_pin_cannot_name_a_connection_outside_the_owners_catalogue():
         )
 
 
-def test_code_only_review_fits_the_captured_order_without_a_prompt_node():
-    choices = data()
-    snapshot = {"node_defs": [{"code": "pass", "effects": ["authenticated_external_call"]}]}
-    assert choices.fit(snapshot, ceiling=4, retry_multiplier=3, review_attempts=2) == 4
-    assert choices.next_candidate(None) == ModelRef("a", "A")
-    with pytest.raises(PermissionError, match="invocation allowance"):
-        data().fit(snapshot, ceiling=3, retry_multiplier=3, review_attempts=2)

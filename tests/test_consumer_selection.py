@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from tinyassets.custom_agents import create_binding, publish_definition
+from tinyassets.commons_catalog import create_binding, publish_definition
 from tinyassets.daemon_server import grant_universe_access, set_founder_home
 from tinyassets.storage import db_path
 
@@ -63,7 +63,7 @@ def legacy_duplicate(base, binding):
 
 
 def test_create_refuses_a_second_installation(store):
-    from tinyassets.custom_agents import AgentConflictError
+    from tinyassets.commons_catalog import AgentConflictError
 
     install(store)
     with pytest.raises(AgentConflictError, match="app_experience"):

@@ -150,7 +150,7 @@ The daemon's explicit Compose `environment` block contains configuration only.
 | `TINYASSETS_BILLING_ENTITLEMENT_KEY` | shared env | Removed; `billing/stripe_adapter.py`, subscription metadata signing. |
 | `WORKOS_API_KEY` | shared env | Removed; `account_deletion.py`, daemon account deletion. |
 | `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` | request-idempotency.env | Removed; `storage/request_admissions.py:mint_idempotency_key_hash`, called by `api/universe.py` admission, plus the interchange fallback below. Engine `run_graph` admission uses `engine_admissions`, not this minter. |
-| `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` | agent-interchange.env | Removed; `agent_interchange.py:_source_commitment`, used by `api/custom_agents.py` import. The engine exposes neither custom-agent import nor protocol-v2 request admission. |
+| `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` | agent-interchange.env | Removed; no Python reader remains under `tinyassets/` since C8 deleted `agent_interchange.py` (agents are files). The deploy template, compose env file and workflow validator still provision it; a deploy lane retires them. |
 | `TINYASSETS_APP_INGRESS_HMAC_KEY` | app-ingress.env | Removed; template reserves it for daemon ingress and the slack-agent caller. No Python reader remains under `tinyassets/` at this head, including the engine. Compose still injects it. |
 | `TINYASSETS_WIKI_CANARY_TOKEN` | shared env | Removed; `auth/wiki_canary.py` verifies the daemon's canary principal, and external health probes send it. Engine HTTP uses a fresh per-engine bearer and binds its owner directly. |
 | `TINYASSETS_SESSION_SEAL_KEY` | shared env | Removed even before `session_store.arm()` pops it; `onboarding/session_store.py` seals daemon app refresh sessions. |

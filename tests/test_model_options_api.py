@@ -52,7 +52,7 @@ def test_configured_but_unpowered_agent_can_read_without_activation(catalogue):
     assert result["sources"][0]["bind_key"] == catalogue.rig.definition.id
     assert result["sources"][0]["accepted"] is True
     assert "no_serving_binding" in result["sources"][0]["reasons"]
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
 
     assert get_binding(catalogue.rig.base, universe_id="u-models",
                        binding_id=before["agent_binding_id"]) == before

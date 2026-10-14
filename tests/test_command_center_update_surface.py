@@ -10,7 +10,7 @@ from tests.test_command_center_update_adapter import (
 from tests.test_command_center_update_adapter import installed as installed
 from tinyassets.api.command_center_update_surface import read_updates, write_update
 from tinyassets.api.graph_reads import read_graph
-from tinyassets.custom_agents import get_definition
+from tinyassets.commons_catalog import get_definition
 from tinyassets.universe_server import write_graph
 
 

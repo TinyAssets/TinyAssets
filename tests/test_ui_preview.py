@@ -14,7 +14,7 @@ import zlib
 
 import pytest
 
-from tinyassets import custom_agents as ca
+from tinyassets import app_ui_store as ca
 from tinyassets import ui_preview
 
 # `api.app_ui` is imported HERE, before any test can patch what it binds: it
@@ -51,9 +51,9 @@ def _add(base, ui_id, **fields):
 
 
 def _pixel(png: bytes, x: int, y: int) -> tuple[int, int, int]:
-    image = pytest.importorskip(
-        "PIL.Image", reason="Pillow required for preview pixel proof; owner=Jonnyton expires=2026-10-10")
-    return image.open(io.BytesIO(png)).convert("RGB").getpixel((x, y))
+    from PIL import Image
+
+    return Image.open(io.BytesIO(png)).convert("RGB").getpixel((x, y))
 
 
 def _need_browser():
@@ -74,11 +74,8 @@ def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path):
     ca.put_app_ui_asset(tmp_path, owner_user_id=OWNER, universe_id=HOME, ui_id="village",
                         path="img/grass.png", data=_png())
 
-    try:
-        report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                           ui_id="village", width=400, height=300)
-    except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
+    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                       ui_id="village", width=400, height=300)
 
     assert report["png"].startswith(b"\x89PNG"), "a real screenshot, not a placeholder"
     assert _pixel(report["png"], 200, 40) == (32, 80, 192), "the sky is the UI's own style"
@@ -98,11 +95,8 @@ def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path):
                 'fetch("https://elsewhere.example/x").catch(()=>{});\n'
                 'document.body.style.background="#fff";\n'
                 'throw new Error("village exploded at r" + THREE.REVISION);')
-    try:
-        report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                           ui_id="broken", width=320, height=240)
-    except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
+    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                       ui_id="broken", width=320, height=240)
 
     assert any("village exploded at r170" in line
                for line in report["uncaught_errors"] + report["console"]), report
@@ -813,11 +807,8 @@ def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
                 "throw new Error('agent_refs: '+JSON.stringify(me.agent_refs));"
                 "document.body.style.background='#20a040';"
                 "}catch(err){document.body.style.background='#c02020';throw err;}})();")
-    try:
-        report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                           ui_id="awaits", width=320, height=240)
-    except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
+    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                       ui_id="awaits", width=320, height=240)
 
     assert report["uncaught_errors"] == [], report["uncaught_errors"]
     assert _pixel(report["png"], 160, 120) == (32, 160, 64), "both reads answered in shape"
@@ -833,11 +824,8 @@ def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
                 "{tinyassets.call(name,{}).catch(()=>{});}"
                 "for(let i=0;i<3000;i++){tinyassets.call('act-'+(i%200),{}).catch(()=>{});}"
                 "try{new WebSocket('wss://elsewhere.example/s')}catch(e){}")
-    try:
-        report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
-                                           ui_id="hostile", width=320, height=240)
-    except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
+    report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                       ui_id="hostile", width=320, height=240)
     for name in ("constructor", "__proto__", "toString"):
         assert report["bridge_calls"][name] == 1
     assert len(report["bridge_calls"]) <= ui_preview.MAX_ACTIONS

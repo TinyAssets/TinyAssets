@@ -35,8 +35,9 @@ from tinyassets.api.app_ui import change_app_ui, write_app_ui
 from tinyassets.api.graph_reads import read_graph
 from tinyassets.api.pending_requests import answer_request, try_package
 from tinyassets.api.status import get_status
+from tinyassets.app_ui_store import get_app_ui, save_app_ui
 from tinyassets.automations import STATE_PAUSED, AutomationStore
-from tinyassets.custom_agents import get_app_ui, get_definition, save_app_ui
+from tinyassets.commons_catalog import get_definition
 from tinyassets.onboarding import render_app_html
 from tinyassets.onboarding.ui_frame import BOOTSTRAP_HTML, FRAME_HEADERS
 
@@ -367,7 +368,7 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         page.evaluate("async()=>{await AppUI.load();}")
         frame.get_by_role("button", name="Try someone else's", exact=True).click()
         expect(frame.locator("#packages")).to_contain_text("Components only; no files")
-        expect(frame.locator("#packages")).to_contain_text("0 public agent templates")
+        expect(frame.locator("#packages")).to_contain_text("2 paused automations")
         frame.get_by_role("button", name="Preview copy", exact=True).click()
         expect(page.locator("#ui-preview")).to_contain_text("Visual preview")
         assert not any(op == "try_package" for op, _ in calls)
@@ -390,10 +391,8 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         accept = tab.get_by_role("button", name="Accept", exact=True)
         expect(accept).to_be_visible()
         expect(tab).to_contain_text("Component-only copy")
-        expect(tab).to_contain_text("No public chat-agent templates are included")
-        expect(tab).to_contain_text("no chat agents will be copied")
-        expect(tab).to_contain_text("shows only your own agents")
-        expect(tab).to_contain_text("republish")
+        expect(tab).to_contain_text("No chat agents are included")
+        expect(tab).to_contain_text("Your own agents stay yours")
         accept.click()  # actual trusted parent-document confirmation, never frame approval
         expect(tab).to_have_count(0)
         assert any(op == "answer_request" and result.get("installed") for op, result in calls)
@@ -443,7 +442,7 @@ def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
 
     from playwright.sync_api import expect
 
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.storage import db_path
 
@@ -580,296 +579,6 @@ def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
 
 
 @pytest.mark.real_browser
-@pytest.mark.parametrize("package", [False, True])
-def test_public_instruction_template_copies_private_agent_and_opens_its_chat_without_model(
-    home, system_server, browser, package,
-):
-    import sqlite3
-
-    from playwright.sync_api import expect
-
-    from tests.test_background_budget_finalization_e2e import _CountingProvider
-    from tests.test_command_center_agent_templates import _agent
-    from tests.test_command_center_packages import _answer, _ask, _publish_action
-    from tinyassets.custom_agents import get_binding, list_bindings
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.storage import db_path
-
-    _seed_own(home)
-    definition, source_binding = _agent(home, config={"provider_policy_id": "publisher-private"})
-    _unselected_definition, unselected = _agent(home, name="Unselected agent")
-    _existing_definition, existing = _agent(home, BOB, BOB_UNIVERSE, "Bob's existing agent")
-    source_ui = {**UI, "agent_refs": {"scout": source_binding["agent_binding_id"]},
-                 "markup": '<h1>Agent village</h1>'
-                           '<button id="scout" disabled>Talk to Scout</button>'
-                           '<p id="opened"></p>',
-                 "script": """(async()=>{
-                   const identity=await tinyassets.whoami();
-                   document.getElementById('scout').onclick=async()=>{
-                     const opened=await tinyassets.openChat(identity.agent_refs.scout);
-                     document.getElementById('opened').textContent=opened.agent_id;
-                   };
-                   document.getElementById('scout').disabled=false;
-                 })();"""}
-    row = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
-    save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
-                expected_revision=row["revision"], changes={"ui_library": [source_ui]})
-    action = _publish_action()
-    if not package:
-        del action["package"]
-    action["agent_templates"] = {"village-scout": source_binding["agent_binding_id"]}
-    asked = _ask(OWNER, UNIVERSE, action)
-    assert "request_id" in asked, asked
-    published = _answer(OWNER, UNIVERSE, asked["request_id"])
-    assert published.get("published"), published
-    source = get_definition(home, published["agent_definition_id"])
-    assert source["components"]["ui"]["agent_refs"] == {"scout": "village-scout"}
-    assert (source["components"]["village-scout"]["agent_definition_id"]
-            == definition["agent_definition_id"])
-    assert source_binding["agent_binding_id"] not in json.dumps(source)
-    assert unselected["agent_binding_id"] not in json.dumps(source)
-    publisher_bindings = list_bindings(home, universe_id=UNIVERSE, limit=None)
-    recipient_bindings = list_bindings(home, universe_id=BOB_UNIVERSE, limit=None)
-    publisher_ui = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
-    with sqlite3.connect(db_path(home)) as db:
-        db.execute("DELETE FROM provider_assignments WHERE universe_id = ?", (BOB_UNIVERSE,))
-    assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
-    origin, calls, failures = system_server
-    provider = _CountingProvider()
-    page = browser.new_page(viewport={"width": 1280, "height": 900})
-    try:
-        with _real_providers(codex=provider):
-            _enter(page, origin)
-            page.evaluate("setChatCloudMode('bubble')")
-            page.get_by_role("button", name="Browse / Switch", exact=True).click()
-            expect(page.frame_locator("#ui-preview-frame").get_by_role(
-                "heading", name="Agent village")).to_be_visible()
-            assert not any(op == "try_package" for op, _ in calls)
-            assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == recipient_bindings
-            page.get_by_role("button", name="Copy into my command center", exact=True).click()
-            tab = page.locator("#rail-items .rtab").filter(has_text="GTM Village")
-            expect(tab).to_contain_text("Chat agents, as new private bindings")
-            expect(tab).to_contain_text("Scout")
-            expect(tab).to_contain_text(
-                "No model assignments, access grants, conversations or private settings")
-            assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == recipient_bindings
-            tab.get_by_role("button", name="Accept", exact=True).click()
-            expect(page.get_by_role(
-                "button", name="Open copied screen", exact=True)).to_be_visible()
-            receipt = next(result for op, result in calls
-                           if op == "answer_request" and result.get("installed"))
-            assert set(receipt["agents"]) == {"village-scout"}
-            target = receipt["agents"]["village-scout"]
-            assert target != source_binding["agent_binding_id"]
-            binding = get_binding(home, universe_id=BOB_UNIVERSE, binding_id=target)
-            assert binding["created_by"] == BOB and binding["status"] == "configured"
-            assert binding["configuration"] == {"schema_version": 1, "name": "Scout"}
-            from tinyassets.addressed_agents import resolve
-            from tinyassets.command_center_packages import pin_for_request
-
-            addressed = resolve(home, universe_id=BOB_UNIVERSE, owner=BOB, agent_id=target)
-            install_result = next(result for op, result in calls if op == "try_package")
-            pin = pin_for_request(home, universe_id=BOB_UNIVERSE,
-                                  request_id=install_result["request_id"])
-            assert addressed.agent_slug == (
-                pin["record"]["action"]["plan"]["placement"]["agent_slug"] if package else None)
-            assert (len(list_bindings(home, universe_id=BOB_UNIVERSE, limit=None))
-                    == len(recipient_bindings) + 1)
-            copied_ui = get_app_ui(
-                home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"][-1]
-            assert copied_ui["agent_refs"] == {"scout": target}
-            page.get_by_role("button", name="Open copied screen", exact=True).click()
-            frame = page.frame_locator("#ui-frame")
-            expect(frame.get_by_role("heading", name="Agent village")).to_be_visible()
-            frame.get_by_role("button", name="Talk to Scout", exact=True).click()
-            expect(frame.locator("#opened")).to_have_text(target)
-            expect(page.locator("#chat-cloud")).to_have_attribute("data-agent", target)
-            expect(page.locator("#composer-input")).to_have_attribute("aria-label", "Message Scout")
-            assert page.evaluate("addressedAgentId()") == target
-            assert any(op == "status:" + target for op, _ in calls)
-            assert not any(op == "status:" + source_binding["agent_binding_id"] for op, _ in calls)
-            assert page.evaluate("window.acceptRelays") == []
-            assert provider.calls == []
-            assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
-            assert list_bindings(home, universe_id=UNIVERSE, limit=None) == publisher_bindings
-            assert get_binding(home, universe_id=BOB_UNIVERSE,
-                               binding_id=existing["agent_binding_id"]) == existing
-            assert get_definition(home, published["agent_definition_id"]) == source
-            assert get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE) == publisher_ui
-            assert not failures
-    finally:
-        page.close()
-
-
-@pytest.mark.real_browser
-@pytest.mark.parametrize("initial_screen", ["my-own", "village"])
-def test_manual_screen_replacement_needs_consent_retains_components_and_refuses_private_edits(
-    home, system_server, browser, initial_screen,
-):
-    import sqlite3
-    from copy import deepcopy
-
-    from playwright.sync_api import expect
-
-    from tests.test_background_budget_finalization_e2e import _CountingProvider
-    from tests.test_command_center_agent_templates import _agent
-    from tests.test_command_center_packages import _answer
-    from tests.test_command_center_system_copy import _preview
-    from tinyassets.custom_agents import list_bindings, publish_definition
-    from tinyassets.provider_assignment import load_provider_assignment
-    from tinyassets.storage import db_path
-
-    _seed_own(home)
-    _agent(home, BOB, BOB_UNIVERSE, "Bob's existing agent")
-    source_id = _legacy(home)
-    source = get_definition(home, source_id)
-    with sqlite3.connect(db_path(home)) as db:
-        db.execute("DELETE FROM provider_assignments WHERE universe_id = ?", (BOB_UNIVERSE,))
-    assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
-    provider = _CountingProvider()
-    with _real_providers(codex=provider):
-        ask = _preview(source_id)
-        installed = _answer(BOB, BOB_UNIVERSE, ask["request_id"])
-    assert installed.get("installed"), installed
-    assert not provider.calls
-    from tinyassets.command_center_update_registry import connect
-
-    with connect(home) as conn:
-        conn.execute("DELETE FROM command_center_adoptions WHERE owner_id=? AND universe_id=?",
-                     (BOB, BOB_UNIVERSE))
-        conn.commit()
-    # Exercise both an unrelated selection and an already active old screen.
-    row = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
-    save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE,
-                expected_revision=row["revision"], changes={"ui_selection": {
-                    "version": 1, "state": "active", "ui_id": initial_screen}})
-    components = deepcopy(source["components"])
-    ui = next(c for c in components.values() if c["kind"] == "tinyassets.app-ui.v1")
-    ui["markup"] = '<h1>Village replacement</h1><p id="updated-boot"></p>'
-    ui["script"] = "document.getElementById('updated-boot').textContent='New screen code ran';"
-    proposed = publish_definition(home, author_id=OWNER, payload={
-        "schema_version": 1, "name": "Village replacement", "description": "A new layout",
-        "tags": ["tinyassets.system.v1"], "components": components})
-    target = proposed["agent_definition_id"]
-    source_proposed = get_definition(home, target)
-    publisher_ui = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
-    branches = _bobs_branches(home)
-    bindings = list_bindings(home, universe_id=BOB_UNIVERSE, limit=None)
-    autos = AutomationStore(home).list(universe_id=BOB_UNIVERSE)
-    assert autos and all(row.desired_state == STATE_PAUSED for row in autos)
-    before = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
-    origin, calls, failures = system_server
-    page = browser.new_page(viewport={"width": 1280, "height": 900})
-    try:
-        with _real_providers(codex=provider):
-            _enter(page, origin)
-            _open_switcher(page)
-            page.get_by_role("button", name="Manage shared copies", exact=True).click()
-            panel = page.locator("#ui-shared-updates")
-            expect(panel).to_contain_text(
-                "Automatic presentation updates are off unless you explicitly opt in")
-            expect(panel).to_contain_text(source_id)
-            expect(panel).to_contain_text("Earlier copy:")
-            with connect(home) as conn:
-                count = conn.execute("SELECT count(*) FROM command_center_adoptions").fetchone()[0]
-                assert count == 0
-            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before
-            page.get_by_role("button", name="Verify earlier copy", exact=True).click()
-            expect(page.get_by_role(
-                "button", name="Verify earlier copy", exact=True)).to_have_count(0)
-            with connect(home) as conn:
-                count = conn.execute("SELECT count(*) FROM command_center_adoptions").fetchone()[0]
-                assert count == 1
-            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before
-            review = page.get_by_role(
-                "button", name="Review screen replacement: Village replacement", exact=True)
-            review.click()
-            confirmation = page.locator("#ui-update-confirmation")
-            expect(confirmation).to_contain_text("Replace screen only")
-            expect(confirmation).to_contain_text(target)
-            expect(confirmation).to_contain_text("paused/running state stay unchanged")
-            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before
-            assert not any(op == "answer_center_update" for op, _ in calls)
-            confirmation.get_by_role("button", name="Keep current", exact=True).click()
-            expect(panel).to_contain_text("Nothing was replaced")
-            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before
-            review.click()
-            confirmation.get_by_role("button", name="Replace screen", exact=True).click()
-            expect(page.locator("#ui-status")).to_contain_text("Screen saved")
-            after = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
-            assert after["ui_selection"] == before["ui_selection"]
-            assert after["ui_library"][0] == before["ui_library"][0]
-            updated = next(b for b in after["ui_library"] if b["ui_id"] == "village")
-            assert updated["markup"] == ui["markup"]
-            assert page.evaluate("AppUI.active.ui_id") == initial_screen
-            expect(page.frame_locator("#ui-frame").locator("#updated-boot")).to_have_count(0)
-            assert page.evaluate("AppUI.active.script") != ui["script"]
-            assert page.evaluate("window.acceptRelays") == [] and not provider.calls
-            assert _bobs_branches(home) == branches
-            assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == bindings
-            assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == autos
-            if initial_screen == "village":
-                # An unrelated library edit and ordinary same-session refresh
-                # must not accidentally boot the deferred new screen either.
-                unrelated = deepcopy(after["ui_library"])
-                unrelated[0]["style"] += "\n/* Bob edited his other screen */"
-                save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE,
-                            expected_revision=after["revision"], changes={"ui_library": unrelated})
-                page.evaluate("async()=>{await AppUI.load();}")
-                expect(page.frame_locator("#ui-frame").locator("#updated-boot")).to_have_count(0)
-                assert page.evaluate("AppUI.active.script") != ui["script"]
-                assert not provider.calls and page.evaluate("window.acceptRelays") == []
-                expect(page.get_by_role("button", name="Use Village", exact=True)).to_be_enabled()
-                # The explicit Open click, not approval, boots the saved script.
-                page.get_by_role("button", name="Open updated screen", exact=True).click()
-                expect(page.frame_locator("#ui-frame").locator("#updated-boot")).to_have_text(
-                    "New screen code ran")
-                # choose() mounts immediately, then persists the selection. The
-                # frame alone cannot prove the revision is ready to snapshot.
-                expect(page.locator("#ui-status")).to_have_text(
-                    f"Now using {updated['name']}.")
-                after = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
-                assert after["ui_selection"] == before["ui_selection"]
-            page.locator("#btn-ui-close").click()
-            page.evaluate("sessionStorage.clear()")
-            _enter(page, origin)
-            assert page.evaluate("AppUI.active.ui_id") == initial_screen
-            _open_switcher(page)
-            page.get_by_role("button", name="Manage shared copies", exact=True).click()
-            expect(panel).to_contain_text("Screen source: " + target)
-            expect(panel).to_contain_text("Retained component source: " + source_id)
-            # A second explicit selection is still fenced against an owner edit
-            # made AFTER preview, so the visible confirmation cannot overwrite it.
-            original_name = source["name"]
-            page.get_by_role("button", name="Review screen replacement: " + original_name,
-                             exact=True).click()
-            expect(confirmation).to_be_visible()
-            edited = deepcopy(after["ui_library"])
-            next(b for b in edited if b["ui_id"] == "village")["markup"] = "My private layout"
-            save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE,
-                        expected_revision=after["revision"], changes={"ui_library": edited})
-            private = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
-            confirmation.get_by_role("button", name="Replace screen", exact=True).click()
-            expect(panel).to_contain_text("edited or deleted")
-            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == private
-            page.get_by_role("button", name="Manage shared copies", exact=True).click()
-            expect(panel).to_contain_text("Private edits detected")
-            expect(page.get_by_role("button", name="Review screen replacement: " + original_name,
-                                    exact=True)).to_be_disabled()
-            assert get_definition(home, source_id) == source
-            assert get_definition(home, target) == source_proposed
-            assert get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE) == publisher_ui
-            assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == autos
-            assert _bobs_branches(home) == branches
-            assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == bindings
-            assert not provider.calls and page.evaluate("window.acceptRelays") == []
-            assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
-            assert not failures
-    finally:
-        page.close()
-
-
-@pytest.mark.real_browser
 @pytest.mark.parametrize("transition", ["selection", "account"])
 def test_manual_update_read_drops_old_selection_or_account_response(
     home, system_server, browser, transition,
@@ -942,7 +651,7 @@ def test_pending_manual_update_cannot_boot_saved_script_during_refresh(
     from tests.test_command_center_packages import _answer
     from tests.test_command_center_system_copy import _preview
     from tinyassets.api import command_center_update_surface
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     source = _legacy(home)
     ask = _preview(source)
@@ -1336,7 +1045,7 @@ def test_opted_in_service_update_survives_browser_reload_without_inference(
     from tests.test_background_budget_finalization_e2e import _CountingProvider
     from tinyassets import command_center_update_maintenance as maintenance
     from tinyassets.command_center_update_policy import inspect_policy
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
     from tinyassets.universe_owner import record_creation
 
     provider = _CountingProvider()

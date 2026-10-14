@@ -5,31 +5,48 @@ from contextlib import contextmanager
 
 import pytest
 
+from tests import test_workflow_http_agent as workflow_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tests.test_run_provider_session import _branch, _run_branch
-from tests.test_work_model_selection import http_wire  # noqa: F401 - pytest fixture
+from tests.test_run_provider_session import _branch, _CountingProvider, _run_branch
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
 from tinyassets.provider_assignment_manifest import ModelAccess
-from tinyassets.providers.base import ModelConfig, UniverseContext
+from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+from tinyassets.providers.base import ModelConfig, ProviderResponse, UniverseContext
 from tinyassets.storage.provider_work_authority import db_path
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
+http_wire = workflow_tests.http_wire
+work_agent = workflow_tests.work_agent
 
 
 @pytest.mark.parametrize("manifest", [False, True])
 @pytest.mark.parametrize("change", [
     None, "closed", "subject", "cancelled", "revoked", "receipt", "claim", "home", "seal",
 ])
-@pytest.mark.usefixtures("http_wire")
 def test_step_rechecks_current_authority_without_new_reservation(
-    tmp_path, monkeypatch, authenticate_request, manifest, change,
+    tmp_path, monkeypatch, authenticate_request, work_agent, manifest, change,
 ):
     # Avoid persona/tool transport setup: only admission and its independent
     # between-step fence are in scope. No engine tool is ever executed here.
     monkeypatch.setattr(
         "tinyassets.shared_self.prepare_shared_self_turn",
-        lambda base, uid, owner, prompt, config, node=None: (prompt, "", ModelConfig()),
+        lambda base, uid, owner, prompt, config, node=None, *, agent=None: (
+            prompt, "", ModelConfig(engine_mcp_enabled=True)),
     )
+    # The fake native provider needs the executor and completion evidence the
+    # real codex adapter supplies; authority is checked inside that launch.
+    monkeypatch.setattr(_CountingProvider, "agent_execution_kind", "native_agent", raising=False)
+
+    async def native(provider, prompt, system, config, *, universe_dir=None):
+        return ProviderResponse(
+            text="native work completed", provider=provider.name, model="test-model",
+            family=provider.family, latency_ms=1, input_tokens=3, output_tokens=4,
+            cost_microunits=0,
+            native_evidence=NativeCompletionEvidence(provider.name, True, True, "committed"),
+        )
+
+    monkeypatch.setattr(_CountingProvider, "complete", native)
+    work_agent.mode = "no_tools"
     original = _ForegroundRunProviderSession._authorize_attempt
     observations = []
 

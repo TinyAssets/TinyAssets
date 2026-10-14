@@ -17,14 +17,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Iterator
 
-from tinyassets.execution_subject import (
-    ExecutionSubject,
-    ExecutionSubjectKind,
-    agent_binding_automation_id,
-)
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.storage import db_path
-
-_AGENT_AUTOMATION_PREFIX = "automation_agent_"
 
 
 class AutomationActivationExecutor(str, Enum):
@@ -57,25 +51,14 @@ def _timestamp(value: datetime) -> str:
     ).replace("+00:00", "Z")
 
 
-def _is_agent_automation_id(automation_id: str) -> bool:
-    return automation_id.startswith(_AGENT_AUTOMATION_PREFIX)
-
-
 def _require_active_transaction(conn: sqlite3.Connection) -> None:
     if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
         raise ValueError("connection must hold an active transaction")
 
 
-def _require_subject_namespace(
-    automation_id: str,
-    subject: ExecutionSubject,
-) -> None:
-    reserved = _is_agent_automation_id(automation_id)
-    if subject.kind is ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST:
-        if not reserved:
-            raise ValueError("agent subject requires reserved agent automation")
-    elif reserved:
-        raise ValueError("reserved agent automation requires an agent subject")
+def _require_branch_subject(subject: ExecutionSubject) -> None:
+    if subject.kind is not ExecutionSubjectKind.BRANCH_VERSION:
+        raise ValueError("an activation subject is a branch version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +117,7 @@ CREATE TABLE IF NOT EXISTS automation_activations (
     executor_class TEXT
         CHECK (executor_class IN ('tray', 'cloud')),
     subject_kind TEXT
-        CHECK (subject_kind IN ('branch_version', 'agent_runtime_manifest')),
+        CHECK (subject_kind IN ('branch_version')),
     subject_ref TEXT,
     subject_digest TEXT,
     immutable_branch_version TEXT,
@@ -160,16 +143,8 @@ CREATE TABLE IF NOT EXISTS automation_activations (
             AND subject_ref IS NOT NULL
             AND subject_digest IS NOT NULL
             AND lease_id IS NOT NULL
-            AND (
-                (
-                    subject_kind = 'branch_version'
-                    AND immutable_branch_version = subject_ref
-                )
-                OR (
-                    subject_kind = 'agent_runtime_manifest'
-                    AND immutable_branch_version IS NULL
-                )
-            )
+            AND subject_kind = 'branch_version'
+            AND immutable_branch_version = subject_ref
         )
     )
 )
@@ -177,24 +152,29 @@ CREATE TABLE IF NOT EXISTS automation_activations (
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    exists = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
         ("automation_activations",),
     ).fetchone()
-    if exists is None:
+    if row is None:
         conn.execute(_CREATE_TABLE)
         return
     columns = {
-        str(row[1])
-        for row in conn.execute("PRAGMA table_info(automation_activations)")
+        str(column[1]) for column in conn.execute("PRAGMA table_info(automation_activations)")
     }
-    if {"subject_kind", "subject_ref", "subject_digest"} <= columns:
-        return
+    if not {"subject_kind", "subject_ref", "subject_digest"} <= columns:
+        _migrate_untyped_subjects(conn)
+    elif "'agent_runtime_manifest'" in str(row[0]):
+        _migrate_subject_constraint(conn)
+
+
+def _migrate_untyped_subjects(conn: sqlite3.Connection) -> None:
+    """Add the typed-subject columns to a table from before they existed."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         columns = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(automation_activations)")
+            str(column[1])
+            for column in conn.execute("PRAGMA table_info(automation_activations)")
         }
         if {"subject_kind", "subject_ref", "subject_digest"} <= columns:
             conn.commit()
@@ -229,6 +209,47 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.commit()
     except Exception:
         conn.rollback()
+        raise
+
+
+def _migrate_subject_constraint(conn: sqlite3.Connection) -> None:
+    """Rebuild the table without the retired agent subject (C8).
+
+    SQLite cannot alter a CHECK in place. An active row still naming the
+    retired kind is a repair case, never silently dropped; the rebuild keeps
+    every row and index and runs in one transaction.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("activation schema migration needs an idle connection")
+    stale = conn.execute(
+        "SELECT COUNT(*) FROM automation_activations WHERE subject_kind IS NOT NULL "
+        "AND subject_kind != 'branch_version'"
+    ).fetchone()[0]
+    if stale:
+        raise RuntimeError("agent-manifest activations remain; stop them before migrating")
+    indexes = [str(index[0]) for index in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name = 'automation_activations' "
+        "AND type = 'index' AND sql IS NOT NULL"
+    )]
+    columns = ", ".join(
+        f'"{column[1]}"' for column in conn.execute("PRAGMA table_info(automation_activations)")
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(_CREATE_TABLE.replace(
+            "CREATE TABLE IF NOT EXISTS automation_activations (",
+            "CREATE TABLE automation_activations_new (", 1))
+        conn.execute(
+            f"INSERT INTO automation_activations_new ({columns}) "
+            f"SELECT {columns} FROM automation_activations"
+        )
+        conn.execute("DROP TABLE automation_activations")
+        conn.execute("ALTER TABLE automation_activations_new RENAME TO automation_activations")
+        for sql in indexes:
+            conn.execute(sql)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
         raise
 
 
@@ -284,8 +305,6 @@ class AutomationActivationStore:
         """Create epoch zero, or return the existing record without mutation."""
 
         clean_automation_id = _required(automation_id, "automation_id")
-        if _is_agent_automation_id(clean_automation_id):
-            raise ValueError("reserved agent automation namespace")
         return self._create_stopped(
             universe_id=_required(universe_id, "universe_id"),
             automation_id=clean_automation_id,
@@ -312,35 +331,6 @@ class AutomationActivationStore:
                 conn.rollback()
                 raise
         return row
-
-    def create_stopped_for_agent_binding(
-        self,
-        *,
-        universe_id: str,
-        agent_binding_id: str,
-    ) -> AutomationActivation:
-        """Create the sole activation row for one universe-owned agent binding."""
-
-        return self._create_stopped(
-            universe_id=_required(universe_id, "universe_id"),
-            automation_id=agent_binding_automation_id(agent_binding_id),
-        )
-
-    def create_stopped_for_agent_binding_in_transaction(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        universe_id: str,
-        agent_binding_id: str,
-    ) -> AutomationActivation:
-        """Create the reserved row inside the caller's write transaction."""
-
-        return self._create_stopped_in_transaction(
-            conn,
-            universe_id=_required(universe_id, "universe_id"),
-            automation_id=agent_binding_automation_id(agent_binding_id),
-            updated_at=_timestamp(self._clock()),
-        )
 
     def _create_stopped_in_transaction(
         self,
@@ -417,7 +407,7 @@ class AutomationActivationStore:
             raise ValueError("executor_class must be typed")
         if not isinstance(subject, ExecutionSubject):
             raise ValueError("subject must be typed")
-        _require_subject_namespace(expected.automation_id, subject)
+        _require_branch_subject(subject)
         return self._transition(
             expected=expected,
             executor_class=executor_class,
@@ -448,7 +438,7 @@ class AutomationActivationStore:
             raise ValueError("executor_class must be typed")
         if not isinstance(subject, ExecutionSubject):
             raise ValueError("subject must be typed")
-        _require_subject_namespace(expected.automation_id, subject)
+        _require_branch_subject(subject)
         return self._transition_in_transaction(
             conn,
             expected=expected,
@@ -493,7 +483,7 @@ class AutomationActivationStore:
             return None
         if not isinstance(subject, ExecutionSubject):
             raise ValueError("subject must be typed")
-        _require_subject_namespace(expected.automation_id, subject)
+        _require_branch_subject(subject)
         return self._transition(
             expected=expected,
             executor_class=expected.executor_class,
@@ -528,7 +518,7 @@ class AutomationActivationStore:
                 return False
             if not isinstance(subject, ExecutionSubject):
                 return False
-            _require_subject_namespace(clean_automation_id, subject)
+            _require_branch_subject(subject)
             clean_lease_id = _required(lease_id, "lease_id")
         except ValueError:
             return False
@@ -570,7 +560,7 @@ class AutomationActivationStore:
                 return False
             if not isinstance(subject, ExecutionSubject):
                 return False
-            _require_subject_namespace(clean_automation_id, subject)
+            _require_branch_subject(subject)
             clean_lease_id = _required(lease_id, "lease_id")
         except ValueError:
             return False

@@ -243,7 +243,7 @@ def test_ta_model_call_joins_parent_once_and_rejects_supplied_authority(source, 
         )
 
     monkeypatch.setattr("tinyassets.providers.model_call.call", routed)
-    monkeypatch.setattr("tinyassets.custom_agents.get_binding", lambda *args, **kwargs: {
+    monkeypatch.setattr("tinyassets.commons_catalog.get_binding", lambda *args, **kwargs: {
         "created_by": "alice", "revision": 1,
     })
     monkeypatch.setattr("tinyassets.provider_serving_binding.resolve_serving_agent_binding",
@@ -294,7 +294,7 @@ def test_ta_model_call_without_pin_uses_owners_explicit_primary(source, monkeypa
     parent = make_budget(source)
     parent.link("turn", "turn-default")
     reference = parent.issue_launch_reference("turn", "turn-default", "custom-a", 1)
-    monkeypatch.setattr("tinyassets.custom_agents.get_binding", lambda *args, **kwargs: {
+    monkeypatch.setattr("tinyassets.commons_catalog.get_binding", lambda *args, **kwargs: {
         "created_by": "alice", "revision": 1,
     })
     monkeypatch.setattr("tinyassets.provider_serving_binding.resolve_serving_agent_binding",

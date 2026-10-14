@@ -29,7 +29,7 @@ def published(tmp_path, monkeypatch):
     )
     from tests.test_command_center_system_copy import _preview
     from tinyassets.api import publish_requests
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     cloud_runtime.__wrapped__(monkeypatch)
@@ -231,7 +231,7 @@ def test_stale_parent_cannot_append_after_another_release(published):
 
 def test_private_edit_after_policy_preview_invalidates_consent(published):
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     request = enable(published, accepted=False)
     row = get_app_ui(
@@ -257,7 +257,7 @@ def test_private_edit_after_policy_preview_invalidates_consent(published):
 
 def test_private_edit_blocks_eligibility_but_does_not_block_opt_out(published):
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     enable(published)
     target = published["publish"](
@@ -293,7 +293,7 @@ def test_private_edit_blocks_eligibility_but_does_not_block_opt_out(published):
 def test_publication_hook_requires_activated_pin_and_pinned_release_display(published, monkeypatch):
     from tests.test_command_center_packages import _as
     from tinyassets import command_center_packages
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(published["base"]) as conn:
         row = conn.execute(
@@ -342,7 +342,7 @@ def test_parent_head_compare_and_set_survives_two_completed_publications(publish
                 universe_id=published["publisher_home"], request_id=left["request_id"]
             )
     assert winner["sequence"] == 2
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     assert get_definition(
         published["base"], left["definition_id"]
@@ -414,7 +414,7 @@ def test_unrelated_same_author_manual_replacement_is_not_auto_linked(published):
 def test_dependency_or_source_change_blocks_policy_and_eligibility(published, mutation):
     from tests.test_command_center_update_adapter import _change_retained_automation
     from tinyassets.branch_versions import mark_versions_public
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     enable(published)
     target = published["publish"](
@@ -478,7 +478,7 @@ def test_capability_surface_changes_are_not_presentation_updates():
 
 def test_policy_replay_and_opt_out_do_not_write_ui_or_run_models(published, monkeypatch):
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import get_app_ui
+    from tinyassets.app_ui_store import get_app_ui
     from tinyassets.providers.router import ProviderRouter
 
     def forbidden(*args, **kwargs):
@@ -568,7 +568,7 @@ def test_release_integrity_tampering_is_not_treated_as_a_valid_series(published)
     import json
 
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(published["base"]) as conn:
         row = conn.execute(
@@ -589,7 +589,7 @@ def test_release_integrity_tampering_is_not_treated_as_a_valid_series(published)
 
 def test_publish_release_hook_checks_author_even_with_home_admin_access(published):
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     with _agent_connect(published["base"]) as conn:
         request = conn.execute(

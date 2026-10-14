@@ -173,8 +173,8 @@ def _seed_serving_assignment(
     model_access=None,
     services=("codex",),
 ) -> None:
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
     universe_dir = base_path / universe_id
@@ -249,7 +249,7 @@ def _seed_open_serving_assignment(
 ) -> str:
     """Select one synthetic owner-bound HTTP provider for foreground runs."""
     from tests.support.broker_double import seed_owner_admission
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
     from tinyassets.providers.definition import register_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger

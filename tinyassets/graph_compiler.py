@@ -2988,7 +2988,7 @@ def _enforce_foreign_mapping_confidentiality(
     """
     if (ctx.caller_provenance or "").strip() == "own":
         return
-    from tinyassets.custom_agents import _is_sensitive_field_name
+    from tinyassets.commons_catalog import _is_sensitive_field_name
 
     for label, mapping in (("inputs_mapping", inputs_mapping), ("output_mapping", output_mapping)):
         for parent_key, child_key in (mapping or {}).items():

@@ -46,7 +46,7 @@ def _scope(uid):
 
 
 def _observe(base, universe, actor, uid, binding_id):
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.provider_assignment import (
         load_provider_assignment_in_transaction,
         provider_assignment_admission,

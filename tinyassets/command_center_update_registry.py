@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 
-from tinyassets.custom_agents import _agent_connect, _begin_write
+from tinyassets.app_ui_store import _begin_write
+from tinyassets.commons_catalog import _agent_connect
 
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS command_center_adoptions (

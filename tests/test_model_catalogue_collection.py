@@ -8,7 +8,7 @@ import pytest
 from tests import test_served_model_preferences as integration
 from tests.test_discovery_snapshot import NOW
 from tinyassets import daemon_server
-from tinyassets.custom_agents import get_binding
+from tinyassets.commons_catalog import get_binding
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import bind_serving_provider
 from tinyassets.providers import definition, discovery_snapshot, served_model_plan

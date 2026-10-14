@@ -57,6 +57,18 @@ class ModelSourceUnavailable(PermissionError):
     """A named source cannot serve this allocation's next model attempt."""
 
 
+def _propose_policy(universe_dir: Path, expected_generation: int, policy: dict) -> dict:
+    """Give the owner a literal policy proposal; the agent never applies it."""
+    from tinyassets.api.pending_requests import request_from_user
+
+    return request_from_user(universe_id=Path(universe_dir).name, payload={
+        "kind": "Policy", "title": "Agent proposes a policy change",
+        "body": ("Review the complete proposed policy below. "
+                 "Applying it changes your account policy."),
+        "action": {"type": "policy_proposal", "expected_generation": expected_generation,
+                   "policy": policy}})
+
+
 class Capabilities:
     def __init__(self, root: Path, context: ExecutionContext, platform: list[dict],
                  call_platform, check_authority: Callable, *,
@@ -150,6 +162,16 @@ class Capabilities:
             from tinyassets.wake_capabilities import CATALOG
 
             items = list(self.platform.values()) + (CATALOG if self.wakes_granted else [])
+            if self.wakes_granted:
+                items.append({
+                    "name": "agent:run", "description":
+                    "Hand work to one of my owner's other agents (an agents/<name>/ "
+                    "directory). It runs as that agent in the background on my owner's "
+                    "normal budget; its status reaches me as it changes.",
+                    "arguments": {"type": "object", "required": ["agent", "input"],
+                                  "additionalProperties": False,
+                                  "properties": {"agent": {"type": "string"},
+                                                 "input": {"type": "string"}}}})
             if self.model_reference is not None:
                 items.append({"name": "model", "description":
                               "Call a connected model within this turn's allocation.",
@@ -210,7 +232,8 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
-        known = (name in {"browser", "model"} or name.startswith(("extension:", "wake:", "policy:"))
+        known = (name in {"browser", "model", "agent:run"}
+                 or name.startswith(("extension:", "wake:", "policy:"))
                  or name in self.platform or name in self.connections())
         if known and not _is_read(name) and not self.mutations_granted:
             return {"error": "mutation capability not granted"}
@@ -240,16 +263,41 @@ class Capabilities:
                     or type(arguments["expected_generation"]) is not int
                     or not isinstance(arguments["policy"], dict)):
                 return {"error": "policy proposal requires a generation and document"}
-            from tinyassets.agent_review import propose_policy
             from tinyassets.broker.client import owner_policy_operation
 
             encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
             if len(encoded.encode()) > 12000:
                 return {"error": "policy proposal is too large"}
             request = await asyncio.to_thread(
-                propose_policy, self.root, arguments["expected_generation"],
+                _propose_policy, self.root, arguments["expected_generation"],
                 arguments["policy"])
             return {"result": {"request": request}}
+        if name == "agent:run":
+            # The one starter (S2): a child session is the named agent's activity.
+            from tinyassets.agent_activities import ActivityRefused
+            from tinyassets.control_plane import session
+            from tinyassets.engine_steering import _session_key
+
+            if not self.wakes_granted:
+                return {"error": "agent run requires the agent's full serving-owner launch"}
+            identity = self.outside_identity
+            if identity is not None and identity.metadata.get("outside_origin") is not None:
+                return {"error": "outside launches cannot start agents"}
+            if (set(arguments) != {"agent", "input"} or not isinstance(arguments["agent"], str)
+                    or not isinstance(arguments["input"], str)):
+                return {"error": "agent run takes an agent name and an input"}
+            parent = session.ChildOf(
+                base_path=self.root.parent, universe_id=self.context.universe,
+                owner=self.context.owner, agent_id=self.context.initiating_agent,
+                inside_activity=_session_key().startswith("activity:"),
+            )
+            try:
+                return {"result": await asyncio.to_thread(
+                    session.start, arguments["agent"], arguments["input"], parent)}
+            except session.AgentUnavailable as exc:
+                return {"error": str(exc)}
+            except ActivityRefused as exc:
+                return {"error": exc.kind, "message": str(exc)}
         if name.startswith("wake:"):
             from tinyassets.wake_capabilities import call
 
@@ -267,11 +315,8 @@ class Capabilities:
                     raise PermissionError('browser authority ended')
 
             try:
-                from tinyassets.agent_review import bound as review_bound
-
-                with review_bound(self.review_model, active=self.model_reference is not None):
-                    return {'result': await asyncio.to_thread(
-                        agent, self.root.parent, self.context, arguments, checkpoint)}
+                return {'result': await asyncio.to_thread(
+                    agent, self.root.parent, self.context, arguments, checkpoint)}
             except Exception:  # noqa: BLE001 - browser exceptions can contain secrets
                 return {'error': 'browser operation unavailable; do not retry an uncertain action'}
         if name.startswith("extension:"):
@@ -292,21 +337,19 @@ class Capabilities:
         if set(arguments) != {"request"} or not isinstance(arguments["request"], dict):
             return {"error": "connection arguments require only a request object"}
         grant, view, verb = match
-        from tinyassets.agent_review import bound as review_bound
         from tinyassets.effectors.authenticated_external_call import (
             run_authenticated_external_call_effector,
         )
 
-        with review_bound(self.review_model, active=self.model_reference is not None):
-            result = await asyncio.to_thread(
-                run_authenticated_external_call_effector,
-                node_id="ta", output_keys=["call"], base_path=self.root,
-                execution_context=self.context,
-                run_state={"call": {"sink": "authenticated_external_call",
-                                   "connection_id": view.connection_id,
-                                   "grant_id": grant.grant_id, "verb": verb,
-                                   "request": arguments["request"]}},
-            )
+        result = await asyncio.to_thread(
+            run_authenticated_external_call_effector,
+            node_id="ta", output_keys=["call"], base_path=self.root,
+            execution_context=self.context,
+            run_state={"call": {"sink": "authenticated_external_call",
+                               "connection_id": view.connection_id,
+                               "grant_id": grant.grant_id, "verb": verb,
+                               "request": arguments["request"]}},
+        )
         response = result.get("response")
         if isinstance(response, dict) and isinstance(response.get("headers"), dict):
             # Same custody rule as bounded_evidence: even a non-secret-looking
@@ -316,15 +359,6 @@ class Capabilities:
             response["header_names"] = sorted(str(k) for k in response.pop("headers"))
             result = {**result, "response": response}
         return {"result": result}
-
-    def review_model(self, prompt, system, **_kwargs):
-        """Review uses the same sealed launch and settled child model attempt."""
-        from tinyassets.providers.model_call import call_sync
-
-        return self._model_request(
-            {"messages": [{"role": "system", "content": system},
-                          {"role": "user", "content": prompt}]}, call_sync,
-            purpose="review")["text"]
 
     async def call_model(self, arguments):
         from tinyassets.exceptions import AllProvidersExhaustedError
@@ -425,7 +459,7 @@ class Capabilities:
                     raise PermissionError("run has no admitted model sources")
                 admitted = live.intersection(sources)
         else:
-            from tinyassets.custom_agents import get_binding
+            from tinyassets.commons_catalog import get_binding
 
             binding_id = row["agent_binding_id"]
             binding_revision = row["binding_revision"]

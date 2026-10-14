@@ -9,12 +9,12 @@ from tests.test_command_center_release_policy import enable
 from tests.test_command_center_release_policy import published as _published
 from tinyassets import command_center_update_executor as executor
 from tinyassets import command_center_update_policy as policy
-from tinyassets.custom_agents import get_app_ui
+from tinyassets.app_ui_store import get_app_ui
 
 
 @pytest.fixture
 def published(tmp_path, monkeypatch):
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
     from tinyassets.universe_owner import record_creation
 
     data = _published.__wrapped__(tmp_path, monkeypatch)
@@ -131,7 +131,8 @@ def test_change_after_reservation_refuses(published, monkeypatch, change):
     from tests.test_command_center_update_adapter import _change_retained_automation
     from tinyassets import storage_accounting
     from tinyassets.account_deletion import principal_digest
-    from tinyassets.custom_agents import _agent_connect, save_app_ui
+    from tinyassets.app_ui_store import save_app_ui
+    from tinyassets.commons_catalog import _agent_connect
 
     enable(published)
     release(published, name="new")
@@ -497,32 +498,6 @@ def test_held_workflow_validation_keeps_nested_dependency_refusal(published):
     assert result["status"] == "requires_decision" and "Nested" in result["reason"], result
 
 
-def test_held_templates_use_same_instruction_and_fingerprint_validation(published):
-    from tests.test_command_center_agent_templates import _publish
-    from tinyassets.api.system_copy_requests import _plan
-
-    source, definition, _ = _publish(published["base"])
-    expected = _plan({"agent_definition_id": source})
-    with executor._connect(published["base"], published["owner"]) as (conn, reads):
-        assert _plan({"agent_definition_id": source}, readers=reads) == expected
-        conn.execute(
-            "UPDATE agent_definitions SET components_json=? WHERE agent_definition_id=?",
-            (
-                json.dumps(
-                    {
-                        "identity": {
-                            "kind": "instructions",
-                            "config": {"instructions": "Safe", "tools": ["hidden"]},
-                        }
-                    }
-                ),
-                definition["agent_definition_id"],
-            ),
-        )
-        with pytest.raises(ValueError, match="instruction-only"):
-            _plan({"agent_definition_id": source}, readers=reads)
-
-
 def test_held_existing_quota_resolvers_never_initialize_and_tier_writer_is_fenced(
     published, monkeypatch
 ):
@@ -657,7 +632,7 @@ def test_durable_owner_status_explains_block_and_hides_foreign_home(published):
 
 def test_policy_sweep_isolates_failure_and_persists_sanitized_status(published, monkeypatch):
     from tests.test_command_center_packages import _as
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     enable(published)
     real = executor.apply_next
@@ -717,7 +692,7 @@ def test_settlement_sweep_failure_does_not_starve_next_receipt(published, monkey
 
 
 def test_stored_grant_digest_tampering_never_authorizes_update(published):
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     enable(published)
     release(published, name="new")
@@ -804,7 +779,7 @@ def test_deleted_receipt_during_settlement_is_not_reported_or_resurrected(publis
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.commons_catalog import _agent_connect
 
     enable(published)
     release(published, name="new")

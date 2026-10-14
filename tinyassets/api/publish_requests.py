@@ -73,10 +73,66 @@ def _ids(raw: Any, field: str, *, required: bool) -> list[str]:
     return ids
 
 
+def reject_nested_workflows(snapshot: Any) -> None:
+    """Refuse both schema-declared child-workflow forms before copying.
+
+    The compiler dispatches these fields whenever they are non-None, including
+    a malformed empty spec. Neither live nor immutable child references can be
+    safely carried without dependency planning and recipient remapping.
+    """
+    if isinstance(snapshot, dict):
+        if any(snapshot.get(field) is not None for field in (
+                "invoke_branch_spec", "invoke_branch_version_spec")):
+            raise ValueError("nested workflow dependencies are not supported by this copier")
+        for value in snapshot.values():
+            reject_nested_workflows(value)
+    elif isinstance(snapshot, list):
+        for value in snapshot:
+            reject_nested_workflows(value)
+
+
+def validate_workflows(base: Any, workflows: list[dict], *,
+                       version_field: str = "version_id", readers=None) -> None:
+    from tinyassets.branch_versions import (
+        branch_version_def_id,
+        branch_version_is_public,
+        get_branch_version,
+        version_readable_by,
+    )
+    from tinyassets.daemon_server import get_branch_definition
+
+    for workflow in workflows:
+        # The caller names its actual copy field. Public package components may
+        # carry arbitrary extra keys, which must never mask the copied version.
+        version_id = workflow.get(version_field)
+        if (not isinstance(version_id, str) or not version_id
+                or version_id != version_id.strip()):
+            raise ValueError("a required workflow version is missing or invalid")
+        source_id = (readers.version_parent(version_id) if readers is not None
+                     else branch_version_def_id(base, version_id))
+        try:
+            branch = (readers.branch(source_id) if readers is not None
+                      else get_branch_definition(base, branch_def_id=source_id)
+                      ) if source_id else {}
+        except KeyError:
+            branch = {}
+        if not version_readable_by(
+            None,
+            author=branch.get("author"),
+            visibility=branch.get("visibility"),
+            public=(readers.version_public(version_id) if readers is not None
+                    else branch_version_is_public(base, version_id)),
+        ):
+            raise ValueError("a required workflow version is missing or no longer public")
+        version = (readers.version(version_id) if readers is not None
+                   else get_branch_version(base, version_id))
+        if version is None:
+            raise ValueError("a required workflow version is missing or no longer public")
+        reject_nested_workflows(version.snapshot)
+
+
 def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     """Shape only: the fields and their types. Ownership is ``capture_action``'s."""
-    from tinyassets.command_center_agent_templates import selection
-
     name = action.get("name")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > _MAX_NAME:
         raise ValueError(f"publish needs a public name of 1-{_MAX_NAME} characters")
@@ -96,8 +152,6 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         "ui_id": ui_id.strip(),
         "automation_ids": _ids(action.get("automation_ids"), "automation_ids", required=False),
     }
-    if "agent_templates" in action:
-        validated["agent_templates"] = selection(action["agent_templates"])
     if action.get("package") is not None:
         from tinyassets.command_center_packages import validate_options
 
@@ -163,7 +217,7 @@ _CHANGED = (
 
 
 def _canonical(value: Any) -> str:
-    from tinyassets.custom_agents import _canonical_json
+    from tinyassets.commons_catalog import _canonical_json
 
     return _canonical_json(value)
 
@@ -248,16 +302,11 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     for a in shown["automations"]:
         lines.append(
             f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
-    for agent in shown.get("agent_templates", []):
-        lines.append(f"- Public instructions for chat agent \"{_shown(agent['name'])}\" "
-                     "(private settings and model assignments stay here)")
-    if shown["ui"] and not shown.get("agent_templates"):
+    if shown["ui"]:
         lines.append(
-            "No chat agents are included. Publishing this screen does not include the "
-            "agents in your command center, even if the screen lists them. Recipients "
-            "see only their own agents, not yours. To include yours, "
-            "ask your agent to select the agents' public instruction templates in a new "
-            "publish request. Workflows and instruction files alone do not create chat agents."
+            "No chat agents are included: an agent is its files, and a component-only "
+            "publication carries none. Recipients see only their own agents. To share an "
+            "agent, publish a package with its agents/<name>/ files."
         )
     package = shown.get("package")
     if package:
@@ -345,15 +394,14 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
+    from tinyassets.app_ui_store import app_ui_workflow_refs, get_app_ui
     from tinyassets.automations import AutomationStore
     from tinyassets.branch_versions import _canonical_snapshot, compute_content_hash
-    from tinyassets.custom_agents import (
+    from tinyassets.commons_catalog import (
         AGENT_SCHEMA_VERSION,
         AgentValidationError,
         _check_secret_fields,
         _normalize_definition_payload,
-        app_ui_workflow_refs,
-        get_app_ui,
     )
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.principals import named_principal
@@ -433,26 +481,6 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         shown["automations"].append({"name": _shown(row.name),
                                      "when": _shown(_trigger_words(trigger))})
 
-    from tinyassets.command_center_agent_templates import export_templates, reject_nested_workflows
-    from tinyassets.custom_agents import app_ui_agent_refs
-
-    selected = action.get("agent_templates") or {}
-    templates = export_templates(base, uid, actor, selected)
-    if set(templates) & (set(components) | {"package"}):
-        raise ValueError("an agent template key collides with another published component")
-    components.update(templates)
-    if templates:
-        shown["agent_templates"] = list(templates.values())
-    if "ui" in components:
-        ui = components["ui"]
-        aliases = {binding: key for key, binding in selected.items()}
-        refs = app_ui_agent_refs(ui)
-        if any(binding not in aliases for binding in refs.values()):
-            raise ValueError("agent_refs must name only agents selected in this publish ask")
-        if any(binding in ui["script"] for binding in selected.values()):
-            raise ValueError("this screen embeds a source agent id; use declared agent_refs")
-        if "agent_refs" in ui:
-            ui["agent_refs"] = {alias: aliases[binding] for alias, binding in refs.items()}
     if "ui" in components:
         for row in rows.values():
             reject_nested_workflows(row)
@@ -853,7 +881,7 @@ def _narrowed(snap: dict[str, Any], leave_out: list[str]) -> dict[str, Any]:
 
 def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], *,
                       request_id: str, universe_id: str = "") -> dict[str, Any]:
-    from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.api.commons_catalog import commons_catalog
     from tinyassets.api.helpers import _base_path
     from tinyassets.branch_versions import (
         branch_version_is_public,
@@ -879,7 +907,7 @@ def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], 
     prior = _flip_if_unchanged(snap)
     try:
         mark_versions_public(_base_path(), newly_marked)
-        result = custom_agents(
+        result = commons_catalog(
             action="publish_agent", payload=json.dumps(snap["definition"]),
             idempotency_key=f"publish-request:{request_id}",
         )

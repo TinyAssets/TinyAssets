@@ -29,13 +29,13 @@ def legacy_authorize_served_provider_call(
     """Fence selection + request + binding + custody immediately before launch."""
 
     from tinyassets.auth.middleware import validate_provider_request_carrier
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.credential_vault import (
         cleanup_llm_credential_snapshot,
         current_connection_grant_custody,
         current_llm_subscription_custody,
         snapshot_llm_subscription_credential,
     )
-    from tinyassets.custom_agents import get_binding
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,

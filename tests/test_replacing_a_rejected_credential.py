@@ -26,7 +26,7 @@ import logging
 import pytest
 
 from tests.test_authenticated_external_call_effector import (  # noqa: F401
-    _a_reviewer_that_approves,  # autouse: an explicit approving D1d reviewer
+    _the_owners_rules_allow,  # autouse: the owner's policy allows this call
 )
 from tests.test_pending_requests import (  # noqa: F401 - fixtures and harness
     _ask,

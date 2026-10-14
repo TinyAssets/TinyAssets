@@ -30,9 +30,10 @@ from tests.test_command_center_packages import (
 )
 from tinyassets.api.pending_requests import try_package
 from tinyassets.api.system_copy_requests import list_systems
+from tinyassets.app_ui_store import get_app_ui, save_app_ui
 from tinyassets.automations import STATE_PAUSED, AutomationStore
 from tinyassets.command_center_picker import read_packages
-from tinyassets.custom_agents import get_app_ui, get_definition, save_app_ui
+from tinyassets.commons_catalog import get_definition
 
 home = package_home
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
@@ -203,7 +204,6 @@ def test_public_version_withdrawn_after_preview_refuses_before_copy(home, monkey
 
 
 def test_legacy_catalogue_pages_past_newer_file_packages(home, monkeypatch):
-    from tinyassets import custom_agents
 
     definition_id = _legacy(home)
     source = get_definition(home, definition_id)
@@ -222,7 +222,9 @@ def test_legacy_catalogue_pages_past_newer_file_packages(home, monkeypatch):
         batch = page(base, **kwargs)
         return [{"tags": [PACKAGE_TAG]} for _ in batch] if kwargs["offset"] == 0 else batch
 
-    monkeypatch.setattr(custom_agents, "list_definitions", packages_first)
+    from tinyassets import commons_catalog
+
+    monkeypatch.setattr(commons_catalog, "list_definitions", packages_first)
     assert [row["agent_definition_id"] for row in list_systems()] == [definition_id]
     assert offsets == [0, 100]
 
@@ -253,7 +255,7 @@ def test_unpublished_workflow_is_refused_before_snapshot_is_read(home, monkeypat
 def test_malformed_public_components_disable_only_their_own_card(home, field, value):
     from copy import deepcopy
 
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     good_id = _legacy(home)
     source = get_definition(home, good_id)
@@ -326,7 +328,7 @@ def test_copied_legacy_workflow_runs_with_recipients_own_provider(home):
 def test_permanently_invalid_automation_refuses_before_recipient_mutation(home, invalid):
     from copy import deepcopy
 
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     original = _legacy(home)
     components = deepcopy(get_definition(home, original)["components"])
