@@ -4987,4 +4987,52 @@ The never-simulate rule lives in `control_station` (hard rule 5):
 if `run_graph` fails, the branch isn't validated, or a code node will not
 compile (`source_code_problems`), state the reason and stop. Approval is
 provenance, never a gate.
+
+## Code nodes and the folder they can touch
+
+Pass `source_code` instead of `prompt_template`. Inside `def run(state)`,
+`invoke_mcp_action(name, ...)` calls one supported action.
+
+The command-center folder `/u` uses these names and arguments:
+
+- `invoke_mcp_action("read", path="notes.md", offset=1, limit=200)` —
+  `offset` is the first line (1-based); `limit` is a line count (default 2000).
+- `invoke_mcp_action("write", path="notes.md", content="...")` — create or replace.
+- `invoke_mcp_action("edit", path="notes.md", old_text="...", new_text="...")` —
+  `old_text` must occur exactly once.
+- `invoke_mcp_action("bash", command="...", timeout=30)` — `timeout` is seconds
+  (omit it for the tool default; at most 600).
+
+An empty `tools_allowed` grants every served tool (`read`, `write`, `edit`,
+`bash`, `read_graph`, `get_status`, `run_graph`, `write_graph`,
+`browse_commons`, `read_commons_shape`, `read_brain`, `write_brain`,
+`connect_compute`, `source_channel`). A named list grants exactly those names.
+Aliases must be named in `tools_allowed`: `wiki.read`, `wiki.search`,
+`wiki.list`, `wiki.since`, `wiki.lint`, `goals.leaderboard`,
+`goals.archive_consultation`, `gates.leaderboard`, `gates.get_ladder`,
+`enqueue_branch_run`, `deliver_output`, `read_run_file`, `notify` (the
+underscore spellings of those aliases work too). Wiki writes are not an
+action; publish through an effect. Bound user attachments are a different
+call, `invoke_mcp_action("read_run_file", file_id=..., offset=0, count=524288)`,
+on a node that declares that file field in `input_keys`.
+
+An unknown name is refused with this same set. The refusal is the list above,
+not a shorter alias-only list.
+
+## Workspace effect packet
+
+A node with `"effects": ["workspace"]` returns one packet under an output key.
+Every packet has `"sink": "workspace"`. A packet without that field is not a
+workspace packet, and the node is refused `no_matching_packet`.
+
+- create: `{"sink": "workspace", "op": "create", "storage": "scratch"}`
+  (`"universe"` keeps it; `"workspace_key"` names it).
+- checkout: `{"sink": "workspace", "op": "checkout", "connection_id": "...",
+  "grant_id": "...", "repo": "owner/name", "ref": "main", "storage": "scratch"}`.
+- push: `{"sink": "workspace", "op": "push", "workspace": "<checkout node id>",
+  "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`.
+- discard: `{"sink": "workspace", "op": "discard", "workspace": "<node id>"}`.
+
+A later code node binds that checkout with `"workspace": "<that node id>"`
+and uses `ws` at `/workspace`.
 """

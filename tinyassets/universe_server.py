@@ -742,7 +742,10 @@ def extension_guide() -> str:
     tags={"branches", "extensions", "graph", "customization"},
 )
 def branch_design_guide() -> str:
-    """Design, inspect, patch, and run graph branches through canonical handles."""
+    """Design, inspect, patch, and run graph branches through canonical handles.
+
+    The same text is read_page page="branch_design_guide".
+    """
     return _branch_design_guide_prompt()
 
 
@@ -1143,7 +1146,10 @@ def write_graph(
             input_keys with tools_allowed ["read_run_file"], reading by keyword call
             invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
             count=524288) which returns bytes_base64, next_offset and eof (loop until
-            eof). Full example: the branch_design_guide "File input contracts" section.
+            eof). Full example: read_page page="branch_design_guide", section
+            "File input contracts". That same page documents the workspace
+            effect packet and the source_code read/write/edit/bash calls.
+            An app UI's add_ui payload is read_page page="app_ui".
             Unbound references expire after one hour; bound files remain until release
             or owner erasure. operation=release takes {file_id}, refuses active run
             bindings and revokes only that file. Export via read_graph target=run_file
@@ -1984,7 +1990,7 @@ def run_graph(
     {version,file_id,size_bytes,sha256,filename,media_type}. No capture, bind
     step, public URL or re-upload is needed. Run a branch whose io_manifest
     declares a file or file_bundle input
-    (write_graph, and the branch_design_guide "File input contracts" section)
+    (write_graph, and read_page page="branch_design_guide", "File input contracts")
     and pass each reference VERBATIM, unchanged, under that input name in
     inputs_json, e.g. {"files": [<reference>, ...]}. Admission binds the exact
     same-owner references before anything executes; a retyped, edited or
@@ -2141,6 +2147,11 @@ def read_page(
 
     Args:
         page: Optional wiki page slug or path. Empty searches by query.
+            read_page page="branch_design_guide" and read_page page="app_ui"
+            return those authoring documents (not wiki pages): the branch
+            guide includes the workspace effect packet and source_code
+            read/write/edit/bash calls; the app_ui page is the add_ui
+            payload, whose version must be 1.
         query: Optional search text or ambient relevance terms.
         category: Optional wiki category filter for searches.
         changed_since: Optional ISO timestamp for feed freshness filtering.
@@ -2151,6 +2162,11 @@ def read_page(
     """
     universe_id = command_center_id  # internal name until C3
     if page:
+        from tinyassets.api.authoring_pages import authoring_page_json
+
+        authored = authoring_page_json(page)
+        if authored:
+            return authored
         return _wiki_impl(
             action="read",
             page=page,
