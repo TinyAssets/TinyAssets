@@ -42,6 +42,7 @@ jobs:
     # Only run when the p0-outage label is applied.
     if: github.event.label.name == 'p0-outage'
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
 
     steps:

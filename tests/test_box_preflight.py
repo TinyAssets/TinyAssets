@@ -20,17 +20,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_g4_durability_stops_mount_and_reattaches_loop(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(box_store_durability, "STORE", tmp_path)
+    if sys.platform == "win32":
+        # Linux opens and fsyncs the containing directory; model that syscall
+        # boundary on Windows while checking the mount command sequence.
+        monkeypatch.setattr(box_store_durability.os, "O_DIRECTORY", 0, raising=False)
+        monkeypatch.setattr(box_store_durability.os, "open", lambda *_a: 42)
+        monkeypatch.setattr(box_store_durability.os, "fsync", lambda *_a: None)
+        monkeypatch.setattr(box_store_durability.os, "close", lambda *_a: None)
     calls = []
     monkeypatch.setattr(box_store_durability, "command", lambda *args: calls.append(args))
     result = box_store_durability.check()
     assert result == {"pass": True, "fsync_remount": True}
-    assert calls[:4] == [
-        ("systemctl", "stop", box_store_durability.SERVICE),
+    assert calls[:3] == [
         ("systemctl", "stop", box_store_durability.MOUNT),
         ("systemctl", "stop", box_store_durability.DEVICE),
         ("systemctl", "start", box_store_durability.MOUNT),
     ]
-    assert calls[-1] == ("systemctl", "start", box_store_durability.SERVICE)
+    assert calls[-1] == ("systemctl", "start", box_store_durability.MOUNT)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -39,6 +45,52 @@ def test_g4_durability_refuses_nonempty_store(monkeypatch, tmp_path: Path) -> No
     (tmp_path / "1000").mkdir()
     result = box_store_durability.check()
     assert result["pass"] is False
+
+
+def test_boxhostd_publishes_durability_in_g4(monkeypatch, tmp_path: Path) -> None:
+    result = tmp_path / "preflight.json"
+
+    def harness(path: Path) -> None:
+        path.write_text(json.dumps({"pass": True, "gates": {"G4": {"pass": True}}}))
+
+    monkeypatch.setattr(boxhostd_idle, "run_preflight", harness)
+    monkeypatch.setattr(
+        boxhostd_idle.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            [], 0, stdout=json.dumps({"pass": False, "reason": "remount_failed"})
+        ),
+    )
+    boxhostd_idle.publish_preflight(result)
+    report = json.loads(result.read_text())
+    assert report["pass"] is False
+    assert report["gates"]["G4"] == {
+        "pass": False,
+        "fsync_remount": False,
+        "durability_reason": "remount_failed",
+    }
+    assert not result.with_suffix(".harness.json").exists()
+
+
+def test_boxhostd_publishes_passing_g4_after_durability(monkeypatch, tmp_path: Path) -> None:
+    result = tmp_path / "preflight.json"
+
+    def harness(path: Path) -> None:
+        assert not result.exists()
+        path.write_text(json.dumps({"pass": True, "gates": {"G4": {"pass": True}}}))
+
+    def durability(*_args, **_kwargs):
+        assert not result.exists()
+        return subprocess.CompletedProcess(
+            [], 0, stdout=json.dumps({"pass": True, "fsync_remount": True})
+        )
+
+    monkeypatch.setattr(boxhostd_idle, "run_preflight", harness)
+    monkeypatch.setattr(boxhostd_idle.subprocess, "run", durability)
+    boxhostd_idle.publish_preflight(result)
+    report = json.loads(result.read_text())
+    assert report["pass"] is True
+    assert report["gates"]["G4"] == {"pass": True, "fsync_remount": True}
 
 
 def test_percentile_and_empty_sample() -> None:
@@ -86,17 +138,14 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
     boxes.parent_cgroup = tmp_path / "cgroups"
     boxes.parent_cgroup.mkdir()
     boxes.names = []
+    boxes.sandbox_pids = {}
     starts = []
-    original_relative_to = Path.relative_to
-
-    def relative_to(path, other, *args, **kwargs):
-        if path == boxes.parent_cgroup and other == "/sys/fs/cgroup":
-            return Path("test")
-        return original_relative_to(path, other, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "relative_to", relative_to)
+    state_pid = 123
+    monkeypatch.setattr(box_preflight, "CGROUP_ROOT", tmp_path)
 
     def spec(*args, **_kwargs):
+        if args[0] == "state":
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"pid": state_pid}))
         bundle = Path(args[args.index("--bundle") + 1])
         (bundle / "config.json").write_text(
             json.dumps({"process": {}, "mounts": [], "linux": {}})
@@ -104,20 +153,58 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
         return subprocess.CompletedProcess(args, 0)
 
     def detached_run(args, **kwargs):
+        assert "--systemd-cgroup=false" in args
         assert args[args.index("run") + 1] == "--detach"
         assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["stdout"] == subprocess.DEVNULL
         assert kwargs["stderr"] == subprocess.DEVNULL
         assert kwargs.get("capture_output") is not True
         starts.append(args[-1])
+        cgroup = boxes.parent_cgroup / args[-1]
+        cgroup.mkdir()
+        (cgroup / "cgroup.procs").write_text("123\n456\n")
+        (cgroup / "memory.current").write_text("1048576\n")
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(boxes, "command", spec)
     monkeypatch.setattr(box_preflight.subprocess, "run", detached_run)
     for name in ("g1", "cap0", "cap1", "cap2", "cap3"):
-        (boxes.parent_cgroup / name).mkdir()
-        boxes.start(name)
+        boxes.start(name, memory=box_preflight.GIB)
+        config = json.loads((tmp_path / name / "config.json").read_text())
+        assert config["linux"]["cgroupsPath"] == f"/cgroups/{name}"
+        assert config["linux"]["resources"]["memory"] == {
+            "limit": box_preflight.GIB,
+            "swap": box_preflight.GIB,
+        }
     assert starts == ["g1", "cap0", "cap1", "cap2", "cap3"]
+    state_pid = 999
+    with pytest.raises(RuntimeError, match="outside its limited box cgroup"):
+        boxes.start("outside", memory=box_preflight.GIB)
+    (boxes.parent_cgroup / "stale").mkdir()
+    with pytest.raises(RuntimeError, match="already exists"):
+        boxes.start("stale", memory=box_preflight.GIB)
+
+
+def test_host_cgroup_membership_and_rss_use_fake_sys_and_proc(tmp_path, monkeypatch) -> None:
+    cgroup = tmp_path / "sys/fs/cgroup/boxhostd/g1"
+    child = cgroup / "nested"
+    child.mkdir(parents=True)
+    (cgroup / "cgroup.procs").write_text("123\n")
+    (child / "cgroup.procs").write_text("456\n")
+    proc = tmp_path / "proc"
+    for pid, kib in ((123, 1024), (456, 2048)):
+        status = proc / str(pid) / "status"
+        status.parent.mkdir(parents=True)
+        status.write_text(f"Name:\trunsc\nVmRSS:\t{kib} kB\n")
+        (proc / str(pid) / "cgroup").write_text("0::/\n")
+    monkeypatch.setattr(box_preflight, "PROC_ROOT", proc)
+    assert box_preflight.cgroup_pids(cgroup) == {123, 456}
+    assert box_preflight.rss_bytes(cgroup) == 3 * box_preflight.MIB
+    (cgroup / "cgroup.procs").write_text("")
+    (child / "cgroup.procs").write_text("")
+    with pytest.raises(RuntimeError, match="no processes"):
+        box_preflight.rss_bytes(cgroup)
+    assert box_preflight.rss_bytes(cgroup, allow_empty=True) == 0
 
 
 def test_workload_error_preserves_fixed_step_category() -> None:
@@ -223,9 +310,10 @@ def test_g3_fails_when_daemon_cap_reservation_consumes_host_headroom(
     assert g6.get("failed_steps", []) == failed_steps
 
 
-def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
+def test_g1_accepts_box_oom_with_or_without_surviving_sentry(monkeypatch, tmp_path: Path) -> None:
     class Boxes:
         state = tmp_path
+        sandbox_pids = {"g1": 123}
 
         def start(self, _name, *, memory):
             assert memory == box_preflight.GIB
@@ -239,7 +327,12 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
             return 137
 
     monkeypatch.setattr(box_preflight.subprocess, "Popen", lambda *_a, **_k: Allocation())
+    monkeypatch.setattr(box_preflight, "CGROUP_ROOT", tmp_path.parent)
     monkeypatch.setattr(box_preflight, "canary_p95", lambda: 10)
+    monkeypatch.setattr(
+        box_preflight, "rss_bytes", lambda _c, **_k: 64 * box_preflight.MIB
+    )
+    monkeypatch.setattr(box_preflight, "cgroup_pids", lambda _c: remaining_pids)
     oom = iter((0, 1))
     events = iter((0, 1))
     monkeypatch.setattr(box_preflight, "host_oom_kills", lambda: next(oom))
@@ -249,16 +342,43 @@ def test_g1_checks_sandbox_survives_oom(monkeypatch, tmp_path: Path) -> None:
         "cgroup_value",
         lambda _p, key: {
             "memory.max": str(box_preflight.GIB),
+            "memory.swap.max": "0",
+            "memory.current": str(64 * box_preflight.MIB),
+            "memory.peak": str(box_preflight.GIB),
             "pids.max": "1024",
             "cpu.weight": "100",
         }[key],
     )
     sandbox_rc = 1
+    remaining_pids = {123}
     assert box_preflight.g1(Boxes(), 10)["pass"] is False
     oom = iter((0, 1))
     events = iter((0, 1))
     sandbox_rc = 0
-    assert box_preflight.g1(Boxes(), 10)["pass"] is True
+    result = box_preflight.g1(Boxes(), 10)
+    assert result["pass"] is True
+    assert result["sandbox_pid_in_cgroup_after_allocation"] is True
+    assert result["box_memory_peak_bytes"] == box_preflight.GIB
+    assert result["box_rss_after_bytes"] == 64 * box_preflight.MIB
+    oom = iter((0, 1))
+    events = iter((0, 1))
+    remaining_pids = set()
+    result = box_preflight.g1(Boxes(), 10)
+    assert result["pass"] is True
+    assert result["sandbox_pid_in_cgroup_after_allocation"] is False
+    assert result["sandbox_exec_after_oom_rc"] is None
+
+
+def test_g1_allocation_touches_every_page() -> None:
+    size = 4 * box_preflight.MIB
+    result = subprocess.run(
+        [sys.executable, "-c", box_preflight.allocation_code(size)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert result.stdout == str(size // 4096)
 
 
 def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: Path) -> None:
@@ -619,8 +739,8 @@ def test_preflight_workflow_and_idle_service_are_decoupled_from_daemon() -> None
     assert "workflow_dispatch:" in gates
     assert "production-host-mutation" in gates
     assert "--kill-who=main -s USR1 boxhostd.service" in gates
-    assert "box_store_durability.py" in gates
-    assert 'g4["pass"] = g4.get("pass") is True and durability.get("pass") is True' in gates
+    assert "box_store_durability.py" in installer
+    assert 'g4["fsync_remount"]' in (ROOT / "deploy/boxhostd_idle.py").read_text()
     assert "Delegate=yes" in unit
     assert "boxhostd_idle.py" in unit
     assert "f3ed9131bc252259df150e270154180188f9df56b73a2312940325e1f522a2d6" in installer

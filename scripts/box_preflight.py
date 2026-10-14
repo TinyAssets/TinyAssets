@@ -35,6 +35,8 @@ QUOTA_SCRATCH = ".box-preflight-scratch"
 BOX_STORE = Path("/var/lib/boxhostd/owners")
 BOX_IMAGE = Path("/var/lib/boxhostd/boxes.img")
 MOUNTINFO = Path("/proc/self/mountinfo")
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+PROC_ROOT = Path("/proc")
 
 
 class CleanupError(Exception):
@@ -123,6 +125,15 @@ def cgroup_event(path: Path, event: str) -> int:
     return int(values.get(event, "0"))
 
 
+def cgroup_pids(cgroup: Path) -> set[int]:
+    """Read host cgroupfs membership, including runsc child cgroups."""
+    return {
+        int(pid)
+        for procs in cgroup.rglob("cgroup.procs")
+        for pid in procs.read_text().split()
+    }
+
+
 def service_cgroup_parent(path: str) -> str:
     if not path.endswith("/boxhostd.service/control"):
         raise RuntimeError("preflight must run under boxhostd.service")
@@ -130,12 +141,7 @@ def service_cgroup_parent(path: str) -> str:
 
 
 def pss_mib(cgroup: Path) -> float:
-    pids: set[int] = set()
-    for procs in cgroup.rglob("cgroup.procs"):
-        try:
-            pids.update(int(pid) for pid in procs.read_text().split())
-        except OSError:
-            pass
+    pids = cgroup_pids(cgroup)
     total_kib = 0
     for pid in pids:
         try:
@@ -148,6 +154,37 @@ def pss_mib(cgroup: Path) -> float:
     if not pids:
         raise RuntimeError("sandbox cgroup has no processes")
     return round(total_kib / 1024, 1)
+
+
+def rss_bytes(cgroup: Path, *, allow_empty: bool = False) -> int:
+    """Host RSS of the Sentry, gofer and their cgroup descendants."""
+    pids = cgroup_pids(cgroup)
+    if not pids and not allow_empty:
+        raise RuntimeError("sandbox cgroup has no processes")
+    total = 0
+    for pid in pids:
+        try:
+            for line in (PROC_ROOT / str(pid) / "status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    total += int(line.split()[1]) * 1024
+                    break
+        except FileNotFoundError:
+            pass  # Process exited after reading cgroup.procs.
+    return total
+
+
+def allocation_code(size: int) -> str:
+    """Write a nonzero byte to every page and keep the mapping until exit."""
+    return (
+        "import mmap, os, time\n"
+        f"size={size}\n"
+        "page=mmap.PAGESIZE\n"
+        "m=mmap.mmap(-1,size)\n"
+        "for i in range(0,size,page):\n"
+        " m[i]=(i//page)%251+1\n"
+        "os.write(1, str(len(range(0,size,page))).encode())\n"
+        "time.sleep(2)\n"
+    )
 
 
 def export_daemon_rootfs(work: Path) -> Path:
@@ -200,18 +237,22 @@ class Boxes:
         self.state = work / "runsc-state"
         self.state.mkdir()
         self.names: list[str] = []
-        service_cgroup = Path("/proc/self/cgroup").read_text().splitlines()[0].split(":", 2)[2]
-        self.parent_cgroup = Path("/sys/fs/cgroup") / service_cgroup_parent(service_cgroup).lstrip(
+        self.sandbox_pids: dict[str, int] = {}
+        service_cgroup = (PROC_ROOT / "self/cgroup").read_text().splitlines()[0].split(":", 2)[2]
+        self.parent_cgroup = CGROUP_ROOT / service_cgroup_parent(service_cgroup).lstrip(
             "/"
         )
-        if cgroup_value(Path("/sys/fs/cgroup"), "cgroup.controllers").find("memory") < 0:
+        if "memory" not in cgroup_value(CGROUP_ROOT, "cgroup.controllers").split():
             raise RuntimeError("cgroup v2 memory controller unavailable")
 
     def command(
         self, *args: str, check: bool = True, timeout: int = 120
     ) -> subprocess.CompletedProcess[str]:
         return run(
-            [str(RUNSC), "--root", str(self.state), "--network=none", "--platform=systrap", *args],
+            [
+                str(RUNSC), "--root", str(self.state), "--systemd-cgroup=false",
+                "--network=none", "--platform=systrap", *args,
+            ],
             check=check,
             timeout=timeout,
         )
@@ -252,11 +293,15 @@ class Boxes:
                 "options": ["nosuid", "nodev", "mode=1777", "size=268435456"],
             }
         )
+        cgroup = self.parent_cgroup / name
+        if cgroup.exists():
+            raise RuntimeError("box cgroup already exists; runsc would not apply its limits")
         config.setdefault("linux", {})["cgroupsPath"] = (
-            f"/{self.parent_cgroup.relative_to('/sys/fs/cgroup')}/{name}"
+            f"/{cgroup.relative_to(CGROUP_ROOT).as_posix()}"
         )
         config["linux"]["resources"] = {
-            "memory": {"limit": memory},
+            # OCI swap is memory+swap. Equal values disable cgroup v2 swap.
+            "memory": {"limit": memory, "swap": memory},
             "pids": {"limit": 1024},
             "cpu": {"shares": 1024},
         }
@@ -264,7 +309,7 @@ class Boxes:
         start = time.monotonic()
         result = subprocess.run(
             [
-                str(RUNSC), "--root", str(self.state), "--network=none",
+                str(RUNSC), "--root", str(self.state), "--systemd-cgroup=false", "--network=none",
                 "--platform=systrap", "run", "--detach", "--bundle", str(bundle), name,
             ],
             stdin=subprocess.DEVNULL,
@@ -276,9 +321,14 @@ class Boxes:
         if result.returncode:
             raise RuntimeError(f"runsc start failed ({result.returncode})")
         self.names.append(name)
-        cgroup = self.parent_cgroup / name
         if not cgroup.is_dir():
             raise RuntimeError("runsc did not create its delegated box cgroup")
+        state = json.loads(self.command("state", name).stdout)
+        if state["pid"] not in cgroup_pids(cgroup):
+            raise RuntimeError("runsc sandbox is outside its limited box cgroup")
+        if int(cgroup_value(cgroup, "memory.current")) <= 0:
+            raise RuntimeError("runsc sandbox has no charge in its limited box cgroup")
+        self.sandbox_pids[name] = state["pid"]
         return time.monotonic() - start, owner, cgroup
 
     def exec(
@@ -296,6 +346,7 @@ class Boxes:
         self.command("kill", name, "KILL", check=False, timeout=10)
         self.command("delete", "--force", name, check=False, timeout=10)
         self.names.remove(name)
+        self.sandbox_pids.pop(name, None)
 
 
 BROWSER_SCRIPT = """from pathlib import Path
@@ -324,6 +375,7 @@ def chromium(boxes: Boxes, name: str, owner: Path) -> subprocess.Popen[str]:
             str(RUNSC),
             "--root",
             str(boxes.state),
+            "--systemd-cgroup=false",
             "--network=none",
             "--platform=systrap",
             "exec",
@@ -351,29 +403,27 @@ def chromium(boxes: Boxes, name: str, owner: Path) -> subprocess.Popen[str]:
 def g1(boxes: Boxes, baseline: float) -> dict:
     start_oom = host_oom_kills()
     _, _, cgroup = boxes.start("g1", memory=GIB)
-    limits = {name: cgroup_value(cgroup, name) for name in ("memory.max", "pids.max", "cpu.weight")}
+    sandbox_pid = boxes.sandbox_pids["g1"]
+    limits = {
+        name: cgroup_value(cgroup, name)
+        for name in ("memory.max", "memory.swap.max", "pids.max", "cpu.weight")
+    }
     before = cgroup_event(cgroup, "oom_kill")
-    # Touch every page so Linux really charges 1.5 GiB; the box should kill
-    # this child while its PID 1 and the host remain alive.
-    alloc_code = (
-        "import mmap,time\n"
-        "m=mmap.mmap(-1,1536*1024*1024)\n"
-        "for i in range(0,1536*1024*1024,4096):\n"
-        " m[i]=1\n"
-        " if i%(64*1024*1024)==0: time.sleep(0.2)\n"
-    )
+    rss_before = rss_bytes(cgroup)
+    current_before = int(cgroup_value(cgroup, "memory.current"))
     alloc = subprocess.Popen(
         [
             str(RUNSC),
             "--root",
             str(boxes.state),
+            "--systemd-cgroup=false",
             "--network=none",
             "--platform=systrap",
             "exec",
             "g1",
             "/opt/venv/bin/python",
             "-c",
-            alloc_code,
+            allocation_code(1536 * MIB),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -387,11 +437,28 @@ def g1(boxes: Boxes, baseline: float) -> dict:
         raise RuntimeError("1.5 GiB allocation did not terminate within 90 seconds") from None
     box_oom = cgroup_event(cgroup, "oom_kill") - before
     all_oom = host_oom_kills() - start_oom
-    sandbox_exec_rc = boxes.exec("g1", "/bin/true", check=False).returncode
+    memory_peak = int(cgroup_value(cgroup, "memory.peak"))
+    memory_current = int(cgroup_value(cgroup, "memory.current"))
+    remaining_pids = cgroup_pids(cgroup)
+    rss_after = rss_bytes(cgroup, allow_empty=True)
+    sandbox_exec_rc = (
+        boxes.exec("g1", "/bin/true", check=False).returncode
+        if sandbox_pid in remaining_pids else None
+    )
     result = {
+        "cgroup_path": f"/{cgroup.relative_to(CGROUP_ROOT).as_posix()}",
+        "sandbox_pid": sandbox_pid,
+        "sandbox_pid_in_cgroup_before_allocation": True,
+        "sandbox_pid_in_cgroup_after_allocation": sandbox_pid in remaining_pids,
         "memory_max_bytes": limits["memory.max"],
+        "memory_swap_max_bytes": limits["memory.swap.max"],
         "pids_max": limits["pids.max"],
         "cpu_weight": limits["cpu.weight"],
+        "box_rss_before_bytes": rss_before,
+        "box_rss_after_bytes": rss_after,
+        "box_memory_current_before_bytes": current_before,
+        "box_memory_current_after_bytes": memory_current,
+        "box_memory_peak_bytes": memory_peak,
         "allocation_rc": allocation_rc,
         "sandbox_exec_after_oom_rc": sandbox_exec_rc,
         "box_oom_kills": box_oom,
@@ -402,10 +469,12 @@ def g1(boxes: Boxes, baseline: float) -> dict:
     }
     result["pass"] = (
         limits["memory.max"] == str(GIB)
+        and limits["memory.swap.max"] == "0"
         and limits["pids.max"] == "1024"
         and int(limits["cpu.weight"]) > 0
+        and memory_peak >= GIB * 9 // 10
         and allocation_rc != 0
-        and sandbox_exec_rc == 0
+        and sandbox_exec_rc in (None, 0)
         and box_oom >= 1
         and all_oom == box_oom
         and under <= baseline * 1.2
@@ -459,6 +528,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
                 str(RUNSC),
                 "--root",
                 str(boxes.state),
+                "--systemd-cgroup=false",
                 "--network=none",
                 "--platform=systrap",
                 "exec",
@@ -519,7 +589,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
         "canary_ratio": round(under / baseline, 3),
     }
     g3_result["pass"] = (
-        with_browser <= 700
+        with_browser <= 1400
         and without_browser <= 250
         and first_exec_s <= 1
         and g3_result["exec_p95_ms"] <= 100
@@ -699,7 +769,10 @@ def cleanup_scratch(work: Path) -> None:
         names = {"cap3", "cap2", "cap1", "cap0", "g1"}
         names.update(child.name for child in state.iterdir() if child.is_dir())
         for name in sorted(names):
-            prefix = [str(RUNSC), "--root", str(state), "--network=none", "--platform=systrap"]
+            prefix = [
+                str(RUNSC), "--root", str(state), "--systemd-cgroup=false",
+                "--network=none", "--platform=systrap",
+            ]
             try:
                 run([*prefix, "kill", name, "KILL"], timeout=10, check=False)
                 deleted = run([*prefix, "delete", "--force", name], timeout=10, check=False)

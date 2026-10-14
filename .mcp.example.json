@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "tinyassets": {
-      "command": "python",
-      "args": ["-m", "tinyassets.mcp_server"]
-    }
-  }
-}

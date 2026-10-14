@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P2a G4 durability check with boxhostd stopped during a real remount."""
+"""P2a G4 durability check run by idle boxhostd after sandbox cleanup."""
 
 from __future__ import annotations
 
@@ -10,13 +10,12 @@ import subprocess
 from pathlib import Path
 
 STORE = Path("/var/lib/boxhostd/owners")
-SERVICE = "boxhostd.service"
 MOUNT = "var-lib-boxhostd-owners.mount"
 DEVICE = "box-store-device.service"
 
 
 def command(*args: str) -> None:
-    subprocess.run(args, check=True, capture_output=True, text=True, timeout=120)
+    subprocess.run(args, check=True, capture_output=True, text=True, timeout=60)
 
 
 def check() -> dict:
@@ -24,7 +23,6 @@ def check() -> dict:
         return {"pass": False, "reason": "durability check requires empty P2a store"}
     marker = STORE / f".g4-fsync-{secrets.token_hex(8)}"
     payload = secrets.token_bytes(4096)
-    stopped = False
     result: dict = {"pass": False}
     try:
         with marker.open("xb") as output:
@@ -36,8 +34,6 @@ def check() -> dict:
             os.fsync(directory)
         finally:
             os.close(directory)
-        stopped = True
-        command("systemctl", "stop", SERVICE)
         command("systemctl", "stop", MOUNT)
         command("systemctl", "stop", DEVICE)
         command("systemctl", "start", MOUNT)
@@ -48,8 +44,6 @@ def check() -> dict:
     finally:
         try:
             command("systemctl", "start", MOUNT)
-            if stopped:
-                command("systemctl", "start", SERVICE)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             result = {"pass": False, "reason": f"restart:{type(error).__name__}"}
         try:

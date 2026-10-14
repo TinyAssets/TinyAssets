@@ -232,9 +232,10 @@ no listener and no daemon caller. Its only P2a operation is a root-only
 `SIGUSR1` that starts the preflight in its delegated cgroup. Every raw `runsc`
 sandbox uses `--network=none`. P2b replaces this idle entry point.
 
-After that deploy, dispatch **Box preflight on production** in a quiet window
-from the Actions tab (`gh workflow run box-preflight.yml --ref main`). It shares
-the production host mutation concurrency group. The run records G1, G3, G4
+The box store volume is attached at 20 GiB by `box-store-volume.yml`.
+After deploy, dispatch **Box preflight on production** from the Actions tab
+in a quiet window. It shares the production host mutation concurrency group.
+The run records G1, G3, G4
 and G6 pass/fail numbers in its summary and `box-preflight-<run id>` artifact.
 Only aggregate host and sandbox numbers leave the droplet. Any failed gate
 blocks P2b; the thresholds in ADR-022 are not adjusted by the harness.
@@ -243,10 +244,11 @@ uses disposable owner trees, and deletes them after measuring. G4 creates a
 disposable quota tree under `/var/lib/boxhostd/owners/.box-preflight-scratch/`.
 It measures EDQUOT in one box, ENOSPC when the XFS store fills, root free
 space, and allocated image blocks after `fstrim -a`.
-After the sandbox run, the workflow stops the idle service, fsyncs a marker,
-stops the mount and device service, remounts (reattaching the loop image when
-used), checks the marker and restarts boxhostd. The combined G4 gate fails if
-this durability check fails. It runs only while the P2a store is empty.
+After the sandbox run and cleanup, boxhostd fsyncs a marker, stops the mount
+and device service, remounts (reattaching the loop image when used), and checks
+the marker. It folds `fsync_remount` and the durability pass into G4 in
+`preflight.json` before publishing the result. This runs only while the P2a
+store is empty.
 The harness has a 30-minute deadline and cleans its sandboxes, `/var/tmp/box-preflight-*`
 rootfs and owner tree, and scratch quota on timeout. At 40 minutes, boxhostd
 kills the harness process group and runs the same cleanup pass before reporting
@@ -287,7 +289,6 @@ Retain `/var/lib/boxhostd/boxes.img` and any external block volume; they
 contain box data. Reverting the deploy prevents automatic reinstallation.
 
 ## Step 5 — Verify canary green (~10 sec)
-
 
 From the Hetzner box (container-internal):
 
@@ -496,7 +497,7 @@ image succeed or fail together:
 1. **validate** — `docker compose config` on the claimed copy with
    `/etc/tinyassets/env` and the candidate image, asserting the production
    invariants: the default service set is exactly `daemon`/`cloudflared`/`logs`
-   (profiles are honoured, so `slack-agent` is absent by construction), the three
+   and the three
    container names, `restart: unless-stopped` on all three, digest-pinned
    `cloudflare/cloudflared:`/`timberio/vector:` sidecar images, the daemon's
    `env_file` containing `/etc/tinyassets/env`, its `tinyassets-data:/data`

@@ -43,6 +43,7 @@ jobs:
   observe:
     name: Observe cloud-only facts (read-only)
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     steps:
       # workflow_dispatch can be fired against any branch carrying this file.

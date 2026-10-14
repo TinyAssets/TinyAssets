@@ -84,6 +84,7 @@ jobs:
   cleanup_retained_droplet:
     if: inputs.cleanup_droplet_id != ''
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 5
 
     steps:
@@ -206,6 +207,7 @@ jobs:
   drill:
     if: inputs.cleanup_droplet_id == ''
     runs-on: ubuntu-latest
+    environment: production
     # 45, not 30: the off-region origin downloads the full tarball (about 4 GB)
     # to the runner and uploads it to the drill Droplet.
     timeout-minutes: 45

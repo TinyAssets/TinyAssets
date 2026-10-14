@@ -1,7 +1,15 @@
 name: Box preflight on production
 
-# Manual quiet-window host measurement. Uses the existing deploy SSH secret,
-# creates no cloud resource, and publishes aggregate gate numbers only.
+# Manual quiet-window host measurement. Uses the deploy SSH secret from the
+# main-only `production` environment, creates no cloud resource, and publishes
+# aggregate gate numbers only.
+#
+# Host contract: this job opens one ssh connection whose remote command is a
+# fixed literal: signal the harness deploy-prod installed (boxhostd.service, which
+# runs the gates from /opt/tinyassets), wait for its result file and print it.
+# Nothing from this checkout reaches the host, so a dispatch from a branch can
+# execute nothing but what main already shipped.
+# tests/test_workflow_production_environment.py enforces both halves.
 on:
   workflow_dispatch:
 
@@ -16,6 +24,7 @@ jobs:
   measure:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 45
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
@@ -41,40 +50,16 @@ jobs:
         timeout-minutes: 40
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo systemctl is-active --quiet boxhostd.service && sudo rm -f /run/tinyassets-boxhostd/preflight.json && sudo systemctl kill --kill-who=main -s USR1 boxhostd.service'
-          ready=0
-          for _ in $(seq 1 240); do
-            if ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                'sudo test -s /run/tinyassets-boxhostd/preflight.json'; then
-              ready=1
-              break
-            fi
-            sleep 10
-          done
-          if [ "$ready" -ne 1 ]; then
-            printf '%s\n' '{"pass":false,"reason":"boxhostd produced no result within 40 minutes"}' > box-preflight-results.json
+          # One connection, one single-quoted literal: nothing from this checkout can
+          # reach the host. The remote side signals boxhostd.service, waits for its
+          # result file and prints it; that file is the only thing that comes back.
+          status=0
+          ssh -n -i ~/.ssh/do_deploy -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo systemctl is-active --quiet boxhostd.service && sudo rm -f /run/tinyassets-boxhostd/preflight.json && sudo systemctl kill --kill-who=main -s USR1 boxhostd.service && for _ in $(seq 1 240); do sudo test -s /run/tinyassets-boxhostd/preflight.json && break; sleep 10; done && sudo cat /run/tinyassets-boxhostd/preflight.json' > box-preflight-results.json || status=$?
+          if [ ! -s box-preflight-results.json ]; then
+            printf '%s\n' "{\"pass\":false,\"reason\":\"boxhostd.service inactive or no result within 40 minutes; exit ${status}\"}" > box-preflight-results.json
             exit 1
           fi
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo cat /run/tinyassets-boxhostd/preflight.json' > box-preflight-results.json
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo python3 /opt/tinyassets/boxhostd/box_store_durability.py' > box-durability-results.json
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          path = Path("box-preflight-results.json")
-          report = json.loads(path.read_text())
-          durability = json.loads(Path("box-durability-results.json").read_text())
-          g4 = report["gates"]["G4"]
-          g4["fsync_remount"] = durability.get("fsync_remount", False)
-          g4["pass"] = g4.get("pass") is True and durability.get("pass") is True
-          if not durability.get("pass"):
-              g4["durability_reason"] = durability.get("reason", "failed")
-          report["pass"] = report.get("pass") is True and g4["pass"]
-          path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-          PY
           python3 -m json.tool box-preflight-results.json >/dev/null
           python3 -c 'import json; assert json.load(open("box-preflight-results.json"))["pass"] is True'
 

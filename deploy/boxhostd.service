@@ -1,7 +1,7 @@
 [Unit]
 Description=TinyAssets box host (P2a idle preflight)
 After=network.target docker.service
-Requires=var-lib-boxhostd-owners.mount
+Wants=var-lib-boxhostd-owners.mount
 After=var-lib-boxhostd-owners.mount
 ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 

@@ -57,7 +57,7 @@ Converge a shape; add no second path. Write durable state before replying.
    for new spending, irreversible acts, or outward-facing acts outside the
    agreed work (host-only: a minimal host-actions row, blocking nothing else).
 5. Accumulating state needs `Annotated[list, operator.add]` —
-   `domains/fantasy_daemon/state/book_state.py`.
+   `tinyassets/graph_compiler.py`.
 6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
 7. Python 3.11+ — `pyproject.toml`.
 8. Fail loudly; a real-looking mock fallback is worse than a crash.

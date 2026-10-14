@@ -39,6 +39,7 @@ concurrency:
 jobs:
   resize:
     runs-on: ubuntu-latest
+    environment: production
     env:
       DROPLET_ID: "565953121"
       EXPECTED_NAME: workflow-daemon-1

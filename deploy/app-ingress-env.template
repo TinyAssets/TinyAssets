@@ -1,9 +1,7 @@
 # TinyAssets app-ingress shared secret.
 #
 # Install as /etc/tinyassets/app-ingress.env with owner root:tinyassets and
-# mode 0640. deploy/compose.yml injects it into exactly two services: the
-# daemon (which SERVES the ingress) and slack-agent (which CALLS it). Nothing
-# else should receive it.
+# mode 0640. deploy/compose.yml injects it into the daemon.
 #
 # Generate at least 32 random bytes and store their canonical single-line
 # standard-base64 encoding — the same shape as the other daemon secrets:
@@ -17,11 +15,7 @@
 # for a universe. It cannot read universe data and cannot post to Slack — the
 # daemon posts, using credentials that never leave it.
 #
-# Fail-closed: with this unset the daemon does not open the ingress port at all
-# (not "opens it and refuses"), and slack-agent dies at startup rather than
-# silently dropping every message it is handed.
+# Fail-closed: with this unset the daemon does not open the ingress port at all.
 #
-# Rotation: replace the value and redeploy BOTH services together. They are a
-# pair; a daemon on the new key and an agent on the old one is an agent whose
-# every request 401s, which looks exactly like an outage.
+# Rotation: replace the value and redeploy the daemon.
 TINYASSETS_APP_INGRESS_HMAC_KEY=

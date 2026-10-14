@@ -171,7 +171,9 @@ def test_store_unit_contract_and_installer_guards() -> None:
     mount = (ROOT / "deploy/var-lib-boxhostd-owners.mount").read_text()
     prepare = (ROOT / "deploy/box-store-device.service").read_text()
     device = (ROOT / "deploy/box-store-device.sh").read_text()
-    assert "Requires=var-lib-boxhostd-owners.mount" in unit
+    # The idle service survives G4's controlled unmount; ExecStartPre still
+    # refuses to start unless the store is mounted and healthy.
+    assert "Wants=var-lib-boxhostd-owners.mount" in unit
     assert "ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh" in unit
     assert "Options=pquota,noatime,nodiscard" in mount
     assert "DefaultDependencies=no" in prepare
