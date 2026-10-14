@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.runs import initialize_runs_db
 from tinyassets.control_plane.events import (
     VALID_EVENT_TYPES,
     CronParseError,
@@ -20,6 +19,7 @@ from tinyassets.control_plane.events import (
     register_subscription,
     unregister_subscription,
 )
+from tinyassets.runs import initialize_runs_db
 
 # ─── Cron parser ──────────────────────────────────────────────────────────────
 

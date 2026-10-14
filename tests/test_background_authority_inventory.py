@@ -126,13 +126,12 @@ def test_inventory_covers_every_required_source_family() -> None:
         "activities",
         "schedule_and_event",
         "goal_subscription",
-        "soul_and_compiled_cycle",
         "request_admission",
-        "branch_task_and_graph_enqueue",
+        "graph_enqueue",
         "direct_live_and_versioned_run",
         "resume_and_recovery",
         "request_actor_boundary",
-        "daemon_cloud_and_distributed_worker",
+        "owner_tick_and_distributed_worker",
         "selector_leaderboard_and_market_delegate",
         "retired_wiki_forwarding",
     }
@@ -178,13 +177,9 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
     observed = set(EXPECTED_SENSITIVE_CALL_SITES)
     assert (
         CallSite(
-            "fantasy_daemon/__main__.py",
-            "DaemonController._run_graph",
-            # Qualified since 2026-08-26: `stream` alone could not tell a
-            # compiled-graph run from an HTTP `request.stream()` body read, so
-            # registering the body reads as reviewed would have blinded the
-            # checker to a real graph stream added beside them.
-            "compiled.stream",
+            "tinyassets/activity_runner.py",
+            "start",
+            "execute_branch_async",
         )
         in observed
     )

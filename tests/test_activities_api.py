@@ -11,11 +11,11 @@ import json
 import pytest
 
 from tests.engine_authority_helpers import mock_engine_admission
-from tinyassets.control_plane import activities as activity_dispatcher
 from tinyassets import activity_runner
 from tinyassets import agent_activities as acts
 from tinyassets import engine_mcp_server as engine
 from tinyassets.api import activities as api
+from tinyassets.control_plane import activities as activity_dispatcher
 
 
 @pytest.fixture

@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_owner_notifications import _home
-from tinyassets.control_plane import agent_wakes as wakes
-from tinyassets.control_plane import continuations as request_continuations
 from tinyassets import runs
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
+from tinyassets.control_plane import agent_wakes as wakes
+from tinyassets.control_plane import continuations as request_continuations
 from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 from tinyassets.storage import pending_requests
 from tinyassets.ta_capabilities import Capabilities, ExecutionContext

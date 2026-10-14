@@ -119,7 +119,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/assigned_queue_refusals.py",
     "tinyassets/storage/automation_activations.py",
     "tinyassets/storage/background_branch_authority.py",
-    "tinyassets/storage/cloud_automation_continuation.py",
     "tinyassets/storage/cloud_automation_control.py",
     "tinyassets/storage/conversation_custody.py",
     "tinyassets/storage/conversation_run_admissions.py",

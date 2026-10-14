@@ -20,14 +20,6 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.branch_tasks import (
-    BranchTask,
-    append_task,
-    claim_task,
-    new_task_id,
-    read_queue,
-    reclaim_expired_leases,
-)
 from tinyassets.control_plane.tick import (
     SUPERVISOR_HEARTBEAT_FILENAME,
     supervisor_heartbeat_filename,
@@ -42,15 +34,6 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _make_task(universe: Path) -> BranchTask:
-    task = BranchTask(
-        branch_task_id=new_task_id(),
-        branch_def_id="def-telemetry-test",
-        universe_id="u-telemetry-test",
-        trigger_source="owner_queued",
-    )
-    append_task(universe, task)
-    return task
 
 
 # ---------------------------------------------------------------------------
@@ -58,53 +41,12 @@ def _make_task(universe: Path) -> BranchTask:
 # ---------------------------------------------------------------------------
 
 
-def test_reclaim_resets_expired_lease(tmp_path):
-    task = _make_task(tmp_path)
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon::test::1")
-    assert claimed is not None
-
-    future = _utc(offset_s=10_000)
-    count = reclaim_expired_leases(tmp_path, now=future)
-    assert count == 1
-    rows = {t.branch_task_id: t for t in read_queue(tmp_path)}
-    row = rows[task.branch_task_id]
-    assert row.status == "pending"
-    assert row.claimed_by == ""
-    assert row.lease_expires_at == ""
 
 
-def test_reclaim_leaves_fresh_lease_alone(tmp_path):
-    task = _make_task(tmp_path)
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon::test::1")
-    assert claimed is not None
-
-    count = reclaim_expired_leases(tmp_path)
-    assert count == 0
-    rows = {t.branch_task_id: t for t in read_queue(tmp_path)}
-    assert rows[task.branch_task_id].status == "running"
 
 
-def test_reclaim_skips_leaseless_running_rows(tmp_path):
-    # Pre-lease-era claim: running but no lease stamp. The reaper must
-    # not guess — startup recovery owns that case.
-    task = _make_task(tmp_path)
-    claimed = claim_task(tmp_path, task.branch_task_id, "daemon::test::1")
-    assert claimed is not None
-    from tinyassets.branch_tasks import _read_raw, _write_raw, queue_path
-
-    qp = queue_path(tmp_path)
-    raw = _read_raw(qp)
-    for row in raw:
-        row["lease_expires_at"] = ""
-    _write_raw(qp, raw)
-
-    count = reclaim_expired_leases(tmp_path, now=_utc(offset_s=10_000))
-    assert count == 0
 
 
-def test_reclaim_ignores_pending_rows(tmp_path):
-    _make_task(tmp_path)
-    assert reclaim_expired_leases(tmp_path, now=_utc(offset_s=10_000)) == 0
 
 
 # ---------------------------------------------------------------------------

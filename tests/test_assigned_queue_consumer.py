@@ -6,84 +6,14 @@ import pytest
 
 import tinyassets.control_plane.tick as consumer_module
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
-from tinyassets.background_served_provider import (
-    BACKGROUND_BRANCH_RUN_OPERATION,
-    _branch_roles,
-    authorize_background_served_provider_call,
-)
-from tinyassets.branch_tasks_v2 import AssignedConsumerLease, Epoch2BranchTask
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
-def test_background_authorizer_rejects_cross_consumer_before_provider_lookup(
-    tmp_path,
-) -> None:
-    task = Epoch2BranchTask(
-        branch_task_id="bt2_" + "a" * 32,
-        branch_def_id="branch-a",
-        universe_id="universe-a",
-        claimed_by="assigned-consumer:one",
-        claimed_at="2026-08-23T00:00:00+00:00",
-        lease_expires_at="2026-08-23T00:30:00+00:00",
-        automation_id="automation-a",
-        automation_branch_version="version-a",
-    )
-    lease = AssignedConsumerLease(
-        consumer_id="assigned-consumer:two",
-        lease_id="lease-two",
-        expires_at="2026-08-23T00:30:00+00:00",
-    )
-
-    try:
-        authorize_background_served_provider_call(tmp_path, task, lease)
-    except PermissionError as exc:
-        assert "does not own" in str(exc)
-    else:  # pragma: no cover - fail-closed assertion
-        raise AssertionError("cross-consumer authority was accepted")
 
 
-def test_background_operation_is_not_interactive_converse() -> None:
-    assert BACKGROUND_BRANCH_RUN_OPERATION == "background_branch_run"
-    assert BACKGROUND_BRANCH_RUN_OPERATION != "converse"
 
 
-def test_background_roles_come_from_exact_immutable_branch(
-    tmp_path, monkeypatch
-) -> None:
-    task = Epoch2BranchTask(
-        branch_task_id="bt2_" + "a" * 32,
-        branch_def_id="branch-a",
-        universe_id="universe-a",
-        automation_branch_version="version-a",
-        automation_subject_digest="sha256:" + "b" * 64,
-    )
-    version = type(
-        "Version",
-        (),
-        {
-            "status": "active",
-            "branch_def_id": "branch-a",
-            "content_hash": "sha256:" + "b" * 64,
-            "snapshot": {
-                "node_defs": {
-                    "draft": {"node_type": "prompt", "model_hint": "writer"},
-                    "score": {"node_type": "prompt", "model_hint": "judge"},
-                }
-            },
-        },
-    )()
-    monkeypatch.setattr("tinyassets.branch_versions.get_branch_version", lambda *_a: version)
-
-    assert _branch_roles(tmp_path, task) == ("judge", "writer")
-
-    version.snapshot["node_defs"]["draft"]["model_hint"] = "ambient-provider"
-    try:
-        _branch_roles(tmp_path, task)
-    except PermissionError as exc:
-        assert "unsupported provider role" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("unsupported immutable role was accepted")
 
 
 

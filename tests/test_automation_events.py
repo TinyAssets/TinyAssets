@@ -1117,8 +1117,8 @@ def test_cleanup_reads_references_after_proving_death(home: Path, monkeypatch) -
     """A run committed just before its process died must keep that process's
     lock file: the references are read AFTER the probe proves death."""
     from tinyassets import process_liveness
-    from tinyassets.runs import runs_db_path
     from tinyassets.control_plane.tick import AssignedQueueConsumer
+    from tinyassets.runs import runs_db_path
 
     token = "proc_dead_race"
     path = process_liveness.liveness_path(home, token)

@@ -291,7 +291,10 @@ def _action_list_sources(kwargs: dict[str, Any]) -> str:
 
 def _action_revoke_source(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.helpers import _base_path
-    from tinyassets.control_plane.events import list_scheduler_subscriptions, unregister_subscription
+    from tinyassets.control_plane.events import (
+        list_scheduler_subscriptions,
+        unregister_subscription,
+    )
     from tinyassets.storage import webhook_hooks
 
     uid = _uid(kwargs)

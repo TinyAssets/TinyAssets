@@ -105,8 +105,8 @@ def boot_sentinels(monkeypatch, tmp_path):
     ``main`` already swallows failures there, so the raise only bounds the test.
     """
     from tinyassets import engine_mcp_http, provider_assignment
-    from tinyassets.onboarding import session_store
     from tinyassets.control_plane import tick as assigned_queue_consumer
+    from tinyassets.onboarding import session_store
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     reached: list[str] = []
