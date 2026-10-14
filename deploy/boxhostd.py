@@ -36,7 +36,7 @@ def owner_box_committed(root: Path) -> bool:
     if not isinstance(document, dict) or document.get("state") != "stable":
         raise RuntimeError("data layout is not stable; refusing box service")
     box_layout = document.get("box_layout")
-    if box_layout is None:
+    if box_layout in (None, "owner-split"):
         return False
     if box_layout != "owner-box":
         raise RuntimeError("unknown box layout marker")
@@ -60,7 +60,7 @@ def main() -> None:
     sys.path.insert(0, str(app))
     from tinyassets.boxes.host_service import main as serve
 
-    serve(rootfs=rootfs)
+    serve(rootfs=rootfs, data_root=data_root())
 
 
 if __name__ == "__main__":

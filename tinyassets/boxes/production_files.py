@@ -1,14 +1,14 @@
-"""Production BoxProvider file surface over authenticated owner channels.
+"""Production file and execution operations over authenticated owner channels.
 
-This preparation does not select the production execution path. The final
-cutover must supply the broker-authenticated channel factory and execution
-supervisor. Unimplemented execution/transfer operations refuse explicitly;
-there is no local provider or host-path fallback.
+The final cutover selects this provider through boxes.frontend. Legacy whole
+box archive operations refuse explicitly; C12 owns the canonical export and
+import implementation over the bounded file surface. No local fallback exists.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 import weakref
 
@@ -19,14 +19,25 @@ from tinyassets.boxes.provider import (
     BoxHandle,
     BoxOperationRefused,
     BoxUsage,
+    DestroyReceipt,
     DirEntry,
     DirPage,
+    ExecEvent,
+    ExecLimits,
+    ExecState,
+    ExecStatus,
     FileRead,
     FileStat,
     FileWrite,
     Snapshot,
     WriteMode,
 )
+
+
+class ProductionHandle(BoxHandle):
+    @property
+    def root(self):
+        return "/home/owner/" + self.command_center_id
 
 
 class ProductionFileProvider:
@@ -38,13 +49,21 @@ class ProductionFileProvider:
         self._guard = threading.RLock()
 
     def bind(self, command_center_id, *, account_id, turn_id=None):
+        return self._bind(command_center_id, account_id, turn_id, False)
+
+    def bind_for_destroy(self, command_center_id, *, account_id, turn_id=None):
+        return self._bind(command_center_id, account_id, turn_id, True)
+
+    def _bind(self, command_center_id, account_id, turn_id, destroying):
         session = turn_id or str(uuid.uuid4())
-        channel = self._channel_factory(account_id, command_center_id, session)
+        channel = (self._channel_factory(account_id, command_center_id, session, destroying=True)
+                   if destroying else self._channel_factory(account_id, command_center_id, session))
         try:
-            result = channel.request({"bind": command_center_id})
+            result = channel.request({"bind_for_destroy" if destroying else "bind":
+                                      command_center_id})
             if result["center"] != command_center_id or type(result["epoch"]) is not int:
                 raise BoxAuthError("host returned the wrong center binding")
-            handle = BoxHandle(command_center_id, account_id, result["epoch"], session)
+            handle = ProductionHandle(command_center_id, account_id, result["epoch"], session)
             with self._guard:
                 self._bindings[id(handle)] = (weakref.ref(handle), channel, result["token"])
             weakref.finalize(handle, self._forget, id(handle))
@@ -64,6 +83,44 @@ class ProductionFileProvider:
 
     def committed_generation(self, handle):
         return self._call(handle, "committed_generation")["generation"]
+
+    def ensure_awake(self, handle, *, reason):
+        return self._call(handle, "ensure_awake")
+
+    def start_exec(self, handle, op_id, argv, *, stdin=b"", env=None, cwd="/cc",
+                   limits=ExecLimits(), interactive_stdin=False):
+        if cwd == handle.root or cwd.startswith(handle.root + "/"):
+            cwd = "/cc" + cwd[len(handle.root):]
+        return self._call(handle, "start_exec", {
+            "argv": list(argv), "stdin": stdin, "env": dict(env or {}), "cwd": cwd,
+            "wall_seconds": limits.wall_seconds, "output_bytes": limits.output_bytes,
+            "interactive_stdin": interactive_stdin}, op_id=op_id)
+
+    def exec_status(self, handle, op_id):
+        result = self._call(handle, "exec_status", {"op_id": op_id})
+        return ExecStatus(**{**result, "state": ExecState(result["state"])})
+
+    def stream(self, handle, exec_id, *, from_offset=0, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self._call(handle, "stream", {"exec_id": exec_id, "offset": from_offset})
+            if result["data"]:
+                yield ExecEvent("output", offset=from_offset, data=result["data"])
+                from_offset += len(result["data"])
+            if result["done"]:
+                yield ExecEvent("exit", exit_code=result["exit_code"], killed=result["killed"])
+                return
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("execution stream wait expired")
+            if not result["data"]:
+                time.sleep(0.05)
+
+    def send_stdin(self, handle, exec_id, request_id, data):
+        return self._call(handle, "send_stdin", {"exec_id": exec_id,
+                                                "request_id": request_id, "data": data})
+
+    def cancel(self, handle, exec_id):
+        return self._call(handle, "cancel", {"exec_id": exec_id})
 
     def read(self, handle, path, *, offset=0, max_bytes):
         return FileRead(**self._call(handle, "read", {
@@ -122,6 +179,10 @@ class ProductionFileProvider:
     def suspend(self, handle):
         return self._call(handle, "suspend")
 
+    def destroy(self, handle, op_id):
+        """Erase the entire owner's box, after tombstone, with a stable retry id."""
+        return DestroyReceipt(**self._call(handle, "destroy", op_id=op_id))
+
     def close(self):
         with self._guard:
             for _, channel, _ in self._bindings.values():
@@ -137,5 +198,4 @@ class ProductionFileProvider:
     def _requires_cutover(self, *args, **kwargs):
         raise BoxOperationRefused("production execution/cutover integration is not installed")
 
-    ensure_awake = start_exec = send_stdin = stream = cancel = _requires_cutover
-    exec_status = export = import_bundle = destroy = _requires_cutover
+    export = import_bundle = _requires_cutover

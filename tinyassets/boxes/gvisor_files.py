@@ -6,7 +6,9 @@ Relay paths and resource limits come from host admission, never RPC arguments.
 
 from __future__ import annotations
 
+import os
 import selectors
+import struct
 import subprocess
 import threading
 import time
@@ -29,6 +31,7 @@ class GvisorFileBackend:
         self._awake: dict[int, float] = {}
         self._guard = threading.RLock()
         self._locks: dict[int, threading.RLock] = {}
+        self._busy: set[int] = set()
 
     def _lock(self, uid: int) -> threading.RLock:
         self.runtime.box_id(uid)
@@ -70,6 +73,95 @@ class GvisorFileBackend:
                 self.runtime.stop(uid)
                 raise
         self._awake[uid] = time.monotonic()
+
+    def wake(self, uid: int) -> None:
+        with self._lock(uid):
+            self._wake(uid)
+
+    def execute(self, uid: int, args: dict, running) -> dict:
+        from tinyassets.boxes.gvisor_runtime import OVERLAY
+
+        body = encode({key: args[key] for key in ("argv", "env", "cwd")})
+        argv = [str(self.runtime.runsc), "--root", str(self.runtime.state_root),
+                "--systemd-cgroup=false", "--network=none", "--platform=systrap",
+                f"--overlay2={OVERLAY}", "exec", self.runtime.box_id(uid),
+                "/opt/venv/bin/python", "-I", "-B", "-c",
+                "import sys; sys.path.insert(0, '/app'); "
+                "from tinyassets.boxes.exec_worker import main; main()"]
+        proc = None
+        try:
+            # Admission and launch share the deletion lock. A queued thread
+            # cannot wake a box after destroy has fenced and stopped it.
+            with running.start_lock, self._lock(uid):
+                running.authorize()
+                self._wake(uid)
+                self._busy.add(uid)
+                proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+            os.set_blocking(proc.stdin.fileno(), False)
+            os.set_blocking(proc.stdout.fileno(), False)
+            pending = struct.pack("!I", len(body)) + body
+            deadline, total = time.monotonic() + args["wall_seconds"], 0
+            killed, output_eof = None, False
+            with selectors.DefaultSelector() as selector:
+                selector.register(proc.stdout, selectors.EVENT_READ, "output")
+                while not (output_eof and proc.poll() is not None):
+                    if running.cancel.is_set():
+                        killed = "cancelled"
+                        break
+                    if time.monotonic() >= deadline:
+                        killed = "timeout"
+                        break
+                    if not pending:
+                        pending = running.take_input()
+                    if not proc.stdin.closed:
+                        if pending:
+                            try:
+                                selector.get_key(proc.stdin)
+                            except KeyError:
+                                selector.register(proc.stdin, selectors.EVENT_WRITE, "input")
+                        elif not running.interactive:
+                            proc.stdin.close()
+                    for key, _ in selector.select(0.05):
+                        if key.data == "input":
+                            try:
+                                sent = os.write(key.fd, pending[:65536])
+                                pending = pending[sent:]
+                            except BrokenPipeError:
+                                pending = b""
+                                selector.unregister(key.fileobj)
+                                proc.stdin.close()
+                                continue
+                            if not pending:
+                                selector.unregister(key.fileobj)
+                        else:
+                            chunk = os.read(key.fd, 65536)
+                            if not chunk:
+                                output_eof = True
+                                selector.unregister(key.fileobj)
+                                continue
+                            room = args["output_bytes"] - total
+                            running.append_output(chunk[:room])
+                            total += len(chunk)
+                            if total > args["output_bytes"]:
+                                killed = "output_limit"
+                                break
+                    if killed:
+                        break
+            # A runsc client exit does not prove detached guest children died.
+            # The host caller stops the whole sandbox before recording this exit.
+            return {"exit_code": proc.poll() if not killed else None, "killed": killed}
+        finally:
+            try:
+                if proc is not None:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    proc.stdin.close()
+                    proc.stdout.close()
+            finally:
+                with self._lock(uid):
+                    self._busy.discard(uid)
 
     def call(self, uid: int, operation: str, args: dict) -> dict:
         from tinyassets.boxes.owner_files import validate
@@ -156,7 +248,8 @@ class GvisorFileBackend:
             owners = list(self._awake)
         for uid in owners:
             with self._lock(uid):
-                if uid in self._awake and time.monotonic() - self._awake[uid] >= self.idle_s:
+                if (uid not in self._busy and uid in self._awake
+                        and time.monotonic() - self._awake[uid] >= self.idle_s):
                     self.stop(uid)
 
     def close(self) -> None:
@@ -164,3 +257,15 @@ class GvisorFileBackend:
             owners = list(self._awake)
         for uid in owners:
             self.stop(uid)
+
+    def destroy_count(self, uid: int) -> int:
+        from tinyassets.boxes.destroy import tree
+
+        with self._lock(uid):
+            return tree(self.runtime.owner_store, uid, erase=False)
+
+    def destroy(self, uid: int) -> None:
+        from tinyassets.boxes.destroy import tree
+
+        with self._lock(uid):
+            tree(self.runtime.owner_store, uid, erase=True)

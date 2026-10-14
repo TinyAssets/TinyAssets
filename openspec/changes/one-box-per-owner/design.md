@@ -513,6 +513,40 @@ sandboxes before exposing recovered state. These are preparation for the final
 cutover, not authorization to select `owner-box` or to retain legacy execution
 beside the new adapter.
 
+The retired daemon (UID 1001) connects to a root-owned bootstrap socket. The
+separately retired broker (UID 1002) registers its ephemeral lease over a
+different UID-authenticated socket; no proof is persisted or placed in an
+environment variable. The host asks the broker for the admitted center,
+permanent UID and migrated quota. Unix credentials are checked on every
+control-frame fragment, with a pinned peer lifetime on the host. A box's
+egress socket is mounted only in that owner's sandbox; the broker derives
+its owner and center from host admission and exposes no owner policy writes.
+
+Execution is serialized per owner in this continuation. A second concurrent
+execution reports busy. Limits, buffered output, input reply deduplication
+and operation outcomes belong to the host. The host stops the entire sandbox
+before recording a terminal execution and publishing a coherent generation.
+A failed stop keeps snapshots closed; an interrupted operation is unknown and
+cannot be replayed. This is not the P6 checkpoint/resident-process lifecycle.
+
+Account deletion must first persist the existing owner tombstone and retain
+the broker identity/center binding. `bind_for_destroy(center, account_id=owner,
+turn_id=...)` then permits `destroy(handle, stable_op_id)` while ordinary
+admission is refused. The host durably fences every center of that owner and
+advances the placement epoch before stopping its sandbox. Descriptor erasure
+never follows symlinks or crosses mount identities. The durable original
+census and final receipt survive retries; the same stable operation ID is
+required after failure. C12 may retire bindings and erase identity-adjacent
+state only after receiving the destroy receipt; broker account cleanup remains
+part of that integration. A failed erase leaves the permanent fence intact.
+
+`deploy/compose.owner-box.yml` is a composition input for the coordinated final
+bundle, not an independently selectable production mode. The final bundle must
+render it into its one `compose.yml`, adopt the owner-box layout, route all
+owner execution and remove the old cells in the same cutover. The current
+`ACTIVE_BOX_LAYOUT` and production compose remain owner-split pending that
+integration, cross-family review and production-copy migration/restore proof.
+
 **G1 done check** (baseline #4624):
 
 - With every app closed and the test phone off, the agent finishes a 2-hour

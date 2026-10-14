@@ -23,6 +23,7 @@ from tinyassets.boxes.provider import (
     BoxBusy,
     BoxError,
     BoxOperationRefused,
+    StaleHandle,
     WriteConflict,
     box_relpath,
 )
@@ -42,9 +43,11 @@ class FileBackend(Protocol):
 
 class OwnerFileHost:
     def __init__(self, *, state_dir: Path, backend: FileBackend,
-                 authorize: Callable[[OwnerGrant, str], bool]) -> None:
+                 authorize: Callable[[OwnerGrant, str], bool],
+                 authorize_destroy: Callable[[OwnerGrant, str], bool] | None = None) -> None:
         self.backend = backend
         self.authorize = authorize
+        self.authorize_destroy = authorize_destroy
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = state_dir.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
@@ -52,7 +55,10 @@ class OwnerFileHost:
             raise BoxError("host journal requires a private host-owned directory")
         # Acquire the host lock BEFORE recovery, so a second service cannot kill
         # a live host's sandboxes. Recovery failure never exposes any handle.
-        self.state = BoxHostState(state_dir / "boxhost.db")
+        # Owner-controlled output/receipt growth must not fill the host root
+        # outside the XFS owner quotas. Exhaustion refuses; receipts never expire
+        # into replay permission. WAL connections are short and serialized.
+        self.state = BoxHostState(state_dir / "boxhost.db", max_bytes=16 * 1024 * 1024)
         try:
             backend.recover()
         except BaseException:
@@ -64,6 +70,9 @@ class OwnerFileHost:
         self._locks: dict[str, threading.RLock] = {}
         self._guard = threading.Lock()
         self._closed = False
+        from tinyassets.boxes.executions import Executions
+
+        self.executions = Executions(self)
 
     def lock(self, owner: str) -> threading.RLock:
         with self._guard:
@@ -74,16 +83,56 @@ class OwnerFileHost:
             raise BoxError("owner file host is closed")
         if not isinstance(grant, OwnerGrant) or self.authorize(grant, center) is not True:
             raise BoxAuthError("owner session or command center admission is no longer valid")
+        if self.state.owner_destroy(grant.owner_id) is not None:
+            raise BoxAuthError("owner admission is permanently fenced for erasure")
 
-    def bind(self, grant: OwnerGrant, center: str) -> dict:
+    def _destroy_authorized(self, grant: OwnerGrant, center: str) -> None:
+        if (self._closed or not isinstance(grant, OwnerGrant)
+                or self.authorize_destroy is None
+                or self.authorize_destroy(grant, center) is not True):
+            raise BoxAuthError("owner tombstone and retained binding required for destruction")
+
+    def bind(self, grant: OwnerGrant, center: str, *, destroying: bool = False) -> dict:
         validate_center(center)
-        self._authorized(grant, center)
+        authorize = self._destroy_authorized if destroying else self._authorized
+        authorize(grant, center)
         with self.lock(grant.owner_id):
-            self._authorized(grant, center)
+            authorize(grant, center)
             handle = self.handles.bind(grant)
             self._centers[handle.token] = center
             self._sessions.setdefault((grant.owner_id, grant.session_id), set()).add(handle.token)
             return {"token": handle.token, "epoch": handle.epoch, "center": center}
+
+    def destroy(self, grant: OwnerGrant, token: str, op_id: str) -> dict:
+        if not isinstance(token, str) or token not in self._centers:
+            raise BoxAuthError("unknown owner deletion handle")
+        center = self._centers[token]
+        with self.lock(grant.owner_id):
+            self._destroy_authorized(grant, center)
+            previous = self.state.owner_destroy(grant.owner_id)
+            try:
+                checked = self.handles.check(token, channel_owner=grant.owner_id,
+                                             session_id=grant.session_id, op_id=op_id)
+            except StaleHandle:
+                if previous is None or (previous["op_id"], previous["uid"], previous["center"]) != (
+                    op_id, grant.uid, center
+                ):
+                    raise
+                # check() validated owner/session/op before checking the epoch.
+            else:
+                if checked.uid != grant.uid:
+                    raise BoxAuthError("permanent owner identity changed")
+            record = self.state.begin_owner_destroy(grant.owner_id, op_id, grant.uid, center)
+            if record["state"] != "done":
+                self.backend.stop(grant.uid)
+                if record["entries"] is None:
+                    self.state.count_owner_destroy(grant.owner_id,
+                                                   self.backend.destroy_count(grant.uid))
+                self.backend.destroy(grant.uid)
+                self.state.finish_owner_destroy(grant.owner_id)
+                record = self.state.owner_destroy(grant.owner_id)
+            return {"result": {"command_center_id": center, "op_id": op_id,
+                               "files_removed": record["entries"], "new_epoch": record["epoch"]}}
 
     def close_session(self, grant: OwnerGrant) -> None:
         with self.lock(grant.owner_id):
@@ -110,7 +159,16 @@ class OwnerFileHost:
                 args: dict, *, op_id: str | None = None) -> dict:
         # The channel grant is not decoded from args. Require an exact operation
         # schema before touching the journal, sandbox or owner tree.
-        validate(operation, args)
+        exec_operation = operation in {
+            "start_exec", "stream", "exec_status", "send_stdin", "cancel"}
+        if exec_operation:
+            from tinyassets.boxes.executions import validate as validate_exec
+
+            validate_exec(operation, args)
+        else:
+            validate(operation, args)
+        if operation == "destroy":
+            return self.destroy(grant, token, op_id)
         if not isinstance(token, str):
             raise BoxAuthError("invalid owner file handle")
         center = self._centers.get(token)
@@ -126,12 +184,17 @@ class OwnerFileHost:
             if handle.uid != grant.uid:
                 raise BoxAuthError("permanent owner identity changed")
             owner = grant.owner_id
+            if exec_operation:
+                return {"result": self.executions.request(grant, center, operation, args, op_id)}
             if self.state.pending(owner):
                 raise BoxBusy("owner files have running or unquiesced writers")
             if operation == "committed_generation":
                 return {"result": {"generation": self.state.generation(owner)}}
             if operation == "suspend":
                 self.backend.stop(grant.uid)
+                return {"result": None}
+            if operation == "ensure_awake":
+                self.backend.wake(grant.uid)
                 return {"result": None}
             mutation = operation in {"write", "remove"}
             if mutation:
@@ -188,6 +251,7 @@ class OwnerFileHost:
         with self._guard:
             self._closed = True
             locks = list(self._locks.values())
+        self.executions.close()
         with ExitStack() as stack:
             for lock in locks:
                 stack.enter_context(lock)
@@ -203,6 +267,7 @@ _FIELDS = {
     "stat": {"path"}, "list": {"path", "cursor", "limit"},
     "write": {"path", "data", "max_bytes", "mode", "expect_generation"},
     "remove": {"path"}, "usage": set(), "committed_generation": set(), "suspend": set(),
+    "destroy": set(), "ensure_awake": set(),
 }
 
 

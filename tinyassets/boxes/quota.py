@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import struct
 import subprocess
 from pathlib import Path
 
@@ -56,3 +57,27 @@ class OwnerQuota:
                 check=True, capture_output=True, text=True,
             )
         return tree
+
+    def admit(self, uid: int, bhard_bytes: int) -> None:
+        """Verify the migrated project; never recursively retag a live owner tree."""
+        import fcntl
+
+        GvisorRuntime.box_id(uid)
+        if type(bhard_bytes) is not int or bhard_bytes <= 0 or bhard_bytes % 1024:
+            raise BoxError("owner storage bound must be positive KiB")
+        self._mounted()
+        fd = os.open(self.store / str(uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, uid, 0o700):
+                raise BoxError("owner quota root has the wrong identity or mode")
+            # linux/fs.h: _IOR('X',31,struct fsxattr), five u32s and eight pad bytes.
+            flags, _, _, project, _, _ = struct.unpack("=IIIII8s", fcntl.ioctl(
+                fd, 0x801c581f, bytes(28)))
+            if project != uid or not flags & 0x200:  # FS_XFLAG_PROJINHERIT
+                raise BoxError("owner root lacks its migrated inheriting quota project")
+        finally:
+            os.close(fd)
+        subprocess.run(["xfs_quota", "-x", "-c",
+                        f"limit -p bhard={bhard_bytes // 1024}k {uid}", str(self.store)],
+                       check=True, capture_output=True, text=True)
