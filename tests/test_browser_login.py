@@ -99,6 +99,10 @@ def test_migration_syncs_new_directory_before_unlink(vault, monkeypatch):
     state = {'cookies': [{'value': 'kept'}]}
     call('save', id=row['id'], revision=1, state=state)
     assert call('read', id=row['id'])['state'] == state
+    with ledger._connect() as conn:
+        blob = conn.execute(
+            'SELECT sealed FROM browser_vault WHERE id=?', (row['id'],)).fetchone()[0]
+    assert b'kept' not in blob
     assert not (ledger._db_path.parent / 'browser-vault').exists()
 
 
@@ -279,6 +283,7 @@ def test_account_erasure_removes_only_owners_ciphertext_and_key(vault):
         blob = conn.execute(
             'SELECT sealed FROM browser_vault WHERE id=?', (own['id'],)).fetchone()[0]
     assert b'secret' not in blob
+    assert not (ledger._db_path.parent / 'browser-vault').exists()
     erased = local_erase(ledger, principal='alice', command_center=ACCOUNT_SCOPE)
     assert erased['browser_vault'] == 1
     with ledger._connect() as conn:
