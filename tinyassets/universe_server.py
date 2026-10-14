@@ -4088,6 +4088,9 @@ PLATFORM_NOT_CLOUD_EXIT_CODE = 78
 def create_streamable_http_app(*, ingress=None) -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
     canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
+    modern_tools = mcp.http_app(path="/mcp", transport="streamable-http",
+                               stateless_http=True, json_response=True)
+    from tinyassets.mcp_events_http import MCPEventsMiddleware, delivery_lifespan
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
@@ -4170,6 +4173,8 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
                 await stack.enter_async_context(
                     canonical_app.router.lifespan_context(canonical_app),
                 )
+                await stack.enter_async_context(modern_tools.router.lifespan_context(modern_tools))
+                await stack.enter_async_context(delivery_lifespan(data_dir()))
                 emit_startup()
                 yield
         except Exception as exc:
@@ -4326,7 +4331,8 @@ def create_streamable_http_app(*, ingress=None) -> Starlette:
     # Inside Starlette's server-error wrapper, outside the exception middleware,
     # so a route exception is stashed before it becomes an HTTP 500.
     app.add_middleware(StashExceptionMiddleware)
-    app = AuthContextMiddleware(AppIngressMiddleware(_MCPDiscoveryMiddleware(app), ingress))
+    app = AuthContextMiddleware(AppIngressMiddleware(
+        MCPEventsMiddleware(_MCPDiscoveryMiddleware(app), modern_tools), ingress))
     # Browser clients preflight OPTIONS /mcp with no bearer, and they can
     # read WWW-Authenticate and Mcp-Session-Id only when the response names
     # their origin. This sits outside auth so the preflight is not a 401,

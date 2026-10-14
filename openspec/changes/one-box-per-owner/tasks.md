@@ -48,9 +48,12 @@ and the spec is synced.
           that `boxhostd.service` `Requires=` and is `After=`; nothing
           binds it into the daemon container;
         - `scripts/box_preflight.py`: the host and platform gates G1, G3,
-          G4 (against the mounted image) and G6 of ADR-022 on raw `runsc`
-          sandboxes, pass or fail numbers, run in a quiet window. It needs
-          nothing P2b builds.
+          G4 (against the mounted store) and G6 of ADR-022 on raw `runsc`
+          sandboxes, pass or fail numbers, run in a quiet window. G4 compares
+          root free-space drop during the fill against an immediately prior
+          idle interval of equal duration; excess must be at most 64 MiB.
+          Report both drops, excess, the memory-backed rootfs overlay and
+          bounded `runsc` state growth. It needs nothing P2b builds.
       - **Deletes:** `.github/workflows/box-kvm-validation.yml` and
         `scripts/box_bench/` (one measurement path).
       - **Verify:** every gate number recorded in the P2b PR description.

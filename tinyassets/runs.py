@@ -2319,7 +2319,8 @@ TERMINAL_REDELIVERY_SECONDS = 30.0
 
 _OWED_EVENTS = (
     "SELECT o.run_id, o.seq, o.status, r.branch_def_id, r.actor, r.queue_universe_id, "
-    "r.cause_principal FROM run_terminal_outbox o JOIN runs r USING (run_id) "
+    "r.cause_principal, r.inputs_json, r.output_json, o.created_at "
+    "FROM run_terminal_outbox o JOIN runs r USING (run_id) "
     "WHERE o.delivered_at IS NULL "
 )
 
@@ -2355,12 +2356,23 @@ def deliver_terminal_events(
         return 0
     delivered = 0
     for row in owed:
+        captured = True
+        try:
+            from tinyassets.mcp_events import capture_terminal
+
+            capture_terminal(base_path, row)
+        except Exception:  # Durable fanout failed: keep the source event owed.
+            logger.error("MCP terminal event capture failed")
+            captured = False
         # Acknowledged only after the emit succeeded: a failure leaves the row
         # owed and the watcher delivers it again (the wake is idempotent).
-        if not _emit_run_completed(
+        local_delivered = _emit_run_completed(
             base_path, row["run_id"], row["status"], row,
             event_id=f"{row['run_id']}#{row['seq']}", strict=True,
-        ):
+        )
+        # An unavailable external subscription store must not starve existing
+        # owner automations. Both fanouts deduplicate when the source is retried.
+        if not local_delivered or not captured:
             continue
         try:
             with _connect(base_path) as conn:

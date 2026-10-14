@@ -210,7 +210,12 @@ def check_mcp_request(identity, document):
         raise OutsideRefused("outside batches unavailable")
     check_identity(identity)
     method = document.get("method")
-    if method in {"initialize", "notifications/initialized", "ping", "tools/list"}:
+    if method in {"initialize", "notifications/initialized", "ping", "tools/list",
+                  "server/discover", "events/list"}:
+        return
+    if method in {"events/subscribe", "events/unsubscribe"}:
+        # The event service checks exact owner/resource access and the existing
+        # read_graph grant; this does not mint an outside-client capability.
         return
     if method != "tools/call":
         raise OutsideRefused("outside protocol method unavailable")

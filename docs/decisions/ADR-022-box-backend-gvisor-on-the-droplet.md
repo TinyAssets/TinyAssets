@@ -115,10 +115,17 @@ They need nothing P2b builds.
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
 | G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 1400 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
-| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is EDQUOT in that project only while a sibling owner tree can still write; filling the store yields ENOSPC inside the box after about the store's capacity is written, with root filesystem free space unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
+| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is ENOSPC in that project only while a sibling owner tree can still write; filling the store yields ENOSPC inside the box after about the store's capacity is written; measure root free-space drop over an idle baseline immediately before the fill, using the same elapsed duration as the fill, then require fill drop minus baseline drop ≤ 64 MiB; report both drops and the excess. The 64 MiB allowance is far below the roughly 20 GiB written, so a store fill spilling onto root fails. The harness uses a 256 MiB memory-backed gVisor rootfs overlay and 256 MiB `/tmp` tmpfs; `runsc` state remains under `/var/tmp` with ≤ 8 MiB growth during the fill, measured and reported. Data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
 
 G3 Chromium ceiling raised 2026-10-13 from measured 1267 MiB; capacity condition is MemAvailable at the daemon cap.
+
+[gVisor's filesystem guide](https://github.com/google/gvisor/blob/master/g3doc/user_guide/filesystem.md)
+documents that its default `root:self` overlay writes a filestore into the
+host rootfs source. The preflight exports that source under `/var/tmp`, so G4
+explicitly selects `root:memory,size=256m` instead. Guest `/tmp` is a separate
+256 MiB tmpfs. The `runsc` state directory stays under `/var/tmp`; G4 reports
+its allocated-block growth and fails above 8 MiB.
 
 **P2b, acceptance on the cutover build.** `scripts/box_acceptance.py` runs
 these in `scripts/linux_oracle.py` and on a production copy before the
