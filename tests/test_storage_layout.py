@@ -106,7 +106,10 @@ def _guard_function() -> str:
     return match.group(0)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fail-safe guard uses bash and flock")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fail-safe guard uses bash and flock; owner=c6-owner-box runs-in=linux-ci",
+)
 def test_candidate_guard_rejects_old_image_after_owner_box_commit(tmp_path):
     script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
     match = re.search(r"^layout_allows_candidate\(\) \{.*?^\}\n", script, re.S | re.M)
