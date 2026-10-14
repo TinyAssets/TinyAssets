@@ -49,7 +49,7 @@ def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool
         '"ps -q") :;; *) :;; esac\n',
     )
     _shim(bin_dir, "findmnt", '''
-if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; else echo rw,pquota,nodiscard; fi
+if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; else echo rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota; fi
 ''')
     _shim(bin_dir, "xfs_freeze", 'echo "$1" >> "$TEST_COMMAND_LOG"\n')
     _shim(bin_dir, "xfs_quota", '''
@@ -219,10 +219,10 @@ def test_pinned_device_unit_and_missing_device_failure(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("filesystem", "options", "expected"),
     [
-        ("xfs", "rw,pquota,noatime,nodiscard", 0),
-        ("xfs", "rw,noatime,nodiscard", 1),
-        ("xfs", "rw,pquota,noatime", 1),
-        ("ext4", "rw,pquota,nodiscard", 1),
+        ("xfs", "rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota", 0),
+        ("xfs", "rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,noquota", 1),
+        ("xfs", "rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota,discard", 1),
+        ("ext4", "rw,relatime,prjquota", 1),
     ],
 )
 def test_store_check_requires_all_mount_properties(
