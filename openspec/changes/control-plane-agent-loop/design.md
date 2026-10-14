@@ -95,13 +95,26 @@ box's root (`/cc`, or the handle's `root`). `tests/test_agent_loop_box_tools.py`
 pins argument parity with the engine's tools and runs the scripts on a real
 POSIX shell.
 
-### 5. Switch, and the failure when it is on without a box
+### 5. Session binding and the mandatory thin route
 
-`TINYASSETS_AGENT_LOOP=thin` selects `ThinLoopChatAdapter` in
-`make_interactive_agent_turn`. With the switch on and no box provider
-configured, a turn granted a box tool is refused before its first inference
-(`box_unavailable`). It is never served by the tool jail instead: a fallback
-that looks like the new path would make the switch unfalsifiable.
+`make_interactive_agent_turn` selects `ThinLoopChatAdapter` without an opt-in.
+`control_plane/session.start` binds the authenticated owner/center and stable
+durable send or run identity before `load_agent`. File reads use the bound
+provider and refuse a changed generation across definition loading. Explicit
+parent objects carry the binding across executor boundaries; tools reuse it
+instead of rebinding under the later journal turn ID. The ta bridge separately
+checks the admitted session identity and retains journal-position operation IDs.
+
+No binding means `box_unavailable` before inference. A client disconnect does
+not cancel the box. Only an explicit owner stop or durable run cancellation
+calls `end_session`; ordinary completion releases references after dependent
+work drains. Same-session reconnect retains operation identity.
+
+The configured production provider has no host-file fallback. The current
+owner-split image and cells remain staged until C6's protected migration and
+coordinated deletion. Native discovery, the CLI runner's strict host paths and
+selected git-grant handoff still need integration; a callable BoxLauncher
+factory alone is not proof of production parity.
 
 ## Measurement: memory per waiting turn
 

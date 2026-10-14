@@ -14,6 +14,17 @@
 
 ## 2. Production path (PR 2, after S4's driver, S6's streaming contract, S8a)
 
+Checkpoint 2026-10-14: `codex/c7-c9-session-convergence` composes C7 #4845
+at `c1eb3d44` and C6 #4920 at `bc418c32`. Session admission now binds before
+agent-file loading, pins a coherent file generation, explicitly carries the
+handle into child/executor parents, and preserves the durable send/run identity.
+Thin tools use that handle and the BoxProvider exception contract. The native
+caller selects BoxLauncher using its existing usage/attempt ID; the package
+runner's host-path assumptions and metadata discovery still need C6 composition.
+None of these notes claims the owner-box layout is active or live acceptance.
+Jonathan reprioritized Roundtable; finish the active tested checkpoint, then
+resume the remaining cutover only under parent coordination.
+
 - [ ] 2.1 One shared loop: task-aware, non-blocking provider-assignment
       admission; journal writes off the loop; then turns as tasks on it.
 - [ ] 2.2 Configure the `BoxProvider` (S4 local driver) in the daemon; adopt
