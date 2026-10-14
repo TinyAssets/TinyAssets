@@ -86,6 +86,13 @@ class UniverseConfig:
     timeout: int = 300
     """Subprocess / HTTP timeout in seconds."""
 
+    absolute_cap_s: float | None = None
+    """Optional owner-selected served-turn cap in seconds; absent means no cap.
+
+    The served runtime accepts only positive finite values. This preference
+    does not grant provider access or replace provider spending admission.
+    """
+
     max_tokens: int | None = None
     """Optional token cap for provider calls."""
 

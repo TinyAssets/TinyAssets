@@ -176,8 +176,11 @@ def test_foreign_room_and_owner_read_denial_refused(wired):
 
 
 @pytest.mark.parametrize("owner_cap", [None, 43])
-def test_graph_routes_one_native_node_then_commit_and_stops_replay(wired, monkeypatch, owner_cap):
+def test_graph_routes_one_native_node_then_commit_and_stops_replay(
+    wired, monkeypatch, tmp_path, owner_cap,
+):
     from tinyassets import graph_compiler
+    from tinyassets.config import load_universe_config
     from tinyassets.served_tools import node_tool_grant
 
     branch, functions, room, _, _, _, event, _, _ = wired
@@ -197,9 +200,11 @@ def test_graph_routes_one_native_node_then_commit_and_stops_replay(wired, monkey
     # Only replace the process sandbox with the same generated functions and a
     # fixture owner RPC. The real compiler handles routing and the prompt node.
     monkeypatch.setattr(graph_compiler, "_build_source_code_node", source_node)
+    if owner_cap is not None:
+        (tmp_path / "config.yaml").write_text(f"absolute_cap_s: {owner_cap}\n")
     compiled = graph_compiler.compile_branch(
         branch, provider_call=provider,
-        universe_context=SimpleNamespace(config=SimpleNamespace(absolute_cap_s=owner_cap)),
+        universe_context=SimpleNamespace(config=load_universe_config(tmp_path)),
     )
     graph = compiled.graph.compile()
     graph.invoke({"event": event})

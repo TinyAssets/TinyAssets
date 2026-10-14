@@ -168,3 +168,39 @@ class TestRuntimeConfigIntegration:
         runtime.universe_config = UniverseConfig(temperature=0.1)
         runtime.reset()
         assert runtime.universe_config.temperature == 0.7
+
+
+class TestServedAbsoluteCap:
+    """The file owners edit must feed the same runtime and activity cap."""
+
+    def test_yaml_cap_reaches_granted_runtime_and_activity(self, tmp_path):
+        from types import SimpleNamespace
+
+        from tinyassets.api.status import _working_turn_max_age_s
+        from tinyassets.universe_intelligence import _sandboxed_config, served_absolute_cap_s
+
+        (tmp_path / "config.yaml").write_text("absolute_cap_s: 120.5\ntemperature: 0.25\n")
+        cfg = load_universe_config(tmp_path)
+        assert cfg.absolute_cap_s == 120.5 and "absolute_cap_s" not in cfg.extra
+        assert cfg.temperature == 0.25
+        ctx = SimpleNamespace(config=cfg)
+        assert served_absolute_cap_s(cfg) == 120.5
+        model = _sandboxed_config(ctx, granted=True)
+        assert model.absolute_cap_s == 120.5
+        assert model.stream_timeout_profile().absolute_cap_s == 120.5
+        assert _sandboxed_config(ctx, granted=False).absolute_cap_s is None
+        assert _working_turn_max_age_s(tmp_path) == 150.5
+
+    def test_missing_cap_preserves_unbounded_served_default(self, tmp_path):
+        from types import SimpleNamespace
+
+        from tinyassets.universe_intelligence import (
+            UNBOUNDED_TURN_SECONDS,
+            _sandboxed_config,
+            served_absolute_cap_s,
+        )
+
+        cfg = load_universe_config(tmp_path)
+        assert cfg.absolute_cap_s is None and served_absolute_cap_s(cfg) is None
+        model = _sandboxed_config(SimpleNamespace(config=cfg), granted=True)
+        assert model.absolute_cap_s == UNBOUNDED_TURN_SECONDS
