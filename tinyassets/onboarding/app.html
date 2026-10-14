@@ -11177,9 +11177,10 @@
         (!$("btn-send").disabled&&pending&&Date.now()-(pending.ts||0)<20*60*1000));
     },
     retryFrame:()=>{
-      if(!AppUI.enabled)return false;
-      if(AppUI.isPlatformDefault())AppUI.mountDefault();
-      else if(AppUI.active)AppUI.mount(AppUI.active);else AppUI.load();
+      if(!AppUI.enabled||AppUI.busy)return false;
+      // Re-read the active app_ui. Remounting AppUI.active kept the revision
+      // that was on screen when the page loaded.
+      AppUI.reloadFromServer().catch(error=>AppRecovery.fail(error));
       return true;
     },
     browse:()=>{

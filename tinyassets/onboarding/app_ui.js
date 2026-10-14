@@ -339,6 +339,25 @@
         this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
       }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
+    // The recovery control. Remounting the bundle already on screen kept a
+    // newly activated revision invisible until a browser reload fetched the
+    // row again (live: echoes-6 stayed up after echoes-7 rev 116 was active).
+    async reloadFromServer(){
+      if(!this.enabled||this.busy) return false;
+      const epoch=this.epoch,home=this.home;
+      this.busy=true; this.paint();
+      try{
+        const row=await this.fetchRow();
+        if(!this.fence(epoch,home)) return false;
+        this.adopt(row,{refresh:true});
+        return true;
+      }catch(err){
+        if(!this.fence(epoch,home)) return false;
+        if(err&&err.authRequired){ sessionExpired(); return false; }
+        this.status("Could not refresh this command center ("+(err&&err.message||"unknown error")+").");
+        return false;
+      }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
+    },
     // After each turn: the command center can switch or edit this row by talking
     // (write_graph target="app_ui" operation="activate" ...). A bodiless index
     // read says whether the row moved; only then is it read whole and adopted,
@@ -361,7 +380,25 @@
       return " "+this.broken.length+(this.broken.length===1?" installed UI cannot be shown":
         " installed UIs cannot be shown")+"; open Switch command center to see why.";
     },
-    adopt(row){
+    // A content fingerprint for the frame URL. The row revision already moves
+    // on every save; this distinguishes the bytes of the component that
+    // revision mounted, so a cached /app/ui-frame document cannot keep an
+    // older screen. It is a cache key, not the server's edit etag.
+    bundleStamp(entry){
+      const text=JSON.stringify([entry&&entry.ui_id,entry&&entry.name,entry&&entry.markup,
+        entry&&entry.style,entry&&entry.script]);
+      let hash=2166136261;
+      for(let i=0;i<text.length;i++){
+        hash^=text.charCodeAt(i);
+        hash=Math.imul(hash,16777619);
+      }
+      return (hash>>>0).toString(16).padStart(8,"0");
+    },
+    frameSrc(entry){
+      return this.FRAME_SRC+"?revision="+encodeURIComponent(String(this.revision||0))
+        +"&etag="+this.bundleStamp(entry);
+    },
+    adopt(row, options){
       if(!this.enabled) return;
       this.closePreview();
       this.revision=row.revision;
@@ -369,6 +406,9 @@
       const library=this.readLibrary(row),selection=this.readSelection(row);
       const selected=selection.ok&&selection.selection&&selection.selection.state==="active"
         ?selection.selection.ui_id:null;
+      // An explicit refresh shows the stored active revision. A deferred
+      // "open updated screen" hold is for an unattended save, not for this.
+      if(options&&options.refresh&&selected) this.deferredUpdates.delete(selected);
       const deferred=library.ok&&library.entries.some(b=>b.ui_id===selected)
         ?this.deferredUpdates.get(selected):null;
       const keepMounted=deferred&&this.active===deferred.bundle&&this.frame;
@@ -453,7 +493,7 @@
       frame.setAttribute("tabindex","0");
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
-      frame.setAttribute("src",this.FRAME_SRC);
+      frame.setAttribute("src",this.frameSrc(entry));
       this.frame=frame; this.active=entry; this.ready=false; this.bootFault=false; this.bootComplete=false;
       this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
       this.defaultMounted=false;   // mountDefault sets it again after this call
