@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import uuid
@@ -16,6 +17,10 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from tinyassets.okf.bundle import ROOT, InvalidBundle
+from tinyassets.okf.records import SourceRecords, source_census
+from tinyassets.okf.sql_index import CanonicalConnection, require_source, reviewed_rows
 
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
@@ -93,17 +98,20 @@ def _stamp(value: datetime | None = None) -> str:
     return current.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def daemon_brain_db_path(base_path: str | Path) -> Path:
-    """Return the additive daemon-brain SQLite path for this host data root."""
+def daemon_brain_db_path(base_path):
+    """The historical backup name, for explicit offline migration tools only."""
     return Path(base_path) / "daemon_brain.db"
 
 
-def _connect(base_path: str | Path) -> sqlite3.Connection:
-    db_path = daemon_brain_db_path(base_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    initialize_daemon_brain(conn)
+def _rebuild_search(conn):
+    conn.execute("INSERT INTO daemon_brain_entries_fts(entry_id,daemon_id,content) "
+                 "SELECT entry_id,daemon_id,content FROM daemon_brain_entries")
+
+
+def _connect(source, operation_id=None):
+    conn = CanonicalConnection(source, "daemon", initialize_daemon_brain,
+                               row_factory=sqlite3.Row, rebuild=_rebuild_search)
+    conn.operation_id = operation_id
     return conn
 
 
@@ -181,13 +189,13 @@ def initialize_daemon_brain(conn: sqlite3.Connection) -> None:
     )
 
 
-def _validate_daemon(base_path: str | Path, daemon_id: str) -> dict[str, Any]:
-    from tinyassets.daemon_registry import get_daemon
-
-    daemon = get_daemon(base_path, daemon_id=daemon_id, include_soul=False)
-    if not daemon.get("has_soul"):
-        raise ValueError("daemon mini-brain requires a soul-bearing daemon")
-    return daemon
+def _validate_daemon(source, daemon_id):
+    require_source(source, "daemon")
+    before = source.snapshot()
+    reviewed_rows(source, before)
+    for definition in source_census(before, "daemon")["tables"].values():
+        if daemon_id not in definition["scope"].get("daemon_id", []):
+            raise InvalidBundle("Daemon has no reviewed namespace in this owner box")
 
 
 def _json_dumps(value: Any) -> str:
@@ -206,17 +214,8 @@ def _estimate_tokens(value: Any) -> int:
     return max(0, len(str(value or "")) // 4)
 
 
-def _connect_existing_read_only(base_path: str | Path) -> sqlite3.Connection | None:
-    db_path = daemon_brain_db_path(base_path)
-    if not db_path.exists():
-        return None
-    conn = sqlite3.connect(
-        f"file:{db_path.as_posix()}?mode=ro",
-        timeout=30.0,
-        uri=True,
-    )
-    conn.row_factory = sqlite3.Row
-    return conn
+def _connect_existing_read_only(source):
+    return _connect(source)
 
 
 def _clean_content(value: str) -> str:
@@ -297,8 +296,8 @@ class DaemonBrain:
     narrow until concrete consumers need more methods.
     """
 
-    def __init__(self, base_path: str | Path, *, daemon_id: str) -> None:
-        self.base_path = Path(base_path)
+    def __init__(self, base_path: SourceRecords, *, daemon_id: str) -> None:
+        self.base_path = require_source(base_path, "daemon")
         self.daemon_id = str(daemon_id)
 
     def capture(
@@ -466,9 +465,10 @@ def _record_event_conn(
 
 
 def record_daemon_memory_event(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
+    operation_id: str | None = None,
     event_type: str,
     trace_id: str | None = None,
     source_type: str = "",
@@ -479,7 +479,7 @@ def record_daemon_memory_event(
 ) -> dict[str, Any]:
     """Record an observable daemon-memory event."""
     _validate_daemon(base_path, daemon_id)
-    with _connect(base_path) as conn:
+    with _connect(base_path, operation_id) as conn:
         return _record_event_conn(
             conn,
             daemon_id=daemon_id,
@@ -512,42 +512,24 @@ def _fetch_entry(conn: sqlite3.Connection, entry_id: str) -> dict[str, Any] | No
 
 
 def capture_daemon_memory(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     content: str,
     metadata: dict[str, Any] | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    """Capture one atomic daemon memory entry (see `_capture_daemon_memory`).
-
-    Charged to the daemon owner's account storage (account-storage-quota D7):
-    at the quota this raises `StorageRefused` before anything is written. The
-    daemon wiki's own byte caps and eviction are gone; this is the bound.
-    """
-    from tinyassets import storage_accounting
-
-    # Every caller-supplied field is persisted (content, metadata, temporal
-    # bounds, source path/hash/id, ...), so all of it is reserved, not just
-    # content (gpt-6-astra, PR #4158).
-    nbytes = len(json.dumps(
-        {"content": content, "metadata": metadata, **fields}, default=str,
-    ).encode("utf-8")) + 1024
-    with storage_accounting.charged(
-        base_path,
-        account_id=storage_accounting.account_for_daemon(base_path, daemon_id),
-        store="daemon_memory",
-        nbytes=nbytes,
-    ):
-        return _capture_daemon_memory(
-            base_path, daemon_id=daemon_id, content=content, metadata=metadata, **fields,
-        )
+    """Capture through the owner provider's quota and canonical transaction."""
+    return _capture_daemon_memory(
+        base_path, daemon_id=daemon_id, content=content, metadata=metadata, **fields,
+    )
 
 
 def _capture_daemon_memory(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
+    operation_id: str | None = None,
     content: str,
     memory_kind: str = DEFAULT_MEMORY_KIND,
     source_type: str = "manual",
@@ -587,12 +569,17 @@ def _capture_daemon_memory(
     clean_source_id = _require_text(source_id, "source_id")
     clean_reliability = _require_text(reliability, "reliability")
     clean_language_type = _require_text(language_type, "language_type")
+    if embedding is not None:
+        values = [float(value) for value in embedding]
+        if not values or not all(math.isfinite(value) for value in values):
+            raise ValueError("embedding needs finite values")
+        metadata = {**(metadata or {}), "_embedding": values}
     bounds = temporal_bounds or {"kind": "unknown"}
     now = _stamp(created_at)
     fingerprint = _fingerprint(clean)
     trace = _trace_id()
 
-    with _connect(base_path) as conn:
+    with _connect(base_path, operation_id) as conn:
         existing = conn.execute(
             """
             SELECT * FROM daemon_brain_entries
@@ -684,9 +671,6 @@ def _capture_daemon_memory(
         )
         entry = _fetch_entry(conn, entry_id)
         assert entry is not None
-
-    if embedding is not None:
-        _index_daemon_memory_vector(base_path, entry=entry, embedding=embedding)
 
     entry["deduped"] = False
     return entry
@@ -843,76 +827,31 @@ def _recent_entries(
     return entries
 
 
-def _index_daemon_memory_vector(
-    base_path: str | Path,
-    *,
-    entry: dict[str, Any],
-    embedding: Sequence[float],
-) -> None:
-    """Optionally index a memory entry in LanceDB using the shared singleton."""
-    from tinyassets.retrieval.vector_store import get_db
-
-    values = [float(item) for item in embedding]
-    if not values:
-        raise ValueError("embedding must contain at least one value")
-    db_path = Path(base_path) / "lancedb"
-    db = get_db(str(db_path))
-    table_name = "daemon_brain_chunks"
-    row = {
-        "entry_id": entry["entry_id"],
-        "daemon_id": entry["daemon_id"],
-        "content": entry["content"],
-        "memory_kind": entry["memory_kind"],
-        "visibility": entry["visibility"],
-        "promotion_state": entry["promotion_state"],
-        "created_at": entry["created_at"],
-        "embedding": values,
-    }
-    if table_name in db.list_tables():
-        table = db.open_table(table_name)
-    else:
-        table = db.create_table(table_name, data=[row])
-        return
-    table.add([row])
-
-
-def _vector_search(
-    base_path: str | Path,
-    *,
-    daemon_id: str,
-    query_embedding: Sequence[float] | None,
-    limit: int,
-) -> list[dict[str, Any]]:
+def _vector_search(conn, *, daemon_id, query_embedding, limit,
+                   include_superseded=False, memory_kinds=None, visibility=None):
     if query_embedding is None:
         return []
-    from tinyassets.retrieval.vector_store import get_db
-
-    db_path = Path(base_path) / "lancedb"
-    db = get_db(str(db_path))
-    table_name = "daemon_brain_chunks"
-    if table_name not in db.list_tables():
-        return []
-    table = db.open_table(table_name)
-    values = [float(item) for item in query_embedding]
-    safe_daemon = daemon_id.replace("'", "''")
-    rows = (
-        table.search(values)
-        .where(f"daemon_id = '{safe_daemon}'")
-        .limit(limit)
-        .to_list()
-    )
-    return [
-        {
-            "entry_id": str(row["entry_id"]),
-            "retrieval_score": 1.0 / (1.0 + float(row.get("_distance") or 0.0)),
-            "retrieval_source": "vector",
-        }
-        for row in rows
-    ]
+    values = [float(value) for value in query_embedding]
+    if not values or not all(math.isfinite(value) for value in values):
+        raise ValueError("query embedding needs finite values")
+    where, params = _where_filters(include_superseded=include_superseded,
+                                   memory_kinds=memory_kinds, visibility=visibility)
+    hits = []
+    for row in conn.execute("SELECT e.entry_id,e.metadata_json FROM daemon_brain_entries e "
+                            "WHERE " + where, [daemon_id, *params]):
+        stored = _json_loads(row["metadata_json"], {}).get("_embedding")
+        if not isinstance(stored, list) or len(stored) != len(values):
+            continue
+        if any(type(v) not in (int, float) or not math.isfinite(v) for v in stored):
+            continue
+        distance = math.sqrt(sum((a-b)**2 for a, b in zip(values, stored)))
+        hits.append({"entry_id": row["entry_id"], "retrieval_score": 1.0/(1.0+distance),
+                     "retrieval_source": "vector"})
+    return sorted(hits, key=lambda hit: (-hit["retrieval_score"], hit["entry_id"]))[:limit]
 
 
 def search_daemon_memory(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     query: str = "",
@@ -984,10 +923,11 @@ def search_daemon_memory(
             )
 
         vector_hits = _vector_search(
-            base_path,
+            conn,
             daemon_id=daemon_id,
             query_embedding=query_embedding,
             limit=bounded_limit,
+            include_superseded=include_superseded, memory_kinds=memory_kinds, visibility=visibility,
         )
         if vector_hits:
             by_id = {entry["entry_id"]: entry for entry in entries}
@@ -1040,7 +980,7 @@ def search_daemon_memory(
 
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "trace_id": trace,
         "query": clean_query,
         "count": len(entries),
@@ -1049,7 +989,7 @@ def search_daemon_memory(
 
 
 def list_daemon_memory(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     limit: int = 50,
@@ -1070,14 +1010,14 @@ def list_daemon_memory(
         )
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "count": len(entries),
         "entries": entries,
     }
 
 
 def read_daemon_brain_dispatch_hints(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     query: str = "",
@@ -1092,17 +1032,6 @@ def read_daemon_brain_dispatch_hints(
     """
     _validate_daemon(base_path, daemon_id)
     bounded_limit = max(0, min(20, int(limit)))
-    db_path = daemon_brain_db_path(base_path)
-    if bounded_limit == 0 or not db_path.exists():
-        return {
-            "daemon_id": daemon_id,
-            "host_local": True,
-            "query": str(query or "").strip(),
-            "count": 0,
-            "entries": [],
-            "read_only": True,
-        }
-
     clean_query = str(query or "").strip()
     tokens = _tokens(clean_query)
     like_sql = ""
@@ -1111,19 +1040,7 @@ def read_daemon_brain_dispatch_hints(
         like_sql = " AND (" + " OR ".join("LOWER(content) LIKE ?" for _ in tokens) + ")"
         like_params = [f"%{token}%" for token in tokens]
 
-    uri = f"file:{db_path.as_posix()}?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-    except sqlite3.OperationalError:
-        return {
-            "daemon_id": daemon_id,
-            "host_local": True,
-            "query": clean_query,
-            "count": 0,
-            "entries": [],
-            "read_only": True,
-        }
+    conn = _connect(base_path)
     try:
         rows = conn.execute(
             f"""
@@ -1152,7 +1069,7 @@ def read_daemon_brain_dispatch_hints(
         entries.append(entry)
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "query": clean_query,
         "count": len(entries),
         "entries": entries,
@@ -1170,7 +1087,7 @@ def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
 
 
 def build_daemon_brain_packet(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     query: str = "",
@@ -1227,7 +1144,7 @@ def build_daemon_brain_packet(
         )
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "trace_id": trace,
         "query": results["query"],
         "context": context,
@@ -1272,7 +1189,7 @@ def _normalize_score(value: Any) -> dict[str, Any]:
 
 
 def evaluate_daemon_memory_quality(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     query: str,
@@ -1364,7 +1281,7 @@ def evaluate_daemon_memory_quality(
 
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "trace_id": trace,
         "query": packet["query"],
         "entry_ids": entry_ids,
@@ -1382,80 +1299,28 @@ def evaluate_daemon_memory_quality(
     }
 
 
-def _brain_review_header() -> str:
-    today = _utc_now().date().isoformat()
-    return (
-        "---\n"
-        "title: Brain Review\n"
-        "type: brain_review\n"
-        f"updated: {today}\n"
-        "---\n\n"
-        "# Brain Review\n\n"
-        "Promoted mini-brain memories are summarized here. Entries remain in the "
-        "daemon brain database; this page is the curated wiki face.\n"
-    )
-
-
-def _entries_bytes(base_path: str | Path, daemon_id: str, entry_ids: Sequence[str]) -> int:
-    conn = _connect_existing_read_only(base_path)
-    if conn is None or not entry_ids:
-        return 0
-    try:
-        ids = [str(e).strip() for e in entry_ids if str(e).strip()]
-        row = conn.execute(
-            "SELECT COALESCE(SUM(length(CAST(content AS BLOB))), 0) FROM daemon_brain_entries "
-            f"WHERE daemon_id = ? AND entry_id IN ({','.join('?' for _ in ids)})",
-            [daemon_id, *ids],
-        ).fetchone()
-        return int(row[0] or 0)
-    except sqlite3.Error:
-        return 0
-    finally:
-        conn.close()
-
-
 def promote_daemon_memory_to_wiki(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
+    operation_id: str | None = None,
     entry_ids: Sequence[str],
     summary: str,
     target_rel_path: str = "pages/brain/review.md",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Promote selected mini-brain entries into the daemon wiki review page.
-
-    Charged to the daemon owner's account storage (account-storage-quota D7):
-    the promotion row and the wiki lines repeat the summary and every promoted
-    entry, so those are reserved; at the quota this raises `StorageRefused`
-    before anything is written.
-    """
-    from tinyassets import storage_accounting
-
-    nbytes = (
-        2 * len(str(summary or "").encode("utf-8"))
-        + _entries_bytes(base_path, daemon_id, entry_ids)
-        + len(json.dumps(metadata or {}, default=str).encode("utf-8"))
-        + len(json.dumps(list(entry_ids), default=str).encode("utf-8"))
-        + len(str(target_rel_path or "").encode("utf-8"))
-        + 1024
+    """Promote into the canonical human-readable knowledge page atomically."""
+    return _promote_daemon_memory_to_wiki(
+        base_path, daemon_id=daemon_id, entry_ids=entry_ids, summary=summary,
+        target_rel_path=target_rel_path, metadata=metadata, operation_id=operation_id,
     )
-    with storage_accounting.charged(
-        base_path,
-        account_id=storage_accounting.account_for_daemon(base_path, daemon_id),
-        store="daemon_memory",
-        nbytes=nbytes,
-    ):
-        return _promote_daemon_memory_to_wiki(
-            base_path, daemon_id=daemon_id, entry_ids=entry_ids, summary=summary,
-            target_rel_path=target_rel_path, metadata=metadata,
-        )
 
 
 def _promote_daemon_memory_to_wiki(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
+    operation_id: str | None = None,
     entry_ids: Sequence[str],
     summary: str,
     target_rel_path: str,
@@ -1475,7 +1340,7 @@ def _promote_daemon_memory_to_wiki(
     safe_target_rel_path = _safe_wiki_rel_path(target_rel_path)
     trace = _trace_id()
     stamp = _stamp()
-    with _connect(base_path) as conn:
+    with _connect(base_path, operation_id) as conn:
         rows = conn.execute(
             f"""
             SELECT *
@@ -1531,27 +1396,17 @@ def _promote_daemon_memory_to_wiki(
             metadata={"target_path": safe_target_rel_path, "promotion_id": promotion_id},
         )
 
-    from tinyassets.daemon_wiki import daemon_wiki_root
-
-    root = daemon_wiki_root(base_path, daemon_id)
-    target = root / safe_target_rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        target.write_text(_brain_review_header(), encoding="utf-8", newline="\n")
-    lines = [
-        f"\n## [{stamp}] memory promotion",
-        "",
-        f"- Promotion: `{promotion_id}`",
-        f"- Summary: {clean_summary}",
-        "- Entries:",
-    ]
-    for entry in entries:
-        lines.append(f"  - `{entry['entry_id']}` ({entry['memory_kind']}): {entry['content']}")
-    with target.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write("\n".join(lines) + "\n")
+    # The promotion's Markdown body is the single editable wiki authority.
+    # Its typed fields retain source entry IDs, requested logical path and provenance.
+    after = base_path.snapshot()
+    record = next(entry for entry in after.entries.values()
+                  if entry.metadata.get("source") == "daemon"
+                  and entry.metadata.get("table") == "daemon_memory_promotions"
+                  and entry.metadata["fields"]["promotion_id"] == ["text", promotion_id])
+    target = ROOT + "/" + after.paths[record.id]
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "promotion_id": promotion_id,
         "target_path": str(target),
         "promoted_count": len(clean_ids),
@@ -1588,16 +1443,17 @@ def _supersede_conn(
 
 
 def supersede_daemon_memory(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
+    operation_id: str | None = None,
     entry_id: str,
     superseded_by_entry_id: str,
 ) -> dict[str, Any]:
     """Mark one entry superseded by another entry for the same daemon."""
     _validate_daemon(base_path, daemon_id)
     trace = _trace_id()
-    with _connect(base_path) as conn:
+    with _connect(base_path, operation_id) as conn:
         old = _fetch_entry(conn, entry_id)
         new = _fetch_entry(conn, superseded_by_entry_id)
         if old is None or old["daemon_id"] != daemon_id:
@@ -1613,7 +1469,7 @@ def supersede_daemon_memory(
         )
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "entry_id": entry_id,
         "superseded_by_entry_id": superseded_by_entry_id,
         "trace_id": trace,
@@ -1621,9 +1477,10 @@ def supersede_daemon_memory(
 
 
 def review_daemon_memory(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
+    operation_id: str | None = None,
     entry_id: str,
     decision: str,
     reviewer_id: str = "host",
@@ -1650,7 +1507,7 @@ def review_daemon_memory(
 
     trace = _trace_id()
     stamp = _stamp()
-    with _connect(base_path) as conn:
+    with _connect(base_path, operation_id) as conn:
         entry = _fetch_entry(conn, entry_id)
         if entry is None or entry["daemon_id"] != daemon_id:
             raise ValueError("entry_id not found for daemon")
@@ -1718,7 +1575,7 @@ def review_daemon_memory(
 
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
+        "owner_box": True,
         "entry_id": entry_id,
         "decision": state,
         "entry": reviewed,
@@ -1727,7 +1584,7 @@ def review_daemon_memory(
 
 
 def memory_observability_status(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
 ) -> dict[str, Any]:
@@ -1772,8 +1629,8 @@ def memory_observability_status(
         }
     return {
         "daemon_id": daemon_id,
-        "host_local": True,
-        "db_path": str(daemon_brain_db_path(base_path)),
+        "owner_box": True,
+        "canonical_source": "daemon",
         "schema_version": SCHEMA_VERSION,
         "entry_count": int(entry_count),
         "event_count": int(event_count),
@@ -1880,7 +1737,7 @@ def _daemon_cost_ledger_from_conn(
 
 
 def daemon_memory_cost_ledger_status(
-    base_path: str | Path,
+    base_path: SourceRecords,
     *,
     daemon_id: str,
     recent_limit: int = 5,
@@ -1916,90 +1773,15 @@ def daemon_memory_cost_ledger_status(
     return out
 
 
-def open_brain_status_surface(
-    base_path: str | Path,
-    *,
-    recent_limit: int = 3,
-    daemon_limit: int = 10,
-) -> dict[str, Any]:
-    """Compact read-only daemon brain status for public status probes."""
-    from tinyassets.storage import db_path
-
-    author_db = db_path(base_path)
-    if not author_db.exists():
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "read_only": True,
-            "daemon_count": 0,
-            "runtime_instance_count": 0,
-            "daemons": [],
-            "warnings": ["daemon_registry_db_missing"],
-        }
-
-    conn = sqlite3.connect(
-        f"file:{author_db.as_posix()}?mode=ro",
-        timeout=30.0,
-        uri=True,
-    )
-    conn.row_factory = sqlite3.Row
-    runtime_instance_count = 0
-    try:
-        rows = conn.execute(
-            """
-            SELECT author_id, display_name, soul_text, metadata_json
-            FROM author_definitions
-            ORDER BY created_at, author_id
-            """
-        ).fetchall()
-        try:
-            runtime_row = conn.execute(
-                "SELECT COUNT(*) AS count FROM author_runtime_instances"
-            ).fetchone()
-            if runtime_row is not None:
-                runtime_instance_count = int(runtime_row["count"] or 0)
-        except sqlite3.Error:
-            runtime_instance_count = 0
-    finally:
-        conn.close()
-    daemons: list[dict[str, Any]] = []
-    for row in rows:
-        metadata = _json_loads(row["metadata_json"], {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-        soul_mode = str(metadata.get("daemon_soul_mode") or "").strip()
-        if soul_mode != "soul":
-            continue
-        author_id = str(row["author_id"])
-        daemon_id = (
-            "daemon::" + author_id[len("author::"):]
-            if author_id.startswith("author::")
-            else author_id
-        )
-        daemons.append({
-            "daemon_id": daemon_id,
-            "display_name": str(row["display_name"]),
-            "has_soul": True,
-        })
-    out_daemons: list[dict[str, Any]] = []
-    for daemon in daemons[: max(0, int(daemon_limit))]:
-        ledger = daemon_memory_cost_ledger_status(
-            base_path,
-            daemon_id=str(daemon["daemon_id"]),
-            recent_limit=recent_limit,
-        )
-        out_daemons.append({
-            "daemon_id": daemon["daemon_id"],
-            "display_name": daemon["display_name"],
-            "has_soul": daemon["has_soul"],
-            "cost_ledger": ledger,
-        })
-
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "read_only": True,
-        "daemon_count": len(daemons),
-        "runtime_instance_count": runtime_instance_count,
-        "returned_daemon_count": len(out_daemons),
-        "daemons": out_daemons,
-        "warnings": [],
-    }
+def open_brain_status_surface(source: SourceRecords, *, recent_limit=3, daemon_limit=10):
+    """Read only the explicitly admitted owner's reviewed daemon namespaces."""
+    require_source(source, "daemon")
+    before = source.snapshot()
+    reviewed_rows(source, before)
+    census = source_census(before, "daemon")
+    names = sorted({value for definition in census["tables"].values()
+                    for value in definition["scope"]["daemon_id"] if isinstance(value, str)})
+    daemons = [{"daemon_id": name, "cost_ledger": daemon_memory_cost_ledger_status(
+        source, daemon_id=name, recent_limit=recent_limit)} for name in names[:daemon_limit]]
+    return {"schema_version": SCHEMA_VERSION, "read_only": True, "daemon_count": len(names),
+            "returned_daemon_count": len(daemons), "daemons": daemons, "warnings": []}

@@ -73,6 +73,33 @@ be reported but SHALL NOT independently make `conformant` false.
 
 ## ADDED Requirements
 
+### Requirement: Disposable canonical consumer indexes
+Daemon, episodic, graph, promise, draft-version and temporal consumers SHALL
+accept an explicitly admitted canonical source and SHALL NOT open a legacy
+database as fallback. SQL structures MAY exist only as disposable in-memory
+indexes rebuilt from the current owner-box revision using trusted repository DDL.
+
+#### Scenario: Owner edits or forgets a canonical record
+- **WHEN** an owner changes or removes a canonical record between operations
+- **THEN** the next consumer operation rebuilds its index from that revision
+- **AND** a stale legacy file cannot restore the removed value.
+
+#### Scenario: Ambiguous or unreviewed namespaces
+- **WHEN** a consumer is given an unbound source, unreviewed NULL scope or host path
+- **THEN** access refuses without inferring ownership or reading a legacy store.
+
+### Requirement: Atomic canonical consumer operations
+Each public operation SHALL use one coherent snapshot and commit related mutations
+atomically through canonical CAS before returning success. Failed operations SHALL
+discard staged index changes. Unknown columns and metadata SHALL survive edits;
+rows SHALL retain reviewed namespaces. Closed sessions, mismatched current owner
+contexts and stale placement handles SHALL refuse access.
+
+#### Scenario: Conflicting writes or interrupted commit
+- **WHEN** canonical data changes during a consumer mutation or a provider refuses it
+- **THEN** the entire mutation refuses without publishing a partial related-table update
+- **AND** a retained pending transaction may only retry its original snapshot and operation ID.
+
 ### Requirement: Reviewed namespace migration census
 Migration SHALL enumerate every declared knowledge namespace under a verified
 snapshot. Assignments SHALL name an owner and center with snapshot-bound review
@@ -136,3 +163,14 @@ identify derived stores needing rebuild and SHALL NOT activate restored state.
 - **WHEN** a canonical record conflicts with a preserved row even under a schema REPLACE or IGNORE policy
 - **THEN** restore aborts and rolls back the destination transaction
 - **AND** no successful receipt is issued and both original owners' rows remain.
+
+### Requirement: Durable forgotten identities
+Canonical deletion SHALL retain a tombstone with typed identity and provenance.
+Disposable indexes SHALL preserve verified backup integer counters and later
+deleted identities. Normal writes SHALL NOT revive a forgotten identity.
+
+#### Scenario: Forgotten identities survive disposable index rebuilds
+- **WHEN** an owner forgets a canonical record and its index is rebuilt
+- **THEN** the current manifest SHALL retain a deletion tombstone and its typed identity/provenance
+- **AND** automatic integer identities SHALL advance beyond retained deletion identities
+- **AND** a write attempting to revive the forgotten identity SHALL refuse before publication

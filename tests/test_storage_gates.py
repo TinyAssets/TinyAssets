@@ -9,7 +9,6 @@ reads never refused; nothing written on a refusal.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -232,124 +231,7 @@ class TestUiLibrary:
 # --------------------------------------------------------------------------- #
 
 
-def _daemon(base: Path, owner: str) -> str:
-    from tinyassets.daemon_registry import create_daemon
-
-    return create_daemon(
-        base,
-        display_name="Test Ada",
-        created_by=owner,
-        soul_mode="soul",
-        soul_text="Test Ada is a careful test daemon.",
-    )["daemon_id"]
-
-
-def _capture(base: Path, daemon_id: str, content: str):
-    from tinyassets.daemon_brain import capture_daemon_memory
-
-    return capture_daemon_memory(
-        base,
-        daemon_id=daemon_id,
-        content=content,
-        memory_kind="failure_mode",
-        source_type="manual",
-        source_id="pytest",
-        reliability="host_observed",
-        temporal_bounds={"valid_from": "2026-09-30"},
-        language_type="policy",
-    )
-
-
-class TestDaemonMemory:
-    def test_capture_is_refused_at_the_owners_quota(self, base):
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        daemon = _daemon(base, A)
-        with pytest.raises(sa.StorageRefused):
-            _capture(base, daemon, "x" * (10 * KIB))
-
-    def test_capture_under_the_quota_writes(self, base):
-        _account_with_bytes(base, A, "u-a", 1 * KIB)
-        daemon = _daemon(base, A)
-        assert _capture(base, daemon, "remember this")["content"] == "remember this"
-
-    def test_a_platform_daemon_is_not_gated(self, base):
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        daemon = _daemon(base, "host")
-        assert _capture(base, daemon, "x" * (10 * KIB))
-
-    def test_promotion_is_refused_at_the_quota(self, base):
-        from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
-
-        _account_with_bytes(base, A, "u-a", 1 * KIB)
-        daemon = _daemon(base, A)
-        entry = _capture(base, daemon, "y" * (30 * KIB))
-        (base / "u-a" / "more.bin").write_bytes(b"x" * (60 * KIB))
-        sa.measure(base, "u-a", "universe_files")
-
-        with pytest.raises(sa.StorageRefused):
-            promote_daemon_memory_to_wiki(
-                base,
-                daemon_id=daemon,
-                entry_ids=[entry["entry_id"]],
-                summary="s",
-            )
-
-    def test_every_persisted_field_is_reserved_not_just_content(self, base):
-        """A tiny content with a huge source path must not slip the gate."""
-        from tinyassets.daemon_brain import capture_daemon_memory
-
-        _account_with_bytes(base, A, "u-a", 90 * KIB)
-        daemon = _daemon(base, A)
-        with pytest.raises(sa.StorageRefused):
-            capture_daemon_memory(
-                base,
-                daemon_id=daemon,
-                content="tiny",
-                memory_kind="failure_mode",
-                source_type="manual",
-                source_id="pytest",
-                reliability="host_observed",
-                source_path="p" * (20 * KIB),
-                language_type="policy",
-            )
-
-    def test_promotion_metadata_is_reserved_and_measured(self, base):
-        from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
-
-        _account_with_bytes(base, A, "u-a", 1 * KIB)
-        daemon = _daemon(base, A)
-        entry = _capture(base, daemon, "short")
-        promote_daemon_memory_to_wiki(
-            base,
-            daemon_id=daemon,
-            entry_ids=[entry["entry_id"]],
-            summary="s",
-            metadata={"blob": "m" * (30 * KIB)},
-        )
-        sa.measure(base, A, "daemon_memory")
-        measured = dict(((s, st), b) for s, st, b in sa.usage(base, A).breakdown)
-        assert measured[(A, "daemon_memory")] >= 30 * KIB
-
-    def test_the_mcp_action_returns_the_refusal(self, base, monkeypatch):
-        from tinyassets.api import universe as api_universe
-
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        daemon = _daemon(base, A)
-        monkeypatch.setattr(api_universe, "_base_path", lambda: base)
-        monkeypatch.setattr(api_universe, "_request_universe", lambda uid: "u-a")
-
-        out = json.loads(
-            api_universe._action_daemon_memory_capture(
-                universe_id="u-a",
-                daemon_id=daemon,
-                inputs_json=json.dumps(
-                    {
-                        "content": "x" * (10 * KIB),
-                        "reliability": "host_observed",
-                        "language_type": "policy",
-                    }
-                ),
-            )
-        )
-
-        assert out["failure_class"] == sa.FAILURE_QUOTA, out
+# Daemon memory no longer writes a host SQLite/wiki store. Its canonical-provider
+# refusal coverage lives in test_canonical_consumer_indexes.py. Provider quota
+# enforcement is a required C6 activation gate; the host's platform exemption
+# cannot authorize writes to an owner box.

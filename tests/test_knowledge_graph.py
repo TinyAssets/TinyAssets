@@ -40,9 +40,15 @@ from tinyassets.knowledge.raptor import (
 
 
 @pytest.fixture
-def tmp_db(tmp_path):
+def tmp_db(canonical_source, tmp_path):
     """Create a KnowledgeGraph backed by a temp DB."""
-    kg = KnowledgeGraph(str(tmp_path / "test.db"))
+    kg = KnowledgeGraph(
+        canonical_source(
+            "knowledge",
+            key=str(tmp_path / "test.db"),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     yield kg
     kg.close()
 

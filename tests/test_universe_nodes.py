@@ -1568,6 +1568,8 @@ class TestReflect:
         assert result["quality_trace"][0]["reflexion_ran"] is True
 
     def test_reflexion_skipped_without_manager(self):
+        from tinyassets import runtime_singletons as runtime
+        runtime.memory_manager = None  # Explicit disabled-manager unit scenario.
         state = {}
         result = reflect(state)
         assert result["quality_trace"][0]["reflexion_ran"] is False
@@ -2642,3 +2644,6 @@ class TestReflectSignalDriven:
         # Weak model should NOT have rewritten the strong model's file
         trace = result["quality_trace"][0]
         assert "characters.md" not in trace["canon_files_rewritten"]
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

@@ -6,6 +6,7 @@ stale owner can still write once a second owner process exists (slice C2).
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -25,7 +26,7 @@ def _writers() -> set[str]:
 
 def test_every_sqlite_writer_is_accounted_for():
     known = (set(owner_stores.FENCED) | owner_stores.INFRASTRUCTURE
-             | owner_stores.FENCE_BEFORE_C2)
+             | owner_stores.FENCE_BEFORE_C2 | owner_stores.CANONICAL_INDEXES)
     unaccounted = sorted(_writers() - known)
     assert not unaccounted, (
         f"new SQLite writers {unaccounted}: fence them (FENCED) or list them in "
@@ -34,7 +35,9 @@ def test_every_sqlite_writer_is_accounted_for():
 
 def test_the_inventory_names_no_ghosts():
     writers = _writers()
-    listed = set(owner_stores.FENCED) | owner_stores.FENCE_BEFORE_C2
+    listed = (
+        set(owner_stores.FENCED) | owner_stores.FENCE_BEFORE_C2 | owner_stores.CANONICAL_INDEXES
+    )
     assert listed <= writers, f"listed but not writers: {sorted(listed - writers)}"
     assert not set(owner_stores.FENCED) & owner_stores.FENCE_BEFORE_C2
 
@@ -59,3 +62,15 @@ def test_fenced_writers_actually_check_the_fence():
     for module in owner_stores.FENCED:
         source = (_REPO / module).read_text(encoding="utf-8")
         assert "check_fence(" in source, module
+
+
+def test_canonical_indexes_have_no_disk_sqlite_connection():
+    for module in owner_stores.CANONICAL_INDEXES:
+        source = (_REPO / module).read_text(encoding="utf-8")
+        assert "CanonicalConnection" in source, module
+        for node in ast.walk(ast.parse(source)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "sqlite3" and node.func.attr == "connect"):
+                assert node.args and isinstance(node.args[0], ast.Constant), module
+                assert node.args[0].value == ":memory:", module

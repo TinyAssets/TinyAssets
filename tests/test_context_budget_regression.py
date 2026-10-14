@@ -118,7 +118,7 @@ class TestBundleUnderBudgetWithHeavyUniverse:
     fix: LIMIT caps rows, dedup halves the footprint.
     """
 
-    def test_characters_not_duplicated_in_core(self, tmp_path: Path):
+    def test_characters_not_duplicated_in_core(self, canonical_source, tmp_path: Path):
         """Regression gate for the 2x-duplication root cause.
 
         Core should hold each character once (under `characters`), not
@@ -147,7 +147,10 @@ class TestBundleUnderBudgetWithHeavyUniverse:
             chapter_avg_words=900,
         )
 
-        mgr = MemoryManager(universe_id="heavy", db_path=":memory:")
+        mgr = MemoryManager(
+            universe_id="heavy",
+            source=canonical_source("episodic", key=":memory:", namespaces=["heavy", "heavy-db"]),
+        )
         try:
             state = {
                 "chapter_number": 1,
@@ -174,7 +177,7 @@ class TestBundleUnderBudgetWithHeavyUniverse:
             "being duplicated somewhere."
         )
 
-    def test_bundle_under_budget_after_db_limit(self, tmp_path: Path):
+    def test_bundle_under_budget_after_db_limit(self, canonical_source, tmp_path: Path):
         """End-to-end: universe with far more rows than the limit still
         produces a bundle whose CoreMemory fits the 15k-token budget.
 
@@ -222,7 +225,10 @@ class TestBundleUnderBudgetWithHeavyUniverse:
             chapter_avg_words=900,
         )
 
-        mgr = MemoryManager(universe_id="heavy-db", db_path=":memory:")
+        mgr = MemoryManager(
+            universe_id="heavy-db",
+            source=canonical_source("episodic", key=":memory:", namespaces=["heavy", "heavy-db"]),
+        )
         try:
             state = {
                 "chapter_number": 1,

@@ -149,13 +149,19 @@ class TestClusterTexts:
 class TestRetrievalResultClustering:
     """Integration test: verify clustering works through the RetrievalRouter."""
 
-    def test_router_clusters_during_query(self, tmp_path):
+    def test_router_clusters_during_query(self, canonical_source, tmp_path):
         """Verify the router applies clustering to its results."""
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
         from tinyassets.knowledge.models import GraphEntity
         from tinyassets.retrieval.router import RetrievalRouter
 
-        kg = KnowledgeGraph(str(tmp_path / "test.db"))
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=str(tmp_path / "test.db"),
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
         kg.add_entity(
             GraphEntity(
                 entity_id="ryn",

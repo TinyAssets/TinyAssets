@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -229,6 +230,14 @@ def _paths(manifest):
     paths = manifest.get("entries")
     if not isinstance(paths, dict):
         raise InvalidBundle("Bundle entries must map ids to source files")
+    tombstones = manifest.get("tombstones", {})
+    if (not isinstance(tombstones, dict) or set(tombstones) & set(paths)
+            or any(not isinstance(key, str) or not key or not isinstance(value, dict)
+                   or not isinstance(value.get("metadata"), dict)
+                   or not isinstance(value.get("operation"), str)
+                   or not re.fullmatch(r"[0-9a-f]{64}", value["operation"])
+                   for key, value in tombstones.items())):
+        raise InvalidBundle("Invalid canonical deletion tombstones")
     revision = manifest.get("revision")
     if (
         not isinstance(revision, str)
@@ -248,12 +257,15 @@ def _paths(manifest):
 class KnowledgeBundle:
     def __init__(self, provider: BoxProvider, handle: BoxHandle, *, read_bytes=64 * 1024 * 1024):
         self.provider, self.handle, self.read_bytes = provider, handle, read_bytes
+        self.access_check = None  # Optional trusted session lifetime guard.
 
     @property
     def scope(self):
         return (self.handle.command_center_id, self.handle.account_id, self.handle.epoch)
 
     def snapshot(self) -> BundleSnapshot:
+        if self.access_check is not None:
+            self.access_check()
         for _ in range(3):
             first = capture_files(self.provider, self.handle, [INDEX], max_total=self.read_bytes)
             if INDEX in first.missing:
@@ -312,19 +324,27 @@ class KnowledgeBundle:
         MUST pass the original before/changes/operation_id, never a fresh snapshot.
         None removes an entry from the new revision; history is not purged.
         """
+        if self.access_check is not None:
+            self.access_check()
         if before.scope != self.scope:
             raise InvalidBundle("A snapshot belongs to one owner, command center and epoch")
         if not isinstance(operation_id, str) or not operation_id:
             raise ValueError("A stable operation_id is required")
+        transaction = hashlib.sha256(operation_id.encode()).hexdigest()
+        tombstones = dict(before.manifest.get("tombstones", {}))
         final = dict(before.entries)
         for key, entry in changes.items():
             if not isinstance(key, str) or not key or (entry is not None and entry.id != key):
                 raise InvalidBundle("Changed entry id must match its key")
             if entry is None:
-                final.pop(key, None)
+                prior = final.pop(key, None)
+                if prior is not None:
+                    tombstones[key] = {"operation": transaction, "type": prior.type,
+                                       "metadata": prior.metadata}
             else:
+                if key in tombstones:
+                    raise InvalidBundle("Cannot revive a forgotten canonical identity")
                 final[key] = entry
-        transaction = hashlib.sha256(operation_id.encode()).hexdigest()
         revision = f"revisions/{transaction}"
         paths = {
             key: f"{revision}/entries/{hashlib.sha256(key.encode()).hexdigest()}.md"
@@ -343,6 +363,7 @@ class KnowledgeBundle:
         manifest = {
             **before.manifest,
             "entries": paths,
+            "tombstones": tombstones,
             "operation_id": operation_id,
             "revision": transaction,
         }

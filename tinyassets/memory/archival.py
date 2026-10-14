@@ -11,6 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from tinyassets.boxes.provider import BoxError
+from tinyassets.okf.bundle import InvalidBundle
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,10 +25,11 @@ class ArchivalMemory:
     early development phases.
     """
 
-    def __init__(self, universe_id: str, db_path: str = "") -> None:
+    def __init__(self, universe_id: str, source) -> None:
         self._universe_id = universe_id
-        self._db_path = db_path
-        self._kg = self._try_load_kg(db_path)
+        from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+
+        self._kg = KnowledgeGraph(source)
         self._asp = self._try_load_asp()
 
     # ------------------------------------------------------------------
@@ -45,6 +49,8 @@ class ArchivalMemory:
             return []
         try:
             return self._kg.hipporag_query(entities=entities, k=k)
+        except (InvalidBundle, BoxError):
+            raise
         except Exception:
             logger.debug("HippoRAG query failed; returning empty", exc_info=True)
             return []
@@ -59,6 +65,8 @@ class ArchivalMemory:
             return []
         try:
             return self._kg.raptor_query(query=query, k=k)
+        except (InvalidBundle, BoxError):
+            raise
         except Exception:
             logger.debug("RAPTOR query failed; returning empty", exc_info=True)
             return []
@@ -77,6 +85,8 @@ class ArchivalMemory:
             return []
         try:
             return self._kg.get_open_promises(overdue=overdue)
+        except (InvalidBundle, BoxError):
+            raise
         except Exception:
             logger.debug("Promise query failed; returning empty", exc_info=True)
             return []
@@ -97,6 +107,8 @@ class ArchivalMemory:
             return {"valid": True, "violations": []}
         try:
             return self._asp.validate(facts)
+        except (InvalidBundle, BoxError):
+            raise
         except Exception:
             logger.debug("ASP validation failed; assuming valid", exc_info=True)
             return {"valid": True, "violations": []}
@@ -104,43 +116,6 @@ class ArchivalMemory:
     # ------------------------------------------------------------------
     # Module loading helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _try_load_kg(db_path: str = "") -> Any | None:
-        """Load the knowledge graph, preferring the runtime singleton.
-
-        Uses ``runtime.knowledge_graph`` if available (set by
-        DaemonController). Falls back to creating a new instance
-        from ``db_path``.
-        """
-        # Prefer runtime singleton (shares connection with indexer)
-        try:
-            from tinyassets import runtime_singletons as runtime
-
-            if runtime.knowledge_graph is not None:
-                return runtime.knowledge_graph
-        except ImportError:
-            pass
-
-        # Fallback: create a new instance
-        try:
-            from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
-
-            if db_path:
-                from pathlib import Path
-                kg_path = str(Path(db_path).parent / "knowledge.db")
-                return KnowledgeGraph(db_path=kg_path)
-            logger.warning(
-                "No db_path provided to ArchivalMemory; KG disabled "
-                "(would create CWD-relative DB causing cross-universe contamination)"
-            )
-            return None
-        except ImportError:
-            logger.debug("knowledge_graph not available; archival KG disabled")
-            return None
-        except Exception:
-            logger.warning("KnowledgeGraph instantiation failed", exc_info=True)
-            return None
 
     @staticmethod
     def _try_load_asp() -> Any | None:
@@ -151,6 +126,8 @@ class ArchivalMemory:
         except ImportError:
             logger.debug("asp_engine not available; archival ASP disabled")
             return None
+        except (InvalidBundle, BoxError):
+            raise
         except Exception:
             logger.warning("ASPEngine instantiation failed", exc_info=True)
             return None

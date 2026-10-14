@@ -38,7 +38,7 @@ from domains.fantasy_daemon.graphs.universe import (
 )
 from tinyassets.checkpointing import compile_all_graphs
 
-pytestmark = pytest.mark.usefixtures("connected_fantasy_model")
+pytestmark = pytest.mark.usefixtures("connected_fantasy_model", "canonical_runtime")
 
 # -----------------------------------------------------------------------
 # Graph compilation tests
@@ -511,7 +511,9 @@ class TestOrientRetrieval:
     """Verify that orient calls the RetrievalRouter and populates
     retrieved_context with real results."""
 
-    def test_orient_returns_retrieval_context_with_kg(self, tmp_path, tmp_story_db):
+    def test_orient_returns_retrieval_context_with_kg(
+        self, canonical_source, tmp_path, tmp_story_db
+    ):
         """Orient should populate retrieved_context when a KG is available."""
         from domains.fantasy_daemon.phases.orient import orient
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
@@ -522,7 +524,13 @@ class TestOrientRetrieval:
         )
 
         kg_path = str(tmp_path / "orient_test.db")
-        kg = KnowledgeGraph(kg_path)
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=kg_path,
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
         kg.add_entity(
             GraphEntity(
                 entity_id="ryn",
@@ -581,7 +589,9 @@ class TestOrientRetrieval:
         # Should not crash -- returns either empty dict or populated dict
         assert isinstance(result["retrieved_context"], dict)
 
-    def test_orient_retrieved_context_has_hipporag_source(self, tmp_path, tmp_story_db):
+    def test_orient_retrieved_context_has_hipporag_source(
+        self, canonical_source, tmp_path, tmp_story_db
+    ):
         """Orient queries about relationships should route through hipporag."""
         from domains.fantasy_daemon.phases.orient import orient
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
@@ -593,7 +603,13 @@ class TestOrientRetrieval:
         )
 
         kg_path = str(tmp_path / "hippo_test.db")
-        kg = KnowledgeGraph(kg_path)
+        kg = KnowledgeGraph(
+            canonical_source(
+                "knowledge",
+                key=kg_path,
+                namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+            )
+        )
         for eid in ["ryn", "kael"]:
             kg.add_entity(
                 GraphEntity(

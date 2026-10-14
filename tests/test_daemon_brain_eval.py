@@ -24,10 +24,10 @@ def _create_daemon(base: Path) -> dict:
     )
 
 
-def test_memory_quality_eval_reports_positive_delta(tmp_path: Path) -> None:
+def test_memory_quality_eval_reports_positive_delta(canonical_daemon, tmp_path: Path) -> None:
     daemon = _create_daemon(tmp_path)
     entry = capture_daemon_memory(
-        tmp_path,
+        canonical_daemon(tmp_path),
         daemon_id=daemon["daemon_id"],
         memory_kind="failure_mode",
         content="When child runs fail, verify provider_call reaches child prompt nodes.",
@@ -46,7 +46,7 @@ def test_memory_quality_eval_reports_positive_delta(tmp_path: Path) -> None:
         return "Fix checks provider routing generally."
 
     result = evaluate_daemon_memory_quality(
-        tmp_path,
+        canonical_daemon(tmp_path),
         daemon_id=daemon["daemon_id"],
         query="child run provider_call",
         replay_fn=replay,
@@ -58,14 +58,14 @@ def test_memory_quality_eval_reports_positive_delta(tmp_path: Path) -> None:
     assert result["with_memory"]["score"] == 1.0
     assert result["delta"] == 1.0
     assert result["outcome"] == "improved"
-    status = memory_observability_status(tmp_path, daemon_id=daemon["daemon_id"])
+    status = memory_observability_status(canonical_daemon(tmp_path), daemon_id=daemon["daemon_id"])
     assert status["event_types"]["daemon.memory.eval"] == 1
 
 
-def test_memory_quality_eval_allows_custom_score_fn(tmp_path: Path) -> None:
+def test_memory_quality_eval_allows_custom_score_fn(canonical_daemon, tmp_path: Path) -> None:
     daemon = _create_daemon(tmp_path)
     capture_daemon_memory(
-        tmp_path,
+        canonical_daemon(tmp_path),
         daemon_id=daemon["daemon_id"],
         memory_kind="policy",
         content="Always cite source episodes when promoting memory.",
@@ -85,7 +85,7 @@ def test_memory_quality_eval_allows_custom_score_fn(tmp_path: Path) -> None:
         }
 
     result = evaluate_daemon_memory_quality(
-        tmp_path,
+        canonical_daemon(tmp_path),
         daemon_id=daemon["daemon_id"],
         query="promoting memory source episodes",
         replay_fn=replay,
@@ -97,12 +97,12 @@ def test_memory_quality_eval_allows_custom_score_fn(tmp_path: Path) -> None:
     assert result["delta"] == 0.5
 
 
-def test_memory_quality_eval_requires_scorer(tmp_path: Path) -> None:
+def test_memory_quality_eval_requires_scorer(canonical_daemon, tmp_path: Path) -> None:
     daemon = _create_daemon(tmp_path)
 
     with pytest.raises(ValueError, match="expected_signals or score_fn"):
         evaluate_daemon_memory_quality(
-            tmp_path,
+            canonical_daemon(tmp_path),
             daemon_id=daemon["daemon_id"],
             query="anything",
             replay_fn=lambda _case: "no scorer",

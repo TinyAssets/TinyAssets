@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from tinyassets.memory.ingestion import (
     IngestionPriority,
     ProgressiveIngestor,
@@ -121,8 +123,10 @@ class TestProgressiveIngestor:
 
 
 class TestOutputVersionStore:
-    def test_save_and_get_current(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_save_and_get_current(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         v = store.save_draft(1, 1, 1, "Draft one", verdict="accept")
         assert v == 1
         current = store.get_current(1, 1, 1)
@@ -130,8 +134,10 @@ class TestOutputVersionStore:
         assert current.prose == "Draft one"
         assert current.is_current
 
-    def test_multiple_versions(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_multiple_versions(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "Draft one")
         store.save_draft(1, 1, 1, "Draft two")
         store.save_draft(1, 1, 1, "Draft three")
@@ -143,8 +149,10 @@ class TestOutputVersionStore:
         all_v = store.get_all_versions(1, 1, 1)
         assert len(all_v) == 3
 
-    def test_rollback(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_rollback(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "Draft one")
         store.save_draft(1, 1, 1, "Draft two")
 
@@ -156,33 +164,43 @@ class TestOutputVersionStore:
         current = store.get_current(1, 1, 1)
         assert current.version == 1
 
-    def test_rollback_nonexistent(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_rollback_nonexistent(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         result = store.rollback(1, 1, 1, to_version=99)
         assert result is None
 
-    def test_version_count(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_version_count(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         assert store.version_count(1, 1, 1) == 0
         store.save_draft(1, 1, 1, "draft")
         assert store.version_count(1, 1, 1) == 1
 
-    def test_get_specific_version(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_get_specific_version(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "version one")
         store.save_draft(1, 1, 1, "version two")
         v1 = store.get_version(1, 1, 1, 1)
         assert v1 is not None
         assert v1.prose == "version one"
 
-    def test_quality_score_stored(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_quality_score_stored(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "draft", quality_score=0.85)
         current = store.get_current(1, 1, 1)
         assert current.quality_score == 0.85
 
-    def test_metadata_stored(self):
-        store = OutputVersionStore(":memory:", "test")
+    def test_metadata_stored(self, canonical_source):
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "draft", metadata={"key": "value"})
         current = store.get_current(1, 1, 1)
         assert current.metadata == {"key": "value"}
@@ -194,15 +212,19 @@ class TestOutputVersionStore:
 
 
 class TestSeriesPromiseTracker:
-    def test_create_and_query(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_create_and_query(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("p1", "Hero finds the sword", 1, 3)
         open_promises = tracker.get_open_promises()
         assert len(open_promises) == 1
         assert open_promises[0].promise_id == "p1"
 
-    def test_resolve_promise(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_resolve_promise(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("p1", "Hero finds the sword", 1, 3)
         tracker.resolve_promise("p1", book=2, chapter=10)
         open_promises = tracker.get_open_promises()
@@ -212,15 +234,19 @@ class TestSeriesPromiseTracker:
         assert len(all_promises) == 1
         assert all_promises[0].status == "resolved"
 
-    def test_add_evidence(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_add_evidence(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("p1", "Sword quest", 1, 1)
         tracker.add_evidence("p1", {"scene": "b1c3s1", "note": "mentioned"})
         all_p = tracker.get_all_promises()
         assert len(all_p[0].evidence) == 1
 
-    def test_overdue_promises(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_overdue_promises(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("old", "Ancient promise", 1, 1)
         tracker.create_promise("new", "Recent promise", 3, 25)
         overdue = tracker.get_overdue_promises(
@@ -229,16 +255,20 @@ class TestSeriesPromiseTracker:
         assert len(overdue) == 1
         assert overdue[0].promise_id == "old"
 
-    def test_filter_by_book(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_filter_by_book(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("p1", "Book 1 promise", 1, 1)
         tracker.create_promise("p2", "Book 3 promise", 3, 1)
         book1 = tracker.get_open_promises(book=1)
         assert len(book1) == 1
         assert book1[0].promise_id == "p1"
 
-    def test_promote_from_book(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_promote_from_book(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         promises = [
             {"id": "p1", "description": "Promise one", "chapter": 5},
             {"id": "p2", "description": "Promise two", "chapter": 10},
@@ -251,8 +281,10 @@ class TestSeriesPromiseTracker:
         created = tracker.promote_from_book(promises, book=1)
         assert created == 0
 
-    def test_duplicate_create_ignored(self):
-        tracker = SeriesPromiseTracker(":memory:", "test")
+    def test_duplicate_create_ignored(self, canonical_source):
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("p1", "Promise", 1, 1)
         tracker.create_promise("p1", "Duplicate", 1, 1)
         all_p = tracker.get_all_promises()
@@ -268,11 +300,13 @@ class TestSeriesPromiseTracker:
 class TestCommitVersionStoreWiring:
     """Test that commit node saves drafts to version store."""
 
-    def test_save_to_version_store_called(self):
+    def test_save_to_version_store_called(self, canonical_source):
         from domains.fantasy_daemon.phases.commit import _save_to_version_store
         from tinyassets import runtime_singletons as runtime
 
-        store = OutputVersionStore(":memory:", "test")
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         state = {
             "book_number": 1,
             "chapter_number": 2,
@@ -315,11 +349,13 @@ class TestCommitVersionStoreWiring:
 class TestBookClosePromiseWiring:
     """Test that book_close promotes promises to series level."""
 
-    def test_promote_promises_on_close(self):
+    def test_promote_promises_on_close(self, canonical_source):
         from domains.fantasy_daemon.phases.book_close import book_close
         from tinyassets import runtime_singletons as runtime
 
-        tracker = SeriesPromiseTracker(":memory:", "test")
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         state = {
             "book_number": 1,
             "chapters_completed": 10,
@@ -328,10 +364,12 @@ class TestBookClosePromiseWiring:
                 {"id": "p2", "description": "Villain returns", "chapter": 8},
             ],
         }
+        runtime.memory_manager = None
         runtime.promise_tracker = tracker
         try:
             result = book_close(state)
         finally:
+            runtime.memory_manager = None
             runtime.promise_tracker = None
         assert "book_summary" in result
 
@@ -343,6 +381,7 @@ class TestBookClosePromiseWiring:
         from domains.fantasy_daemon.phases.book_close import book_close
         from tinyassets import runtime_singletons as runtime
 
+        runtime.memory_manager = None
         runtime.promise_tracker = None
         result = book_close({
             "book_number": 1,
@@ -350,12 +389,15 @@ class TestBookClosePromiseWiring:
         })
         assert "book_summary" in result
 
-    def test_book_close_empty_promises(self):
+    def test_book_close_empty_promises(self, canonical_source):
         """Graceful handling when no promises to promote."""
         from domains.fantasy_daemon.phases.book_close import book_close
         from tinyassets import runtime_singletons as runtime
 
-        tracker = SeriesPromiseTracker(":memory:", "test")
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
+        runtime.memory_manager = None
         runtime.promise_tracker = tracker
         try:
             result = book_close({
@@ -364,6 +406,7 @@ class TestBookClosePromiseWiring:
                 "extracted_promises": [],
             })
         finally:
+            runtime.memory_manager = None
             runtime.promise_tracker = None
         assert "book_summary" in result
         assert len(tracker.get_all_promises()) == 0
@@ -378,3 +421,6 @@ class TestBookClosePromiseWiring:
 # not accidentally removed production methods — they were never in
 # version control. Deleted per planner decision memo
 # `orphaned_test_phase7_decision.md (archived in git)`. Do not resurrect.
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

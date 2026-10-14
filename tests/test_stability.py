@@ -301,9 +301,11 @@ class TestHealthDegradation:
 class TestCrossBookPromises:
     """Verify promises promote from book to series level."""
 
-    def test_promises_promote_across_books(self):
+    def test_promises_promote_across_books(self, canonical_source):
         """Promises from book 1 should be visible in book 2."""
-        tracker = SeriesPromiseTracker(":memory:", "test")
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
 
         # Book 1 close: promote promises
         book1_promises = [
@@ -323,9 +325,11 @@ class TestCrossBookPromises:
         assert len(open_p) == 1
         assert open_p[0].promise_id == "p2"
 
-    def test_overdue_promise_detection(self):
+    def test_overdue_promise_detection(self, canonical_source):
         """Promises unresolved for too long should be flagged."""
-        tracker = SeriesPromiseTracker(":memory:", "test")
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         tracker.create_promise("old_p", "Ancient prophecy", book=1, chapter=1)
 
         overdue = tracker.get_overdue_promises(
@@ -334,11 +338,13 @@ class TestCrossBookPromises:
         assert len(overdue) == 1
         assert overdue[0].promise_id == "old_p"
 
-    def test_book_close_wires_promise_promotion(self):
+    def test_book_close_wires_promise_promotion(self, canonical_source):
         """book_close node should call promote_from_book."""
         import tinyassets.runtime_singletons as runtime
 
-        tracker = SeriesPromiseTracker(":memory:", "test")
+        tracker = SeriesPromiseTracker(
+            canonical_source("promises", key=":memory:", namespaces=["test"]), "test"
+        )
         runtime.promise_tracker = tracker
         try:
             result = book_close({
@@ -362,9 +368,11 @@ class TestCrossBookPromises:
 class TestOutputVersioning:
     """Verify versioning captures accepts and reverts."""
 
-    def test_versioning_saves_accepted_draft(self):
+    def test_versioning_saves_accepted_draft(self, canonical_source):
         """Accepted drafts should be saved to version store."""
-        store = OutputVersionStore(":memory:", "test")
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "Good prose", verdict="accept", quality_score=0.9)
 
         current = store.get_current(1, 1, 1)
@@ -372,9 +380,11 @@ class TestOutputVersioning:
         assert current.verdict == "accept"
         assert current.quality_score == 0.9
 
-    def test_versioning_saves_reverted_draft(self):
+    def test_versioning_saves_reverted_draft(self, canonical_source):
         """Reverted drafts should also be saved for history."""
-        store = OutputVersionStore(":memory:", "test")
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "Bad prose", verdict="revert", quality_score=0.2)
         store.save_draft(1, 1, 1, "Better prose", verdict="accept", quality_score=0.8)
 
@@ -384,9 +394,11 @@ class TestOutputVersioning:
         assert "revert" in verdicts
         assert "accept" in verdicts
 
-    def test_rollback_restores_earlier_version(self):
+    def test_rollback_restores_earlier_version(self, canonical_source):
         """Rollback should restore an earlier draft as current."""
-        store = OutputVersionStore(":memory:", "test")
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         store.save_draft(1, 1, 1, "Version 1")
         store.save_draft(1, 1, 1, "Version 2")
         store.save_draft(1, 1, 1, "Version 3")
@@ -397,11 +409,13 @@ class TestOutputVersioning:
         current = store.get_current(1, 1, 1)
         assert current.version == 1
 
-    def test_commit_node_saves_to_version_store(self, tmp_path):
+    def test_commit_node_saves_to_version_store(self, canonical_source, tmp_path):
         """Commit node should save draft to version store when wired."""
         import tinyassets.runtime_singletons as runtime
 
-        store = OutputVersionStore(":memory:", "test")
+        store = OutputVersionStore(
+            canonical_source("versions", key=":memory:", namespaces=["test"]), "test"
+        )
         db_path = str(tmp_path / "version_commit.db")
 
         state = _make_scene_state(db_path=db_path)
@@ -474,3 +488,6 @@ class TestUniverseCycleLifecycle:
         })
         health = result["health"]
         assert health.get("stopped", False) is False
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

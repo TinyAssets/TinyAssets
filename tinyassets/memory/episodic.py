@@ -1,4 +1,4 @@
-"""Episodic memory -- recent scene summaries and facts (SQLite-backed).
+"""Episodic memory -- canonical recent scene summaries and facts.
 
 Stores scene-by-scene summaries, recently-extracted facts, and style
 observations from the last N chapters.  Supports sliding-window
@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tinyassets.memory.scoping import MemoryScope
+
+from tinyassets.okf.records import SourceRecords
+from tinyassets.okf.sql_index import CanonicalConnection, canonical_methods
 
 logger = logging.getLogger(__name__)
 
@@ -174,34 +177,25 @@ class EpisodicSchemaMigrationResult:
     no_bleed_violations: list[str]
 
 
+@canonical_methods
 class EpisodicMemory:
-    """SQLite-backed store for recent scene summaries and facts.
+    """Canonical owner-box store for recent scene summaries and facts.
 
     Parameters
     ----------
-    db_path : str | Path
-        Path to the SQLite database.  Use ``":memory:"`` for tests.
+    source : SourceRecords
+        Explicitly admitted, reviewed canonical owner-box records.
     universe_id : str
         Scopes all reads/writes to this universe.
     window_chapters : int
         How many chapters of history to keep in the hot window.
     """
 
-    def __init__(
-        self,
-        db_path: str | Path = ":memory:",
-        universe_id: str = "default",
-        window_chapters: int = 5,
-    ) -> None:
-        self._db_path = str(db_path)
+    def __init__(self, source: SourceRecords, universe_id: str = "default",
+                 window_chapters: int = 5) -> None:
         self._universe_id = universe_id
         self._window_chapters = window_chapters
-        self._conn = sqlite3.connect(self._db_path, timeout=30)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=30000")
-        self._conn.executescript(_SCHEMA)
-        self._migrate_scope_columns()
-        self._migrate_domain_neutral_columns()
+        self._conn = CanonicalConnection(source, "episodic", initialize_episodic_index)
 
     # -----------------------------------------------------------------
     # Memory-scope Stage 2b schema migration
@@ -290,6 +284,13 @@ class EpisodicMemory:
             "ON reflections(universe_id, domain_id, sequence_number)"
         )
         self._conn.commit()
+
+    def observation_dimensions(self) -> list[str]:
+        """Read dimensions from the current canonical revision."""
+        return [row[0] for row in self._conn.execute(
+            "SELECT DISTINCT dimension FROM style_observations WHERE universe_id = ?",
+            (self._universe_id,),
+        )]
 
     def close(self) -> None:
         self._conn.close()
@@ -1188,3 +1189,12 @@ def _row_counts(conn: sqlite3.Connection) -> dict[str, int]:
         row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         counts[table] = int(row[0]) if row is not None else 0
     return counts
+
+
+def initialize_episodic_index(conn):
+    """Trusted schema for a disposable index or an explicit offline fixture."""
+    view = object.__new__(EpisodicMemory)
+    view._conn = conn
+    conn.executescript(_SCHEMA)
+    view._migrate_scope_columns()
+    view._migrate_domain_neutral_columns()

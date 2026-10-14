@@ -298,8 +298,9 @@ def test_reserved_rowid_alias_is_case_insensitive_and_shadowed_rowid_is_preserve
 def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundle, tmp_path):
     import hashlib
 
+    from tests.support.legacy_memory_snapshot import daemon_snapshot, offline_consumer
     from tests.support.project_snapshot import snapshot as project_snapshot
-    from tinyassets.daemon_brain import capture_daemon_memory, daemon_brain_db_path
+    from tinyassets.daemon_brain import daemon_brain_db_path
     from tinyassets.daemon_registry import create_daemon
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
     from tinyassets.knowledge.models import FactWithContext, GraphEntity, SourceType
@@ -319,28 +320,21 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         soul_mode="soul",
         soul_text="Preserve evidence",
     )
-    capture_daemon_memory(
-        legacy,
-        daemon_id=daemon["daemon_id"],
-        content="Preserve daemon memory",
-        reliability="host_observed",
-        language_type="literal",
-        metadata={"unknown": [1e20, "extra"]},
-    )
+    daemon_snapshot(daemon_brain_db_path(legacy), daemon["daemon_id"])
     project_snapshot(legacy / ".project_memory.db", [
         ("project-a", "note", {"text": "Project content"}),
         ("project-b", "note", "Other project"),
     ])
     episodic_path = legacy / "episodic.db"
     for owner in ("owner-a", "owner-b"):
-        episodic = EpisodicMemory(episodic_path, universe_id=owner)
+        episodic = offline_consumer(EpisodicMemory, episodic_path, universe_id=owner)
         episodic.store_fact("fact", "subject", f"Preserve {owner} episode")
         episodic.store_episode_summary(
             "episode", 1, f"Summary for {owner}", domain_payload={"unknown": [1, None]}
         )
         episodic.close()
     graph_path = legacy / "knowledge.db"
-    graph = KnowledgeGraph(graph_path)
+    graph = offline_consumer(KnowledgeGraph, graph_path)
     for owner in ("owner-a", "owner-b"):
         graph.add_entity(
             GraphEntity(
@@ -364,16 +358,16 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         )
     graph.close()
     for owner in ("owner-a", "owner-b"):
-        promises = SeriesPromiseTracker(legacy / "promises.db", universe_id=owner)
+        promises = offline_consumer(SeriesPromiseTracker, legacy / "promises.db", universe_id=owner)
         promises.create_promise("promise", f"Promise for {owner}", 1, 1)
         promises.add_evidence("promise", {"source": "chapter", "unknown": [None, 1e20]})
         promises.resolve_promise("promise", 2, 3)
         promises.close()
-        versions = OutputVersionStore(legacy / "versions.db", universe_id=owner)
+        versions = offline_consumer(OutputVersionStore, legacy / "versions.db", universe_id=owner)
         versions.save_draft(1, 1, 1, f"Earlier draft for {owner}")
         versions.save_draft(1, 1, 1, f"Current draft for {owner}", metadata={"unknown": True})
         versions.close()
-    temporal = TemporalFactStore(legacy / "temporal.db")
+    temporal = offline_consumer(TemporalFactStore, legacy / "temporal.db")
     for owner in ("owner-a", "owner-b"):
         temporal.assert_fact(TemporalFact(f"{owner}-old", "place", "location", "Earlier value",
                                          "2026-01-01", branch_id=owner))
@@ -395,9 +389,9 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
             {
                 "daemon_brain_entries": {"daemon_id": [daemon["daemon_id"]]},
                 "daemon_memory_promotions": {"daemon_id": [daemon["daemon_id"]]},
+                "daemon_memory_events": {"daemon_id": [daemon["daemon_id"]]},
             },
             {
-                "daemon_memory_events": "Retained transactional event history",
                 **{
                     f"daemon_brain_entries_fts{suffix}": "Derived full-text index"
                     for suffix in ("", "_data", "_idx", "_content", "_docsize", "_config")
@@ -444,7 +438,7 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         )
     plan = prepare_migration(bundle, sources, operation_id="real-schemas")
     receipt = commit_migration(bundle, plan)
-    assert receipt["entries"] == 12
+    assert receipt["entries"] == 13
     by_source = {source.source: source for source in sources}
     for entry in bundle.snapshot().entries.values():
         row = restore_row(entry)

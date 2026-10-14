@@ -65,9 +65,8 @@ logger = logging.getLogger("universe_server.runtime_ops")
 
 # ───────────────────────────────────────────────────────────────────────────
 
-def _project_source(kwargs):
+def _canonical_source(kwargs, source):
     from tinyassets.api.engine_helpers import _current_actor
-    from tinyassets.memory.project import SOURCE
     from tinyassets.okf.records import SourceRecords
 
     owner = _current_actor()
@@ -82,7 +81,11 @@ def _project_source(kwargs):
             center = current_home(conn, owner)
         if not center:
             raise PermissionError("An admitted command center is required")
-    return SourceRecords.bind(owner=owner, center=center, source=SOURCE)
+    return SourceRecords.bind(owner=owner, center=center, source=source)
+
+def _project_source(kwargs):
+    return _canonical_source(kwargs, "project")
+
 
 def _action_project_memory_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.memory.project import project_memory_get

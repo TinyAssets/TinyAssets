@@ -3212,6 +3212,11 @@ def _daemon_memory_inputs(
     return data, resolved_daemon_id, None
 
 
+def _daemon_memory_source(center):
+    from tinyassets.api.runtime_ops import _canonical_source
+    return _canonical_source({"universe_id": center}, "daemon")
+
+
 def _action_daemon_memory_capture(
     universe_id: str = "",
     inputs_json: str = "",
@@ -3223,7 +3228,7 @@ def _action_daemon_memory_capture(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import capture_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -3235,9 +3240,15 @@ def _action_daemon_memory_capture(
         data.get("temporal_bounds") if isinstance(data.get("temporal_bounds"), dict)
         else None
     )
+    request_id = _kwargs.get("request_id") or data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "Daemon memory mutations require a stable request_id."})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         entry = capture_daemon_memory(
-            _base_path(),
+            source,
+            operation_id=request_id,
             daemon_id=daemon_id,
             content=content,
             memory_kind=str(data.get("memory_kind") or "semantic"),
@@ -3278,7 +3289,7 @@ def _action_daemon_memory_search(
 ) -> str:
     from tinyassets.daemon_brain import search_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -3286,8 +3297,10 @@ def _action_daemon_memory_search(
         return json.dumps({"universe_id": uid, "error": err})
     query = str(data.get("query") or text or filter_text or "").strip()
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = search_daemon_memory(
-            _base_path(),
+            source,
             daemon_id=daemon_id,
             query=query,
             limit=int(data.get("limit", limit)),
@@ -3315,15 +3328,17 @@ def _action_daemon_memory_list(
 ) -> str:
     from tinyassets.daemon_brain import list_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = list_daemon_memory(
-            _base_path(),
+            source,
             daemon_id=daemon_id,
             limit=int(data.get("limit", limit)),
             include_superseded=_as_bool(data.get("include_superseded", False)),
@@ -3347,7 +3362,7 @@ def _action_daemon_memory_review(
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.daemon_brain import review_daemon_memory
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -3357,9 +3372,15 @@ def _action_daemon_memory_review(
     if not entry_id:
         return json.dumps({"universe_id": uid, "error": "entry_id is required."})
     metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+    request_id = _kwargs.get("request_id") or data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "Daemon memory mutations require a stable request_id."})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = review_daemon_memory(
-            _base_path(),
+            source,
+            operation_id=request_id,
             daemon_id=daemon_id,
             entry_id=entry_id,
             decision=str(data.get("decision") or text or ""),
@@ -3388,7 +3409,7 @@ def _action_daemon_memory_promote(
 ) -> str:
     from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
@@ -3398,9 +3419,15 @@ def _action_daemon_memory_promote(
     summary = str(data.get("summary") or text or "").strip()
     target_rel_path = str(data.get("target_rel_path") or "pages/brain/review.md")
     metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+    request_id = _kwargs.get("request_id") or data.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "Daemon memory mutations require a stable request_id."})
     try:
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
         result = promote_daemon_memory_to_wiki(
-            _base_path(),
+            source,
+            operation_id=request_id,
             daemon_id=daemon_id,
             entry_ids=entry_ids or [],
             summary=summary,
@@ -3424,14 +3451,16 @@ def _action_daemon_memory_status(
 ) -> str:
     from tinyassets.daemon_brain import memory_observability_status
 
-    uid = _request_universe(universe_id)
+    uid = str(universe_id or "").strip()
     data, daemon_id, err = _daemon_memory_inputs(
         inputs_json, daemon_id=daemon_id, node_def_id=node_def_id
     )
     if err:
         return json.dumps({"universe_id": uid, "error": err})
     try:
-        result = memory_observability_status(_base_path(), daemon_id=daemon_id)
+        source = _daemon_memory_source(uid)
+        uid = source.bundle.scope[0]
+        result = memory_observability_status(source, daemon_id=daemon_id)
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     result["universe_id"] = uid

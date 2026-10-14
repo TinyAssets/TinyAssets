@@ -21,18 +21,21 @@ from tinyassets.memory.manager import (
 )
 
 
-def _make_manager() -> MemoryManager:
-    return MemoryManager(universe_id="trim-test", db_path=":memory:")
+def _make_manager(canonical_source) -> MemoryManager:
+    return MemoryManager(
+        universe_id="trim-test",
+        source=canonical_source("episodic", key=":memory:", namespaces=["trim-test"]),
+    )
 
 
 class TestTrimListsReducesBundle:
-    def test_200_canon_facts_trimmed_below_budget(self):
+    def test_200_canon_facts_trimmed_below_budget(self, canonical_source):
         """Primary regression gate from the task spec.
 
         Bundle with 200 long canon_facts (each ~500 chars) exceeds the
         15k-token budget. After trim, bundle must be ≤ budget or raise.
         """
-        mgr = _make_manager()
+        mgr = _make_manager(canonical_source)
         try:
             bundle = {
                 "canon_facts": [
@@ -57,8 +60,8 @@ class TestTrimListsReducesBundle:
         finally:
             mgr.close()
 
-    def test_list_trim_shrinks_multiple_list_fields(self):
-        mgr = _make_manager()
+    def test_list_trim_shrinks_multiple_list_fields(self, canonical_source):
+        mgr = _make_manager(canonical_source)
         try:
             bundle = {
                 "facts": [{"text": "x" * 200} for _ in range(100)],
@@ -81,8 +84,8 @@ class TestTrimListsReducesBundle:
 
 
 class TestTrimCharacterDict:
-    def test_aggressive_pass_strips_verbose_character_fields(self):
-        mgr = _make_manager()
+    def test_aggressive_pass_strips_verbose_character_fields(self, canonical_source):
+        mgr = _make_manager(canonical_source)
         try:
             bundle = {
                 "active_characters": {
@@ -114,11 +117,11 @@ class TestTrimCharacterDict:
 
 
 class TestTrimRaisesOnIrreducibleOverflow:
-    def test_raises_when_single_field_dominates_irreducibly(self):
+    def test_raises_when_single_field_dominates_irreducibly(self, canonical_source):
         """World_state is highest priority (never trimmed); if it alone
         exceeds budget, the trim must raise rather than return over-budget.
         """
-        mgr = _make_manager()
+        mgr = _make_manager(canonical_source)
         try:
             # world_state dict with a huge irreducible string inside.
             # `_trim_character_dict` doesn't touch world_state;
@@ -141,8 +144,8 @@ class TestTrimRaisesOnIrreducibleOverflow:
 
 
 class TestTrimUnderBudgetIsNoOp:
-    def test_already_under_budget_returns_bundle_unchanged(self):
-        mgr = _make_manager()
+    def test_already_under_budget_returns_bundle_unchanged(self, canonical_source):
+        mgr = _make_manager(canonical_source)
         try:
             bundle = {
                 "facts": [{"text": "short"} for _ in range(5)],

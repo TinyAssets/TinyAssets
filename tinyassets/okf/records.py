@@ -110,6 +110,8 @@ class SourceRecords:
         return snapshot
 
     def rows(self, snapshot):
+        if self.bundle.access_check is not None:
+            self.bundle.access_check()
         if snapshot.scope != self.bundle.scope:
             raise InvalidBundle("Source snapshot belongs to another owner or placement")
         census = source_census(snapshot, self.source)

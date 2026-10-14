@@ -23,7 +23,7 @@ from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 # launcher, and center admission/deletion. Production has no fallback; tests opt out of a double
 # with the ``role_split`` marker when they exercise the real one.
 pytest_plugins = ("tests.support.broker_double", "tests.support.cell_double",
-                  "tests.support.admission_double")
+                  "tests.support.admission_double", "tests.support.canonical_sources")
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 

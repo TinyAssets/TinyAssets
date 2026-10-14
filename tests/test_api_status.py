@@ -175,7 +175,7 @@ def test_get_status_release_state_reads_deploy_receipt(status_env):
     assert release_state["warnings"] == []
 
 
-def test_get_status_includes_read_only_open_brain_surface(status_env, tmp_path):
+def test_get_status_includes_read_only_open_brain_surface(canonical_daemon, status_env, tmp_path):
     from tinyassets.daemon_brain import capture_daemon_memory
     from tinyassets.daemon_registry import create_daemon
 
@@ -187,7 +187,7 @@ def test_get_status_includes_read_only_open_brain_surface(status_env, tmp_path):
         soul_text="Status Brain Daemon observes memory cost.",
     )
     capture_daemon_memory(
-        tmp_path,
+        canonical_daemon(tmp_path),
         daemon_id=daemon["daemon_id"],
         memory_kind="policy",
         content="Report open-brain token cost as status, not as a decision.",

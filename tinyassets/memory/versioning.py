@@ -1,6 +1,6 @@
 """Output versioning -- save all drafts, allow rollback.
 
-Every scene draft is versioned.  The system keeps all drafts in SQLite
+Every scene draft is versioned. The system keeps all drafts in canonical files
 so that:
   - Any draft can be retrieved for comparison.
   - Rollback to a previous version is a pointer update.
@@ -13,8 +13,10 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
+
+from tinyassets.okf.records import SourceRecords
+from tinyassets.okf.sql_index import CanonicalConnection, canonical_methods
 
 logger = logging.getLogger(__name__)
 
@@ -56,28 +58,21 @@ class DraftVersion:
     metadata: dict[str, Any]
 
 
+@canonical_methods
 class OutputVersionStore:
-    """SQLite-backed draft version store.
+    """Canonical owner-box draft version store.
 
     Parameters
     ----------
-    db_path : str | Path
-        Path to SQLite database.  Use ``":memory:"`` for tests.
+    source : SourceRecords
+        Explicitly admitted, reviewed canonical owner-box records.
     universe_id : str
         Universe namespace.
     """
 
-    def __init__(
-        self,
-        db_path: str | Path = ":memory:",
-        universe_id: str = "default",
-    ) -> None:
-        self._db_path = str(db_path)
+    def __init__(self, source: SourceRecords, universe_id: str = "default") -> None:
         self._universe_id = universe_id
-        self._conn = sqlite3.connect(self._db_path, timeout=30)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=30000")
-        self._conn.executescript(_SCHEMA)
+        self._conn = CanonicalConnection(source, "versions", lambda db: db.executescript(_SCHEMA))
 
     def close(self) -> None:
         self._conn.close()

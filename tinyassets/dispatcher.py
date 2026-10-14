@@ -278,9 +278,10 @@ def soul_guided_dispatch_read(
     brain_hits: list[dict[str, Any]] = []
     try:
         from tinyassets.daemon_brain import read_daemon_brain_dispatch_hints
+        from tinyassets.memory.runtime import current_memory
 
         brain = read_daemon_brain_dispatch_hints(
-            base_path,
+            current_memory().source("daemon"),
             daemon_id=daemon_id,
             query=task_text,
             limit=3,

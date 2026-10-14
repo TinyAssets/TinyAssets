@@ -23,10 +23,16 @@ from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
 
 @pytest.fixture
-def temp_kg(tmp_path):
+def temp_kg(canonical_source, tmp_path):
     """Create a temporary KnowledgeGraph backed by a temp SQLite file."""
     db_path = tmp_path / "test_kg.db"
-    kg = KnowledgeGraph(db_path=str(db_path))
+    kg = KnowledgeGraph(
+        source=canonical_source(
+            "knowledge",
+            key=str(db_path),
+            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
+        )
+    )
     yield kg
     kg.close()
 
@@ -226,6 +232,7 @@ class TestCommitKGIntegration:
         from domains.fantasy_daemon.phases.commit import commit
         from tinyassets import runtime_singletons as runtime
 
+        runtime.knowledge_graph = None  # Explicit disabled-index unit scenario.
         assert runtime.knowledge_graph is None
 
         state = _build_commit_state(tmp_story_db)
@@ -287,3 +294,6 @@ def _build_commit_state(db_path: str) -> dict:
         "quality_debt": [],
         "verdict": "",
     }
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

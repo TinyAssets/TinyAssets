@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from domains.fantasy_daemon.phases.orient import orient
 from domains.fantasy_daemon.phases.writer_tools import select_and_run_writer_tools
 from tinyassets.notes import add_note, list_notes
@@ -148,3 +150,6 @@ class TestOrientNotesConsumption:
         instructions = result.get("workflow_instructions", {})
         assert "workflow_instructions" not in result or "notes" not in instructions
         assert len(list_notes(tmp_path, status="unread")) == 1
+
+
+pytestmark = pytest.mark.usefixtures("canonical_runtime")

@@ -113,12 +113,4 @@ class PromotionGates:
     @staticmethod
     def _get_observation_dimensions(episodic: Any) -> list[str]:
         """Extract distinct style dimensions from the episodic store."""
-        try:
-            rows = episodic._conn.execute(
-                "SELECT DISTINCT dimension FROM style_observations "
-                "WHERE universe_id = ?",
-                (episodic._universe_id,),
-            ).fetchall()
-            return [r[0] for r in rows]
-        except Exception:
-            return []
+        return episodic.observation_dimensions()

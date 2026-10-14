@@ -156,16 +156,16 @@ class TestKnowledgeGraphRequiresPath:
     def test_no_default_path(self) -> None:
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
-        with pytest.raises(ValueError, match="explicit db_path"):
+        with pytest.raises(TypeError):
             KnowledgeGraph()
 
     def test_explicit_path_accepted(self, tmp_path) -> None:
         from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
 
         db_file = str(tmp_path / "test_kg.db")
-        kg = KnowledgeGraph(db_path=db_file)
-        assert kg._db_path == db_file
-        kg.close()
+        with pytest.raises(ValueError, match="admitted canonical"):
+            KnowledgeGraph(db_file)
+        assert not Path(db_file).exists()
 
 
 class TestWorldStateDbRequiresPath:

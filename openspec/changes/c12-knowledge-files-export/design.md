@@ -357,10 +357,11 @@ Both current and history tables require matching reviewed namespace bindings.
 One revision atomically commits value and history with optimistic version
 checks. Runtime writes require a stable request ID; a repeated committed request
 returns its original version, while reuse for different content refuses. The
-provider accounts storage and enforces its envelope/quota. The retired global
-SQLite writer and writer-account accounting tests are replaced by canonical
-storage, refusal, retry and owner-isolation coverage. Six other production
-consumers remain unwired; this does not make the full cutover deployable.
+provider enforces bounded message envelopes. Account-quota enforcement has not
+been established in the checked-out provider; C6 must provide and prove that
+boundary before activation. The retired global SQLite writer and writer-account
+accounting tests are replaced by canonical storage, refusal, retry and
+owner-isolation coverage. Provider-refusal tests do not prove quota enforcement.
 
 ## Native private-agent adoption
 
@@ -384,3 +385,35 @@ Activation must retain newer tombstones, destruction fences and permanent
 UID/admission reservations; differing authority frontiers currently refuse in
 C6. An OKF restore receipt cannot override that refusal. No production snapshot,
 authority merge, source deletion or activation was performed in this lane.
+
+
+## Remaining six canonical consumers
+
+Daemon, episodic, knowledge, promises, versions and temporal consumers now accept
+only explicit SourceRecords. Repository-owned DDL creates disposable in-memory
+SQL indexes; no runtime disk database or vector directory is consulted. Each
+public operation refreshes a coherent canonical revision, checks exact typed SQL
+round trips, and publishes all related rows under one generation CAS. Unknown
+source columns and metadata survive updates. A lost reply retains the original
+snapshot/diff/operation ID for exact retry on the same connection; conflicting or
+already committed IDs refuse instead of guessing a new operation. Daemon API
+mutations require stable request_id in inputs_json (or internal kwargs).
+
+Deletion adds a durable tombstone with source identity and provenance. Forgotten
+IDs cannot be revived by normal writes. Trusted AUTOINCREMENT indexes seed their
+counter from verified backup counters and later tombstones, so deletion/rebuild
+cannot recycle identities. Current source edits and deletions rebuild temporal,
+full-text and vector indexes; historical files are never a recovery read path.
+Daemon promotions put their human-readable summary in the canonical promotion
+record and return that Markdown path. They retain source entry IDs, logical target
+path and provenance in the same atomic revision, without a duplicate host wiki.
+
+C7 must enter owner_memory_scope after authenticated C6 admission and reviewed
+migration, keeping it alive until children finish. The namespace is explicitly
+reviewed, not inferred from paths/state. Async context inheritance carries the
+exact owner binding; plain threads need copy_context and serialized workers must
+re-admit independently. Retained services/adapters refuse after scope exit or
+under another current owner's context. The module's non-memory configuration
+remains separate; memory services have no process-global default or fallback.
+C7 production scope entry and C6 quota enforcement remain activation gates. The
+six consumers and real scoped graph test fixtures do not establish those gates.

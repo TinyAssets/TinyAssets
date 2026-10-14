@@ -22,7 +22,9 @@
 - [ ] 3.1 Complete source census and lossless staged migration under one snapshot transaction.
 - [x] 3.1a Implement verified snapshot namespace census, explicit provenance-bound assignments and restricted unresolved-row custody; refuse unreviewed/expanded scopes. No production census has been run.
 - [ ] 3.2 Bundle-authoritative reads/writes; rebuildable indexes; delete canonical duplicates.
-- [x] 3.2a Wire project-memory production operations to canonical owner-box records with reviewed namespace authority, atomic current/history writes and stable request retry. Six other consumers and legacy source deletion remain.
+- [x] 3.2a Wire project-memory production operations to canonical owner-box records with reviewed namespace authority, atomic current/history writes and stable request retry. Legacy source deletion remains.
+- [x] 3.2b Implement the six remaining consumers on canonical records, disposable indexes, coherent related-table CAS, typed losslessness, tombstones, preserved counters, scoped lifetime and explicit failure; adapt real graph tests to admitted scopes.
+- [ ] 3.2c C7 enters the scope around production graph/native execution and awaits children; C6 enforces/proves owner-box quotas. Neither dependency is implied by consumer tests.
 - [ ] 3.3 One owner export door, preview, manifest, secret exclusions, download and import quarantine.
 - [ ] 3.4 Exact-head oracle and migration failure tests; cross-family review; protected merge.
 - [ ] 3.5 Deploy, assert SHA, real owner edit/rebuild/export/import and standalone-model acceptance.

@@ -620,7 +620,7 @@ def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
     assert selected.branch_task_id == "bt-open"
 
 
-def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(tmp_path):
+def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(canonical_daemon, tmp_path):
     from tinyassets import daemon_registry
     from tinyassets.daemon_brain import capture_daemon_memory
 
@@ -634,7 +634,7 @@ def test_soul_guided_dispatch_read_boosts_matching_open_brain_task(tmp_path):
         domain_claims=["workflow-platform"],
     )
     memory = capture_daemon_memory(
-        tmp_path,
+        canonical_daemon(tmp_path),
         daemon_id=daemon["daemon_id"],
         memory_kind="preference",
         content="Prefer workflow-platform dispatch patches with narrow tests.",

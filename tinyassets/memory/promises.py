@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
+
+from tinyassets.okf.records import SourceRecords
+from tinyassets.okf.sql_index import CanonicalConnection, canonical_methods
 
 logger = logging.getLogger(__name__)
 
@@ -50,27 +51,21 @@ class SeriesPromise:
     evidence: list[dict[str, Any]]
 
 
+@canonical_methods
 class SeriesPromiseTracker:
-    """SQLite-backed cross-book promise tracking.
+    """Canonical owner-box cross-book promise tracking.
 
     Parameters
     ----------
-    db_path : str | Path
-        Path to SQLite database.
+    source : SourceRecords
+        Explicitly admitted, reviewed canonical owner-box records.
     universe_id : str
         Universe namespace.
     """
 
-    def __init__(
-        self,
-        db_path: str | Path = ":memory:",
-        universe_id: str = "default",
-    ) -> None:
+    def __init__(self, source: SourceRecords, universe_id: str = "default") -> None:
         self._universe_id = universe_id
-        self._conn = sqlite3.connect(str(db_path), timeout=30)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=30000")
-        self._conn.executescript(_SCHEMA)
+        self._conn = CanonicalConnection(source, "promises", lambda db: db.executescript(_SCHEMA))
 
     def close(self) -> None:
         self._conn.close()

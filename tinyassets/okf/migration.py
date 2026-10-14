@@ -137,6 +137,11 @@ def read_snapshot(
                 "count": len(rows),
                 "sha256": digest,
             }
+            if "AUTOINCREMENT" in (tables[table] or "").upper():
+                sequence = conn.execute(
+                    "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
+                ).fetchone()
+                inventory["tables"][table]["sequence"] = int(sequence[0]) if sequence else 0
             entries.extend(table_entries)
         # Round-trip every value before any bundle write is offered to a caller.
         if len({entry.id for entry in entries}) != len(entries):
