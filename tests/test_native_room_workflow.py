@@ -41,7 +41,8 @@ def wired(tmp_path):
         if action == "read_graph":
             reads.append(args)
             assert args["graph_id"] == "fixture-center" and args["run_id"] == "fixture-run"
-            return json.dumps(actual if args["target"] == "run" else output)
+            data = actual if args["target"] == "run" else output
+            return {"is_error": False, "text": json.dumps(data), "data": data}
         assert action == "bash"
         commands.append(args)
         command = args["command"]
@@ -157,3 +158,57 @@ def test_builder_literals_do_not_reexpand_placeholder_like_identifiers():
     weird = dict(CONFIG, room_id="ROOM_PROGRAM_CENTER")
     branch = builder.build(**weird)
     assert "'ROOM_PROGRAM_CENTER'" in branch.node_defs[0].source_code
+
+
+def test_production_node_invoker_envelope_and_owner_fence(monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets import engine_tool_client, graph_compiler
+
+    branch = builder.build(**CONFIG)
+    result = {"run_id": "fixture-run", "status": "completed"}
+    opened = []
+
+    class Client:
+        async def call(self, name, arguments):
+            assert name == "read_graph" and arguments["target"] == "run"
+            return SimpleNamespace(
+                isError=False, content=[SimpleNamespace(text=json.dumps(result))]
+            )
+
+    @contextlib.asynccontextmanager
+    async def open_tools(**kwargs):
+        opened.append(kwargs)
+        yield Client()
+
+    monkeypatch.setattr(engine_tool_client, "open_engine_tools", open_tools)
+    context = SimpleNamespace(
+        owner_user_id="fixture-owner",
+        universe_id="fixture-center",
+        caller_provenance="own",
+        definition_author="fixture-owner",
+    )
+    invoke = graph_compiler._build_node_mcp_invoker(
+        branch.node_defs[0],
+        event_sink=None,
+        execution_context=context,
+    )
+    envelope = invoke("read_graph", target="run", run_id="fixture-run")
+    namespace = {}
+    exec(compile(branch.node_defs[0].source_code, "<generated>", "exec"), namespace)
+    assert namespace["object_result"](envelope) == result
+    assert opened == [
+        {
+            "actor_id": "fixture-owner",
+            "graph_id": "fixture-center",
+            "enabled_tools": ("read_graph",),
+        }
+    ]
+    context.definition_author = "other-owner"
+    with pytest.raises(graph_compiler.CompilerError, match="owner"):
+        invoke("read_graph", target="run", run_id="fixture-run")
+    assert len(opened) == 1
+    with pytest.raises(RuntimeError):
+        namespace["object_result"]({"is_error": True, "text": "refused", "data": result})
+    with pytest.raises(RuntimeError):
+        namespace["object_result"]({"is_error": False, "text": "invalid", "data": None})

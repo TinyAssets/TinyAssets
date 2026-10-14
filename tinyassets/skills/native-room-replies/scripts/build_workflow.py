@@ -29,6 +29,11 @@ def object_result(value):
     if isinstance(value, str): value = json.loads(value)
     if not isinstance(value, dict) or value.get("error") or value.get("is_error"):
         raise RuntimeError("Owner-scoped workflow read refused")
+    # Served tools in code nodes return the compiler's RPC envelope.
+    if "is_error" in value and "text" in value:
+        value = value.get("data")
+        if not isinstance(value, dict) or value.get("error"):
+            raise RuntimeError("Owner-scoped workflow returned invalid data")
     return value
 
 def run(state):
