@@ -25,6 +25,10 @@ from pathlib import Path
 
 GIB = 1024**3
 MIB = 1024**2
+ROOT_EXCESS_DROP_LIMIT = 64 * MIB
+ROOT_BASELINE_SECONDS = 610  # Covers the 600 s store-fill command and its startup overhead.
+ROOTFS_OVERLAY = "root:memory,size=256m"
+RUNSC_STATE_GROWTH_LIMIT = 8 * MIB
 ROOT = Path("/opt/tinyassets/boxhostd")
 RUNSC = ROOT / "current" / "runsc"
 RUNSC_RELEASE = "release-20260928.0"
@@ -251,7 +255,8 @@ class Boxes:
         return run(
             [
                 str(RUNSC), "--root", str(self.state), "--systemd-cgroup=false",
-                "--network=none", "--platform=systrap", *args,
+                "--network=none", "--platform=systrap", f"--overlay2={ROOTFS_OVERLAY}",
+                *args,
             ],
             check=check,
             timeout=timeout,
@@ -309,8 +314,9 @@ class Boxes:
         start = time.monotonic()
         result = subprocess.run(
             [
-                str(RUNSC), "--root", str(self.state), "--systemd-cgroup=false", "--network=none",
-                "--platform=systrap", "run", "--detach", "--bundle", str(bundle), name,
+                str(RUNSC), "--root", str(self.state), "--systemd-cgroup=false",
+                "--network=none", "--platform=systrap", f"--overlay2={ROOTFS_OVERLAY}",
+                "run", "--detach", "--bundle", str(bundle), name,
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -378,6 +384,7 @@ def chromium(boxes: Boxes, name: str, owner: Path) -> subprocess.Popen[str]:
             "--systemd-cgroup=false",
             "--network=none",
             "--platform=systrap",
+            f"--overlay2={ROOTFS_OVERLAY}",
             "exec",
             name,
             "/opt/venv/bin/python",
@@ -419,6 +426,7 @@ def g1(boxes: Boxes, baseline: float) -> dict:
             "--systemd-cgroup=false",
             "--network=none",
             "--platform=systrap",
+            f"--overlay2={ROOTFS_OVERLAY}",
             "exec",
             "g1",
             "/opt/venv/bin/python",
@@ -531,6 +539,7 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
                 "--systemd-cgroup=false",
                 "--network=none",
                 "--platform=systrap",
+                f"--overlay2={ROOTFS_OVERLAY}",
                 "exec",
                 "cap0",
                 "/usr/bin/node",
@@ -617,6 +626,34 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
     return g3_result, g6_result
 
 
+def sample_root_free(seconds: int) -> list[tuple[float, int]]:
+    """Keep an idle trace long enough to match the following fill's actual duration."""
+    start = time.monotonic()
+    samples = [(start, shutil.disk_usage("/").free)]
+    while time.monotonic() - start < seconds:
+        time.sleep(min(1, max(0, start + seconds - time.monotonic())))
+        samples.append((time.monotonic(), shutil.disk_usage("/").free))
+    return samples
+
+
+def root_drop_for_duration(samples: list[tuple[float, int]], seconds: float) -> int:
+    """Use the trailing idle interval, interpolating its first free-space reading."""
+    target = samples[-1][0] - seconds
+    if target < samples[0][0]:
+        raise RuntimeError("store fill outlasted root baseline")
+    for before, after in zip(samples, samples[1:]):
+        if before[0] <= target <= after[0]:
+            fraction = (target - before[0]) / (after[0] - before[0])
+            start_free = before[1] + fraction * (after[1] - before[1])
+            return round(start_free - samples[-1][1])
+    raise RuntimeError("root baseline did not cover store fill")
+
+
+def allocated_tree_bytes(tree: Path) -> int:
+    """Count allocated host blocks, including runsc's metadata files."""
+    return sum(path.stat().st_blocks * 512 for path in tree.rglob("*") if path.is_file())
+
+
 def g4(store: Path, boxes: Boxes, work: Path) -> dict:
     fs = run(["findmnt", "--mountpoint", str(store), "-no", "FSTYPE,OPTIONS"]).stdout.strip()
     fields = fs.split()
@@ -626,6 +663,13 @@ def g4(store: Path, boxes: Boxes, work: Path) -> dict:
         "project_quota_mount": "pquota" in options or "prjquota" in options,
         # XFS never lists nodiscard (the default); only an enabled discard shows.
         "nodiscard_mount": "discard" not in options,
+        "rootfs_overlay_medium": "memory",
+        "rootfs_overlay_limit_bytes": 256 * MIB,
+        "tmp_mount_medium": "tmpfs",
+        "tmp_mount_limit_bytes": 256 * MIB,
+        "runsc_state_location": str(work / "runsc-state"),
+        "runsc_state_growth_limit_bytes": RUNSC_STATE_GROWTH_LIMIT,
+        "root_excess_drop_limit_bytes": ROOT_EXCESS_DROP_LIMIT,
     }
     if (
         result["filesystem"] != "xfs"
@@ -675,7 +719,6 @@ def g4(store: Path, boxes: Boxes, work: Path) -> dict:
     (sibling / "sibling.bin").unlink(missing_ok=True)
     # Fill only the disposable store, never the host root. The sandbox sees
     # ENOSPC and remains alive; the allocated backing image cannot grow.
-    root_free = shutil.disk_usage("/").free
     store_size = shutil.disk_usage(store).total
     result["store_size_bytes"] = store_size
     image_blocks = getattr(BOX_IMAGE.stat(), "st_blocks", None) if BOX_IMAGE.exists() else None
@@ -685,12 +728,24 @@ def g4(store: Path, boxes: Boxes, work: Path) -> dict:
         "   n+=f.write(b'x'*16777216)\n"
         "except OSError as x: e=x.errno\nprint(json.dumps({'errno':e,'bytes':n}))"
     )
+    baseline = sample_root_free(ROOT_BASELINE_SECONDS)
+    state_blocks_before = allocated_tree_bytes(boxes.state)
+    fill_start = time.monotonic()
+    root_fill_start_free = shutil.disk_usage("/").free
     full = json.loads(boxes.exec(
         "g4full", "/opt/venv/bin/python", "-c", full_code, timeout=600
     ).stdout)
+    fill_seconds = time.monotonic() - fill_start
     result["store_errno"] = full["errno"]
     result["store_written_bytes"] = full["bytes"]
-    result["root_free_delta_bytes"] = shutil.disk_usage("/").free - root_free
+    result["root_baseline_window_seconds"] = round(fill_seconds, 3)
+    result["root_fill_window_seconds"] = round(fill_seconds, 3)
+    result["root_baseline_drop_bytes"] = root_drop_for_duration(baseline, fill_seconds)
+    result["root_fill_drop_bytes"] = root_fill_start_free - shutil.disk_usage("/").free
+    result["root_excess_drop_bytes"] = (
+        result["root_fill_drop_bytes"] - result["root_baseline_drop_bytes"]
+    )
+    result["runsc_state_growth_bytes"] = allocated_tree_bytes(boxes.state) - state_blocks_before
     boxes.stop("g4full")
     (sibling / "full.bin").unlink(missing_ok=True)
     sibling.rmdir()
@@ -710,7 +765,8 @@ def quota_limits_pass(result: dict) -> bool:
         and result["sibling_write_ok"]
         and result["store_errno"] == errno.ENOSPC
         and result["store_written_bytes"] >= result["store_size_bytes"] * 3 // 4
-        and result["root_free_delta_bytes"] >= -MIB
+        and result["root_excess_drop_bytes"] <= ROOT_EXCESS_DROP_LIMIT
+        and result["runsc_state_growth_bytes"] <= RUNSC_STATE_GROWTH_LIMIT
         and result["image_blocks_unchanged"]
     )
 
