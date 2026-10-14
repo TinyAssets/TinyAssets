@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from tinyassets.boxes.admission import Admission
+from tinyassets.boxes.admission import OwnerRegistry
 from tinyassets.boxes.layout import hold
 from tinyassets.boxes.provider import BoxAuthError
 from tinyassets.broker.box_admission import resolve
@@ -42,7 +42,7 @@ def test_broker_admission_requires_permanent_mapping_live_center_and_migrated_qu
 
 
 def test_tombstone_is_required_for_destroy_and_checked_again_after_binding(tmp_path, monkeypatch):
-    admission = Admission(tmp_path, tmp_path / "broker.sock")
+    admission = OwnerRegistry(tmp_path, tmp_path / "broker.sock")
     monkeypatch.setattr(admission, "record", lambda *args: {"uid": 300001})
     with pytest.raises(sqlite3.Error):
         admission.grant("alice", "a", "session")

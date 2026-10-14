@@ -9,7 +9,7 @@ import socket
 import threading
 from pathlib import Path
 
-from tinyassets.boxes.admission import Admission
+from tinyassets.boxes.admission import OwnerRegistry
 from tinyassets.boxes.bootstrap import RUNTIME, peer
 from tinyassets.boxes.file_channel import receive, send, serve_channel
 from tinyassets.boxes.gvisor_files import GvisorFileBackend
@@ -21,7 +21,7 @@ from tinyassets.boxes.relay import OwnerRelays
 
 
 class HostService:
-    def __init__(self, host: OwnerFileHost, admission: Admission, quota: OwnerQuota,
+    def __init__(self, host: OwnerFileHost, admission: OwnerRegistry, quota: OwnerQuota,
                  relays: OwnerRelays) -> None:
         self.host, self.admission, self.quota, self.relays = host, admission, quota, relays
         self._broker_lock = threading.Lock()
@@ -156,7 +156,7 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
     os.chmod(broker_dir, 0o2750)
     state = Path("/var/lib/boxhostd/state")
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    admission = Admission(data_root, broker_dir / "broker.sock")
+    admission = OwnerRegistry(data_root, broker_dir / "broker.sock")
     relays = OwnerRelays(RUNTIME / "relays", admission)
     runtime = GvisorRuntime(
         runsc=Path("/opt/tinyassets/boxhostd/current/runsc"), rootfs=rootfs,
@@ -167,7 +167,9 @@ def _serve(*, rootfs: Path, data_root: Path) -> None:
                                 memory_for=lambda uid: 1024**3)
     host = OwnerFileHost(state_dir=state, backend=backend, authorize=admission.authorize,
                          authorize_destroy=lambda grant, center:
-                         admission.authorize(grant, center, destroying=True))
+                         admission.authorize(grant, center, destroying=True),
+                         bound_for=lambda grant, center:
+                         admission.record(grant.owner_id, center)["quota"])
     service = HostService(host, admission, OwnerQuota(runtime.owner_store), relays)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):

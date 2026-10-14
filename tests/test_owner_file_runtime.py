@@ -210,6 +210,16 @@ def test_guest_cannot_claim_dispatched_mutation_had_no_effect(setup):
     assert calls == ["write"]
 
 
+def test_usage_generation_and_quota_come_from_host_authority(setup):
+    host, sandbox, _, _ = setup
+    token = host.bind(A, "a")["token"]
+    host.bound_for = lambda grant, center: 1024**3
+    sandbox.call = lambda *args: {"result": {
+        "logical_bytes": 17, "bound_bytes": 1, "generation": -1}}
+    usage = host.request(A, token, "usage", {})["result"]
+    assert usage == {"logical_bytes": 17, "bound_bytes": 1024**3, "generation": 0}
+
+
 def test_second_host_cannot_stop_first_hosts_sandboxes(setup, tmp_path):
     host, sandbox, _, authorize = setup
     with pytest.raises(BoxError, match="another box host"):
