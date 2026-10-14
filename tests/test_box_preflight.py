@@ -116,17 +116,30 @@ def test_g4_distinguishes_project_limit_from_store_full() -> None:
         "quota_written_bytes": 8 * mib,
         "sibling_write_ok": True,
         "store_errno": errno.ENOSPC,
-        "store_written_bytes": 8 * 1024 * mib,
-        "store_size_bytes": 8 * 1024 * mib,
-        "root_free_delta_bytes": 0,
+        "store_written_bytes": 21_200_000_000,
+        "store_size_bytes": 21_400_000_000,
+        "root_baseline_drop_bytes": 200 * mib,
+        "root_fill_drop_bytes": 214_716_416,
+        "root_excess_drop_bytes": 214_716_416 - 200 * mib,
+        "runsc_state_growth_bytes": 0,
         "image_blocks_unchanged": True,
     }
     assert box_preflight.quota_limits_pass(result)
     for change in ({"quota_written_bytes": 1024 * mib},
                    {"sibling_write_ok": False},
                    {"store_written_bytes": 8 * mib},
-                   {"quota_errno": errno.EDQUOT}):
+                   {"quota_errno": errno.EDQUOT},
+                   {"root_excess_drop_bytes": 65 * mib},
+                   {"runsc_state_growth_bytes": 9 * mib}):
         assert not box_preflight.quota_limits_pass({**result, **change})
+
+
+def test_root_baseline_matches_fill_duration_and_rejects_short_trace() -> None:
+    mib = box_preflight.MIB
+    samples = [(0.0, 1000 * mib), (60.0, 990 * mib), (120.0, 970 * mib)]
+    assert box_preflight.root_drop_for_duration(samples, 90.0) == 25 * mib
+    with pytest.raises(RuntimeError, match="outlasted"):
+        box_preflight.root_drop_for_duration(samples, 121.0)
 
 
 def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path: Path) -> None:
@@ -154,6 +167,7 @@ def test_all_detached_box_starts_discard_standard_streams(monkeypatch, tmp_path:
 
     def detached_run(args, **kwargs):
         assert "--systemd-cgroup=false" in args
+        assert f"--overlay2={box_preflight.ROOTFS_OVERLAY}" in args
         assert args[args.index("run") + 1] == "--detach"
         assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["stdout"] == subprocess.DEVNULL
@@ -386,10 +400,15 @@ def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: P
 
     def fake_run(args, **_kwargs):
         commands.append(args)
-        output = "xfs rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota" if args[0] == "findmnt" else ""
+        output = (
+            "xfs rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota"
+            if args[0] == "findmnt" else ""
+        )
         return subprocess.CompletedProcess(args, 0, stdout=output)
 
     class Boxes:
+        state = tmp_path / "work" / "runsc-state"
+
         def start(self, _name, **_kwargs):
             return None
 
@@ -411,6 +430,7 @@ def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: P
     store.mkdir()
     work = tmp_path / "work"
     work.mkdir()
+    (work / "runsc-state").mkdir()
     image = tmp_path / "boxes.img"
     image.write_bytes(b"image")
     monkeypatch.setattr(box_preflight, "BOX_IMAGE", image)
@@ -420,6 +440,11 @@ def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: P
         total=8 * box_preflight.GIB, free=8 * box_preflight.GIB
     )
     monkeypatch.setattr(box_preflight.shutil, "disk_usage", lambda _path: usage)
+    monkeypatch.setattr(
+        box_preflight,
+        "sample_root_free",
+        lambda _seconds: [(0.0, usage.free), (1000.0, usage.free)],
+    )
     result = box_preflight.g4(store, Boxes(), work)
     assert result["pass"] is True
     assert result["quota_errno"] == errno.ENOSPC
@@ -673,6 +698,13 @@ def test_missing_quota_mount_fails_without_touching_volume(monkeypatch, tmp_path
         "filesystem": "ext4",
         "project_quota_mount": False,
         "nodiscard_mount": True,
+        "rootfs_overlay_medium": "memory",
+        "rootfs_overlay_limit_bytes": 256 * box_preflight.MIB,
+        "tmp_mount_medium": "tmpfs",
+        "tmp_mount_limit_bytes": 256 * box_preflight.MIB,
+        "runsc_state_location": str(tmp_path / "runsc-state"),
+        "runsc_state_growth_limit_bytes": 8 * box_preflight.MIB,
+        "root_excess_drop_limit_bytes": 64 * box_preflight.MIB,
         "pass": False,
         "reason": "box store requires XFS pquota,nodiscard",
     }
