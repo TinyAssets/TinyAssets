@@ -138,23 +138,23 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/bid/execution_log.py::_exec_log_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/bid/node_bid.py::_bid_file_lock": (CALL_SCOPED, "lock acquisition"),
-    "tinyassets/boxes/local.py::LocalBoxProvider._supervise": (
+    "tinyassets/boxes/boxd.py::BoxdCore._supervise": (
         CALL_SCOPED,
         "host-side thread for one exec; stops at leader exit, cancel, wall or "
         "output bound, then kills/reaps the group; not an in-box scheduler",
     ),
-    "tinyassets/boxes/local.py::LocalBoxProvider.destroy": (
+    "tinyassets/boxes/boxd.py::BoxdCore.destroy": (
         CALL_SCOPED,
         "one destroy waits on its finite victim set after cancellation, with "
         "a per-exec destroy_wait_s bound before refusing removal",
     ),
-    "tinyassets/boxes/local.py::LocalBoxProvider.export": (
+    "tinyassets/boxes/boxd.py::BoxdCore.export": (
         CALL_SCOPED, "one snapshot waits for pending mutations up to busy_wait_s",
     ),
-    "tinyassets/boxes/local.py::LocalBoxProvider.read_many": (
+    "tinyassets/boxes/boxd.py::BoxdCore.read_many": (
         CALL_SCOPED, "one coherent read waits for pending mutations up to busy_wait_s",
     ),
-    "tinyassets/boxes/local.py::LocalBoxProvider.stream.events": (
+    "tinyassets/boxes/boxd.py::BoxdCore.stream.events": (
         CALL_SCOPED,
         "caller-consumed iterator for one bounded exec; ends on terminal or "
         "restore state, optional caller timeout, or iterator close",
