@@ -32,12 +32,31 @@ def test_bootstrap_failure_is_actionable_bounded_and_secret_free(monkeypatch, ca
 def test_broker_allowlist_withholds_unknown_and_forbidden_environment(monkeypatch):
     for name in (*CHILD_FORBIDDEN_ENV, "UNENUMERATED_SECRET", "PYTHONPATH", "LD_PRELOAD"):
         monkeypatch.setenv(name, "must-not-cross")
+    monkeypatch.delenv("TINYASSETS_VAULT_TEST_DOUBLE", raising=False)
+    monkeypatch.delenv("TINYASSETS_ENV", raising=False)
     monkeypatch.setenv("TZ", "UTC")
     result = LAUNCHER["broker_environment"]("/data")
     assert set(result) == {"PATH", "LANG", "HOME", "PYTHONDONTWRITEBYTECODE",
                            "TINYASSETS_DATA_DIR", "TZ"}
     assert not CHILD_FORBIDDEN_ENV.intersection(result)
     assert "must-not-cross" not in result.values()
+
+
+def test_broker_receives_the_vault_test_double_only_as_one(monkeypatch):
+    name = "TINYASSETS_VAULT_TEST_DOUBLE"
+    monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("TINYASSETS_ENV", raising=False)
+    assert name not in LAUNCHER["broker_environment"]("/data")
+    monkeypatch.setenv(name, "true")
+    assert name not in LAUNCHER["broker_environment"]("/data")
+    monkeypatch.setenv(name, "1")
+    result = LAUNCHER["broker_environment"]("/data")
+    assert result[name] == "1"
+    assert "TINYASSETS_ENV" not in result
+    monkeypatch.setenv("TINYASSETS_ENV", "production")
+    result = LAUNCHER["broker_environment"]("/data")
+    assert result[name] == "1"
+    assert result["TINYASSETS_ENV"] == "production"
 
 
 def test_no_engine_identity_can_run_outside_an_owner_cell():
