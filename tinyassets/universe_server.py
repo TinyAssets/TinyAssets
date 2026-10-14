@@ -828,7 +828,10 @@ def read_graph(
             branch, automations, automation, connections, compute, agents (your own
             agents: main and every agents/<name>/ directory), catalog (the commons
             catalogue of published systems and packages), agent, agent_bindings,
-            agent_binding, app_ui (your own UI library and choice),
+            agent_binding, app_ui (your own UI library and choice: no query is
+            the index, ids and sizes only; query=ui_selection is the choice
+            alone, never the library; query=<ui_id> is one UI, and field_name
+            plus output_offset reads one field in chunks),
             command_center_packages (working public packages to try in your own command center),
             command_center_preview (public visual bytes only; no copy or consent),
             command_center_updates (your copy provenance and explicit replacement choices),
@@ -853,7 +856,10 @@ def read_graph(
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
-            branch's full graph + node configs). Falls back to graph_id.
+            branch's graph + node configs). Falls back to graph_id. A branch
+            that fits comes back whole. One that does not pages node_defs:
+            pass output_offset=<the next_offset the page returned> until
+            next_offset is null. Each page repeats the rest of the branch.
         automation_id: Identifier of one of this command center's automations, for
             target=automation. The server assigns it on create and returns it
             in the response; use that value for later reads and controls.
@@ -877,7 +883,9 @@ def read_graph(
             conversation catalogue, the returned before-message-id key). Continue
             using next_offset. For catalog, a filtered definition index; for an agent
             catalog, a component index; for a selected component, Unicode JSON
-            character offset. Concatenate chunks until next_offset is null.
+            character offset. For target=branch, the node_defs index a previous
+            page returned as next_offset (0 is the first page). Concatenate
+            chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
         file_id: For target=run_file, an owned opaque reference bound to run_id.
@@ -963,6 +971,34 @@ def read_graph(
             field_name=field_name, offset=output_offset,
             max_chars=output_max_chars, max_rows=limit,
         ), default=str)
+    if normalized == "branch":
+        # The domain read is the whole branch. This door pages node_defs under
+        # the ceiling instead of letting the ceiling cut the JSON (and its
+        # cursor) in half. A branch that fits is the original text.
+        from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_branch
+        from tinyassets.engine_result_bounds import resolve_ceiling
+
+        if type(output_offset) is not int or output_offset < 0:
+            return json.dumps({"error": "output_offset must be a non-negative integer"})
+        return project_branch(
+            _domain_read_graph(**arguments),
+            offset=output_offset,
+            budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+            render_text=lambda text: text,
+            branch_id=branch_id or graph_id,
+            scope=_continuation_scope(graph_id),
+        )
+    if normalized == "app_ui":
+        # The same index the engine serves. An empty query used to be the whole
+        # library, which the ceiling then cut. The owner's app reads the whole
+        # row through the owner door, not here.
+        from tinyassets.api.app_ui import INDEX, read_app_ui
+
+        return json.dumps(read_app_ui(
+            universe_id=graph_id, ui_id=(query or "").strip() or INDEX,
+            field_name=field_name, output_offset=output_offset,
+            output_max_chars=output_max_chars,
+        ))
     raw = _domain_read_graph(**arguments)
     if isinstance(raw, str) and raw.startswith('{"error": "unknown_target"'):
         # The domain names its own targets; this door adds its one synonym.

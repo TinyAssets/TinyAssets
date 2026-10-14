@@ -598,7 +598,10 @@ def read_graph(
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
             workflow to read (get it from ``target="branches"``). Ignored for every
             other target. You can read your own branches and public ones; a private
-            branch belonging to someone else reads as not found.
+            branch belonging to someone else reads as not found. A branch that
+            fits is the whole graph. One that does not pages ``node_defs``:
+            continue with ``output_offset`` set to the returned ``next_offset``
+            until it is null. Each page repeats the rest of the branch.
         target: What to read: ``status`` (a factual daemon + serving snapshot),
             ``graph`` (inspect your command center's graph), ``branches`` (list YOUR OWN
             workflows by name + ``branch_def_id`` + tags — use it to find the id of a
@@ -828,11 +831,18 @@ def read_graph(
         # branch_id widens nothing this agent could not already run.
         if normalized == "branch":
             bid = (branch_id or "").strip()
-            payload = _impl(
-                target=normalized,
-                graph_id=_GRAPH_ID,
-                branch_id=bid,
-            )
+            # universe_server.read_graph pages node_defs and leaves headroom
+            # for this envelope. Paging that page again would hide nodes.
+            # output_offset stays off a first read so the call is the three
+            # keys a one-branch read has always been.
+            selectors = {
+                "target": normalized,
+                "graph_id": _GRAPH_ID,
+                "branch_id": bid,
+            }
+            if output_offset:
+                selectors["output_offset"] = output_offset
+            payload = _impl(**selectors)
             # A PUBLIC branch authored by somebody else reads fine here (the
             # target is deliberately not author-gated), so it is another user's
             # content and carries the untrusted envelope. A branch this founder
@@ -2168,6 +2178,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
         read_graph target="app_ui"                  -> {"app_ui": {"uis": [{ui_id, name,
                                    etag, chars}], "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui" query="ui_selection"
+                                                 -> the choice only, no library
         read_graph target="app_ui" query="<ui_id>"  -> {"ui": {...}, "etag": "..."}
         read_graph target="app_ui" query="<ui_id>" field_name="script"
                    output_offset=0                  -> one chunk + next_offset

@@ -496,6 +496,67 @@ def project_automations(
                        render=render, max_rows=max_rows)
 
 
+def project_branch(
+    payload: str, *, offset: int, budget: int, render_text, branch_id: str = "",
+    scope: str = "",
+) -> str:
+    """A branch read as a model door returns it: the nodes, paged to fit.
+
+    ``render_text`` turns a JSON string into the exact text that door returns
+    (the string itself, or the untrusted envelope around a foreign branch).
+    The fit is measured on those bytes. When ``offset`` is 0 and that rendering
+    of the original payload fits ``budget``, the original rendering is returned
+    unchanged — a small branch stays the document it always was.
+
+    An oversized branch pages ``node_defs``. The rest of the document is on
+    every page. ``next`` is the follow-up call. One node bigger than the budget
+    is clipped (``clipped_chars``) so the cursor past it still arrives.
+    """
+    if type(offset) is not int or offset < 0:
+        return json.dumps({"error": "output_offset must be a non-negative integer"})
+    try:
+        document = json.loads(payload)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return render_text(payload)
+    if not isinstance(document, dict) or document.get("error"):
+        return render_text(payload)
+    if offset == 0 and len(render_text(payload).encode("utf-8")) <= budget:
+        return render_text(payload)
+    nodes = document.get("node_defs")
+    if not isinstance(nodes, list):
+        nodes = []
+    if offset > len(nodes):
+        return json.dumps({
+            "error": "output_offset is past the branch",
+            "node_total": len(nodes),
+        })
+    bid = str(document.get("branch_def_id") or branch_id or "")
+    head = {key: value for key, value in document.items() if key != "node_defs"}
+    start = offset
+
+    def build(page, next_offset):
+        return {
+            **head,
+            "node_defs": page,
+            "node_total": len(nodes),
+            "offset": start,
+            "complete": next_offset is None,
+            "next_offset": next_offset,
+            "next": (None if next_offset is None else
+                     f'read_graph target="branch" branch_id="{bid}"{scope} '
+                     f"output_offset={next_offset}"),
+        }
+
+    def render(doc: dict) -> str:
+        return render_text(json.dumps(doc, default=str))
+
+    paged = page_to_fit(nodes, start=start, budget=budget, build=build, render=render)
+    text = render(paged)
+    if len(text.encode("utf-8")) > budget:
+        text = render(clip_to_fit(paged, budget=budget, render=render))
+    return text
+
+
 def project_automation(
     result: dict[str, Any], *, budget: int, render, field_name: str = "",
     offset: int = 0, max_chars: int = 8192, scope: str = "",
