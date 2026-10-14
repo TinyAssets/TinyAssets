@@ -4,11 +4,15 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
+import time
 
 import pytest
 
 from tests.test_okf_transfer import archive
 from tinyassets import command_center_packages as packages
+from tinyassets import storage_accounting as accounting
 from tinyassets import universe_files
 from tinyassets.account_deletion import _delete_satellite_rows
 from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
@@ -135,6 +139,119 @@ def test_failed_import_erasure_preserves_other_references(custody, monkeypatch, 
     if retention == "public":
         packages.record_version(base, author_id=OWNER, name="Published", version=1,
                                 sha256=sha)
+    assert packages.measure_packages(base, [OWNER]) == len(blob)
+    if retention == "peer":
+        assert packages.measure_packages(base, [PEER]) == len(blob)
+        assert packages.measure_packages(base, [OWNER, PEER]) == 2 * len(blob)
     erase(base)
     assert counts(base) == (0, 1)
     assert packages.read_blob(base, sha) == blob
+    assert packages.measure_packages(base, [OWNER]) == (len(blob) if retention == "public" else 0)
+
+
+def test_failed_ownership_is_charged_and_retry_needs_no_second_allocation(custody, monkeypatch):
+    base, _, blob, _ = custody
+    with monkeypatch.context() as patch:
+        fail_at(base, "ownership", patch)
+        for _ in range(2):
+            with pytest.raises(sqlite3.IntegrityError, match="ownership write failed"):
+                import_bundle(custody)
+            usage = accounting.usage(base, OWNER)
+            assert usage.used_bytes >= len(blob)
+            assert usage.reserved_bytes == 0
+    assert counts(base) == (2, 0)
+    assert accounting.measure(base, OWNER, "packages") == len(blob)
+    assert accounting.measure(base, PEER, "packages") == 0
+    before = accounting.usage(base, OWNER).used_bytes
+    # There is less than a second allocation free. A genuinely new blob cannot
+    # fit, but retrying these already retained bytes must still succeed.
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str((before + len(blob) - 1) / 1024**3))
+    with pytest.raises(accounting.StorageRefused):
+        accounting.reserve(base, account_id=OWNER, scope_id=OWNER,
+                           store="packages", nbytes=len(blob))
+    with packages._db(base) as conn:
+        conn.execute("DROP TRIGGER reject_owner")
+    import_bundle(custody)
+    assert accounting.usage(base, OWNER).used_bytes == before
+    assert accounting.measure(base, OWNER, "packages") == len(blob)
+    assert counts(base) == (3, 1)
+    erase(base)
+    assert accounting.measure(base, OWNER, "packages") == 0
+
+
+def test_failed_write_before_bytes_has_no_phantom_charge(custody, monkeypatch):
+    base, _, _, _ = custody
+    with monkeypatch.context() as patch:
+        fail_at(base, "before_file", patch)
+        with pytest.raises(InterruptedImport):
+            import_bundle(custody)
+    assert counts(base) == (1, 0)
+    assert accounting.usage(base, OWNER).committed_bytes == 0
+    assert accounting.measure(base, OWNER, "packages") == 0
+
+
+def test_process_exit_before_ownership_remains_charged_after_reservation_expiry(custody):
+    base, _, blob, sha = custody
+    script = r'''
+import os, sys
+from tests.test_okf_transfer import archive
+from tinyassets import command_center_packages as packages, universe_files
+from tinyassets.okf.transfer import ingest_zip
+write = universe_files.write_data_path
+def interrupted(*args, **kwargs):
+    write(*args, **kwargs)
+    os._exit(42)
+universe_files.write_data_path = interrupted
+packages.quarantine_import(sys.argv[1], owner=sys.argv[2], command_center=sys.argv[3],
+    epoch=1, bundle=ingest_zip(archive({'workspace/note': b'private interrupted import'})))
+'''
+    result = subprocess.run([sys.executable, "-c", script, str(base), OWNER, HOME],
+                            capture_output=True, timeout=15)
+    assert result.returncode == 42, result.stderr.decode()
+    assert counts(base) == (1, 0)
+    assert packages.read_blob(base, sha) == blob
+    assert accounting.usage(base, OWNER).reserved_bytes == len(blob)
+    with sqlite3.connect(accounting.ledger_path(base)) as conn:
+        conn.execute("UPDATE pending SET created_at=? WHERE account_id=?",
+                     (time.time() - accounting.RESERVED_TTL_S - 1, OWNER))
+    assert accounting.measure(base, OWNER, "packages") == len(blob)
+    usage = accounting.usage(base, OWNER)
+    assert usage.reserved_bytes == 0
+    assert usage.used_bytes >= len(blob)
+    erase(base)
+    assert accounting.measure(base, OWNER, "packages") == 0
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "corrupt"])
+def test_retained_bytes_measurement_fails_loudly(custody, monkeypatch, failure):
+    base, _, _, sha = custody
+    with monkeypatch.context() as patch:
+        fail_at(base, "ownership", patch)
+        with pytest.raises(sqlite3.IntegrityError):
+            import_bundle(custody)
+    if failure == "unreadable":
+        def refused(*args, **kwargs):
+            raise PermissionError("retained file unreadable")
+        monkeypatch.setattr(packages, "read_data_path", refused)
+        expected = PermissionError
+    else:
+        universe_files.write_data_path(packages._blob_path(base, sha), b"corrupt")
+        expected = packages.PackageError
+    with pytest.raises(expected):
+        accounting.measure(base, OWNER, "packages")
+    assert accounting.usage(base, OWNER).committed_bytes > 0
+
+
+def test_failed_import_keeps_original_error_and_charge_when_verification_fails(
+    custody, monkeypatch,
+):
+    base, _, blob, _ = custody
+    with monkeypatch.context() as patch:
+        fail_at(base, "ownership", patch)
+        def refused(*args, **kwargs):
+            raise PermissionError("retained file unreadable")
+        patch.setattr(packages, "read_data_path", refused)
+        with pytest.raises(sqlite3.IntegrityError, match="ownership write failed") as caught:
+            import_bundle(custody)
+    assert any("could not be verified" in note for note in caught.value.__notes__)
+    assert accounting.usage(base, OWNER).committed_bytes == len(blob)

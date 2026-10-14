@@ -207,20 +207,17 @@ def test_import_auth_and_archive_rejection_precede_custody(transfer_door):
 
 def test_import_quota_refusal_retains_no_blob_or_custody_record(transfer_door, monkeypatch):
     import base64
-    from contextlib import contextmanager
 
     from tests.test_okf_transfer import archive
     from tinyassets import command_center_packages as packages
     from tinyassets import storage_accounting
     from tinyassets.api.helpers import _base_path
 
-    @contextmanager
     def refused(*args, **kwargs):
         raise storage_accounting.StorageRefused({"error": "quota test"}, account_id=A)
-        yield
 
     client, _, _ = transfer_door
-    monkeypatch.setattr(storage_accounting, "charged", refused)
+    monkeypatch.setattr(storage_accounting, "reserve", refused)
     result = request(client, {
         "operation": "import", "command_center": HOME_A,
         "archive": base64.b64encode(archive({"workspace/note": b"hello"})).decode(),
