@@ -91,7 +91,9 @@ def test_supervisor_cannot_recycle_stdin_during_an_inflight_reply(tmp_path, monk
     )
     output = tmp_path / "output"
     output.write_bytes(b"")
-    real_select = local.select.select
+    from tinyassets.boxes import boxd
+
+    real_select = boxd.select.select
 
     def after_ready(read, write, error, timeout):
         result = real_select(read, write, error, timeout)
@@ -107,8 +109,8 @@ def test_supervisor_cannot_recycle_stdin_during_an_inflight_reply(tmp_path, monk
         except BaseException as exc:
             supervisor_errors.append(exc)
 
-    monkeypatch.setattr(local.select, "select", after_ready)
-    monkeypatch.setattr(local, "_kill_group", lambda _: None)
+    monkeypatch.setattr(boxd.select, "select", after_ready)
+    monkeypatch.setattr(boxd, "_kill_group", lambda _: None)
     supervisor = threading.Thread(target=supervise)
     try:
         supervisor.start()
@@ -243,7 +245,7 @@ def test_a_restart_reaps_what_the_crashed_host_left_running(tmp_path):
 
 
 def test_a_failed_partial_destroy_stales_every_handle_and_is_recorded(tmp_path, monkeypatch):
-    from tinyassets.boxes import local as local_mod
+    from tinyassets.boxes import boxd as local_mod
 
     host = _local(tmp_path)
     handle = host.bind("cc-a", account_id="acct-a")
