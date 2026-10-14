@@ -2033,12 +2033,10 @@ class SQLiteProviderWorkAuthorityStore:
         access = _accepted_work_access(conn, receipt, selection.provider)
         if selection.provider in _PROVIDER_SERVICE and selection.model_id:
             from tinyassets.provider_work_authority import _canonical_json
-            from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
+            from tinyassets.providers.work_model_selection import native_work_model
 
-            if type(model_snapshot) is not NativeDiscoverySnapshot:
-                raise PermissionError("native workflow model requires fresh owned enumeration")
-            native = model_snapshot.select(
-                provider=selection.provider, owner=receipt.principal_id,
+            native = native_work_model(
+                model_snapshot, provider=selection.provider, owner=receipt.principal_id,
                 universe=self.base_path / receipt.universe_id, custody=custody,
                 model_id=selection.model_id, access=access,
             )
