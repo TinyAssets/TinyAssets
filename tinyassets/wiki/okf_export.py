@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import PurePosixPath as Path
 from typing import Any, Mapping
 
@@ -16,7 +17,6 @@ OKF_VERSION = "0.1"
 _RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
 _EXCLUDED_ROOTS = frozenset({"drafts", "raw", "daemon-wiki"})
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
-_H1_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 _SAFE_PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./:@+\-]*$")
 
 
@@ -268,8 +268,15 @@ def _parse_list_value(value: str) -> list[str]:
 
 
 def _first_h1(body: str) -> str:
-    match = _H1_RE.search(body)
-    return match.group(1).strip() if match else ""
+    # Scan each line once: multiline ^\s* can repeatedly consume the remaining
+    # body at every blank line. Iterate without allocating a list of all lines.
+    for line in StringIO(body):
+        heading = line.lstrip()
+        if len(heading) > 1 and heading[0] == "#" and heading[1].isspace():
+            title = heading[2:].strip()
+            if title:
+                return title
+    return ""
 
 
 def _title_from_slug(bundle_rel: str) -> str:

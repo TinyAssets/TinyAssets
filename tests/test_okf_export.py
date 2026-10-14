@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -174,3 +176,29 @@ def test_reserved_files_follow_okf_structure(fixture_wiki: tuple[Path, Path]) ->
         "index.md": {"okf_version": "0.1", "valid": True},
         "log.md": {"valid": True},
     }
+
+
+@pytest.mark.parametrize(("body", "title"), [
+    (b"\n\n  # First heading  \n# Second heading\n", "First heading"),
+    (b"## Not H1\n#No whitespace\n\t#\tA title\r\n", "A title"),
+    (b"#\nThis is body, not a title\n", "Fallback Name"),
+    (b"#   \nThis is body, not a title\n", "Fallback Name"),
+])
+def test_heading_fallback_reads_one_line_at_a_time(body, title):
+    _, report = render_okf_files({"pages/fallback-name.md": body})
+    assert report["concepts"][0]["title"] == title
+
+
+def test_large_no_heading_wiki_conversion_finishes_within_deadline():
+    # A subprocess bounds the test itself if a multiline backtracking scan is
+    # reintroduced. Newline-heavy and single-line whitespace both lack an H1.
+    subprocess.run([
+        sys.executable, "-c",
+        "from tinyassets.wiki.okf_export import render_okf_files\n"
+        "for whitespace in (b'\\n', b' '):\n"
+        "    files, report = render_okf_files({\n"
+        "        'pages/no-heading.md': whitespace * (8 * 1024 * 1024)})\n"
+        "    assert report['concepts'][0]['title'] == 'No Heading'\n"
+        "    assert report['conformant']\n"
+        "    assert b'title: No Heading' in files['no-heading.md']\n",
+    ], check=True, timeout=10)
