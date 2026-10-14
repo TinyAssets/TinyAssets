@@ -34,15 +34,16 @@ The site SHALL present TinyAssets as one app on any device: the visitor's own ag
 - **THEN** ChatGPT/Codex is described as one tap and Claude as the person pasting their own setup token into the deposit form
 - **AND** no page presents a "Connect Claude" OAuth control
 
-### Requirement: The Legal Operator Is One Setting
+### Requirement: The Site Names TinyAssets Only
 
-The operating entity's name, the state whose law governs, and the public contact address SHALL be recorded only in `WebSite/site-react/lib/legal-info.json`. The site SHALL fill the operator line and the terms party from that record's brand, legal name, and phrase templates, and SHALL NOT retype the legal name, those phrases, or the governing-law state in any other file under `WebSite/site-react`. `/legal` (page and metadata), the footer brand, the schema.org Organization, WebSite, and SoftwareApplication names, the Open Graph site name, and `SITE.contact` SHALL read this record. A site test SHALL fail when the legal name, a trade-name phrase, or the governing-law state is hard-coded in `WebSite/site-react` outside that file.
+The public site SHALL name the operator as TinyAssets and SHALL NOT publish a separate legal-entity name, a trade-name phrase, or a doing-business-as phrase. `brand`, `governing_law`, and `contact` SHALL stay in `WebSite/site-react/lib/legal-info.json`. `/legal` (page and metadata), the footer brand, the schema.org Organization, WebSite, and SoftwareApplication names, the Open Graph site name, and `SITE.contact` SHALL read this record. A site test that scans only `WebSite/site-react` SHALL fail when `Simkal`, `Holdings LLC`, `trade name of`, `doing business as`, or a `{legal_name}` placeholder appears there.
 
-#### Scenario: The operating entity is renamed
+#### Scenario: A visitor reads the terms
 
-- **WHEN** `legal_name` in `lib/legal-info.json` changes and no other file is edited
-- **THEN** the legal page lead, its metadata description, and the terms party all show the new name
-- **AND** the governing-law sentence and the public contact address stay the values in that same file
+- **WHEN** a visitor opens `/legal`
+- **THEN** the terms say the agreement is between them and TinyAssets
+- **AND** the page names the governing law and the contact address from `lib/legal-info.json`
+- **AND** the page does not name another legal entity
 
 ### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 

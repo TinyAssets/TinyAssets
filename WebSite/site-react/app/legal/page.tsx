@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import { RitualLabel } from "@tiny/design-system";
 import { TokenContracts } from "../../components/TokenContracts";
-import { legal, operatorLine, termsParty } from "../../lib/legal";
+import { legal } from "../../lib/legal";
 import tokenInfo from "../../lib/token-info.json";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
   title: "Legal",
-  description: `Privacy policy and terms of service for ${operatorLine}.`,
+  description: `Privacy policy and terms of service for ${legal.brand}.`,
   alternates: { canonical: "https://tinyassets.io/legal" },
 };
 
@@ -19,7 +19,7 @@ export default function LegalPage() {
           <RitualLabel>· Legal · privacy and terms ·</RitualLabel>
           <h1>Legal.</h1>
           <p className="lead">
-            {operatorLine} (&ldquo;we&rdquo;, &ldquo;us&rdquo;). Questions and requests go to{" "}
+            {legal.brand} (&ldquo;we&rdquo;, &ldquo;us&rdquo;). Questions and requests go to{" "}
             <a href={`mailto:${legal.contact}`}>{legal.contact}</a>.
           </p>
 
@@ -109,7 +109,7 @@ export default function LegalPage() {
           <h2 id="terms">Terms of Service</h2>
           <p className="blank">Effective {legal.effective_date}</p>
           <p>
-            These terms are an agreement between you and {termsParty} (&ldquo;we&rdquo;, &ldquo;us&rdquo;). By using TinyAssets you agree to them. If you don&apos;t agree, don&apos;t use it.
+            These terms are an agreement between you and {legal.brand} (&ldquo;we&rdquo;, &ldquo;us&rdquo;). By using {legal.brand} you agree to them. If you don&apos;t agree, don&apos;t use it.
           </p>
           <ol>
             <li>

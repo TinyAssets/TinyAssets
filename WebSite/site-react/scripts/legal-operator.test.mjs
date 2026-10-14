@@ -5,7 +5,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const siteRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SETTING = "lib/legal-info.json";
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -22,19 +21,17 @@ const SKIP_DIRS = new Set([
 
 const TEXT = /\.(?:cjs|css|html|js|json|jsx|md|mjs|py|sh|svg|toml|ts|tsx|txt|xml|ya?ml)$/i;
 
+// Pieces stay split so this file does not itself contain a forbidden phrase.
+const FORBIDDEN = [
+  "Sim" + "kal",
+  "Holdings " + "LLC",
+  "trade name " + "of",
+  "doing business " + "as",
+  "{" + "legal_name}",
+];
+
 function read(path) {
   return readFileSync(resolve(siteRoot, path), "utf8");
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function fragments(template) {
-  return template
-    .split(/\{(?:brand|legal_name)\}/g)
-    .map((part) => part.replace(/^[\s,.;:]+|[\s,.;:]+$/g, ""))
-    .filter((part) => part.length >= 8);
 }
 
 function siteFiles() {
@@ -55,56 +52,37 @@ function siteFiles() {
   return found;
 }
 
-const info = JSON.parse(read("lib/legal-info.json"));
-const phrases = [info.operator_template, info.terms_party_template].flatMap(fragments);
-const needles = [
-  { label: "legal_name", re: new RegExp(escapeRegExp(info.legal_name), "i") },
-  { label: "governing_law", re: new RegExp(`\\b${escapeRegExp(info.governing_law)}\\b`, "i") },
-  ...phrases.map((phrase) => ({ label: "trade-name phrase", re: new RegExp(escapeRegExp(phrase), "i") })),
-];
-
 function hits(text) {
-  return needles.filter((needle) => needle.re.test(text)).map((needle) => needle.label);
+  const lower = text.toLowerCase();
+  return FORBIDDEN.filter((needle) => lower.includes(needle.toLowerCase()));
 }
 
-test("the legal operator record is one editable setting", () => {
-  assert.equal(typeof info.brand, "string");
-  assert.ok(info.brand.length > 0);
-  assert.equal(typeof info.legal_name, "string");
-  assert.ok(info.legal_name.length > 0);
-  assert.equal(info.contact, "info@tinyassets.io");
-  assert.equal(typeof info.governing_law, "string");
-  assert.ok(info.governing_law.length > 0);
-  for (const key of ["operator_template", "terms_party_template"]) {
-    assert.match(info[key], /\{brand\}/);
-    assert.match(info[key], /\{legal_name\}/);
-  }
-  assert.ok(phrases.length >= 2, "both public sentences must carry phrasing beyond the name");
+const info = JSON.parse(read("lib/legal-info.json"));
 
-  const filler = read("lib/legal.ts");
-  assert.match(filler, /replaceAll\("\{brand\}", info\.brand\)/);
-  assert.match(filler, /replaceAll\("\{legal_name\}", info\.legal_name\)/);
-  assert.match(filler, /fill\(info\.operator_template\)/);
-  assert.match(filler, /fill\(info\.terms_party_template\)/);
+test("the public legal record names TinyAssets only", () => {
+  assert.equal(info.brand, "TinyAssets");
+  assert.equal(info.contact, "info@tinyassets.io");
+  assert.equal(info.governing_law, "Washington");
+  assert.equal("legal_name" in info, false);
+  assert.equal("operator_template" in info, false);
+  assert.equal("terms_party_template" in info, false);
 
   const legalPage = read("app/legal/page.tsx");
-  assert.match(legalPage, /operatorLine/);
-  assert.match(legalPage, /termsParty/);
+  assert.match(legalPage, /agreement between you and \{legal\.brand\}/);
+  assert.match(legalPage, /Privacy policy and terms of service for \$\{legal\.brand\}/);
   assert.match(legalPage, /legal\.governing_law/);
   assert.match(legalPage, /legal\.contact/);
   assert.match(read("components/Footer.tsx"), /legal\.brand/);
   assert.match(read("app/layout.tsx"), /legal\.brand/);
   assert.match(read("lib/site.ts"), /contact:\s*legal\.contact/);
 
-  assert.deepEqual(hits(`Agreement with ${info.legal_name}.`), ["legal_name"]);
-  assert.deepEqual(hits(`Courts in ${info.governing_law}.`), ["governing_law"]);
+  assert.deepEqual(hits(`seen ${FORBIDDEN[0]} here`), [FORBIDDEN[0]]);
 });
 
-test("the owner string is not hard-coded outside the shared setting", () => {
+test("no legal-entity name appears under the site", () => {
   const offenders = [];
   for (const path of siteFiles()) {
     const rel = relative(siteRoot, path).split(sep).join("/");
-    if (rel === SETTING) continue;
     let text;
     try {
       text = readFileSync(path, "utf8");
@@ -115,9 +93,5 @@ test("the owner string is not hard-coded outside the shared setting", () => {
     const found = hits(text);
     if (found.length) offenders.push(`${rel} (${found.join(", ")})`);
   }
-  assert.deepEqual(
-    offenders,
-    [],
-    `hard-coded legal operator outside ${SETTING}:\n${offenders.join("\n")}`,
-  );
+  assert.deepEqual(offenders, [], `legal-entity wording under the site:\n${offenders.join("\n")}`);
 });
