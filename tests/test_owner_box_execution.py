@@ -467,12 +467,18 @@ def test_private_cli_worker_materializes_refreshes_and_erases_only_tmpfs_home(tm
 
     config = cli_config()
     config["nonce"] = uuid.uuid4().hex
-    setup = '''import os, sys
+    setup = '''import os, sys, resource
 from tinyassets.boxes.file_wire import decode
 from tinyassets.boxes.cli_wire import run
 from tinyassets.external_agents import cell
-# Only namespace/device and installed-image/network seams are substituted.
+# Namespace/device, installed-image/network and UID process-limit seams are substituted.
 # Credential materialization, subprocess, framing, file checks and cleanup run.
+# This fixture shares pytest's host UID; it cannot prove an owner-UID PID ceiling.
+original_limit = resource.setrlimit
+def set_limit(kind, bounds):
+    if kind != resource.RLIMIT_NPROC:
+        original_limit(kind, bounds)
+resource.setrlimit = set_limit
 original_stat = os.stat
 def stat(path, *args, **kwargs):
     if path == '/home/owner':
