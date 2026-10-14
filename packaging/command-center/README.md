@@ -30,7 +30,8 @@ Bash runs with your host privileges. By default every command requires typing
 `run/rules.json` containing `{"bash":"deny"}`, `{"bash":"ask"}` or
 `{"bash":"allow"}`. Broker behavior rules travel in `agents/<agent>/rules.json`;
 file tools enforce `workspace.files` and bash also enforces `workspace.shell`.
-`hand_off` refuses; `ask_first` and `do_if_preapproved` need fresh local consent.
+`hand_off` asks you to perform the action and report its result; `ask_first` and
+`do_if_preapproved` need fresh local consent.
 Source grants never travel. Qualified rules apply conservatively to the whole
 action class. File tools cannot modify policies, settings or runner code and reject
 credential paths, links and paths outside the folder. Bash, once authorized,
@@ -43,7 +44,8 @@ the bundled example is disabled. Intervals, one-time timestamps and numeric
 five-field cron with IANA zones run only while the machine is on. Durable
 claims and an OS lock prevent automatic replay after uncertain execution.
 `--once` checks the current slot and exits; no offline backlog is replayed.
-Platform workflow/schedule serialization into this local prompt format,
-Windows and broker-equivalent enforcement of other action classes remain
-outstanding C12 work. Other behaviors are supplied to the model, but a host
-shell has no broker to classify its effects; keep its default command prompts.
+Supported linear prompt workflows and disabled schedules are exported into
+this local format; unsupported graph semantics refuse export. Every action class
+requires trusted terminal classification and the corresponding policy decision;
+unattended ambiguity refuses. This does not provide hosted broker confinement or
+Windows support. Keep the default shell prompts and review each command's effects.

@@ -140,6 +140,7 @@ class TestOrientRetrievalIntegration:
             assert "facts" in ctx or "relationships" in ctx or "sources" in ctx
 
         # Cleanup
+        kg.close()
         try:
             os.unlink(kg_path)
         except FileNotFoundError:

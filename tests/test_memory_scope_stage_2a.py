@@ -160,29 +160,26 @@ def test_kg_schema_adds_scope_columns(canonical_source, tmp_path):
 
 
 def test_kg_migration_is_idempotent(canonical_source, tmp_path):
-    """Re-opening the DB doesn't re-add columns or error."""
+    """A fresh bundle/source rebuilds the index without adding duplicate columns."""
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.okf.bundle import KnowledgeBundle
+    from tinyassets.okf.records import SourceRecords
 
-    db_path = tmp_path / "kg.db"
-    KnowledgeGraph(
-        source=canonical_source(
-            "knowledge",
-            key=str(db_path),
-            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
-        )
-    )  # first open = schema create
-    # Second open should be a no-op.
-    kg2 = KnowledgeGraph(
-        source=canonical_source(
-            "knowledge",
-            key=str(db_path),
-            namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
-        )
+    source = canonical_source(
+        "knowledge", key=tmp_path / "kg.db",
+        namespaces=[None, "world", "u1", "test", "test-universe", "universe-A"],
     )
-    cur = kg2._conn.execute("PRAGMA table_info(entities)")
-    cols = [row["name"] for row in cur]
-    # No duplicate universe_id columns.
-    assert cols.count("universe_id") == 1
+    first = KnowledgeGraph(source)
+    first.close()
+    fresh = SourceRecords(
+        KnowledgeBundle(source.bundle.provider, source.bundle.handle), "knowledge"
+    )
+    reopened = KnowledgeGraph(fresh)
+    try:
+        columns = [row["name"] for row in reopened._conn.execute("PRAGMA table_info(entities)")]
+        assert columns.count("universe_id") == 1
+    finally:
+        reopened.close()
 
 
 def test_kg_scope_reassignment_requires_reviewed_migration(canonical_source, tmp_path):

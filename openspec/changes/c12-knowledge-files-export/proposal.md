@@ -16,11 +16,14 @@ own knowledge, and `wiki/okf_export.py` has no user-facing caller.
 
 ## Delivery boundary
 
-This branch starts with the independently buildable local runner specified in
-§4.17. It is not connected to production, does not complete C12, and must not
-mark S17 converged. The owner-box C6 cutover remains a prerequisite for the
-canonical-store migration and production export. The complete convergence must
-remove the old canonical paths and satisfy the net-line and review gates.
+This branch implements the local runner, protected transfer/import door and
+canonical-only production access for all seven knowledge consumers. Existing
+owners cannot use those consumers until their namespaces are migrated and C7
+enters the owner memory scope. Merge and deployment are blocked on the coordinated
+C6 cutover prerequisites, verified backup and lossless migration (3.1), C7 scope
+entry and C6 quota proof (3.2c), plus exact-head tests and independent review.
+This draft does not complete C12 or mark S17 converged. Legacy source retirement
+and live acceptance remain required.
 
 ## Impact
 

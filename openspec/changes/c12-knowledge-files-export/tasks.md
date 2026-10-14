@@ -26,6 +26,6 @@
 - [x] 3.2b Implement the six remaining consumers on canonical records, disposable indexes, coherent related-table CAS, typed losslessness, tombstones, preserved counters, scoped lifetime and explicit failure; adapt real graph tests to admitted scopes.
 - [ ] 3.2c C7 enters the scope around production graph/native execution and awaits children; C6 enforces/proves owner-box quotas. Neither dependency is implied by consumer tests.
 - [ ] 3.3 One owner export door, preview, manifest, secret exclusions, download and import quarantine.
-- [ ] 3.4 Exact-head oracle and migration failure tests; cross-family review; protected merge.
+- [ ] 3.4 Exact-head oracle and migration failure tests; cross-family review; protected merge only after the coordinated C6 prerequisites, verified backup/migration (3.1) and C7 scope/C6 quota proof (3.2c). Deployment has the same prerequisites.
 - [ ] 3.5 Deploy, assert SHA, real owner edit/rebuild/export/import and standalone-model acceptance.
 - [ ] 3.6 Mark S17 converged, sync specs and remove resolved export concern only after live proof.

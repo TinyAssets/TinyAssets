@@ -84,6 +84,22 @@ class TestProjectMemorySet:
         assert result["status"] == "ok"
         assert result["version"] == 2
 
+    def test_provider_envelope_refuses_project_write_before_staging(
+        self, tmp_path, canonical_project, monkeypatch,
+    ):
+        from tinyassets.memory.project import project_memory_set
+        from tinyassets.okf.bundle import PAGE_BYTES, InvalidBundle
+
+        canonical_bundle = canonical_project.bundle
+        before = canonical_bundle.snapshot()
+        monkeypatch.setattr(
+            canonical_bundle.provider, "write",
+            lambda *a, **k: pytest.fail("oversized project value reached provider staging"),
+        )
+        with pytest.raises(InvalidBundle, match="write envelope"):
+            project_memory_set(tmp_path, project_id="proj1", key="large", value="x" * PAGE_BYTES)
+        assert canonical_bundle.snapshot() == before
+
     def test_there_is_no_per_project_size_cap(self, tmp_path: Path) -> None:
         """Past the old 1 MB ceiling, and the write still succeeds.
 

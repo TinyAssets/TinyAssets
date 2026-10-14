@@ -114,6 +114,15 @@ def canonical_source(tmp_path):
             assigned = {name: namespaces}
             if name == "episodic":
                 assigned["knowledge"] = [None, *namespaces]
+            if name == "daemon":
+                assigned.update({
+                    "project": ["fixture-project"],
+                    "knowledge": [None, "fixture-universe"],
+                    "episodic": ["fixture-universe"],
+                    "promises": ["fixture-universe"],
+                    "versions": ["fixture-universe"],
+                    "temporal": ["fixture-universe"],
+                })
             cache[identity] = sources(bundle, root, assigned)[name]
         return cache[identity]
 
@@ -124,26 +133,34 @@ def canonical_source(tmp_path):
 
 @pytest.fixture
 def canonical_daemon(canonical_source, monkeypatch):
-    """Explicitly admit daemons constructed in this test's registry fixture."""
-    from types import SimpleNamespace
+    """Daemon tests use the same admitted lifetime and source dispatch as production."""
+    from contextlib import ExitStack
 
+    from tinyassets.agent_loop import served_chat
     from tinyassets.daemon_registry import list_daemons
-    from tinyassets.memory import runtime
+    from tinyassets.memory.runtime import owner_memory_scope
 
-    def make(root):
-        source = canonical_source(
-            "daemon",
-            key=root,
-            namespaces=[
-                item["daemon_id"] for item in list_daemons(root) if item["soul_mode"] == "soul"
-            ],
-        )
-        monkeypatch.setattr(
-            runtime, "current_memory", lambda: SimpleNamespace(source=lambda _: source)
-        )
-        return source
+    cache = {}
+    with ExitStack() as scopes:
+        def make(root):
+            key = str(root)
+            if key not in cache:
+                source = canonical_source(
+                    "daemon", key=root,
+                    namespaces=[item["daemon_id"] for item in list_daemons(root)
+                                if item["soul_mode"] == "soul"],
+                )
+                provider = source.bundle.provider
+                monkeypatch.setattr(
+                    served_chat, "configured_box_provider", lambda: (provider, None)
+                )
+                memory = scopes.enter_context(owner_memory_scope(
+                    owner="test-owner", center="test-center", namespace="fixture-universe"
+                ))
+                cache[key] = memory.source("daemon")
+            return cache[key]
 
-    return make
+        yield make
 
 
 @pytest.fixture

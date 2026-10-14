@@ -108,8 +108,10 @@ hashes, bounded expansion, regular file types and normalized path collisions
 before writing a fresh platform-owned quarantine with no activation record.
 
 The owner door, shared manifest, private contact choices and standalone files
-are implemented below. Structured configuration, roster, complete D1 policy and
-schedule mapping, hosted activation remain open. Curated wiki conversion is integrated below.
+are implemented below, including structured configuration, roster, supported
+workflow/schedule mapping and conservative D1 policy projection. Unsupported
+policy qualifiers and graph semantics refuse export. Hosted activation and live
+acceptance remain open. Curated wiki conversion is integrated below.
 The arbitrary-file scanner conservatively excludes canonical records containing
 generated hashes; schema-aware serialization must resolve that without allowing
 secrets through. Passing ingestion tests do not establish a shipped feature.
@@ -224,7 +226,8 @@ included instructions and settings, and import recomputes it before custody.
 Each model-bearing agent gets a distinct AGENT_n environment group, written as
 empty placeholders. The standalone runner can use that complete local group or
 the global model group; it never inherits the global credential into a partially
-overridden endpoint. Workflow definitions and schedule records remain outstanding.
+overridden endpoint. Supported workflow definitions and disabled schedule records
+are captured and fenced as described below.
 
 Local .env loading uses a 64-KiB, no-follow, single-link regular-file read and a
 closed model-variable grammar. Values are literal; no shell is sourced, no
@@ -251,11 +254,12 @@ The UI shows these rules alongside content. Selecting an agent includes its
 previewed rules and records their path in the verified roster; selecting another
 file does not include that agent's rules. Agent-controlled files cannot replace
 the captured projection. The local dispatcher enforces workspace.files and
-workspace.shell; preapproval requires fresh consent and hand_off refuses.
-Policies/settings/manifest/schedule state are read-only to model file tools.
-The model sees the remaining action behaviors, but a host shell has no broker
-effect classification, egress or spend enforcement. Full D1 is still incomplete;
-the README preserves that limit and the default per-command shell prompt.
+workspace.shell; preapproval requires fresh consent and hand_off asks the owner
+to perform the action and report its result. Policies/settings/manifest/schedule
+state are read-only to model file tools. All action classes pass through trusted
+terminal classification and consent or refusal as described below; this is not
+hosted broker confinement. Unmappable egress/spend limits refuse export, and
+authorized host shell commands run with the owner's host privileges.
 
 ## Explicit local schedules
 

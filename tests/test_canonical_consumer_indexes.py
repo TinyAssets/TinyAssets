@@ -403,15 +403,22 @@ def test_owner_sessions_do_not_share_objects_or_survive_scope_exit(migrated, tmp
     with owner_memory_scope(owner="owner-a", center="a", namespace="a") as first:
         retained = first.get("promise_tracker")
         retained_source = first.source("promises")
+        retained_daemon = first.source("daemon")
         retained.create_promise("private", "Owner A", 1, 1)
         with owner_memory_scope(owner="owner-b", center="b", namespace="b") as second:
             assert current_memory() is second
             with pytest.raises(InvalidBundle, match="current owner session"):
                 retained.get_all_promises()
+            with pytest.raises(InvalidBundle, match="current owner session"):
+                retained_daemon.snapshot()
             assert second.get("promise_tracker").get_all_promises() == []
             second.get("promise_tracker").create_promise("private", "Owner B", 1, 1)
         assert current_memory() is first
         assert first.get("promise_tracker").get_all_promises()[0].description == "Owner A"
+    with pytest.raises(InvalidBundle, match="authenticated owner session"):
+        current_memory().source("daemon")
+    with pytest.raises(InvalidBundle, match="session has ended"):
+        retained_daemon.snapshot()
     with pytest.raises(InvalidBundle, match="session has ended"):
         retained_source.snapshot()
     with pytest.raises(InvalidBundle, match="session has ended"):
