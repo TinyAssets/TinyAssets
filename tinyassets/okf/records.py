@@ -156,4 +156,11 @@ class SourceRecords:
                 changes[entry.id] = entry
         if not changes:
             raise InvalidBundle("A source write needs a concrete change")
-        return self.bundle.commit(before, changes, operation_id=operation_id)
+        # Recomputed community membership is an index relation, not an owner's
+        # permanent forget request. Natural keys may return on the next clustering.
+        transient = (
+            set((deletions or {}).get("communities", [])) if self.source == "knowledge" else set()
+        )
+        return self.bundle.commit(
+            before, changes, operation_id=operation_id, transient_deletions=transient
+        )

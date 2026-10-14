@@ -109,8 +109,9 @@ def test_related_version_update_refuses_concurrent_edit(migrated, monkeypatch):
     with pytest.raises(WriteConflict):
         store.save_draft(1, 1, 1, "After")
     assert source.snapshot().entries == old.entries
-    with pytest.raises(InvalidBundle, match="pending"):
-        store.save_draft(1, 1, 1, "Must not guess")
+    monkeypatch.setattr(source, "write", real)
+    store.save_draft(1, 1, 1, "After retry with a new operation")
+    assert store.version_count(1, 1, 1) == 2
 
 
 def test_lost_commit_reply_retries_exact_original_diff(migrated, monkeypatch):
@@ -150,6 +151,51 @@ def test_unreviewed_null_and_peer_namespaces_refuse(migrated):
     with pytest.raises(InvalidBundle, match="declared source scope"):
         store.assert_fact(TemporalFact("f", "subject", "attr", "Unassigned", "2026-01-01"))
     assert not migrated["temporal"].rows(migrated["temporal"].snapshot())["temporal_facts"]
+    store.assert_fact(
+        TemporalFact("valid", "subject", "attr", "Assigned", "2026-01-01", branch_id="a")
+    )
+    assert len(migrated["temporal"].rows(migrated["temporal"].snapshot())["temporal_facts"]) == 1
+
+
+def test_reclustering_can_restore_a_derived_natural_key(migrated):
+    graph = KnowledgeGraph(migrated["knowledge"])
+    graph.store_communities([{"community_id": 0, "entities": ["a", "b"]}])
+    graph.store_communities(
+        [{"community_id": 0, "entities": ["a"]}, {"community_id": 1, "entities": ["b"]}]
+    )
+    graph.store_communities([{"community_id": 0, "entities": ["a", "b"]}])
+    assert len(graph.get_communities()) == 1
+    assert len(migrated["knowledge"].rows(migrated["knowledge"].snapshot())["communities"]) == 2
+
+
+def test_daemon_search_and_packet_do_not_write_canonical_telemetry(migrated, monkeypatch):
+    from tinyassets.daemon_brain import (
+        build_daemon_brain_packet,
+        capture_daemon_memory,
+        search_daemon_memory,
+    )
+
+    source = migrated["daemon"]
+    capture_daemon_memory(
+        source,
+        daemon_id="daemon-a",
+        content="Remember the fact",
+        source_type="test",
+        source_id="read-only-search",
+        reliability="source-backed",
+        language_type="descriptive",
+    )
+    before = source.snapshot()
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError("A canonical read must not require storage admission")
+
+    monkeypatch.setattr(source.bundle.provider, "write", unavailable)
+    assert search_daemon_memory(source, daemon_id="daemon-a", query="fact")["count"] == 1
+    assert (
+        build_daemon_brain_packet(source, daemon_id="daemon-a", query="fact")["selected_count"] == 1
+    )
+    assert source.snapshot() == before
 
 
 def test_daemon_capture_review_promote_and_query_are_canonical(migrated):

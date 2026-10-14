@@ -12,10 +12,14 @@ from tinyassets.okf.bundle import InvalidBundle
 
 
 def test_request_uses_authenticated_owner_and_canonical_bytes(
-    bundle, tmp_path, monkeypatch, signed_in  # noqa: F811
+    bundle,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    signed_in,  # noqa: F811
 ):  # noqa: F811
     source = records(bundle, tmp_path)
     signed_in("owner-a")
+    monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(
         "tinyassets.agent_loop.served_chat.configured_box_provider",
         lambda: (bundle.provider, "test"),
@@ -49,6 +53,7 @@ def test_request_uses_authenticated_owner_and_canonical_bytes(
 
 def test_unmigrated_and_unbound_namespaces_refuse(bundle, tmp_path, monkeypatch, signed_in):  # noqa: F811
     signed_in("owner-a")
+    monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(
         "tinyassets.agent_loop.served_chat.configured_box_provider",
         lambda: (bundle.provider, "test"),
@@ -63,12 +68,16 @@ def test_unmigrated_and_unbound_namespaces_refuse(bundle, tmp_path, monkeypatch,
 
 
 def test_omitted_center_uses_binding_without_a_host_home_directory(
-    bundle, tmp_path, monkeypatch, signed_in  # noqa: F811
+    bundle,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    signed_in,  # noqa: F811
 ):  # noqa: F811
     from tinyassets.storage import _connect
 
     records(bundle, tmp_path)
     signed_in("owner-a")
+    monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
     monkeypatch.setattr(
         "tinyassets.agent_loop.served_chat.configured_box_provider",
@@ -89,3 +98,24 @@ def test_omitted_center_uses_binding_without_a_host_home_directory(
         )["found"]
         is False
     )
+
+
+def test_explicit_center_cannot_skip_principal_deletion(bundle, tmp_path, monkeypatch, signed_in):  # noqa: F811
+    from tinyassets.account_deletion import principal_digest
+    from tinyassets.storage import _connect
+    from tinyassets.storage.current_home import CurrentHomeChanged
+
+    records(bundle, tmp_path)
+    signed_in("owner-a")
+    monkeypatch.setattr(runtime_ops, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tinyassets.agent_loop.served_chat.configured_box_provider",
+        lambda: (bundle.provider, "test"),
+    )
+    with _connect(tmp_path) as conn:
+        conn.execute("CREATE TABLE deleted_principals(founder_sub TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO deleted_principals VALUES (?)", (principal_digest("owner-a"),))
+    with pytest.raises(CurrentHomeChanged, match="deleted"):
+        runtime_ops._canonical_source({"universe_id": "a"}, "project")
+    with pytest.raises(ValueError, match="string"):
+        runtime_ops._canonical_source({"universe_id": None}, "project")

@@ -876,20 +876,6 @@ def search_daemon_memory(
     threshold = _clamp(min_score, default=0.0)
 
     with _connect(base_path) as conn:
-        _record_event_conn(
-            conn,
-            daemon_id=daemon_id,
-            event_type="daemon.memory.query",
-            trace_id=trace,
-            query_text=clean_query,
-            metadata={
-                "limit": bounded_limit,
-                "min_score": threshold,
-                "memory_kinds": list(memory_kinds or []),
-                "visibility": visibility,
-                "has_query_embedding": query_embedding is not None,
-            },
-        )
         entries: list[dict[str, Any]]
         if clean_query:
             try:
@@ -958,25 +944,6 @@ def search_daemon_memory(
             reverse=True,
         )
         entries = entries[:bounded_limit]
-        entry_ids = [entry["entry_id"] for entry in entries]
-        _record_event_conn(
-            conn,
-            daemon_id=daemon_id,
-            event_type="daemon.memory.retrieve",
-            trace_id=trace,
-            query_text=clean_query,
-            entry_ids=entry_ids,
-            metadata={"selected_count": len(entry_ids)},
-        )
-        if not entries and clean_query:
-            _record_event_conn(
-                conn,
-                daemon_id=daemon_id,
-                event_type="daemon.memory.low_confidence_skip",
-                trace_id=trace,
-                query_text=clean_query,
-                metadata={"reason": "no_entries_above_threshold"},
-            )
 
     return {
         "daemon_id": daemon_id,
@@ -1128,20 +1095,6 @@ def build_daemon_brain_packet(
             entry["content"],
         ])
     context, truncated = _truncate_text("\n".join(lines).strip(), budget)
-    with _connect(base_path) as conn:
-        _record_event_conn(
-            conn,
-            daemon_id=daemon_id,
-            event_type="daemon.memory.inject",
-            trace_id=trace,
-            query_text=results["query"],
-            entry_ids=[entry["entry_id"] for entry in results["entries"]],
-            metadata={
-                "packet_chars": len(context),
-                "max_chars": budget,
-                "truncated": truncated,
-            },
-        )
     return {
         "daemon_id": daemon_id,
         "owner_box": True,

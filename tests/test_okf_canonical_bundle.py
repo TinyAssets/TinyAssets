@@ -45,6 +45,76 @@ def test_commit_retry_and_source_edit_drive_search(bundle):
     assert bundle.search("edited") == [changed]
 
 
+def test_history_rolls_past_transport_bound_without_losing_replay_or_forget(bundle, monkeypatch):
+    import tinyassets.okf.bundle as module
+
+    monkeypatch.setattr(module, "HISTORY_PAGE_BYTES", 100)
+    monkeypatch.setattr(module, "PAGE_BYTES", 1800)
+    original = bundle.snapshot()
+    bundle.commit(original, {"forgotten": entry("forgotten")}, operation_id="original")
+    bundle.commit(bundle.snapshot(), {"forgotten": None}, operation_id="forget-original")
+    for i in range(24):
+        bundle.commit(
+            bundle.snapshot(), {"current": entry("current", str(i))}, operation_id=f"write-{i}"
+        )
+    before = bundle.snapshot()
+    assert before.manifest["log_history"]
+    assert before.manifest["tombstones_history"]
+    assert sum(len(log) for log in bundle._history(before, "log")) > module.PAGE_BYTES
+    assert len(before.log.encode()) < module.PAGE_BYTES
+    with pytest.raises(InvalidBundle, match="already committed"):
+        bundle.commit(before, {"current": entry("current", "bad")}, operation_id="original")
+    with pytest.raises(InvalidBundle, match="forgotten"):
+        bundle.commit(before, {"forgotten": entry("forgotten")}, operation_id="revive")
+    assert bundle.snapshot() == before
+
+
+def test_deletion_marker_retains_identity_without_deleted_payload(bundle):
+    value = Entry(
+        "large",
+        "sqlite-record",
+        "body",
+        {
+            "source": "test",
+            "table": "rows",
+            "identity": [["integer", "37"]],
+            "fields": {"private": ["text", "x" * 5000]},
+        },
+    )
+    bundle.commit(bundle.snapshot(), {value.id: value}, operation_id="large")
+    bundle.commit(bundle.snapshot(), {value.id: None}, operation_id="forget-large")
+    before = bundle.snapshot()
+    assert "fields" not in before.manifest["tombstones"][value.id]["metadata"]
+    assert before.manifest["deletion_sequences"][json.dumps(["test", "rows"])] == 37
+
+
+def test_history_page_retry_and_integrity_are_fenced(bundle, monkeypatch):
+    import tinyassets.okf.bundle as module
+
+    monkeypatch.setattr(module, "HISTORY_PAGE_BYTES", 100)
+    bundle.commit(bundle.snapshot(), {"note": entry()}, operation_id="seed-history")
+    before = bundle.snapshot()
+    real = bundle.provider.write
+
+    def lost(handle, op, path, data, **kwargs):
+        receipt = real(handle, op, path, data, **kwargs)
+        if path == INDEX:
+            raise OSError("lost archive reply")
+        return receipt
+
+    monkeypatch.setattr(bundle.provider, "write", lost)
+    with pytest.raises(OSError, match="lost archive"):
+        bundle.commit(before, {"note": entry(body="new")}, operation_id="archive")
+    monkeypatch.setattr(bundle.provider, "write", real)
+    bundle.commit(before, {"note": entry(body="new")}, operation_id="archive")
+    current = bundle.snapshot()
+    assert current.entries["note"].body == "new"
+    history = ROOT + "/history/" + current.manifest["log_history"] + ".json"
+    real(bundle.handle, "corrupt-history", history, b"{}", max_bytes=2)
+    with pytest.raises(InvalidBundle, match="missing or changed"):
+        bundle.commit(bundle.snapshot(), {"note": entry(body="bad")}, operation_id="new-op")
+
+
 def test_failed_staging_never_changes_visible_knowledge(bundle, monkeypatch):
     bundle.commit(bundle.snapshot(), {"note": entry()}, operation_id="initial")
     before = bundle.snapshot()
@@ -321,10 +391,13 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         soul_text="Preserve evidence",
     )
     daemon_snapshot(daemon_brain_db_path(legacy), daemon["daemon_id"])
-    project_snapshot(legacy / ".project_memory.db", [
-        ("project-a", "note", {"text": "Project content"}),
-        ("project-b", "note", "Other project"),
-    ])
+    project_snapshot(
+        legacy / ".project_memory.db",
+        [
+            ("project-a", "note", {"text": "Project content"}),
+            ("project-b", "note", "Other project"),
+        ],
+    )
     episodic_path = legacy / "episodic.db"
     for owner in ("owner-a", "owner-b"):
         episodic = offline_consumer(EpisodicMemory, episodic_path, universe_id=owner)
@@ -369,20 +442,29 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         versions.close()
     temporal = offline_consumer(TemporalFactStore, legacy / "temporal.db")
     for owner in ("owner-a", "owner-b"):
-        temporal.assert_fact(TemporalFact(f"{owner}-old", "place", "location", "Earlier value",
-                                         "2026-01-01", branch_id=owner))
-        temporal.supersede(f"{owner}-old", TemporalFact(
-            f"{owner}-new", "place", "location", "Current value", "2026-02-01",
-            valid_from="2026-02-01", supersedes=f"{owner}-old", branch_id=owner,
-        ))
+        temporal.assert_fact(
+            TemporalFact(
+                f"{owner}-old", "place", "location", "Earlier value", "2026-01-01", branch_id=owner
+            )
+        )
+        temporal.supersede(
+            f"{owner}-old",
+            TemporalFact(
+                f"{owner}-new",
+                "place",
+                "location",
+                "Current value",
+                "2026-02-01",
+                valid_from="2026-02-01",
+                supersedes=f"{owner}-old",
+                branch_id=owner,
+            ),
+        )
     temporal.close()
     definitions = [
-        ("promises", legacy / "promises.db",
-         {"series_promises": {"universe_id": ["owner-a"]}}, {}),
-        ("versions", legacy / "versions.db",
-         {"draft_versions": {"universe_id": ["owner-a"]}}, {}),
-        ("temporal", legacy / "temporal.db",
-         {"temporal_facts": {"branch_id": ["owner-a"]}}, {}),
+        ("promises", legacy / "promises.db", {"series_promises": {"universe_id": ["owner-a"]}}, {}),
+        ("versions", legacy / "versions.db", {"draft_versions": {"universe_id": ["owner-a"]}}, {}),
+        ("temporal", legacy / "temporal.db", {"temporal_facts": {"branch_id": ["owner-a"]}}, {}),
         (
             "daemon",
             daemon_brain_db_path(legacy),
@@ -468,16 +550,20 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         adapter = SourceRecords(bundle, source.source)
         before = adapter.snapshot()
         rows = adapter.rows(before)
-        entry = next(item for item in before.entries.values()
-                     if item.metadata.get("source") == source.source
-                     and item.metadata["body_field"])
+        entry = next(
+            item
+            for item in before.entries.values()
+            if item.metadata.get("source") == source.source and item.metadata["body_field"]
+        )
         row = dict(rows[entry.metadata["table"]][entry.id])
         row[entry.metadata["body_field"]] += " [canonical owner edit]"
-        adapter.write(before, upserts={entry.metadata["table"]: [row]},
-                      operation_id="edit-" + source.source)
+        adapter.write(
+            before, upserts={entry.metadata["table"]: [row]}, operation_id="edit-" + source.source
+        )
         assert adapter.rows(adapter.snapshot())[entry.metadata["table"]][entry.id] == row
-        restored = restore_copy(adapter.snapshot(), source,
-                                tmp_path / (source.source + "-restore.db"))
+        restored = restore_copy(
+            adapter.snapshot(), source, tmp_path / (source.source + "-restore.db")
+        )
         assert restored["rows"] == sum(len(table) for table in rows.values())
         assert restored["activated"] is False
     for path, original in originals.items():
@@ -486,12 +572,15 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         assert not Path(str(path) + "-shm").exists()
 
 
-@pytest.mark.parametrize("header", [
-    "id: &shared one\ntype: note\nother: *shared",
-    "id: one\ntype: note\nvalue: " + "[" * 70 + "x" + "]" * 70,
-    'id: one\ntype: note\nvalue: !!python/object:builtins.object {}',
-    'id: one\ntype: note\nvalue: .nan',
-])
+@pytest.mark.parametrize(
+    "header",
+    [
+        "id: &shared one\ntype: note\nother: *shared",
+        "id: one\ntype: note\nvalue: " + "[" * 70 + "x" + "]" * 70,
+        "id: one\ntype: note\nvalue: !!python/object:builtins.object {}",
+        "id: one\ntype: note\nvalue: .nan",
+    ],
+)
 def test_owner_frontmatter_refuses_expansion_and_nonportable_values(header):
     with pytest.raises(InvalidBundle):
         parse(("---\n" + header + "\n---\nBody").encode())

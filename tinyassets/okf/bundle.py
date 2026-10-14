@@ -34,6 +34,8 @@ PAGE_FILES = 1000
 # JSON escapes non-ASCII path names. Reserve a separate metadata budget so
 # paths plus base64 data and per-file framing fit C6's 8-MiB message envelope.
 PAGE_PATH_BYTES = 2 * 1024 * 1024
+# History is immutable, content-addressed pages; only its head is in current.json.
+HISTORY_PAGE_BYTES = 64 * 1024
 
 
 class InvalidBundle(ValueError):
@@ -56,8 +58,9 @@ def capture_files(provider, handle, paths, *, max_total):
             return
         view = provider.read_many(handle, pending, max_total=min(PAGE_BYTES, max_total - used))
         check(view.generation)
-        if (set(view.files) & set(view.missing)
-                or set(view.files) | set(view.missing) != set(pending)):
+        if set(view.files) & set(view.missing) or set(view.files) | set(view.missing) != set(
+            pending
+        ):
             raise InvalidBundle("Provider snapshot differs from requested paths")
         size = sum(map(len, view.files.values()))
         if size > min(PAGE_BYTES, max_total - used):
@@ -95,8 +98,11 @@ def capture_files(provider, handle, paths, *, max_total):
             files[path] = b"".join(chunks)
             used += size
         else:
-            if pending and (pending_bytes + size > PAGE_BYTES or len(pending) >= PAGE_FILES
-                            or pending_path_bytes + path_bytes > PAGE_PATH_BYTES):
+            if pending and (
+                pending_bytes + size > PAGE_BYTES
+                or len(pending) >= PAGE_FILES
+                or pending_path_bytes + path_bytes > PAGE_PATH_BYTES
+            ):
                 flush()
             pending.append(path)
             pending_bytes += size
@@ -231,12 +237,19 @@ def _paths(manifest):
     if not isinstance(paths, dict):
         raise InvalidBundle("Bundle entries must map ids to source files")
     tombstones = manifest.get("tombstones", {})
-    if (not isinstance(tombstones, dict) or set(tombstones) & set(paths)
-            or any(not isinstance(key, str) or not key or not isinstance(value, dict)
-                   or not isinstance(value.get("metadata"), dict)
-                   or not isinstance(value.get("operation"), str)
-                   or not re.fullmatch(r"[0-9a-f]{64}", value["operation"])
-                   for key, value in tombstones.items())):
+    if (
+        not isinstance(tombstones, dict)
+        or set(tombstones) & set(paths)
+        or any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, dict)
+            or not isinstance(value.get("metadata"), dict)
+            or not isinstance(value.get("operation"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["operation"])
+            for key, value in tombstones.items()
+        )
+    ):
         raise InvalidBundle("Invalid canonical deletion tombstones")
     revision = manifest.get("revision")
     if (
@@ -262,6 +275,53 @@ class KnowledgeBundle:
     @property
     def scope(self):
         return (self.handle.command_center_id, self.handle.account_id, self.handle.epoch)
+
+    def _history(self, before, kind):
+        if self.access_check is not None:
+            self.access_check()
+        digest = before.manifest.get(kind + "_history")
+        while digest is not None:
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise InvalidBundle("Invalid canonical history reference")
+            path = ROOT + "/history/" + digest + ".json"
+            view = capture_files(self.provider, self.handle, [path], max_total=PAGE_BYTES)
+            raw = view.files.get(path)
+            if raw is None or hashlib.sha256(raw).hexdigest() != digest:
+                raise InvalidBundle("Canonical history is missing or changed")
+            page = json.loads(raw, object_pairs_hook=_unique_pairs)
+            if (
+                not isinstance(page, dict)
+                or set(page) != {"previous", "values", "kind"}
+                or page["kind"] != kind
+            ):
+                raise InvalidBundle("Invalid canonical history page")
+            if not isinstance(page["values"], str if kind == "log" else dict):
+                raise InvalidBundle("Invalid canonical history values")
+            yield page["values"]
+            digest = page["previous"]
+
+    def operation_committed(self, before, operation_id):
+        marker = "## Commit " + hashlib.sha256(operation_id.encode()).hexdigest() + "\n"
+        return marker in before.log or any(marker in log for log in self._history(before, "log"))
+
+    def forgotten(self, before, keys):
+        pending = set(keys)
+        if not pending:
+            return False
+        if pending & before.manifest.get("tombstones", {}).keys():
+            return True
+        return any(pending & page.keys() for page in self._history(before, "tombstones"))
+
+    @staticmethod
+    def _archive(manifest, files, kind, values):
+        raw = json.dumps(
+            {"kind": kind, "previous": manifest.get(kind + "_history"), "values": values},
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        files["history/" + digest + ".json"] = raw
+        manifest[kind + "_history"] = digest
 
     def snapshot(self) -> BundleSnapshot:
         if self.access_check is not None:
@@ -315,7 +375,12 @@ class KnowledgeBundle:
         raise BoxBusy("Knowledge commit changed during three coherent reads")
 
     def commit(
-        self, before: BundleSnapshot, changes: dict[str, Entry | None], *, operation_id: str
+        self,
+        before: BundleSnapshot,
+        changes: dict[str, Entry | None],
+        *,
+        operation_id: str,
+        transient_deletions=frozenset(),
     ):
         """Stage a conformant revision, then atomically switch the commit pointer.
 
@@ -331,16 +396,42 @@ class KnowledgeBundle:
         if not isinstance(operation_id, str) or not operation_id:
             raise ValueError("A stable operation_id is required")
         transaction = hashlib.sha256(operation_id.encode()).hexdigest()
+        if self.operation_committed(before, operation_id):
+            raise InvalidBundle("Operation already committed; read its canonical result")
+        if any(key not in changes or changes[key] is not None for key in transient_deletions):
+            raise InvalidBundle("Transient deletion must name an actual removed record")
+        if self.forgotten(before, [key for key, entry in changes.items() if entry is not None]):
+            raise InvalidBundle("Cannot revive a forgotten canonical identity")
         tombstones = dict(before.manifest.get("tombstones", {}))
+        sequences = dict(before.manifest.get("deletion_sequences", {}))
         final = dict(before.entries)
         for key, entry in changes.items():
             if not isinstance(key, str) or not key or (entry is not None and entry.id != key):
                 raise InvalidBundle("Changed entry id must match its key")
             if entry is None:
                 prior = final.pop(key, None)
-                if prior is not None:
-                    tombstones[key] = {"operation": transaction, "type": prior.type,
-                                       "metadata": prior.metadata}
+                if prior is not None and key not in transient_deletions:
+                    metadata = {
+                        name: prior.metadata[name]
+                        for name in ("source", "table", "identity")
+                        if name in prior.metadata
+                    }
+                    tombstones[key] = {
+                        "operation": transaction,
+                        "type": prior.type,
+                        "metadata": metadata,
+                    }
+                    identity = metadata.get("identity")
+                    if (
+                        isinstance(identity, list)
+                        and len(identity) == 1
+                        and isinstance(identity[0], list)
+                        and len(identity[0]) == 2
+                        and identity[0][0] == "integer"
+                    ):
+                        value = int(identity[0][1])
+                        sequence_key = json.dumps([metadata.get("source"), metadata.get("table")])
+                        sequences[sequence_key] = max(sequences.get(sequence_key, 0), value)
             else:
                 if key in tombstones:
                     raise InvalidBundle("Cannot revive a forgotten canonical identity")
@@ -357,16 +448,26 @@ class KnowledgeBundle:
         )
         files[revision + "/index.md"] = document({"okf_version": "0.1"}, body)
         # Stable operation hash is safe display text and deterministic on retry.
-        log = before.log + f"\n## Commit {transaction}\n\n"
+        manifest = dict(before.manifest)
+        log = before.log
+        if len(log.encode()) > HISTORY_PAGE_BYTES:
+            self._archive(manifest, files, "log", log)
+            log = "# Log\n"
+        log += f"\n## Commit {transaction}\n\n"
         log += f"{len(changes)} changes; {len(final)} current entries.\n"
         files[revision + "/log.md"] = log.encode("utf-8")
-        manifest = {
-            **before.manifest,
-            "entries": paths,
-            "tombstones": tombstones,
-            "operation_id": operation_id,
-            "revision": transaction,
-        }
+        if len(json.dumps(tombstones).encode()) > HISTORY_PAGE_BYTES:
+            self._archive(manifest, files, "tombstones", tombstones)
+            tombstones = {}
+        manifest.update(
+            {
+                "entries": paths,
+                "tombstones": tombstones,
+                "deletion_sequences": sequences,
+                "operation_id": operation_id,
+                "revision": transaction,
+            }
+        )
         _paths(manifest)
         data = json.dumps(manifest, ensure_ascii=False, allow_nan=False).encode("utf-8")
         if len(data) + sum(map(len, files.values())) > self.read_bytes:

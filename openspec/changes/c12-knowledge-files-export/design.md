@@ -395,11 +395,13 @@ SQL indexes; no runtime disk database or vector directory is consulted. Each
 public operation refreshes a coherent canonical revision, checks exact typed SQL
 round trips, and publishes all related rows under one generation CAS. Unknown
 source columns and metadata survive updates. A lost reply retains the original
-snapshot/diff/operation ID for exact retry on the same connection; conflicting or
-already committed IDs refuse instead of guessing a new operation. Daemon API
+snapshot/diff/operation ID for exact retry on the same connection. Deterministic
+validation and CAS refusals release the connection after a fresh canonical read
+proves the operation is absent; unknown I/O outcomes retain the pending diff.
+Already committed IDs refuse instead of guessing a new operation. Daemon API
 mutations require stable request_id in inputs_json (or internal kwargs).
 
-Deletion adds a durable tombstone with source identity and provenance. Forgotten
+Deletion adds a durable tombstone with source identity and committing operation. Forgotten
 IDs cannot be revived by normal writes. Trusted AUTOINCREMENT indexes seed their
 counter from verified backup counters and later tombstones, so deletion/rebuild
 cannot recycle identities. Current source edits and deletions rebuild temporal,
@@ -407,6 +409,17 @@ full-text and vector indexes; historical files are never a recovery read path.
 Daemon promotions put their human-readable summary in the canonical promotion
 record and return that Markdown path. They retain source entry IDs, logical target
 path and provenance in the same atomic revision, without a duplicate host wiki.
+
+Commit logs and compact deletion markers roll into immutable content-addressed
+history pages; the current manifest retains only page heads, bounded recent
+markers, and per-table deletion counters. Operation replay and forgotten-ID
+checks include archived pages. Historical source bodies are never restored by
+these checks. Derived community membership deletions are replaceable relations,
+while an explicit owner forget remains permanent. Daemon search and prompt
+assembly are read-only; their trace IDs stay in the response rather than adding
+canonical telemetry on every prompt. Mutation events remain durable. Explicit
+center API requests check the principal deletion fence before provider binding;
+the provider retains current ownership/epoch enforcement for every operation.
 
 C7 must enter owner_memory_scope after authenticated C6 admission and reviewed
 migration, keeping it alive until children finish. The namespace is explicitly

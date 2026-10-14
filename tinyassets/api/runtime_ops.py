@@ -68,20 +68,24 @@ logger = logging.getLogger("universe_server.runtime_ops")
 def _canonical_source(kwargs, source):
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.okf.records import SourceRecords
+    from tinyassets.storage import _connect
+    from tinyassets.storage.current_home import check_principal_not_deleted, current_home
 
     owner = _current_actor()
-    center = kwargs.get("universe_id", "").strip()
-    if not center:
-        from tinyassets.storage import _connect
-        from tinyassets.storage.current_home import check_principal_not_deleted, current_home
-
-        with _connect(_base_path()) as conn:
-            conn.execute("BEGIN")
-            check_principal_not_deleted(conn, owner)
+    requested = kwargs.get("universe_id", "")
+    if not isinstance(requested, str):
+        raise ValueError("Command center must be a string")
+    center = requested.strip()
+    with _connect(_base_path()) as conn:
+        conn.execute("BEGIN")
+        check_principal_not_deleted(conn, owner)
+        if not center:
             center = current_home(conn, owner)
         if not center:
             raise PermissionError("An admitted command center is required")
-    return SourceRecords.bind(owner=owner, center=center, source=source)
+        # The provider checks current ownership/epoch for explicit centers too;
+        # a founder may own more than the center named by current_home.
+        return SourceRecords.bind(owner=owner, center=center, source=source)
 
 def _project_source(kwargs):
     return _canonical_source(kwargs, "project")

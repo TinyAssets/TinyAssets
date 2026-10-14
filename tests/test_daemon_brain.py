@@ -143,7 +143,7 @@ def test_daemon_brain_smoke_roundtrip(canonical_daemon, tmp_path: Path) -> None:
 
     status = memory_observability_status(canonical_daemon(tmp_path), daemon_id=ada["daemon_id"])
     assert status["entry_count"] == 1
-    assert status["event_count"] >= 5
+    assert status["event_count"] == 3  # Only capture/update/promotion mutate the event log.
     assert status["cost_ledger"]["read_only"] is True
     assert status["cost_ledger"]["estimated_total_tokens"] > 0
 
@@ -355,7 +355,7 @@ def test_daemon_memory_cost_ledger_is_read_only_status(canonical_daemon, tmp_pat
     assert ledger["read_only"] is True
     assert ledger["ledger_available"] is True
     assert ledger["entry_count"] == 1
-    assert ledger["event_count"] >= 2
+    assert ledger["event_count"] == 1  # Search must remain available without a write.
     assert ledger["estimated_total_tokens"] > 0
     assert ledger["entries_by_kind"] == {"policy": 1}
     assert "daemon.memory.write_candidate" in ledger["events_by_type"]

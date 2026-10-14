@@ -8,12 +8,13 @@ The SQLite connection is an implementation detail and never a recovery source.
 from __future__ import annotations
 
 import functools
-import hashlib
+import json
 import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
 
+from tinyassets.boxes.provider import BoxOperationRefused, WriteConflict
 from tinyassets.okf.bundle import InvalidBundle
 from tinyassets.okf.migration import _quoted, restore_scalar, scalar
 from tinyassets.okf.records import SourceRecords, record_entry, source_census
@@ -128,6 +129,12 @@ class CanonicalConnection:
                 high = definitions[table].get("sequence", 0)
                 if type(high) is not int or not 0 <= high < 2**63:
                     raise InvalidBundle("Reviewed integer sequence is malformed")
+                deleted_high = before.manifest.get("deletion_sequences", {}).get(
+                    json.dumps([self.source.source, table]), 0
+                )
+                if type(deleted_high) is not int or not 0 <= deleted_high < 2**63:
+                    raise InvalidBundle("Deleted integer sequence is malformed")
+                high = max(high, deleted_high)
                 for deleted in before.manifest.get("tombstones", {}).values():
                     metadata = deleted["metadata"]
                     if (
@@ -179,8 +186,7 @@ class CanonicalConnection:
                 self._operation = operation_id or uuid.uuid4().hex
                 if not isinstance(self._operation, str) or len(self._operation) > 128:
                     raise InvalidBundle("Name a bounded canonical operation ID")
-                digest = hashlib.sha256(self._operation.encode()).hexdigest()
-                if "## Commit " + digest + "\n" in self.before.log:
+                if self.source.bundle.operation_committed(self.before, self._operation):
                     raise InvalidBundle("Operation already committed; read its canonical result")
             self._depth += 1
             try:
@@ -238,9 +244,18 @@ class CanonicalConnection:
             if self._pending is None:
                 raise InvalidBundle("No original canonical transaction is pending")
             before, upserts, deletions, operation = self._pending
-            result = self.source.write(
-                before, upserts=upserts, deletions=deletions, operation_id=operation
-            )
+            try:
+                result = self.source.write(
+                    before, upserts=upserts, deletions=deletions, operation_id=operation
+                )
+            except (InvalidBundle, BoxOperationRefused, WriteConflict):
+                # A failed validation/CAS may leave unreachable staging files,
+                # but must not poison the cached consumer. Unknown I/O outcomes
+                # retain the exact pending transaction and still require retry.
+                latest = self.source.snapshot()
+                if not self.source.bundle.operation_committed(latest, operation):
+                    self._pending = None
+                raise
             self._pending = None
             return result
 
