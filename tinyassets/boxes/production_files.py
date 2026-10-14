@@ -183,6 +183,12 @@ class ProductionFileProvider:
         """Erase the entire owner's box, after tombstone, with a stable retry id."""
         return DestroyReceipt(**self._call(handle, "destroy", op_id=op_id))
 
+    def end_session(self, handle):
+        """Explicit terminal session cancellation; disconnect alone never cancels."""
+        result = self._call(handle, "end_session")
+        self._forget(id(handle))
+        return result
+
     def close(self):
         with self._guard:
             for _, channel, _ in self._bindings.values():

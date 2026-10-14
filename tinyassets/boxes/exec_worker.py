@@ -39,7 +39,15 @@ def main():
                    "HOME": "/home/owner/.agent-home", "TMPDIR": "/tmp",
                    "PLAYWRIGHT_BROWSERS_PATH": "/opt/ms-playwright",
                    **request["env"]}
-    os.execvpe(request["argv"][0], request["argv"], environment)
+    from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+
+    environment.update(PROXY_ENV)
+    environment["TINYASSETS_BOX_CENTER"] = path.split("/", 1)[0]
+    # Shared loopback forwarder; the only outbound socket is host-bound to this
+    # owner. The entire guest (including this child) is stopped before receipt.
+    python = "/opt/venv/bin/python"
+    os.execvpe(python, [python, "-I", "-B", "-c", FORWARDER,
+                       "3128=/run/boxhostd/relay.sock", "--", *request["argv"]], environment)
 
 
 if __name__ == "__main__":

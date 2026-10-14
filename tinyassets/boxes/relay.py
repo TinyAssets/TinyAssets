@@ -63,7 +63,7 @@ class OwnerRelays:
                 if first is None or first.kind != rf.CONTROL or first.stream != rf.CONNECTION:
                     raise BoxAuthError("relay requires a bounded center selection")
                 doc = first.control()
-                if set(doc) != {"op", "center"} or doc["op"] != "BOX_CONNECT":
+                if set(doc) != {"op", "center"} or doc["op"] not in {"BOX_CONNECT", "BOX_PUBLIC"}:
                     raise BoxAuthError("invalid relay operation")
                 center = doc["center"]
                 grant = self.admission.grant(owner, center, "relay")
@@ -74,22 +74,27 @@ class OwnerRelays:
                 if peer(broker)[1:] != (1002, 1002):
                     raise BoxAuthError("relay peer is not the broker")
                 broker.sendall(rf.control(rf.CONNECTION, {
-                    "op": "BOX_CHANNEL", "principal": owner, "center": center}))
+                    "op": "BOX_PUBLIC" if doc["op"] == "BOX_PUBLIC" else "BOX_CHANNEL",
+                    "principal": owner, "center": center}))
                 answer = rf.read_frame_blocking(broker)
                 if answer is None or answer.control().get("op") != "BOX_ADMITTED":
                     raise BoxAuthError("broker refused box channel")
                 guest.sendall(rf.control(rf.CONNECTION, {"op": "BOX_CONNECTED"}))
                 # Fixed-size forwarding prevents a peer's input from growing an
                 # unbounded queue. The broker owns framing, credit and policy.
-                while True:
-                    ready, _, _ = select.select([guest, broker], [], [], 30)
+                readers = [guest, broker]
+                while readers:
+                    ready, _, _ = select.select(readers, [], [], 30)
                     if not ready or not self.admission.authorize(grant, center):
                         return
                     for source in ready:
                         data = source.recv(65536)
+                        destination = broker if source is guest else guest
                         if not data:
-                            return
-                        (broker if source is guest else guest).sendall(data)
+                            readers.remove(source)
+                            destination.shutdown(socket.SHUT_WR)
+                        else:
+                            destination.sendall(data)
         except (OSError, ValueError, rf.FrameError):
             pass  # no identity or credential details in guest errors
         finally:

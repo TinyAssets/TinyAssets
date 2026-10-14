@@ -73,3 +73,44 @@ def test_existing_quota_admission_never_retags_tree(tmp_path, monkeypatch, proje
         with pytest.raises(BoxError, match="quota project"):
             OwnerQuota(tmp_path).admit(uid, 1024**3)
         assert not calls
+
+
+def test_new_owner_provision_applies_project_and_limit_before_exposing_tree(tmp_path, monkeypatch):
+    import fcntl
+    import struct
+
+    if os.geteuid() != 0:
+        pytest.skip("requires linux_oracle.py --as-root")
+    uid = 300001
+    quota = OwnerQuota(tmp_path)
+    monkeypatch.setattr(quota, "_mounted", lambda: None)
+    projects, calls = {}, []
+
+    def ioctl(fd, command, value):
+        inode = os.fstat(fd).st_ino
+        if command == 0x401c5820:
+            assert os.fstat(fd).st_uid == 0
+            projects[inode] = value
+            return value
+        return projects.get(inode, struct.pack("=IIIII8s", 0, 0, 0, 0, 0, b"\0" * 8))
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            assert (tmp_path / str(uid)).stat().st_uid == 0
+
+    monkeypatch.setattr(fcntl, "ioctl", ioctl)
+    monkeypatch.setattr(subprocess, "run", run)
+    quota.provision(uid, 1024**3, "a")
+    root = tmp_path / str(uid)
+    assert root.stat().st_uid == uid
+    assert (root / "a").stat().st_uid == uid
+    assert (root / ".agent-home").stat().st_uid == uid
+    (root / "a" / "retained").write_text("owner data")
+    quota.provision(uid, 1024**3, "b")
+    assert (root / "a" / "retained").read_text() == "owner data"
+    assert (root / "b").stat().st_uid == uid
+    (root / "foreign").symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(OSError):
+        quota.provision(uid, 1024**3, "foreign")
+    assert not any("project -s" in " ".join(call) for call in calls)

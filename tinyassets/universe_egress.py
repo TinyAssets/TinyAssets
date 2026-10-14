@@ -96,7 +96,10 @@ if os.fork():
         srv.close()
     os.execvp(command[0], command)
 null = os.open(os.devnull, os.O_RDWR)
-for fd in (0, 1):
+# A persistent gVisor box outlives this exec. Do not keep its output pipe
+# open through the proxy child after the command exits; the host stops the box.
+box_proxy = any(path == "/run/boxhostd/relay.sock" for _, path in servers)
+for fd in (0, 1, 2) if box_proxy else (0, 1):
     os.dup2(null, fd)
 threading.stack_size(256 * 1024)
 def pump(a, b):
@@ -125,6 +128,14 @@ def serve(c, path, slots):
     u = socket.socket(socket.AF_UNIX)
     try:
         u.connect(path)
+        if path == "/run/boxhostd/relay.sock":
+            sys.path.insert(0, "/app")
+            from tinyassets import rpc_frames as rf
+            u.sendall(rf.control(rf.CONNECTION, {
+                "op": "BOX_PUBLIC", "center": os.environ["TINYASSETS_BOX_CENTER"]}))
+            answer = rf.read_frame_blocking(u)
+            if answer is None or answer.control() != {"op": "BOX_CONNECTED"}:
+                raise OSError("owner relay refused")
     except OSError as exc:
         report(exc, 'connect')
         c.close(); u.close(); slots.release(); return

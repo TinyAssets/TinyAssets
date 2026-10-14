@@ -100,8 +100,9 @@ def test_pending_work_blocks_snapshots_and_cancel_is_reachable(runtime):
     exec_id = provider.start_exec(handle, "long", ["unused"])
     with pytest.raises(BoxBusy):
         provider.read_many(handle, ["/cc/file"], max_total=20)
-    with pytest.raises(BoxBusy):
-        provider.start_exec(handle, "another", ["unused"])
+    queued = provider.start_exec(handle, "another", ["unused"])
+    provider.cancel(handle, queued)
+    assert collect(provider, handle, queued)[1].killed == "cancelled"
     provider.cancel(handle, exec_id)
     assert collect(provider, handle, exec_id)[1].killed == "cancelled"
 
@@ -161,3 +162,166 @@ def test_receipt_store_refuses_growth_instead_of_filling_host_disk(tmp_path):
         assert sum(path.stat().st_size for path in tmp_path.iterdir()) < maximum * 4
     finally:
         state.close()
+
+
+def test_owner_fifo_holds_generation_and_cancels_queued_without_launch(runtime):
+    host, provider, handle, state = runtime
+    started, release = threading.Event(), threading.Event()
+    launches = []
+
+    def execute(uid, args, running):
+        launches.append(args["argv"])
+        started.set()
+        assert release.wait(5)
+        return {"exit_code": 0, "killed": None}
+
+    host.backend.execute = execute
+    first = provider.start_exec(handle, "first", ["first"])
+    assert started.wait(5)
+    second = provider.start_exec(handle, "second", ["second"])
+    third = provider.start_exec(handle, "third", ["third"])
+    assert host.state.pending("alice") == 3
+    provider.cancel(handle, second)
+    assert collect(provider, handle, second)[1].killed == "cancelled"
+    assert host.state.pending("alice") == 2
+    with pytest.raises(BoxBusy):
+        provider.committed_generation(handle)
+    release.set()
+    assert collect(provider, handle, first)[1].exit_code == 0
+    assert collect(provider, handle, third)[1].exit_code == 0
+    assert launches == [["first"], ["third"]]
+    assert host.state.pending("alice") == 0
+
+
+def test_failed_quiescence_cancels_successor_and_keeps_owner_closed(runtime):
+    host, provider, handle, state = runtime
+    started, release = threading.Event(), threading.Event()
+    launches = []
+
+    def execute(uid, args, running):
+        launches.append(args["argv"])
+        started.set()
+        assert release.wait(5)
+        return {"exit_code": 0, "killed": None}
+
+    host.backend.execute = execute
+    first = provider.start_exec(handle, "first", ["first"])
+    assert started.wait(5)
+    second = provider.start_exec(handle, "second", ["second"])
+    state["stop_fail"] = True
+    release.set()
+    with pytest.raises(BoxError, match="unknown"):
+        collect(provider, handle, first)
+    assert collect(provider, handle, second)[1].killed == "cancelled"
+    assert launches == [["first"]]
+    assert host.state.pending("alice") == 1
+    with pytest.raises(BoxBusy):
+        provider.start_exec(handle, "third", ["third"])
+
+
+def test_session_close_cancels_its_queue_and_exec_ids_are_session_scoped(runtime):
+    from tinyassets.boxes.provider import OpIdReuse
+
+    host, provider, handle, state = runtime
+    state["code"] = "import time; time.sleep(10)"
+    first = provider.start_exec(handle, "first", ["first"])
+    second = provider.start_exec(handle, "second", ["second"])
+    other = OwnerGrant("alice", 300001, "other-session")
+    host.authorize = lambda g, c: g.owner_id == "alice" and c == "a"
+    bound = host.bind(other, "a")
+    # A sibling session cannot recover the opaque exec id by guessing an op id.
+    args = {"argv": ["first"], "stdin": b"", "env": {}, "cwd": "/cc",
+            "wall_seconds": 300, "output_bytes": 1048576, "interactive_stdin": False}
+    with pytest.raises(OpIdReuse):
+        host.request(other, bound["token"], "start_exec", args, op_id="first")
+    host.close_session(OwnerGrant("alice", 300001, "session"))
+    deadline = time.monotonic() + 5
+    while host.executions.running and time.monotonic() < deadline:
+        threading.Event().wait(.01)
+    assert not host.executions.running
+    assert host.state.pending("alice") == 0
+    assert host.state.find_exec("alice", first)["outcome"]["killed"] == "cancelled"
+    assert host.state.find_exec("alice", second)["outcome"]["killed"] == "cancelled"
+
+
+def test_host_capacity_yields_to_another_owner_before_same_owner_successor(runtime):
+    host, provider, handle, _ = runtime
+    host.authorize = lambda grant, center: True
+    launched = []
+    changes = threading.Condition()
+    releases = {name: threading.Event() for name in ("a1", "a2", "b1", "c1")}
+
+    def execute(uid, args, running):
+        name = args["argv"][0]
+        with changes:
+            launched.append(name)
+            changes.notify_all()
+        assert releases[name].wait(5)
+        return {"exit_code": 0, "killed": None}
+
+    def start(owner, uid, name):
+        grant = OwnerGrant(owner, uid, "session")
+        token = host.bind(grant, "a")["token"]
+        args = {"argv": [name], "stdin": b"", "env": {}, "cwd": "/cc",
+                "wall_seconds": 5, "output_bytes": 100, "interactive_stdin": False}
+        return host.request(grant, token, "start_exec", args, op_id=name)
+
+    host.backend.execute = execute
+    try:
+        start("alice", 300001, "a1")
+        start("bob", 300002, "b1")
+        with changes:
+            assert changes.wait_for(lambda: len(launched) == 2, timeout=5)
+        start("alice", 300001, "a2")
+        start("charlie", 300003, "c1")
+        releases["a1"].set()
+        with changes:
+            assert changes.wait_for(lambda: len(launched) == 3, timeout=5)
+        assert launched[2] == "c1"
+        assert host.state.pending("alice") == 1
+    finally:
+        for release in releases.values():
+            release.set()
+
+
+def test_cancelling_not_yet_selected_owner_job_does_not_duplicate_its_successor(runtime):
+    host, provider, handle, state = runtime
+    # Prevent the pool from selecting its first job until a cancelled empty
+    # owner queue has been replaced. Exactly one work item may own that queue.
+    with host.lock("alice"):
+        first = provider.start_exec(handle, "first", ["first"])
+        provider.cancel(handle, first)
+        second = provider.start_exec(handle, "second", ["second"])
+    assert collect(provider, handle, second)[1].exit_code == 0
+    assert collect(provider, handle, first)[1].killed == "cancelled"
+    assert len(state["launches"]) == 1
+
+
+def test_channel_detach_keeps_work_and_reconnected_handle_alive(runtime):
+    host, provider, handle, _ = runtime
+    started, release = threading.Event(), threading.Event()
+
+    def execute(uid, args, running):
+        started.set()
+        assert release.wait(5)
+        assert not running.cancel.is_set()
+        return {"exit_code": 0, "killed": None}
+
+    host.backend.execute = execute
+    exec_id = provider.start_exec(handle, "survive", ["work"])
+    assert started.wait(5)
+    grant = OwnerGrant("alice", 300001, "session")
+    new_handle = host.bind(grant, "a")
+    old_token = provider._bindings[id(handle)][2]
+    try:
+        host.detach(grant, old_token)
+        assert not host.executions.running[exec_id].cancel.is_set()
+        status = host.request(grant, new_handle["token"], "exec_status", {"op_id": "survive"})
+        assert status["result"]["state"] == "running"
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while host.executions.running and time.monotonic() < deadline:
+        threading.Event().wait(.01)
+    assert host.state.find_exec("alice", exec_id)["state"] == "done"
+    assert host.state.pending("alice") == 0

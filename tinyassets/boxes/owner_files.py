@@ -136,8 +136,20 @@ class OwnerFileHost:
             return {"result": {"command_center_id": center, "op_id": op_id,
                                "files_removed": record["entries"], "new_epoch": record["epoch"]}}
 
+    def detach(self, grant: OwnerGrant, token: str | None) -> None:
+        """Transport loss revokes only its token, never the continuing session."""
+        with self.lock(grant.owner_id):
+            self.handles.detach(token, grant.owner_id, grant.session_id)
+            self._centers.pop(token, None)
+            tokens = self._sessions.get((grant.owner_id, grant.session_id))
+            if tokens is not None:
+                tokens.discard(token)
+                if not tokens:
+                    self._sessions.pop((grant.owner_id, grant.session_id), None)
+
     def close_session(self, grant: OwnerGrant) -> None:
         with self.lock(grant.owner_id):
+            self.executions.cancel_session(grant)
             self.handles.close_session(grant.owner_id, grant.session_id)
             for token in self._sessions.pop((grant.owner_id, grant.session_id), ()):
                 self._centers.pop(token, None)
@@ -186,6 +198,9 @@ class OwnerFileHost:
             if handle.uid != grant.uid:
                 raise BoxAuthError("permanent owner identity changed")
             owner = grant.owner_id
+            if operation == "end_session":
+                self.close_session(grant)
+                return {"result": None}
             if exec_operation:
                 return {"result": self.executions.request(grant, center, operation, args, op_id)}
             if self.state.pending(owner):
@@ -272,7 +287,7 @@ _FIELDS = {
     "stat": {"path"}, "list": {"path", "cursor", "limit"},
     "write": {"path", "data", "max_bytes", "mode", "expect_generation"},
     "remove": {"path"}, "usage": set(), "committed_generation": set(), "suspend": set(),
-    "destroy": set(), "ensure_awake": set(),
+    "destroy": set(), "ensure_awake": set(), "end_session": set(),
 }
 
 

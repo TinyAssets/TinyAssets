@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import os
+import sqlite3
 import subprocess
 import tarfile
 from pathlib import Path
@@ -22,16 +22,19 @@ def _shim(directory: Path, name: str, body: str) -> None:
 
 @pytest.mark.parametrize("remote_restore", [False, True])
 def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool) -> None:
+    if os.geteuid() != 0:
+        pytest.skip("permanent owner UID restore requires linux_oracle.py --as-root")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     volume = tmp_path / "volume" / "_data"
     volume.mkdir(parents=True)
     broker = volume / ".broker"
     broker.mkdir()
-    uid, gid = os.getuid(), os.getgid()
-    (broker / "box-registry.json").write_text(json.dumps({"boxes": [{
-        "uid": uid, "gid": gid, "project_id": 123456, "bhard_bytes": 8 * 1024 * 1024,
-    }]}))
+    uid = 300001
+    (broker / "state").mkdir()
+    with sqlite3.connect(broker / "state" / "owner-identities.db") as db:
+        db.execute("CREATE TABLE box_records (machine INT, project_id INT, bhard_bytes INT)")
+        db.execute("INSERT INTO box_records VALUES (?,?,?)", (uid, uid, 8 * 1024 * 1024))
     (volume / "record.txt").write_text("data")
     store = tmp_path / "owners"
     owner = store / str(uid)
@@ -133,7 +136,7 @@ esac
     assert (volume / "record.txt").read_text() == "data"
     assert (owner / "box.txt").read_text() == "box"
     assert (owner / "link.txt").read_text() == "box"
-    assert "bhard=8192k 123456" in log.read_text()
+    assert "bhard=8192k 300001" in log.read_text()
     assert "report -p -n" in log.read_text()
     assert "project -C -p" in log.read_text()
     commands = log.read_text().splitlines()
@@ -153,7 +156,7 @@ esac
     assert failed.returncode == 4, failed.stdout + failed.stderr
     assert (volume / "record.txt").read_text() == "current"
     assert (owner / "box.txt").read_text() == "current-box"
-    assert log.read_text().count("bhard=8192k 123456") >= 2
+    assert log.read_text().count("bhard=8192k 300001") >= 2
     env.pop("FAIL_RESTORED_QUOTA")
     env["FAIL_DATA_SWAP"] = "1"
     failed_data = subprocess.run(

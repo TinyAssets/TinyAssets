@@ -35,6 +35,9 @@ UNIT_FILES = tuple(item for pair in zip(SERVICES, TIMERS, strict=True) for item 
 RUNTIME_FILES = (
     "deploy/daemon-watchdog.sh",
     "deploy/backup.sh",
+    "deploy/box-store-check.sh",
+    "deploy/box-store-archive.py",
+    "deploy/box-store-quotas.py",
     "deploy/ship-logs.sh",
     "scripts/__init__.py",
     "scripts/_canary_common.py",

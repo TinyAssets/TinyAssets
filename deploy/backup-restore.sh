@@ -85,7 +85,7 @@ rollback_box() {
     done
     if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
             "${BOX_STORE_DIR}" "${BOX_STORE_DIR}" \
-            "${VOLUME_DIR}/.broker/box-registry.json"; then
+            "${VOLUME_DIR}/.broker/state/owner-identities.db"; then
         log "CRITICAL: failed to restore original box quota limits"
     fi
     rmdir -- "$BOX_OLD" 2>/dev/null || true
@@ -375,7 +375,12 @@ if [[ -n "${BOX_NAME:-}" ]]; then
             exit 4
         fi
     fi
-    REGISTRY="${BOX_REGISTRY_FILE:-${STAGE_DIR}/.broker/box-registry.json}"
+    REGISTRY="${STAGE_DIR}/.broker/state/owner-identities.db"
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${STAGE_DIR}"; then
+        log "ERROR: staged owner-box receipt journal is missing or invalid"
+        exit 4
+    fi
 fi
 
 # ----- 4. stop every consumer, then swap with automatic rollback -------
@@ -413,6 +418,24 @@ if [[ -n "${BOX_STAGE}" ]]; then
         log "ERROR: failed to stop boxhostd before box-store swap"
         exit 4
     fi
+    # Exclude service restarts on both sides of the volume rename. The staged
+    # lock becomes the live lock; keep both descriptors until restore exits.
+    exec 8<>"${VOLUME_DIR}/.layout.lock"
+    exec 7<>"${STAGE_DIR}/.layout.lock"
+    if ! flock -n -x 8 || ! flock -n -x 7; then
+        log "ERROR: a storage writer still owns the live or staged layout"
+        exit 4
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${VOLUME_DIR}" --quiescent; then
+        log "ERROR: current owner-box receipt/survivor census refused restore"
+        exit 4
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-quotas.py" \
+            --snapshot-data "${STAGE_DIR}" --restore-from "${VOLUME_DIR}"; then
+        log "ERROR: restore would roll back authority or replay an operation"
+        exit 4
+    fi
     BOX_OLD="$(mktemp -d "${BOX_STORE_DIR}/.tinyassets-box-restore-old.XXXXXX")"
     BOX_SWAP_ACTIVE=1
     for tree in "${BOX_STORE_DIR}"/[0-9]*; do
@@ -424,7 +447,7 @@ if [[ -n "${BOX_STAGE}" ]]; then
     done
     quota_script="$(dirname "$(realpath "$0")")/box-store-quotas.py"
     if ! python3 "$quota_script" "${BOX_STORE_DIR}" "${BOX_OLD}" \
-            "${VOLUME_DIR}/.broker/box-registry.json" --clear; then
+            "${VOLUME_DIR}/.broker/state/owner-identities.db" --clear; then
         log "ERROR: failed to clear retained box project IDs"
         exit 4
     fi
