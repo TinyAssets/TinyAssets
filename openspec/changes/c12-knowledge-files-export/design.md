@@ -273,3 +273,31 @@ or process death leaves a claimed attempt; restart stops for owner inspection,
 never guesses that effects did not happen. Configuration changes also stop the
 loop. The state stores only each schedule's latest attempt and remains within
 the closed 100-schedule/1-MiB limits. Existing tool consent remains in force.
+
+## Reviewed private import copying
+
+The transfer door now has a separate preview and confirmation after quarantine.
+The immutable existing package pin binds owner, center, epoch, custody hash,
+initial destination generation and exact file map. Files land under a fresh
+imports/<import-id>/ folder; existing files and the active harness are never
+replaced. This materializes a complete portable bundle without adopting its
+agents, grants, hooks or schedules into the active native runtime.
+
+Existing install-kind pins carry an explicit private-import discriminator;
+public package validation and native installation are not widened. Confirmation
+uses the existing claim token and lease, durable pre-write progress and stable
+per-file CREATE operation IDs. A lost response requires explicit retry of the
+same operation; the provider owns uncertain-outcome handling. A final coherent
+capture must match all selected bytes before the pin finishes. UTF-8 decoding
+failures and NUL-containing data require named binary confirmation. Imported
+content is rendered only as text nodes. Tombstones block starting a copy;
+placement fencing and authenticated box destruction handle in-flight writes.
+
+## Current migration ownership input
+
+Project IDs are opaque caller inputs; project_memory.updated_by is the writing
+actor, not an ownership relation. A cutover needs a verified project-to-owner
+and command-center mapping. NULL legacy knowledge scopes likewise need explicit
+resolution under the backup snapshot. Neither is inferred from the last editor,
+current session, or an arbitrary first owner. Preparing adapters and restore
+verification does not authorize a production migration with unresolved scopes.

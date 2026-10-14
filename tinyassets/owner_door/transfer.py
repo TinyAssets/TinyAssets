@@ -82,6 +82,15 @@ def _arguments(args):
             args["archive"], str
         ):
             raise InvalidBundle("Import needs a base64 archive")
+    elif operation in ("import-preview", "import-activate"):
+        key = "import_id" if operation == "import-preview" else "request"
+        required = {"operation", "command_center", key}
+        if operation == "import-activate":
+            required.add("named_binaries")
+        if (set(args) != required or not isinstance(args[key], str)
+                or not 1 <= len(args[key]) <= 100
+                or operation == "import-activate" and not _strings(args["named_binaries"])):
+            raise InvalidBundle("Import review needs its exact reference and binary selections")
     else:
         raise InvalidBundle("Unknown transfer operation")
     return args
@@ -136,6 +145,14 @@ def _transfer(provider, handle, args):
             _base_path(), owner=handle.account_id, command_center=handle.command_center_id,
             epoch=handle.epoch, bundle=bundle,
         )
+    if args["operation"] in ("import-preview", "import-activate"):
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.okf.import_activation import activate_import, preview_import
+
+        if args["operation"] == "import-preview":
+            return preview_import(_base_path(), provider, handle, args["import_id"])
+        return activate_import(_base_path(), provider, handle, args["request"],
+                               named_binaries=args["named_binaries"])
     if args["operation"] == "preview":
         from tinyassets.okf.workflow_export import PREFIX, SCHEDULES
 
@@ -214,7 +231,9 @@ async def handle_transfer(request):
     from tinyassets import onboarding
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.command_center_packages import PackageError
     from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.storage.current_home import CurrentHomeChanged
     from tinyassets.storage.outbound_connections import ProxyRequestError
     from tinyassets.storage_accounting import StorageRefused, visible_record
 
@@ -256,12 +275,15 @@ async def handle_transfer(request):
 
     try:
         result = await run_in_threadpool(run)
-    except (BoxAuthError, StaleHandle):
+    except (BoxAuthError, StaleHandle, CurrentHomeChanged):
         return JSONResponse({"error": "transfer_not_authorized"}, 403, headers=_HEADERS)
     except WriteConflict:
         return JSONResponse({"error": "source_changed_preview_again"}, 409, headers=_HEADERS)
     except StorageRefused as refused:
         return JSONResponse(visible_record(refused), 413, headers=_HEADERS)
+    except PackageError as exc:
+        return JSONResponse({"error": "import_not_ready", "detail": str(exc)},
+                            409, headers=_HEADERS)
     except InvalidBundle as exc:
         return JSONResponse(
             {"error": "invalid_transfer", "detail": str(exc)}, 400, headers=_HEADERS

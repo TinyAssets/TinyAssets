@@ -11,6 +11,7 @@
 - [x] 2.2c Implement explicitly enabled local prompt schedules with durable claims, no uncertain replay and IANA-aware cron; platform graph/schedule conversion remains in 2.2.
 - [x] 2.2d Capture owned structured workflows and disabled schedules, fence source changes, and execute the supported linear prompt subset with whole-graph refusal for unsupported semantics.
 - [x] 2.2e Integrate C6 destruction-only provider admission and durable receipts into account deletion; verify unknown-outcome retries and concurrent requests without production mutation.
+- [x] 2.2f Add separate protected import review/copy confirmation using existing package pins, per-file journalled CREATE and verified final bytes; active native harness adoption remains separate.
 - [ ] 2.3 Independent cross-family review and trusted receipt.
 
 ## 3. Knowledge cutover and export

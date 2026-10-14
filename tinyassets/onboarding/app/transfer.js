@@ -43,8 +43,13 @@ export function openTransfer({commandCenter, request, isCurrent}) {
   importFile.accept = ".zip,application/zip";
   importFile.setAttribute("aria-label", "Command center zip to import");
   const importButton = element("button", "Import into quarantine");
+  const importReview = element("div");
+  const reviewImport = element("button", "Review imported files");
+  const copyImport = element("button", "Copy reviewed files into this box");
+  reviewImport.disabled = copyImport.disabled = true;
+  let importId = null, importPlan = null, binaryChoices = [];
   const close = element("button", "Close");
-  for (const button of [refresh, previewButton, download, importButton, close]) {
+  for (const button of [refresh, previewButton, download, importButton, reviewImport, copyImport, close]) {
     button.type = "button";
     button.className = "btn btn--link";
   }
@@ -174,21 +179,66 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     for (let i = 0; i < data.length; i += 32768) {
       chunks.push(String.fromCharCode(...data.subarray(i, i + 32768)));
     }
+    importId = importPlan = null;
+    importReview.replaceChildren();
+    reviewImport.disabled = copyImport.disabled = true;
     const result = await call({operation: "import", archive: btoa(chunks.join(""))});
+    importId = result.import_id;
+    reviewImport.disabled = false;
     status.textContent = "Imported into quarantine. No files or schedules were activated. Reference: " + result.import_id;
     importFile.value = "";
+  });
+  reviewImport.onclick = () => work(async () => {
+    importPlan = null;
+    binaryChoices = [];
+    importReview.replaceChildren();
+    copyImport.disabled = true;
+    const result = await call({operation: "import-preview", import_id: importId});
+    importPlan = result;
+    importReview.append(element("p", "Copy destination: " + result.destination +
+      ". This is a separate folder. Your active agent stays as it is; no imported code runs."));
+    for (const file of result.files) {
+      const details = element("details");
+      details.append(element("summary", file.to + " (" + file.size + " bytes)"));
+      if (file.binary) {
+        binaryChoices.push({path: file.path,
+          input: checkbox("I reviewed this binary separately: " + file.path, details)});
+      } else {
+        const pre = element("pre", file.content);
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.overflowWrap = "anywhere";
+        details.append(pre);
+      }
+      importReview.append(details);
+    }
+    copyImport.disabled = false;
+    status.textContent = "Review every file before copying. Existing files are never overwritten.";
+  });
+  copyImport.onclick = () => work(async () => {
+    if (!importPlan) throw new Error("Review the imported files first.");
+    if (binaryChoices.some(item => !item.input.checked)) {
+      throw new Error("Review and name each binary before copying.");
+    }
+    const result = await call({operation: "import-activate", request: importPlan.request,
+      named_binaries: binaryChoices.map(item => item.path)});
+    copyImport.disabled = true;
+    status.textContent = "Files copied to " + result.destination +
+      ". No imported code or schedule was started.";
   });
   close.onclick = () => dialog.close();
   dialog.addEventListener("close", () => {
     if (active === dialog) active = null;
     resetReview();
     choices = [];
+    importId = importPlan = null;
+    binaryChoices = [];
+    importReview.replaceChildren();
     list.replaceChildren();
     dialog.remove();
   });
   dialog.append(title, element("p", "Export stays private. Import keeps code inactive until a separate activation."),
     status, signIn, refresh, list, previewButton, review, download,
-    element("h3", "Import a command center"), importFile, importButton, close);
+    element("h3", "Import a command center"), importFile, importButton, reviewImport, importReview, copyImport, close);
   document.body.append(dialog);
   dialog.showModal();
   refresh.click();

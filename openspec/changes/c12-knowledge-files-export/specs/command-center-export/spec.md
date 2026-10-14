@@ -214,3 +214,21 @@ erased before their custody inventory rows are removed.
 - **THEN** the receipt reports pending destruction and retains the home binding
 - **AND** an explicit retry uses the same operation ID and verifies the durable outcome
 - **AND** another owner's box and binding remain untouched.
+
+### Requirement: Reviewed private import materialization
+A separate protected owner confirmation SHALL copy a quarantined bundle into
+a fresh import folder in that owner's box. The preview SHALL show file content,
+binary labels and exact destinations. Existing files SHALL never be overwritten;
+active harness settings, grants, hooks and schedules SHALL never be installed or
+executed. Existing package pins SHALL retain the owner/center/epoch-bound approval
+and stable per-file operation IDs for explicit recovery.
+
+#### Scenario: Copy loses a provider response
+- **WHEN** a confirmed copy is interrupted after a provider mutation
+- **THEN** an explicit retry uses the same journalled operation ID
+- **AND** a second confirmation cannot run beside a live package claim
+- **AND** completion requires reading and verifying every copied file.
+
+#### Scenario: Owner or destination changes before confirmation
+- **WHEN** confirmation has a different owner, center, placement epoch or destination generation
+- **THEN** the initial copy refuses without installing files.

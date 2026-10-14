@@ -1293,7 +1293,7 @@ def test_the_android_shell_cannot_reach_checkout():
     assert "if(!b || !PLAN || NATIVE) return;" in html, "and the button stays hidden"
 
 
-def test_failed_owner_box_destroy_keeps_the_binding_and_retry_resumes(
+def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
         two_users, monkeypatch):
     """Failed destruction retains authentication and never stages owner bytes."""
     from tinyassets.boxes.provider import DestroyReceipt
