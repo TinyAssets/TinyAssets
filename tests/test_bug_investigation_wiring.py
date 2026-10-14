@@ -53,7 +53,7 @@ def test_wiki_file_bug_never_invokes_retired_investigation_helpers(
     monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
 
     with patch(
-        "tinyassets.branch_tasks.read_queue",
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.operational_read",
         side_effect=AssertionError("file_bug must not read task state"),
     ) as queue_reader:
         result_json = wiki_api._wiki_file_bug(

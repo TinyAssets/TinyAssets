@@ -220,7 +220,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "migration marker; returns on stable layout or raises on refusal, "
         "without scheduling background work",
     ),
-    "tinyassets/subscriptions.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),
     "tinyassets/universe_tools.py::_remove_cgroup": (CALL_SCOPED, "cgroup teardown retry"),

@@ -125,7 +125,7 @@ def test_inventory_covers_every_required_source_family() -> None:
     assert set(REQUIRED_BACKGROUND_ROOTS) == {
         "activities",
         "schedule_and_event",
-        "goal_subscription",
+        "event_subscription",
         "request_admission",
         "graph_enqueue",
         "direct_live_and_versioned_run",
@@ -153,7 +153,7 @@ def test_inventory_records_canonical_read_interfaces_without_new_truth() -> None
         "run",
         "request_admission",
         "filing_only_wiki_negative",
-        "goal_subscription",
+        "event_subscription",
         "queue",
         "b2",
     }
