@@ -9,6 +9,12 @@ const ChatRender = (() => {
     catch(_){return null;}
   }
   function inline(parent, source){
+    // A surface that cannot purchase must not render an upgrade link. The
+    // plan action's canPurchase() is the only gate; this file does not know
+    // which shell it is in.
+    if(typeof canPurchase==="function" && !canPurchase()){
+      source=source.replace(/(?:\s*—\s*|,\s*or\s*)\[Upgrade\]\([^)\s]*\) for more [^.]+\.?/gi, "");
+    }
     const tokens=/`([^`\n]+)`|\[([^\]\n]+)\]\(([^\s]+)\)|(https?:\/\/[^\s<>]+)/gi;
     let at=0;
     for(const match of source.matchAll(tokens)){
@@ -21,6 +27,10 @@ const ChatRender = (() => {
       }
       const href=httpURL(url);
       if(!href){text(parent,match[0]);continue;}
+      if(typeof canPurchase==="function" && !canPurchase() && /[?&]upgrade=1(?:&|#|$)/.test(href)){
+        text(parent, suffix);
+        continue;
+      }
       const a=document.createElement("a"); a.href=href;a.target="_blank";a.rel="noopener noreferrer";
       a.addEventListener("click",event=>{
         if(typeof NATIVE!=="undefined" && NATIVE){event.preventDefault();void openExternal(href);}

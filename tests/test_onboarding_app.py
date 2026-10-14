@@ -2901,12 +2901,19 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
 
 
 def test_the_android_shell_shows_no_checkout_ui():
-    """Play's payments policy: a subscription sold inside a Play-installed app must use
-    Play Billing, so the native shell must never surface the Stripe plan/checkout UI."""
+    """Play's payments policy: buy controls read one field, not a native check
+    inside each link. The shell only names the surface; Android's policy is off."""
     from pathlib import Path
 
     html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
-    assert "if(!b || !PLAN || NATIVE) return;" in html
+    surface = html[html.index("function billingSurface()"):html.index("function canPurchase()")]
+    assert '? "android" : "web"' in surface
+    assert "can_purchase_on_surface===true" in html
+    plan = html[html.index("function renderPlan()"):html.index("async function startSubscribe()")]
+    assert "can_purchase_on_surface === false" in plan
+    assert "b.hidden = true" in plan
+    assert "|| NATIVE" not in plan
+    assert "Plans are managed on the web" not in html
 
 
 def test_native_store_shells_keep_review_declared_voice_dark():

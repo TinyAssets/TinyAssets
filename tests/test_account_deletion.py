@@ -1284,13 +1284,20 @@ def test_the_app_page_carries_the_deletion_path():
 
 def test_the_android_shell_cannot_reach_checkout():
     """Play's payments policy is about capability, not layout: hiding the button
-    is not enough while the code path still POSTs to the checkout endpoint."""
+    is not enough while the code path still POSTs to the checkout endpoint.
+
+    The POST is reached only when ``canPurchase()`` is true, and that is true
+    only when the plan action set ``can_purchase_on_surface``. The native shell
+    asks as surface ``android``, whose policy is false, so this function returns
+    before the request.
+    """
     html = _app_html()
     start = html.index("async function startSubscribe()")
-    guard = html.index("if(NATIVE){", start)
+    guard = html.index("if(!canPurchase()){", start)
     checkout = html.index('billingFetch("/app/billing/checkout"', start)
-    assert guard < checkout, "the native guard must precede any checkout call"
-    assert "if(!b || !PLAN || NATIVE) return;" in html, "and the button stays hidden"
+    assert guard < checkout, "the purchase guard must precede any checkout call"
+    assert "if(NATIVE)" not in html[start:checkout]
+    assert "PLAN.can_purchase_on_surface===true" in html
 
 
 def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(

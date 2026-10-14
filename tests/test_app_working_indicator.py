@@ -67,6 +67,7 @@ _DECLS = (
     r"let interruptRequested=[^\n]*;", r"const STOP_REQUEST_MS=[^\n]*;",
     # The seat wait line (`universe_seats`).
     r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
+    r"let PLAN = null;",
     # Lines steered into a running turn (harness S2).
     r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;", r"let watchedActive=[^\n]*;",
     # The tool-activity suffix on the status line (harness S4).
@@ -92,7 +93,7 @@ _FUNCS = (
 # tree without them must fail on what the screen shows, not on an extraction.
 _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued",
               "readServerTurn", "serverTurnLive", "workingSince", "workingElapsed",
-              "renderWorking", "pulseHeartbeat",
+              "renderWorking", "pulseHeartbeat", "canPurchase",
               "renderStop", "takeInterruptFlush", "flushAfterTurn",
               "drainAfterStop", "takeBatch", "flushBatch",
               "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
@@ -656,21 +657,43 @@ def _seats(**extra):
             "upgrade_url": "https://tinyassets.io/app?upgrade=1", **extra}
 
 
+_PURCHASE_ON = (
+    "PLAN={can_purchase_on_surface:true,upgrade_available:true};\n" + _SEAT_LINE
+)
+_PURCHASE_OFF = (
+    "PLAN={can_purchase_on_surface:false,upgrade_available:true,label:'Free'};\n"
+    + _SEAT_LINE
+)
+
+
 def test_a_waiting_chat_shows_the_waiting_line_with_the_upgrade_link_inside_it(
     tmp_path, html,
 ):
     """Founder, 2026-09-30: the waiting message itself carries a clickable Upgrade
-    link -- on the one status line, never a banner, card or modal."""
-    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats()}, _SEAT_LINE)
+    -- on the one status line, never a banner, card or modal. It calls the shared
+    plan action (a button) only when that action says this surface may purchase."""
+    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats()}, _PURCHASE_ON)
     assert out["text"] == "Waiting for a free seat (2 running)"
-    links = [p for p in out["parts"] if p["href"]]
-    assert links == [{"text": "Upgrade", "href": "https://tinyassets.io/app?upgrade=1"}]
+    upgrades = [p for p in out["parts"] if p["text"] == "Upgrade"]
+    assert upgrades == [{"text": "Upgrade", "href": ""}]
     assert "".join(p["text"] for p in out["parts"]).endswith("for more seats.")
 
 
+def test_a_surface_that_cannot_purchase_waits_without_an_upgrade_control(
+    tmp_path, html,
+):
+    """The seat payload still carries upgrade_url. The line ignores it."""
+    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats()}, _PURCHASE_OFF)
+    assert out["text"] == "Waiting for a free seat (2 running)"
+    assert out["parts"] == []
+    assert "Upgrade" not in out["text"]
+
+
 def test_the_top_tier_waits_without_an_upgrade_link(tmp_path, html):
-    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats(upgrade_url=None)},
-               _SEAT_LINE)
+    out = _run(
+        tmp_path, html, {"activeTurn": None, "seats": _seats(upgrade_url=None)},
+        "PLAN={can_purchase_on_surface:true,upgrade_available:false};\n" + _SEAT_LINE,
+    )
     assert out["text"] == "Waiting for a free seat (2 running)"
     assert out["parts"] == [], "nothing to sell on the top tier"
 

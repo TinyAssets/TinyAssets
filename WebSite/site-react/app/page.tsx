@@ -50,6 +50,15 @@ export default function HomePage() {
           <a className="quiet" href="#how">
             How it works
           </a>
+          <Link className="quiet" href="/start/#connector">
+            Add it to Claude or ChatGPT
+          </Link>
+          <Link className="quiet" href="/start/#android">
+            Get the Android app
+          </Link>
+          <a className="quiet" href={`${SITE.app}?upgrade=1`}>
+            Plans
+          </a>
         </div>
       </section>
 
