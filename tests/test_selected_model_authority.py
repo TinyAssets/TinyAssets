@@ -645,7 +645,13 @@ def test_cancelled_router_does_not_launch_or_duplicate_discovery(served, blocked
             assert served.wire == []
             assert auth._active_provider_request(served.capability)["invocations"] == 0
             second = asyncio.create_task(_async_call(served))
-            await asyncio.sleep(0)
+            # Admission and its SQL checks now yield to the bounded worker
+            # pool; wait for the second caller to reach discovery, not a fixed
+            # single event-loop tick. It must share the pending discovery.
+            async with asyncio.timeout(3):
+                while len([c for c in calls if "models/user" in c["url"]]) < 3:
+                    assert not second.done()
+                    await asyncio.sleep(0.01)
             assert not second.done() and len([c for c in calls if "models/user" in c["url"]]) == 3
             release.set()
             await asyncio.wait_for(second, 5)
