@@ -1,35 +1,9 @@
-"""Descriptor-safe box operations shared by the in-box worker and local tests.
+"""Descriptor-safe box operations for Linux boxd and the local test driver.
 
-**This driver has no kernel boundary.** It runs commands as host processes in the
-box directory. It exists so the platform can code against `BoxProvider` today,
-and as the reference driver for the contract suite. The same descriptor-safe core
-is what `boxd` runs *inside* an isolating box. It refuses to start unless the
-caller passes ``allow_unisolated=True``.
-
-Everything above the kernel is enforced:
-
-* **Paths** resolve beneath the box directory through directory descriptors,
-  with every component opened ``O_NOFOLLOW``, so a planted link is never
-  followed. An exec's working directory is passed to the child as an open
-  descriptor (``/proc/self/fd``), never re-resolved by name.
-* **Authority.** Every operation re-checks, under the box's lock, that the
-  handle's account owns the command center and that its epoch is current. A
-  destroy therefore cannot interleave with an operation that authenticated a
-  moment earlier.
-* **Idempotency.** Mutations are idempotent by operation id. An operation that
-  may have had an effect is never forgotten: it is recorded as done, or as
-  failed, and a retry gets that record back. Outcomes are fenced to the box-host
-  incarnation that started them (`BoxHostState`).
-* **Coherent generations.** Mutations and running execs hold a pending count. A
-  snapshot (`read_many`, `export`) is taken only while nothing is pending, and
-  `cas` refuses while anything is pending.
-* **Executions** are supervised from launch. Stdin is fed by its own thread, so
-  a child that never reads it cannot stall the wall clock. When the leader exits,
-  the rest of its process group is killed. The output limit is enforced even on
-  a fast exit.
-
-Linux only (POSIX ``openat`` semantics and ``/proc/self/fd``). Like
-`tinyassets.workspace_fs`, it refuses elsewhere; there is no unsafe fallback.
+Paths use ``openat`` with ``O_NOFOLLOW``; exec cwd is an open descriptor.
+Owner and epoch checks, idempotent operation ids, coherent generations and
+bounded process supervision are shared. The local adapter has no kernel
+boundary and requires an explicit opt-in; production runs this core in gVisor.
 """
 
 from __future__ import annotations
@@ -58,6 +32,7 @@ from tinyassets.boxes.provider import (
     BoxError,
     BoxHandle,
     BoxNotFound,
+    BoxOperationRefused,
     BoxPathError,
     BoxUsage,
     DestroyReceipt,
@@ -81,7 +56,7 @@ from tinyassets.boxes.provider import (
 )
 from tinyassets.boxes.state import BoxHostState, op_digest, process_start_time
 
-__all__ = ["BoxdCore", "LocalBoxProvider"]
+__all__ = ["BoxdCore", "LocalBoxProvider", "OwnerBoxd"]
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -1130,3 +1105,35 @@ def _remove_beneath(parent_fd: int, name: str, path: str, depth: int = 0) -> int
 
 # The local contract-test driver is this core with an explicit unisolated opt-in.
 LocalBoxProvider = BoxdCore
+
+
+class OwnerBoxd(BoxdCore):
+    """Run the descriptor-safe operations against one mounted owner tree.
+
+    This adapter is instantiated only *inside* the owner's sandbox. The host
+    checks owner, session, epoch and operation id before forwarding a request;
+    this class independently refuses any other owner key. Destroy and quota
+    management remain host operations, outside the untrusted box.
+    """
+
+    def __init__(self, *, owner_id: str, owner_root: Path, state_dir: Path) -> None:
+        self._owner_id = self._check_cc(owner_id)
+        if not owner_root.is_dir() or owner_root.is_symlink():
+            raise BoxPathError("owner root must be an existing directory, not a link")
+        super().__init__(
+            boxes_root=owner_root,
+            state_dir=state_dir,
+            owner_of=lambda key: self._owner_id if key == self._owner_id else None,
+            allow_unisolated=True,
+        )
+
+    def _box_fd(self, cc: str, *, create: bool = True) -> int:
+        if cc != self._owner_id:
+            raise BoxAuthError("boxd may open only its bound owner's tree")
+        return self._root_fd()
+
+    def bind(self, owner_id: str, *, session_id: str | None = None) -> BoxHandle:
+        return super().bind(owner_id, account_id=owner_id, turn_id=session_id)
+
+    def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt:
+        raise BoxOperationRefused("owner deletion is a fenced boxhostd operation")
