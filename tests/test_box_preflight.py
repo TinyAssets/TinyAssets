@@ -774,6 +774,9 @@ def test_preflight_workflow_and_idle_service_are_decoupled_from_daemon() -> None
     assert "box_store_durability.py" in installer
     assert 'g4["fsync_remount"]' in (ROOT / "deploy/boxhostd_idle.py").read_text()
     assert "Delegate=yes" in unit
-    assert "boxhostd_idle.py" in unit
+    assert "boxhostd.py" in unit
+    assert "from boxhostd_idle import main as idle" in (
+        ROOT / "deploy/boxhostd.py"
+    ).read_text()
     assert "f3ed9131bc252259df150e270154180188f9df56b73a2312940325e1f522a2d6" in installer
     assert "88a87d5d6d06160d4c144f51f95ec6dd6fe0fc6b02697eb877876683c5b57a91" in installer
