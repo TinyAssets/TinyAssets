@@ -26,6 +26,7 @@ import sys
 TIER_PATTERNS = (
     r"^tinyassets-data-\d.*\.tar\.gz$",
     r"^tinyassets-brain-\d.*\.tar\.gz$",
+    r"^tinyassets-box-store-\d.*\.tar\.gz$",
 )
 
 
