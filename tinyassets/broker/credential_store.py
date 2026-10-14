@@ -205,7 +205,26 @@ def _published_test_broker(data_root: Path) -> _PublishedTestBroker | None:
     return _PublishedTestBroker(Path(socket_path), generation, token)
 
 
+def _in_broker() -> bool:
+    from tinyassets.broker.key_service import broker_process
+
+    return broker_process()
+
+
 def _rpc_root(data_root: Path, command_center: str, document: dict[str, Any]) -> dict[str, Any]:
+    # The broker's own HTTP resolver loads vault records. A nested socket call
+    # from that process deadlocks the single broker thread and the proxy
+    # reports a generic outbound failure.
+    if _in_broker():
+        if command_center == "health":
+            return local_operation(
+                data_root=data_root,
+                command_center="health",
+                document={"action": "health"},
+            )
+        return local_operation(
+            data_root=data_root, command_center=command_center, document=document
+        )
     from tinyassets import rpc_frames as rf
     from tinyassets.broker.supervisor import get_supervisor
 

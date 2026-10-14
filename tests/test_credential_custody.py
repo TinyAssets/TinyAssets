@@ -12,6 +12,38 @@ def _source(relative: str) -> str:
     return (REPO / relative).read_text(encoding="utf-8")
 
 
+def test_the_broker_loads_sealed_records_without_opening_a_socket(monkeypatch, tmp_path):
+    monkeypatch.setenv("TINYASSETS_BROKER_PROCESS", "1")
+    monkeypatch.setenv("TINYASSETS_VAULT_TEST_DOUBLE", "1")
+    from tinyassets.broker import credential_store
+    from tinyassets.broker.key_service import reset_for_tests
+    from tinyassets.credential_vault import load_credential_vault
+
+    reset_for_tests()
+    center = tmp_path / "u-alice"
+    center.mkdir()
+    record = {
+        "credential_type": "http",
+        "destination": "capability-service",
+        "secret": "capability-service-token",
+    }
+    replaced = credential_store.local_operation(
+        data_root=tmp_path,
+        command_center=center.name,
+        document={"action": "replace", "owner": "alice", "records": [record]},
+    )
+    assert replaced == {"replaced": True}
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the broker opened a vault socket")
+
+    monkeypatch.setattr(credential_store.socket, "socket", refuse)
+    loaded = load_credential_vault(center)
+    assert loaded[0]["secret"] == "capability-service-token"
+    assert loaded[0]["destination"] == "capability-service"
+    reset_for_tests()
+
+
 def test_daemon_vault_writer_does_not_publish_cleartext():
     source = _source("tinyassets/credential_vault.py")
     assert "_persist_role_vault" not in source
