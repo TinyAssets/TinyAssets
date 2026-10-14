@@ -78,6 +78,10 @@ class GvisorRuntime:
         config["process"].update(
             args=["/bin/sleep", "infinity"], terminal=False, cwd="/home/owner",
             user={"uid": uid, "gid": gid},
+            noNewPrivileges=True,
+            capabilities={kind: [] for kind in (
+                "bounding", "effective", "inheritable", "permitted", "ambient"
+            )},
             env=[
                 "PATH=/usr/local/bin:/usr/bin:/bin",
                 "HOME=/home/owner",
