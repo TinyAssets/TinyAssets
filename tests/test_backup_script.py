@@ -143,23 +143,33 @@ def test_browser_keys_never_enter_data_archives(tmp_path, mode):
 
 
 @pytest.mark.parametrize('entry', ['egress-42.sock', 'engine-42-abcdef123456.sock',
-                                  'unknown.sock', 'omit-file'])
-def test_snapshot_restorable_inventory(tmp_path, entry):
+                                  'ta-' + 'a' * 32 + '.sock',
+                                  'registry-' + 'b' * 32 + '.sock',
+                                  'unknown.sock', 'omit-file', 'omit-many'])
+def test_snapshot_restorable_inventory(tmp_path, monkeypatch, entry):
     import socket
 
     volume = tmp_path / 'volume'
     sidecar = volume / '.universe-sidecars/alice'
     sidecar.mkdir(parents=True)
     (volume / 'keep').write_bytes(b'restore me')
+    if entry == 'omit-many':
+        for number in range(25):
+            (volume / f'missing-{number:02}').write_bytes(b'file')
     endpoint = socket.socket(socket.AF_UNIX)
-    if entry != 'omit-file':
-        endpoint.bind(str(sidecar / entry))
+    if entry not in ('omit-file', 'omit-many'):
+        # Bind relative to the short cwd: Linux limits the sockaddr, not the
+        # resulting filesystem path (the real daemon uses /proc/self/fd).
+        monkeypatch.chdir(sidecar)
+        endpoint.bind(entry)
     fake_env = tmp_path / 'commands.sh'
     fake_env.write_text(
         f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
         "rclone() { return 0; }\n" + (
             "tar() { if [[ $1 == -czf ]]; then command tar --exclude=./keep \"$@\"; "
-            "else command tar \"$@\"; fi; }\n" if entry == 'omit-file' else ''))
+            "else command tar \"$@\"; fi; }\n" if entry == 'omit-file' else
+            "tar() { if [[ $1 == -czf ]]; then command tar --exclude=./missing-* \"$@\"; "
+            "else command tar \"$@\"; fi; }\n" if entry == 'omit-many' else ''))
     try:
         result = _run(BACKUP_SH, {
             'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-snapshot-test',
@@ -169,12 +179,77 @@ def test_snapshot_restorable_inventory(tmp_path, entry):
         })
     finally:
         endpoint.close()
-    expected = entry.startswith(('egress-', 'engine-'))
+    expected = entry.startswith(('egress-', 'engine-', 'ta-', 'registry-'))
     assert (result.returncode == 0) == expected, result.stdout + result.stderr
     if expected:
         archive = next((tmp_path / 'snapshots').glob('*.tar.gz'))
         with tarfile.open(archive) as handle:
             assert handle.extractfile('./keep').read() == b'restore me'
+    elif entry == 'omit-file':
+        assert "missing from archive (1): 'keep'" in result.stderr
+    elif entry == 'omit-many':
+        assert 'missing from archive (25): ' in result.stderr
+        assert "'missing-19' ..." in result.stderr
+        assert "'missing-20'" not in result.stderr
+    else:
+        assert (f"unrecognized socket in snapshot inventory: "
+                f"'.universe-sidecars/alice/{entry}'") in result.stderr
+
+
+@pytest.mark.skipif(os.name != 'posix' or os.geteuid() != 0,
+                    reason='requires Linux root for cross-uid volume ownership')
+def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
+    volume = tmp_path / 'volume'
+    broker = volume / '.broker'
+    broker.mkdir(parents=True)
+    secret = broker / '.runs.db'
+    secret.write_bytes(b'broker-only state')
+    os.chown(broker, 2101, 2101)
+    os.chown(secret, 2101, 2101)
+    broker.chmod(0o700)
+    secret.chmod(0o600)
+    fake_env = tmp_path / 'commands.sh'
+    fake_env.write_text(
+        f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
+        'rclone() { return 0; }\n')
+    result = _run(BACKUP_SH, {
+        'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-root-snapshot-test',
+        'BACKUP_DEST': 'test:backup', 'BACKUP_MODE': 'snapshot',
+        'BACKUP_LOG': str(tmp_path / 'log'),
+        'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    archive = next((tmp_path / 'snapshots').glob('*.tar.gz'))
+    with tarfile.open(archive) as handle:
+        member = handle.getmember('./.broker/.runs.db')
+        assert (member.uid, member.gid) == (2101, 2101)
+        assert handle.extractfile(member).read() == b'broker-only state'
+
+
+@pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0,
+                    reason='requires a nonroot Linux caller')
+def test_snapshot_refuses_unreadable_tree_instead_of_skipping_it(tmp_path):
+    volume = tmp_path / 'volume'
+    broker = volume / '.broker'
+    broker.mkdir(parents=True)
+    (broker / '.runs.db').write_bytes(b'broker-only state')
+    broker.chmod(0)
+    fake_env = tmp_path / 'commands.sh'
+    fake_env.write_text(
+        f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
+        'rclone() { return 0; }\n')
+    try:
+        result = _run(BACKUP_SH, {
+            'BASH_ENV': str(fake_env), 'BACKUP_VOLUME': 'nonexistent-unreadable-test',
+            'BACKUP_DEST': 'test:backup', 'BACKUP_MODE': 'snapshot',
+            'BACKUP_LOG': str(tmp_path / 'log'),
+            'BACKUP_SNAPSHOT_DIR': str(tmp_path / 'snapshots'),
+        })
+    finally:
+        broker.chmod(0o700)
+    assert result.returncode == 2
+    assert 'ERROR: snapshot tar failed' in result.stdout
+    assert not list((tmp_path / 'snapshots').glob('*.tar.gz'))
 
 @pytest.mark.skipif(_SHELLCHECK is None, reason="shellcheck not installed")
 def test_backup_sh_shellcheck():

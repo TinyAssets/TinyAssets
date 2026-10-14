@@ -156,7 +156,14 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 # xattrs kept, a local copy and an upload, then its id, sha256, size and name
 # count. The count must match a fresh census of the volume.
 if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
-    if [[ -n "$(docker ps -q --filter "volume=${BACKUP_VOLUME}")" ]]; then
+    # The nightly unit and sudo deploy caller run this as host root to read
+    # broker/owner 0700 trees. Tar and the inventory both fail on unreadable
+    # entries, so a less privileged manual caller cannot publish a partial copy.
+    if ! running="$(docker ps -q --filter "volume=${BACKUP_VOLUME}")"; then
+        log "ERROR: cannot verify that volume writers are stopped"
+        exit 2
+    fi
+    if [[ -n "${running}" ]]; then
         log "ERROR: snapshot needs every container on ${BACKUP_VOLUME} stopped"
         exit 2
     fi
@@ -181,9 +188,12 @@ import tarfile
 from collections import Counter
 
 root, archive = sys.argv[1:]
-# Exactly role_migrate.py's disposable stopped-daemon relay socket set.
+# Runtime relay sockets cannot be represented in tar or restored as live
+# endpoints. Match the daemon's role_relays.directory names; all other sockets
+# still fail the census. Their parent directories remain in the archive.
 relay = re.compile(r"\.universe-sidecars/[A-Za-z0-9_-]{1,128}/"
-                   r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12})\.sock")
+                   r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12}|"
+                   r"ta-[a-f0-9]{32}|registry-[a-f0-9]{32})\.sock")
 expected = []
 def fail_walk(error):
     raise error
@@ -201,8 +211,16 @@ for parent, directories, files in os.walk(root, onerror=fail_walk):
 with tarfile.open(archive, 'r:gz') as handle:
     actual = [member.name.removeprefix('./').rstrip('/') for member in handle
               if member.name not in ('.', './')]
-if Counter(actual) != Counter(expected):
-    raise SystemExit('snapshot restorable inventory mismatch (missing, extra or duplicate names)')
+missing = Counter(expected) - Counter(actual)
+extra = Counter(actual) - Counter(expected)
+if missing or extra:
+    for label, difference in (('missing from archive', missing),
+                              ('extra in archive', extra)):
+        if difference:
+            names = sorted(difference.elements())
+            print(f'{label} ({len(names)}): ' + ', '.join(ascii(name) for name in names[:20])
+                  + (' ...' if len(names) > 20 else ''), file=sys.stderr)
+    raise SystemExit(1)
 print(len(expected))
 INVENTORY_PY
 )"; then

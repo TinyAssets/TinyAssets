@@ -1,10 +1,13 @@
 [Unit]
 Description=TinyAssets box host (P2a idle preflight)
 After=network.target docker.service
+Wants=var-lib-boxhostd-owners.mount
+After=var-lib-boxhostd-owners.mount
 ConditionPathExists=/opt/tinyassets/boxhostd/current/runsc
 
 [Service]
 Type=simple
+ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh
 ExecStart=/usr/bin/python3 /opt/tinyassets/boxhostd/boxhostd_idle.py
 Restart=on-failure
 RestartSec=5
