@@ -62,21 +62,40 @@ def _unique_pairs(pairs):
 
 
 def parse(raw: bytes) -> tuple[dict, str]:
-    text = raw.decode("utf-8")
-    if not text.startswith("---\n") or "\n---\n" not in text[4:]:
-        raise InvalidBundle("An OKF file needs YAML frontmatter")
-    header, body = text[4:].split("\n---\n", 1)
-    # YAML 1.1 treats JSON scientific notation (1e+20) as text. Preserve JSON's
-    # numeric semantics for our own output before accepting owner-authored YAML.
     try:
-        metadata = json.loads(header, object_pairs_hook=_unique_pairs)
-    except json.JSONDecodeError:
-        metadata = yaml.load(header, Loader=_UniqueKeys)
-    if not isinstance(metadata, dict):
-        raise InvalidBundle("Frontmatter must be an object")
-    # Reject nonportable YAML values and NaN instead of silently changing them.
-    json.dumps(metadata, allow_nan=False)
-    return metadata, body
+        text = raw.decode("utf-8")
+        if not text.startswith("---\n") or "\n---\n" not in text[4:]:
+            raise InvalidBundle("An OKF file needs YAML frontmatter")
+        header, body = text[4:].split("\n---\n", 1)
+        # YAML 1.1 treats JSON scientific notation (1e+20) as text. Preserve
+        # JSON's exact numeric semantics before accepting owner-authored YAML.
+        try:
+            metadata = json.loads(header, object_pairs_hook=_unique_pairs)
+        except json.JSONDecodeError:
+            if len(header.encode("utf-8")) > 1024 * 1024:
+                raise InvalidBundle("Owner-authored YAML frontmatter exceeds 1 MiB") from None
+            depth = 0
+            # Scan before construction: aliases can otherwise turn a small file
+            # into exponential work in the later JSON portability check.
+            for event in yaml.parse(header, Loader=yaml.SafeLoader):
+                if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
+                    raise InvalidBundle("Frontmatter anchors and aliases are refused")
+                if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
+                    depth += 1
+                    if depth > 64:
+                        raise InvalidBundle("Frontmatter is nested too deeply")
+                elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
+                    depth -= 1
+            metadata = yaml.load(header, Loader=_UniqueKeys)
+        if not isinstance(metadata, dict):
+            raise InvalidBundle("Frontmatter must be an object")
+        # Reject nonportable YAML values and NaN instead of changing them.
+        json.dumps(metadata, allow_nan=False)
+        return metadata, body
+    except InvalidBundle:
+        raise
+    except (UnicodeError, yaml.YAMLError, RecursionError, TypeError, ValueError):
+        raise InvalidBundle("Frontmatter must contain portable UTF-8 JSON/YAML values") from None
 
 
 @dataclass(frozen=True)

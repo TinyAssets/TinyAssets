@@ -47,6 +47,16 @@ Migration preparation reads verified offline SQLite snapshots in read-only
 transactions. Every table must be classified with explicit scoped columns or an
 exclusion reason. All SQLite values, unknown columns and schema are retained;
 editable prose has exactly one canonical representation in the Markdown body.
+The real-schema projection check covers daemon brain, project memory, episodic
+memory, knowledge graph, resolved series promises, historical/current drafts and
+superseded temporal facts. Prose and description columns become the editable
+body without a second canonical metadata copy. This validates seven source
+schemas, not an assertion that production ownership mapping is complete.
+Owner-authored YAML frontmatter refuses aliases/anchors, over-1-MiB headers and
+nesting beyond 64 levels before constructing values; duplicate keys, malformed
+UTF-8 and nonportable values fail explicitly. JSON-form metadata retains exact
+scientific-notation types.
+
 Preparation never changes a live database, infers owner mappings, or starts on
 application boot. Cross-store backup consistency, writer pause and cutover remain
 the deploy transaction's prerequisites. Snapshot commits are bound to the same

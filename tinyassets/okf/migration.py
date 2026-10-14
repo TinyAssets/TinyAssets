@@ -145,6 +145,8 @@ def read_snapshot(
                             "reflection",
                             "observation",
                             "public_description",
+                            "prose",
+                            "description",
                         )
                         if isinstance(row.get(field), str)
                     ),

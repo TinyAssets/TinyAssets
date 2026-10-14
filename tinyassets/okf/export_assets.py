@@ -19,6 +19,9 @@ _README = """# Exported command center
 This private folder contains only the files selected in the content preview.
 See command-center.json for the included agents and the complete file manifest.
 Include agents/<agent>/AGENTS.md in the preview to run that agent locally.
+Selected wiki/pages Markdown is converted into the OKF bundle rooted at wiki/.
+Its absolute links resolve within that wiki bundle; open it as the OKF root.
+Other selected files retain their original paths.
 
 With Python 3.11+ on POSIX and a local OpenAI-compatible model endpoint running:
 

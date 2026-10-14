@@ -304,7 +304,10 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
     from tinyassets.knowledge.models import FactWithContext, GraphEntity, SourceType
     from tinyassets.memory.episodic import EpisodicMemory
     from tinyassets.memory.project import project_memory_set
+    from tinyassets.memory.promises import SeriesPromiseTracker
     from tinyassets.memory.scoping import MemoryScope
+    from tinyassets.memory.temporal import TemporalFact, TemporalFactStore
+    from tinyassets.memory.versioning import OutputVersionStore
     from tinyassets.okf.migration import SnapshotSource, commit_migration, prepare_migration
 
     legacy = tmp_path / "legacy"
@@ -360,7 +363,32 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
             scope=MemoryScope(universe_id=owner),
         )
     graph.close()
+    for owner in ("owner-a", "owner-b"):
+        promises = SeriesPromiseTracker(legacy / "promises.db", universe_id=owner)
+        promises.create_promise("promise", f"Promise for {owner}", 1, 1)
+        promises.add_evidence("promise", {"source": "chapter", "unknown": [None, 1e20]})
+        promises.resolve_promise("promise", 2, 3)
+        promises.close()
+        versions = OutputVersionStore(legacy / "versions.db", universe_id=owner)
+        versions.save_draft(1, 1, 1, f"Earlier draft for {owner}")
+        versions.save_draft(1, 1, 1, f"Current draft for {owner}", metadata={"unknown": True})
+        versions.close()
+    temporal = TemporalFactStore(legacy / "temporal.db")
+    for owner in ("owner-a", "owner-b"):
+        temporal.assert_fact(TemporalFact(f"{owner}-old", "place", "location", "Earlier value",
+                                         "2026-01-01", branch_id=owner))
+        temporal.supersede(f"{owner}-old", TemporalFact(
+            f"{owner}-new", "place", "location", "Current value", "2026-02-01",
+            valid_from="2026-02-01", supersedes=f"{owner}-old", branch_id=owner,
+        ))
+    temporal.close()
     definitions = [
+        ("promises", legacy / "promises.db",
+         {"series_promises": {"universe_id": ["owner-a"]}}, {}),
+        ("versions", legacy / "versions.db",
+         {"draft_versions": {"universe_id": ["owner-a"]}}, {}),
+        ("temporal", legacy / "temporal.db",
+         {"temporal_facts": {"branch_id": ["owner-a"]}}, {}),
         (
             "daemon",
             daemon_brain_db_path(legacy),
@@ -416,7 +444,7 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         )
     plan = prepare_migration(bundle, sources, operation_id="real-schemas")
     receipt = commit_migration(bundle, plan)
-    assert receipt["entries"] == 7
+    assert receipt["entries"] == 12
     by_source = {source.source: source for source in sources}
     for entry in bundle.snapshot().entries.values():
         row = restore_row(entry)
@@ -428,8 +456,32 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         assert row in expected
         if entry.metadata["source"] == "knowledge" and table == "facts":
             assert entry.body == "Fact owner-a"
+        if entry.metadata["source"] == "promises":
+            assert entry.body == "Promise for owner-a"
+            assert row["status"] == "resolved" and row["resolved_book"] == 2
+        if entry.metadata["source"] == "versions":
+            assert entry.body in {"Earlier draft for owner-a", "Current draft for owner-a"}
+            assert bool(row["is_current"]) == entry.body.startswith("Current")
+        if entry.metadata["source"] == "temporal" and row["fact_id"].endswith("-old"):
+            assert row["valid_until"] is not None
         assert "owner-b" not in entry.body
     for path, original in originals.items():
         assert path.read_bytes() == original
         assert not Path(str(path) + "-wal").exists()
         assert not Path(str(path) + "-shm").exists()
+
+
+@pytest.mark.parametrize("header", [
+    "id: &shared one\ntype: note\nother: *shared",
+    "id: one\ntype: note\nvalue: " + "[" * 70 + "x" + "]" * 70,
+    'id: one\ntype: note\nvalue: !!python/object:builtins.object {}',
+    'id: one\ntype: note\nvalue: .nan',
+])
+def test_owner_frontmatter_refuses_expansion_and_nonportable_values(header):
+    with pytest.raises(InvalidBundle):
+        parse(("---\n" + header + "\n---\nBody").encode())
+
+
+def test_owner_yaml_frontmatter_is_bounded_before_constructing_values():
+    with pytest.raises(InvalidBundle, match="exceeds"):
+        parse(b"---\nid: one\ntype: note\nvalue: " + b"x" * (1024 * 1024) + b"\n---\n")
