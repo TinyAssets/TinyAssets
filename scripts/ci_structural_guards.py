@@ -152,6 +152,12 @@ GUARDS = {
         'Repair .github/workflows/linux-jail-proof.yml to retain the Linux oracle and '
         'assert every real_jail case executed without skips. '
     ),
+    "test_workflow_production_environment": (
+        'Add `environment: production` to the reported job, or allowlist the secret in '
+        'tests/test_workflow_production_environment.py with a one-line justification if it '
+        'cannot reach the production host or the DigitalOcean account; keep box-preflight.yml '
+        'to one ssh connection running the fixed boxhostd literal. '
+    ),
 }
 
 # Only route contracts from this large mixed UI/behaviour file belong in the

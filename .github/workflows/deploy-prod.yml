@@ -73,6 +73,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
+    environment: production
     # 15 min of deploy work, 15 for backup verification/repair, 10 for advisory
     # capabilities, and up to 55 for in-flight turns.
     timeout-minutes: 95
@@ -191,7 +192,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 

@@ -63,6 +63,7 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST || vars.DO_DROPLET_HOST }}
@@ -108,7 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s' "$DO_SSH_KEY" > ~/.ssh/do_deploy
+          printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           # TOFU host identity (systemic across all droplet workflows; a pinned
           # DO_SSH_KNOWN_HOSTS secret is the tracked follow-up).
