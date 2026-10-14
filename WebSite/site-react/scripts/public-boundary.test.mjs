@@ -171,7 +171,7 @@ test("plans name no price and do not claim a live cutoff", () => {
     );
   }
 
-  for (const asset of ["public/llms.txt", "public/robots.txt", "lib/site.ts", "lib/legal-info.json"]) {
+  for (const asset of ["public/llms.txt", "public/robots.txt", "lib/site.ts", "lib/legal.ts", "lib/legal-info.json"]) {
     const body = source(asset);
     assert.doesNotMatch(body, /\$?\bUSD 20\b|\$20\b/, `${asset} must not name a price`);
     assert.doesNotMatch(
@@ -181,7 +181,8 @@ test("plans name no price and do not claim a live cutoff", () => {
     );
   }
   assert.match(source("public/llms.txt"), /fine-print\/#plans/);
-  assert.match(source("lib/site.ts"), /info@tinyassets\.io/);
+  assert.match(source("lib/legal-info.json"), /info@tinyassets\.io/);
+  assert.match(source("lib/site.ts"), /contact:\s*legal\.contact/);
 });
 
 test("robots.txt keeps every named crawler in the group that carries the exclusions", () => {
