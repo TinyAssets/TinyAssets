@@ -202,7 +202,9 @@ def test_reflect_phase_propagates_a_refusal_from_reflexion(monkeypatch):
         def run_reflexion(self, _state):
             raise PlatformLLMCallRefusedError(REFUSAL)
 
-    monkeypatch.setattr(runtime, "memory_manager", _RefusingManager(), raising=False)
+    # Assignment, not monkeypatch: reading the unset name opens a session.
+    runtime.memory_manager = _RefusingManager()
+    monkeypatch.setattr(runtime, "memory_manager", runtime.memory_manager, raising=False)
 
     with pytest.raises(PlatformLLMCallRefusedError):
         reflect({"_universe_path": ""})

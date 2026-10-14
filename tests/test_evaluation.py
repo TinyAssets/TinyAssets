@@ -705,6 +705,7 @@ class TestAggregateScore:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("canonical_runtime")
 class TestCommitUsesRealEvaluator:
     """Verify the commit node imports and uses the real StructuralEvaluator."""
 
