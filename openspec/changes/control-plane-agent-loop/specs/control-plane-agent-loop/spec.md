@@ -18,17 +18,17 @@ The tools `read`, `write`, `edit` and `bash` SHALL execute in the turn's
 command-center box through the `BoxProvider` contract, on a handle bound once
 at turn start for the turn's owner, command center and turn, and never looked
 up per call. Each call SHALL carry an `op_id` derived from its journal
-position. A lost reply SHALL be resolved only by asking again with the same
-`op_id`; an outcome still unresolved, including a timed-out execution whose
-end the box does not confirm, SHALL be recorded as unknown, the turn SHALL
-hold, and the operation SHALL NOT be re-issued. Writes through the box tools
-SHALL be ordered, so that an `edit` refuses rather than overwrites when another
-write through the box tools changed the file after the edit read it.
+position. A lost reply SHALL be resolved only with the same `op_id`.
 
 #### Scenario: a lost reply runs once
 - **WHEN** the reply to a box tool's `start_exec` is lost
 - **THEN** the loop asks again with the same `op_id` and the box runs the
   command once
+
+### Requirement: Unresolved box operations hold the turn
+An unresolved outcome, including a timed-out execution whose end the box does
+not confirm, SHALL be recorded as unknown. The turn SHALL hold and SHALL NOT
+re-issue that operation.
 
 #### Scenario: an unknown outcome holds the turn
 - **WHEN** a box tool's outcome cannot be resolved
@@ -61,7 +61,16 @@ and SHALL take no parameter naming an owner or command center.
 ### Requirement: Other served tools keep their engine route and gates
 Every served tool other than the box tools and the owner reads SHALL keep its
 existing engine route, so the owner's rules and the auto-review continue to
-    gate consequential actions where they are enforced today.
+gate consequential actions where they are enforced today.
+
+#### Scenario: an engine tool retains its effect gate
+- **WHEN** a turn calls a consequential engine tool
+- **THEN** its existing owner rules and auto-review gates still apply
+
+### Requirement: Session authority precedes owner file access
+The admitted session SHALL bind its owner, center and stable execution identity
+before reading agent files, refuse mixed generations, and pass that binding to
+child work. A client disconnect SHALL NOT end the admitted box session.
 
 #### Scenario: a session is admitted before owner files are loaded
 - **WHEN** an authenticated owner turn or run starts an agent
@@ -73,6 +82,10 @@ existing engine route, so the owner's rules and the auto-review continue to
 - **WHEN** a client disconnects while its admitted session is running
 - **THEN** its work remains owned by the control plane and reconnect uses the same
   admitted identity; only explicit terminal cancellation ends the box session
+
+### Requirement: Box tool writes are ordered
+Writes through box tools SHALL be ordered. An edit SHALL refuse if another box
+tool write changed the file after the edit read it.
 
 #### Scenario: two edits never silently lose one
 - **WHEN** several edits of one file run concurrently, each having read the
