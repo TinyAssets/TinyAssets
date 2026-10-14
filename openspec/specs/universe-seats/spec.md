@@ -152,19 +152,7 @@ account only; and the app's one status line shows "Waiting for a free seat (N
 running) -- Upgrade for more seats." with Upgrade a link INSIDE the line, never
 a banner, card or modal. The link SHALL be `usage_policy.upgrade_url`
 (`https://tinyassets.io/app?upgrade=1`), which the app routes to its existing
-`startSubscribe()`. The top tier SHALL see the waiting line with no link. Whenever `chat_waiting` is
-true, the seat block SHALL include `message`. A chat turn that fails because no
-owner-bound provider can be allocated SHALL be reported on that block as
-`error` `provider_allocation` with `message` naming the failure, and SHALL NOT
-be reported as a waiting chat that omits `message`.
-
-#### Scenario: A waiting chat always carries the waiting line
-- **WHEN** this universe's chat is queued for a seat
-- **THEN** the owner's seat status has `chat_waiting` true and a `message` naming how many seats are running
-
-#### Scenario: A chat that cannot allocate a provider is an error
-- **WHEN** a chat turn fails because no owner-bound provider is allocated
-- **THEN** the owner's seat status has `error` `provider_allocation` and a `message`, and `chat_waiting` is false
+`startSubscribe()`. The top tier SHALL see the waiting line with no link.
 
 #### Scenario: The top tier is not asked to upgrade
 - **WHEN** an account on the highest tier waits for a seat

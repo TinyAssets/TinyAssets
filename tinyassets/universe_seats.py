@@ -213,16 +213,6 @@ CREATE TABLE IF NOT EXISTS seat_waiters (
 );
 CREATE INDEX IF NOT EXISTS seat_waiters_account
     ON seat_waiters(account_id, seat_class, ticket);
-
--- A chat turn that failed before it could call a model. One row per universe,
--- replaced by the next attempt, so status can say why instead of omitting it.
-CREATE TABLE IF NOT EXISTS chat_turn_failures (
-    account_id   TEXT NOT NULL,
-    universe_id  TEXT NOT NULL,
-    message      TEXT NOT NULL,
-    recorded_at  REAL NOT NULL,
-    PRIMARY KEY (account_id, universe_id)
-);
 """
 
 
@@ -604,75 +594,12 @@ def waiting_message(*, running: int, tier: str) -> str:
     return f"{head} — {tail}" if tail else f"{head}."
 
 
-def note_chat_allocation_failure(account_id: str, universe_id: str, message: str, *,
-                                 db: Path | None = None) -> None:
-    """Remember that this universe's chat could not allocate an owner-bound provider.
-
-    Status reads it back as ``error`` ``provider_allocation`` with ``message``.
-    The next chat attempt in that universe clears it once a seat is held.
-    """
-    text = " ".join((message or "").split())
-    if not text or "/" in text or "\\" in text:
-        text = "Connect your provider: an owner-bound source is required"
-    db = db or ledger_path()
-    with _txn(db) as conn:
-        conn.execute(
-            """
-            INSERT INTO chat_turn_failures (account_id, universe_id, message, recorded_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(account_id, universe_id) DO UPDATE SET
-                message = excluded.message,
-                recorded_at = excluded.recorded_at
-            """,
-            (account_id, universe_id, text[:300], time.time()),
-        )
-
-
-def clear_chat_allocation_failure(account_id: str, universe_id: str, *,
-                                  db: Path | None = None) -> None:
-    """Drop a recorded chat allocation failure. A held attempt supersedes it."""
-    db = db or ledger_path()
-    if not db.exists():
-        return
-    with _txn(db) as conn:
-        conn.execute(
-            "DELETE FROM chat_turn_failures WHERE account_id = ? AND universe_id = ?",
-            (account_id, universe_id),
-        )
-
-
-def _allocation_failure(conn: sqlite3.Connection, account_id: str, universe_id: str) -> str:
-    present = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_turn_failures'"
-    ).fetchone()
-    if not present:
-        return ""
-    row = conn.execute(
-        "SELECT message FROM chat_turn_failures WHERE account_id = ? AND universe_id = ?",
-        (account_id, universe_id),
-    ).fetchone()
-    return str(row[0]) if row and row[0] else ""
-
-
-def _with_status_message(out: dict[str, object], limits, failure: str) -> dict[str, object]:
-    """A waiting chat always carries ``message``. An allocation failure is an error."""
-    if out.get("chat_waiting") or (out.get("waiting") and not failure):
-        out["message"] = waiting_message(running=int(out["running"]), tier=str(limits.name))
-    elif failure:
-        out["error"] = "provider_allocation"
-        out["message"] = failure
-    return out
-
-
 def occupancy(account_id: str, *, db: Path | None = None, universe_id: str = "",
               now: float | None = None) -> dict[str, object]:
     """Seats, running and waiting for one account -- read-only, reaps nothing.
 
     ``universe_id`` adds ``chat_waiting``: whether a chat turn in THAT universe is
     queued, so a surface shows the waiting line only on the conversation waiting.
-    Counts and that flag come from one statement, and ``message`` is present
-    whenever ``chat_waiting`` is true. A chat that failed provider allocation is
-    ``error`` ``provider_allocation`` with its ``message``, not a blank wait.
     """
     account_id = (account_id or "").strip()
     db = db or ledger_path()
@@ -691,49 +618,27 @@ def occupancy(account_id: str, *, db: Path | None = None, universe_id: str = "",
     if not account_id or not db.exists():
         return out
     moment = time.time() if now is None else now
-    failure = ""
     try:
         if not _trusted(db):
             raise SeatLedgerUnusable("untrusted seat ledger")
-        conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=30,
-                               isolation_level=None)
-        try:
-            conn.execute("PRAGMA busy_timeout = 30000")
-            conn.execute("BEGIN")
-            try:
-                row = conn.execute(
-                    """
-                    SELECT
-                      (SELECT COUNT(*) FROM account_seats WHERE account_id = ?),
-                      (SELECT COUNT(*) FROM seat_waiters
-                         WHERE account_id = ? AND expires_at >= ?),
-                      (SELECT COUNT(*) FROM seat_waiters
-                         WHERE account_id = ? AND expires_at >= ? AND seat_class = ?),
-                      (SELECT COUNT(*) FROM seat_waiters
-                         WHERE account_id = ? AND expires_at >= ? AND seat_class = ?
-                           AND universe_id = ?)
-                    """,
-                    (
-                        account_id,
-                        account_id, moment,
-                        account_id, moment, CLASS_INTERACTIVE,
-                        account_id, moment, CLASS_INTERACTIVE, universe_id,
-                    ),
-                ).fetchone()
-                out["running"] = int(row[0])
-                out["waiting"] = int(row[1])
-                out["interactive_waiting"] = int(row[2])
-                if universe_id:
-                    out["chat_waiting"] = bool(row[3])
-                    failure = _allocation_failure(conn, account_id, universe_id)
-            finally:
-                conn.execute("ROLLBACK")
-        finally:
-            conn.close()
+        with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+            out["running"] = _count(conn, "account_seats", account_id)
+            live = "SELECT COUNT(*) FROM seat_waiters WHERE account_id = ? AND expires_at >= ?"
+            out["waiting"] = int(conn.execute(live, (account_id, moment)).fetchone()[0])
+            out["interactive_waiting"] = int(conn.execute(
+                live + " AND seat_class = ?", (account_id, moment, CLASS_INTERACTIVE),
+            ).fetchone()[0])
+            if universe_id:
+                out["chat_waiting"] = bool(conn.execute(
+                    live + " AND seat_class = ? AND universe_id = ?",
+                    (account_id, moment, CLASS_INTERACTIVE, universe_id),
+                ).fetchone()[0])
     except (SeatLedgerUnusable, sqlite3.Error, OSError):
         out["availability"] = "unavailable"
-        return _with_status_message(out, limits, failure)
-    return _with_status_message(out, limits, failure)
+        return out
+    if out["waiting"]:
+        out["message"] = waiting_message(running=int(out["running"]), tier=limits.name)
+    return out
 
 
 def _upgrade_url(tier: str) -> str | None:
@@ -1044,14 +949,12 @@ __all__ = [
     "acquire_blocking",
     "bound",
     "carrying",
-    "clear_chat_allocation_failure",
     "current_seat",
     "detach_seat",
     "hold",
     "holder_is_named",
     "ledger_path",
     "limits_for_key",
-    "note_chat_allocation_failure",
     "occupancy",
     "owner_of_key",
     "refresh",
