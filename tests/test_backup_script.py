@@ -112,7 +112,7 @@ def _run(script: Path, env: dict, args: list[str] | None = None) -> subprocess.C
 def test_browser_keys_never_enter_data_archives(tmp_path, mode):
     import sqlite3
 
-    volume = tmp_path / 'volume'
+    volume = tmp_path / 'volume' / '_data'
     keys = volume / '.broker' / 'browser-vault'
     keys.mkdir(parents=True)
     (keys / 'owner.key').write_bytes(b'private owner key')
@@ -149,7 +149,7 @@ def test_browser_keys_never_enter_data_archives(tmp_path, mode):
 def test_snapshot_restorable_inventory(tmp_path, monkeypatch, entry):
     import socket
 
-    volume = tmp_path / 'volume'
+    volume = tmp_path / 'volume' / '_data'
     sidecar = volume / '.universe-sidecars/alice'
     sidecar.mkdir(parents=True)
     (volume / 'keep').write_bytes(b'restore me')
@@ -166,9 +166,9 @@ def test_snapshot_restorable_inventory(tmp_path, monkeypatch, entry):
     fake_env.write_text(
         f"docker() {{ if [[ $1 == volume ]]; then echo {shlex.quote(str(volume))}; fi; }}\n"
         "rclone() { return 0; }\n" + (
-            "tar() { if [[ $1 == -czf ]]; then command tar --exclude=./keep \"$@\"; "
+            "tar() { if [[ $1 == -czf ]]; then command tar --exclude=_data/keep \"$@\"; "
             "else command tar \"$@\"; fi; }\n" if entry == 'omit-file' else
-            "tar() { if [[ $1 == -czf ]]; then command tar --exclude=./missing-* \"$@\"; "
+            "tar() { if [[ $1 == -czf ]]; then command tar --exclude=_data/missing-* \"$@\"; "
             "else command tar \"$@\"; fi; }\n" if entry == 'omit-many' else ''))
     try:
         result = _run(BACKUP_SH, {
@@ -184,7 +184,7 @@ def test_snapshot_restorable_inventory(tmp_path, monkeypatch, entry):
     if expected:
         archive = next((tmp_path / 'snapshots').glob('*.tar.gz'))
         with tarfile.open(archive) as handle:
-            assert handle.extractfile('./keep').read() == b'restore me'
+            assert handle.extractfile('_data/keep').read() == b'restore me'
     elif entry == 'omit-file':
         assert "missing from archive (1): 'keep'" in result.stderr
     elif entry == 'omit-many':
@@ -199,7 +199,7 @@ def test_snapshot_restorable_inventory(tmp_path, monkeypatch, entry):
 @pytest.mark.skipif(os.name != 'posix' or os.geteuid() != 0,
                     reason='requires Linux root for cross-uid volume ownership')
 def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
-    volume = tmp_path / 'volume'
+    volume = tmp_path / 'volume' / '_data'
     broker = volume / '.broker'
     broker.mkdir(parents=True)
     secret = broker / '.runs.db'
@@ -221,7 +221,7 @@ def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     archive = next((tmp_path / 'snapshots').glob('*.tar.gz'))
     with tarfile.open(archive) as handle:
-        member = handle.getmember('./.broker/.runs.db')
+        member = handle.getmember('_data/.broker/.runs.db')
         assert (member.uid, member.gid) == (2101, 2101)
         assert handle.extractfile(member).read() == b'broker-only state'
 
@@ -229,7 +229,7 @@ def test_snapshot_reads_broker_only_tree_as_root(tmp_path):
 @pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0,
                     reason='requires a nonroot Linux caller')
 def test_snapshot_refuses_unreadable_tree_instead_of_skipping_it(tmp_path):
-    volume = tmp_path / 'volume'
+    volume = tmp_path / 'volume' / '_data'
     broker = volume / '.broker'
     broker.mkdir(parents=True)
     (broker / '.runs.db').write_bytes(b'broker-only state')
@@ -675,10 +675,13 @@ def test_restore_rejects_unsafe_archive_before_mutation(tmp_path, kind):
             bad.type = tarfile.SYMTYPE
             bad.linkname = "good.txt"
             tar.addfile(bad)
+            through = tarfile.TarInfo("_data/link/escape.txt")
+            through.size = 4
+            tar.addfile(through, BytesIO(b"nope"))
         else:
             bad = tarfile.TarInfo("_data/hardlink")
             bad.type = tarfile.LNKTYPE
-            bad.linkname = "_data/good.txt"
+            bad.linkname = "../outside.txt"
             tar.addfile(bad)
     fake_bin = _fake_restore_bin(tmp_path, target_dir)
     result = _run(RESTORE_SH, _restore_env(tmp_path, target_dir, archive, fake_bin))

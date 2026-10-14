@@ -129,7 +129,7 @@ if [[ ! "${BACKUP_VOLUME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
 fi
 
 is_full_archive_name() {
-    [[ "$1" =~ ^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
+    [[ "$1" =~ ^tinyassets-(data|snapshot)-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]tar[.]gz$ ]]
 }
 
 # ----- 1. select local or remote source --------------------------------
@@ -225,6 +225,7 @@ if [[ -e "${BOX_STORE_DIR}" ]]; then
         exit 2
     fi
     BOX_NAME="${TAR_NAME/tinyassets-data-/tinyassets-box-store-}"
+    BOX_NAME="${BOX_NAME/tinyassets-snapshot-/tinyassets-box-store-}"
     if [[ -n "${BACKUP_FILE}" ]]; then
         BOX_TAR_PATH="${BOX_BACKUP_FILE:-$(dirname "${BACKUP_FILE}")/${BOX_NAME}}"
         if [[ "${BOX_TAR_PATH}" != /* || -L "${BOX_TAR_PATH}" || ! -f "${BOX_TAR_PATH}" ]]; then
@@ -303,6 +304,7 @@ if not members:
     print("archive is empty", file=sys.stderr)
     raise SystemExit(1)
 
+symlinks = {member.name.rstrip("/") for member in members if member.issym()}
 for member in members:
     path = pathlib.PurePosixPath(member.name)
     parts = path.parts
@@ -315,12 +317,16 @@ for member in members:
     if len(parts) == 1 and not member.isdir():
         print(f"archive root is not a directory: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
-    # Stripping the `_data` root changes link coordinates, so reject links
-    # entirely rather than trying to prove their post-strip target safe.
-    if member.issym() or member.islnk():
-        print(f"archive links are not restorable safely: {member.name!r}", file=sys.stderr)
+    if any(str(parent) in symlinks for parent in path.parents):
+        print(f"archive descends through a symlink: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
-    if not (member.isfile() or member.isdir()):
+    if member.islnk():
+        target = pathlib.PurePosixPath(member.linkname)
+        if (target.is_absolute() or not target.parts or target.parts[0] != "_data"
+                or ".." in target.parts or str(target) in symlinks):
+            print(f"unsafe archive hardlink: {member.name!r}", file=sys.stderr)
+            raise SystemExit(1)
+    elif not (member.isfile() or member.isdir() or member.issym()):
         print(f"unsupported archive member type: {member.name!r}", file=sys.stderr)
         raise SystemExit(1)
 PY
