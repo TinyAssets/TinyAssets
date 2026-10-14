@@ -590,17 +590,13 @@ def _extensions_impl(
         )
 
     # ── Project Memory ─────────────────────────────────────────────────────
-    pm_kwargs: dict[str, Any] = {
-        "project_id": project_id,
-        "key": key,
-        "key_prefix": key_prefix,
-        "value": value,
-        "expected_version": expected_version if expected_version else None,
-        "limit": limit,
-    }
     pm_handler = _PROJECT_MEMORY_ACTIONS.get(action)
     if pm_handler is not None:
-        result_str = pm_handler(pm_kwargs)
+        result_str = pm_handler({
+            "project_id": project_id, "key": key, "key_prefix": key_prefix,
+            "value": value, "expected_version": expected_version if expected_version else None,
+            "limit": limit, "universe_id": universe_id, "request_id": request_id,
+        })
         if action in _PROJECT_MEMORY_WRITE_ACTIONS:
             try:
                 res = json.loads(result_str)

@@ -131,7 +131,16 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
     if not isinstance(request_id, str) or not request_id.strip():
         from tinyassets.auth.middleware import current_request_boundary_id
 
-        request_id = current_request_boundary_id()
+        boundary = current_request_boundary_id()
+        if isinstance(boundary, str) and boundary.strip():
+            import hashlib
+
+            # One transport request can execute several writes. Identical calls
+            # replay, while distinct keys/values keep distinct durable identities.
+            request_id = hashlib.sha256(json.dumps(
+                [boundary, actor, kwargs.get("universe_id", ""), project_id,
+                 key, value, expected_version], default=str,
+            ).encode()).hexdigest()
     if not isinstance(request_id, str) or not request_id.strip():
         return json.dumps({"error": "project_memory_set requires a stable request_id."})
     try:

@@ -1024,14 +1024,25 @@ def _destroy_owner_box(root: Path, home: str, *, principal: str):
         raise AccountDeletionError("invalid durable owner destruction receipt")
     # A receipt for a different box root cannot erase a pre-cutover host home.
     # Refuse residual bytes; never introduce a second host deletion path.
-    from tinyassets.universe_files import list_universe_dir
+    from tinyassets.workspace_fs import open_dir_nofollow, open_subdir_nofollow
 
+    parent = open_dir_nofollow(root)
     try:
-        leftover = list_universe_dir(root, home)
-    except FileNotFoundError:
-        leftover = []
-    if leftover:
-        raise AccountDeletionError("legacy owner bytes remain after box destruction")
+        try:
+            legacy = open_subdir_nofollow(parent, home)
+        except FileNotFoundError:
+            legacy = None
+        if legacy is not None:
+            try:
+                with os.scandir(legacy) as children:
+                    if next(children, None) is not None:
+                        raise AccountDeletionError(
+                            "legacy owner bytes remain after box destruction"
+                        )
+            finally:
+                os.close(legacy)
+    finally:
+        os.close(parent)
     return result
 
 

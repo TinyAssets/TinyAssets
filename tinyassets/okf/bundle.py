@@ -305,7 +305,10 @@ class KnowledgeBundle:
                 raw = view.data
                 if view.size != len(raw) or hashlib.sha256(raw).hexdigest() != digest:
                     raise InvalidBundle("Canonical history is missing or changed")
-                page = json.loads(raw, object_pairs_hook=_unique_pairs)
+                try:
+                    page = json.loads(raw, object_pairs_hook=_unique_pairs)
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise InvalidBundle("Invalid history page JSON") from exc
             if (
                 not isinstance(page, dict)
                 or set(page) != {"previous", "values", "kind"}
@@ -343,6 +346,8 @@ class KnowledgeBundle:
 
     @staticmethod
     def _remember_sequence(sequences, metadata):
+        if not all(isinstance(metadata.get(k), str) and metadata[k] for k in ("source", "table")):
+            return
         identity = metadata.get("identity")
         if (
             isinstance(identity, list)

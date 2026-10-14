@@ -157,3 +157,29 @@ def test_missing_authenticated_destroy_driver_has_no_legacy_fallback(
         REAL_DESTROY(two_users, HOME_A, principal=A)
     assert (two_users / HOME_A / 'soul.md').exists()
     assert (two_users / HOME_B / 'soul.md').exists()
+
+
+def test_disappearing_child_metadata_cannot_clear_residual_home(bound, monkeypatch):
+    root, provider = bound
+    deletion.write_tombstone(root, A)
+    monkeypatch.setattr(provider, "destroy",
+                        lambda _handle, op: DestroyReceipt(HOME_A, op, 0, 2))
+
+    class VanishedChild:
+        name = "transient"
+
+        def stat(self, **kwargs):
+            raise FileNotFoundError("child vanished after directory opened")
+
+    class Scan:
+        def __enter__(self):
+            return iter([VanishedChild()])
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(deletion.os, "scandir", lambda _fd: Scan())
+    with pytest.raises(deletion.AccountDeletionError, match="legacy owner bytes remain"):
+        REAL_DESTROY(root, HOME_A, principal=A)
+    assert get_founder_home(root, A) == HOME_A
+    assert (root / HOME_A / "soul.md").exists()

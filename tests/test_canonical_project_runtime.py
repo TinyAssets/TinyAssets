@@ -134,3 +134,28 @@ def test_project_write_reuses_the_authenticated_request_boundary(
     assert json.loads(runtime_ops._action_project_memory_set(args))["version"] == 1
     assert json.loads(runtime_ops._action_project_memory_set(args))["version"] == 1
     assert json.loads(runtime_ops._action_project_memory_get(args))["value"] == "Once"
+    other_key = {**args, "key": "second"}
+    other_value = {**args, "value": '"Changed"'}
+    assert json.loads(runtime_ops._action_project_memory_set(other_key))["version"] == 1
+    assert json.loads(runtime_ops._action_project_memory_set(other_value))["version"] == 2
+    assert json.loads(runtime_ops._action_project_memory_get(other_key))["value"] == "Once"
+    assert json.loads(runtime_ops._action_project_memory_get(args))["value"] == "Changed"
+    assert json.loads(runtime_ops._action_project_memory_set(args))["version"] == 1
+    assert json.loads(runtime_ops._action_project_memory_set(other_value))["version"] == 2
+    assert json.loads(runtime_ops._action_project_memory_get(args))["value"] == "Changed"
+
+
+def test_extensions_preserves_explicit_center_and_request(monkeypatch):
+    from tinyassets.api import extensions
+
+    received = []
+    monkeypatch.setattr(extensions, "_dispatch_scope_error", lambda *_: None)
+    monkeypatch.setattr(extensions, "_public_goal_read_rejection", lambda *_: None)
+    monkeypatch.setitem(extensions._PROJECT_MEMORY_ACTIONS, "project_memory_get",
+                        lambda args: received.append(args) or '{}')
+    extensions._extensions_impl(
+        action="project_memory_get", universe_id="explicit-center",
+        project_id="project", key="key", request_id="stable-request",
+    )
+    assert received[0]["universe_id"] == "explicit-center"
+    assert received[0]["request_id"] == "stable-request"

@@ -652,3 +652,26 @@ def test_owner_frontmatter_refuses_expansion_and_nonportable_values(header):
 def test_owner_yaml_frontmatter_is_bounded_before_constructing_values():
     with pytest.raises(InvalidBundle, match="exceeds"):
         parse(b"---\nid: one\ntype: note\nvalue: " + b"x" * (1024 * 1024) + b"\n---\n")
+
+
+def test_owner_note_identity_is_not_a_sql_sequence(bundle):  # noqa: F811
+    note = Entry("owner-note", "note", "Private", {"identity": [["integer", 5]]})
+    bundle.commit(bundle.snapshot(), {note.id: note}, operation_id="note-write")
+    bundle.commit(bundle.snapshot(), {note.id: None}, operation_id="note-forget")
+    bundle.commit(bundle.snapshot(), {"next": entry("next")}, operation_id="after-forget")
+    assert note.id not in bundle.snapshot().entries
+    assert bundle.snapshot().manifest.get("deletion_sequences", {}) == {}
+
+
+def test_content_addressed_invalid_history_json_refuses_as_bundle_error(bundle):  # noqa: F811
+    import hashlib
+
+    raw = b"{broken"
+    digest = hashlib.sha256(raw).hexdigest()
+    bundle.provider.write(bundle.handle, "invalid-page", ROOT + "/history/" + digest + ".json",
+                          raw, max_bytes=1000)
+    before = bundle.snapshot()
+    corrupt = replace(before, manifest={**before.manifest, "log_history": digest})
+    with pytest.raises(InvalidBundle, match="history page JSON"):
+        list(bundle._history(corrupt, "log"))
+    assert digest not in bundle._history_cache
