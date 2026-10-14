@@ -4,6 +4,7 @@ These fixtures replace only the remote transport. Production ScopedConnectionPro
 instances retain their real broker/worker path, exercised in separate composition
 and authorization tests. No provider adapter gains a test bypass.
 """
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from tinyassets.storage.agent_request_usage import UsageStore
@@ -36,6 +37,9 @@ class _AccountedProxy:
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)
+
+    def stream(self, *args, **kwargs):
+        return synthetic_stream(self, *args, **kwargs)
 
     def request(self, verb, request, *, inference_usage=None):
         if inference_usage is not None:
@@ -91,3 +95,24 @@ def broker_accounting_resolver(resolve):
         )
 
     return wrapped
+
+
+@asynccontextmanager
+async def synthetic_stream(proxy, verb, request, *, inference_usage=None, operation_id):
+    """Adapt a synthetic remote's collected result to the async transport seam."""
+    from tinyassets.agent_loop.execution import off_loop
+
+    result = await off_loop(
+        proxy.request, verb, request,
+        **({"inference_usage": inference_usage} if inference_usage is not None else {}),
+    )
+
+    class Stream:
+        async def head(self):
+            return result if isinstance(result, dict) else {}
+
+        async def body(self):
+            value = result.get("body") if isinstance(result, dict) else None
+            yield value.encode() if isinstance(value, str) else b""
+
+    yield Stream()

@@ -23,6 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -827,9 +828,11 @@ class _BrokerChannel:
     fresh ``op_id``. Holds no credential.
     """
 
-    __slots__ = ("_client", "_closed", "_connection_id", "_grant_id")
+    __slots__ = ("_client", "_closed", "_connection_id", "_grant_id", "_stream_factory")
 
-    def __init__(self, client: Any, *, grant_id: str, connection_id: str) -> None:
+    def __init__(self, client: Any, *, grant_id: str, connection_id: str,
+                 stream_factory=None) -> None:
+        self._stream_factory = stream_factory
         self._client = client
         self._grant_id = grant_id
         self._connection_id = connection_id
@@ -857,6 +860,21 @@ class _BrokerChannel:
                                     **({"inference_usage": inference_usage.document()}
                                        if inference_usage is not None else {}))
 
+    @asynccontextmanager
+    async def stream(self, verb, request, *, inference_usage=None, operation_id):
+        if self._closed or self._stream_factory is None:
+            raise ProxyRequestError("outbound streaming proxy is unavailable")
+        if not isinstance(request, dict):
+            raise ProxyRequestError("outbound proxy rejected an invalid request")
+        async with self._stream_factory() as client:
+            async with client.stream(
+                grant_id=self._grant_id, connection_id=self._connection_id,
+                verb=verb, request=request, op_id=operation_id,
+                inference_usage=(
+                    inference_usage.document() if inference_usage is not None else None),
+            ) as stream:
+                yield stream
+
     def close(self) -> None:
         self._closed = True
 
@@ -882,7 +900,18 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
                           refresh_factory=lambda grant, connection: prepare(
                               data_root, principal=principal, command_center=command_center,
                               grant_id=grant, connection_id=connection))
-    return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
+    from tinyassets.agent_loop.model_stream import shared_broker_client
+
+    return _BrokerChannel(
+        client, grant_id=grant_id, connection_id=connection_id,
+        stream_factory=lambda: shared_broker_client(
+            supervisor.socket_path, principal=principal, command_center=command_center,
+            fence=supervisor.fence, verify_peer=supervisor.verify_broker,
+            refresh_factory=lambda grant, connection: prepare(
+                data_root, principal=principal, command_center=command_center,
+                grant_id=grant, connection_id=connection),
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -917,6 +946,15 @@ class ScopedConnectionProxy:
                 "policy_task_id": policy_task_id}
                if policy_grant_ref is not None else {}),
         )
+
+    @asynccontextmanager
+    async def stream(self, verb, request, *, inference_usage=None, operation_id):
+        if not _verb_within_scopes(verb, self.scopes, self.access_mode):
+            raise PermissionError(f"verb {verb!r} is outside the granted connection scope")
+        async with self._channel.stream(
+            verb, request, inference_usage=inference_usage, operation_id=operation_id,
+        ) as stream:
+            yield stream
 
     def close(self) -> None:
         self._channel.close()
