@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -58,7 +57,9 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
 
 
 def call_interactive_agent_turn(turn, *, response_observer=None) -> str:
-    result = asyncio.run(turn.run())
+    from tinyassets.agent_loop.execution import execution_owner
+
+    result = execution_owner().run(turn.run())
     if response_observer is not None:
         response_observer(result)
     return result.text

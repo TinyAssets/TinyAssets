@@ -13,6 +13,7 @@ import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
+from tinyassets.agent_loop.execution import off_loop
 from tinyassets.engine_steering import session_of, turn_of
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 from tinyassets.exceptions import (
@@ -187,6 +188,20 @@ class AgentTurnCoordinator:
         if transition.status != "applied":
             raise JournalUnavailable("agent progress changed; action was not replayed")
         self.turn = transition.snapshot
+
+    async def _journal_write(self, method, *args, **kwargs):
+        # Updating the local frontier is part of the drained worker operation:
+        # cancellation after commit cannot leave self.turn at the old generation.
+        def commit():
+            self._accept(getattr(self.journal, method)(*args, **kwargs))
+        await off_loop(commit)
+
+    def _create_turn(self):
+        self.journal = AgentTurnJournal(self.context.universe_dir.parent)
+        self.turn = self.adapter.create_turn(
+            self.journal, owner=self.owner, context=self.context,
+            prompt=self.prompt, system=self.system, plan=self.plan,
+        )
 
     def _begin(self, authority, reservation, config):
         candidate = self.adapter.round_input(
@@ -453,7 +468,7 @@ class AgentTurnCoordinator:
                               "the owner stopped this turn before a tool call")
 
     async def run(self):
-        owner = self._check_scope()
+        owner = await off_loop(self._check_scope)
         if self.request_budget is None:
             self.request_budget = open_allocation(
                 owner, self.context.universe_dir,
@@ -481,13 +496,13 @@ class AgentTurnCoordinator:
                 # A retry starts a fresh root; no returned task owns a ready row.
                 if self.turn is not None and self.turn.state == "ready":
                     try:
-                        self.close_quiescent()
+                        await off_loop(self.close_quiescent)
                     except Exception:  # noqa: BLE001 - preserve the original failure
                         _LOG.exception("could not close settled agent turn progress")
             finally:
-                self._release_turn()
+                await off_loop(self._release_turn)
                 if self._owns_request_budget:
-                    self.request_budget.close()
+                    await off_loop(self.request_budget.close)
 
     def _daily_budget(self):
         """Refresh advisory evidence without manufacturing provider exhaustion.
@@ -503,7 +518,7 @@ class AgentTurnCoordinator:
         )
 
     async def _run(self):
-        self.owner = self._check_scope()
+        self.owner = await off_loop(self._check_scope)
         # Lifecycle hooks belong to the initialized execution, not the release
         # wrapper that must also settle interrupted or recovered turn bodies.
         result = await self._run_turn()
@@ -515,23 +530,19 @@ class AgentTurnCoordinator:
     async def _run_turn(self):
         uid = self.context.universe_dir.name
         if self._has_candidate_order():
-            first = self._next_candidate()
+            first = await off_loop(self._next_candidate)
             if first is None:
                 raise ProviderAuthorityHeldError("no eligible interactive model remains")
             if self.context.model_selection != first:
                 raise ProviderAuthorityHeldError("interactive selection contradicts its plan")
-            self._check_scope()
+            await off_loop(self._check_scope)
         if self.turn is None:
-            self.journal = AgentTurnJournal(self.context.universe_dir.parent)
-            self.turn = self.adapter.create_turn(
-                self.journal, owner=self.owner, context=self.context,
-                prompt=self.prompt, system=self.system, plan=self.plan,
-            )
+            await off_loop(self._create_turn)
         elif self.turn.state != "ready" or self.turn.rounds:
             raise JournalUnavailable("agent turn cannot be replayed")
 
-        self.request_budget.persist(self.context.universe_dir.parent)
-        self.request_budget.link("turn", self.turn.turn_id)
+        await off_loop(self.request_budget.persist, self.context.universe_dir.parent)
+        await off_loop(self.request_budget.link, "turn", self.turn.turn_id)
         from tinyassets.extension_hooks import turn_event
 
         await turn_event(self, "input", {"input": self.prompt})
@@ -551,7 +562,7 @@ class AgentTurnCoordinator:
                     # every settled round and tool result kept as it is.
                     if self.interrupt is not None:
                         self.interrupt.check()
-                    budget = self._daily_budget()
+                    budget = await off_loop(self._daily_budget)
                     # One definition: every executor gets the same instructions,
                     # the budget line included (tests/test_one_agent_definition.py).
                     instructions = self.system + (
@@ -620,10 +631,9 @@ class AgentTurnCoordinator:
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
                         if self.turn.state == "native_started":
-                            self._finish_native_failure(exc)
+                            await off_loop(self._finish_native_failure, exc)
                         elif self.turn.state == "inference_started":
-                            self._accept(
-                                self.journal.finish_inference(
+                            await self._journal_write("finish_inference",
                                     self.owner,
                                     uid,
                                     self.turn.turn_id,
@@ -631,7 +641,6 @@ class AgentTurnCoordinator:
                                     ordinal=len(self.turn.rounds),
                                     reply=None,
                                 )
-                            )
                         if (
                             self._next_after_request_budget(exc)
                             or self._next_after_capacity(exc)
@@ -655,27 +664,26 @@ class AgentTurnCoordinator:
                                 input_tokens=response.input_tokens,
                                 output_tokens=response.output_tokens,
                             )
-                            self._accept(self.journal.finish_native(
+                            await self._journal_write("finish_native",
                                 self.owner, uid, self.turn.turn_id,
                                 expected_generation=self.turn.generation,
                                 ordinal=len(self.turn.rounds), terminal=terminal,
                                 cost_microusd=response.cost_microunits,
-                            ))
+                            )
                         except BaseException as exc:
                             if self.turn.state == "native_started":
-                                self._finish_native_failure(exc)
+                                await off_loop(self._finish_native_failure, exc)
                             raise
                         # The call SUCCEEDED and the journal has committed it, so
                         # this model id provably works on this kind of source.
                         # Learn it for every universe with that kind. After the
                         # commit and outside the try, so a catalog write can
                         # neither be mistaken for a turn failure nor rewrite one.
-                        self._learn_verified_model(response)
+                        await off_loop(self._learn_verified_model, response)
                         return self._capacity_notice(response)
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
-                    self._accept(
-                        self.journal.finish_inference(
+                    await self._journal_write("finish_inference",
                             self.owner,
                             uid,
                             self.turn.turn_id,
@@ -684,7 +692,6 @@ class AgentTurnCoordinator:
                             reply=response.agent_reply,
                             cost_microusd=response.cost_microunits,
                         )
-                    )
                     # The model answered: whatever refused it before does not now.
                     self._forget_refusal()
                     if self.turn.state == "completed":
@@ -695,8 +702,8 @@ class AgentTurnCoordinator:
                         )
                     for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
                         if self._interrupted():
-                            self._stop_before_tool(uid, call_ordinal, tool)
-                        self._check_scope()
+                            await off_loop(self._stop_before_tool, uid, call_ordinal, tool)
+                        await off_loop(self._check_scope)
                         try:
                             self.request_budget.check_available(
                                 source_ref=self.context.model_selection.connection_id,
@@ -707,12 +714,11 @@ class AgentTurnCoordinator:
                                     or self._request_budget_fallback() is None):
                                 # A held tool is never approved or silently resumed.
                                 try:
-                                    self._stop_before_tool(uid, call_ordinal, tool)
+                                    await off_loop(self._stop_before_tool, uid, call_ordinal, tool)
                                 except TurnInterrupted:
                                     pass
                                 raise
-                        self._accept(
-                            self.journal.start_tool(
+                        await self._journal_write("start_tool",
                                 self.owner,
                                 uid,
                                 self.turn.turn_id,
@@ -720,7 +726,6 @@ class AgentTurnCoordinator:
                                 ordinal=len(self.turn.rounds),
                                 call_ordinal=call_ordinal,
                             )
-                        )
                         try:
                             if getattr(engine, "takes_op_id", False):
                                 # The journal position names the operation, so a
@@ -740,8 +745,7 @@ class AgentTurnCoordinator:
                                 if (isinstance(exc, EngineToolError) and exc.outcome == "not_sent")
                                 else "unknown"
                             )
-                            self._accept(
-                                self.journal.finish_tool(
+                            await self._journal_write("finish_tool",
                                     self.owner,
                                     uid,
                                     self.turn.turn_id,
@@ -751,10 +755,8 @@ class AgentTurnCoordinator:
                                     request=tool.request,
                                     failure=failure,
                                 )
-                            )
                             raise
-                        self._accept(
-                            self.journal.finish_tool(
+                        await self._journal_write("finish_tool",
                                 self.owner,
                                 uid,
                                 self.turn.turn_id,
@@ -764,7 +766,6 @@ class AgentTurnCoordinator:
                                 request=tool.request,
                                 result=result,
                             )
-                        )
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
 
