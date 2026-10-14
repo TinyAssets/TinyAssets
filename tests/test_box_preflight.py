@@ -13,9 +13,40 @@ from pathlib import Path
 import pytest
 
 from deploy import boxhostd_idle
-from scripts import box_preflight, box_preflight_summary
+from scripts import box_preflight, box_preflight_summary, box_store_durability
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_g4_durability_stops_mount_and_reattaches_loop(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(box_store_durability, "STORE", tmp_path)
+    if sys.platform == "win32":
+        # Linux opens and fsyncs the containing directory; model that syscall
+        # boundary on Windows while checking the mount command sequence.
+        monkeypatch.setattr(box_store_durability.os, "O_DIRECTORY", 0, raising=False)
+        monkeypatch.setattr(box_store_durability.os, "open", lambda *_a: 42)
+        monkeypatch.setattr(box_store_durability.os, "fsync", lambda *_a: None)
+        monkeypatch.setattr(box_store_durability.os, "close", lambda *_a: None)
+    calls = []
+    monkeypatch.setattr(box_store_durability, "command", lambda *args: calls.append(args))
+    result = box_store_durability.check()
+    assert result == {"pass": True, "fsync_remount": True}
+    assert calls[:3] == [
+        ("systemctl", "stop", box_store_durability.MOUNT),
+        ("systemctl", "stop", box_store_durability.DEVICE),
+        ("systemctl", "start", box_store_durability.MOUNT),
+    ]
+    assert calls[-1] == ("systemctl", "start", box_store_durability.MOUNT)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_g4_durability_refuses_nonempty_store(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(box_store_durability, "STORE", tmp_path)
+    (tmp_path / "1000").mkdir()
+    result = box_store_durability.check()
+    assert result["pass"] is False
+
+
 
 
 def test_percentile_and_empty_sample() -> None:

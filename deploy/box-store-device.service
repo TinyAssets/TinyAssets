@@ -1,0 +1,15 @@
+[Unit]
+Description=Prepare TinyAssets box store device
+DefaultDependencies=no
+After=local-fs-pre.target
+@BOX_STORE_DEVICE_DEPENDENCIES@
+Before=var-lib-boxhostd-owners.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/tinyassets/boxhostd/box-store-device.sh
+ExecStop=/opt/tinyassets/boxhostd/box-store-device-stop.sh
+
+[Install]
+WantedBy=multi-user.target
