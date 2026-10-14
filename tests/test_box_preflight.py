@@ -386,7 +386,7 @@ def test_g4_xfs_quota_and_store_exhaustion_are_distinct(monkeypatch, tmp_path: P
 
     def fake_run(args, **_kwargs):
         commands.append(args)
-        output = "xfs rw,pquota,noatime,nodiscard" if args[0] == "findmnt" else ""
+        output = "xfs rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota" if args[0] == "findmnt" else ""
         return subprocess.CompletedProcess(args, 0, stdout=output)
 
     class Boxes:
@@ -672,7 +672,7 @@ def test_missing_quota_mount_fails_without_touching_volume(monkeypatch, tmp_path
     assert box_preflight.g4(tmp_path, None, tmp_path) == {
         "filesystem": "ext4",
         "project_quota_mount": False,
-        "nodiscard_mount": False,
+        "nodiscard_mount": True,
         "pass": False,
         "reason": "box store requires XFS pquota,nodiscard",
     }

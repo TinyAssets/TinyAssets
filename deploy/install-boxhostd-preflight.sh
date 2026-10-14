@@ -10,6 +10,9 @@ runsc_sha=88a87d5d6d06160d4c144f51f95ec6dd6fe0fc6b02697eb877876683c5b57a91
 root=/opt/tinyassets/boxhostd
 target="${root}/${release}"
 source_dir="$(cd "$(dirname "$0")" && pwd)"
+# Sibling files read from source_dir are the production ship list.
+# scripts/boxhostd_install_files.py derives it; workflows copy that
+# list and do not keep a second one.
 mkdir -p "$root"
 # G4 and the store require XFS userspace tools.
 if ! command -v mkfs.xfs >/dev/null || ! command -v xfs_quota >/dev/null; then
