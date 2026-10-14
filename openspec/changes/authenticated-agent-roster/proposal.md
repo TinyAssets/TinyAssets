@@ -14,4 +14,4 @@ An external agent can authenticate to MCP or the API without appearing in the co
 None.
 
 ## Impact
-Authentication metadata, API key use timestamp, owner agents read, AppUI bridge/shell, outside-authority database observation table and account erasure inventory. Private Roundtable presentation belongs to the event lane. Local implementation only; publication requires separate approval.
+Authentication metadata, API key use timestamp, owner agents read, AppUI bridge/shell, outside-authority database observation table and account erasure inventory. User-authored screen changes remain separate. Release follows independent source review and required checks.

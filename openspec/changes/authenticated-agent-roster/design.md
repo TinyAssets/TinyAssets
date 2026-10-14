@@ -2,7 +2,7 @@
 The addressable roster is loaded from agent files. It must not launch an external OAuth/API client as an in-app agent. API keys already have a last-used receipt; MCP lacks a durable owner projection. Observability logs are not a product database or an authority source.
 
 ## Goals / Non-Goals
-Show authenticated external connections automatically, preserve installed-agent addressing, and expose honest evidence to custom screens. No extra grants, onboarding step, delivery promise, secret retention, fabricated attribution, or private Roundtable content.
+Show authenticated external connections automatically, preserve installed-agent addressing, and expose honest evidence to custom screens. No extra grants, onboarding step, delivery promise, secret retention, fabricated attribution, or user conversation content.
 
 ## Decisions
 - Add `external_agents` beside existing `agents` in the owner-only agents read and AppUI `list_agents`/`read_live`. Preserve existing addressable-agent consumers.
@@ -16,7 +16,7 @@ Show authenticated external connections automatically, preserve installed-agent 
 Opaque token fallback can yield multiple connections after token rotation when the issuer supplies no session identifier; label unknown identity honestly rather than merge unrelated clients. Names are bounded and secret-shaped strings rejected. Observation-store failures do not break authentication, but emit a fixed warning. Receipt reads fail visibly rather than invent an empty roster.
 
 ## Migration Plan
-Additive observation table, covered by owner erasure and SQLite-writer inventory. No live credentials, production probes, grants, or deployment during local implementation. Publication/review is a separate approval step.
+Additive observation table, covered by owner erasure and SQLite-writer inventory. Release uses independent source review and required checks. Live credentials, grants and subscriptions are outside this change.
 
 ## Open Questions
 None blocking local implementation. OAuth issuer-side revocations without local grant evidence cannot be inferred from an old successful authentication receipt.

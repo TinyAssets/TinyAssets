@@ -6,4 +6,4 @@
 - [x] 2.2 Protect account/home reentry and retain installed-agent addressing and conversation history.
 ## 3. Verification and handoff
 - [x] 3.1 Test unused/refused/successful/revoked credentials, scopes, isolation, UI reentry and secret exclusion; run affected tests and lint.
-- [ ] 3.2 Obtain separate publication approval, cross-family public-code review, and required CI before release; local handoff is prepared and private Roundtable ownership is coordinated.
+- [ ] 3.2 Complete cross-family public-code review, required CI and deployment verification under the approved release.
