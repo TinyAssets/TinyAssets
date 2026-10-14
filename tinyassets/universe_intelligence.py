@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import re
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -1299,6 +1301,25 @@ def _ordinary_chat(message: str) -> bool:
     ))
 
 
+@contextmanager
+def _surface_chat_allocation_failure(account_id: str, universe_id: str, db: Path):
+    """Record a provider-allocation refusal on the seat status, then re-raise it."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    try:
+        yield
+    except ProviderAuthorityHeldError as exc:
+        from tinyassets import universe_seats
+
+        try:
+            universe_seats.note_chat_allocation_failure(
+                account_id, universe_id, str(exc), db=db,
+            )
+        except (universe_seats.SeatLedgerUnusable, sqlite3.Error, OSError):
+            logger.warning("chat allocation failure could not be recorded")
+        raise
+
+
 @observed('chat_stream', inspect_result=False)
 def converse(
     universe_id: str,
@@ -1538,7 +1559,9 @@ def converse(
     # Over the seat count it waits with no deadline -- never refused -- and its
     # queue row, tagged with this universe, is what `get_status` reports as
     # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
-    # reserve means a chat only ever waits behind another chat.
+    # reserve means a chat only ever waits behind another chat. A provider
+    # allocation failure is recorded on that same status as an error with a
+    # message, then re-raised for the caller's failure notice.
     from contextlib import closing, nullcontext
 
     from tinyassets import universe_seats
@@ -1558,12 +1581,15 @@ def converse(
         )
     turn_config = replace(turn_config, request_budget=budget)
     scope = closing(budget) if owns_budget and budget is not None else nullcontext()
+    account = universe_seats.account_key(uid, root=udir.parent)
+    ledger = universe_seats.ledger_path(udir.parent)
     with scope, universe_seats.hold(
-        universe_seats.account_key(uid, root=udir.parent),
+        account,
         seat_class=universe_seats.CLASS_INTERACTIVE,
         kind=universe_seats.KIND_CHAT_TURN, universe_id=uid,
-        db=universe_seats.ledger_path(udir.parent),
-    ):
+        db=ledger,
+    ), _surface_chat_allocation_failure(account, uid, ledger):
+        universe_seats.clear_chat_allocation_failure(account, uid, db=ledger)
         recorded: set = set()
         responses = []
         reply = _call_writer(
