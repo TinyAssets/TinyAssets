@@ -222,6 +222,72 @@ Look for:
 - `daemon-1 | Starting TinyAssets Server on 0.0.0.0:8001 (transport=streamable-http)` — daemon bound.
 - `cloudflared | Registered tunnel connection connIndex=0` — tunnel up.
 
+## C6 P2a idle box host and production gates
+
+The production deploy workflow installs the pinned gVisor
+`release-20260928.0` archive (SHA-256
+`f3ed9131bc252259df150e270154180188f9df56b73a2312940325e1f522a2d6`)
+and enables `boxhostd.service` after the public checks pass. The service has
+no listener and no daemon caller. Its only P2a operation is a root-only
+`SIGUSR1` that starts the preflight in its delegated cgroup. Every raw `runsc`
+sandbox uses `--network=none`. P2b replaces this idle entry point.
+
+The box store volume is attached at 20 GiB by `box-store-volume.yml`.
+After deploy, dispatch **Box preflight on production** from the Actions tab
+in a quiet window. It shares the production host mutation concurrency group.
+The run records G1, G3, G4
+and G6 pass/fail numbers in its summary and `box-preflight-<run id>` artifact.
+Only aggregate host and sandbox numbers leave the droplet. Any failed gate
+blocks P2b; the thresholds in ADR-022 are not adjusted by the harness.
+The trial exports the already deployed daemon image as a read-only rootfs,
+uses disposable owner trees, and deletes them after measuring. G4 creates a
+disposable quota tree under `/var/lib/boxhostd/owners/.box-preflight-scratch/`.
+It measures EDQUOT in one box, ENOSPC when the XFS store fills, root free
+space, and allocated image blocks after `fstrim -a`.
+After the sandbox run and cleanup, boxhostd fsyncs a marker, stops the mount
+and device service, remounts (reattaching the loop image when used), and checks
+the marker. It folds `fsync_remount` and the durability pass into G4 in
+`preflight.json` before publishing the result. This runs only while the P2a
+store is empty.
+The harness has a 30-minute deadline and cleans its sandboxes, `/var/tmp/box-preflight-*`
+rootfs and owner tree, and scratch quota on timeout. At 40 minutes, boxhostd
+kills the harness process group and runs the same cleanup pass before reporting
+failure. Inspect those paths if a host failure interrupted cleanup.
+
+Rollback P2a without touching the daemon image or owner data:
+
+1. Revert the P2a deploy change so the next deploy cannot re-enable it.
+2. On the droplet, run `sudo systemctl disable --now boxhostd.service` and
+   `sudo systemctl daemon-reload`. Confirm `systemctl is-active boxhostd.service`
+   is inactive and the public canary remains green.
+3. After that confirmation, remove `/etc/systemd/system/boxhostd.service` and
+   `/opt/tinyassets/boxhostd/` if the install must be fully undone. These paths
+   contain only P2a runtime files. Inspect and remove leftover
+   `/var/tmp/box-preflight-*` rootfs/owner trees and the dedicated
+   `/var/lib/boxhostd/owners/.box-preflight-scratch/` tree; clear any live scratch project
+   quota first using the `quota-state.json` in its `/var/tmp` work directory.
+   Do not delete the `tinyassets-data` volume. Run
+   `sudo systemctl daemon-reload` again after removing the unit file.
+
+The box store is provisioned by `var-lib-boxhostd-owners.mount` through
+`box-store-device.service`. `/etc/tinyassets/box-store.conf` contains
+the selected device path: the attached volume's stable `/dev/disk/by-id/` path.
+To use the loop image, set `BOX_STORE_DEVICE=/var/lib/boxhostd/boxes.img`
+explicitly before installation. The selection is pinned; a missing volume fails boot
+instead of selecting a new image. Installation refuses to allocate an image
+unless at least 6 GiB of root free space remains, and never reformats an
+existing image. To change the selected device later, stop `boxhostd.service`
+and the mount, set `BOX_STORE_DEVICE=/dev/<device>` in the root-owned config,
+stop the device service, rerun the installer to regenerate its `.device`
+dependency, then start the mount and boxhostd. The same mount options and boxhostd
+code apply. Confirm `findmnt /var/lib/boxhostd/owners` shows XFS with
+`pquota,noatime,nodiscard`. Never bind this path into the daemon container.
+
+For P2a rollback, stop and disable `boxhostd.service` and
+`var-lib-boxhostd-owners.mount`, then stop `box-store-device.service`.
+Retain `/var/lib/boxhostd/boxes.img` and any external block volume; they
+contain box data. Reverting the deploy prevents automatic reinstallation.
+
 ## Step 5 — Verify canary green (~10 sec)
 
 From the Hetzner box (container-internal):

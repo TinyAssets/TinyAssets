@@ -115,8 +115,7 @@ They need nothing P2b builds.
 |---|---|
 | G1 host and limits | pinned `runsc` under the `boxhostd` systemd unit, `--network=none`, cgroup v2 per box (`memory.max`, `pids.max` 1024, `cpu.weight`); a 1.5 GiB allocation inside a 1 GiB box dies inside the box; no host OOM event; the daemon canary p95 stays within +20 % of baseline meanwhile |
 | G3 capacity | realistic box (harness rootfs, a Node CLI package process, headless Chromium with one page, 1 GiB owner tree): awake PSS ≤ 1400 MiB with Chromium, ≤ 250 MiB without; start to first exec ≤ 1 s; exec p95 ≤ 100 ms; with the daemon at its 4 GiB cap and 4 boxes awake (one with Chromium) the canary p95 stays within +20 % and host `MemAvailable` ≥ 1 GiB |
-
-| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is EDQUOT in that project only; with the store full a write is ENOSPC inside the box and the root filesystem's free space is unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
+| G4 box store | project quotas mounted on `/var/lib/boxhostd/owners` (XFS, `pquota`, either backing store of the amendment); a write past a project's `bhard` is EDQUOT in that project only while a sibling owner tree can still write; filling the store yields ENOSPC inside the box after about the store's capacity is written, with root filesystem free space unchanged; data written with `fsync` survives unmount and remount (and, for the loop image, detach and reattach); after `fstrim` on the mount the image's allocated blocks (`stat -c %b`) are unchanged |
 | G6 C9 workloads | one CLI package job and one Chromium page render complete under `runsc` on the production kernel |
 
 G3 Chromium ceiling raised 2026-10-13 from measured 1267 MiB; capacity condition is MemAvailable at the daemon cap.
@@ -182,9 +181,9 @@ path, since its in-box tools are the same `boxd` operations P2b ships.
   (design §11). Irreversible for the cell layout, not for data.
 - **P8:** the off-region bucket, about $0-5 a month (existing
   `docs/host-actions.md` row). Blocks only P8.
-- **Later, measured:** a larger droplet, a DO volume for box storage, or a
-  bare-metal KVM host (Firecracker's precondition) is each a spending
-  decision raised with the G3 or wake-queue numbers that need it.
+- **Later, measured:** a larger droplet or a bare-metal KVM host
+  (Firecracker's precondition) is a spending decision raised with the G3
+  or wake-queue numbers that need it. The box volume was approved below.
 
 ## Amendment 2026-10-13: where box trees live (G4)
 
@@ -195,15 +194,15 @@ project quotas. Enabling `prjquota` on the root ext4 needs an offline
 one cross-family round.
 
 **Decision: box trees live on one XFS filesystem mounted `pquota,nodiscard`
-at `/var/lib/boxhostd/owners`.** Two backing stores pass the same G4; the
-founder picks one:
+at `/var/lib/boxhostd/owners`.** The founder chose (a) for production;
+(b) is available only when configured explicitly:
 
-- **(a) Recommended: a DO block volume, 20 GiB, about $2 a month.** New
-  spending, a founder decision. Formatted XFS once, attached to the
+- **(a) Chosen: a DO block volume, 20 GiB, about $2 a month.** Approved
+  spending. Formatted XFS once, attached to the
   droplet, grown online (DO resize, then `xfs_growfs`) with no loop device,
   no `fallocate` and no discard concern; a volume snapshot is a second
   backup form.
-- **(b) No spending: a loop image.** `/var/lib/boxhostd/boxes.img`,
+- **(b) Fallback: a loop image.** `/var/lib/boxhostd/boxes.img`,
   preallocated with `fallocate` (never sparse) at 8 GiB. That leaves
   8.9 GiB on the root filesystem, so the first 4 GiB growth would breach
   the 6 GiB reserve: the block-volume decision is required before the
@@ -218,6 +217,9 @@ founder picks one:
 **Common to both.**
 
 - **Boot order.** `var-lib-boxhostd-owners.mount` is a systemd unit;
+  the selected block volume is pinned in `box-store.conf`, and its device
+  service requires the escaped `.device` unit. A missing selected volume
+  fails startup without creating a loop image.
   `boxhostd.service` has `Requires=` and `After=` it and refuses to start
   if the mount lacks `pquota`. The daemon container is unrelated: after
   P2b it never touches an owner tree directly. Compose mounts only
@@ -226,16 +228,16 @@ founder picks one:
   owner's permanent UID/GID, mode 0700; `boxhostd` (root) sets ownership
   and project ids; the unprivileged daemon reaches them only through
   `BoxProvider` over the `boxhostd` socket.
-- **Full.** Per-owner `bhard` is the first bound (EDQUOT in that project
-  only); the store may be oversubscribed; a write with the store full is
-  ENOSPC inside the writing box only. The root filesystem and the daemon's
+- **Full.** Per-owner `bhard` is the first bound (ENOSPC in that project
+  after about `bhard` bytes, while a sibling can still write); the store may be oversubscribed; a write with the store full is
+  also ENOSPC inside the writing box. The root filesystem and the daemon's
   data are elsewhere, so a box can never fill them (today `/data` shares
   the root disk).
-- **Backup and restore.** `deploy/backup.sh` today archives only the
-  `tinyassets-data` volume and `backup-restore.sh` restores only that.
-  P2b extends both: a second archive member is the box store, taken under
-  `xfs_freeze -f` / `-u` with `--numeric-owner --acls --xattrs`; restore
-  recreates the trees, then re-applies project ids and `bhard` from the
+- **Backup and restore.** A second archive member contains numeric box owner
+  trees, taken under `xfs_freeze -f` / `-u` with
+  `--numeric-owner --acls --xattrs`, validated locally after thaw and before
+  upload. Restore recreates the trees, clears retained old project IDs,
+  then re-applies project ids and `bhard` from the
   broker's box registry (tar does not carry project ids) and checks
   `xfs_quota -x -c report`. The restore is tested on the production copy
   before the window.
@@ -247,9 +249,12 @@ founder picks one:
   removed. Rollback before that step: the old image, old trees intact;
   after it: that backup plus the previous image. Design §11 is amended.
 
-Founder: **one decision now**, backing store (a) at about $2 a month or
-(b) with the same decision deferred to the first growth. No reboot either
-way.
+Founder decision 2026-10-13: **(a), the 20 GiB DigitalOcean block volume**
+at about $2 a month. Dispatch `box-store-volume.yml` on main before deploying
+the store, then run box preflight. The installer prefers its stable by-id
+device, formats it as XFS only when it has no filesystem, and uses the loop
+image only if the volume is absent. An existing loop store with owner data
+is not switched automatically. No reboot is required.
 
 ## Consequences
 

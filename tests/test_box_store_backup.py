@@ -166,6 +166,30 @@ esac
     assert (owner / "box.txt").read_text() == "current-box"
 
 
+def test_store_unit_contract_and_installer_guards() -> None:
+    unit = (ROOT / "deploy/boxhostd.service").read_text()
+    mount = (ROOT / "deploy/var-lib-boxhostd-owners.mount").read_text()
+    prepare = (ROOT / "deploy/box-store-device.service").read_text()
+    device = (ROOT / "deploy/box-store-device.sh").read_text()
+    # The idle service survives G4's controlled unmount; ExecStartPre still
+    # refuses to start unless the store is mounted and healthy.
+    assert "Wants=var-lib-boxhostd-owners.mount" in unit
+    assert "ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh" in unit
+    assert "Options=pquota,noatime,nodiscard" in mount
+    assert "DefaultDependencies=no" in prepare
+    assert "@BOX_STORE_DEVICE_DEPENDENCIES@" in prepare
+    assert "fallocate -l" in device and "reserve=$((6 * 1024 * 1024 * 1024))" in device
+    assert "discard_max_bytes" in device and "--direct-io=on" in device
+    assert "mkfs.xfs" in device and "if [[ ! -e \"$device\" ]]" in device
+    assert device.index('blkid -p -s TYPE') < device.index('mkfs.xfs "$device"')
+    assert 'wipefs -n --noheadings --output TYPE' in device
+    for name in ("box-store-device.sh", "box-store-unit.sh", "box-store-device-stop.sh",
+                 "box-store-check.sh", "install-boxhostd-preflight.sh", "backup.sh",
+                 "backup-restore.sh"):
+        result = subprocess.run(["bash", "-n", str(ROOT / "deploy" / name)], check=False)
+        assert result.returncode == 0, name
+
+
 def test_pinned_device_unit_and_missing_device_failure(tmp_path: Path) -> None:
     template = ROOT / "deploy/box-store-device.service"
     renderer = ROOT / "deploy/box-store-unit.sh"
