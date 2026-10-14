@@ -23,7 +23,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from tinyassets.producers.goal_pool import validate_pool_task_inputs
+from tinyassets.bid.input_validation import validate_node_bid_inputs as validate_node_bid_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +61,6 @@ class NodeBid:
         known = {f for f in cls.__dataclass_fields__}
         filtered = {k: v for k, v in data.items() if k in known}
         return cls(**filtered)
-
-
-def validate_node_bid_inputs(inputs: object) -> tuple[bool, str]:
-    """Reuse Phase F validator verbatim — same flat-dict invariant."""
-    return validate_pool_task_inputs(inputs)
 
 
 def bids_dir(repo_root: Path) -> Path:

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets import activity_dispatcher as dispatcher
+from tinyassets.control_plane import activities as dispatcher
 from tinyassets import activity_runner as runner
 from tinyassets import agent_activities as acts
 

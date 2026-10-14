@@ -215,7 +215,7 @@ def _event_type_for(source_id: str) -> str:
 
 def _action_create_source(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.helpers import _base_path
-    from tinyassets.scheduler import register_subscription
+    from tinyassets.control_plane.events import register_subscription
     from tinyassets.storage import webhook_hooks
 
     uid = _uid(kwargs)
@@ -291,7 +291,7 @@ def _action_list_sources(kwargs: dict[str, Any]) -> str:
 
 def _action_revoke_source(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.helpers import _base_path
-    from tinyassets.scheduler import list_scheduler_subscriptions, unregister_subscription
+    from tinyassets.control_plane.events import list_scheduler_subscriptions, unregister_subscription
     from tinyassets.storage import webhook_hooks
 
     uid = _uid(kwargs)

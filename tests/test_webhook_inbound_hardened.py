@@ -181,7 +181,7 @@ def test_create_source_mints_a_source_hook_and_registers_a_trigger(env):
     source_id = out["source_id"]
     binding = webhook_hooks.resolve(base, token=out["token"])
     assert binding["source_id"] == source_id and binding["universe_id"] == uid
-    from tinyassets.scheduler import list_scheduler_subscriptions
+    from tinyassets.control_plane.events import list_scheduler_subscriptions
     subs = list_scheduler_subscriptions(
         base, owner_actor=f"universe:{uid}", event_type=f"source:{source_id}",
     )
@@ -205,7 +205,7 @@ def test_revoke_source_tears_down_both_hook_and_trigger(env):
     revoked = _source_op("revoke", uid, source_id=created["source_id"])
     assert revoked["revoked"] is True
     assert webhook_hooks.resolve(base, token=created["token"]) is None
-    from tinyassets.scheduler import list_scheduler_subscriptions
+    from tinyassets.control_plane.events import list_scheduler_subscriptions
     assert list_scheduler_subscriptions(
         base, owner_actor=f"universe:{uid}", event_type=f"source:{created['source_id']}",
         active_only=True,
@@ -217,7 +217,7 @@ def test_a_source_delivery_flows_through_the_real_bus_to_a_run(env):
     # assert the bus fires a REAL run for the owning universe (no spies on the run path).
     import time as _time
 
-    from tinyassets.scheduler import get_or_create_scheduler, shutdown_scheduler
+    from tinyassets.control_plane.events import get_or_create_scheduler, shutdown_scheduler
     from tinyassets.universe_server import _inbound_event_run_fn
 
     base, authenticate = env
@@ -482,7 +482,7 @@ def test_every_non_deliverable_state_answers_404(env, monkeypatch):
     assert wh.handle_hook(token="nope", body=b"{}", headers={}, base_path=base)[0] == 404
 
     # a source hook whose event bus is off -> 404 (NOT 500), and no run
-    from tinyassets.scheduler import shutdown_scheduler
+    from tinyassets.control_plane.events import shutdown_scheduler
     shutdown_scheduler()
     src_token = webhook_hooks.mint(
         base,

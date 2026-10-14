@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from tinyassets.producers import producer_interface_enabled, run_producers
 from tinyassets.work_targets import (
     ROLE_NOTES,
     choose_authorial_targets,
@@ -38,23 +37,9 @@ def authorial_priority_review(state: dict[str, Any]) -> dict[str, Any]:
             }],
         }
 
-    if producer_interface_enabled():
-        # Phase C.5 — producers run seed + user-request materialization
-        # + authorial candidate listing. Phase D deletes the else branch.
-        merged = run_producers(universe_path)
-        materialized_requests = [
-            t for t in merged if t.origin == "user_request"
-        ]
-        ranked = choose_authorial_targets(
-            universe_path, premise=premise, candidate_override=merged,
-        )
-    else:
-        ensure_seed_targets(universe_path, premise=premise)
-        # Promote pending submit_request entries into WorkTargets so the
-        # daemon actually sees them. Before this wiring they sat dead in
-        # requests.json forever (STATUS.md #18).
-        materialized_requests = materialize_pending_requests(universe_path)
-        ranked = choose_authorial_targets(universe_path, premise=premise)
+    ensure_seed_targets(universe_path, premise=premise)
+    materialized_requests = materialize_pending_requests(universe_path)
+    ranked = choose_authorial_targets(universe_path, premise=premise)
     workflow_next = str(instructions.get("next_task", "") or "").strip().lower()
 
     selected = _choose_target(ranked, workflow_next, state.get("selected_target_id"))

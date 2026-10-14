@@ -11,7 +11,7 @@ from tinyassets.api.market import classify_filing_effort, filing_effort_dispatch
 from tinyassets.auth.provider import Identity
 from tinyassets.branch_tasks import BranchTask, read_queue
 from tinyassets.daemon_server import grant_universe_access
-from tinyassets.dispatcher import DispatcherConfig, score_task
+from tinyassets.control_plane.queue_policy import DispatcherConfig, score_task
 from tinyassets.work_targets import (
     choose_authorial_targets,
     load_work_targets,

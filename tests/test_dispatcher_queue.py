@@ -52,7 +52,7 @@ from tinyassets.branch_tasks_v2 import (
     WorkerClaimDescriptor,
 )
 from tinyassets.daemon_server import initialize_author_server
-from tinyassets.dispatcher import (
+from tinyassets.control_plane.queue_policy import (
     DispatcherConfig,
     dispatcher_enabled,
     load_dispatcher_config,

@@ -32,7 +32,7 @@ from tinyassets.branch_tasks import (
     new_task_id,
     read_queue,
 )
-from tinyassets.dispatcher import (
+from tinyassets.control_plane.queue_policy import (
     run_branch_task_producers_into_queue,
 )
 from tinyassets.producers import branch_task as bt_producer_mod
@@ -792,7 +792,7 @@ def test_wire_up_cancel_during_claim_race(universe_dir, monkeypatch):
     append_task(universe_dir, task)
     # Simulate cancel before the wire-up's claim attempt by patching
     # select_next_task to cancel the task after returning it.
-    import tinyassets.dispatcher as dispatcher_mod
+    import tinyassets.control_plane.queue_policy as dispatcher_mod
     real_select = dispatcher_mod.select_next_task
 
     def _select_then_cancel(*args, **kwargs):

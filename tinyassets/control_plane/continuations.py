@@ -32,7 +32,8 @@ def recover(home, run=None):
         os.close(fd)
         return 0
     try:
-        from tinyassets import agent_wakes, request_answers
+        from tinyassets import request_answers
+        from tinyassets.control_plane import agent_wakes
 
         return (request_answers.recover(home, run) + _recover(home, run or _run)
                 + agent_wakes.recover(home))
@@ -147,8 +148,10 @@ def _recover(home, run):
 
 
 def _run(home, payload):
+    from tinyassets.control_plane.lease import current_owner_lease
     from tinyassets.request_answers import destination, owner_turn
 
+    current_owner_lease().check()
     agent, note = destination(home, {**payload, "home": home.name})
     payload = {**payload, "agent": agent, "routing_note": note}
 

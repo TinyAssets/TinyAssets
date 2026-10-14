@@ -18,14 +18,15 @@ import time
 
 import pytest
 
-from tinyassets.runs import initialize_runs_db
-from tinyassets.scheduler import (
+from tinyassets.control_plane.events import (
     CronParseError,
     CronSchedule,
     Scheduler,
+    SchedulerEvent,
     register_subscription,
     unregister_subscription,
 )
+from tinyassets.runs import initialize_runs_db
 
 # ─── Cron parser edge cases ───────────────────────────────────────────────────
 
@@ -198,23 +199,56 @@ class TestEventRegistryEdgeCases:
 
 
 class TestSchedulerConcurrency:
-    """The event loop's lifecycle (the tick loop is retired with schedules)."""
+    """The event source is drained only when the owner ticks it."""
 
-    def test_scheduler_start_is_idempotent(self, tmp_path):
+    def test_tick_drains_a_bounded_batch(self, tmp_path):
         initialize_runs_db(tmp_path)
-
-        def _fake_run(bid, actor, inputs, name):
-            pass
-
-        sched = Scheduler(tmp_path, _fake_run)
+        calls = []
+        register_subscription(
+            tmp_path, branch_def_id="branch", owner_actor="alice", event_type="source:one"
+        )
+        sched = Scheduler(tmp_path, lambda *args: calls.append(args))
         sched.start()
         try:
-            first = sched._event_thread
-            # Calling start() again must not raise or spawn another thread.
-            sched.start()
-            assert sched._event_thread is first
-            assert first is not None and first.is_alive()
+            sched._event_queue.put(SchedulerEvent(event_type="source:one", event_id="first"))
+            sched._event_queue.put(SchedulerEvent(event_type="source:one", event_id="second"))
+            assert calls == []
+            assert sched.tick(max_events=1) == 1
+            assert len(calls) == 1
+            assert sched.tick(max_events=1) == 1
+            assert len(calls) == 2
         finally:
+            sched.stop()
+
+    def test_lease_loss_before_fire_requeues_the_event(self, tmp_path):
+        from tinyassets.control_plane.lease import LeaseLost, SingleProcessLease, set_owner_lease
+
+        initialize_runs_db(tmp_path)
+        calls = []
+        register_subscription(
+            tmp_path, branch_def_id="branch", owner_actor="alice", event_type="source:one"
+        )
+        sched = Scheduler(tmp_path, lambda *args: calls.append(args))
+
+        class LostBeforeFire(SingleProcessLease):
+            checks = 0
+
+            def check(self):
+                self.checks += 1
+                if self.checks == 2:
+                    raise LeaseLost("owner changed")
+
+        previous = set_owner_lease(LostBeforeFire())
+        sched.start()
+        try:
+            sched._event_queue.put(SchedulerEvent(event_type="source:one", event_id="first"))
+            assert sched.tick() == 0
+            assert calls == []
+            set_owner_lease(previous)
+            assert sched.tick() == 1
+            assert len(calls) == 1
+        finally:
+            set_owner_lease(previous)
             sched.stop()
 
     def test_two_schedulers_can_coexist_without_deadlock(self, tmp_path):
@@ -233,16 +267,3 @@ class TestSchedulerConcurrency:
         finally:
             sched1.stop()
             sched2.stop()
-
-    def test_stop_terminates_threads(self, tmp_path):
-        initialize_runs_db(tmp_path)
-
-        def _noop(bid, actor, inputs, name):
-            pass
-
-        sched = Scheduler(tmp_path, _noop)
-        sched.start()
-        assert sched._event_thread is not None
-        sched.stop(timeout=2.0)
-        assert not sched._event_thread.is_alive()
-        assert not sched.is_alive()

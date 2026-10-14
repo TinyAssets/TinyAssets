@@ -67,7 +67,7 @@ PLATFORM_NAMES = frozenset({
     ".workspace-staging", ".authoring_blobs",
     ".idle_cycle_stamp.json",
     # the queue consumer's heartbeat (api/universe.py _WORKER_SUPERVISOR_FILENAME,
-    # runtime/assigned_queue_consumer.py SUPERVISOR_HEARTBEAT_FILENAME)
+    # control_plane/tick.py SUPERVISOR_HEARTBEAT_FILENAME)
     ".worker_supervisor.json",
 })
 

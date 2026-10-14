@@ -63,7 +63,7 @@ def env(tmp_path: Path, monkeypatch, authenticate_request):
     monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)
     from tinyassets.daemon_server import initialize_author_server
     from tinyassets.runs import initialize_runs_db
-    from tinyassets.scheduler import shutdown_scheduler
+    from tinyassets.control_plane.events import shutdown_scheduler
 
     initialize_author_server(base)
     initialize_runs_db(base)  # scheduler tables, as the daemon does at boot
@@ -298,7 +298,7 @@ def _drain_run(base: Path, run_id: str, timeout: float = 5.0) -> None:
 
 def test_the_scheduler_starts_with_the_inbound_flag_off(env):
     """2.2 — schedule ticks are not part of the inbound channel surface."""
-    from tinyassets.scheduler import is_running, shutdown_scheduler
+    from tinyassets.control_plane.events import is_running, shutdown_scheduler
     from tinyassets.universe_server import (
         start_scheduler_for_serving,
         stop_scheduler_for_serving,
@@ -319,7 +319,7 @@ def test_the_scheduler_starts_with_the_inbound_flag_off(env):
 
 def test_is_running_is_false_for_a_scheduler_that_was_never_started(env):
     """Liveness, not the mere presence of a singleton object."""
-    import tinyassets.scheduler as sched
+    import tinyassets.control_plane.events as sched
 
     sched.shutdown_scheduler()
     base, _authenticate = env
@@ -498,7 +498,7 @@ def test_the_migration_is_safe_when_two_connections_race(tmp_path):
     """Check-then-ALTER is atomic under one BEGIN IMMEDIATE; a loser is idempotent."""
     import threading
 
-    from tinyassets import scheduler as sched
+    from tinyassets.control_plane import events as sched
 
     db = _old_schema_db(tmp_path)
     errors: list[BaseException] = []
@@ -546,7 +546,7 @@ def test_the_migration_keeps_every_schedule_row_with_its_retirement(tmp_path):
     """Schedules are retired. An existing install gains the columns, and every
     row is kept with a recorded disposition -- inactive, paused, and the reason
     on the row -- rather than dropped. Idempotent."""
-    from tinyassets import scheduler as sched
+    from tinyassets.control_plane import events as sched
 
     db = tmp_path / ".runs.db"
     conn = sqlite3.connect(db)

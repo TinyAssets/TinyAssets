@@ -43,7 +43,7 @@ from tinyassets.automations import (
     automation_lease_key,
     register_automation,
 )
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.control_plane.tick import AssignedQueueConsumer
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
@@ -723,7 +723,7 @@ def test_a_row_that_cannot_take_its_agent_says_so_on_the_row(
         now=datetime.now(timezone.utc), ttl_seconds=600,
     )
     monkeypatch.setattr(
-        "tinyassets.runtime.assigned_queue_consumer.AssignedQueueConsumer."
+        "tinyassets.control_plane.tick.AssignedQueueConsumer."
         "_agent_running_elsewhere", lambda self, key, now: False,
     )
     ran: list[str] = []

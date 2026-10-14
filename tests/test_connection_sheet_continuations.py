@@ -8,7 +8,8 @@ import pytest
 from tests.test_pending_requests import _CRED, _ask, _login, _make_universe, _owner_answer
 from tests.test_pending_requests import _reset_auth as _auth_fixture
 from tests.test_pending_requests import base as _base_fixture
-from tinyassets import bound_requests, request_continuations, turn_interrupt
+from tinyassets import bound_requests, turn_interrupt
+from tinyassets.control_plane import continuations as request_continuations
 from tinyassets.storage import pending_requests
 
 base = _base_fixture

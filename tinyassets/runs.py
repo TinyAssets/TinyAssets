@@ -1500,7 +1500,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
     from tinyassets.branch_versions import BRANCH_VERSIONS_SCHEMA
     from tinyassets.contribution_events import CONTRIBUTION_EVENTS_SCHEMA
     from tinyassets.gate_events.schema import GATE_EVENT_SCHEMA
-    from tinyassets.scheduler import SCHEDULER_SCHEMA, migrate_scheduler_schema
+    from tinyassets.control_plane.events import SCHEDULER_SCHEMA, migrate_scheduler_schema
     schema = (
         schema
         + SCHEDULER_SCHEMA

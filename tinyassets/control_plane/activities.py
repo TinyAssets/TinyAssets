@@ -86,6 +86,9 @@ def _settle_ended(base_path: Path, universe_id: str, record: dict) -> bool:
 
 def _start(base_path: Path, universe_id: str, activity_id: str) -> bool:
     """Try to start a run; True if one was started."""
+    from tinyassets.control_plane.lease import current_owner_lease
+
+    current_owner_lease().check()
     universe_dir = base_path / universe_id
     record = activities.get(universe_dir, activity_id)
     if record is None:
@@ -107,6 +110,7 @@ def _start(base_path: Path, universe_id: str, activity_id: str) -> bool:
     if generation is None:
         return False
     try:
+        current_owner_lease().check()
         runner.start(base_path, universe_id, record, generation)
     except activities.ActivityRefused as exc:
         if exc.kind == "run_refused":

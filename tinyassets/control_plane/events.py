@@ -420,48 +420,47 @@ class Scheduler:
         self._run_fn = run_fn
         self._run_fn_takes_principal = _accepts_principal_id(run_fn)
         self._event_queue: queue.Queue[SchedulerEvent] = queue.Queue()
-        self._stop = threading.Event()
-        self._event_thread: threading.Thread | None = None
+        self._running = False
 
     # ── Lifecycle ──
 
     def start(self) -> None:
-        """Start the event loop. Idempotent if already running."""
-        if self._event_thread and self._event_thread.is_alive():
-            return
-        self._stop.clear()
-        self._event_thread = threading.Thread(
-            target=self._event_loop, daemon=True, name="scheduler-event"
-        )
-        self._event_thread.start()
-        logger.info("Scheduler started (base=%s)", self._base_path)
+        """Register this event source with the execution owner's tick."""
+        self._running = True
 
     def is_alive(self) -> bool:
-        """Whether the event loop is running right now."""
-        return bool(self._event_thread and self._event_thread.is_alive())
+        """Whether this event source accepts events."""
+        return self._running
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Signal the loop to stop and wait for it to exit."""
-        self._stop.set()
-        self._event_queue.put(_STOP_SENTINEL)  # unblock event loop
-        if self._event_thread:
-            self._event_thread.join(timeout=timeout)
-        logger.info("Scheduler stopped")
+        """Stop accepting events during serving teardown."""
+        self._running = False
 
     # ── Event loop ──
 
-    def _event_loop(self) -> None:
-        while not self._stop.is_set():
+    def tick(self, *, max_events: int = 100) -> int:
+        """Drain a bounded batch on the execution owner's leased tick."""
+        if not self._running:
+            return 0
+        from tinyassets.control_plane.lease import LeaseLost, current_owner_lease
+
+        processed = 0
+        while processed < max_events:
+            if not current_owner_lease().held():
+                break
             try:
-                event = self._event_queue.get(timeout=1.0)
+                event = self._event_queue.get_nowait()
             except queue.Empty:
-                continue
-            if event is _STOP_SENTINEL:
                 break
             try:
                 self._dispatch_event(event)
+            except LeaseLost:
+                self._event_queue.put(event)
+                break
             except Exception:
                 logger.exception("scheduler: event dispatch error for %s", event.event_id)
+            processed += 1
+        return processed
 
     def _subscription_active(self, subscription_id: str) -> bool:
         """Whether a subscription is still active RIGHT NOW (Codex #3 revocation re-check)."""
@@ -492,6 +491,8 @@ class Scheduler:
             return
 
         for sub in subs:
+            from tinyassets.control_plane.lease import LeaseLost, current_owner_lease
+
             sub_id = sub["subscription_id"]
             # Idempotency: skip if already delivered.
             delivery_key = f"{event.event_id}:{sub_id}"
@@ -503,6 +504,7 @@ class Scheduler:
                     ).fetchone()
                     if already:
                         continue
+                    current_owner_lease().check()
                     # Mark delivered before firing to prevent double-fire on crash.
                     _SQL_MARK_DELIVERED = (
                         "INSERT INTO scheduler_delivered_events "
@@ -545,6 +547,7 @@ class Scheduler:
                 logger.info("scheduler: subscription %s revoked before fire; skipping", sub_id)
                 continue
             try:
+                current_owner_lease().check()
                 if self._run_fn_takes_principal:
                     self._run_fn(
                         sub["branch_def_id"], actor, inputs, run_name,
@@ -557,6 +560,13 @@ class Scheduler:
                     sub_id,
                     event.event_type,
                 )
+            except LeaseLost:
+                with _connect(db) as conn:
+                    conn.execute(
+                        "DELETE FROM scheduler_delivered_events WHERE event_id=?",
+                        (delivery_key,),
+                    )
+                raise
             except Exception:
                 logger.exception(
                     "scheduler: run_fn failed for subscription %s on event %s",
@@ -575,11 +585,6 @@ def _matches_filter(payload: dict[str, Any], filter_json: dict[str, Any]) -> boo
 
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
-class _StopSentinel:
-    pass
-
-
-_STOP_SENTINEL = _StopSentinel()
 _SINGLETON: Scheduler | None = None
 _SINGLETON_LOCK = threading.Lock()
 
@@ -701,6 +706,12 @@ def shutdown_scheduler(timeout: float = 5.0) -> None:
             _SINGLETON = None
 
 
+def tick_events(*, max_events: int = 100) -> int:
+    """Dispatch source events from the one owner tick, when serving."""
+    scheduler = _SINGLETON
+    return scheduler.tick(max_events=max_events) if scheduler is not None else 0
+
+
 __all__ = [
     "CronParseError",
     "CronSchedule",
@@ -716,5 +727,6 @@ __all__ = [
     "list_scheduler_subscriptions",
     "register_subscription",
     "shutdown_scheduler",
+    "tick_events",
     "unregister_subscription",
 ]

@@ -213,7 +213,7 @@ def _schedule_local(automation: Automation) -> str:
     """
     from tinyassets.automations import TRIGGER_CRON, cron_zone_name
     from tinyassets.schedule_timezone import describe_slot
-    from tinyassets.scheduler import CronParseError, CronSchedule
+    from tinyassets.control_plane.events import CronParseError, CronSchedule
 
     if automation.trigger_kind != TRIGGER_CRON:
         return ""
@@ -299,7 +299,7 @@ def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
     enrichment, never a precondition for seeing the row.
     """
     try:
-        from tinyassets.runtime.assigned_queue_consumer import (
+        from tinyassets.control_plane.tick import (
             assigned_queue_refusal_freshness_seconds,
         )
         from tinyassets.storage.assigned_queue_refusals import (

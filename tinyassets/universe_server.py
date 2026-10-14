@@ -1920,7 +1920,7 @@ def start_scheduler_for_serving() -> bool:
     Returns whether the scheduler is running afterwards. A scheduler fault must not
     block boot, so a failure is logged and reported, never raised.
     """
-    from tinyassets.scheduler import get_or_create_scheduler
+    from tinyassets.control_plane.events import get_or_create_scheduler
     from tinyassets.storage import data_dir
 
     try:
@@ -1934,7 +1934,7 @@ def start_scheduler_for_serving() -> bool:
 
 def stop_scheduler_for_serving() -> None:
     """Stop the process scheduler on daemon teardown. Never masks a teardown error."""
-    from tinyassets.scheduler import shutdown_scheduler
+    from tinyassets.control_plane.events import shutdown_scheduler
 
     try:
         shutdown_scheduler()
@@ -4657,21 +4657,6 @@ def main(
 
     start_owner_tree(_owner_data_dir())
     _ensure_runs_recovery()
-    def _resume_request_loop(base):
-        import time
-
-        from tinyassets.request_continuations import tick
-        # Bound at boot: this process serves one root, and a re-resolved root
-        # would sweep (and take owner control of) homes this server never served.
-        while True:
-            try:
-                tick(base)
-            except Exception:
-                logger.exception("request continuation sweep failed")
-            time.sleep(5)
-    import threading
-    threading.Thread(target=_resume_request_loop, args=(_owner_data_dir(),),
-                     name="request-continuations", daemon=True).start()
     # And keep recovering: an engine child that dies mid-run while this server
     # lives is found within one tick, by proof that it died.
     start_run_owner_watcher()
@@ -4697,20 +4682,16 @@ def main(
         _engine_http_procs = start_engine_mcp_http_servers()  # noqa: F841
         app = create_streamable_http_app()
         assigned_consumer = None
-        from tinyassets.runtime.assigned_queue_consumer import (
+        # The lifespan has not run yet. Storage initialization precedes the tick.
+        from tinyassets.consumer_runtime import initialize as initialize_consumer
+        from tinyassets.control_plane.tick import (
             AssignedQueueConsumer,
-            assigned_queue_consumer_enabled,
         )
         from tinyassets.storage import data_dir as assigned_data_dir
 
-        if assigned_queue_consumer_enabled():
-            # The lifespan has not run yet. Its storage initialization must also
-            # precede this polling worker; best-effort boot maintenance may fail.
-            from tinyassets.consumer_runtime import initialize as initialize_consumer
-
-            initialize_consumer(assigned_data_dir())
-            assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
-            assigned_consumer.start()
+        initialize_consumer(assigned_data_dir())
+        assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
+        assigned_consumer.start()
         try:
             socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
             if socket_path:
@@ -4735,9 +4716,8 @@ def main(
 
     writer_barrier = prepare_service_writer_barrier(data_dir())
     assigned_consumer = None
-    from tinyassets.runtime.assigned_queue_consumer import (
+    from tinyassets.control_plane.tick import (
         AssignedQueueConsumer,
-        assigned_queue_consumer_enabled,
     )
 
     try:
@@ -4746,9 +4726,8 @@ def main(
         # Do not rely on best-effort boot maintenance: storage must be ready
         # before the assigned consumer can open the same database.
         initialize_consumer(data_dir())
-        if assigned_queue_consumer_enabled():
-            assigned_consumer = AssignedQueueConsumer(data_dir())
-            assigned_consumer.start()
+        assigned_consumer = AssignedQueueConsumer(data_dir())
+        assigned_consumer.start()
         run_visibility_startup_gate()
         start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):

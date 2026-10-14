@@ -198,7 +198,7 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/desktop/dashboard.py": [
         "_seed_from_output_dir: .read_text()",
     ],
-    "tinyassets/dispatcher.py": [
+    "tinyassets/control_plane/queue_policy.py": [
         "load_dispatcher_config: .read_text()",
     ],
     "tinyassets/engine_mcp_http.py": [
@@ -269,10 +269,6 @@ PINNED: dict[str, list[str]] = {
         "remove_if_dead: .unlink()",
         "remove_if_dead: os.open()",
     ],
-    "tinyassets/producers/goal_pool.py": [
-        "_scan_goal_dir: .read_text()",
-        "write_pool_post: .write_text()",
-    ],
     "tinyassets/provider_assignment.py": [
         "_file_lock: .open()",
     ],
@@ -320,7 +316,7 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/rollback.py": [
         "_append_rollback_log: .open()",
     ],
-    "tinyassets/runtime/assigned_queue_consumer.py": [
+    "tinyassets/control_plane/tick.py": [
         "_hold_liveness: .unlink()",
         "_publish_heartbeat: .write_text()",
     ],

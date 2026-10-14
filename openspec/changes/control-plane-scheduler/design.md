@@ -147,6 +147,30 @@ owner-checked store call (`set_cadence_override`, `set_enabled`); harness D3's
 Scheduled view writes it there. The agent may *propose* a cadence; it does not
 set one by editing a file the scheduler reads.
 
+## C7 cutover on the C8 starter
+
+The owner consumer is the only periodic poll. It runs the existing automation
+store, source-event subscriptions, control-plane cadence, activity dispatch,
+and the protected request and saved-agent wake scan under the owner lease.
+The handlers can start an agent turn only through `control_plane/session.py`
+`start`; arbitrary workflow nodes reach that starter at their agent step.
+The request scan uses the tick's bounded executor because a continuation can
+wait for a full model turn. A second scan is not submitted while one is live.
+
+The existing `.automations.db`, `.control_plane.db`, `.runs.db` subscription,
+protected request, and `agent_wakes` rows retain their shape and authority.
+This cutover needs no schedule or wake migration. The source-event queue was
+already in process memory; it is drained on the owner tick with the existing
+`scheduler_delivered_events` fence. It gains no second event store.
+
+The retired fantasy producer registry, goal-pool and node-bid producer paths,
+and v1 file queue are removed with their public request callers. The account
+limits remain seat concurrency and account storage bytes, resolved only by
+`usage_policy.py`; credential abuse and per-call safety bounds are separate.
+If v1 pending queue rows cannot be mapped to an admitted owner, a deploy-time
+cutover must stop after the snapshot rather than infer authority. No startup
+migration, replay ledger, or compatibility worker is permitted.
+
 ## Risks
 
 - **Handler latency blocks the tick.** A handler must start work and return;

@@ -15,7 +15,7 @@ from tests.test_cloud_only_admission_regressions import (
 )
 from tests.test_runtime_reconcile import _stale_fleet_fixture
 from tinyassets import runtime_reconcile
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.control_plane.tick import AssignedQueueConsumer
 from tinyassets.runtime_reconcile import build_stale_fleet_plan
 from tinyassets.storage import db_path
 
