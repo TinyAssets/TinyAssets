@@ -357,8 +357,8 @@ _MESSAGING_ACTIONS: dict[str, Any] = {
 
 def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
     from tinyassets.automations import EVENT_TYPES
-    from tinyassets.runs import initialize_runs_db
     from tinyassets.control_plane.events import VALID_EVENT_TYPES, register_subscription
+    from tinyassets.runs import initialize_runs_db
 
     branch_def_id = (kwargs.get("branch_def_id") or "").strip()
     if not branch_def_id:
@@ -443,8 +443,8 @@ def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
 
 
 def _action_list_scheduler_subscriptions(kwargs: dict[str, Any]) -> str:
-    from tinyassets.runs import initialize_runs_db
     from tinyassets.control_plane.events import list_scheduler_subscriptions
+    from tinyassets.runs import initialize_runs_db
 
     owner_actor = (kwargs.get("owner_actor") or "").strip()
     event_type = (kwargs.get("event_type") or "").strip()

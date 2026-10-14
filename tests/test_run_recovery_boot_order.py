@@ -22,8 +22,8 @@ def test_main_sweeps_before_spawning_engines_or_the_consumer(
     from tinyassets import delivery_runtime, engine_mcp_http, provider_assignment
     from tinyassets import universe_server as us
     from tinyassets.api import runs as api_runs
-    from tinyassets.onboarding import session_store
     from tinyassets.control_plane import tick as aqc
+    from tinyassets.onboarding import session_store
 
     order: list[str] = []
 

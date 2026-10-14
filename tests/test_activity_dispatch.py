@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets.control_plane import activities as dispatcher
 from tinyassets import activity_runner as runner
 from tinyassets import agent_activities as acts
+from tinyassets.control_plane import activities as dispatcher
 
 OWNER = "acct_alice"
 

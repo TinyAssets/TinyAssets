@@ -212,8 +212,8 @@ def _schedule_local(automation: Automation) -> str:
     honest answer rather than picking one of its slots to display.
     """
     from tinyassets.automations import TRIGGER_CRON, cron_zone_name
-    from tinyassets.schedule_timezone import describe_slot
     from tinyassets.control_plane.events import CronParseError, CronSchedule
+    from tinyassets.schedule_timezone import describe_slot
 
     if automation.trigger_kind != TRIGGER_CRON:
         return ""

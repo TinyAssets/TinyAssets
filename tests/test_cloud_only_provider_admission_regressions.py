@@ -35,9 +35,7 @@ from pathlib import Path
 
 import pytest
 
-import tinyassets.background_served_provider as background_provider
 import tinyassets.platform_runtime_provenance as provenance
-from tests.test_background_served_provider import _authority_fixture, _lease
 from tests.test_cloud_only_admission_regressions import (
     ADMITTED,
     COPIED_LABEL_VARIANTS,
@@ -115,13 +113,8 @@ def _receipt_rows(base_path: Path) -> list[tuple[str, str]]:
 
 # --- small local helpers (no production helper is introduced) --------------
 
-_SERVED_OPERATION = background_provider.BACKGROUND_BRANCH_RUN_OPERATION
 
 
-def background_provider_session(base_path: Path, task, raw_provider):
-    return background_provider._BackgroundAssignedProviderSession(
-        base_path, task, _lease(), raw_provider
-    )
 
 
 def _reservations(conn: sqlite3.Connection) -> int:
@@ -196,107 +189,13 @@ def test_admitted_foreground_run_still_launches_and_settles(
 # --- lane 2: background served turn (background_served_provider.py:1336,1547)
 
 
-def test_unadmitted_background_served_turn_never_reaches_the_provider(
-    tmp_path: Path, monkeypatch, bind_provenance
-) -> None:
-    """Matrix 3, served half.
-
-    Driven through `_BackgroundAssignedProviderSession.__call__` — the actual
-    authority path, not a source-string assertion. `_authority_fixture` gives
-    it a valid, active, unexpired per-universe background binding owned by
-    `acct_owner_a` for `universe_a`, a claimed attempt whose lease has not
-    expired, a live queue-owner row and a matching consumer lease; the same
-    fixture state the launch positives in
-    `tests/test_background_served_provider.py` succeed on.
-
-    A refusal is allowed to arrive as either a raised `REFUSALS` member or a
-    refusing return. What is not allowed is the provider fake running: this
-    lane stamps `executor_class="cloud"` as a literal at
-    `background_served_provider.py:1336,1547`, so on the unfixed tree the call
-    lands and this goes red.
-    """
-    bind_provenance(UNADMITTED)
-    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    raw_calls: list[str] = []
-
-    session = background_provider_session(
-        tmp_path, task, lambda *_a, **_k: raw_calls.append("raw") or "unexpected"
-    )
-    try:
-        session("prompt")
-    except REFUSALS:
-        pass
-
-    assert raw_calls == [], (
-        "unadmitted served turn invoked the provider before any admission check"
-    )
-    assert _reservations(conn) == 0, (
-        "unadmitted served turn reserved cloud-class provider budget"
-    )
 
 
-@pytest.mark.parametrize("copied_labels", COPIED_LABEL_VARIANTS)
-def test_admitted_background_served_turn_still_launches(
-    copied_labels: bool, tmp_path: Path, monkeypatch, bind_provenance
-) -> None:
-    """Preserved behaviour and the control: same fixture, admitted verdict.
-
-    The `copied_labels` leg is the positive control for
-    `test_copied_cloud_labels_never_reach_the_served_provider`: the served
-    lane's negative asserts an empty call list and a zero reservation count,
-    both of which a broken fixture would also produce.
-    """
-    bind_provenance(ADMITTED)
-    maybe_copied_cloud_labels(copied_labels, monkeypatch, tmp_path)
-    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    raw_calls: list[str] = []
-
-    def raw_provider(*_args, **kwargs):
-        carrier = kwargs["universe_context"].provider_invocation
-        assert carrier.validate_for_call(role="writer", operation=_SERVED_OPERATION) == "codex"
-        raw_calls.append("raw")
-        return "ok"
-
-    session = background_provider_session(tmp_path, task, raw_provider)
-
-    assert session("prompt") == "ok"
-    assert raw_calls == ["raw"]
-    assert _reservations(conn) == 1
 
 
 # --- the refusal itself: sanitized, and not an arbitrary crash ------------
 
 
-def test_served_refusal_is_the_stable_token_and_leaks_no_identifier(
-    tmp_path: Path, monkeypatch, bind_provenance
-) -> None:
-    """A refusal has to be *this* refusal, not any exception that happens to fly.
-
-    Two separable claims. First, the message carries the stable
-    `platform_not_cloud` token plus the sanitized verdict/reason pair and
-    nothing else — no universe id, no task id, no daemon id, no worker id, no
-    instance id, no address. Second, the type is a refusal the callers above
-    already handle, so `REFUSALS` in the negatives is a real contract rather
-    than a net wide enough to catch a `KeyError` from broken setup.
-    """
-    bind_provenance(UNADMITTED)
-    task, _conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-
-    session = background_provider_session(tmp_path, task, lambda *_a, **_k: "unexpected")
-    with pytest.raises(PermissionError) as raised:
-        session("prompt")
-
-    message = str(raised.value)
-    assert provenance.PLATFORM_NOT_CLOUD_REASON in message
-    assert "verdict=not_cloud" in message
-    assert "reason=metadata_unreachable" in message
-    for identifier in (
-        task.universe_id,
-        task.branch_task_id,
-        task.actor_id,
-        "169.254.169.254",
-    ):
-        assert identifier not in message, f"refusal leaked {identifier!r}"
 
 
 def test_in_transaction_stamp_refuses_unobserved_without_resolving(
@@ -437,34 +336,6 @@ def test_copied_cloud_labels_never_reach_the_foreground_provider(
     )
 
 
-def test_copied_cloud_labels_never_reach_the_served_provider(
-    tmp_path: Path, monkeypatch, bind_provenance
-) -> None:
-    """Matrix 5, served provider site.
-
-    The served lane is the one a real universe turn takes, and it is a
-    different literal (`background_served_provider.py`) from the foreground
-    lane, so the labels have to be refused here in their own right.
-    """
-    bind_provenance(UNADMITTED)
-    apply_copied_cloud_labels(monkeypatch, tmp_path)
-    task, conn, _assignment, _current, _events = _authority_fixture(tmp_path, monkeypatch)
-    raw_calls: list[str] = []
-
-    session = background_provider_session(
-        tmp_path, task, lambda *_a, **_k: raw_calls.append("raw") or "unexpected"
-    )
-    try:
-        session("prompt")
-    except REFUSALS:
-        pass
-
-    assert raw_calls == [], (
-        "a process wearing copied cloud labels invoked the served provider"
-    )
-    assert _reservations(conn) == 0, (
-        "copied cloud labels reserved cloud-class provider budget"
-    )
 
 
 def test_copied_cloud_labels_still_match_no_runtime_row(

@@ -4,8 +4,6 @@ This package is the home for FastMCP sub-apps per `docs/architecture.md`:
   api/runs.py, api/branches.py, api/judgments.py, api/goals.py, api/wiki.py
 
 create_app() is a stub — the FastMCP submodule extraction is in-flight.
-Tests for the fantasy_daemon REST app belong in fantasy_daemon/api.py scope;
-import from fantasy_daemon.api directly, not from this package.
 """
 
 from __future__ import annotations

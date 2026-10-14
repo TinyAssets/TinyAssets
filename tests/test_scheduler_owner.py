@@ -61,9 +61,9 @@ def env(tmp_path: Path, monkeypatch, authenticate_request):
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)
+    from tinyassets.control_plane.events import shutdown_scheduler
     from tinyassets.daemon_server import initialize_author_server
     from tinyassets.runs import initialize_runs_db
-    from tinyassets.control_plane.events import shutdown_scheduler
 
     initialize_author_server(base)
     initialize_runs_db(base)  # scheduler tables, as the daemon does at boot

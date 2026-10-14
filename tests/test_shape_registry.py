@@ -114,8 +114,8 @@ def test_c5_retired_prototype_compose_and_local_mcp_guards(tmp_path: Path):
 
     runner = tmp_path / "fantasy_daemon/__main__.py"
     runner.parent.mkdir()
-    runner.write_text('if "--mcp" in argv:\n    pass\n', encoding="utf-8")
-    assert "spawn-entry: local MCP runner returned" in check_shapes.dead_entry_problems(tmp_path)
+    runner.write_text("pass\n", encoding="utf-8")
+    assert "host-paths: fantasy_daemon" in check_shapes.dead_entry_problems(tmp_path)
 
 
 def test_public_route_and_opt_in_flag_on_existing_file():

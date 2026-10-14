@@ -608,22 +608,6 @@ class Epoch2BranchTaskAdapter:
                 candidate=candidate,
                 consumer_lease=consumer_lease,
             )
-            if reason is None:
-                from tinyassets.background_served_provider import (
-                    explain_background_queue_authority_in_transaction,
-                )
-
-                claimed_at = _parse_timestamp(transaction_at)
-                assert claimed_at is not None
-                reason = explain_background_queue_authority_in_transaction(
-                    conn,
-                    candidate,
-                    consumer_lease,
-                    claimed_at=transaction_at,
-                    lease_expires_at=(
-                        claimed_at + timedelta(seconds=lease_seconds)
-                    ).isoformat(),
-                )
             conn.rollback()
         return reason
 

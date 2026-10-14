@@ -159,7 +159,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         "caller-consumed iterator for one bounded exec; ends on terminal or "
         "restore state, optional caller timeout, or iterator close",
     ),
-    "tinyassets/branch_tasks.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/broker/fence.py::Fence.barrier": (
         CALL_SCOPED,
         "one verified fence barrier cancels older streams then waits for active "

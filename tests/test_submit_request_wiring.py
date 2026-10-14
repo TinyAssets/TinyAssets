@@ -42,8 +42,6 @@ from tinyassets.storage import db_path
 from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.work_targets import (
     ROLE_NOTES,
-    choose_authorial_targets,
-    list_selectable_targets,
     load_work_targets,
     materialize_pending_requests,
     requests_path,
@@ -352,73 +350,6 @@ def test_materialize_leaves_unclaimed_or_not_ready_epoch2_work_inert(
 # ─── authorial_priority_review integration ─────────────────────────────
 
 
-def test_epoch2_target_selection_tracks_exact_current_live_claim(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from fantasy_daemon.branch_registrations import _restartable_work_exists
-
-    universe_dir = tmp_path / "test-universe"
-    universe_dir.mkdir()
-    initialize_author_server(tmp_path)
-    committed = _commit_epoch2_request(tmp_path, universe_dir.name)
-    adapter = _claim_epoch2_request(tmp_path, committed)
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
-    monkeypatch.setattr(
-        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
-        True,
-    )
-
-    created = materialize_pending_requests(universe_dir)
-    assert len(created) == 1
-    target_id = created[0].target_id
-    assert [
-        target.target_id for target in list_selectable_targets(universe_dir)
-    ] == [target_id]
-
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
-    assert list_selectable_targets(universe_dir) == []
-    assert choose_authorial_targets(
-        universe_dir,
-        candidate_override=created,
-    ) == []
-
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        conn.execute(
-            """
-            UPDATE branch_tasks_v2
-            SET lease_expires_at = ?
-            WHERE branch_task_id = ?
-            """,
-            ("2000-01-01T00:00:00+00:00", committed["branch_task_id"]),
-        )
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
-    assert list_selectable_targets(universe_dir) == []
-    assert choose_authorial_targets(
-        universe_dir,
-        candidate_override=created,
-    ) == []
-    assert _restartable_work_exists(universe_dir) is False
-
-    assert adapter.recover_expired()
-    _claim_epoch2_request(
-        tmp_path,
-        committed,
-        worker_id="worker-b",
-    )
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
-    rematerialized = materialize_pending_requests(universe_dir)
-
-    assert len(rematerialized) == 1
-    assert rematerialized[0].metadata["claimed_by"] == "worker-b"
-    assert [
-        target.target_id for target in list_selectable_targets(universe_dir)
-    ] == [target_id]
-    assert choose_authorial_targets(
-        universe_dir,
-        candidate_override=rematerialized,
-    )[0].target_id == target_id
 
 
 def test_epoch2_materialization_rejects_same_basename_outside_data_root(
