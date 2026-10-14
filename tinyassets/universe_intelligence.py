@@ -273,14 +273,18 @@ UNBOUNDED_TURN_SECONDS = 30 * 24 * 3600.0
 def _served_knob(config, name: str, default):
     """A positive per-universe override for a watchdog knob, else ``default``.
 
-    Nonsense (a string, zero, negative) falls back to the default rather than
-    disabling a bound - the same hardening the profile resolver applies.
+    Invalid, boolean, nonfinite or nonpositive values use the default.
     """
+    import math
+
     try:
-        value = float(getattr(config, name, None) or 0)
-    except (TypeError, ValueError):
+        raw = getattr(config, name, None)
+        if isinstance(raw, bool):
+            return default
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def served_absolute_cap_s(config) -> float | None:
@@ -290,11 +294,13 @@ def served_absolute_cap_s(config) -> float | None:
     coordinator about how long a turn may take. Codex on #4020: a bound derived
     from the library's 600s default called a healthy founder turn dead after ten
     and a half minutes, which hid the indicator for exactly the long turns it was
-    added for. The granted turn's cap is 3600s (founder rule 2026-08-29, "a
-    granted turn runs until it is finished") with a positive per-universe
-    override, and this returns that same number.
+    added for. Granted turns now default to no cap; a positive finite owner
+    override loaded from config.yaml supplies the same bound to runtime and
+    activity readers, at most the platform-safe unbounded horizon above.
+    Ordinary node timeouts are not this served-turn policy.
     """
-    return _served_knob(config, "absolute_cap_s", None)
+    value = _served_knob(config, "absolute_cap_s", None)
+    return None if value is None else min(value, UNBOUNDED_TURN_SECONDS)
 
 
 def _sandboxed_config(
