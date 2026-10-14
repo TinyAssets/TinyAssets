@@ -145,8 +145,14 @@ class MCPEventsMiddleware:
             if method == "server/discover":
                 result = {
                     "supportedVersions": [VERSION, *LEGACY],
-                    "serverInfo": {"name": "TinyAssets", "version": "0.1.0"},
+                    "_meta": {
+                        "io.modelcontextprotocol/serverInfo": {
+                            "name": "TinyAssets", "version": "0.1.0",
+                        },
+                    },
                     "capabilities": {"tools": {}, "prompts": {}, "events": {}},
+                    "ttlMs": 0,
+                    "cacheScope": "private",
                 }
             elif method == "events/list":
                 if params.get("cursor") is not None:

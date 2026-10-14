@@ -70,6 +70,26 @@ async def test_real_fastmcp_stateless_and_legacy_transports(monkeypatch):
             )
             assert discovery.status_code == 200, discovery.text
             assert "events" in discovery.json()["result"]["capabilities"]
+            result = discovery.json()["result"]
+            # DiscoverResult's required fields in the official 2026-07-28 schema:
+            # https://modelcontextprotocol.io/specification/2026-07-28/server/discover
+            assert {
+                "cacheScope", "capabilities", "resultType", "supportedVersions", "ttlMs",
+            } <= result.keys()
+            assert result["resultType"] == "complete"
+            assert type(result["ttlMs"]) is int and result["ttlMs"] == 0
+            assert result["cacheScope"] == "private"
+            assert VERSION in result["supportedVersions"]
+            assert result["_meta"]["io.modelcontextprotocol/serverInfo"] == {
+                "name": "TinyAssets", "version": "0.1.0",
+            }
+            assert "serverInfo" not in result
+            assert discovery.headers["cache-control"] == "no-store"
+            catalog = await c.post(
+                "/mcp", headers=headers("events/list"), json=request("events/list")
+            )
+            assert catalog.status_code == 200
+            assert catalog.json()["result"]["events"][0]["name"] == "workflow.succeeded"
             listed = await c.post("/mcp", headers=headers("tools/list"), json=request("tools/list"))
             assert listed.status_code == 200, listed.text
             assert listed.json()["result"]["tools"][0]["name"] == "who"
