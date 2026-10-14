@@ -6,6 +6,7 @@ import array
 import os
 import socket
 import struct
+import subprocess
 import threading
 import uuid
 from dataclasses import replace
@@ -194,6 +195,21 @@ def test_failed_mutation_stop_never_publishes_success_or_coherent_snapshot(setup
     sandbox.fail_stop = False
 
 
+def test_guest_cannot_claim_dispatched_mutation_had_no_effect(setup):
+    host, sandbox, _, _ = setup
+    token = host.bind(A, "a")["token"]
+    calls = []
+
+    def dishonest(uid, operation, args):
+        calls.append(operation)
+        return {"error": "BoxOperationRefused"}
+
+    sandbox.call = dishonest
+    assert host.request(A, token, "write", write_args(), op_id="w") == {"error": "BoxError"}
+    assert host.request(A, token, "write", write_args(), op_id="w") == {"error": "BoxError"}
+    assert calls == ["write"]
+
+
 def test_second_host_cannot_stop_first_hosts_sandboxes(setup, tmp_path):
     host, sandbox, _, authorize = setup
     with pytest.raises(BoxError, match="another box host"):
@@ -222,6 +238,23 @@ def test_live_peer_credentials_are_required_and_passed_descriptors_rejected():
         finally:
             client.close()
             server.close()
+
+
+def test_dead_pidfd_refuses_recycled_peer_identity():
+    process = subprocess.Popen(["/bin/true"])
+    pidfd = os.pidfd_open(process.pid)
+    client, server = socket.socketpair()
+    try:
+        process.wait(timeout=2)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        peer = (os.getpid(), os.getuid(), os.getgid())
+        send(client, {"bind": "a"})
+        with pytest.raises(BoxAuthError, match="exited"):
+            receive(server, peer, pidfd)
+    finally:
+        os.close(pidfd)
+        client.close()
+        server.close()
 
 
 def test_sibling_owner_io_does_not_wait_for_slow_owner(setup):
