@@ -272,6 +272,24 @@ _EFFECTORS = {
 }
 
 
+def effect_declaration_error(names: list[str]) -> str:
+    """Empty when every name is a registered sink. Otherwise the save refusal.
+
+    The run records ``unknown effect sink`` and the node does nothing. Save
+    uses this same registry, so a name that would fail at run is refused
+    before it is stored. An empty list clears the declaration.
+    """
+    unknown = [name for name in names if name not in _EFFECTORS]
+    if not unknown:
+        return ""
+    listed = ", ".join(repr(name) for name in unknown)
+    allowed = ", ".join(sorted(_EFFECTORS))
+    return (
+        f"unknown effect sink: {listed}. A node may only name a sink that "
+        f"exists. Allowed: {allowed}."
+    )
+
+
 def _schema_defaulted_keys(state_schema) -> set:
     """The keys the compiler treats as declared for every node (BUG-085):
     state_schema entries carrying a default. Same helper the compiler uses."""

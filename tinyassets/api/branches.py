@@ -2477,7 +2477,14 @@ def _apply_node_spec(branch: Any, raw: Any) -> str:
     if effects_raw is None:
         effects_arg: list[str] = []
     elif isinstance(effects_raw, list):
-        effects_arg = list(effects_raw)
+        effects_arg, effects_err = _coerce_node_keys(effects_raw, "effects")
+        if effects_err:
+            return f"node '{nid}' {effects_err}"
+        from tinyassets.effectors import effect_declaration_error
+
+        sink_err = effect_declaration_error(effects_arg)
+        if sink_err:
+            return f"node '{nid}' {sink_err}"
     else:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
@@ -3031,6 +3038,11 @@ def _apply_node_updates(
         )
         if err:
             return err
+        from tinyassets.effectors import effect_declaration_error
+
+        sink_err = effect_declaration_error(effects)
+        if sink_err:
+            return sink_err
         node.effects = effects
     if "workspace" in editable_updates:
         # The ancestor checkout node whose workspace this node binds. Cleared
