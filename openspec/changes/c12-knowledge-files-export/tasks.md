@@ -9,6 +9,7 @@
 - [ ] 2.3 Independent cross-family review and trusted receipt.
 
 ## 3. Knowledge cutover and export
+- [x] 3.0 Implement/test atomic owner-box revisions, lossless scoped snapshot planning and verified projection, private file preview and bounded inert zip ingestion.
 - [ ] 3.1 Complete source census and lossless staged migration under one snapshot transaction.
 - [ ] 3.2 Bundle-authoritative reads/writes; rebuildable indexes; delete canonical duplicates.
 - [ ] 3.3 One owner export door, preview, manifest, secret exclusions, download and import quarantine.

@@ -31,7 +31,28 @@ This initial slice proves a bounded chat turn and tools. Schedule execution,
 full D1 rules mapping, export/import orchestration and live acceptance remain
 explicit tasks, not simulated successes.
 
-## Cutover and export (not implemented in this slice)
+## File authority and migration preparation
+
+The canonical store binds one existing BoxProvider handle and uses only its
+coherent reads and journalled CAS writes. Each operation stages a complete OKF
+revision with one Markdown entry per record, root index.md containing only
+okf_version frontmatter, and plain log.md. An atomic current.json pointer outside
+the revision is the commit point. Interrupted staging is never visible; indexes
+read only the committed revision. Owner edits to committed Markdown win on the
+next read. Old revisions are history, never scanned into a rebuilt index.
+Physical redaction of historical content needs a separate purge transaction;
+ordinary logical deletion is not claimed to erase historical bytes.
+
+Migration preparation reads verified offline SQLite snapshots in read-only
+transactions. Every table must be classified with explicit scoped columns or an
+exclusion reason. All SQLite values, unknown columns and schema are retained;
+editable prose has exactly one canonical representation in the Markdown body.
+Preparation never changes a live database, infers owner mappings, or starts on
+application boot. Cross-store backup consistency, writer pause and cutover remain
+the deploy transaction's prerequisites. Snapshot commits are bound to the same
+owner, command center and epoch that produced them.
+
+## Cutover and export (remaining integration)
 
 1. Finish and deploy C6; bind the owner box once per operation.
 2. Enumerate legacy knowledge stores and preserve scoped records, metadata,
@@ -57,11 +78,29 @@ explicit tasks, not simulated successes.
 - Every PR requires a trusted exact-head receipt. Builders may not self-stamp
   one (lead handoff); independent review must be supplied by the review lane.
 
-## Guard conflict requiring reconciliation
+## Proposed guard boundary requiring independent review
 
-The unchanged S1 second-path guard rejects the standalone runner's model_call
-callback even under packaging/. D11 explicitly requires a standalone loop with
-a local model, while S1 currently scans this artifact as a hosted call path.
-This branch retains the failing guard: no callback rename or guard allowance
-has been used to manufacture a pass. A gate-owner decision and independent
-review are required before this slice can merge.
+The original S1 second-path guard rejects the standalone runner's model_call
+callback even under packaging/. D11 requires this account-free local loop.
+The proposed change names exactly that artifact, enforces declared standard
+library imports, rejects dynamic Python loading and hosted references, and
+keeps all hosted call paths and S1 ceilings unchanged. Architecture records the
+export-only boundary. This gate change needs independent review before merge.
+
+## Transfer preparation and remaining limitations
+
+The shared versioned file manifest now drives private zip export and import.
+Arbitrary content is captured through one coherent box read, starts excluded,
+and cannot be exported after its generation changes. Detected credentials stay
+blocked; binary inclusion requires an exact named selection. Import validates
+hashes, bounded expansion, regular file types and normalized path collisions
+before writing a fresh platform-owned quarantine with no activation record.
+
+This does not yet supply the owner HTTP door, schema-aware structured config,
+roster, the complete runnable folder, contact-by-contact private inclusion,
+wiki writer integration or hosted activation. The raw arbitrary-file scanner
+also conservatively excludes canonical records containing generated hashes;
+schema-aware serialization must resolve that without allowing secrets through.
+The quarantine caller must resolve its root outside every agent box. There is
+no production caller yet. These limitations must be resolved before cutover;
+the passing ingestion tests are not evidence of a shipped export feature.

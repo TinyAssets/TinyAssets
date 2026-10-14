@@ -25,3 +25,39 @@ terminal input SHALL not execute. The runner SHALL not start schedules implicitl
 #### Scenario: Model tries to change its rules
 - **WHEN** a file tool targets run/rules.json or runner code
 - **THEN** the tool refuses the operation.
+
+### Requirement: Atomic file authority
+Knowledge SHALL be committed through the bound owner's BoxProvider with a
+generation fence. A complete OKF revision SHALL precede its commit pointer;
+only the pointed revision SHALL be indexed. Unknown entry metadata and exact
+prose SHALL round-trip. A snapshot from another owner, center or epoch SHALL
+never be accepted for a write.
+
+#### Scenario: A write fails before its commit point
+- **WHEN** staging is interrupted before the pointer write
+- **THEN** readers continue to see the previous complete revision
+- **AND** a retry with the original snapshot and operation id completes idempotently.
+
+### Requirement: Private content preview
+Export and import SHALL share a versioned file manifest with relative paths and
+content hashes. Arbitrary content SHALL start excluded and selection SHALL bind
+to the exact preview bytes and owner. Detected credentials SHALL remain excluded
+regardless of approval; uninspectable binaries SHALL need named selection.
+
+#### Scenario: Approval cannot override a detected credential
+- **WHEN** the owner selects a file that contains a detected credential
+- **THEN** export refuses that selection without returning an archive.
+
+### Requirement: Bounded inert import
+Import SHALL validate all bytes and path collisions before creating fresh
+platform-owned quarantine, SHALL enforce resource bounds, and SHALL never
+execute imported files or create an activation record.
+
+#### Scenario: Archive tries to escape or collide
+- **WHEN** an archive contains traversal, links, special files, or case or Unicode collisions
+- **THEN** import fails before creating quarantine files.
+
+#### Scenario: Imported code remains inert
+- **WHEN** a valid archive contains executable runner code or hooks
+- **THEN** only regular file bytes are copied to quarantine
+- **AND** no runner, hook, filter, installer or schedule executes.

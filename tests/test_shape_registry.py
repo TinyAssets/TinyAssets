@@ -449,3 +449,23 @@ def test_git_added_uses_the_pr_diff_not_untracked_files():
         patch.object(check_shapes.subprocess, "run", side_effect=git_diff_only),
     ):
         assert check_shapes.git_added() == {"tinyassets/new.py"}
+
+
+def test_export_runtime_is_one_isolated_stdlib_artifact(tmp_path):
+    runner = tmp_path / check_shapes.EXPORT_RUNTIME
+    runner.parent.mkdir(parents=True)
+    runner.write_text("import urllib.request\ndef turn(model_call): return model_call([])\n")
+    assert check_shapes.export_runtime_problems(tmp_path) == []
+    assert not any(check_shapes.registered_path(check_shapes.EXPORT_RUNTIME, path)
+                   for path in check_shapes.SHAPES["S1"].paths)
+    runner.write_text("from tinyassets.providers import router\n")
+    assert check_shapes.export_runtime_problems(tmp_path)
+    runner.write_text("from . import other_runner\n")
+    assert check_shapes.export_runtime_problems(tmp_path)
+    runner.write_text("loader = __import__\nloader('tinyassets')\n")
+    assert check_shapes.export_runtime_problems(tmp_path)
+    runner.write_text("import json\n")
+    hosted = tmp_path / "tinyassets" / "caller.py"
+    hosted.parent.mkdir()
+    hosted.write_text('path = "packaging/command-center/run/agent.py"\n')
+    assert any("hosted caller" in p for p in check_shapes.export_runtime_problems(tmp_path))

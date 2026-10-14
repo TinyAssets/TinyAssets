@@ -14,6 +14,41 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs/architecture.md"
+EXPORT_RUNTIME = "packaging/command-center/run/agent.py"
+# ADR-018's account-free local runner is shipped as bytes, never a hosted caller.
+# This is one exact artifact, not a directory allowance or an S1 ceiling change.
+EXPORT_STDLIB = frozenset({
+    "__future__", "argparse", "json", "os", "secrets", "selectors", "signal",
+    "subprocess", "sys", "time", "urllib.parse", "urllib.request", "pathlib", "stat",
+})
+
+
+def export_runtime_problems(root: Path) -> list[str]:
+    path = root / EXPORT_RUNTIME
+    if not path.exists():
+        return []
+    problems = []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return ["export-runtime: runner must be parseable Python"]
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module if not node.level else "relative-import"]
+        if any(module not in EXPORT_STDLIB for module in modules):
+            problems.append("export-runtime: only declared standard-library imports are allowed")
+        if isinstance(node, ast.Name) and node.id in {"__import__", "exec", "eval", "compile"}:
+            problems.append("export-runtime: dynamic Python loading is not allowed")
+    # The artifact is not in the wheel and has no production caller. The eventual
+    # exporter must serialize bytes without importing or executing this artifact.
+    for hosted in files("tinyassets/**/*.py", root):
+        source = hosted.read_text(encoding="utf-8")
+        if "command-center/run" in source or "command_center.run" in source:
+            problems.append(f"export-runtime: hosted caller {hosted.relative_to(root)}")
+    return sorted(set(problems))
 
 
 @dataclass(frozen=True)
@@ -737,6 +772,8 @@ def added_line_problems(changes: dict[str, str]) -> list[str]:
 def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
     problems: list[str] = []
     problems.extend(dead_entry_problems(root))
+    export_problems = export_runtime_problems(root)
+    problems.extend(export_problems)
     rows = registry_rows((root / "docs/architecture.md").read_text(encoding="utf-8"))
     missing = sorted(rows.keys() - SHAPES.keys())
     extra = sorted(SHAPES.keys() - rows.keys())
@@ -784,6 +821,8 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
             continue
         source = path.read_text(encoding="utf-8", errors="replace")
         for shape_id, pattern in ENTRY_SYMBOLS.items():
+            if shape_id == "S1" and rel == EXPORT_RUNTIME and not export_problems:
+                continue
             if not any(registered_path(rel, glob) for glob in SHAPES[shape_id].paths) and re.search(
                 pattern, source
             ):
