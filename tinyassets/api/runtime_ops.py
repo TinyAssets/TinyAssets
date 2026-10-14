@@ -129,6 +129,10 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
     actor = _current_actor()
     request_id = kwargs.get("request_id")
     if not isinstance(request_id, str) or not request_id.strip():
+        from tinyassets.auth.middleware import current_request_boundary_id
+
+        request_id = current_request_boundary_id()
+    if not isinstance(request_id, str) or not request_id.strip():
         return json.dumps({"error": "project_memory_set requires a stable request_id."})
     try:
         result = project_memory_set(
