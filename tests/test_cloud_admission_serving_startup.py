@@ -105,6 +105,7 @@ def boot_sentinels(monkeypatch, tmp_path):
     ``main`` already swallows failures there, so the raise only bounds the test.
     """
     from tinyassets import engine_mcp_http, provider_assignment
+    from tinyassets.broker import supervisor
     from tinyassets.control_plane import tick as assigned_queue_consumer
     from tinyassets.onboarding import session_store
 
@@ -122,6 +123,7 @@ def boot_sentinels(monkeypatch, tmp_path):
         raise RuntimeError("sentinel: boot maintenance must not run unadmitted")
 
     monkeypatch.setattr(session_store, "arm", _arm)
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda *_a, **_k: object())
     monkeypatch.setattr(
         provider_assignment, "reconcile_orphaned_reservations_on_boot", _maintenance
     )
@@ -179,11 +181,11 @@ def test_serving_boot_refuses_unadmitted_with_a_nonzero_exit(
     )
 
 
-@pytest.mark.parametrize("transport", ["stdio", "sse"])
-def test_local_transport_boots_without_starting_consumer_when_not_cloud(
-    unresolved, boot_sentinels, monkeypatch, transport,
+@pytest.mark.parametrize("transport", ["streamable-http", "stdio", "sse"])
+def test_every_transport_refuses_unadmitted_before_startup(
+    unresolved, boot_sentinels, transport,
 ):
-    """Local transport remains usable without cloud owner-tick admission."""
+    """No transport may reach downstream boot actions without admission."""
     calls: list[int] = []
 
     def _resolver():
@@ -191,16 +193,12 @@ def test_local_transport_boots_without_starting_consumer_when_not_cloud(
         return UNADMITTED
 
     unresolved(_resolver)
-    monkeypatch.setattr(
-        us.mcp, "run",
-        lambda **_kwargs: boot_sentinels.append("local-listener"),
-    )
-
-    us.main(transport=transport)
+    with pytest.raises(SystemExit) as excinfo:
+        us.main(transport=transport)
 
     assert calls == [1], "boot must resolve exactly once"
-    assert "local-listener" in boot_sentinels
-    assert "queue-worker-start" not in boot_sentinels
+    assert excinfo.value.code == us.PLATFORM_NOT_CLOUD_EXIT_CODE
+    assert boot_sentinels == ["seal-arm"]
 
 
 def test_the_seal_is_armed_before_admission_resolves_anything(
