@@ -21,6 +21,8 @@ never shell code; process environment values override file values. Linked,
 malformed or duplicate-key files fail visibly. The manifest roster names each
 agent's optional `AGENT_n` model group. Set its URL and model together; that
 endpoint never inherits the global API key.
+Changing an endpoint through the shell environment drops the file's old endpoint
+key unless the shell also supplies a key.
 It never contacts TinyAssets. Model traffic goes to the endpoint you configure.
 
 Bash runs with your host privileges. By default every command requires typing

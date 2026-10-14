@@ -40,6 +40,8 @@ account or network connection is needed. .env.example lists empty placeholders;
 copy it to .env and fill the model variables, or set them in your shell.
 The runner reads .env as literal data, never as shell code. Shell environment
 values override .env; duplicate/unknown keys and malformed values fail startup.
+A shell endpoint override drops the file's old endpoint key unless you also
+set the key in the shell.
 The manifest roster names each agent's optional AGENT_n model environment group.
 Set that group's MODEL_BASE_URL and MODEL_NAME together to override the global
 endpoint for that agent; its MODEL_API_KEY is separate and never inherited from

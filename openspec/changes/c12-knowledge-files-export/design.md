@@ -214,8 +214,9 @@ Root and nested agent paths may not collide. Root platform state stays absent.
 The canonical settings parser validates bounds, duplicates and typed fields;
 only model identifiers/connections and source owner bindings are replaced or
 omitted before the preview. Other behavior/configuration fields retain ordinary
-credential screening. Contact selection traverses JSON string values, so a
-phone-shaped numeric configuration value cannot become invalid JSON.
+credential screening. Contact selection traverses typed string values, so a
+phone-shaped number stays numeric. Serialization uses the canonical parser's
+YAML scalar rules, preserving scientific floats and numeric-looking strings.
 
 The shared manifest accepts an optional roster for private/share exports while
 existing public-package bytes remain unchanged. The roster is derived only from
@@ -229,4 +230,5 @@ rules, workflow definitions or schedule records; those remain next integration.
 Local .env loading uses a 64-KiB, no-follow, single-link regular-file read and a
 closed model-variable grammar. Values are literal; no shell is sourced, no
 process environment is mutated, and existing process values take precedence.
+An endpoint override cannot inherit the file credential for a different endpoint.
 Malformed local files fail before fallback. The file tools still refuse .env.
