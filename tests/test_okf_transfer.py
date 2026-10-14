@@ -246,3 +246,41 @@ def test_contact_scan_is_bounded_on_large_plain_text_and_preserves_items():
         "'Call +1 (212) 555-0123 or a@example.com')] == "
         "['+1 (212) 555-0123', 'a@example.com']",
     ], check=True, timeout=10)
+
+
+def test_discovery_lists_only_eligible_files(box):
+    from tinyassets.okf.transfer import discover
+
+    for number, path in enumerate([
+        "workspace/note.md", "agents/main/AGENTS.md", "workspace/.env",
+        "wiki/soul.md", "wiki/raw/private.md", "wiki/drafts/idea.md",
+        "workspace/wiki/daemon-wiki/private.md", "wiki/topics/topic.md",
+    ]):
+        write(box, path, b"content", str(number))
+    assert [item["path"] for item in discover(*box)["files"]] == [
+        "agents/main/AGENTS.md", "wiki/topics/topic.md", "workspace/note.md",
+    ]
+    with pytest.raises(InvalidBundle, match="bound"):
+        discover(*box, limits=Limits(files=2))
+
+
+def test_discovery_refuses_changed_tree(box, monkeypatch):
+    from tinyassets.okf.transfer import discover
+
+    provider, _ = box
+    write(box, "workspace/note", b"first")
+    original = provider.list
+    def changing(*args, **kwargs):
+        result = original(*args, **kwargs)
+        write(box, "workspace/note", b"second", "during-list")
+        return result
+    monkeypatch.setattr(provider, "list", changing)
+    with pytest.raises(WriteConflict):
+        discover(*box)
+
+
+@pytest.mark.parametrize("path", ["wiki/soul.md", "wiki/raw/a", "wiki/drafts/a",
+                                  "workspace/wiki/daemon-wiki/a"])
+def test_wiki_private_sources_cannot_be_selected_directly(box, path):
+    with pytest.raises(InvalidBundle, match="cannot be exported"):
+        preview(*box, [path])

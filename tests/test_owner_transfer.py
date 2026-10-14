@@ -346,3 +346,14 @@ def test_peer_blob_creation_racing_erasure_retains_real_bytes(transfer_door, mon
         assert futures[0].result(timeout=5) == result["sha256"]
     assert packages.read_blob(base, result["sha256"]) == raw
     assert packages.blob_owned(base, B, result["sha256"])
+
+
+def test_discovery_requires_protected_owner_and_lists_bound_center(transfer_door):
+    client, _, _ = transfer_door
+    body = {"operation": "list", "command_center": HOME_A}
+    response = request(client, body)
+    assert response.status_code == 200, response.text
+    assert response.json()["files"] == [{"path": PATH, "size": 7}]
+    assert request(client, {**body, "command_center": HOME_B}).status_code == 403
+    client.cookies.clear()
+    assert request(client, body).status_code == 403

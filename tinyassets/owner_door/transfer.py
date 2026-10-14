@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse, Response
 
 from tinyassets.boxes.provider import BoxAuthError, BoxError, StaleHandle, WriteConflict
 from tinyassets.okf.bundle import InvalidBundle
-from tinyassets.okf.transfer import Limits, Preview, export_zip, ingest_zip, preview
+from tinyassets.okf.transfer import Limits, Preview, discover, export_zip, ingest_zip, preview
 from tinyassets.owner_door.routes import _BYTE_HEADERS, _HEADERS
 
 _TTL = 600
@@ -55,7 +55,10 @@ def _arguments(args):
     if not args["command_center"] or len(args["command_center"]) > 256:
         raise InvalidBundle("Invalid command center")
     operation = args.get("operation")
-    if operation == "preview":
+    if operation == "list":
+        if set(args) != {"operation", "command_center"}:
+            raise InvalidBundle("List needs only the command center")
+    elif operation == "preview":
         if set(args) != {"operation", "command_center", "paths"} or not _strings(args["paths"]):
             raise InvalidBundle("Preview needs a list of file paths")
     elif operation == "export":
@@ -82,6 +85,8 @@ def _arguments(args):
 
 
 def _transfer(provider, handle, args):
+    if args["operation"] == "list":
+        return discover(provider, handle)
     if args["operation"] == "import":
         from tinyassets.api.helpers import _base_path
         from tinyassets.command_center_packages import quarantine_import

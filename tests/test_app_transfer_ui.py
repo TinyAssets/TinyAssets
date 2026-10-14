@@ -1,0 +1,82 @@
+"""Execute the transfer module: private selections, text-only rendering and stale results."""
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+
+from tests.test_app_account_transition import _function_source, _run_node
+from tinyassets.onboarding import render_app_html
+
+SOURCE = Path(__file__).resolve().parents[1] / "tinyassets/onboarding/app/transfer.js"
+
+
+def test_private_transfer_ui_boundaries():
+    module = base64.b64encode(SOURCE.read_bytes()).decode()
+    result = _run_node(r'''
+const assert = require('node:assert/strict');
+class Node {
+  constructor(tag) { this.tag=tag; this.children=[]; this.style={};
+    this.events={}; this.checked=false; }
+  set innerHTML(value) { throw new Error('untrusted HTML insertion'); }
+  append(...nodes) { this.children.push(...nodes); nodes.forEach(n=>n.parent=this); }
+  replaceChildren(...nodes) { this.children=[]; this.append(...nodes); }
+  setAttribute() {}
+  addEventListener(name, fn) { this.events[name]=fn; }
+  showModal() { this.open=true; }
+  close() { this.open=false; this.events.close?.(); }
+  remove() { if(this.parent)this.parent.children=this.parent.children.filter(n=>n!==this); }
+  click() { return this.onclick?.(); }
+}
+global.document={body:new Node('body'),createElement:tag=>new Node(tag),
+  createTextNode:text=>Object.assign(new Node('text'),{textContent:text})};
+function all(root, predicate) {
+  return [root,...root.children.flatMap(n=>all(n,()=>true))].filter(predicate); }
+const button = text => all(document.body,n=>n.tag==='button'&&n.textContent===text)[0];
+const inputs = () => all(document.body,n=>n.type==='checkbox');
+const tick = () => new Promise(r=>setImmediate(r));
+(async()=>{
+ const {openTransfer}=await import('data:text/javascript;base64,''' + module + r'''');
+ const calls=[]; let current=true, delayed=null, downloads=0;
+ URL.createObjectURL=()=>{downloads++;return 'blob:test';}; URL.revokeObjectURL=()=>{};
+ const request=async body=>{
+   calls.push(body);
+   if(body.operation==='list')return {ok:true,json:async()=>({files:[
+     {path:'workspace/note',size:2}]})};
+   if(body.operation==='preview')return {ok:true,json:async()=>({
+     preview:'p',limitations:'review',files:[
+     {path:'workspace/note',binary:false,blocked:null,
+      content:'<img src=x onerror=steal()>',contacts:[{index:0,value:'person@example.com'}]},
+     {path:'workspace/blocked',binary:false,blocked:'credential',content:'secret',contacts:[]},
+     {path:'workspace/image',binary:true,blocked:null,content:null,contacts:[]}]})};
+   if(body.operation==='export')return {ok:true,blob:()=>new Promise(resolve=>{delayed=resolve;})};
+   throw new Error('unexpected request');
+ };
+ openTransfer({commandCenter:'home-a',request,isCurrent:()=>current}); await tick();
+ assert(inputs().every(n=>!n.checked));
+ inputs()[0].checked=true; await button('Preview selected files').click();
+ assert(inputs().slice(1).every(n=>!n.checked));
+ assert(all(document.body,n=>n.tag==='pre')[0].textContent.includes('<img'));
+ const check=inputs(); check[1].checked=true; check[2].checked=true;
+ assert(check[3].disabled); check[3].checked=true; check[4].checked=true;
+ const pending=button('Download private zip').click(); await tick();
+ assert.deepEqual(calls.at(-1).selected,['workspace/note','workspace/image']);
+ assert.deepEqual(calls.at(-1).named_binaries,['workspace/image']);
+ assert.deepEqual(calls.at(-1).included_contacts,{'workspace/note':[0]});
+ current=false; delayed(new Blob(['private'])); await pending;
+ assert.equal(downloads,0); assert.equal(document.body.children.length,0);
+ console.log(JSON.stringify({passed:true}));
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
+    assert result == {"passed": True}
+
+
+def test_account_clear_closes_private_preview_immediately():
+    html, _ = render_app_html()
+    source = _function_source(html, "clearAccountScopedState")
+    # Run the real synchronous first boundary before unrelated app collaborators.
+    source = source[:source.index('if(typeof CredentialRequests')] + "}"
+    result = _run_node('let closed=false; const $=id=>({close(){closed=true;}});\n'
+                       + source + '\nclearAccountScopedState();'
+                       + 'console.log(JSON.stringify(closed));')
+    assert result is True
+    assert "__TA_TRANSFER_URL__" not in html

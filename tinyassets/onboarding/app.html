@@ -835,6 +835,9 @@
         <p id="profile-name"></p>
         <p id="profile-responsibility"></p>
         <div id="profile-status" class="notice" role="status"></div>
+        <details><summary aria-label="Command center actions">⋯</summary>
+          <button id="btn-transfer" class="btn btn--link" type="button">Export or import command center</button>
+        </details>
         <h3>Soul and memory</h3>
         <p>Edit who your agent is, its name and style, and what it remembers.
         You can also say “forget X” in chat to remove a remembered fact.</p>
@@ -6486,6 +6489,8 @@
     setStatusLine(""); renderWorking();
   }
   function clearAccountScopedState(){
+    const transferDialog=$("command-center-transfer");
+    if(transferDialog && typeof transferDialog.close==="function") transferDialog.close();
     if(typeof CredentialRequests!=="undefined")CredentialRequests.clear();
     if(typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     queueScope=""; queueOwner="";
@@ -8317,6 +8322,18 @@
     $("btn-apps").addEventListener("click", ()=>showApps());
     $("btn-apps-back").addEventListener("click", ()=>showView("chat"));
     $("btn-account").addEventListener("click", showAccount);
+    $("btn-transfer").addEventListener("click", async()=>{
+      const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
+      const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
+      try{
+        const transfer=await import("__TA_TRANSFER_URL__");
+        if(!current()) return;
+        transfer.openTransfer({commandCenter:home,isCurrent:current,
+          request:body=>fetch("/app/api/transfer",{method:"POST",credentials:"same-origin",
+            headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+            body:JSON.stringify(body)})});
+      }catch(e){ if(current()) $("profile-status").textContent="Transfer could not open. Refresh and try again."; }
+    });
     $("btn-account-back").addEventListener("click", leaveAccount);
     $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
     $("btn-delete-account").addEventListener("click", deleteAccount);

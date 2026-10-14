@@ -83,8 +83,13 @@ def _scope(handle):
 
 
 def _never(path):
+    parts = [part.casefold() for part in path.split("/")]
+    if "wiki" in parts:
+        wiki = parts[parts.index("wiki") + 1:]
+        if "soul.md" in wiki or any(part in {"raw", "drafts", "daemon-wiki"} for part in wiki):
+            return True
     return any(
-        part.casefold() in NEVER or part.casefold().startswith(".env.") for part in path.split("/")
+        part in NEVER or part.startswith(".env.") for part in parts
     )
 
 
@@ -98,6 +103,42 @@ def _agents(paths):
         for path in sorted(paths)
         if re.fullmatch(r"agents/[^/]+/AGENTS\.md", path)
     ]
+
+
+def discover(provider: BoxProvider, handle: BoxHandle, *, limits=Limits()):
+    """List eligible regular files, refusing a partial or stale discovery."""
+    generation = provider.read_many(handle, [], max_total=0).generation
+    pending, found, visited = list(sorted(CONTENT_ROOTS)), [], 0
+    deadline = time.monotonic() + limits.seconds
+    while pending:
+        path = pending.pop()
+        if _never(path):
+            continue
+        safe_path(path, depth=limits.depth)
+        info = provider.stat(handle, "/cc/" + path)
+        if info is None:
+            continue
+        visited += 1
+        if visited > limits.files or time.monotonic() > deadline:
+            raise InvalidBundle("File discovery exceeds its bound; use explicit paths")
+        if info.kind == "file":
+            found.append({"path": path, "size": info.size})
+        elif info.kind == "dir":
+            cursor, cursors = None, set()
+            while True:
+                page = provider.list(handle, "/cc/" + path, cursor=cursor)
+                pending.extend(path + "/" + entry.name for entry in page.entries)
+                if len(pending) + visited > limits.files or time.monotonic() > deadline:
+                    raise InvalidBundle("File discovery exceeds its bound; use explicit paths")
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+                if cursor in cursors:
+                    raise InvalidBundle("File discovery cursor did not advance")
+                cursors.add(cursor)
+    if provider.read_many(handle, [], max_total=0).generation != generation:
+        raise WriteConflict("Files changed during discovery; list again")
+    return {"files": sorted(found, key=lambda item: item["path"]), "generation": generation}
 
 
 @dataclass(frozen=True)

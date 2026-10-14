@@ -241,6 +241,7 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
         .replace("__TA_APP_RECOVERY__", recovery_source())
         .replace("__TA_CHAT_RENDER__", chat_renderer_source())
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
+        .replace("__TA_TRANSFER_URL__", module_url("transfer.js"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace("__TA_CREDENTIAL_REQUESTS__", credential_requests_source())
         .replace(_NONCE_PLACEHOLDER, nonce)

@@ -71,7 +71,8 @@ owner, command center and epoch that produced them.
 ## Blockers observed in this cloud environment
 
 - `scripts/linux_oracle.py --ci`: base image request to mirror.gcr.io returned
-  Forbidden; no oracle pass exists.
+  Forbidden locally; hosted exact-head Linux oracle shards passed at d10eec39.
+  The final candidate still needs its own exact-head CI pass.
 - `scripts/deployed_sha.py --json`: tinyassets.io/app tunnel returned HTTP 403;
   live SHA cannot currently be observed.
 - Claude CLI absent; no cross-family review receipt can be manufactured.
@@ -96,14 +97,12 @@ blocked; binary inclusion requires an exact named selection. Import validates
 hashes, bounded expansion, regular file types and normalized path collisions
 before writing a fresh platform-owned quarantine with no activation record.
 
-This does not yet supply the owner HTTP door, schema-aware structured config,
-roster, the complete runnable folder, contact-by-contact private inclusion,
-wiki writer integration or hosted activation. The raw arbitrary-file scanner
-also conservatively excludes canonical records containing generated hashes;
-schema-aware serialization must resolve that without allowing secrets through.
-The quarantine caller must resolve its root outside every agent box. There is
-no production caller yet. These limitations must be resolved before cutover;
-the passing ingestion tests are not evidence of a shipped export feature.
+The owner door, shared manifest, private contact choices and standalone files
+are implemented below. Structured configuration, roster, complete D1 policy and
+schedule mapping, curated wiki conversion and hosted activation remain open.
+The arbitrary-file scanner conservatively excludes canonical records containing
+generated hashes; schema-aware serialization must resolve that without allowing
+secrets through. Passing ingestion tests do not establish a shipped feature.
 
 ## Owner transfer integration
 
@@ -159,7 +158,8 @@ A platform `bundle_imports` record binds an opaque import id to authenticated
 owner, command center, placement epoch and digest. Its state is quarantined;
 there is no pending executable install action or activation receipt. Storage
 uses the existing account packages pool and the account-deletion writer fence.
-Account erasure removes import metadata by owner. A future explicit activation
+Erasure inventory is durably recorded before any blob write and survives every
+later failure. Account erasure removes private bytes and metadata by owner. A future explicit activation
 must recheck that record and epoch, construct a reviewed installation plan and
 use BoxProvider; importing alone never writes an owner box or starts code.
 
@@ -169,3 +169,15 @@ shared bytes. Blob creation and reference-counted removal share the package
 writer transaction; a concurrent peer import cannot record a now-missing file.
 Quarantine rows survive failed removal for retry. The unused extracted-directory
 quarantine helper has been deleted; there is one production custody path.
+
+## Owner interaction
+
+The profile's transfer control opens a protected preview. File discovery lists
+eligible regular files through BoxProvider only, excludes never-exported trees,
+and refuses a changed generation or an incomplete bounded walk. The owner
+chooses files for content preview, then explicitly selects final content and
+individual private contacts before downloading. Text is rendered with DOM text
+nodes, never HTML; binaries are named rather than rendered. The same control
+accepts a local zip and reports durable quarantine without claiming activation.
+All asynchronous UI responses are discarded after identity/center/login changes.
+The account-clear boundary also closes and clears an already visible private preview.
