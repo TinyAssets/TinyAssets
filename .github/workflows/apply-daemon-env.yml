@@ -109,7 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s' "$DO_SSH_KEY" > ~/.ssh/do_deploy
+          printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           # TOFU host identity (systemic across all droplet workflows; a pinned
           # DO_SSH_KNOWN_HOSTS secret is the tracked follow-up).
