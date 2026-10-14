@@ -37,7 +37,13 @@ credential paths, links and paths outside the folder. Bash, once authorized,
 is a host shell and is not confined by the file-tool checks.
 
 Review an imported runner before executing it. Hosted jail, egress and
-review guarantees are absent locally. Schedules do not start here. Windows,
-broker-equivalent enforcement of other action classes and schedule execution
-are outstanding C12 work. Other behaviors are supplied to the model, but a host
+review guarantees are absent locally. Schedules need the separate
+`sh run/schedule --enable` command and reviewed `automations.json` prompt data;
+the bundled example is disabled. Intervals, one-time timestamps and numeric
+five-field cron with IANA zones run only while the machine is on. Durable
+claims and an OS lock prevent automatic replay after uncertain execution.
+`--once` checks the current slot and exits; no offline backlog is replayed.
+Platform workflow/schedule serialization into this local prompt format,
+Windows and broker-equivalent enforcement of other action classes remain
+outstanding C12 work. Other behaviors are supplied to the model, but a host
 shell has no broker to classify its effects; keep its default command prompts.

@@ -1,5 +1,24 @@
 ## ADDED Requirements
 
+### Requirement: Explicit local schedule execution
+The standalone runner SHALL start schedules only with a separate explicit
+enable flag. It SHALL validate bounded local schedule data before execution,
+serialize runners with an OS lock and durably claim each due slot before a
+model turn. An uncertain attempt SHALL block automatic replay. Local schedules
+SHALL retain file/shell consent and SHALL not claim always-on or hosted delivery.
+
+#### Scenario: Restart follows an interrupted scheduled turn
+- **WHEN** a prior durable claim has no completion record
+- **THEN** the scheduler refuses further execution until the owner inspects the uncertain attempt.
+
+#### Scenario: Daylight saving repeats a wall-clock slot
+- **WHEN** a cron slot repeats in the configured IANA time zone
+- **THEN** the local schedule executes that wall-clock slot at most once.
+
+#### Scenario: A second process or changed schedule competes with the running loop
+- **WHEN** another scheduler starts or its captured configuration changes
+- **THEN** the second process or stale loop refuses before another model turn.
+
 ### Requirement: Portable broker rule projection
 The protected export door SHALL capture broker-owned rules for previewed agents,
 scoped to the bound owner and center, and reject download if policy changes.

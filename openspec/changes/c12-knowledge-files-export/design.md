@@ -256,3 +256,20 @@ Policies/settings/manifest/schedule state are read-only to model file tools.
 The model sees the remaining action behaviors, but a host shell has no broker
 effect classification, egress or spend enforcement. Full D1 is still incomplete;
 the README preserves that limit and the default per-command shell prompt.
+
+## Explicit local schedules
+
+The same inert standalone runtime accepts a separate schedule/enable invocation;
+chat never starts it. A disabled example documents the local prompt schema.
+This does not yet serialize platform graph schedules or claim that a model
+prompt is equivalent to a workflow graph. Numeric five-field cron (all fields
+match, Sunday zero) uses an explicit IANA zone; interval and once use aware
+timestamps. Only the present minute's slot may run; offline backlog is not
+replayed. The previous local wall-clock slot suppresses DST-fold duplicates.
+
+A no-follow regular-file flock serializes local schedulers. Bounded atomic
+state is fsynced before any model turn and again after completion. An exception
+or process death leaves a claimed attempt; restart stops for owner inspection,
+never guesses that effects did not happen. Configuration changes also stop the
+loop. The state stores only each schedule's latest attempt and remains within
+the closed 100-schedule/1-MiB limits. Existing tool consent remains in force.

@@ -7,6 +7,8 @@
 - [x] 2.1 Dependency-free chat turn and read/write/edit/bash with explicit owner policy; exact-head tests.
 - [ ] 2.2 Export manifest integration, full D1 rule mapping and separately enabled schedules.
 - [x] 2.2a Export the actual root harness, validated portable roster/settings and per-agent model references; support literal local .env with endpoint-bound credentials.
+- [x] 2.2b Capture broker-owned behavior rules with canonical identities and policy fencing; enforce local file/shell rules without transferable grants.
+- [x] 2.2c Implement explicitly enabled local prompt schedules with durable claims, no uncertain replay and IANA-aware cron; platform graph/schedule conversion remains in 2.2.
 - [ ] 2.3 Independent cross-family review and trusted receipt.
 
 ## 3. Knowledge cutover and export

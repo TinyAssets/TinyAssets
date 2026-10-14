@@ -7,6 +7,9 @@ running it. Bash has your host privileges; each command asks by default.
 from __future__ import annotations
 
 import argparse
+import datetime
+import fcntl
+import hashlib
 import json
 import os
 import secrets
@@ -17,6 +20,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import zoneinfo
 from pathlib import Path, PurePosixPath
 
 TOOLS = [
@@ -386,13 +390,278 @@ def model_environment(root, agent):
             environment.get("MODEL_NAME", ""), environment.get("MODEL_API_KEY", ""))
 
 
+def _instant(value):
+    if not isinstance(value, str):
+        raise ValueError("Schedule instants must be ISO timestamps with offsets")
+    moment = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise ValueError("Schedule instants need an explicit UTC offset")
+    return moment.timestamp()
+
+
+def _cron(expression):
+    """Numeric five-field cron; all fields match, as in the hosted scheduler."""
+    if not isinstance(expression, str) or len(expression) > 256:
+        raise ValueError("Invalid local cron expression")
+    fields = expression.split()
+    if len(fields) != 5:
+        raise ValueError("Cron needs minute hour day month weekday")
+    result = []
+    for token, (lo, hi) in zip(fields, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))):
+        values = set()
+        for part in token.split(","):
+            item, separator, stride = part.partition("/")
+            step = int(stride) if separator else 1
+            if step < 1 or step > hi + 1:
+                raise ValueError("Invalid cron step")
+            if item == "*":
+                start, end = lo, hi
+            elif "-" in item:
+                first, last = item.split("-", 1)
+                start, end = int(first), int(last)
+            else:
+                if separator:
+                    raise ValueError("Cron steps require a range or wildcard")
+                start = end = int(item)
+            if not lo <= start <= end <= hi:
+                raise ValueError("Cron field outside its range")
+            values.update(range(start, end + 1, step))
+        result.append(values)
+    return result
+
+
+def schedules(root):
+    """Read data only: no imported code, expressions or platform bindings."""
+    raw = LocalTools(root).read("automations.json")
+    document = _schedule_json(raw)
+    if (not isinstance(document, dict) or set(document) != {"schema_version", "automations"}
+            or type(document["schema_version"]) is not int or document["schema_version"] != 1
+            or not isinstance(document["automations"], list)
+            or len(document["automations"]) > 100):
+        raise ValueError("Invalid local schedule document")
+    seen = set()
+    for row in document["automations"]:
+        if (not isinstance(row, dict)
+                or set(row) != {"id", "agent", "message", "enabled", "trigger"}
+                or type(row["enabled"]) is not bool):
+            raise ValueError("Invalid local schedule entry")
+        for field in ("id", "agent"):
+            value = row[field]
+            if (not isinstance(value, str) or not 1 <= len(value) <= 100
+                    or value in (".", "..") or not value.isascii()
+                    or any(not (char.isalnum() or char in "-_.") for char in value)):
+                raise ValueError("Schedule identifiers must be simple local names")
+        if row["id"] in seen:
+            raise ValueError("Schedule identifiers must be unique")
+        seen.add(row["id"])
+        if not isinstance(row["message"], str) or not 1 <= len(row["message"]) <= 64 * 1024:
+            raise ValueError("Schedule message must be bounded nonempty text")
+        trigger = row["trigger"]
+        if not isinstance(trigger, dict):
+            raise ValueError("Invalid local schedule trigger")
+        kind = trigger.get("kind")
+        if kind == "interval" and set(trigger) == {"kind", "seconds", "start_at"}:
+            if type(trigger["seconds"]) is not int or not 60 <= trigger["seconds"] <= 31536000:
+                raise ValueError("Local intervals must be between one minute and one year")
+            _instant(trigger["start_at"])
+        elif kind == "once" and set(trigger) == {"kind", "at"}:
+            _instant(trigger["at"])
+        elif kind == "cron" and set(trigger) == {"kind", "expression", "timezone"}:
+            _cron(trigger["expression"])
+            if not isinstance(trigger["timezone"], str):
+                raise ValueError("Cron needs an IANA time zone")
+            zoneinfo.ZoneInfo(trigger["timezone"])
+        else:
+            raise ValueError("Unsupported local schedule trigger; no hosted fallback")
+    return document["automations"], hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _schedule_json(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate schedule data key")
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=unique)
+
+
+def due_slot(row, now, previous):
+    """No offline backlog: execute only the present minute's slot."""
+    if not row["enabled"]:
+        return None
+    trigger, local = row["trigger"], ""
+    if trigger["kind"] == "cron":
+        moment = datetime.datetime.fromtimestamp(now, zoneinfo.ZoneInfo(trigger["timezone"]))
+        values = (moment.minute, moment.hour, moment.day, moment.month, (moment.weekday() + 1) % 7)
+        if not all(value in field for value, field in zip(values, _cron(trigger["expression"]))):
+            return None
+        local = moment.strftime("%Y-%m-%dT%H:%M")
+        due = int(now // 60) * 60
+    elif trigger["kind"] == "interval":
+        start = _instant(trigger["start_at"])
+        if now < start:
+            return None
+        due = start + int((now - start) // trigger["seconds"]) * trigger["seconds"]
+    else:
+        due = _instant(trigger["at"])
+    if not 0 <= now - due < 60:
+        return None
+    if previous and (due <= previous["due"] or (local and local <= previous["local"])):
+        return None
+    return {"due": due, "local": local, "status": "claimed"}
+
+
+class ScheduleState:
+    """One local scheduler; fsynced claims survive process death without replay."""
+    def __init__(self, root):
+        import stat
+
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.directory = self.lock = None
+        try:
+            try:
+                os.mkdir(".run-state", mode=0o700, dir_fd=parent)
+                os.fsync(parent)
+            except FileExistsError:
+                pass
+            self.directory = os.open(".run-state", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=parent)
+            self.lock = os.open("schedule.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                0o600, dir_fd=self.directory)
+            info = os.fstat(self.lock)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Schedule lock must be an unlinked regular file")
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            os.close(parent)
+
+    def close(self):
+        for name in ("lock", "directory"):
+            descriptor = getattr(self, name)
+            if descriptor is not None:
+                os.close(descriptor)
+                setattr(self, name, None)
+
+    def load(self):
+        import stat
+
+        fd = os.open("schedules.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=self.directory)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Schedule state must be an unlinked regular file")
+            raw = stream.read(MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES:
+            raise ValueError("Schedule state exceeds its bound")
+        return _schedule_json(raw)
+
+    def save(self, document):
+        import stat
+
+        raw = json.dumps(document, sort_keys=True, allow_nan=False).encode()
+        if len(raw) > MAX_FILE_BYTES:
+            raise ValueError("Schedule state exceeds its bound")
+        try:
+            info = os.stat("schedules.json", dir_fd=self.directory, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise ValueError("Schedule state must be an unlinked regular file")
+        name = ".schedule-" + secrets.token_hex(12)
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=self.directory)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, "schedules.json", src_dir_fd=self.directory, dst_dir_fd=self.directory)
+            os.fsync(self.directory)
+        finally:
+            try:
+                os.unlink(name, dir_fd=self.directory)
+            except FileNotFoundError:
+                pass
+
+
+def schedule(root, *, enabled=False, once=False, turn=None, clock=time.time, pause=time.sleep):
+    if not enabled:
+        raise ValueError("Schedules require the separate --enable flag")
+    root = Path(root).resolve(strict=True)
+    rows, digest = schedules(root)
+    state = ScheduleState(root)
+    try:
+        try:
+            ledger = state.load()
+        except FileNotFoundError:
+            ledger = {"configuration": digest, "attempts": {}}
+        if (not isinstance(ledger, dict) or set(ledger) != {"configuration", "attempts"}
+                or not isinstance(ledger["attempts"], dict)):
+            raise ValueError("Invalid local schedule state; inspect before restarting")
+        if ledger["configuration"] != digest:
+            raise ValueError("Schedule configuration changed; inspect and reset local state")
+        if not set(ledger["attempts"]) <= {row["id"] for row in rows}:
+            raise ValueError("Schedule state contains an unknown identifier")
+        for attempt in ledger["attempts"].values():
+            if (not isinstance(attempt, dict) or set(attempt) != {"due", "local", "status"}
+                    or type(attempt["due"]) not in (int, float)
+                    or not -1e15 < attempt["due"] < 1e15
+                    or not isinstance(attempt["local"], str)
+                    or attempt["status"] not in ("claimed", "completed")):
+                raise ValueError("Invalid local schedule attempt")
+            if attempt["status"] == "claimed":
+                raise RuntimeError("Uncertain previous schedule attempt; inspect before resetting state")
+        if turn is None:
+            def turn(row):
+                endpoint, model, key = model_environment(root, row["agent"])
+                if not model:
+                    raise ValueError("Set the scheduled agent's model before enabling schedules")
+                return run(root, row["message"], agent=row["agent"],
+                           model_call=lambda messages: complete(endpoint, model, messages, api_key=key))
+        while True:
+            if schedules(root)[1] != digest:
+                raise ValueError("Schedule configuration changed; stop and review before restarting")
+            for row in rows:
+                slot = due_slot(row, clock(), ledger["attempts"].get(row["id"]))
+                if slot is None:
+                    continue
+                if schedules(root)[1] != digest:
+                    raise ValueError("Schedule configuration changed before the next turn")
+                ledger["attempts"][row["id"]] = slot
+                state.save(ledger)  # durable claim always precedes model or tool effects
+                result = turn(row)  # any failure leaves an uncertain durable claim
+                slot["status"] = "completed"
+                state.save(ledger)
+                print(result, flush=True)
+            if once:
+                return
+            pause(15)
+    finally:
+        state.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("message")
+    parser.add_argument("message", nargs="?")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--agent", default="main")
     parser.add_argument("--max-calls", type=int, default=20)
+    parser.add_argument("--schedule", action="store_true")
+    parser.add_argument("--enable", action="store_true")
+    parser.add_argument("--once", action="store_true", help="Check the current schedule slot once")
     args = parser.parse_args()
+    if args.schedule:
+        if args.message or not args.enable:
+            parser.error("Use --schedule --enable without a chat message")
+        schedule(args.root, enabled=True, once=args.once)
+        return
+    if args.enable or args.once or not args.message:
+        parser.error("Chat needs a message; schedule flags require --schedule")
     endpoint, model, api_key = model_environment(args.root, args.agent)
     if not model:
         parser.error("Set MODEL_NAME and MODEL_BASE_URL for your own endpoint")

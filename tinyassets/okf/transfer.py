@@ -394,7 +394,7 @@ def export_zip(
     with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path, data in files.items():
             info = zipfile.ZipInfo(path)
-            info.external_attr = (stat.S_IFREG | 0o600) << 16
+            info.external_attr = (stat.S_IFREG | (0o700 if path == "run/schedule" else 0o600)) << 16
             archive.writestr(info, data)
     return result.getvalue()
 

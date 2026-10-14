@@ -7,6 +7,10 @@ def generated_files() -> dict[str, bytes]:
     return {
         "run/agent.py": files("tinyassets.okf").joinpath("assets", "agent.py.txt").read_bytes(),
         "run/rules.json": b'{"bash": "ask"}\n',
+        "run/schedule": b'#!/bin/sh\nexec python3 "$(dirname "$0")/agent.py" --schedule "$@"\n',
+        "automations.example.json": b'{"schema_version":1,"automations":[{"id":"daily-note",'
+            b'"agent":"main","message":"Summarize the project","enabled":false,'
+            b'"trigger":{"kind":"cron","expression":"0 9 * * *","timezone":"UTC"}}]}\n',
         ".env.example": b"MODEL_BASE_URL=\nMODEL_NAME=\nMODEL_API_KEY=\n",
         ".gitignore": b".env\n.env.*\n!.env.example\n*.key\n*.pem\n.run-state/\n.sessions/\n",
         "LICENSE": b"No license selected. Choose a license before publishing this folder.\n",
@@ -62,11 +66,31 @@ Review imported run/
 code before executing it; its own prompts are not proof it is trustworthy.
 
 Hosted jail, egress checks, auto-review, browser broker, delivery, phone push,
-quota accounting and always-on execution are absent. Schedules are not started
-or implemented by this runner. Full platform action-rule mapping is not yet
+quota accounting and always-on execution are absent. Full platform action-rule mapping is not yet
 supported. Other action behaviors are shown to the model, but arbitrary host
 shell commands have no broker to classify their effects. Keep bash on ask and
 review each command; this runner is not an OS sandbox. Windows is not supported yet.
+
+Local schedules are a separate opt-in. The example is disabled, and platform
+workflow/schedule records are not yet converted into this local prompt format.
+Copy automations.example.json to automations.json, review each agent/message,
+set enabled to true for the entries you want, then run:
+
+```sh
+sh run/schedule --enable
+```
+
+This loop runs only while your machine is on. It supports intervals (seconds
+and an offset-bearing start_at), one-time offset-bearing at timestamps, and
+numeric five-field cron with an IANA timezone. All five cron fields must match;
+weekday is 0=Sunday through 6=Saturday. There is no offline backlog replay.
+--once checks the present slot and exits. File/shell permission still applies;
+unattended input cannot approve an ask-first action. A durable local claim
+precedes each turn, and only one scheduler can hold the OS lock. If a turn is
+interrupted or fails, inspect .run-state/schedules.json and any external effects
+before resetting state; the runner will not automatically retry an uncertain
+attempt. Configuration changes require stopping, reviewing and resetting that
+state. Resetting discards deduplication history, so do it only after inspection.
 
 Credential detection cannot prove a file is free of personal data. This export
 is private local output. Choose a license and review every file again before
