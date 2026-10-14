@@ -183,10 +183,6 @@ PINNED: dict[str, list[str]] = {
         "_write_exclusive_snapshot_file: os.open()",
         "load_credential_vault: .read_text()",
     ],
-    "tinyassets/daemon_brain.py": [
-        "_promote_daemon_memory_to_wiki: .open()",
-        "_promote_daemon_memory_to_wiki: .write_text()",
-    ],
     "tinyassets/daemon_memory.py": [
         "_read_section: .read_text()",
     ],
