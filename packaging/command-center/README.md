@@ -28,11 +28,16 @@ It never contacts TinyAssets. Model traffic goes to the endpoint you configure.
 Bash runs with your host privileges. By default every command requires typing
 `yes` in a terminal; noninteractive input refuses commands. The owner may write
 `run/rules.json` containing `{"bash":"deny"}`, `{"bash":"ask"}` or
-`{"bash":"allow"}`. Only this bash rule is currently supported; unsupported rules
-fail visibly. File tools cannot modify this policy or runner code and reject
+`{"bash":"allow"}`. Broker behavior rules travel in `agents/<agent>/rules.json`;
+file tools enforce `workspace.files` and bash also enforces `workspace.shell`.
+`hand_off` refuses; `ask_first` and `do_if_preapproved` need fresh local consent.
+Source grants never travel. Qualified rules apply conservatively to the whole
+action class. File tools cannot modify policies, settings or runner code and reject
 credential paths, links and paths outside the folder. Bash, once authorized,
 is a host shell and is not confined by the file-tool checks.
 
 Review an imported runner before executing it. Hosted jail, egress and
 review guarantees are absent locally. Schedules do not start here. Windows,
-complete harness-rule mapping and schedule execution are outstanding C12 work.
+broker-equivalent enforcement of other action classes and schedule execution
+are outstanding C12 work. Other behaviors are supplied to the model, but a host
+shell has no broker to classify its effects; keep its default command prompts.

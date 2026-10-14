@@ -165,9 +165,11 @@ class Preview:
     binary: frozenset[str]
     limitations: str = LIMITATIONS
     contacts: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    rules: Mapping[str, bytes] = field(default_factory=dict)
 
 
-def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limits=Limits()):
+def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limits=Limits(),
+            policy=None):
     """Capture arbitrary content for review; nothing is included automatically.
 
     Contacts are indexed within the captured bytes and redacted unless the
@@ -183,9 +185,28 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
         normalized.add(key)
         if (path not in ROOT_HARNESS and path.split("/")[0] not in CONTENT_ROOTS) or _never(path):
             raise InvalidBundle("This path cannot be exported")
-    view = provider.read_many(handle, ["/cc/" + path for path in paths], max_total=limits.expanded)
-    if view.missing:
+    from tinyassets.agent_definition import SettingsError, agent_directory, parse_settings
+    from tinyassets.okf.policy_export import preview_agents
+
+    identities, identity_paths = {}, {}
+    if policy is not None:
+        for agent in preview_agents(paths):
+            try:
+                directory = "" if agent == "main" else agent_directory(agent)
+            except SettingsError as exc:
+                raise InvalidBundle("Invalid canonical agent directory") from exc
+            identity_paths[agent] = (directory + "/" if directory else "") + "settings.yaml"
+    source_paths = set(paths) | set(identity_paths.values())
+    view = provider.read_many(handle, ["/cc/" + path for path in sorted(source_paths)],
+                              max_total=limits.expanded)
+    if set(view.missing) & {"/cc/" + path for path in paths}:
         raise InvalidBundle("Preview source file is missing")
+    for agent, path in identity_paths.items():
+        try:
+            settings = parse_settings(view.files.get("/cc/" + path))
+        except SettingsError as exc:
+            raise InvalidBundle("Cannot resolve the agent's canonical policy identity") from exc
+        identities[agent] = "main" if agent == "main" else settings.agent.id or agent
     files, blocked, binary, contacts = {}, {}, set(), {}
     settings_numbers = {path: n for n, path in enumerate(
         sorted(p for p in paths if settings_path(p)), 1
@@ -211,6 +232,10 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
                 blocked[path] = "contact details in an uninspectable binary"
             else:
                 contacts[path] = matches
+    rules = _policy_rules(policy, handle, identities)
+    if (sum(map(len, files.values())) + sum(map(len, rules.values())) > limits.expanded
+            or len(files) + len(rules) > limits.files):
+        raise InvalidBundle("Files and rule projection exceed preview bounds")
     return Preview(
         _scope(handle),
         view.generation,
@@ -218,7 +243,17 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
         MappingProxyType(blocked),
         frozenset(binary),
         contacts=MappingProxyType(contacts),
+        rules=MappingProxyType(rules),
     )
+
+
+def _policy_rules(policy, handle, identities):
+    if policy is None:
+        return {}
+    from tinyassets.okf.policy_export import portable_rules
+
+    return portable_rules(policy, owner=handle.account_id, center=handle.command_center_id,
+                          agents=identities)
 
 
 def _contacts(path, content, approved=None):
@@ -308,6 +343,13 @@ def export_zip(
         occupied.add(key)
     files = relocated
     agents = _agents(files)
+    for agent in agents:
+        path = f"agents/{agent}/rules.json"
+        if path in reviewed.rules:
+            if safe_path(path) in occupied:
+                raise InvalidBundle("Selected content conflicts with broker-owned agent rules")
+            files[path] = reviewed.rules[path]
+            occupied.add(safe_path(path))
     agent_roster = roster(files, agents)
     if profile == "export":
         from tinyassets.okf.export_assets import generated_files

@@ -1,5 +1,27 @@
 ## ADDED Requirements
 
+### Requirement: Portable broker rule projection
+The protected export door SHALL capture broker-owned rules for previewed agents,
+scoped to the bound owner and center, and reject download if policy changes.
+Selected agents SHALL carry their previewed behavior rules; source identifiers,
+preapprovals and other centers' rules SHALL not travel. Local file tools SHALL
+enforce workspace.files, and bash SHALL enforce workspace.shell plus local
+consent. Missing broker enforcement SHALL never become a portable grant.
+
+#### Scenario: Policy changes after content approval
+- **WHEN** the broker policy generation or digest changes after preview
+- **THEN** download requires a new preview even if the box files did not change.
+
+#### Scenario: Exported agent has a restrictive workspace rule
+- **WHEN** that agent requests a file or shell action locally
+- **THEN** hand_off refuses, ask_first and do_if_preapproved require fresh local consent
+- **AND** the agent cannot edit its policy using file tools.
+
+#### Scenario: A source rule names a connection or operation
+- **WHEN** its source authority cannot be bound locally
+- **THEN** the projection conservatively applies its behavior to that action class
+- **AND** no source grant or identifier appears in the portable policy.
+
 ### Requirement: Portable agent roster
 Export SHALL include selected root harness files without collisions and derive
 its roster from included instructions and settings. Settings SHALL use the

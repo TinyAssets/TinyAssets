@@ -36,10 +36,16 @@ TOOLS = [
 MAX_FILE_BYTES = 1024 * 1024
 MAX_COMMAND_BYTES = 64 * 1024
 COMMAND_SECONDS = 120
+BEHAVIOURS = ("do", "do_if_preapproved", "ask_first", "hand_off")
+ACTION_CLASSES = {
+    "workspace.files", "workspace.shell", "workspace.workflows", "shell.egress",
+    "app.read", "app.write", "people.message", "commons.publish", "share", "spend",
+    "browser.action", "money.move", "security.change", "access.grant",
+}
 
 
 class LocalTools:
-    def __init__(self, root: Path, *, approve=None):
+    def __init__(self, root: Path, *, approve=None, agent="main"):
         if os.name != "posix":
             raise RuntimeError("This runner currently requires POSIX file-descriptor operations")
         self.root = root.resolve(strict=True)
@@ -53,13 +59,38 @@ class LocalTools:
         self.bash_policy = rules.get("bash", "ask")
         if self.bash_policy not in ("ask", "allow", "deny"):
             raise ValueError("bash policy must be ask, allow or deny")
+        has_policy = True
+        try:
+            policy = json.loads(self.read(f"agents/{agent}/rules.json"))
+        except FileNotFoundError:
+            policy = None
+            has_policy = False
+        if not has_policy:
+            try:
+                manifest = json.loads(self.read("command-center.json"))
+            except FileNotFoundError:
+                manifest = {}
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("roster", []), list):
+                raise ValueError("Invalid command-center manifest")
+            if any(isinstance(row, dict) and row.get("agent") == agent and row.get("rules")
+                   for row in manifest.get("roster", [])):
+                raise ValueError("Exported agent policy is missing")
+        self.behaviours = {}
+        if has_policy:
+            if (not isinstance(policy, dict) or set(policy) != {"schema_version", "behaviours"}
+                    or type(policy["schema_version"]) is not int or policy["schema_version"] != 1
+                    or not isinstance(policy["behaviours"], dict)
+                    or set(policy["behaviours"]) != ACTION_CLASSES
+                    or any(value not in BEHAVIOURS for value in policy["behaviours"].values())):
+                raise ValueError("Invalid portable agent policy")
+            self.behaviours = policy["behaviours"]
 
     @staticmethod
     def _ask(command):
         if not sys.stdin.isatty():
             return False
         try:
-            return input(f"Run with your host privileges?\n{command}\nType yes: ") == "yes"
+            return input(f"Allow this local action with your host privileges?\n{command}\nType yes: ") == "yes"
         except (EOFError, KeyboardInterrupt):
             return False
 
@@ -72,7 +103,10 @@ class LocalTools:
         if any(p.lower() in (".env", ".git", ".ssh", ".aws", ".credentials")
                or p.lower().startswith((".env.", ".credential-vault")) for p in parts):
             raise PermissionError("Credential and repository-private files are excluded")
-        if writing and (parts[0].casefold() == "run" or path.casefold() == "command-center.json"):
+        policy_file = (len(parts) == 3 and parts[0].casefold() == "agents"
+                       and parts[2].casefold() in ("rules.json", "settings.yaml"))
+        if writing and (parts[0].casefold() in ("run", ".run-state") or policy_file
+                        or path.casefold() in ("command-center.json", "automations.json")):
             raise PermissionError("Runner policy, code and manifest are read-only to tools")
         fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -137,8 +171,9 @@ class LocalTools:
         return self.write(path, current.replace(old, new, 1))
 
     def bash(self, command):
-        if self.bash_policy == "deny" or (
-            self.bash_policy == "ask" and not self.approve(command)
+        behavior = self.behaviours.get("workspace.shell", "do")
+        if self.bash_policy == "deny" or behavior == "hand_off" or (
+            (self.bash_policy == "ask" or behavior != "do") and not self.approve(command)
         ):
             return "Refused: command lacks owner consent"
         process = subprocess.Popen(["bash", "-lc", command], cwd=self.root,
@@ -188,6 +223,11 @@ class LocalTools:
         if (not isinstance(arguments, dict) or set(arguments) != set(schemas[name]["required"])
                 or not all(isinstance(value, str) for value in arguments.values())):
             raise ValueError("Tool arguments must match the declared string fields")
+        if name != "bash":
+            behavior = self.behaviours.get("workspace.files", "do")
+            if behavior == "hand_off" or (behavior != "do" and not self.approve(
+                    f"{name} {json.dumps(arguments, ensure_ascii=False)}")):
+                return "Refused: file action lacks owner consent"
         return getattr(self, name)(**arguments)
 
 
@@ -224,9 +264,12 @@ def run(root, message, *, agent="main", model_call, max_calls=20, approve=None):
         raise ValueError("agent must be one directory name")
     if not 1 <= max_calls <= 100:
         raise ValueError("max_calls must be between 1 and 100")
-    tools = LocalTools(Path(root), approve=approve)
+    tools = LocalTools(Path(root), approve=approve, agent=agent)
     instructions = tools.read(f"agents/{agent}/AGENTS.md")
     context = f"Your harness is in agents/{agent}/. File paths are relative to the export root.\n"
+    if tools.behaviours:
+        context += "Owner action rules: " + json.dumps(tools.behaviours, sort_keys=True) + "\n"
+        context += "Preapprovals are not portable. Ask for fresh local permission.\n"
     messages = [{"role": "system", "content": context + instructions},
                 {"role": "user", "content": message}]
     for _ in range(max_calls):
@@ -307,7 +350,7 @@ def local_environment(root):
 
 def model_environment(root, agent):
     """Resolve only declared local model variables; never mix endpoint secrets."""
-    tools = LocalTools(Path(root))
+    tools = LocalTools(Path(root), agent=agent)
     environment = local_environment(tools.root)
     process = {key: value for key, value in os.environ.items() if _model_key(key)}
     for key, value in process.items():

@@ -75,7 +75,7 @@ export function openTransfer({commandCenter, request, isCurrent}) {
       const messages = {
         protected_owner_session_required: "Sign in to the protected owner view, then try again.",
         box_provider_unavailable: "Transfer is not available for this command center yet.",
-        source_changed_preview_again: "The files changed. Choose and preview them again.",
+        source_changed_preview_again: "The files or rules changed. Choose and preview them again.",
         transfer_busy: "Transfer is busy. Try again shortly.",
         transfer_not_authorized: "This command center is no longer available to this account.",
       };
@@ -114,6 +114,13 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     const result = await call({operation: "preview", paths});
     previewId = result.preview;
     review.append(element("p", result.limitations));
+    for (const rule of result.rules || []) {
+      const details = element("details");
+      const pre = element("pre", rule.content);
+      pre.style.whiteSpace = "pre-wrap";
+      details.append(element("summary", rule.path + " — included with this agent"), pre);
+      review.append(details);
+    }
     for (const file of result.files) {
       const section = element("section");
       const input = checkbox("Include " + file.path + (file.binary ? " (binary; cannot preview)" : ""), section);

@@ -16,7 +16,8 @@ def generated_files() -> dict[str, bytes]:
 
 _README = """# Exported command center
 
-This private folder contains only the files selected in the content preview.
+This private folder contains the files selected in the content preview and
+the previewed broker rule projection for each selected agent.
 See command-center.json for the included agents and the complete file manifest.
 Include agents/<agent>/AGENTS.md in the preview to run that agent locally.
 Selected wiki/pages Markdown is converted into the OKF bundle rooted at wiki/.
@@ -51,13 +52,21 @@ empty variables; model and connection references require your own local binding.
 Chat, read/write/edit/bash tools, instructions, skills and selected files work
 locally. Bash has your host privileges and asks before every command by default.
 You may change run/rules.json's bash policy to ask, deny or allow. The agent's
-file tools cannot edit this policy, runtime or manifest. Review imported run/
+file tools cannot edit policies, settings, runtime, schedule state or manifest.
+agents/<agent>/rules.json carries that agent's action behaviors. File tools
+enforce workspace.files; bash enforces workspace.shell and the local bash policy.
+hand_off refuses; ask_first and do_if_preapproved require fresh local consent.
+Source preapprovals never travel. Connection/operation-specific behaviors are
+conservatively applied to the whole action class, so local rules can be stricter.
+Review imported run/
 code before executing it; its own prompts are not proof it is trustworthy.
 
 Hosted jail, egress checks, auto-review, browser broker, delivery, phone push,
 quota accounting and always-on execution are absent. Schedules are not started
 or implemented by this runner. Full platform action-rule mapping is not yet
-supported; the local policy only governs bash. Windows is not supported yet.
+supported. Other action behaviors are shown to the model, but arbitrary host
+shell commands have no broker to classify their effects. Keep bash on ask and
+review each command; this runner is not an OS sandbox. Windows is not supported yet.
 
 Credential detection cannot prove a file is free of personal data. This export
 is private local output. Choose a license and review every file again before

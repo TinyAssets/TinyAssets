@@ -74,6 +74,72 @@ def test_real_owner_session_preview_and_private_download(transfer_door):
     assert "attachment" in result.headers["content-disposition"]
 
 
+def test_agent_rules_are_previewed_bound_and_included_with_selected_agent(
+        transfer_door, monkeypatch):
+    from tests.test_okf_policy_export import projection, rule
+
+    client, provider, handle = transfer_door
+    provider.write(handle, "agent", "/cc/AGENTS.md", b"Help the owner", max_bytes=100)
+    policy = projection(owner=A, entries=[rule("hand_off", scope=HOME_A)])
+    monkeypatch.setattr(transfer, "_policy", lambda bound: policy)
+    view = preview(client, paths=["AGENTS.md", PATH]).json()
+    assert view["rules"][0]["path"] == "agents/main/rules.json"
+    assert json.loads(view["rules"][0]["content"])["behaviours"]["workspace.files"] == "hand_off"
+    result = download(client, view["preview"], selected=["AGENTS.md"])
+    assert result.status_code == 200, result.text
+    bundle = ingest_zip(result.content)
+    assert bundle.files["agents/main/rules.json"].decode() == view["rules"][0]["content"]
+    without_agent = ingest_zip(download(client, view["preview"]).content)
+    assert "agents/main/rules.json" not in without_agent.files
+    policy["generation"] += 1
+    assert download(client, view["preview"], selected=["AGENTS.md"]).status_code == 409
+
+
+def test_policy_wrong_owner_unavailable_and_colliding_file_are_refused(transfer_door, monkeypatch):
+    from tests.test_okf_policy_export import projection
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    client, provider, handle = transfer_door
+    provider.write(handle, "agent", "/cc/AGENTS.md", b"Help the owner", max_bytes=100)
+    monkeypatch.setattr(transfer, "_policy", lambda bound: projection(owner=B))
+    assert preview(client, paths=["AGENTS.md"]).status_code == 400
+    def unavailable(bound):
+        raise ProxyRequestError("unavailable")
+    monkeypatch.setattr(transfer, "_policy", unavailable)
+    assert preview(client, paths=["AGENTS.md"]).status_code == 503
+    monkeypatch.setattr(transfer, "_policy", lambda bound: projection(owner=A))
+    provider.write(handle, "fake-rules", "/cc/agents/main/rules.json", b"{}", max_bytes=100)
+    paths = ["AGENTS.md", "agents/main/rules.json"]
+    view = preview(client, paths=paths).json()
+    assert download(client, view["preview"], selected=paths).status_code == 400
+
+
+def test_rules_resolve_unselected_canonical_identity_in_the_same_snapshot(
+        transfer_door, monkeypatch):
+    from tests.test_okf_policy_export import projection, rule
+
+    client, provider, handle = transfer_door
+    instructions = "agents/editor/AGENTS.md"
+    settings = "agents/editor/settings.yaml"
+    provider.write(handle, "agent", "/cc/" + instructions, b"Edit notes", max_bytes=100)
+    provider.write(handle, "identity", "/cc/" + settings,
+                   b"schema_version: 1\nagent:\n  id: durable-editor\n", max_bytes=100)
+    policy = projection(owner=A, entries=[rule("hand_off", scope=HOME_A, agent="durable-editor")])
+    monkeypatch.setattr(transfer, "_policy", lambda bound: policy)
+    view = preview(client, paths=[instructions]).json()
+    assert [row["path"] for row in view["files"]] == [instructions]
+    assert "durable-editor" not in json.dumps(view)
+    assert json.loads(view["rules"][0]["content"])["behaviours"]["workspace.files"] == "hand_off"
+    result = download(client, view["preview"], selected=[instructions])
+    assert result.status_code == 200, result.text
+    assert settings not in ingest_zip(result.content).files
+    provider.write(handle, "changed-identity", "/cc/" + settings,
+                   b"schema_version: 1\nagent:\n  id: changed-id\n", max_bytes=100)
+    assert download(client, view["preview"], selected=[instructions]).status_code == 409
+    provider.write(handle, "invalid-identity", "/cc/" + settings, b"[invalid]", max_bytes=100)
+    assert preview(client, paths=[instructions]).status_code == 400
+
+
 def test_bearer_cannot_preview_or_download_without_owner_cookie(transfer_door):
     client, _, _ = transfer_door
     token = preview(client).json()["preview"]

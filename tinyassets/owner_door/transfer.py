@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse, Response
 
 from tinyassets.boxes.provider import BoxAuthError, BoxError, StaleHandle, WriteConflict
 from tinyassets.okf.bundle import InvalidBundle
+from tinyassets.okf.policy_export import preview_agents
 from tinyassets.okf.transfer import Limits, Preview, discover, export_zip, ingest_zip, preview
 from tinyassets.owner_door.routes import _BYTE_HEADERS, _HEADERS
 
@@ -34,6 +35,7 @@ class Pending:
     provider: object
     view: Preview
     expires: float
+    policy_version: tuple[int, str] | None = None
 
 
 _PENDING: dict[str, Pending] = {}
@@ -84,6 +86,21 @@ def _arguments(args):
     return args
 
 
+def _policy(handle):
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.client import owner_policy_operation
+
+    return owner_policy_operation(_base_path(), handle.account_id, "read")
+
+
+def _version(policy):
+    return policy["generation"], policy["digest"]
+
+
+def _preview_bytes(view):
+    return sum(map(len, view.files.values())) + sum(map(len, view.rules.values()))
+
+
 def _transfer(provider, handle, args):
     if args["operation"] == "list":
         return discover(provider, handle)
@@ -103,18 +120,20 @@ def _transfer(provider, handle, args):
             epoch=handle.epoch, bundle=bundle,
         )
     if args["operation"] == "preview":
-        view = preview(provider, handle, args["paths"])
-        pending = Pending(provider, view, time.monotonic() + _TTL)
+        policy = _policy(handle) if preview_agents(args["paths"]) else None
+        view = preview(provider, handle, args["paths"], policy=policy)
+        pending = Pending(provider, view, time.monotonic() + _TTL,
+                          _version(policy) if policy is not None else None)
         token = secrets.token_urlsafe(32)
         with _LOCK:
             _prune()
             previous = [t for t, p in _PENDING.items() if p.view.scope[1] == handle.account_id]
             used = sum(
-                sum(map(len, p.view.files.values())) for t, p in _PENDING.items()
+                _preview_bytes(p.view) for t, p in _PENDING.items()
                 if t not in previous
             )
             if (
-                used + sum(map(len, view.files.values())) > _CAPACITY
+                used + _preview_bytes(view) > _CAPACITY
                 or len(_PENDING) - len(previous) >= 256
             ):
                 raise BufferError("Preview capacity is busy")
@@ -125,6 +144,8 @@ def _transfer(provider, handle, args):
             "preview": token,
             "expires_in": _TTL,
             "limitations": view.limitations,
+            "rules": [{"path": path, "content": data.decode("utf-8")}
+                      for path, data in view.rules.items()],
             "files": [
                 {
                     "path": path, "size": len(data), "selected": False,
@@ -147,6 +168,14 @@ def _transfer(provider, handle, args):
         or pending.view.scope != (handle.command_center_id, handle.account_id, handle.epoch)
     ):
         raise InvalidBundle("Preview expired or unavailable; preview again")
+    if pending.policy_version is not None:
+        policy = _policy(handle)
+        # Validate ownership and shape again before comparing the version.
+        from tinyassets.okf.policy_export import portable_rules
+
+        portable_rules(policy, owner=handle.account_id, center=handle.command_center_id, agents={})
+        if _version(policy) != pending.policy_version:
+            raise WriteConflict("Policy changed after preview; preview again")
     return export_zip(
         provider, handle, pending.view, selected=args["selected"],
         named_binaries=args["named_binaries"], included_contacts=args["included_contacts"],
@@ -159,6 +188,7 @@ async def handle_transfer(request):
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.auth.middleware import current_identity, identity_context
     from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.storage.outbound_connections import ProxyRequestError
     from tinyassets.storage_accounting import StorageRefused, visible_record
 
     if not onboarding.onboarding_enabled():
@@ -209,7 +239,7 @@ async def handle_transfer(request):
         return JSONResponse(
             {"error": "invalid_transfer", "detail": str(exc)}, 400, headers=_HEADERS
         )
-    except (BoxError, OSError, BufferError):
+    except (BoxError, OSError, BufferError, ProxyRequestError):
         return JSONResponse({"error": "transfer_unavailable"}, 503, headers=_HEADERS)
     finally:
         _SLOTS.release()

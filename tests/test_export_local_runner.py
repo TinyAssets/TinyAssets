@@ -33,11 +33,80 @@ def tool_call(name="read", arguments=None):
     }]}
 
 
+def agent_policy(folder, **changes):
+    from tinyassets.broker.policy import DEFAULT_RULES
+
+    rules = dict(DEFAULT_RULES) | changes
+    (folder / "agents/main/rules.json").write_text(json.dumps({
+        "schema_version": 1, "behaviours": rules,
+    }))
+
+
+@pytest.mark.parametrize("behavior,consent,allowed", [
+    ("do", False, True), ("ask_first", False, False), ("ask_first", True, True),
+    ("do_if_preapproved", False, False), ("do_if_preapproved", True, True),
+    ("hand_off", False, False), ("hand_off", True, False),
+])
+@pytest.mark.parametrize("name", ["read", "write", "edit", "bash"])
+def test_exported_workspace_rules_require_fresh_local_authority(
+        folder, behavior, consent, allowed, name):
+    agent_policy(folder, **{"workspace.files": behavior, "workspace.shell": behavior})
+    (folder / "run/rules.json").write_text('{"bash":"allow"}')
+    (folder / "note.txt").write_text("original")
+    prompts = []
+    def approve(action):
+        prompts.append(action)
+        return consent
+    arguments = {
+        "read": {"path": "note.txt"},
+        "write": {"path": "note.txt", "content": "changed"},
+        "edit": {"path": "note.txt", "old": "original", "new": "changed"},
+        "bash": {"command": "printf changed > note.txt"},
+    }[name]
+    result = RUNNER["LocalTools"](folder, approve=approve).call(name, arguments)
+    assert result.startswith("Refused:") is not allowed
+    if name == "read":
+        assert (result == "original") is allowed
+    else:
+        assert (folder / "note.txt").read_text() == ("changed" if allowed else "original")
+    assert bool(prompts) is (behavior in ("ask_first", "do_if_preapproved"))
+
+
+@pytest.mark.parametrize("raw", ["null", "{}", '{"schema_version":1,"behaviours":{}}'])
+def test_malformed_exported_policy_does_not_use_defaults(folder, raw):
+    (folder / "agents/main/rules.json").write_text(raw)
+    with pytest.raises(ValueError, match="policy"):
+        RUNNER["LocalTools"](folder)
+
+
+def test_declared_policy_must_exist_and_selected_agent_uses_own_policy(folder):
+    (folder / "command-center.json").write_text(json.dumps({"roster": [
+        {"agent": "main", "rules": "agents/main/rules.json"},
+    ]}))
+    with pytest.raises(ValueError, match="missing"):
+        RUNNER["LocalTools"](folder)
+    agent_policy(folder, **{"workspace.files": "hand_off"})
+    (folder / "agents/editor").mkdir()
+    (folder / "agents/editor/AGENTS.md").write_text("Edit notes")
+    (folder / "note.txt").write_text("original")
+    answers = iter([tool_call(), {"role": "assistant", "content": "done"}])
+    captured = []
+    def model(messages):
+        captured[:] = messages
+        return next(answers)
+    RUNNER["run"](folder, "read", agent="main", model_call=model)
+    assert captured[-1]["content"].startswith("Refused:")
+    editor = RUNNER["LocalTools"](folder, agent="editor")
+    assert editor.call("read", {"path": "note.txt"}) == "original"
+
+
 @pytest.mark.parametrize("path", [
     "../outside", "/tmp/outside", "a/../outside", "a//b", "./note", "a\\b",
     ".env", ".env.production", ".ssh/key", ".aws/config", ".git/config",
     "run/rules.json", "run/agent.py", "command-center.json",
     "RUN/agent.py", "RUN/rules.json", "COMMAND-CENTER.JSON",
+    "agents/main/rules.json", "agents/main/settings.yaml", "AGENTS/main/RULES.JSON",
+    "automations.json", ".run-state/schedules.json",
 ])
 def test_file_tools_refuse_escape_credentials_and_policy(folder, path):
     tools = RUNNER["LocalTools"](folder)

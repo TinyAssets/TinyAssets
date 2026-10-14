@@ -69,6 +69,9 @@ def roster(files, agents):
         path = f"agents/{agent}/settings.yaml"
         entry = {"agent": agent, "instructions": f"agents/{agent}/AGENTS.md",
                  "settings": path if path in files else None, "model_env": ""}
+        rules = f"agents/{agent}/rules.json"
+        if rules in files:
+            entry["rules"] = rules
         if path in files:
             try:
                 settings = parse_settings(files[path])

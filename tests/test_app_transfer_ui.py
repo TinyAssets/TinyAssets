@@ -43,7 +43,7 @@ const tick = () => new Promise(r=>setImmediate(r));
    if(body.operation==='list')return {ok:true,json:async()=>({files:[
      {path:'workspace/note',size:2}]})};
    if(body.operation==='preview')return {ok:true,json:async()=>({
-     preview:'p',limitations:'review',files:[
+     preview:'p',limitations:'review',rules:[{path:'agents/main/rules.json',content:'<rule>'}],files:[
      {path:'workspace/note',binary:false,blocked:null,
       content:'<img src=x onerror=steal()>',contacts:[{index:0,value:'person@example.com'}]},
      {path:'workspace/blocked',binary:false,blocked:'credential',content:'secret',contacts:[]},
@@ -55,7 +55,8 @@ const tick = () => new Promise(r=>setImmediate(r));
  assert(inputs().every(n=>!n.checked));
  inputs()[0].checked=true; await button('Preview selected files').click();
  assert(inputs().slice(1).every(n=>!n.checked));
- assert(all(document.body,n=>n.tag==='pre')[0].textContent.includes('<img'));
+ assert(all(document.body,n=>n.tag==='pre').some(n=>n.textContent.includes('<img')));
+ assert(all(document.body,n=>n.tag==='pre').some(n=>n.textContent==='<rule>'));
  const check=inputs(); check[1].checked=true; check[2].checked=true;
  assert(check[3].disabled); check[3].checked=true; check[4].checked=true;
  const pending=button('Download private zip').click(); await tick();
