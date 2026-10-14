@@ -79,12 +79,13 @@ def read_app_ui(
     *, universe_id: str = "", ui_id: str = "", field_name: str = "",
     output_offset: int = 0, output_max_chars: int = 8192,
 ) -> dict[str, Any]:
-    """The caller's own UI row: whole, as an index, one UI, or one field chunk.
+    """The caller's own UI row: whole, as an index, the choice, one UI, or a chunk.
 
     No ``ui_id`` is the whole row (the app's read). ``ui_id="index"`` is every
     UI's id, name, etag and field sizes with no bodies, plus the choice.
-    Any other ``ui_id`` is that one UI; with ``field_name`` it is one chunk of
-    that field, from ``output_offset``, with ``next_offset`` to continue.
+    ``ui_id="ui_selection"`` is the choice only: no library. Any other
+    ``ui_id`` is that one UI; with ``field_name`` it is one chunk of that
+    field, from ``output_offset``, with ``next_offset`` to continue.
     """
 
     uid = _binding_universe(universe_id)
@@ -105,6 +106,16 @@ def read_app_ui(
         return {"app_ui": {**document, "platform_default": PLATFORM_DEFAULT_UI}}
     if selector == INDEX:
         return {"app_ui": app_ui_index(document)}
+    if selector == "ui_selection":
+        # The choice is a few fields. Returning the row here handed the model
+        # the whole library (live: 569KB, then cut). ui_id cannot contain "_",
+        # so this name cannot be a real UI.
+        return {"app_ui": {
+            "universe_id": document.get("universe_id"),
+            "revision": document.get("revision"),
+            "updated_at": document.get("updated_at"),
+            "ui_selection": document.get("ui_selection"),
+        }}
     entry = next((e for e in document["ui_library"]
                   if isinstance(e, dict) and e.get("ui_id") == selector), None)
     if entry is None:

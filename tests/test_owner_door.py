@@ -347,7 +347,8 @@ def test_an_unreadable_history_is_reported_not_drawn_empty(door):
 def test_a_heavy_ui_library_reaches_the_app_whole(door):
     """Live 2026-09-30, main account: "Could not read your installed UIs
     (unexpected app UI reply). Default chat is in use." -- the installed-UI read
-    crossed the connector's ceiling too. A library is the owner's own bytes."""
+    crossed the connector's ceiling. The owner's app still gets the whole
+    library. The model door gets the index, and a selection read is the choice."""
     from tinyassets import universe_server as us
     from tinyassets.app_ui_store import save_app_ui
 
@@ -367,7 +368,14 @@ def test_a_heavy_ui_library_reaches_the_app_whole(door):
         raw = us.read_graph(target="app_ui", graph_id=HOME_A)
         bounded = us._structured_return(raw, tool="read_graph",
                                         arguments={"target": "app_ui"}).structured_content
-    assert bounded["truncated"] is True, "the model door still bounds it, visibly"
+        selection = json.loads(us.read_graph(
+            target="app_ui", graph_id=HOME_A, query="ui_selection",
+        ))
+    assert "truncated" not in bounded
+    assert "ui_library" not in bounded["app_ui"]
+    assert len(bounded["app_ui"]["uis"]) == 12
+    assert "ui_library" not in selection["app_ui"]
+    assert "uis" not in selection["app_ui"]
 
 
 def test_the_connector_follows_its_own_history_cursor_in_model_sized_pages(door):

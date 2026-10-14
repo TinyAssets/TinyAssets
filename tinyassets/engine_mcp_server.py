@@ -598,7 +598,10 @@ def read_graph(
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
             workflow to read (get it from ``target="branches"``). Ignored for every
             other target. You can read your own branches and public ones; a private
-            branch belonging to someone else reads as not found.
+            branch belonging to someone else reads as not found. A branch that
+            fits is the whole graph. One that does not pages ``node_defs``:
+            continue with ``output_offset`` set to the returned ``next_offset``
+            until it is null. Each page repeats the rest of the branch.
         target: What to read: ``status`` (a factual daemon + serving snapshot),
             ``graph`` (inspect your command center's graph), ``branches`` (list YOUR OWN
             workflows by name + ``branch_def_id`` + tags — use it to find the id of a
@@ -827,20 +830,29 @@ def read_graph(
         # branch of another universe reads as not found), so passing the caller's
         # branch_id widens nothing this agent could not already run.
         if normalized == "branch":
+            from tinyassets.api.graph_reads import read_graph as _domain_read
+            from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_branch
+            from tinyassets.engine_result_bounds import resolve_ceiling
+
             bid = (branch_id or "").strip()
-            payload = _impl(
-                target=normalized,
-                graph_id=_GRAPH_ID,
-                branch_id=bid,
+            # The domain read, paged HERE. The connector also pages, and paging
+            # its page again would hide nodes. The envelope is part of the
+            # measured text: a foreign branch's cursor has to survive the wrap.
+            payload = _domain_read(
+                target=normalized, graph_id=_GRAPH_ID, branch_id=bid,
             )
-            # A PUBLIC branch authored by somebody else reads fine here (the
-            # target is deliberately not author-gated), so it is another user's
-            # content and carries the untrusted envelope. A branch this founder
-            # authored is their own work and is returned bare.
             foreign, origin = _foreign_branch_origin(bid)
-            if foreign:
-                return _untrusted(origin, payload)
-            return payload
+
+            def _render_branch(text: str) -> str:
+                return _untrusted(origin, text) if foreign else text
+
+            if type(output_offset) is not int or output_offset < 0:
+                return json.dumps({"error": "output_offset must be a non-negative integer"})
+            return project_branch(
+                payload, offset=output_offset,
+                budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+                render_text=_render_branch, branch_id=bid,
+            )
         if normalized in {"run", "run_output"}:
             # get_run is scoped to the caller's own runs; the pinned graph_id keeps
             # the universe scope, run_id only selects within it.
@@ -2168,6 +2180,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
         read_graph target="app_ui"                  -> {"app_ui": {"uis": [{ui_id, name,
                                    etag, chars}], "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui" query="ui_selection"
+                                                 -> the choice only, no library
         read_graph target="app_ui" query="<ui_id>"  -> {"ui": {...}, "etag": "..."}
         read_graph target="app_ui" query="<ui_id>" field_name="script"
                    output_offset=0                  -> one chunk + next_offset
