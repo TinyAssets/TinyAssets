@@ -71,8 +71,8 @@ def _seed_branch_version(tmp_path: Path, *, policy=None, agent=False):
 
 
 def _seed_serving_assignment(tmp_path: Path, *, model_access=None, services=("codex",)) -> None:
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
     from tinyassets.provider_serving_binding import (
         bind_serving_provider,

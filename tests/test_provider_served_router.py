@@ -208,9 +208,9 @@ def _served_context(
         mint_provider_request_carrier,
         reserve_provider_request,
     )
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.config import load_universe_config
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 

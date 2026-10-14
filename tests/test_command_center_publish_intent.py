@@ -88,7 +88,7 @@ def test_full_center_preview_and_receipt_name_the_actual_catalogue(home: Path): 
 
 def test_legacy_screen_bundle_is_not_upgraded_to_a_file_package(home: Path):  # noqa: F811
     from tinyassets.api.package_requests import list_packages
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     action = _publish_action()
     del action["package"]

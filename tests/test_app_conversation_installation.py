@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from tinyassets.api.custom_agents import custom_agents
+from tinyassets.api.commons_catalog import commons_catalog
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 
@@ -40,13 +40,13 @@ def configuration(name):
 
 
 def publish(payload):
-    result = custom_agents(action="publish_agent", payload=payload)
+    result = commons_catalog(action="publish_agent", payload=payload)
     assert result.get("status") == "published", result
     return result["agent"]
 
 
 def install(uid, did, config):
-    result = custom_agents(action="create_binding", universe_id=uid,
+    result = commons_catalog(action="create_binding", universe_id=uid,
                            definition_id=did, payload=config)
     assert result.get("status") == "configured", result
     return result["binding"]
@@ -80,9 +80,9 @@ def test_other_owner_discovers_remixes_and_applies_without_copying_private_data(
     memory.write_text("bob-private-memory-verbatim\n", encoding="utf-8")
 
     with actor("bob"):
-        found = custom_agents(action="list_agents", tags=[TAG])
+        found = commons_catalog(action="list_agents", tags=[TAG])
         assert source["agent_definition_id"] in {a["agent_definition_id"] for a in found["agents"]}
-        assert custom_agents(action="get_binding", universe_id="u-alice",
+        assert commons_catalog(action="get_binding", universe_id="u-alice",
                              binding_id=private_source["agent_binding_id"])["error"] == "not_found"
         private_config = configuration("bob-private-installation")
         installed = install("u-bob", source["agent_definition_id"], private_config)
@@ -94,13 +94,13 @@ def test_other_owner_discovers_remixes_and_applies_without_copying_private_data(
                                   "component_key": key, "credit_share": 1.0}]
                              for key in remix["components"]}
         child = publish(remix)
-        changed = custom_agents(action="update_binding", universe_id="u-bob",
+        changed = commons_catalog(action="update_binding", universe_id="u-bob",
                                 binding_id=installed["agent_binding_id"],
                                 expected_revision=installed["revision"],
                                 definition_id=child["agent_definition_id"],
                                 payload=copy.deepcopy(installed["configuration"]))
         assert changed.get("status") == "configured", changed
-        readback = custom_agents(action="get_binding", universe_id="u-bob",
+        readback = commons_catalog(action="get_binding", universe_id="u-bob",
                                  binding_id=installed["agent_binding_id"])["binding"]
         assert readback["configuration"] == private_config
         assert readback["agent_definition_id"] == child["agent_definition_id"]
@@ -128,12 +128,12 @@ def test_revision_conflict_and_foreign_mutation_leave_current_installation(homes
                 "binding_id": binding["agent_binding_id"], "expected_revision": 1,
                 "definition_id": source["agent_definition_id"],
                 "payload": configuration("new private value")}
-        assert custom_agents(**args)["status"] == "configured"
-        assert custom_agents(**args)["error"] == "agent_conflict"
+        assert commons_catalog(**args)["status"] == "configured"
+        assert commons_catalog(**args)["error"] == "agent_conflict"
     with actor("alice"):
-        assert "error" in custom_agents(**{**args, "expected_revision": 2})
+        assert "error" in commons_catalog(**{**args, "expected_revision": 2})
     with actor("bob"):
-        current = custom_agents(action="get_binding", universe_id="u-bob",
+        current = commons_catalog(action="get_binding", universe_id="u-bob",
                                 binding_id=binding["agent_binding_id"])["binding"]
         assert current["revision"] == 2
         assert current["configuration"] == configuration("new private value")
@@ -147,7 +147,7 @@ def test_two_first_creates_race_and_exactly_one_installation_exists(homes):
     """
     import threading
 
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
 
     with actor("alice"):
         source = publish(definition())
@@ -157,7 +157,7 @@ def test_two_first_creates_race_and_exactly_one_installation_exists(homes):
     def create():
         with actor("bob"):
             start.wait()
-            results.append(custom_agents(
+            results.append(commons_catalog(
                 action="create_binding", universe_id="u-bob",
                 definition_id=source["agent_definition_id"],
                 payload=configuration("tab")))
@@ -175,7 +175,7 @@ def test_two_first_creates_race_and_exactly_one_installation_exists(homes):
 
     # Sequentially too: a second create of the role is refused by name.
     with actor("bob"):
-        again = custom_agents(action="create_binding", universe_id="u-bob",
+        again = commons_catalog(action="create_binding", universe_id="u-bob",
                               definition_id=source["agent_definition_id"],
                               payload=configuration("later"))
     assert again["error"] == "agent_conflict"

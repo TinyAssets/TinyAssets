@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from tinyassets.api import permissions
 from tinyassets.api.helpers import _base_path
+from tinyassets.commons_catalog import serving_binding_candidates
 from tinyassets.credential_vault import current_llm_subscription_custody
-from tinyassets.custom_agents import serving_binding_candidates
 from tinyassets.exceptions import ProviderError
 from tinyassets.provider_assignment import (
     accepted_connected_model_access,

@@ -132,7 +132,7 @@ class TestProjectMemory:
 
 class TestUiLibrary:
     def _save(self, base, owner, library, revision=0):
-        from tinyassets.custom_agents import save_app_ui
+        from tinyassets.app_ui_store import save_app_ui
 
         return save_app_ui(
             base, owner_user_id=owner, universe_id="u-a",
@@ -144,7 +144,7 @@ class TestUiLibrary:
         assert self._save(base, A, [])["revision"] == 1
 
     def test_at_the_quota_it_is_refused_and_nothing_is_saved(self, base):
-        from tinyassets.custom_agents import get_app_ui
+        from tinyassets.app_ui_store import get_app_ui
 
         _account_with_bytes(base, A, "u-a", 95 * KIB)
         big = [{"ui_id": "ui", "html": "x" * (10 * KIB)}]
@@ -154,7 +154,7 @@ class TestUiLibrary:
         assert get_app_ui(base, owner_user_id=A, universe_id="u-a")["revision"] == 0
 
     def test_a_conflict_releases_its_reservation(self, base):
-        from tinyassets.custom_agents import AgentConflictError
+        from tinyassets.commons_catalog import AgentConflictError
 
         _account_with_bytes(base, A, "u-a", 1 * KIB)
         with pytest.raises(AgentConflictError):

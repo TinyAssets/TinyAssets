@@ -33,7 +33,7 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     universe_dir = tmp_path / "u-owner"
     universe_dir.mkdir()
 
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.daemon_server import set_founder_home
     from tinyassets.providers.definition import register_definition
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger

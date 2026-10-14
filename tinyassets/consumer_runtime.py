@@ -271,7 +271,9 @@ def converse_turn(base, *, owner, universe, message, input_method, model_choice,
 
 
 def initialize(base):
-    """Explicit schema setup only; not called inside request/worker fences."""
+    """Explicit schema setup; never inside a request or worker fence. Every
+    serving path calls this before it serves (the HTTP lifespan, the sse/stdio
+    main, the assigned consumer)."""
     canonical.initialize(base)
     with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
         run_input_admissions.ensure_schema(conn)

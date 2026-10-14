@@ -369,6 +369,15 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/storage_accounting.py": [
         "_commons_pages: .read_bytes()",
     ],
+    # The one-shot agent-file cutover rewrites the data-root .layout.json marker
+    # (prepare a temp beside it, replace, fsync the directory). Data root only,
+    # same reason as storage_layout.py above.
+    "tinyassets/agent_file_migration.py": [
+        "_prepare_marker: .unlink()",
+        "_publish_marker: os.open()",
+        "_publish_marker: os.replace()",
+        "apply: .unlink()",
+    ],
     "tinyassets/subscriptions.py": [
         "_read_raw: .read_text()",
     ],

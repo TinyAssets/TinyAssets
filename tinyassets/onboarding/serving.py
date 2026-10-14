@@ -83,7 +83,7 @@ def _gesture_lock(universe_id: str) -> threading.RLock:
 
 def _retired_platform_definition_ids(base: Path) -> frozenset[str]:
     """Ids of the pre-rename default definition, looked up, never created."""
-    from tinyassets.custom_agents import list_definitions
+    from tinyassets.commons_catalog import list_definitions
 
     return frozenset(
         str(d["agent_definition_id"])
@@ -92,7 +92,7 @@ def _retired_platform_definition_ids(base: Path) -> frozenset[str]:
 
 
 def _platform_definition(base: Path) -> dict[str, Any]:
-    from tinyassets.custom_agents import publish_definition
+    from tinyassets.commons_catalog import publish_definition
 
     return publish_definition(
         base,
@@ -131,7 +131,7 @@ def _platform_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, 
     use; otherwise a fresh one is created. Ambiguity (several candidates) is
     refused rather than guessed.
     """
-    from tinyassets.custom_agents import create_binding, list_bindings, update_binding
+    from tinyassets.commons_catalog import create_binding, list_bindings, update_binding
 
     definition = _platform_definition(base)
     did = definition["agent_definition_id"]
@@ -184,7 +184,7 @@ def _quiesce_other_serving(
     """Exactly one founder serving binding may exist: the app's connect is the
     founder's choice of which one. Other founder-created serving bindings are
     disabled at their exact revision; anyone else's bindings are never touched."""
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
     from tinyassets.provider_serving_binding import set_serving
 
     for b in list_bindings(base, universe_id=universe_id, limit=100):
@@ -254,8 +254,8 @@ def _reconnect_manifest(
     expected_digest: str,
 ) -> dict[str, Any]:
     """Renew an accepted source without interpreting renewal as new model consent."""
+    from tinyassets.commons_catalog import reconnect_binding_candidates_in_transaction
     from tinyassets.credential_vault import validate_llm_subscription_deposit
-    from tinyassets.custom_agents import reconnect_binding_candidates_in_transaction
     from tinyassets.provider_assignment import (
         load_provider_assignment,
         load_provider_assignment_in_transaction,

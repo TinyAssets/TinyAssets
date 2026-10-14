@@ -104,7 +104,7 @@ _CODEX_BUNDLE = json.dumps({"tokens": {
 
 
 def _bindings(base: Path, uid: str) -> list[dict[str, Any]]:
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
 
     return list(list_bindings(base, universe_id=uid, limit=100))
 
@@ -141,9 +141,9 @@ def test_two_first_time_gestures_leave_ONE_binding_and_it_serves(base, monkeypat
     _login("founder")
     assert _deposit("u-1", "codex", _CODEX_BUNDLE)["status"] == "deposited"
 
-    from tinyassets import custom_agents
+    from tinyassets import commons_catalog
 
-    original = custom_agents.list_bindings
+    original = commons_catalog.list_bindings
     started = threading.Barrier(2)
 
     def slow_list(*args, **kwargs):
@@ -158,7 +158,7 @@ def test_two_first_time_gestures_leave_ONE_binding_and_it_serves(base, monkeypat
             pass
         return rows
 
-    monkeypatch.setattr(custom_agents, "list_bindings", slow_list)
+    monkeypatch.setattr(commons_catalog, "list_bindings", slow_list)
 
     results: list[dict[str, Any]] = []
     errors: list[BaseException] = []

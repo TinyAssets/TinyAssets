@@ -270,17 +270,17 @@ def _project_memory(base: Path, account_id: str) -> int:
 def _ui_library(base: Path, account_id: str) -> int:
     """A person's app-UI library, per universe they saved one in, plus the asset
     bytes their UIs load (one blob per hash, however many UIs share it)."""
-    from tinyassets import custom_agents
+    from tinyassets import commons_catalog
 
     rows = _sum_sql(
-        custom_agents.db_path(base),
+        commons_catalog.db_path(base),
         "SELECT SUM(length(CAST(ui_library_json AS BLOB)) "
         "+ COALESCE(length(CAST(ui_selection_json AS BLOB)), 0)) "
         "FROM universe_app_ui WHERE owner_user_id = ?",
         (account_id,),
     )
     assets = _sum_sql(
-        custom_agents.db_path(base),
+        commons_catalog.db_path(base),
         "SELECT SUM(size_bytes) FROM universe_app_ui_asset WHERE owner_user_id = ?",
         (account_id,),
     )

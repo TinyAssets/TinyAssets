@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from tinyassets.app_object import BLANK_SCREEN, KIND_COMMAND_CENTER, list_owned_apps
-from tinyassets.custom_agents import get_app_ui, save_app_ui
+from tinyassets.app_ui_store import get_app_ui, save_app_ui
 from tinyassets.daemon_server import (
     _connect,
     ensure_universe_registered,

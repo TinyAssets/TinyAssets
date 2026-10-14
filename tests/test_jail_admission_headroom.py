@@ -10,7 +10,7 @@ from threading import Barrier
 
 import pytest
 
-from tinyassets import custom_agents
+from tinyassets import app_ui_store
 from tinyassets import jail_disk as jd
 from tinyassets import storage_accounting as sa
 from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
@@ -53,7 +53,7 @@ def test_two_new_launches_leave_room_for_a_real_ui_save(base, retained, same_roo
         budgets.append(_launch(root))
         budgets.append(_launch(other))
         library = [{"ui_id": "example", "html": "x" * 48 * 1024}]
-        saved = custom_agents.save_app_ui(
+        saved = app_ui_store.save_app_ui(
             base, owner_user_id=OWNER, universe_id="u-one", expected_revision=0,
             changes={"ui_library": library},
         )

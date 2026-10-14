@@ -1122,7 +1122,7 @@ def load_provider_assignment(
 def _served_request_agent(base_path, universe, request_carrier, role, operation):
     """One validator shared by discovery preflight and final launch admission."""
     from tinyassets.auth.middleware import validate_provider_request_carrier
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
 
     uid = universe.name
     binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
@@ -1357,11 +1357,11 @@ def _authorize_served_provider_call(
     agent_turn: bool = False,
 ) -> Iterator[ServedProviderAuthority]:
     """Authorize one model on the request principal's live connected set."""
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.credential_vault import (
         cleanup_llm_credential_snapshot,
         snapshot_llm_subscription_credential,
     )
-    from tinyassets.custom_agents import get_binding
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.provider_serving_binding import current_connected_source_custody
     from tinyassets.providers.model_policy import ModelRef

@@ -125,6 +125,8 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
         argv = ["policy:show", "--json", "{}"]
     elif argv[:2] == ["policy", "propose"] and len(argv) == 4 and argv[2] == "--json":
         argv = ["policy:propose", "--json", argv[3]]
+    elif argv[:2] == ["agent", "run"] and len(argv) == 4 and argv[2] == "--json":
+        argv = ["agent:run", "--json", argv[3]]
     invoke = dispatch or remote
     catalog = invoke({"op": "catalog"})
     if "error" in catalog:

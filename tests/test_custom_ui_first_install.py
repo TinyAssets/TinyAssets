@@ -19,14 +19,13 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.custom_agents import (
+from tinyassets.app_ui_store import get_app_ui, save_app_ui
+from tinyassets.commons_catalog import (
     AgentConflictError,
     AgentValidationError,
     _agent_connect,
-    get_app_ui,
     list_bindings,
     list_definitions,
-    save_app_ui,
 )
 
 ALICE, BOB = "alice", "bob"
@@ -182,10 +181,10 @@ def test_the_library_has_no_size_bound(tmp_path) -> None:
     are cloud storage and concurrent agent seats). Per-BUNDLE validation is
     untouched; that is payload validation of one document.
     """
-    from tinyassets import custom_agents
-    from tinyassets.custom_agents import _canonical_json
+    from tinyassets import app_ui_store
+    from tinyassets.commons_catalog import _canonical_json
 
-    assert not hasattr(custom_agents, "MAX_APP_UI_LIBRARY_BYTES")
+    assert not hasattr(app_ui_store, "MAX_APP_UI_LIBRARY_BYTES")
 
     # ~6 MiB of library, half again the old ceiling, built from valid bundles.
     big = [dict(_bundle(), ui_id=f"ui-{i:03d}", script="x" * 32000) for i in range(200)]

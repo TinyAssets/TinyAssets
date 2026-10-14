@@ -390,6 +390,42 @@ def write_universe_file(
         os.close(dir_fd)
 
 
+def publish_staged_universe_file(
+    staging_root: Path | str, staged_relpath: str,
+    universe_dir: Path | str, relpath: str,
+) -> None:
+    """Rename a prepared file into a checked universe path after SQL commits.
+
+    Owner-labelled centers use their owner-cell publisher, which is the only
+    permitted writer of visible content there. The private staged copy remains
+    available until the migration ledger has been acknowledged.
+    """
+    source_root, target_root = Path(staging_root), Path(universe_dir)
+    source_parts, target_parts = _split(staged_relpath), _split(relpath)
+    if getattr(fs, "_POSIX", False):
+        from tinyassets import role_content
+
+        selected = role_content.locate(target_root, target_parts)
+        if selected is not None:
+            role_content.write(*selected, read_universe_file(source_root, staged_relpath))
+            return
+        source_fd = _parent_dir_fd(source_root, source_parts, create=False)
+        try:
+            target_fd = _parent_dir_fd(target_root, target_parts, create=True)
+            try:
+                os.replace(source_parts[-1], target_parts[-1],
+                           src_dir_fd=source_fd, dst_dir_fd=target_fd)
+                os.fsync(target_fd)
+            finally:
+                os.close(target_fd)
+        finally:
+            os.close(source_fd)
+    else:
+        source_parent = _windows_parent(source_root, source_parts, create=False)
+        target_parent = _windows_parent(target_root, target_parts, create=True)
+        os.replace(source_parent / source_parts[-1], target_parent / target_parts[-1])
+
+
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:

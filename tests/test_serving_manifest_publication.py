@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 
 from tests.test_open_serving_bind import _CONN_ID, _GRANT_ID, _setup
-from tinyassets.custom_agents import get_binding
+from tinyassets.commons_catalog import get_binding
 from tinyassets.provider_assignment import load_provider_assignment
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import (

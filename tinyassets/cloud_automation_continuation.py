@@ -442,11 +442,10 @@ class AgentInvocationCloudContinuation:
             _integer(getattr(self, name), name, minimum=1)
         for name in ("max_tokens", "max_cost_microunits"):
             _integer(getattr(self, name), name, minimum=0)
-        if (
-            not isinstance(self.execution_subject, ExecutionSubject)
-            or self.execution_subject.kind is not ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST
-        ):
-            raise ValueError("execution_subject must be an agent runtime manifest")
+        # The agent runtime manifest subject is retired (C8): a continuation of
+        # that runtime can no longer be built. The module's claim and fence
+        # types still serve the Branch cloud lane until C5/C7 delete it.
+        raise ValueError("agent runtime continuations are retired")
         for name in (
             "continuation_digest",
             "command_digest",

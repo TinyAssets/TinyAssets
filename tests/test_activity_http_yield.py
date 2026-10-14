@@ -50,10 +50,10 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
     monkeypatch.setattr(_ForegroundRunProviderSession, "prepare", bind_before_start)
     shared_turn = shared_self.prepare_shared_self_turn
 
-    def prepare_activity(*args, activity):
+    def prepare_activity(*args, activity, agent):
         assert activity["activity_id"] == aid and activity["runner_generation"] == generation
         assert activity["runner_token"] == run_ids[0]
-        return shared_turn(*args)
+        return shared_turn(*args, activity=activity, agent=agent)
 
     monkeypatch.setattr(shared_self, "prepare_shared_self_turn", prepare_activity)
     monkeypatch.setattr(engine_mcp_server, "_GRAPH_ID", universe.name)

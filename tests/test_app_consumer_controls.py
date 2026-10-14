@@ -14,7 +14,7 @@ EXTRA = r'''
 let prompts=[],approve=true;
 const confirm=message=>{prompts.push(message);return approve;};
 // The binding store as it really answers: canonical JSON with sorted keys
-// (custom_agents._canonical_json), so {version,state,...} reads back
+// (commons_catalog._canonical_json), so {version,state,...} reads back
 // {component_key,...,version}. A text compare called every save a failure.
 const sortKeys=v=>Array.isArray(v)?v.map(sortKeys):(v&&typeof v==='object')?
  Object.fromEntries(Object.keys(v).sort().map(k=>[k,sortKeys(v[k])])):v;

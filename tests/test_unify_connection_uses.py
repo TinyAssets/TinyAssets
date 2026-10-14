@@ -29,9 +29,9 @@ import pytest
 
 from tests.support.broker_double import seed_owner_admission
 from tests.test_authenticated_external_call_effector import (  # noqa: F401
-    _a_reviewer_that_approves,  # autouse: an explicit approving D1d reviewer
     _install_loopback_driver,
     _Loopback,
+    _the_owners_rules_allow,  # autouse: the owner's policy allows this call
 )
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import DevAuthProvider, Identity
@@ -397,7 +397,7 @@ def test_confirmed_openrouter_model_source_is_accepted_without_switching_root(ow
 def test_model_source_acceptance_refusal_keeps_request_pending_and_existing_serving(
     owner, monkeypatch,
 ):
-    from tinyassets.custom_agents import serving_binding_candidates
+    from tinyassets.commons_catalog import serving_binding_candidates
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
 
@@ -459,7 +459,7 @@ def test_failed_additional_source_activation_restores_prior_membership_and_servi
 
 def test_additional_source_recovery_cannot_overwrite_a_newer_disable(owner, monkeypatch):
     from tinyassets import provider_serving_binding
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
 
     _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
     actual = provider_serving_binding.set_serving

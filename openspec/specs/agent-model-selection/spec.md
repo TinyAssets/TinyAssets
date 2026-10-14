@@ -115,7 +115,7 @@ SHALL keep their prior interpretation and serialization.
 - **AND** unsupported wire protocols remain explicitly unsupported rather than fabricated success
 
 ### Requirement: Model access uses the existing owner binding action
-The authenticated custom_agents bind_serving_provider action SHALL accept optional
+The authenticated commons_catalog bind_serving_provider action SHALL accept optional
 model_access via strict ModelAccess validation and existing assignment publication.
 Omission SHALL preserve the legacy provider-only payload. Saving preferences SHALL
 NOT publish or widen assignments, grants or permitted spending.

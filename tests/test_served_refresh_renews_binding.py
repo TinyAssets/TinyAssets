@@ -42,8 +42,8 @@ def _redeposit_stale(agent) -> None:
     custody row pin THIS document's digest -- the live state before the turn.
     """
     from tinyassets import daemon_server
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.credential_vault import write_credential_vault
-    from tinyassets.custom_agents import get_binding
     from tinyassets.onboarding.serving import ensure_founder_serving
 
     base = agent.served.rig.base
@@ -186,8 +186,8 @@ def test_another_principals_deposit_is_never_spent_on_this_owners_turn(agent, mo
 def test_a_source_no_longer_accepted_is_not_renewed_back_in(agent, monkeypatch):
     """A custody row from an earlier acceptance is history, not consent."""
     from tinyassets import subscription_refresh
-    from tinyassets.api.custom_agents import custom_agents
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.api.commons_catalog import commons_catalog
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_assignment_manifest import ModelAccess
 
@@ -197,7 +197,7 @@ def test_a_source_no_longer_accepted_is_not_renewed_back_in(agent, monkeypatch):
         base, universe_id="u-models", binding_id=agent.served.agent["agent_binding_id"],
     )
     # The owner narrows the accepted setup to the HTTP source alone.
-    narrowed = custom_agents(
+    narrowed = commons_catalog(
         action="bind_serving_provider", universe_id="u-models",
         binding_id=current["agent_binding_id"], expected_revision=current["revision"],
         payload={"provider": agent.served.rig.definition.id, "model_access": {

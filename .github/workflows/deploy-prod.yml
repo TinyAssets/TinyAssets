@@ -906,15 +906,19 @@ jobs:
 
       # P2a installs an idle service after the image and public surfaces are
       # healthy. No daemon path calls it, and this step runs no gate workload.
+      # The copy list is derived from the installer. Restart, DR, and the
+      # box-preflight workflow do not run it.
       - name: Install pinned gVisor and idle boxhostd
         if: ${{ success() }}
-        continue-on-error: true
         timeout-minutes: 8
         run: |
           set -euo pipefail
+          list="${RUNNER_TEMP}/boxhostd-install-files.txt"
+          python scripts/boxhostd_install_files.py > "$list"
+          [[ -s "$list" ]]
+          mapfile -t boxhostd_files < "$list"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
-              deploy/install-boxhostd-preflight.sh deploy/boxhostd_idle.py \
-              deploy/boxhostd.service scripts/box_preflight.py \
+              "${boxhostd_files[@]}" \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash /tmp/install-boxhostd-preflight.sh"

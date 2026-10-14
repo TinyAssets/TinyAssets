@@ -32,7 +32,8 @@ RUNSC_SHA256 = "88a87d5d6d06160d4c144f51f95ec6dd6fe0fc6b02697eb877876683c5b57a91
 CANARY = "http://127.0.0.1:8001/app"
 HARNESS_DEADLINE = 1800
 QUOTA_SCRATCH = ".box-preflight-scratch"
-QUOTA_TOOLS = {"xfs": ("xfs_quota",), "ext4": ("repquota", "chattr", "setquota")}
+BOX_STORE = Path("/var/lib/boxhostd/owners")
+BOX_IMAGE = Path("/var/lib/boxhostd/boxes.img")
 MOUNTINFO = Path("/proc/self/mountinfo")
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 PROC_ROOT = Path("/proc")
@@ -256,11 +257,14 @@ class Boxes:
             timeout=timeout,
         )
 
-    def start(self, name: str, *, memory: int = 2 * GIB) -> tuple[float, Path, Path]:
+    def start(
+        self, name: str, *, memory: int = 2 * GIB, owner_root: Path | None = None
+    ) -> tuple[float, Path, Path]:
         bundle = self.work / name
         bundle.mkdir()
-        owner = bundle / "owner"
-        owner.mkdir()
+        owner = owner_root or bundle / "owner"
+        if owner_root is None:
+            owner.mkdir()
         self.command("spec", "--bundle", str(bundle))
         config = json.loads((bundle / "config.json").read_text())
         config["root"] = {"path": str(self.rootfs), "readonly": True}
@@ -613,83 +617,102 @@ def g3_g6(boxes: Boxes, baseline: float, daemon_memory: int) -> tuple[dict, dict
     return g3_result, g6_result
 
 
-def g4(volume: Path, work: Path | None = None) -> dict:
-    fs = run(["findmnt", "-T", str(volume), "-no", "FSTYPE,OPTIONS"]).stdout.strip()
-    filesystem = fs.split()[0]
-    options = fs.split()[1] if len(fs.split()) > 1 else ""
+def g4(store: Path, boxes: Boxes, work: Path) -> dict:
+    fs = run(["findmnt", "--mountpoint", str(store), "-no", "FSTYPE,OPTIONS"]).stdout.strip()
+    fields = fs.split()
+    options = fields[1].split(",") if len(fields) > 1 else []
     result: dict = {
-        "filesystem": filesystem,
-        "project_quota_mount": any(opt in options.split(",") for opt in ("prjquota", "pquota")),
+        "filesystem": fields[0] if fields else "",
+        "project_quota_mount": "pquota" in options or "prjquota" in options,
+        # XFS never lists nodiscard (the default); only an enabled discard shows.
+        "nodiscard_mount": "discard" not in options,
     }
-    if not result["project_quota_mount"]:
-        return {**result, "pass": False, "reason": "project quotas are not mounted on data volume"}
-    if filesystem not in QUOTA_TOOLS:
-        return {**result, "pass": False, "reason": "unsupported_project_quota_filesystem"}
-    for tool in QUOTA_TOOLS[filesystem]:
-        if shutil.which(tool) is None:
-            return {**result, "pass": False, "reason": f"missing_tool:{tool}"}
-    # Only a new, disposable tree under the actual Docker data volume is
-    # touched. No quota is applied to an owner directory.
-    if not volume.is_dir():
-        return {**result, "pass": False, "reason": "path_missing"}
-    scratch_root = volume / QUOTA_SCRATCH
+    if (
+        result["filesystem"] != "xfs"
+        or not result["project_quota_mount"]
+        or not result["nodiscard_mount"]
+    ):
+        return {**result, "pass": False, "reason": "box store requires XFS pquota,nodiscard"}
+    if not store.is_dir() or shutil.which("xfs_quota") is None:
+        return {**result, "pass": False, "reason": "box store or xfs_quota missing"}
+    if any(entry.name != QUOTA_SCRATCH for entry in store.iterdir()):
+        return {**result, "pass": False, "reason": "G4 requires an empty P2a store"}
+    scratch_root = store / QUOTA_SCRATCH
     scratch_root.mkdir(mode=0o700, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="quota-", dir=scratch_root) as scratch:
-        tree = Path(scratch)
-        mount = run(["findmnt", "-T", str(volume), "-no", "TARGET"]).stdout.strip()
-        if filesystem == "xfs":
-            existing = run(["xfs_quota", "-x", "-c", "report -p -n", mount]).stdout
-        elif filesystem == "ext4":
-            existing = run(["repquota", "-P", "-n", mount]).stdout
-        # Never alter an existing project id. A fresh random id is also
-        # checked against the filesystem's quota report before use.
-        project = 1_000_000_000 + secrets.randbelow(1_000_000_000)
-        if re.search(rf"(?<!\d){project}(?!\d)", existing):
-            raise RuntimeError("scratch project id already has a quota")
-        quota_state = work / "quota-state.json" if work is not None else None
-        if quota_state is not None:
-            quota_state.write_text(
-                json.dumps(
-                    {
-                        "filesystem": filesystem,
-                        "mount": mount,
-                        "project": project,
-                        "tree": str(tree),
-                    }
-                )
-            )
-        cleanup = None
-        try:
-            if filesystem == "xfs":
-                cleanup = ["xfs_quota", "-x", "-c", f"limit -p bhard=0 {project}", mount]
-                run(["xfs_quota", "-x", "-c", f"project -s -p {tree} {project}", mount])
-                run(["xfs_quota", "-x", "-c", f"limit -p bhard=8m {project}", mount])
-            else:
-                cleanup = ["setquota", "-P", str(project), "0", "0", "0", "0", mount]
-                run(["chattr", "-p", str(project), "+P", str(tree)])
-                run(["setquota", "-P", str(project), "0", "8192", "0", "0", mount])
-            try:
-                with (tree / "limit.bin").open("wb") as output:
-                    for _ in range(32):
-                        output.write(b"q" * MIB)
-                failure_errno = 0
-            except OSError as error:
-                failure_errno = error.errno
-            sibling = tree.parent / f"{tree.name}-sibling"
-            try:
-                sibling.write_bytes(b"ok")
-                sibling_ok = True
-            except OSError:
-                sibling_ok = False
-            finally:
-                sibling.unlink(missing_ok=True)
-            result.update({"write_errno": failure_errno, "sibling_write_ok": sibling_ok})
-        finally:
-            assert cleanup is not None
-            cleared = run(cleanup, check=False)
-            result["quota_cleanup_ok"] = cleared.returncode == 0
-        result["pass"] = failure_errno == errno.ENOSPC and sibling_ok and result["quota_cleanup_ok"]
-        return result
+    tree = Path(tempfile.mkdtemp(prefix="quota-", dir=scratch_root))
+    project = 1_000_000_000 + secrets.randbelow(1_000_000_000)
+    existing = run(["xfs_quota", "-x", "-c", "report -p -n", str(store)]).stdout
+    if re.search(rf"(?<!\d){project}(?!\d)", existing):
+        raise RuntimeError("scratch project id already has a quota")
+    (work / "quota-state.json").write_text(json.dumps({
+        "filesystem": "xfs", "mount": str(store), "project": project, "tree": str(tree)
+    }))
+    run(["xfs_quota", "-x", "-c", f"project -s -p {tree} {project}", str(store)])
+    run(["xfs_quota", "-x", "-c", f"limit -p bhard=8m {project}", str(store)])
+    boxes.start("g4quota", owner_root=tree)
+    quota_code = (
+        "import json; p='/home/owner/limit.bin'; e=0; n=0\n"
+        "try:\n with open(p,'wb',buffering=0) as f:\n"
+        "  for _ in range(32): n+=f.write(b'x'*1048576)\n"
+        "except OSError as x: e=x.errno\nprint(json.dumps({'errno':e,'bytes':n}))"
+    )
+    quota = json.loads(boxes.exec("g4quota", "/opt/venv/bin/python", "-c", quota_code).stdout)
+    result["quota_errno"] = quota["errno"]
+    result["quota_written_bytes"] = quota["bytes"]
+    boxes.stop("g4quota")
+    sibling = scratch_root / "sibling"
+    sibling.mkdir()
+    boxes.start("g4full", owner_root=sibling)
+    sibling_code = (
+        "import json; p='/home/owner/sibling.bin'; ok=False\n"
+        "try:\n with open(p,'wb') as f: f.write(b'x'*1048576)\n"
+        "except OSError: pass\nelse: ok=True\nprint(json.dumps({'write_ok':ok}))"
+    )
+    sibling_probe = json.loads(boxes.exec(
+        "g4full", "/opt/venv/bin/python", "-c", sibling_code
+    ).stdout)
+    result["sibling_write_ok"] = sibling_probe["write_ok"]
+    (sibling / "sibling.bin").unlink(missing_ok=True)
+    # Fill only the disposable store, never the host root. The sandbox sees
+    # ENOSPC and remains alive; the allocated backing image cannot grow.
+    root_free = shutil.disk_usage("/").free
+    store_size = shutil.disk_usage(store).total
+    result["store_size_bytes"] = store_size
+    image_blocks = getattr(BOX_IMAGE.stat(), "st_blocks", None) if BOX_IMAGE.exists() else None
+    full_code = (
+        "import json; e=0; n=0; p='/home/owner/full.bin'\n"
+        "try:\n with open(p,'wb',buffering=0) as f:\n  while True:\n"
+        "   n+=f.write(b'x'*16777216)\n"
+        "except OSError as x: e=x.errno\nprint(json.dumps({'errno':e,'bytes':n}))"
+    )
+    full = json.loads(boxes.exec(
+        "g4full", "/opt/venv/bin/python", "-c", full_code, timeout=600
+    ).stdout)
+    result["store_errno"] = full["errno"]
+    result["store_written_bytes"] = full["bytes"]
+    result["root_free_delta_bytes"] = shutil.disk_usage("/").free - root_free
+    boxes.stop("g4full")
+    (sibling / "full.bin").unlink(missing_ok=True)
+    sibling.rmdir()
+    run(["fstrim", "-a"], timeout=120)
+    result["image_blocks_unchanged"] = (
+        image_blocks is None or getattr(BOX_IMAGE.stat(), "st_blocks", None) == image_blocks
+    )
+    result["pass"] = quota_limits_pass(result)
+    return result
+
+
+def quota_limits_pass(result: dict) -> bool:
+    """Distinguish a project limit from an exhausted filesystem by bytes and sibling I/O."""
+    return (
+        result["quota_errno"] == errno.ENOSPC
+        and 6 * MIB <= result["quota_written_bytes"] <= 8 * MIB
+        and result["sibling_write_ok"]
+        and result["store_errno"] == errno.ENOSPC
+        and result["store_written_bytes"] >= result["store_size_bytes"] * 3 // 4
+        and result["root_free_delta_bytes"] >= -MIB
+        and result["image_blocks_unchanged"]
+    )
 
 
 def valid_work_dir(work: Path) -> bool:
@@ -794,6 +817,7 @@ def cleanup_scratch(work: Path) -> None:
             raise CleanupError("quota_clear", "quota_clear_failed")
         else:
             remove_cleanup_tree(tree, "quota_tree_remove")
+            remove_cleanup_tree(tree.parent / "sibling", "store_fill_remove")
             try:
                 tree.parent.rmdir()
             except OSError:
@@ -853,12 +877,6 @@ def main() -> int:
                 ["docker", "inspect", "-f", "{{.HostConfig.Memory}}", "tinyassets-daemon"]
             ).stdout.strip()
         )
-        volume = Path(
-            run(
-                ["docker", "volume", "inspect", "tinyassets-data", "-f", "{{.Mountpoint}}"]
-            ).stdout.strip()
-        )
-        report["gates"]["G4"] = gate(lambda: g4(volume, work))
         # Refuse the extraction if the host cannot safely hold the image and
         # one allocated tree. This is a failed G3 with a concrete headroom fact.
         free = shutil.disk_usage("/var/tmp").free
@@ -884,6 +902,7 @@ def main() -> int:
         step = "rootfs_export"
         boxes = Boxes(work, export_daemon_rootfs(work))
         step = "sandbox_gates"
+        report["gates"]["G4"] = gate(lambda: g4(BOX_STORE, boxes, work))
         report["gates"]["G1"] = gate(lambda: g1(boxes, baseline))
         boxes.stop("g1")
         try:

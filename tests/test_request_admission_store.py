@@ -100,6 +100,67 @@ def test_author_server_pretraffic_init_migrates_epoch2_schema(tmp_path):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_branch_subject_check_migrates_copy_of_populated_current_schema(
+    tmp_path, monkeypatch,
+):
+    """A production-shaped DB copy keeps queued work and its child rows."""
+    from tinyassets.storage import request_admissions
+
+    legacy_root = tmp_path / "legacy"
+    copy_root = tmp_path / "copy"
+    old_check = "automation_subject_kind IN ('branch_version', 'agent_runtime_manifest')"
+    new_check = "automation_subject_kind = 'branch_version'"
+    assert new_check in request_admissions._SCHEMA
+    with monkeypatch.context() as patch:
+        patch.setattr(request_admissions, "_SCHEMA", request_admissions._SCHEMA.replace(
+            new_check, old_check,
+        ))
+        patch.setattr(request_admissions, "_migrate_branch_task_subject_constraint",
+                      lambda conn: None)
+        initialize_author_server(legacy_root)
+    committed = RequestAdmissionStore(legacy_root).commit_admission(**_commit_kwargs())
+
+    db_path(copy_root).parent.mkdir(parents=True, exist_ok=True)
+    with _connect(legacy_root) as source, sqlite3.connect(db_path(copy_root)) as target:
+        old_rowid = source.execute(
+            "SELECT rowid FROM branch_tasks_v2 WHERE branch_task_id = ?",
+            (committed["branch_task_id"],),
+        ).fetchone()[0]
+        source.backup(target)
+    with sqlite3.connect(db_path(copy_root)) as conn:
+        conn.executescript(
+            "CREATE TABLE unrelated_parent (id TEXT PRIMARY KEY);"
+            "CREATE TABLE unrelated_child (parent_id TEXT REFERENCES unrelated_parent(id));"
+            "INSERT INTO unrelated_child (parent_id) VALUES ('preexisting-orphan');"
+        )
+
+    with _connect(copy_root) as conn:
+        migrate_request_admission_schema(conn)
+        migrate_request_admission_schema(conn)
+        assert conn.execute("PRAGMA foreign_key_check(unrelated_child)").fetchall()
+        for table in ("branch_tasks_v2", "request_admissions",
+                      "request_admission_events", "branch_tasks_v2_quarantine"):
+            assert conn.execute(f"PRAGMA foreign_key_check({table})").fetchall() == []
+        task = conn.execute(
+            "SELECT branch_task_id, rowid FROM branch_tasks_v2"
+        ).fetchone()
+        assert task["branch_task_id"] == committed["branch_task_id"]
+        assert task["rowid"] == old_rowid
+        assert conn.execute(
+            "SELECT branch_task_id FROM request_admission_events"
+        ).fetchone()[0] == committed["branch_task_id"]
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='branch_tasks_v2'"
+        ).fetchone()[0]
+        assert "agent_runtime_manifest" not in table_sql
+        assert "IN ('branch_version')" in table_sql
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE branch_tasks_v2 SET automation_subject_kind = ?",
+                ("agent_runtime_manifest",),
+            )
+
+
 def test_migrates_prechange_database_without_losing_requests(tmp_path):
     path = db_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,35 +368,6 @@ def test_commit_persists_only_the_exact_current_automation_activation(
         )
     assert _table_count(tmp_path, "branch_tasks_v2") == 1
 
-
-def test_branch_task_admission_rejects_agent_manifest_activation(
-    tmp_path: Path,
-) -> None:
-    initialize_author_server(tmp_path)
-    activations = AutomationActivationStore(tmp_path)
-    stopped = activations.create_stopped_for_agent_binding(
-        universe_id="universe-a",
-        agent_binding_id="agent-binding-a",
-    )
-    active = activations.activate(
-        expected=stopped,
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=ExecutionSubject(
-            kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
-            ref="agent-manifest-a",
-            digest=f"sha256:{'c' * 64}",
-        ),
-        lease_id="activation-lease-a",
-    )
-    assert active is not None
-
-    with pytest.raises(ValueError, match="requires a branch_version subject"):
-        RequestAdmissionStore(tmp_path).commit_admission(
-            **_commit_kwargs(automation_activation=active),
-        )
-
-    assert _table_count(tmp_path, "request_admissions") == 0
-    assert _table_count(tmp_path, "branch_tasks_v2") == 0
 
 def test_commit_preserves_incentive_and_directed_instruction_privately(
     tmp_path,

@@ -339,6 +339,43 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if "tinyassets.agent_file_migration" in argv:
+            # The C8 cutover container (deploy step 3c). `check` reports the
+            # rows still in SQL; a failed `apply` can be before or after commit,
+            # independently of the marker it left.
+            marker = os.path.join(os.environ.get("FAKE_DOCKER_VOLUME_DIR", ""), ".layout.json")
+            command = argv[argv.index("tinyassets.agent_file_migration") + 1]
+            if command == "check":
+                if state.get("migration_recheck_error") and state.get("migration_apply_attempted"):
+                    sys.stderr.write("fake migration: recheck failed: sqlite locked\n")
+                    return 1
+                if state.get("migration_probe_error"):
+                    sys.stderr.write(
+                        "fake migration: probe failed: %s\n" % state["migration_probe_error"]
+                    )
+                    return int(state.get("migration_probe_rc", 1))
+                pending = int(bool(state.get("migration_pending")))
+                print(json.dumps({"pending": pending}))
+                return 10 if pending else 0
+            outcome = state.get("migration_apply", "commit")
+            state["migration_apply_attempted"] = True
+            if outcome == "commit":
+                state["migration_pending"] = False
+                save_state(state)
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write('{"layout": 1, "state": "stable"}')
+                print("{}")
+                return 0
+            if outcome.startswith("committed_"):
+                state["migration_pending"] = False
+                save_state(state)
+                outcome = outcome.removeprefix("committed_")
+            else:
+                save_state(state)
+            with open(marker, "w", encoding="utf-8") as handle:
+                handle.write('{"layout": 1, "state": "%s"}' % outcome)
+            sys.stderr.write("fake migration: apply failed outcome=%s\n" % outcome)
+            return 1
         if "KNOWN_LAYOUTS" in argv[-1]:
             if not state.get("layout_probe_ok", True):
                 return 1
@@ -348,6 +385,31 @@ def main(argv):
             print(state.get("layout_probe_output", json.dumps(declaration)))
         return 0 if state.get("preflight_ok", True) else 1
 
+    if argv[:1] == ["ps"]:
+        # `ps -q --filter name=^X$`: the id of a running container, or nothing.
+        wanted = argv[-1].split("=", 1)[-1].strip("^$")
+        container = (state.get("containers") or {}).get(wanted)
+        if container is not None and container.get("status", "running") == "running":
+            print("c0ffee")
+        return 0
+    if argv[:1] in (["stop"], ["start"]):
+        container = (state.get("containers") or {}).get(argv[-1])
+        if argv[0] == "stop" and state.get("stop_refused"):
+            sys.stderr.write(
+                "fake docker: stop refused for %s status=%s\n"
+                % (argv[-1], (container or {}).get("status", "missing"))
+            )
+            return 1
+        if argv[0] == "start" and state.get("start_refused"):
+            sys.stderr.write(
+                "fake docker: start refused for %s status=%s\n"
+                % (argv[-1], (container or {}).get("status", "missing"))
+            )
+            return 1
+        if container is not None:
+            container["status"] = "running" if argv[0] == "start" else "exited"
+            save_state(state)
+        return 0
     if argv[:2] == ["volume", "inspect"]:
         # The data volume's host directory: the layout guard reads its marker.
         print(os.environ.get("FAKE_DOCKER_VOLUME_DIR") or os.path.dirname(STATE_PATH))
@@ -540,6 +602,17 @@ if [ -n "$match" ]; then
   done
 fi
 exec /bin/rm "$@"
+'''
+
+# deploy/backup.sh in BACKUP_MODE=snapshot: the full-volume rollback point the
+# migration verifies. It reports the archive the way the real script does.
+FAKE_BACKUP = r'''#!/usr/bin/env bash
+set -euo pipefail
+[ "${BACKUP_MODE:-}" = "snapshot" ] || { echo "fake backup: not a snapshot" >&2; exit 1; }
+name="tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
+printf 'tar' > "${BACKUP_SNAPSHOT_DIR}/${name}"
+printf '%064d  %s\n' 0 "$name" > "${BACKUP_SNAPSHOT_DIR}/${name}.sha256"
+echo "SNAPSHOT id=${name} sha256=0 bytes=3 names=1"
 '''
 
 FAKE_SYSTEMCTL = r'''#!/bin/sh
@@ -2311,3 +2384,270 @@ def test_pull_headroom_is_enforced_under_mutation_lock(box: Box, headroom_status
         assert box.live() == before
     else:
         assert "pull " in box.docker_calls_text()
+
+
+# ---------------------------------------------------------------------------
+# (e) the agent-files cutover (step 3c): once apply has committed, the previous
+# image never starts again in this run
+# ---------------------------------------------------------------------------
+
+
+def _cutover(box: Box) -> tuple[Path, dict[str, str]]:
+    """A volume still holding bindings, the snapshot script, the snapshot dir."""
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text('{"layout": 1, "state": "stable"}', encoding="utf-8")
+    backup = box.root / "backup.sh"
+    backup.write_text(FAKE_BACKUP, encoding="utf-8", newline="\n")
+    backup.chmod(0o755)
+    box.set_docker_state(migration_pending=True)
+    env = {
+        "FAKE_DOCKER_VOLUME_DIR": str(volume),
+        "BACKUP_SCRIPT": str(backup),
+        "MIGRATION_BACKUP_DIR": str(box.root / "backups"),
+    }
+    return volume, env
+
+
+def _migration_refusal(completed: subprocess.CompletedProcess) -> str:
+    """The deploy-log line. The workflow echoes stdout; stderr is annotations."""
+    lines = [
+        line for line in completed.stdout.splitlines()
+        if line.startswith("[deploy-fail-safe] migration refused:")
+    ]
+    assert lines, completed.stdout
+    return "\n".join(lines)
+
+
+def _daemon_starts(box: Box) -> list[str]:
+    """Every call that would start a daemon: `start`, and a `compose up` that
+    names the daemon service (the log forwarder's own recreate is not one)."""
+    return [
+        line for line in box.docker_calls_text().splitlines()
+        if line.startswith("start ")
+        or ("compose" in line and " up " in line and " daemon " in line + " ")
+    ]
+
+
+@pytest.mark.parametrize("candidate", ["healthy", "unhealthy", "converge_fails"])
+def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candidate):
+    """The old image serving with its bindings deleted from SQL is the failure
+    the whole cutover exists to prevent (Codex on #4744). After apply commits,
+    a candidate that fails leaves the service down with the exact restore
+    command for the snapshot this run took: no image-only rollback."""
+    volume, env = _cutover(box)
+    if candidate == "unhealthy":
+        box.set_docker_state(unhealthy_images=[NEW_IMAGE])
+    elif candidate == "converge_fails":
+        box.set_docker_state(up_fail_images=[NEW_IMAGE])
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    calls = box.docker_calls_text()
+    assert "agent_file_migration apply /data --backup /backup/tinyassets-snapshot-" in calls
+    assert "--user 0 --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE" in calls
+    assert "stop --time" in calls, "the daemon stops before the snapshot and the move"
+    assert json.loads((volume / ".layout.json").read_text(encoding="utf-8"))["state"] == "stable"
+    snapshot = box.root / "backups" / "tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
+    assert snapshot.is_file()
+    if candidate == "healthy":
+        assert completed.returncode == 0, completed.stderr
+        assert _result(completed) == "deployed"
+        assert _deployed_image(completed) == NEW_IMAGE
+        return
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_needs_restore"
+    assert "start " not in calls, "the previous image must never start on migrated data"
+    assert len(_daemon_starts(box)) == 1, (
+        "only the candidate's converge was attempted; no rollback converge of the previous image"
+    )
+    assert f"NOT starting {OLD_IMAGE}" in completed.stderr
+    assert f"BACKUP_FILE={snapshot} sudo bash deploy/backup-restore.sh" in completed.stderr
+    assert box.live() == before, "the bundle this run installed is restored"
+    assert box.env_image() == NEW_IMAGE, "the env must not be re-pointed at the previous image"
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert daemon["status"] == "exited", "the service is left down for the restore"
+    # A refused converge never replaced the container stopped for the move.
+    assert daemon["image_ref"] == (OLD_IMAGE if candidate == "converge_fails" else NEW_IMAGE)
+
+
+@pytest.mark.parametrize("outcome,result,code", [
+    ("stable", "migration_refused", 1),
+    ("migrating", "migration_refused", 1),
+    ("committed_stable", "rollback_needs_restore", 3),
+    ("committed_migrating", "rollback_needs_restore", 3),
+])
+def test_a_failed_apply_is_judged_by_sql(box: Box, outcome, result, code):
+    """SQL decides whether an apply committed, regardless of marker state."""
+    volume, env = _cutover(box)
+    box.set_docker_state(migration_apply=outcome)
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == code, completed.stderr
+    assert _result(completed) == result
+    assert box.live() == before and box.env_image() == OLD_IMAGE
+    calls = box.docker_calls_text()
+    assert calls.count("agent_file_migration check /data") == 2
+    assert "compose" not in calls.split("agent_file_migration apply")[-1], (
+        "no image is converged after a failed apply"
+    )
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert f"fake migration: apply failed outcome={outcome.removeprefix('committed_')}" in (
+        completed.stdout
+    )
+    if result == "migration_refused":
+        assert "start tinyassets-daemon" in calls and daemon["status"] == "running"
+        reason = _migration_refusal(completed)
+        assert "check=move_committed" in reason
+        assert "apply_rc=1" in reason
+        assert f"outcome={outcome}" in reason
+        assert "recheck_rc=10" in reason
+        assert 'recheck_output={"pending": 1}' in reason
+    else:
+        assert "start " not in calls and daemon["status"] == "exited"
+        assert "restore it with: BACKUP_FILE=" in completed.stderr
+        assert "apply_rc=1 apply_output=fake migration: apply failed outcome=" in (
+            completed.stdout
+        )
+
+
+def test_a_failed_sql_recheck_keeps_the_old_image_down(box: Box):
+    _, env = _cutover(box)
+    box.set_docker_state(migration_apply="stable", migration_recheck_error=True)
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_needs_restore"
+    assert not _daemon_starts(box)
+    assert "could not verify SQL after apply failed" in completed.stderr
+    assert "rc=1 output=fake migration: recheck failed: sqlite locked" in completed.stdout
+    assert "apply_output=fake migration: apply failed outcome=stable" in completed.stdout
+
+
+def _refusing_backup(box: Box, body: str) -> None:
+    script = box.root / "backup.sh"
+    script.write_text(body, encoding="utf-8", newline="\n")
+    script.chmod(0o755)
+
+
+def test_a_snapshot_refusal_names_the_check_and_its_values(box: Box):
+    """The echoed deploy log names the census check and the socket it rejected."""
+    _, env = _cutover(box)
+    socket = (
+        ".universe-sidecars/u-01kxm1vszd8hwp7em418asq8h9/"
+        "ta-b9cd7a37b3752b2734bbf9daa3806c7e.sock"
+    )
+    _refusing_backup(
+        box,
+        "#!/usr/bin/env bash\n"
+        f"echo \"unrecognized socket in snapshot inventory: '{socket}'\" >&2\n"
+        "echo '[backup test] ERROR: snapshot does not match the restorable inventory'\n"
+        "exit 2\n",
+    )
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=full_volume_snapshot rc=2" in reason
+    assert socket in reason
+    assert "ERROR: snapshot does not match the restorable inventory" in reason
+    stdout = completed.stdout
+    assert stdout.index("stopping tinyassets-daemon") < stdout.index("migration refused:")
+    assert stdout.index("migration refused:") < stdout.index("deploy_result=")
+    assert box.live() == before
+    assert "start tinyassets-daemon" in box.docker_calls_text()
+    assert "agent_file_migration apply" not in box.docker_calls_text()
+
+
+def test_a_missing_snapshot_script_names_the_path(box: Box):
+    _, env = _cutover(box)
+    missing = box.root / "no-such-backup.sh"
+    env["BACKUP_SCRIPT"] = str(missing)
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert f"check=backup_script path={missing} present=no" in reason
+
+
+def test_a_snapshot_without_an_id_names_the_last_line(box: Box):
+    _, env = _cutover(box)
+    _refusing_backup(
+        box,
+        "#!/usr/bin/env bash\n"
+        "echo 'backup finished without an id'\n"
+        "exit 0\n",
+    )
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=snapshot_id present=no last=backup finished without an id" in reason
+
+
+def test_a_stop_refusal_names_the_container_and_docker_output(box: Box):
+    _, env = _cutover(box)
+    box.set_docker_state(stop_refused=True)
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=daemon_stopped container=tinyassets-daemon grace_s=20 rc=1" in reason
+    assert "output=fake docker: stop refused for tinyassets-daemon status=running" in reason
+    assert "agent_file_migration apply" not in box.docker_calls_text()
+    assert not list((box.root / "backups").glob("*.tar.gz"))
+
+
+def test_a_restart_refusal_names_docker_output(box: Box):
+    _, env = _cutover(box)
+    box.set_docker_state(start_refused=True)
+    _refusing_backup(box, "#!/usr/bin/env bash\necho 'ERROR: snapshot tar failed' >&2\nexit 2\n")
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert "check=full_volume_snapshot rc=2" in reason
+    assert "ERROR: snapshot tar failed" in reason
+    assert "check=daemon_restart container=tinyassets-daemon" in reason
+    assert "output=fake docker: start refused for tinyassets-daemon status=exited" in reason
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert daemon["status"] == "exited"
+
+
+def test_a_probe_refusal_names_the_rc_and_the_probe_output(box: Box):
+    _, env = _cutover(box)
+    box.set_docker_state(
+        migration_probe_error="PermissionError errno=13 path=/data/.broker/.runs.db",
+        migration_probe_rc=2,
+    )
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "migration_refused"
+    reason = _migration_refusal(completed)
+    assert f"check=agent_bindings_probe image={NEW_IMAGE} rc=2" in reason
+    assert (
+        "output=fake migration: probe failed: "
+        "PermissionError errno=13 path=/data/.broker/.runs.db"
+    ) in reason
+    assert "stop --time" not in box.docker_calls_text()

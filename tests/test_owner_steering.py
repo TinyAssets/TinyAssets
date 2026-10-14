@@ -560,7 +560,6 @@ def test_a_line_held_for_another_agent_comes_back_for_that_agent(monkeypatch, tm
     from tinyassets import addressed_agents, onboarding
     from tinyassets.api import helpers, permissions
     from tinyassets.auth import middleware
-    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import ensure_universe_registered
 
     base = tmp_path / "data"
@@ -575,14 +574,13 @@ def test_a_line_held_for_another_agent_comes_back_for_that_agent(monkeypatch, tm
     monkeypatch.setattr(permissions, "universe_access_allows",
                         lambda uid, write=False: caller.user_id == "owner-1" and uid == "u-alpha")
 
-    definition = publish_definition(base, author_id="owner-1", payload={
-        "schema_version": 1, "name": "Evidence Weaver",
-        "components": {"identity": {"kind": "soul", "config": {"instructions": "Weave."}}},
-    })
-    weaver = create_binding(
-        base, universe_id="u-alpha", definition_id=definition["agent_definition_id"],
-        created_by="owner-1", payload={"schema_version": 1, "name": "Evidence Weaver"},
-    )["agent_binding_id"]
+    folder = universe / "agents" / "evidence-weaver"
+    folder.mkdir(parents=True)
+    (folder / "AGENTS.md").write_text("Weave.", encoding="utf-8")
+    (folder / "settings.yaml").write_text(
+        "schema_version: 1\nagent: {id: agent_weaver, name: Evidence Weaver}\n",
+        encoding="utf-8")
+    weaver = "agent_weaver"
 
     held = json.loads(asyncio.run(onboarding._handle_turn_steer(
         _Request({"universe_id": "u-alpha", "agent_id": weaver,

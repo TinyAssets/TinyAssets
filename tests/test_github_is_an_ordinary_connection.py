@@ -28,9 +28,9 @@ import urllib.request
 import pytest
 
 from tests.test_authenticated_external_call_effector import (  # noqa: F401
-    _a_reviewer_that_approves,  # autouse: an explicit approving D1d reviewer
     _install_loopback_driver,
     _Loopback,
+    _the_owners_rules_allow,  # autouse: the owner's policy allows this call
 )
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import DevAuthProvider, Identity

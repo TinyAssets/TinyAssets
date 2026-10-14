@@ -18,13 +18,9 @@ import sqlite3
 
 import pytest
 
-from tinyassets import custom_agents
-from tinyassets.custom_agents import (
-    AgentConflictError,
-    change_app_ui_entry,
-    get_app_ui,
-    save_app_ui,
-)
+from tinyassets import app_ui_store
+from tinyassets.app_ui_store import change_app_ui_entry, get_app_ui, save_app_ui
+from tinyassets.commons_catalog import AgentConflictError
 from tinyassets.storage import DB_FILENAME
 
 ALICE = "acct_alice"
@@ -266,7 +262,7 @@ def test_a_concurrent_save_between_read_and_write_is_not_lost(tmp_path, monkeypa
     """
     save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME, expected_revision=0,
                 changes={"ui_library": [_ui(VILLAGE)]})
-    real = custom_agents._apply_app_ui_entry_operation
+    real = app_ui_store._apply_app_ui_entry_operation
     calls = []
 
     def racing(library, selection, operation, payload):
@@ -276,7 +272,7 @@ def test_a_concurrent_save_between_read_and_write_is_not_lost(tmp_path, monkeypa
                         changes={"ui_library": [*library, _ui("den")]})
         return real(library, selection, operation, payload)
 
-    monkeypatch.setattr(custom_agents, "_apply_app_ui_entry_operation", racing)
+    monkeypatch.setattr(app_ui_store, "_apply_app_ui_entry_operation", racing)
     change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME,
                         operation="edit_ui",
                         payload={"ui_id": VILLAGE, "set": {"style": "#v{}"}})
@@ -290,7 +286,7 @@ def test_a_concurrent_save_between_read_and_write_is_not_lost(tmp_path, monkeypa
 def test_a_stale_etag_is_refused_and_changes_nothing(tmp_path) -> None:
     save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME, expected_revision=0,
                 changes={"ui_library": [_ui(VILLAGE)]})
-    etag = custom_agents.app_ui_etag(_ui(VILLAGE))
+    etag = app_ui_store.app_ui_etag(_ui(VILLAGE))
     change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME, operation="edit_ui",
                         payload={"ui_id": VILLAGE, "set": {"name": "Renamed"}})
     before = _row(tmp_path)

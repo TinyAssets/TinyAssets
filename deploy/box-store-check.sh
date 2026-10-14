@@ -8,6 +8,7 @@ options=",$(findmnt --mountpoint "$store" -no OPTIONS),"
 [[ "$options" == *,pquota,* || "$options" == *,prjquota,* ]] || {
     echo 'box store lacks project quotas' >&2; exit 1;
 }
-[[ "$options" == *,nodiscard,* ]] || {
-    echo 'box store lacks nodiscard' >&2; exit 1;
+# XFS never lists nodiscard (it is the default); only an enabled discard shows.
+[[ "$options" != *,discard,* ]] || {
+    echo 'box store is mounted with discard' >&2; exit 1;
 }

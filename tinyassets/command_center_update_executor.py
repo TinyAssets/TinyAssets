@@ -22,14 +22,10 @@ from tinyassets import command_center_update_policy as policy
 from tinyassets import command_center_update_registry as registry
 from tinyassets import storage_accounting as accounting
 from tinyassets.api.command_center_updates import _prepare
+from tinyassets.app_ui_store import _check_app_ui_fields, _check_assets_held
 from tinyassets.command_center_update_reads import HeldReads
 from tinyassets.command_center_updates import digest
-from tinyassets.custom_agents import (
-    _agent_connect,
-    _canonical_json,
-    _check_app_ui_fields,
-    _check_assets_held,
-)
+from tinyassets.commons_catalog import _agent_connect, _canonical_json
 
 _log = logging.getLogger(__name__)
 

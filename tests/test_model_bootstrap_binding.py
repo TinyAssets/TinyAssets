@@ -2,7 +2,7 @@
 
 import pytest
 
-from tinyassets.custom_agents import create_binding, get_binding, list_bindings, update_binding
+from tinyassets.commons_catalog import create_binding, get_binding, list_bindings, update_binding
 from tinyassets.onboarding.model_bootstrap_binding import ensure_bootstrap_binding
 from tinyassets.onboarding.serving import _BINDING_PAYLOAD, _platform_definition
 

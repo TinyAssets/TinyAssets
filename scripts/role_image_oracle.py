@@ -530,7 +530,7 @@ def leg_engine_http():
     import sqlite3
     import time
 
-    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.commons_catalog import create_binding, publish_definition
     from tinyassets.engine_mcp_http import _EngineServer, EngineMcpRoute
     from tinyassets.engine_tool_client import _make_client
     from tinyassets.engine_steering import route_with_session
@@ -708,7 +708,7 @@ def leg_workspace_provision():
 
 
 def leg_preview():
-    from tinyassets import custom_agents, ui_preview
+    from tinyassets import app_ui_store, ui_preview
     from tinyassets.auth.middleware import Identity, identity_context
     import io
     from PIL import Image
@@ -718,7 +718,7 @@ def leg_preview():
                  'markup': '<div>Owner preview</div>',
                  'style': 'html,body{margin:0;background:rgb(32,80,192)}', 'script': ''}
     with identity_context(Identity('alice', 'alice')):
-        custom_agents.change_app_ui_entry(DATA, owner_user_id='alice', universe_id='u-alice',
+        app_ui_store.change_app_ui_entry(DATA, owner_user_id='alice', universe_id='u-alice',
             operation='add_ui', payload={'component': component})
         try:
             ui_preview.preview_app_ui(DATA, owner_user_id='alice', universe_id='u-alice',

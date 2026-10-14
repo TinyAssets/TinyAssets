@@ -26,7 +26,8 @@ from tests.test_command_center_packages import (
     cloud_runtime,  # noqa: F401
 )
 from tests.test_command_center_packages import home as home
-from tinyassets import custom_agents as ca
+from tinyassets import app_ui_store
+from tinyassets import commons_catalog as ca
 from tinyassets.api.package_requests import list_packages
 from tinyassets.command_center_packages import check_blob, read_blob
 from tinyassets.commons_bundles import publication_bundle
@@ -49,7 +50,7 @@ def test_republish_supersedes_with_history_and_installed_copy_unchanged(home):
     ask = _install(home, first["agent_definition_id"])
     assert _answer(BOB, BOB_UNIVERSE, ask["request_id"])["installed"]
     installed = _bob_files(home)
-    old_ui = ca.get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    old_ui = app_ui_store.get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
     _write(home / UNIVERSE, "notes/board.md", "# A newly published board\n")
     second = _publish(home)
     assert first["bundle_id"] == second["bundle_id"]
@@ -65,7 +66,7 @@ def test_republish_supersedes_with_history_and_installed_copy_unchanged(home):
     assert old["previous_definition_id"] == ""
     assert _blob_files(home, first["agent_definition_id"]) == old_files
     assert _bob_files(home) == installed
-    assert ca.get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == old_ui
+    assert app_ui_store.get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == old_ui
     manifest, _ = check_blob(read_blob(home, second["components"]["package"]["blob_sha256"]))
     assert manifest["bundle_id"] == second["bundle_id"]
 
@@ -92,21 +93,6 @@ def test_publish_ask_creates_no_bundle_row_before_approval(home):
     assert bundles == 1
 
 
-def test_author_fence_and_remix_identity(home):
-    first = _publish(home)
-    payload = first["portable_definition"]
-    with _as(BOB), pytest.raises(ca.AgentValidationError, match="original author"):
-        ca.publish_definition(home, author_id=BOB, payload=payload)
-    remix = ca.import_definition(home, author_id=BOB, portable_definition=payload,
-                                 idempotency_key="remix")
-    assert remix["portable_definition"]["bundle_id"] != first["bundle_id"]
-    assert remix["author_id"] == BOB
-    assert ca.import_definition(home, author_id=BOB, portable_definition=payload,
-                                idempotency_key="remix") == remix
-    assert ca.get_definition(home, first["agent_definition_id"], include_catalogue=True)[
-        "current_definition_id"] == first["agent_definition_id"]
-
-
 def test_rename_filters_and_pagination_consider_only_current_versions(home):
     first = _publish(home)
     renamed = {**_publish_action(), "name": "Renamed village", "description": "Current text"}
@@ -126,9 +112,9 @@ def test_same_name_different_screen_and_different_author_are_distinct(home, pack
     if not package:
         action.pop("package")
     first = _publish(home, action)
-    doc = ca.get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+    doc = app_ui_store.get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
     other = {**doc["ui_library"][0], "ui_id": "other-village"}
-    ca.save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
+    app_ui_store.save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
                    expected_revision=doc["revision"],
                    changes={"ui_library": doc["ui_library"] + [other]})
     second = _publish(home, {**action, "ui_id": "other-village"})
@@ -138,7 +124,7 @@ def test_same_name_different_screen_and_different_author_are_distinct(home, pack
     assert len(list_packages() if package else list_systems()) == 2
 
 
-@pytest.mark.parametrize("kind", ["packages", "agents", "systems"])
+@pytest.mark.parametrize("kind", ["packages", "systems"])
 def test_second_account_discovers_foreign_current_version_through_engine(home, monkeypatch, kind):
     from tinyassets import engine_mcp_server as engine
 

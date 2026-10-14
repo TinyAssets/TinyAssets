@@ -38,7 +38,7 @@ def work_agent(tmp_path, monkeypatch, http_wire):
     )])
     # Persona generation isn't this test's subject. Identity/route/admission are
     # real and the adapter overwrites these hostile ordinary config identities.
-    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args: (
+    monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", lambda *args, **kw: (
         args[3], "work system", ModelConfig(
             engine_mcp_enabled=True, engine_mcp_actor_id="wrong-owner",
             engine_mcp_graph_id="wrong-universe", max_tokens=1024, absolute_cap_s=120,
@@ -106,7 +106,8 @@ def work_agent(tmp_path, monkeypatch, http_wire):
                 return {"status": 429, "body": '{"error":{"message":"synthetic capacity"}}'}
             if len(state.wires) == 2 and state.mode == "later_model_capacity":
                 return {"status": 503, "body": '{"error":{"message":"synthetic overload"}}'}
-            tools = len(state.wires) == 1 or state.mode == "ongoing_tools"
+            tools = (len(state.wires) == 1 and state.mode != "no_tools"
+                     or state.mode == "ongoing_tools")
             message = {"role": "assistant", "content": None if tools else "work completed"}
             if tools:
                 message["tool_calls"] = [{"id": "tool-1", "type": "function", "function": {

@@ -712,37 +712,28 @@
         if(!doc||doc.error||!Array.isArray(doc[key])||doc[key].length<page) return doc;
       }
     },
-    // The viewer's agents a person can talk to: the main agent, then every agent
-    // they bound into THIS command center (harness §4.18). A conversation-design
-    // installation answers the main thread, so it is not one of them.
-    // `selected` is the agent the app's chat is talking to right now.
-    conversable(b){
-      return !!(b&&typeof b==="object"&&b.created_by===this.principal&&b.universe_id===this.home&&
-        b.status==="configured"&&b.agent_binding_id&&b.configuration&&typeof b.configuration==="object"&&
-        b.configuration.role!==this.ROLE&&
-        !Object.prototype.hasOwnProperty.call(b.configuration,"turn_consumer"));
-    },
+    // The viewer's agents a person can talk to: the main agent, then every
+    // `agents/<name>/` directory of THIS command center (harness §4.18), as the
+    // server lists them. `selected` is the agent the app's chat is talking to.
     async listAgents(){
       // A name lookup is optional; losing it must not hide the roster.
       const own=await Owner.status({universe_id:this.home}).catch(()=>null);
       return this.agentRoster(own);
     },
     async agentRoster(own){
-      const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
-      if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
+      const doc=await this.readWhole({target:"agents",graph_id:this.home},"agents");
+      if(!doc||doc.error||!Array.isArray(doc.agents)) throw new Error("your agents are unavailable");
       const current=typeof addressedAgentId==="function"?addressedAgentId():"main";
       if(own&&!own.error&&String(own.universe_id||"")!==this.home)
         throw new Error("that state belongs to another command center; this UI's access ended");
       // The agent's learned name is distinct from the command center's title.
       const name=own&&!own.error&&own.persona&&typeof own.persona.name==="string"?own.persona.name.trim():"";
-      const agents=[{agent_id:"main",name:name||"Your agent",selected:current==="main"}];
-      for(const b of doc.bindings){
-        if(!this.conversable(b)) continue;
-        // Picked fields only. A configuration is private operational data and
-        // never crosses into a bundle, so only its NAME does.
-        const id=String(b.agent_binding_id);
-        agents.push({agent_id:id,name:String(b.configuration.name||"Unnamed agent"),selected:current===id});
+      const agents=[];
+      for(const a of doc.agents){
+        const id=String(a.agent_id);
+        agents.push({agent_id:id,name:id==="main"?(name||"Your agent"):String(a.name||id),selected:current===id});
       }
+      if(!agents.length||agents[0].agent_id!=="main") throw new Error("your agents are unavailable");
       return {agents};
     },
     // One of the viewer's own agents, by id or by name. Anything else is refused
@@ -847,9 +838,7 @@
         typeof p.author_id!=="string"||typeof p.available!=="boolean"||
         typeof p.unavailable_reason!=="string"||
         !Number.isInteger(p.workflow_count)||p.workflow_count<0||
-        !Number.isInteger(p.automation_count)||p.automation_count<0||
-        (p.agent_template_count!==undefined&&(!Number.isInteger(p.agent_template_count)||
-          p.agent_template_count<0)))||
+        !Number.isInteger(p.automation_count)||p.automation_count<0)||
         doc.can_try!==(doc.packages.length>=1||systems.some(p=>p.available)))
         throw new Error("shared command centers are unavailable");
       const packages=doc.packages.map(p=>{
@@ -862,13 +851,11 @@
           throw new Error("invalid command-center package");
         return {agent_definition_id:p.agent_definition_id,name:p.name,description:p.description,
           author_id:p.author_id,version:p.version,size:p.size,file_count:p.file_count,
-          agent_template_count:Number.isInteger(p.agent_template_count)?p.agent_template_count:0,
           needs:{model:p.needs.model,connections:p.needs.connections.slice()}};
       });
       return {packages,systems:systems.map(p=>({agent_definition_id:p.agent_definition_id,
         publication_kind:"system",name:p.name,description:p.description,author_id:p.author_id,
         workflow_count:p.workflow_count,automation_count:p.automation_count,
-        agent_template_count:p.agent_template_count||0,
         available:p.available,unavailable_reason:p.unavailable_reason})),
         build_prompt:doc.build_prompt,can_try:doc.can_try};
     },
@@ -1521,8 +1508,7 @@
         this.line(card,system?"Public system · Components only; no files · "+
           item.workflow_count+" workflows · "+item.automation_count+" paused automations":
           "File package · Version "+item.version+" · "+item.size);
-        this.line(card,(item.agent_template_count||0)+" public agent templates"+
-          (item.agent_template_count?" · Copies get your own agent bindings":" · No conversation agents included"));
+        this.line(card,"No conversation agents included · an agent is its agents/<name>/ files");
         if(system&&!item.available)this.line(card,item.unavailable_reason,"muted");
         card.appendChild(this.button("Preview "+item.name,
           ()=>this.previewShared(item.agent_definition_id),this.trying||(system&&!item.available)));

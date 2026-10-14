@@ -58,7 +58,7 @@ def _serving_hint(base: Path, *, universe_id: str, actor: str) -> tuple[str | No
     a universe may legitimately have no binding yet.
     """
     try:
-        from tinyassets.custom_agents import list_bindings
+        from tinyassets.commons_catalog import list_bindings
 
         # Every binding: the owner's own is looked for AMONG them, so a page
         # of 30 newer ones by other creators used to hide it.

@@ -197,7 +197,8 @@ def _spec_for(
     base_path: str | Path, owner_user_id: str, universe_id: str, ui_id: str,
     width: int, height: int,
 ) -> dict[str, Any]:
-    from tinyassets.custom_agents import AgentNotFoundError, get_app_ui
+    from tinyassets.app_ui_store import get_app_ui
+    from tinyassets.commons_catalog import AgentNotFoundError
 
     row = get_app_ui(base_path, owner_user_id=owner_user_id, universe_id=universe_id)
     entry = next((e for e in row["ui_library"]
@@ -340,7 +341,7 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 
-    from tinyassets.custom_agents import read_app_ui_asset
+    from tinyassets.app_ui_store import read_app_ui_asset
     from tinyassets.onboarding import ui_library_set
     from tinyassets.onboarding.ui_frame import BOOTSTRAP_HTML, FRAME_HEADERS
 

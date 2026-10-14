@@ -12,9 +12,9 @@ def model_setup_state(base: Path, *, universe: Path, uid: str, owner: str) -> st
     This does not prove upstream sign-in, account quota or model eligibility.
     """
     from tinyassets.api.universe import _config_yaml_is_parseable
+    from tinyassets.commons_catalog import list_bindings
     from tinyassets.config import load_universe_config
     from tinyassets.credential_vault import load_credential_vault
-    from tinyassets.custom_agents import list_bindings
     from tinyassets.onboarding.serving import _require_current_admin
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.provider_serving_binding import (

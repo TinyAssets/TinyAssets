@@ -107,7 +107,7 @@ def _app_record(base: Path, universe_id: str, owner: str, home: str) -> dict[str
 
 
 def _screen_and_version(base: Path, owner: str, uid: str) -> tuple[dict[str, str], int]:
-    from tinyassets.custom_agents import app_ui_renderability, get_app_ui
+    from tinyassets.app_ui_store import app_ui_renderability, get_app_ui
 
     document = get_app_ui(base, owner_user_id=owner, universe_id=uid)
     version = int(document.get("revision") or 0)

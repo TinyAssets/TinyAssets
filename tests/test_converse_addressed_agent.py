@@ -21,7 +21,6 @@ import tinyassets.universe_intelligence as ui
 import tinyassets.universe_server as us
 from tinyassets import addressed_agents
 from tinyassets.conversation_store import load_recent_readonly
-from tinyassets.custom_agents import create_binding, publish_definition
 from tinyassets.universe_bundle import seed_okf_bundle
 
 OWNER = "founder-1"
@@ -83,18 +82,21 @@ def _universe(base: Path, uid: str) -> Path:
     return udir
 
 
-def _agent(base: Path, uid: str, owner: str, name: str, **configuration) -> str:
-    definition = publish_definition(base, author_id=owner, payload={
-        "schema_version": 1, "name": name, "components": {
-            "identity": {"kind": "soul", "config": {"instructions": WEAVER_RULE}},
-            "fact_check": {"kind": "skill", "config": {"instructions": CHECK_RULE}},
-        },
-    })
-    binding = create_binding(
-        base, universe_id=uid, definition_id=definition["agent_definition_id"],
-        created_by=owner, payload={"schema_version": 1, "name": name, **configuration},
-    )
-    return binding["agent_binding_id"]
+def _agent(base: Path, uid: str, owner: str, name: str, **settings) -> str:
+    """One of the owner's agents, as its files: ``agents/<slug>/`` with its id kept."""
+    from tinyassets.command_center_packages import slug
+
+    agent_id = "agent_" + slug(name).replace("-", "_")
+    folder = base / uid / "agents" / slug(name)
+    folder.mkdir(parents=True)
+    (folder / "AGENTS.md").write_text(
+        "## identity (soul)\n\n" + WEAVER_RULE + "\n\n## fact_check (skill)\n\n"
+        + CHECK_RULE + "\n", encoding="utf-8")
+    (folder / "settings.yaml").write_text(json.dumps({
+        "schema_version": 1,
+        "agent": {"id": agent_id, "name": name, "owner": owner, **settings}}),
+        encoding="utf-8")
+    return agent_id
 
 
 class _Provider:
@@ -204,15 +206,16 @@ def test_main_sees_what_the_other_agents_said(world):
 
 def test_a_stranger_agent_is_refused_before_any_model_runs(world):
     base, provider = world["base"], world["provider"]
-    # Another account's agent, bound into THIS universe and into its own.
-    _become(base, "stranger", "u-other")
-    in_home = _agent(base, "u-home", "stranger", "Planted")
+    # Agents of ANOTHER command center, a co-admin's own agent on THIS one, a
+    # retired one here, and ids that are nothing at all: none is answered, by
+    # name or by file.
     theirs = _agent(base, "u-other", "stranger", "Theirs")
-    # The owner's own agent, but bound in a different command center.
+    co_admins = _agent(base, "u-home", "co-admin", "Co-admin's")
     mine_elsewhere = _agent(base, "u-other", OWNER, "Elsewhere")
-    _become(base, OWNER, "u-home")
+    retired = _agent(base, "u-home", OWNER, "Retired", retired=True)
 
-    for agent_id in (in_home, theirs, mine_elsewhere, "agent_binding_nope", "a:b", "x y"):
+    for agent_id in (theirs, co_admins, "co-admins", mine_elsewhere, retired,
+                     "agent_binding_nope", "a:b", "x y"):
         out = _converse(message="hi", agent_id=agent_id)
         assert out.get("agent_not_found") is True, agent_id
         assert "reply" not in out
@@ -221,8 +224,18 @@ def test_a_stranger_agent_is_refused_before_any_model_runs(world):
 
 
 def test_a_conversation_design_row_is_not_an_agent(world):
+    """A binding row (the installation, the serving provider) is never an agent now."""
+    from tinyassets.commons_catalog import create_binding, publish_definition
+
     base = world["base"]
-    design = _agent(base, "u-home", OWNER, "Design", role="app_experience")
+    definition = publish_definition(base, author_id=OWNER, payload={
+        "schema_version": 1, "name": "Design", "components": {
+            "identity": {"kind": "soul", "config": {"instructions": "x"}}}})
+    design = create_binding(
+        base, universe_id="u-home", definition_id=definition["agent_definition_id"],
+        created_by=OWNER, payload={"schema_version": 1, "name": "Design",
+                                   "role": "app_experience"},
+    )["agent_binding_id"]
     out = _converse(message="hi", agent_id=design)
     assert out.get("agent_not_found") is True
     assert [row["agent_id"] for row in addressed_agents.roster(
@@ -371,7 +384,7 @@ def test_long_message_expansion_reads_only_the_addressed_agents_thread(world):
     assert "".join(chunks) == text
     assert json.loads(read_graph(target="conversation", graph_id="u-home", field_name=message_id))[
         "error"] == "conversation_message_not_found"
-    foreign = _agent(world["base"], "u-home", "stranger", "Foreign")
+    foreign = _agent(world["base"], "u-other", "stranger", "Foreign")
     assert json.loads(read_graph(**dict(args, agent_binding_id=foreign)))["agent_not_found"]
 
 

@@ -4766,10 +4766,6 @@ def _invoke_graph(
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         invocation_depth=int(invocation_depth or 0),
         universe_id=_eff_universe_hint or run_universe,
-        # The run's own model reviews a consequential action before it fires
-        # (harness D1d), admitted like any agent call.
-        review_provider=provider_call,
-        review_active=True,
     )
     register_effect_chain(effect_chain)
     try:
@@ -6691,8 +6687,6 @@ def _invoke_graph_resume(
         base_path=_resolve_effector_base(base_path, run_id),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         universe_id=_resume_universe,
-        review_provider=provider_call,
-        review_active=True,
     )
     # What the interrupted segment already fired and spent, so "at most once
     # per run" and the RPC cap hold across the resume, and the nested depth

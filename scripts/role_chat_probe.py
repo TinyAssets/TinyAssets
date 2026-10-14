@@ -440,17 +440,14 @@ def main():
     async def chat():
         results = {}
         async with Client("http://127.0.0.1:8001/mcp", auth="oracle-local", timeout=180) as client:
-            from tinyassets.custom_agents import create_binding, publish_definition
+            # An agent is a directory (C8): its instructions and its name are files.
+            from tinyassets.universe_files import write_universe_file
 
-            definition = publish_definition(Path('/data'), author_id=owner, payload={
-                'schema_version': 1, 'name': 'Oracle sub-agent', 'components': {
-                    'identity': {'kind': 'soul', 'config': {
-                        'instructions': 'Follow the test request.'}}}})
-            binding = create_binding(Path('/data'), universe_id=center,
-                definition_id=definition['agent_definition_id'], created_by=owner,
-                payload={'schema_version': 1, 'name': 'Oracle sub-agent'})
-            turns = (("claude-code", 'main'),
-                     ('claude-code', binding['agent_binding_id']))
+            write_universe_file(Path('/data') / center, 'agents/oracle-sub-agent/AGENTS.md',
+                                b'Follow the test request.\n')
+            write_universe_file(Path('/data') / center, 'agents/oracle-sub-agent/settings.yaml',
+                                b'schema_version: 1\nagent: {name: Oracle sub-agent}\n')
+            turns = (("claude-code", 'main'), ('claude-code', 'oracle-sub-agent'))
             if os.environ.get('ORACLE_RUNS_ONLY') == '1':
                 turns = ()
                 active.update(step=6, nonce='unused', path='/u/oracle-unused', before='', after='')

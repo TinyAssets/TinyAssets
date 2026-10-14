@@ -5,7 +5,7 @@ from pathlib import Path
 
 def reconnect_owned_binding(base: Path, *, uid: str, owner: str) -> dict:
     """Explicit reconnect after withdrawal; preserve every agent content field."""
-    from tinyassets.custom_agents import reconnect_binding_candidates_in_transaction
+    from tinyassets.commons_catalog import reconnect_binding_candidates_in_transaction
     from tinyassets.onboarding.serving import _require_current_admin
     from tinyassets.provider_assignment import load_provider_assignment_in_transaction
     from tinyassets.providers.connection_lifecycle import intentionally_disconnected
@@ -36,7 +36,7 @@ def ensure_bootstrap_binding(base: Path, *, uid: str, owner: str) -> dict:
     not permission to replace the user's agent. Model approval is a separate
     existing request whose capture/publication rechecks home and exact revisions.
     """
-    from tinyassets.custom_agents import create_binding, list_bindings
+    from tinyassets.commons_catalog import create_binding, list_bindings
     from tinyassets.onboarding.serving import (
         _BINDING_PAYLOAD,
         RETIRED_BINDING_PAYLOAD,

@@ -1,7 +1,7 @@
 """Real temporary SQLite/file tests; no model-output simulation."""
 import importlib.util
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
     "automation_progress", Path(__file__).parents[1] / "tinyassets/automation_progress.py"

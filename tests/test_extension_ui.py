@@ -4,7 +4,7 @@ import json
 import pytest
 
 from tests.test_one_extension_unit import backend, call, files
-from tinyassets.custom_agents import change_app_ui_entry, get_app_ui
+from tinyassets.app_ui_store import change_app_ui_entry, get_app_ui
 from tinyassets.extension_capabilities import ExtensionCapabilities
 
 

@@ -40,7 +40,7 @@ def _publish(name="First", *, ui_id="village"):
 
 
 def _add_screen(home, ui_id):
-    from tinyassets.custom_agents import get_app_ui, save_app_ui
+    from tinyassets.app_ui_store import get_app_ui, save_app_ui
 
     doc = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
     screen = {**doc["ui_library"][0], "ui_id": ui_id}
@@ -78,7 +78,7 @@ def test_both_doors_offer_two_latest_packages(home):
 @pytest.mark.parametrize("broken", ["blob", "private", "missing"])
 def test_unhealthy_packages_are_not_offered(home, broken, caplog):
     from tinyassets.command_center_packages import _blob_path
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     definition = get_definition(home, _publish())
     if broken == "blob":
@@ -108,7 +108,7 @@ def test_read_requires_the_named_centers_owner(home):
 
 
 def test_default_is_a_valid_bundle_and_is_not_in_storage(home):
-    from tinyassets.custom_agents import _check_app_ui_fields, get_app_ui
+    from tinyassets.app_ui_store import _check_app_ui_fields, get_app_ui
 
     with _as(BOB):
         doc = json.loads(read_graph(target="app_ui", graph_id=BOB_UNIVERSE))
@@ -488,7 +488,7 @@ def test_package_discovery_filters_author_and_search_without_changing_publicatio
 
 def test_broken_latest_publication_does_not_resurrect_stale_version(home):
     from tinyassets.command_center_packages import _blob_path
-    from tinyassets.custom_agents import get_definition
+    from tinyassets.commons_catalog import get_definition
 
     old = _publish("Village")
     newest = _publish("Village")

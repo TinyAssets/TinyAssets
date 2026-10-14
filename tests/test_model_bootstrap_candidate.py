@@ -61,7 +61,7 @@ def prepare(rig):
 
 
 def test_seed_is_real_free_catalogue_model_and_no_serving_is_created(rig):
-    from tinyassets.custom_agents import list_bindings
+    from tinyassets.commons_catalog import list_bindings
     from tinyassets.provider_assignment import load_provider_assignment
 
     did = prepare(rig)

@@ -78,7 +78,11 @@ on:
       # deploy-prod.yml installs this beside boxhostd; the manual host gate
       # uses the summary script after exercising that installed service.
       - 'scripts/box_preflight.py'
+      - 'scripts/box_store_durability.py'
       - 'scripts/box_preflight_summary.py'
+      # deploy-prod.yml runs this on the runner to derive that copy list from
+      # the installer. A change to what it ships has to reach a deploy.
+      - 'scripts/boxhostd_install_files.py'
       # Python the deploy-chain workflows run, and what it imports
       # (scripts/runtime_paths.py python_import_closure).
       - 'scripts/cloud_only_preflight.py'

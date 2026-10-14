@@ -55,6 +55,7 @@
 set -euo pipefail
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-tinyassets-data}"
+BOX_STORE_DIR="${BOX_STORE_DIR:-/var/lib/boxhostd/owners}"
 # Browser owner keys live on a separate broker-only volume, deliberately without
 # an offsite copy. Losing it requires signing in again. Legacy keys are excluded
 # below while the broker migrates them on first use.
@@ -95,6 +96,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     log "DRY_RUN=1 — skipping volume locate, tar, upload, and prune. No mutations."
     log "  BACKUP_DEST=${BACKUP_DEST:-<unset>}"
     log "  BACKUP_VOLUME=${BACKUP_VOLUME}"
+    log "  BOX_STORE_DIR=${BOX_STORE_DIR}"
     log "  retention: daily=${BACKUP_RETAIN_DAILY} weekly=${BACKUP_RETAIN_WEEKLY} monthly=${BACKUP_RETAIN_MONTHLY}"
     exit 0
 fi
@@ -154,7 +156,14 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 # xattrs kept, a local copy and an upload, then its id, sha256, size and name
 # count. The count must match a fresh census of the volume.
 if [[ "${BACKUP_MODE:-}" == "snapshot" ]]; then
-    if [[ -n "$(docker ps -q --filter "volume=${BACKUP_VOLUME}")" ]]; then
+    # The nightly unit and sudo deploy caller run this as host root to read
+    # broker/owner 0700 trees. Tar and the inventory both fail on unreadable
+    # entries, so a less privileged manual caller cannot publish a partial copy.
+    if ! running="$(docker ps -q --filter "volume=${BACKUP_VOLUME}")"; then
+        log "ERROR: cannot verify that volume writers are stopped"
+        exit 2
+    fi
+    if [[ -n "${running}" ]]; then
         log "ERROR: snapshot needs every container on ${BACKUP_VOLUME} stopped"
         exit 2
     fi
@@ -179,9 +188,12 @@ import tarfile
 from collections import Counter
 
 root, archive = sys.argv[1:]
-# Exactly role_migrate.py's disposable stopped-daemon relay socket set.
+# Runtime relay sockets cannot be represented in tar or restored as live
+# endpoints. Match the daemon's role_relays.directory names; all other sockets
+# still fail the census. Their parent directories remain in the archive.
 relay = re.compile(r"\.universe-sidecars/[A-Za-z0-9_-]{1,128}/"
-                   r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12})\.sock")
+                   r"(?:egress-[0-9]+|engine-[0-9]+-[a-f0-9]{12}|"
+                   r"ta-[a-f0-9]{32}|registry-[a-f0-9]{32})\.sock")
 expected = []
 def fail_walk(error):
     raise error
@@ -199,8 +211,16 @@ for parent, directories, files in os.walk(root, onerror=fail_walk):
 with tarfile.open(archive, 'r:gz') as handle:
     actual = [member.name.removeprefix('./').rstrip('/') for member in handle
               if member.name not in ('.', './')]
-if Counter(actual) != Counter(expected):
-    raise SystemExit('snapshot restorable inventory mismatch (missing, extra or duplicate names)')
+missing = Counter(expected) - Counter(actual)
+extra = Counter(actual) - Counter(expected)
+if missing or extra:
+    for label, difference in (('missing from archive', missing),
+                              ('extra in archive', extra)):
+        if difference:
+            names = sorted(difference.elements())
+            print(f'{label} ({len(names)}): ' + ', '.join(ascii(name) for name in names[:20])
+                  + (' ...' if len(names) > 20 else ''), file=sys.stderr)
+    raise SystemExit(1)
 print(len(expected))
 INVENTORY_PY
 )"; then
@@ -359,6 +379,62 @@ if ! rclone copyto --contimeout 60s --timeout 900s \
     exit 3
 fi
 log "  upload OK"
+
+# ----- 4b. box-store member, paired by timestamp with the data archive ---
+# On an installed host this member is mandatory. Thaw before validation/upload.
+if [[ -e "${BOX_STORE_DIR}" ]]; then
+    if ! "$(dirname "$(realpath "$0")")/box-store-check.sh" "${BOX_STORE_DIR}"; then
+        log "ERROR: box store exists but is not mounted with XFS project quota"
+        exit 2
+    fi
+    BOX_NAME="tinyassets-box-store-${TS}.tar.gz"
+    BOX_TAR_PATH="$(mktemp "${TMPDIR:-/tmp}/tinyassets-box-store-${TS}.XXXXXX")"
+    box_root="$(basename "${BOX_STORE_DIR}")"
+    box_members=()
+    for tree in "${BOX_STORE_DIR}"/[0-9]*; do
+        [[ -d "$tree" && ! -L "$tree" ]] || continue
+        name="$(basename "$tree")"
+        [[ "$name" =~ ^[0-9]+$ ]] && box_members+=("${box_root}/${name}")
+    done
+    box_frozen=0
+    thaw_box() {
+        if [[ "$box_frozen" -eq 1 ]]; then
+            xfs_freeze -u "${BOX_STORE_DIR}"
+            box_frozen=0
+        fi
+    }
+    trap 'thaw_box; rm -rf -- "${BRAIN_STAGE}"; rm -f -- "${BOX_TAR_PATH:-}"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    xfs_freeze -f "${BOX_STORE_DIR}"
+    box_frozen=1
+    set +e
+    tar -czf "${BOX_TAR_PATH}" --numeric-owner --acls --xattrs \
+        -C "$(dirname "${BOX_STORE_DIR}")" \
+        --no-recursion "$box_root" --recursion "${box_members[@]}"
+    box_tar_rc=$?
+    set -e
+    thaw_box
+    if [[ "$box_tar_rc" -ne 0 ]]; then
+        log "ERROR: box-store archive failed (rc=${box_tar_rc})"
+        exit 2
+    fi
+    if ! python3 "$(dirname "$(realpath "$0")")/box-store-archive.py" "${BOX_TAR_PATH}"; then
+        log "ERROR: box-store archive validation failed"
+        exit 2
+    fi
+    if ! rclone copyto --contimeout 60s --timeout 900s \
+            "${BOX_TAR_PATH}" "${BACKUP_DEST}/${BOX_NAME}"; then
+        log "ERROR: box-store upload failed"
+        exit 3
+    fi
+    rm -f -- "${BOX_TAR_PATH}"
+    BOX_TAR_PATH=''
+    trap 'rm -rf -- "${BRAIN_STAGE}"' EXIT
+    trap - HUP INT TERM
+    log "  box-store upload OK: ${BOX_NAME}"
+fi
 
 # ----- 5. offsite upload (GH release assets) ----------------------------
 # Best-effort; failure is non-fatal so local backup still counts as done.

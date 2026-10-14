@@ -69,7 +69,7 @@ def test_second_oauth_result_cannot_replace_first_deposit(rig):
 def test_disconnect_then_guided_reconnect_requires_fresh_approval(rig):
     from tinyassets.api.http_connection import remove_http
     from tinyassets.api.model_access_requests import execute_action
-    from tinyassets.custom_agents import get_binding
+    from tinyassets.commons_catalog import get_binding
     from tinyassets.onboarding.model_setup import model_setup_state
     from tinyassets.provider_assignment_manifest import parse_model_access
     from tinyassets.provider_serving_binding import bind_serving_provider

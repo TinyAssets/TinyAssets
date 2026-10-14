@@ -10,10 +10,10 @@ import pytest
 from tinyassets.execution_subject import (
     ExecutionSubject,
     ExecutionSubjectKind,
-    agent_binding_automation_id,
 )
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
+    _CREATE_TABLE,
     AutomationActivation,
     AutomationActivationExecutor,
     AutomationActivationState,
@@ -29,17 +29,6 @@ def _branch_subject(
 ) -> ExecutionSubject:
     return ExecutionSubject(
         kind=ExecutionSubjectKind.BRANCH_VERSION,
-        ref=ref,
-        digest=digest,
-    )
-
-
-def _agent_subject(
-    ref: str = "agent_manifest_alice_v1",
-    digest: str = f"sha256:{'b' * 64}",
-) -> ExecutionSubject:
-    return ExecutionSubject(
-        kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
         ref=ref,
         digest=digest,
     )
@@ -355,167 +344,6 @@ def test_create_rejects_blank_keys(tmp_path: Path) -> None:
         store.create_stopped(universe_id="universe", automation_id="")
 
 
-def test_agent_binding_creation_derives_one_reserved_activation_key(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        records = tuple(
-            pool.map(
-                lambda _index: store.create_stopped_for_agent_binding(
-                    universe_id="universe-main",
-                    agent_binding_id="agent_binding_alice",
-                ),
-                range(8),
-            )
-        )
-
-    assert len(set(records)) == 1
-    assert records[0].automation_id == agent_binding_automation_id("agent_binding_alice")
-    assert records[0].subject is None
-
-
-def test_generic_creation_cannot_claim_reserved_agent_namespace(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-
-    with pytest.raises(ValueError, match="reserved agent automation namespace"):
-        store.create_stopped(
-            universe_id="universe-main",
-            automation_id=agent_binding_automation_id("agent_binding_alice"),
-        )
-
-
-def test_subject_kind_must_match_automation_namespace(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    branch_stopped = store.create_stopped(
-        universe_id="universe-main",
-        automation_id="automation-spec-drain",
-    )
-    agent_stopped = store.create_stopped_for_agent_binding(
-        universe_id="universe-main",
-        agent_binding_id="agent_binding_alice",
-    )
-
-    with pytest.raises(ValueError, match="agent subject requires reserved"):
-        store.activate(
-            expected=branch_stopped,
-            executor_class=AutomationActivationExecutor.CLOUD,
-            subject=_agent_subject(),
-            lease_id="activation-lease-cloud-1",
-        )
-    with pytest.raises(ValueError, match="reserved agent automation requires"):
-        store.activate(
-            expected=agent_stopped,
-            executor_class=AutomationActivationExecutor.CLOUD,
-            subject=_branch_subject(),
-            lease_id="activation-lease-cloud-1",
-        )
-
-
-def test_rebind_cannot_cross_subject_namespaces(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    branch_active = _cloud_activation(store)
-    agent_stopped = store.create_stopped_for_agent_binding(
-        universe_id="universe-main",
-        agent_binding_id="agent_binding_alice",
-    )
-    agent_active = store.activate(
-        expected=agent_stopped,
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=_agent_subject(),
-        lease_id="activation-lease-agent-1",
-    )
-    assert agent_active is not None
-
-    with pytest.raises(ValueError, match="agent subject requires reserved"):
-        store.rebind(
-            expected=branch_active,
-            subject=_agent_subject(),
-            lease_id="activation-lease-agent-2",
-        )
-    with pytest.raises(ValueError, match="reserved agent automation requires"):
-        store.rebind(
-            expected=agent_active,
-            subject=_branch_subject(),
-            lease_id="activation-lease-cloud-2",
-        )
-
-
-def test_agent_manifest_activation_and_claim_are_exactly_subject_fenced(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-    stopped = store.create_stopped_for_agent_binding(
-        universe_id="universe-main",
-        agent_binding_id="agent_binding_alice",
-    )
-    subject = _agent_subject()
-    active = store.activate(
-        expected=stopped,
-        executor_class=AutomationActivationExecutor.CLOUD,
-        subject=subject,
-        lease_id="activation-lease-cloud-1",
-    )
-    assert active is not None
-    assert active.subject == subject
-    assert store.validate_claim(
-        universe_id=active.universe_id,
-        automation_id=active.automation_id,
-        epoch=active.epoch,
-        executor_class=active.executor_class,
-        subject=subject,
-        lease_id=active.lease_id,
-    )
-    for changed in (
-        _branch_subject(ref=subject.ref, digest=subject.digest),
-        _agent_subject(ref="agent_manifest_alice_v2", digest=subject.digest),
-        _agent_subject(ref=subject.ref, digest=f"sha256:{'c' * 64}"),
-    ):
-        assert not store.validate_claim(
-            universe_id=active.universe_id,
-            automation_id=active.automation_id,
-            epoch=active.epoch,
-            executor_class=active.executor_class,
-            subject=changed,
-            lease_id=active.lease_id,
-        )
-
-
-def test_competing_agent_manifests_for_one_binding_have_one_cas_winner(
-    tmp_path: Path,
-) -> None:
-    store = _store(tmp_path)
-    stopped = store.create_stopped_for_agent_binding(
-        universe_id="universe-main",
-        agent_binding_id="agent_binding_alice",
-    )
-    subjects = (
-        _agent_subject(),
-        _agent_subject(
-            ref="agent_manifest_alice_v2",
-            digest=f"sha256:{'c' * 64}",
-        ),
-    )
-
-    def activate(subject: ExecutionSubject) -> AutomationActivation | None:
-        return store.activate(
-            expected=stopped,
-            executor_class=AutomationActivationExecutor.CLOUD,
-            subject=subject,
-            lease_id=f"lease-{subject.ref}",
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = tuple(pool.map(activate, subjects))
-
-    winners = tuple(result for result in results if result is not None)
-    assert len(winners) == 1
-    assert store.get(stopped.universe_id, stopped.automation_id) == winners[0]
-
-
 def test_legacy_active_activation_migration_fails_without_rewriting_row(
     tmp_path: Path,
 ) -> None:
@@ -609,3 +437,74 @@ def test_legacy_stopped_activation_migrates_without_changing_epoch(
     assert active is not None
     assert active.epoch == 9
     assert active.subject == _branch_subject()
+
+
+def test_retired_agent_subject_check_is_rebuilt_without_losing_rows(tmp_path: Path) -> None:
+    """C8: the ``agent_runtime_manifest`` subject leaves the CHECK; rows and epochs stay."""
+    path = db_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_ddl = _CREATE_TABLE.replace(
+        "CHECK (subject_kind IN ('branch_version')),",
+        "CHECK (subject_kind IN ('branch_version', 'agent_runtime_manifest')),",
+    ).replace(
+        "            AND subject_kind = 'branch_version'\n"
+        "            AND immutable_branch_version = subject_ref\n",
+        "            AND ((subject_kind = 'branch_version'"
+        " AND immutable_branch_version = subject_ref)"
+        " OR (subject_kind = 'agent_runtime_manifest' AND immutable_branch_version IS NULL))\n",
+    )
+    assert "agent_runtime_manifest" in old_ddl
+    with sqlite3.connect(path) as connection:
+        connection.executescript(old_ddl + ";" + """
+            CREATE INDEX idx_activation_state ON automation_activations(state);
+            INSERT INTO automation_activations VALUES (
+                'universe-main', 'automation-spec-drain', 8, 'cloud', 'branch_version',
+                'branch-version-1', 'sha256:""" + "a" * 64 + """', 'branch-version-1',
+                'lease-1', 'active', '2026-07-30T20:00:00.000000Z'
+            );
+            INSERT INTO automation_activations VALUES (
+                'universe-main', 'automation-idle', 3, NULL, NULL, NULL, NULL, NULL, NULL,
+                'stopped', '2026-07-30T20:00:00.000000Z'
+            );
+            """)
+
+    active = _store(tmp_path).get("universe-main", "automation-spec-drain")
+    assert active is not None and active.epoch == 8 and active.state.value == "active"
+    assert _store(tmp_path).get("universe-main", "automation-idle").epoch == 3
+    with sqlite3.connect(path) as connection:
+        ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'automation_activations'"
+        ).fetchone()[0]
+        indexes = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL")}
+    assert "agent_runtime_manifest" not in ddl
+    assert "idx_activation_state" in indexes
+    with sqlite3.connect(path) as connection, pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE automation_activations SET subject_kind = 'agent_runtime_manifest', "
+            "immutable_branch_version = NULL WHERE automation_id = 'automation-spec-drain'")
+
+
+def test_an_active_retired_agent_subject_blocks_the_rebuild(tmp_path: Path) -> None:
+    path = db_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_ddl = _CREATE_TABLE.replace(
+        "CHECK (subject_kind IN ('branch_version')),",
+        "CHECK (subject_kind IN ('branch_version', 'agent_runtime_manifest')),",
+    ).replace(
+        "            AND subject_kind = 'branch_version'\n"
+        "            AND immutable_branch_version = subject_ref\n",
+        "            AND ((subject_kind = 'branch_version'"
+        " AND immutable_branch_version = subject_ref)"
+        " OR (subject_kind = 'agent_runtime_manifest' AND immutable_branch_version IS NULL))\n",
+    )
+    with sqlite3.connect(path) as connection:
+        connection.executescript(old_ddl + ";" + """
+            INSERT INTO automation_activations VALUES (
+                'universe-main', 'automation_agent_x', 1, 'cloud', 'agent_runtime_manifest',
+                'manifest-1', 'sha256:""" + "b" * 64 + """', NULL,
+                'lease-1', 'active', '2026-07-30T20:00:00.000000Z'
+            );
+            """)
+    with pytest.raises(RuntimeError, match="agent-manifest activations remain"):
+        _store(tmp_path).get("universe-main", "automation_agent_x")

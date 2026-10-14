@@ -114,9 +114,9 @@ def test_daemon_auth_inventory_has_only_the_audited_readers():
     # consume the HMAC keys; the engine exposes neither operation.
     expected = {
         "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY": {
-            "api/universe.py", "storage/request_admissions.py", "agent_interchange.py",
+            "api/universe.py", "storage/request_admissions.py",
         },
-        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": {"agent_interchange.py"},
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": set(),
         "TINYASSETS_APP_INGRESS_HMAC_KEY": set(),
         "TINYASSETS_WIKI_CANARY_TOKEN": {"auth/wiki_canary.py"},
         "TINYASSETS_SESSION_SEAL_KEY": {"onboarding/session_store.py", "universe_server.py"},

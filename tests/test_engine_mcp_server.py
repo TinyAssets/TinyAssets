@@ -189,17 +189,24 @@ def test_browse_commons_branches_lists_published_with_read_caps(monkeypatch):
     assert captured["caps"] == {"read", "list"}  # least privilege
 
 
-def test_browse_commons_agents_delegates_to_read_graph(monkeypatch):
-    import tinyassets.universe_server as us
+def test_browse_commons_agents_delegates_to_read_graph(monkeypatch, tmp_path):
     from tinyassets import engine_mcp_server as s
+    from tinyassets.commons_catalog import publish_definition
 
     _bind_ids(monkeypatch)
-    captured: dict = {}
-    monkeypatch.setattr(us, "read_graph", lambda **kw: (captured.update(kw), "{}")[1])
-    s.browse_commons(kind="agents", query="triage", limit=5)
-    assert captured["target"] == "agents"
-    assert captured["query"] == "triage"
-    assert captured["limit"] == 5
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    listed = publish_definition(tmp_path, author_id="other", payload={
+        "schema_version": 1, "name": "Triage", "description": "Triage work",
+        "components": {"identity": {"kind": "soul", "config": {
+            "instructions": "Triage work.",
+        }}},
+    })
+    result = json.loads(s.browse_commons(kind="agents", query="triage", limit=5))
+    assert result["untrusted"] is True
+    assert [row["agent_definition_id"] for row in result["content"]["agents"]] == [
+        listed["agent_definition_id"]]
+    assert json.loads(s.browse_commons(kind="agents", query="absent"))["content"][
+        "agents"] == []
 
 
 def test_read_commons_shape_reads_any_public_branch_by_id(monkeypatch):
