@@ -1238,13 +1238,16 @@ def store_blob(base_path: str | Path, *, author_id: str, blob: bytes) -> str:
 
     sha = hashlib.sha256(blob).hexdigest()
     path = _blob_path(base_path, sha)
-    if not path.exists():
-        # The platform's one link-free writer: atomic temp + rename.
-        write_data_path(path, blob, make_parents=True)
     with _db(base_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO blobs (author_id, blob_sha256, size_bytes, created_at) "
-            "VALUES (?, ?, ?, ?)", (author_id, sha, len(blob), time.time()))
+        with conn:
+            # Serialize file creation and ownership with private-import erasure.
+            # A peer cannot record ownership after its only file was removed.
+            conn.execute("BEGIN IMMEDIATE")
+            if not path.exists():
+                write_data_path(path, blob, make_parents=True)
+            conn.execute(
+                "INSERT OR IGNORE INTO blobs (author_id, blob_sha256, size_bytes, created_at) "
+                "VALUES (?, ?, ?, ?)", (author_id, sha, len(blob), time.time()))
     return sha
 
 
@@ -1292,6 +1295,42 @@ def quarantine_import(base_path, *, owner, command_center, epoch, bundle):
                     (import_id, owner, command_center, epoch, sha, time.time()),
                 )
     return {"import_id": import_id, "state": "quarantined", "sha256": sha}
+
+
+def erase_private_imports(base_path, *, owner):
+    """Erase private import custody; retain peer-owned or published content.
+
+    Account deletion has already tombstoned this owner. Keep quarantine rows
+    until each physical removal finishes so an interrupted erasure can retry.
+    The package writer lock excludes concurrent creation of a peer reference.
+    """
+    from tinyassets.universe_files import unlink_data_path
+
+    with _db(base_path) as conn:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            candidates = conn.execute(
+                "SELECT DISTINCT blob_sha256 FROM bundle_imports WHERE owner_id=?", (owner,),
+            ).fetchall()
+            for row in candidates:
+                sha = row[0]
+                published = conn.execute(
+                    "SELECT 1 FROM package_versions WHERE blob_sha256=? LIMIT 1", (sha,),
+                ).fetchone()
+                if published:
+                    continue
+                peer = conn.execute(
+                    "SELECT 1 FROM blobs WHERE blob_sha256=? AND author_id<>? LIMIT 1",
+                    (sha, owner),
+                ).fetchone()
+                if peer is None:
+                    try:
+                        unlink_data_path(_blob_path(base_path, sha))
+                    except FileNotFoundError:
+                        pass
+                conn.execute("DELETE FROM blobs WHERE author_id=? AND blob_sha256=?", (owner, sha))
+            conn.execute("DELETE FROM bundle_imports WHERE owner_id=?", (owner,))
+    return len(candidates)
 
 
 def record_version(base_path: str | Path, *, author_id: str, name: str, version: int,

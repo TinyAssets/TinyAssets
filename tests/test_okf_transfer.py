@@ -17,7 +17,6 @@ from tinyassets.okf.transfer import (
     export_zip,
     ingest_zip,
     preview,
-    quarantine,
 )
 
 
@@ -53,7 +52,7 @@ def archive(files, *, profile="export", extra=(), manifest=None):
     return result.getvalue()
 
 
-def test_private_preview_export_and_inert_quarantine_round_trip(box, tmp_path):
+def test_private_preview_export_and_inert_ingestion_round_trip(box):
     content = b"Use the files to learn.\n"
     write(box, "agents/main/AGENTS.md", content)
     view = preview(*box, ["agents/main/AGENTS.md"])
@@ -64,14 +63,7 @@ def test_private_preview_export_and_inert_quarantine_round_trip(box, tmp_path):
     assert {MANIFEST, "run/agent.py", ".env.example", "README.md"} <= empty.files.keys()
     raw = export_zip(*box, view, selected=["agents/main/AGENTS.md"])
     imported = ingest_zip(raw)
-    root = tmp_path / "platform-quarantine"
-    root.mkdir(mode=0o700)
-    target = quarantine(imported, platform_root=root)
-    assert (target / "payload/agents/main/AGENTS.md").read_bytes() == content
-    assert json.loads((target / "status.json").read_text())["state"] == "quarantined"
-    assert not (target / "activation.json").exists()
-    assert target.stat().st_mode & 0o777 == 0o700
-    assert (target / "payload/agents/main/AGENTS.md").stat().st_mode & 0o777 == 0o600
+    assert imported.files["agents/main/AGENTS.md"] == content
 
 
 def test_preview_is_owner_bound_and_stale_preview_requires_review_again(box):
@@ -193,10 +185,9 @@ def test_import_excludes_git_without_running_hooks(tmp_path):
     code = f"from pathlib import Path; Path({str(sentinel)!r}).touch()".encode()
     raw = archive({"run/agent.py": code}, extra=[(".git/hooks/post-checkout", code)])
     result = ingest_zip(raw)
-    target = quarantine(result, platform_root=tmp_path)
     assert not sentinel.exists()
-    assert not (target / "payload/.git").exists()
-    assert (target / "payload/run/agent.py").read_bytes() == code
+    assert not any(p.startswith(".git/") for p in result.files)
+    assert result.files["run/agent.py"] == code
 
 
 @pytest.mark.parametrize(
@@ -222,19 +213,6 @@ def test_manifest_hash_mismatch_and_duplicate_keys():
         ingest_zip(archive({"workspace/a": b"changed"}, manifest=manifest))
     with pytest.raises(InvalidBundle, match="Duplicate"):
         ingest_zip(archive({}, manifest=b'{"format_version":1,"format_version":1}'))
-
-
-def test_quarantine_removes_only_its_fresh_directory_on_failed_copy(tmp_path, monkeypatch):
-    imported = ingest_zip(archive({"workspace/a": b"data"}))
-    existing = tmp_path / "existing"
-    existing.write_text("preserve")
-    from tinyassets.okf import transfer
-
-    monkeypatch.setattr(transfer.os, "fsync", lambda fd: (_ for _ in ()).throw(OSError("disk")))
-    with pytest.raises(OSError, match="disk"):
-        quarantine(imported, platform_root=tmp_path)
-    assert list(tmp_path.iterdir()) == [existing]
-    assert existing.read_text() == "preserve"
 
 
 @pytest.mark.parametrize("data", [

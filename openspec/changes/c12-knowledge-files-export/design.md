@@ -162,3 +162,10 @@ uses the existing account packages pool and the account-deletion writer fence.
 Account erasure removes import metadata by owner. A future explicit activation
 must recheck that record and epoch, construct a reviewed installation plan and
 use BoxProvider; importing alone never writes an owner box or starts code.
+
+Private-import erasure removes both the custody record and its private blob
+ownership/physical bytes. Peer ownership or a public package version retains
+shared bytes. Blob creation and reference-counted removal share the package
+writer transaction; a concurrent peer import cannot record a now-missing file.
+Quarantine rows survive failed removal for retry. The unused extracted-directory
+quarantine helper has been deleted; there is one production custody path.

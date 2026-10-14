@@ -2,7 +2,7 @@
 
 The HTTP owner door must retain Preview server-side and authorize the bound
 owner before selection. This module never publishes, activates or executes a
-bundle. Quarantine's root is supplied by platform-owned storage, never a box.
+bundle. The owner door retains validated bytes in existing platform package custody.
 """
 
 from __future__ import annotations
@@ -10,16 +10,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 import re
-import shutil
 import stat
-import tempfile
 import time
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
@@ -354,39 +350,3 @@ def _unique_object(pairs):
             raise InvalidBundle("Duplicate manifest key")
         result[key] = value
     return result
-
-
-def quarantine(bundle: ValidatedBundle, *, platform_root: Path) -> Path:
-    """Copy validated bytes to fresh platform-owned storage; create no activation.
-
-    The caller must resolve platform_root outside every agent-writable box.
-    This function does not accept a caller-chosen destination or execute files.
-    """
-    root = Path(platform_root)
-    if root.is_symlink() or not root.is_dir():
-        raise InvalidBundle("Quarantine needs a platform-owned regular directory")
-    destination = Path(tempfile.mkdtemp(prefix="import-", dir=root))
-    try:
-        for path, data in bundle.files.items():
-            safe_path(path)
-            target = destination / "payload" / path
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "wb") as output:
-                output.write(data)
-                output.flush()
-                os.fsync(output.fileno())
-        (destination / "status.json").write_text(
-            json.dumps(
-                {
-                    "state": "quarantined",
-                    "archive_sha256": bundle.sha256,
-                    "profile": bundle.profile,
-                }
-            ),
-            encoding="utf-8",
-        )
-        return destination
-    except BaseException:
-        shutil.rmtree(destination)
-        raise

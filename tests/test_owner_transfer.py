@@ -244,3 +244,105 @@ def test_import_erasure_uses_owner_even_when_centers_change(transfer_door):
                            counts={}, label="packages")
     with packages._db(_base_path()) as conn:
         assert [r[0] for r in conn.execute("SELECT import_id FROM bundle_imports")] == ["theirs"]
+
+
+def test_private_import_erasure_removes_real_bytes_and_preserves_peer_custody(transfer_door):
+    import base64
+
+    from tests.test_okf_transfer import archive
+    from tinyassets import command_center_packages as packages
+    from tinyassets.account_deletion import _delete_satellite_rows
+    from tinyassets.api.helpers import _base_path
+
+    client, _, _ = transfer_door
+    receipts = []
+    for value in (b"private only", b"also owned by another account", b"published retention"):
+        result = request(client, {
+            "operation": "import", "command_center": HOME_A,
+            "archive": base64.b64encode(archive({"workspace/note": value})).decode(),
+        })
+        assert result.status_code == 200, result.text
+        receipts.append(result.json())
+    private, shared, published = (r["sha256"] for r in receipts)
+    peer_bytes = packages.read_blob(_base_path(), shared)
+    packages.store_blob(_base_path(), author_id=B, blob=peer_bytes)
+    packages.record_version(_base_path(), author_id=A, name="Published", version=1,
+                            sha256=published)
+    _delete_satellite_rows(packages.database_path(_base_path()), principal=A, home=HOME_A,
+                           counts={}, label="packages")
+    assert not packages._blob_path(_base_path(), private).exists()
+    assert packages.read_blob(_base_path(), shared) == peer_bytes
+    assert packages.read_blob(_base_path(), published)
+    with packages._db(_base_path()) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bundle_imports WHERE owner_id=?", (A,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT author_id FROM blobs WHERE blob_sha256=?", (shared,),
+        ).fetchone()[0] == B
+        assert conn.execute(
+            "SELECT COUNT(*) FROM blobs WHERE blob_sha256=?", (private,),
+        ).fetchone()[0] == 0
+
+
+def test_import_erasure_is_retryable_after_physical_failure(transfer_door, monkeypatch):
+    import base64
+
+    from tests.test_okf_transfer import archive
+    from tinyassets import command_center_packages as packages
+    from tinyassets import universe_files
+    from tinyassets.api.helpers import _base_path
+
+    client, _, _ = transfer_door
+    result = request(client, {
+        "operation": "import", "command_center": HOME_A,
+        "archive": base64.b64encode(archive({"workspace/note": b"private"})).decode(),
+    }).json()
+    real_unlink = universe_files.unlink_data_path
+    with monkeypatch.context() as patch:
+        def fail(path):
+            raise OSError("simulated interrupted removal")
+        patch.setattr(universe_files, "unlink_data_path", fail)
+        with pytest.raises(OSError):
+            packages.erase_private_imports(_base_path(), owner=A)
+    with packages._db(_base_path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM bundle_imports").fetchone()[0] == 1
+    assert packages.read_blob(_base_path(), result["sha256"])
+    assert universe_files.unlink_data_path is real_unlink
+    packages.erase_private_imports(_base_path(), owner=A)
+    assert not packages._blob_path(_base_path(), result["sha256"]).exists()
+
+
+def test_peer_blob_creation_racing_erasure_retains_real_bytes(transfer_door, monkeypatch):
+    import base64
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tests.test_okf_transfer import archive
+    from tinyassets import command_center_packages as packages
+    from tinyassets import universe_files
+    from tinyassets.api.helpers import _base_path
+
+    client, _, _ = transfer_door
+    result = request(client, {
+        "operation": "import", "command_center": HOME_A,
+        "archive": base64.b64encode(archive({"workspace/note": b"shared after erasure"})).decode(),
+    }).json()
+    base = _base_path()
+    raw = packages.read_blob(base, result["sha256"])
+    started = threading.Event()
+    real_unlink = universe_files.unlink_data_path
+    futures = []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def peer():
+            started.set()
+            return packages.store_blob(base, author_id=B, blob=raw)
+        def remove(path):
+            futures.append(executor.submit(peer))
+            assert started.wait(2)
+            real_unlink(path)
+        monkeypatch.setattr(universe_files, "unlink_data_path", remove)
+        packages.erase_private_imports(base, owner=A)
+        assert futures[0].result(timeout=5) == result["sha256"]
+    assert packages.read_blob(base, result["sha256"]) == raw
+    assert packages.blob_owned(base, B, result["sha256"])

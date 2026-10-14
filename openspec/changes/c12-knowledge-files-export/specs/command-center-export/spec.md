@@ -49,8 +49,8 @@ regardless of approval; uninspectable binaries SHALL need named selection.
 - **THEN** export refuses that selection without returning an archive.
 
 ### Requirement: Bounded inert import
-Import SHALL validate all bytes and path collisions before creating fresh
-platform-owned quarantine, SHALL enforce resource bounds, and SHALL never
+Import SHALL validate all bytes and path collisions before retaining inert
+bytes in platform-owned package quarantine, SHALL enforce resource bounds, and SHALL never
 execute imported files or create an activation record.
 
 #### Scenario: Archive tries to escape or collide
@@ -59,7 +59,7 @@ execute imported files or create an activation record.
 
 #### Scenario: Imported code remains inert
 - **WHEN** a valid archive contains executable runner code or hooks
-- **THEN** only regular file bytes are copied to quarantine
+- **THEN** only validated regular file bytes are retained in package custody
 - **AND** no runner, hook, filter, installer or schedule executes.
 
 ### Requirement: Protected owner transfer door

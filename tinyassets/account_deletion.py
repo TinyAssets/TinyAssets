@@ -771,6 +771,12 @@ def _delete_satellite_rows(
     if path == runs_db_path(path.parent):
         from tinyassets.run_file_erasure import erase_owner_files
         erase_owner_files(path.parent, owner_id=principal)
+    from tinyassets.command_center_packages import database_path, erase_private_imports
+
+    if path == database_path(path.parent.parent):
+        removed = erase_private_imports(path.parent.parent, owner=principal)
+        if removed:
+            counts[f"{label}.private_imports"] = removed
     conn = sqlite3.connect(str(path), timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
