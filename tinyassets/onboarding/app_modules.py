@@ -85,6 +85,11 @@ def recovery_source() -> str:
     return (MODULE_DIR.parent / "app_recovery.js").read_text(encoding="utf-8")
 
 
+def credential_requests_source() -> str:
+    """Trusted packaged card script; no owner storage or request-provided path."""
+    return (MODULE_DIR.parent / "credential_requests.js").read_text(encoding="utf-8")
+
+
 def is_module_path(path: str) -> bool:
     """The exact public path shape, for the auth middleware's carve-out."""
     return _PATH_RE.fullmatch(path) is not None
