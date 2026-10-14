@@ -80,9 +80,9 @@ beside `cloudflared` and a log shipper.
 | `tinyassets/graph_compiler.py` | Compiles a `BranchDefinition` into a LangGraph `StateGraph`. |
 | `tinyassets/runs.py`, `tinyassets/run_*` | Run storage, events, run files and inputs. |
 | `tinyassets/node_sandbox.py`, `tinyassets/sandbox/` | The sandboxed code node and sandbox detection. |
-| `tinyassets/scheduler.py`, `tinyassets/automations.py` | Event subscriptions, cron, user-owned automations. |
-| `tinyassets/agent_wakes.py`, `tinyassets/wake_conditions.py` | Saved agent follow-ups through `ta`, checked by the protected request continuation worker. |
-| `tinyassets/branch_tasks.py`, `tinyassets/branch_tasks_v2.py` | The file-locked branch task queue and its transactional successor. |
+| `tinyassets/control_plane/tick.py`, `tinyassets/control_plane/events.py`, `tinyassets/automations.py` | One owner tick, event subscriptions, cron and user-owned automations. |
+| `tinyassets/control_plane/agent_wakes.py`, `tinyassets/control_plane/continuations.py` | Saved agent follow-ups and protected request continuations on the owner tick. |
+| `tinyassets/branch_tasks_v2.py` | The transactional v2 request queue adapter. |
 | `tinyassets/workspace_*.py` | Workspace pool, provisioning, staging and git for workspace jobs. |
 | `tinyassets/effectors/`, `tinyassets/delivery_runtime.py` | External effects and their delivery. |
 
@@ -116,11 +116,10 @@ beside `cloudflared` and a log shipper.
 
 ### Domains
 
-`domains/<name>/` registers through the `tinyassets.domains` entry-point group
-in `pyproject.toml`; `tinyassets/discovery.py` finds them. Two exist:
-`fantasy_daemon` (a LangGraph authoring domain) and `research_probe`.
-`fantasy_daemon/` at the root is its runner. `tinyassets/constraints/` is an
-ASP engine over `data/world_rules.lp`.
+`domains/<name>/` contains optional authoring packages discovered from files
+by `tinyassets/discovery.py`. The packaged `fantasy_daemon` and
+`research_probe` examples have no CLI entry points. `tinyassets/constraints/`
+is an ASP engine over `data/world_rules.lp`.
 
 ### Operations
 
