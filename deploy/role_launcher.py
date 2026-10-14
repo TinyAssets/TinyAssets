@@ -133,6 +133,12 @@ def broker_environment(data_root):
         # Preserve the deployment's existing opt-in, never arbitrary values.
         result[http_flag] = "1" if os.environ[http_flag].strip().lower() in (
             "1", "true", "yes", "on") else "0"
+    # The capability image seals with the in-memory root. Only the literal
+    # "1" crosses; production still refuses it inside the broker.
+    if os.environ.get("TINYASSETS_VAULT_TEST_DOUBLE") == "1":
+        result["TINYASSETS_VAULT_TEST_DOUBLE"] = "1"
+    if os.environ.get("TINYASSETS_ENV") == "production":
+        result["TINYASSETS_ENV"] = "production"
     return result
 
 

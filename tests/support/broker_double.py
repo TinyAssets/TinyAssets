@@ -23,6 +23,7 @@ Linux-only: the broker classifies peers with ``SO_PEERCRED``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import socket
@@ -200,6 +201,7 @@ class _Registry:
                 self._sockets.append(directory)
                 broker = _InProcessBroker(root, Path(directory) / "b.sock")
                 self._brokers[root] = broker
+            _publish_test_broker(root, broker)
             return broker
 
     def close(self) -> None:
@@ -210,6 +212,29 @@ class _Registry:
             for directory in self._sockets:
                 shutil.rmtree(directory, ignore_errors=True)
             self._sockets.clear()
+
+
+def _publish_test_broker(root: Path, broker: _InProcessBroker) -> None:
+    """Let a child of this test reach the same broker the parent just started.
+
+    The supervisor registry is in-process. A subprocess has no patch, so it
+    reads ``TINYASSETS_VAULT_TEST_BROKER`` and opens the published socket.
+    """
+    raw = os.environ.get("TINYASSETS_VAULT_TEST_BROKER")
+    try:
+        document = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        document = {}
+    if not isinstance(document, dict):
+        document = {}
+    generation, token = broker.fence()
+    document[str(root)] = {
+        "socket": os.fspath(broker.socket_path),
+        "generation": generation,
+        "token": token,
+    }
+    os.environ["TINYASSETS_VAULT_TEST_BROKER"] = json.dumps(document)
+    os.environ.setdefault("TINYASSETS_VAULT_TEST_DOUBLE", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -235,10 +260,15 @@ def in_process_broker(request, monkeypatch):
 
     registry = _Registry()
     monkeypatch.setattr(supervisor, "get_supervisor", registry.supervisor_for)
+    published = os.environ.get("TINYASSETS_VAULT_TEST_BROKER")
     try:
         yield registry
     finally:
         registry.close()
+        if published is None:
+            os.environ.pop("TINYASSETS_VAULT_TEST_BROKER", None)
+        else:
+            os.environ["TINYASSETS_VAULT_TEST_BROKER"] = published
 
 
 @pytest.fixture

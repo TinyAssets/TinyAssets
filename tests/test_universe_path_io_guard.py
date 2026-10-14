@@ -175,13 +175,10 @@ PINNED: dict[str, list[str]] = {
         "file_lock: .open()",
     ],
     "tinyassets/credential_vault.py": [
-        "_fsync_directory: os.open()",
-        "_fsync_file: open()",
         "_read_credential_material: .read_bytes()",
         "_remove_snapshot_tree: .unlink()",
         "_remove_snapshot_tree: .unlink()",
         "_write_exclusive_snapshot_file: os.open()",
-        "load_credential_vault: .read_text()",
     ],
     "tinyassets/daemon_brain.py": [
         "_promote_daemon_memory_to_wiki: .open()",

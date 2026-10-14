@@ -141,7 +141,9 @@ services:
     # capabilities. It refuses an unmigrated volume, forks the broker (uid 1002)
     # and the bounded mapper (owner uids 300001-399999 in its user namespace),
     # then retires to the capability-free daemon (uid 1001) before importing
-    # the application. deploy/role_launcher.py ENTRY_CAPS and ta_op.c MASK are
+    # the application. The broker is not its own container. deploy/role_launcher.py
+    # retires it to uid 1002, and tinyassets/broker/process.py refuses to serve
+    # unless getresuid() is (1002, 1002, 1002). ENTRY_CAPS and ta_op.c MASK are
     # the same set; nothing here ever holds SYS_ADMIN, CHOWN or DAC_OVERRIDE.
     user: "0:0"
     cap_drop:
@@ -203,8 +205,9 @@ services:
       - /etc/tinyassets/app-ingress.env
     volumes:
       - tinyassets-data:/data
-      # Separate broker-only keys. Never included in data-volume backups.
-      - tinyassets-browser-keys:/var/lib/ta-broker
+      # Broker-only KMS credential. Mode 0400, uid 1002. The daemon uid cannot
+      # read it. Create the host file before this compose file is applied.
+      - /etc/tinyassets/vault-kms.env:/etc/tinyassets/vault-kms.env:ro
     healthcheck:
       # Liveness from release facts as the canary service principal. The token
       # is installed in /etc/tinyassets/env by deploy-prod before compose starts;
@@ -291,8 +294,6 @@ services:
       org.tinyassets.role: log-forwarder
 
 volumes:
-  tinyassets-browser-keys:
-    name: tinyassets-browser-keys
   tinyassets-data:
     name: tinyassets-data
     # Local named volume backed by Docker's default driver. Backups

@@ -558,6 +558,14 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
   remove_compose_temp_daemons
+  # The compose file bind-mounts the broker KMS credential. `up` would recreate
+  # the daemon to attach it, so a missing file has to refuse first and leave
+  # the running stack alone.
+  local vault_kms="${TINYASSETS_VAULT_KMS_FILE:-/etc/tinyassets/vault-kms.env}"
+  if [ -L "$vault_kms" ] || [ ! -f "$vault_kms" ]; then
+    err "refusing deploy: ${vault_kms} is missing. Install it with deploy/install-tinyassets-env.sh install-vault-kms. The running stack was not changed."
+    return 1
+  fi
   # Time the converge. `up -d` recreates the daemon, which STOPS the old
   # container first. `--timeout` bounds that stop to MAX_DAEMON_STOP_GRACE_S
   # and then SIGKILLs. Without it compose uses the StopTimeout the old

@@ -1,68 +1,56 @@
-"""Versioned encrypted browser custody, reachable only on the fenced owner channel."""
+"""Versioned encrypted browser custody, reachable only on the fenced owner channel.
+
+Session state is sealed under the command center's data key. There is no
+per-owner key file.
+"""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import secrets
 import socket
-from pathlib import Path
-
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tinyassets import rpc_frames as rf
 
 MAX_STATE = 2 * 1024 * 1024
-SECRET_ROOT = Path('/var/lib/ta-broker/browser-vault')
 
 
-def key_path(ledger, principal):
-    if SECRET_ROOT.resolve().is_relative_to(ledger._db_path.parent.parent.resolve()):
-        raise ValueError('browser key root must be outside backed-up data')
-    return SECRET_ROOT / (hashlib.sha256(principal.encode()).hexdigest() + '.key')
+def _keys(ledger):
+    from tinyassets.broker.key_service import broker_service
+
+    return broker_service(ledger._data_root)
 
 
-def _sync_directory(path):
-    if os.name == 'posix':
-        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+def _seal(ledger, *, principal, command_center, ident, revision, state) -> bytes:
+    from tinyassets.broker.key_service import seal_blob
+
+    raw = json.dumps(state).encode()
+    if len(raw) > MAX_STATE or not isinstance(state, dict):
+        raise ValueError('browser state exceeds bounds')
+    return seal_blob(
+        _keys(ledger), owner=principal, center=command_center, record_id=ident,
+        generation=revision, plaintext=raw,
+    )
 
 
-def _owner_key(ledger, principal):
-    """Migrate under the ledger write lock; publish durably before removing legacy."""
-    path = key_path(ledger, principal)
-    legacy = ledger._db_path.parent / 'browser-vault' / path.name
-    path.parent.mkdir(mode=0o700, exist_ok=True)
-    old = legacy.read_bytes() if legacy.exists() else None
-    if old is not None and len(old) != 32:
-        raise ValueError('invalid legacy browser key')
-    if not path.exists():
-        temporary = path.with_name('.key-' + secrets.token_hex(16))
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(old if old is not None else AESGCM.generate_key(bit_length=256))
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                pass
-        finally:
-            temporary.unlink()
-    current = path.read_bytes()
-    if old is not None and current != old:
-        raise ValueError('conflicting browser keys; migration refused')
-    _sync_directory(path.parent)
-    _sync_directory(path.parent.parent)  # Persist a newly created key directory too.
-    if old is not None:
-        legacy.unlink()
-        _sync_directory(legacy.parent)
-    return current
+def _open(ledger, *, principal, command_center, ident, revision, blob) -> dict:
+    from tinyassets.broker.key_service import open_blob
+    from tinyassets.broker.root_key import ReconnectRequired
+
+    if not blob:
+        return {}
+    try:
+        raw = open_blob(
+            _keys(ledger), owner=principal, center=command_center, blob=blob,
+            generation=revision, record_id=ident,
+        )
+        state = json.loads(raw.decode('utf-8'))
+    except (ReconnectRequired, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PermissionError('browser connection unavailable') from exc
+    if not isinstance(state, dict):
+        raise PermissionError('browser connection unavailable')
+    return state
 
 
 def local_operation(ledger, *, principal, command_center, document):
@@ -124,32 +112,30 @@ def local_operation(ledger, *, principal, command_center, document):
                     and document.get('revision') != revision):
                 raise PermissionError('browser connection changed')
             revision += 1
-        cipher = AESGCM(_owner_key(ledger, principal))
-        aad = json.dumps([1, principal, command_center, ident, revision]).encode()
         status = row['status']
         if action in {'save', 'capture', 'cancel'}:
-            old_aad = json.dumps([1, principal, command_center, ident, row['revision']]).encode()
-            sealed = row['sealed']
-            state = (json.loads(cipher.decrypt(sealed[:12], sealed[12:], old_aad))
-                     if sealed else {})
+            state = _open(
+                ledger, principal=principal, command_center=command_center, ident=ident,
+                revision=row['revision'], blob=row['sealed'],
+            )
             if action == 'save':
                 state = document['state']
-            raw = json.dumps(state).encode()
-            if len(raw) > MAX_STATE or not isinstance(state, dict):
-                raise ValueError('browser state exceeds bounds')
-            nonce = secrets.token_bytes(12)
             status = {'capture': 'login', 'cancel': 'needs_login', 'save': 'connected'}[action]
             conn.execute('UPDATE browser_vault SET revision=?,status=?,sealed=? WHERE id=?',
-                         (revision, status, nonce + cipher.encrypt(nonce, raw, aad), ident))
+                         (revision, status, _seal(
+                             ledger, principal=principal, command_center=command_center,
+                             ident=ident, revision=revision, state=state,
+                         ), ident))
         elif action == 'revoke':
             conn.execute("UPDATE browser_vault SET revision=?,status='revoked',sealed=? WHERE id=?",
                          (revision, b'', ident))
         result = dict(id=ident, url=row['url'], revision=revision,
                       status='revoked' if action == 'revoke' else status, account=row['account'])
         if action == 'read':
-            sealed = row['sealed']
-            result['state'] = (json.loads(cipher.decrypt(sealed[:12], sealed[12:], aad))
-                               if sealed else {})
+            result['state'] = _open(
+                ledger, principal=principal, command_center=command_center, ident=ident,
+                revision=row['revision'], blob=row['sealed'],
+            )
             result['verify'] = json.loads(row['verify'])
         return result
 

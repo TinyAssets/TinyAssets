@@ -108,6 +108,9 @@ DAEMON_FORBIDDEN_ENV=(
     BETTERSTACK_SOURCE_TOKEN
     SUPABASE_DB_URL
     SUPABASE_SERVICE_ROLE_KEY
+    TINYASSETS_VAULT_KMS_KEY_ARN
+    TINYASSETS_VAULT_AWS_ACCESS_KEY_ID
+    TINYASSETS_VAULT_AWS_SECRET_ACCESS_KEY
 )
 
 usage() {
@@ -120,6 +123,7 @@ Usage:
   install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
   install-tinyassets-env.sh render-daemon-env   # daemon.env = env minus platform secrets
   install-tinyassets-env.sh daemon-forbidden-names
+  install-tinyassets-env.sh install-vault-kms   # three stdin lines -> broker 0400 file
 EOF
     exit 1
 }
@@ -834,6 +838,38 @@ is_daemon_env_source() {
     [ -n "${DAEMON_ENV_FILE}" ] && [ "${ENV_FILE}" = "${DAEMON_ENV_SOURCE}" ]
 }
 
+# Three newline-framed values on stdin: key ARN, access key id, secret access key.
+# The file is mode 0400 and owned by the broker uid. It is not daemon.env.
+install_vault_kms() {
+    local dest="${TINYASSETS_VAULT_KMS_FILE-/etc/tinyassets/vault-kms.env}"
+    local arn access secret
+    IFS= read -r arn || true
+    IFS= read -r access || true
+    IFS= read -r secret || true
+    if [[ -z "${arn}" || -z "${access}" || -z "${secret}" ]]; then
+        echo "::error::install-vault-kms needs the key ARN, access key id, and secret" >&2
+        exit 1
+    fi
+    if [[ "${arn}" != arn:aws:kms:* ]]; then
+        echo "::error::install-vault-kms refused a non-KMS key ARN" >&2
+        exit 1
+    fi
+    install -d -m 0755 "$(dirname "${dest}")"
+    local tmp
+    tmp="$(mktemp "${dest}.tmp.XXXXXX")"
+    chmod 0400 "${tmp}"
+    printf 'TINYASSETS_VAULT_KMS_KEY_ARN=%s\nTINYASSETS_VAULT_AWS_ACCESS_KEY_ID=%s\nTINYASSETS_VAULT_AWS_SECRET_ACCESS_KEY=%s\n' \
+        "${arn}" "${access}" "${secret}" > "${tmp}"
+    chmod 0400 "${tmp}"
+    if id tinyassets-broker >/dev/null 2>&1; then
+        chown tinyassets-broker:tinyassets-broker "${tmp}"
+    else
+        chown 1002:1002 "${tmp}"
+    fi
+    mv -f "${tmp}" "${dest}"
+    chmod 0400 "${dest}"
+}
+
 [ $# -ge 1 ] || usage
 subcmd="$1"
 shift
@@ -866,6 +902,10 @@ case "${subcmd}" in
     daemon-forbidden-names)
         [ $# -eq 0 ] || usage
         printf '%s\n' "${DAEMON_FORBIDDEN_ENV[@]}"
+        ;;
+    install-vault-kms)
+        [ $# -eq 0 ] || usage
+        install_vault_kms
         ;;
     *)
         usage

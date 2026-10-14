@@ -357,6 +357,9 @@ class _Connection:
         elif op == "BROWSER_VAULT":
             answer = await asyncio.to_thread(self._browser_vault, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CREDENTIAL_VAULT":
+            answer = await asyncio.to_thread(self._credential_vault, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "FENCE":
             try:
                 generation, token = await asyncio.to_thread(
@@ -498,6 +501,27 @@ class _Connection:
                 return {'op': 'BROWSER_RESULT', 'result': result}
         except Exception:  # noqa: BLE001 - credentials never enter error payloads
             return {'op': 'BROWSER_REFUSED'}
+
+    def _credential_vault(self, doc):
+        from tinyassets.broker.credential_store import local_operation
+
+        try:
+            if set(doc) != {'op', 'principal', 'command_center', 'generation', 'token', 'document'}:
+                raise ValueError('invalid credential vault fields')
+            if type(doc['generation']) is not int or not isinstance(doc['token'], str):
+                raise Fenced('invalid fence')
+            with self._server._fence.send(doc['generation'], doc['token']):
+                ledger = self._server._ledger_for(doc['principal'])
+                result = local_operation(
+                    data_root=Path(ledger._data_root),
+                    command_center=doc['command_center'],
+                    document=doc['document'],
+                )
+                answer = {'op': 'CREDENTIAL_RESULT', 'result': result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception:  # noqa: BLE001 - credentials never enter error payloads
+            return {'op': 'CREDENTIAL_REFUSED', 'reason': 'key_service_unavailable'}
 
     def _connection_catalog(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.catalog import local_page, validate

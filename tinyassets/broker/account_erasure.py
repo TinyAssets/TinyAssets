@@ -65,11 +65,9 @@ def local_erase(ledger, *, principal, command_center):
             count = conn.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
             if count:
                 counts[table] = count
-    from tinyassets.broker.browser_vault import key_path
+    from tinyassets.broker.key_service import broker_service
 
-    path = key_path(ledger, principal)
-    path.unlink(missing_ok=True)
-    (ledger._db_path.parent / 'browser-vault' / path.name).unlink(missing_ok=True)
+    broker_service(ledger._data_root).erase_account(principal)
     return counts
 
 

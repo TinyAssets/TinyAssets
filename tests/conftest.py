@@ -734,6 +734,8 @@ def universe_input() -> dict[str, Any]:
 # its own. A test that wants NO identity calls auth_middleware(None) and
 # asserts the refusal, never a stand-in.
 os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")
+# The vault's KMS root is an in-memory double in tests. Production refuses it.
+os.environ.setdefault("TINYASSETS_VAULT_TEST_DOUBLE", "1")
 
 # The still shipped domain CLI imports the tray helper. pystray's dummy backend
 # keeps those imports available to the Linux suite without a display.

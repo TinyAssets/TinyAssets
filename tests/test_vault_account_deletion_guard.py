@@ -60,10 +60,10 @@ def test_deletion_waits_for_inflight_vault_persist_then_erases(home, monkeypatch
     original_persist = vault._persist_credential_vault_file
     original_tombstone = deletion.write_tombstone
 
-    def blocked_persist(*args):
+    def blocked_persist(*args, **kwargs):
         entered.set()
         assert release.wait(10), "test did not release writer"
-        return original_persist(*args)
+        return original_persist(*args, **kwargs)
 
     def observed_tombstone(*args):
         tombstone_entered.set()
