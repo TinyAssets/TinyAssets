@@ -67,7 +67,11 @@ def read_snapshot(
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise InvalidBundle("Migration requires a regular verified snapshot file")
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    if any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-journal")):
+        raise InvalidBundle("Migration needs a standalone, checkpointed backup")
+    # A checkpointed backup may retain WAL journal_mode in its header. Immutable
+    # read-only access avoids creating new WAL/SHM files while reading that copy.
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     entries, inventory = [], {"source": source, "tables": {}, "excluded": dict(excluded)}
     try:
@@ -133,7 +137,15 @@ def read_snapshot(
                 body_field = next(
                     (
                         field
-                        for field in ("content", "summary", "value", "reflection")
+                        for field in (
+                            "content",
+                            "summary",
+                            "text",
+                            "value",
+                            "reflection",
+                            "observation",
+                            "public_description",
+                        )
                         if isinstance(row.get(field), str)
                     ),
                     None,

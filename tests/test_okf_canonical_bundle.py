@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -292,3 +293,143 @@ def test_reserved_rowid_alias_is_case_insensitive_and_shadowed_rowid_is_preserve
         "owner": "a",
         "ROWID": "Original field data",
     }
+
+
+def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundle, tmp_path):
+    import hashlib
+
+    from tinyassets.daemon_brain import capture_daemon_memory, daemon_brain_db_path
+    from tinyassets.daemon_registry import create_daemon
+    from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
+    from tinyassets.knowledge.models import FactWithContext, GraphEntity, SourceType
+    from tinyassets.memory.episodic import EpisodicMemory
+    from tinyassets.memory.project import project_memory_set
+    from tinyassets.memory.scoping import MemoryScope
+    from tinyassets.okf.migration import SnapshotSource, commit_migration, prepare_migration
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    daemon = create_daemon(
+        legacy,
+        display_name="Migration fixture",
+        created_by="fixture",
+        soul_mode="soul",
+        soul_text="Preserve evidence",
+    )
+    capture_daemon_memory(
+        legacy,
+        daemon_id=daemon["daemon_id"],
+        content="Preserve daemon memory",
+        reliability="host_observed",
+        language_type="literal",
+        metadata={"unknown": [1e20, "extra"]},
+    )
+    project_memory_set(
+        legacy, project_id="project-a", key="note", value={"text": "Project content"}
+    )
+    project_memory_set(legacy, project_id="project-b", key="note", value="Other project")
+    episodic_path = legacy / "episodic.db"
+    for owner in ("owner-a", "owner-b"):
+        episodic = EpisodicMemory(episodic_path, universe_id=owner)
+        episodic.store_fact("fact", "subject", f"Preserve {owner} episode")
+        episodic.store_episode_summary(
+            "episode", 1, f"Summary for {owner}", domain_payload={"unknown": [1, None]}
+        )
+        episodic.close()
+    graph_path = legacy / "knowledge.db"
+    graph = KnowledgeGraph(graph_path)
+    for owner in ("owner-a", "owner-b"):
+        graph.add_entity(
+            GraphEntity(
+                entity_id=owner,
+                entity_type="concept",
+                access_tier=0,
+                public_description=f"Entity {owner}",
+                hidden_description="",
+                secret_description="",
+                aliases=[],
+            ),
+            scope=MemoryScope(universe_id=owner),
+        )
+        graph.add_facts(
+            [
+                FactWithContext(
+                    fact_id=owner, text=f"Fact {owner}", source_type=SourceType.AUTHOR_FACT
+                )
+            ],
+            scope=MemoryScope(universe_id=owner),
+        )
+    graph.close()
+    definitions = [
+        (
+            "daemon",
+            daemon_brain_db_path(legacy),
+            {
+                "daemon_brain_entries": {"daemon_id": [daemon["daemon_id"]]},
+                "daemon_memory_promotions": {"daemon_id": [daemon["daemon_id"]]},
+            },
+            {
+                "daemon_memory_events": "Retained transactional event history",
+                **{
+                    f"daemon_brain_entries_fts{suffix}": "Derived full-text index"
+                    for suffix in ("", "_data", "_idx", "_content", "_docsize", "_config")
+                },
+            },
+        ),
+        (
+            "project",
+            legacy / ".project_memory.db",
+            {
+                t: {"project_id": ["project-a"]}
+                for t in ("project_memory", "project_memory_history")
+            },
+            {},
+        ),
+        (
+            "episodic",
+            episodic_path,
+            {
+                t: {"universe_id": ["owner-a"]}
+                for t in ("scene_summaries", "episodic_facts", "style_observations", "reflections")
+            },
+            {},
+        ),
+        (
+            "knowledge",
+            graph_path,
+            {
+                t: {"universe_id": ["owner-a"]}
+                for t in ("entities", "edges", "facts", "communities")
+            },
+            {},
+        ),
+    ]
+    sources, originals = [], {}
+    for name, path, scopes, excluded in definitions:
+        backup = tmp_path / (name + "-backup.db")
+        with sqlite3.connect(path) as live, sqlite3.connect(backup) as target:
+            live.backup(target)
+        data = backup.read_bytes()
+        originals[backup] = data
+        sources.append(
+            SnapshotSource(backup, name, hashlib.sha256(data).hexdigest(), scopes, excluded)
+        )
+    plan = prepare_migration(bundle, sources, operation_id="real-schemas")
+    receipt = commit_migration(bundle, plan)
+    assert receipt["entries"] == 7
+    by_source = {source.source: source for source in sources}
+    for entry in bundle.snapshot().entries.values():
+        row = restore_row(entry)
+        source = by_source[entry.metadata["source"]]
+        table = entry.metadata["table"]
+        with sqlite3.connect(source.path.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+            db.row_factory = sqlite3.Row
+            expected = [dict(r) for r in db.execute(f'SELECT * FROM "{table}"')]
+        assert row in expected
+        if entry.metadata["source"] == "knowledge" and table == "facts":
+            assert entry.body == "Fact owner-a"
+        assert "owner-b" not in entry.body
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+        assert not Path(str(path) + "-wal").exists()
+        assert not Path(str(path) + "-shm").exists()
