@@ -15,31 +15,48 @@ def settings_path(path: str) -> bool:
     return path == "settings.yaml" or bool(re.fullmatch(r"agents/[^/]+/settings\.yaml", path))
 
 
+def settings_document(raw: bytes) -> dict:
+    """Read portable values with the canonical settings parser's scalar rules."""
+    try:
+        parse_settings(raw)  # byte, alias, nesting, duplicate and typed-field bounds
+        document = yaml.safe_load(raw.decode("utf-8"))
+        json.dumps(document, allow_nan=False)  # refuse nonportable YAML values
+        return document
+    except (SettingsError, ValueError, UnicodeError, TypeError, yaml.YAMLError) as exc:
+        raise InvalidBundle("Invalid agent settings; export cannot use defaults") from exc
+
+
+def settings_bytes(document: dict) -> bytes:
+    """Serialize types for the YAML parser, including scientific-notation floats."""
+    try:
+        json.dumps(document, allow_nan=False)
+        raw = yaml.safe_dump(document, allow_unicode=True, sort_keys=True).encode("utf-8")
+        settings_document(raw)  # transformed settings must still meet the same bounds
+        return raw
+    except (SettingsError, ValueError, UnicodeError, TypeError, yaml.YAMLError) as exc:
+        raise InvalidBundle("Invalid agent settings; export cannot use defaults") from exc
+
+
 def portable_settings(raw: bytes, *, number: int) -> bytes:
     """Replace authority/connection identifiers before exposing a content preview.
 
     Only these schema fields are replaced. Arbitrary agent configuration and
     behavior strings still pass through the transfer credential/contact screen.
     """
-    try:
-        parse_settings(raw)  # byte, alias, nesting, duplicate and typed-field bounds
-        document = yaml.safe_load(raw.decode("utf-8"))
-        if "model" in document:
-            previous = document["model"]
-            model = {"id": f"${{AGENT_{number}_MODEL_NAME}}"}
-            if isinstance(previous, dict):
-                if "effort" in previous:
-                    model["effort"] = previous["effort"]
-                if "connection" in previous:
-                    model["connection"] = f"connection-{number}"
-            document["model"] = model
-            document["schema_version"] = 1
-        if "agent" in document:
-            document["agent"].pop("owner", None)
-        return json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2,
-                          allow_nan=False).encode("utf-8")
-    except (SettingsError, ValueError, UnicodeError, TypeError, yaml.YAMLError) as exc:
-        raise InvalidBundle("Invalid agent settings; export cannot use defaults") from exc
+    document = settings_document(raw)
+    if "model" in document:
+        previous = document["model"]
+        model = {"id": f"${{AGENT_{number}_MODEL_NAME}}"}
+        if isinstance(previous, dict):
+            if "effort" in previous:
+                model["effort"] = previous["effort"]
+            if "connection" in previous:
+                model["connection"] = f"connection-{number}"
+        document["model"] = model
+        document["schema_version"] = 1
+    if "agent" in document:
+        document["agent"].pop("owner", None)
+    return settings_bytes(document)
 
 
 def roster(files, agents):

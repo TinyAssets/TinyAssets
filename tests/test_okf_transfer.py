@@ -6,6 +6,7 @@ import stat
 import zipfile
 
 import pytest
+import yaml
 
 from tinyassets.boxes.local import LocalBoxProvider
 from tinyassets.boxes.provider import WriteConflict
@@ -99,7 +100,7 @@ def test_actual_root_harness_settings_and_roster_round_trip(box):
     assert imported.files["agents/main/AGENTS.md"] == sources["AGENTS.md"]
     assert imported.files["agents/main/skills/notes/SKILL.md"] == sources["skills/notes/SKILL.md"]
     assert "AGENTS.md" not in imported.files
-    settings = json.loads(imported.files["agents/main/settings.yaml"])
+    settings = yaml.safe_load(imported.files["agents/main/settings.yaml"])
     assert settings["loop"]["compaction"]["trigger_tokens"] == 12345678901
     assert settings["agent"]["configuration"]["contact"] == "[contact removed]"
     assert "owner" not in settings["agent"]
@@ -110,8 +111,43 @@ def test_actual_root_harness_settings_and_roster_round_trip(box):
     assert b"AGENT_2_MODEL_API_KEY=\n" in imported.files[".env.example"]
     included = ingest_zip(export_zip(*box, view, selected=list(sources),
                                     included_contacts={"settings.yaml": [0]}))
-    assert json.loads(included.files["agents/main/settings.yaml"])["agent"][
+    assert yaml.safe_load(included.files["agents/main/settings.yaml"])["agent"][
         "configuration"]["contact"] == "person@example.com"
+
+
+@pytest.mark.parametrize("approved", [[], [1]])
+def test_settings_scalars_survive_contact_review_export_and_import(box, approved):
+    from tinyassets.agent_definition import parse_settings
+
+    configuration = {
+        "numbers": [1e-20, 1e20, -1.2e30, 12345678901, True, None, "1e+20"],
+        "contacts": ["first@example.com", "second@example.com"],
+    }
+    source = yaml.safe_dump({
+        "schema_version": 1,
+        "loop": {"retry": {"backoff_seconds": 0.00001}},
+        "agent": {"configuration": configuration},
+    }).encode()
+    assert parse_settings(source).loop.backoff_seconds == 0.00001
+    write(box, "AGENTS.md", b"Use selected files.")
+    write(box, "settings.yaml", source, "settings")
+    view = preview(*box, ["AGENTS.md", "settings.yaml"])
+    assert view.contacts == {"settings.yaml": ("first@example.com", "second@example.com")}
+    bundle = ingest_zip(export_zip(
+        *box, view, selected=list(view.files), included_contacts={"settings.yaml": approved},
+    ))
+    for raw in (view.files["settings.yaml"], bundle.files["agents/main/settings.yaml"]):
+        settings = parse_settings(raw)
+        assert type(settings.loop.backoff_seconds) is float
+        assert settings.loop.backoff_seconds == 0.00001
+        numbers = settings.agent.configuration["numbers"]
+        assert numbers == configuration["numbers"]
+        assert list(map(type, numbers)) == list(map(type, configuration["numbers"]))
+    actual = parse_settings(bundle.files["agents/main/settings.yaml"]).agent.configuration
+    assert actual["contacts"] == [
+        contact if i in approved else "[contact removed]"
+        for i, contact in enumerate(configuration["contacts"])
+    ]
 
 
 def test_agent_settings_references_do_not_exempt_arbitrary_credentials(box):

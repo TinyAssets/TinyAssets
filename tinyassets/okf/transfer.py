@@ -22,7 +22,14 @@ from typing import Mapping
 from tinyassets.boxes.provider import BoxHandle, BoxProvider, WriteConflict
 from tinyassets.command_center_packages import HARNESS_ROOT_DIRS, HARNESS_ROOT_FILES
 from tinyassets.credential_shape import looks_like_credential
-from tinyassets.okf.agent_export import model_variables, portable_settings, roster, settings_path
+from tinyassets.okf.agent_export import (
+    model_variables,
+    portable_settings,
+    roster,
+    settings_bytes,
+    settings_document,
+    settings_path,
+)
 from tinyassets.okf.bundle import InvalidBundle
 from tinyassets.okf.manifest import build_manifest
 
@@ -215,7 +222,7 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
 
 
 def _contacts(path, content, approved=None):
-    """Settings contacts are string values, never JSON numbers or field names."""
+    """Settings contacts are string values, never numbers or field names."""
     matches = []
 
     def replace(match):
@@ -235,8 +242,7 @@ def _contacts(path, content, approved=None):
         return value
 
     if settings_path(path):
-        content = json.dumps(visit(json.loads(content)), ensure_ascii=False,
-                             sort_keys=True, indent=2)
+        content = settings_bytes(visit(settings_document(content.encode("utf-8")))).decode("utf-8")
     else:
         content = CONTACT.sub(replace, content)
     return tuple(matches), content
