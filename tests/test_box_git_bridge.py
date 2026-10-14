@@ -67,7 +67,7 @@ def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server,
 
         thread = threading.Thread(target=relay)
         thread.start()
-        s.monkeypatch.setattr(git_bridge, "BrokerClient", lambda path, **kwargs:
+        s.monkeypatch.setattr(git_bridge, "broker_client", lambda path, **kwargs:
                              BrokerClient(relay_path, **kwargs))
         for key, value in git_bridge.environment([s.record], "developer").items():
             assert s.secret not in value
@@ -99,3 +99,20 @@ def test_git_frames_use_owner_bound_channel_without_guest_credential(git_server,
         assert not thread.is_alive()
         assert not errors
         assert not any(key[0] == id(proxy) for key in git_egress._routes)
+
+
+def test_cli_forwarder_without_git_stays_stdlib_only(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); "
+            "from tinyassets.boxes.git_bridge import prepare; "
+            "assert prepare() == (None, None); "
+            "assert 'tinyassets.broker.client' not in sys.modules")
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(root)],
+                            capture_output=True, timeout=10,
+                            env={key: value for key, value in os.environ.items()
+                                 if key != git_bridge.ENV})
+    assert result.returncode == 0, result.stderr.decode()

@@ -134,12 +134,11 @@ def serve(c, path, slots):
     try:
         first = b""
         if git_proxy is not None and path == "/run/boxhostd/relay.sock":
-            c.settimeout(30)
-            while b"\r\n\r\n" not in first:
-                part = c.recv(16384 - len(first))
-                if not part or len(first) + len(part) >= 16384:
-                    raise OSError("git proxy header incomplete or exceeds bound")
-                first += part
+            from tinyassets.universe_egress import _read_head, EgressRefused
+            try:
+                first = _read_head(c)
+            except EgressRefused:
+                raise OSError("git proxy header incomplete or exceeds bound") from None
             from tinyassets.git_egress import serve as serve_git
             if serve_git(git_proxy, c, first):
                 c.close(); u.close(); slots.release(); return

@@ -7,16 +7,13 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from tinyassets import git_egress
-from tinyassets import rpc_frames as rf
-from tinyassets.broker.client import BrokerClient
-from tinyassets.storage.workspace_authority import connection_git_host
-
 ENV = "TINYASSETS_BOX_GIT"
 
 
 def environment(connections, agent):
     """Project already selected grants; credentials and fence tokens stay out."""
+    from tinyassets.storage.workspace_authority import connection_git_host
+
     rows = [{"grant_id": grant.grant_id, "connection_id": view.connection_id,
              "incarnation": incarnation, "git_host": connection_git_host(view),
              "scopes": list(view.scopes)} for grant, view, incarnation in connections]
@@ -26,11 +23,21 @@ def environment(connections, agent):
     return {ENV: body}
 
 
+def broker_client(path, **kwargs):
+    from tinyassets.broker.client import BrokerClient
+
+    return BrokerClient(path, **kwargs)
+
+
 def prepare():
     """Called inside the immutable guest forwarder, before its command fork."""
     raw = os.environ.pop(ENV, None)
     if raw is None:
         return None, None
+    # CLI-only forwarding runs with -S. Keep its no-git path stdlib-only.
+    from tinyassets import git_egress
+    from tinyassets import rpc_frames as rf
+
     if len(raw.encode()) > 16384:
         raise ValueError("git launch scope exceeds bound")
     document = json.loads(raw)
@@ -48,7 +55,7 @@ def prepare():
                 or answer.control() != {"op": "BOX_CONNECTED"}):
             raise PermissionError("owner git relay refused")
 
-    client = BrokerClient(Path("/run/boxhostd/relay.sock"), principal=owner,
+    client = broker_client(Path("/run/boxhostd/relay.sock"), principal=owner,
                           command_center=center, fence=lambda: (0, "owner-box"),
                           verify_peer=handshake)
     connections = []
