@@ -42,8 +42,10 @@ def test_error_trap_prints_status_and_journal_then_exits_nonzero(tmp_path: Path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "stub"
+    # systemctl status returns non-zero for a failed unit. The dump has to
+    # finish anyway, then the installer has to stay failed.
     stub.write_text(
-        '#!/bin/sh\nprintf \'called %s %s\\n\' "$(basename "$0")" "$*"\n',
+        '#!/bin/sh\nprintf \'called %s %s\\n\' "$(basename "$0")" "$*"\nexit 3\n',
         encoding="utf-8",
     )
     stub.chmod(0o755)
@@ -53,7 +55,10 @@ def test_error_trap_prints_status_and_journal_then_exits_nonzero(tmp_path: Path)
     script.write_text(
         "#!/bin/bash\nset -euo pipefail\n"
         + _dump_function()
-        + "\ntrap dump_boxhostd_failure ERR\nfalse\n",
+        + "\ntrap dump_boxhostd_failure ERR\n"
+        + "trap 'echo CLEANED' EXIT\n"
+        + "false\n"
+        + "echo SHOULD_NOT_RUN\n",
         encoding="utf-8",
     )
     result = subprocess.run(
@@ -63,9 +68,11 @@ def test_error_trap_prints_status_and_journal_then_exits_nonzero(tmp_path: Path)
         check=False,
         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
     )
-    assert result.returncode != 0
+    assert result.returncode == 1
     output = result.stdout + result.stderr
     assert "boxhostd install failed; unit diagnostics follow" in output
+    assert "SHOULD_NOT_RUN" not in output
+    assert "CLEANED" in output
     for unit in UNITS:
         assert f"called systemctl status {unit} --no-pager -l" in output
         assert f"called journalctl -u {unit} -n 80 --no-pager" in output

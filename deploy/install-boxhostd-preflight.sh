@@ -5,6 +5,10 @@ set -euo pipefail
 # systemctl prints only "control process exited" on the deploy log. The
 # unit's own stderr stays in the journal, so every failure copies it out.
 dump_boxhostd_failure() {
+    # set +e lets status/journal run when the unit is already failed, but it
+    # also stays off after the trap returns. Exit with the original status so
+    # a later command cannot turn this deploy green.
+    local status=$?
     set +e
     echo 'boxhostd install failed; unit diagnostics follow'
     local unit
@@ -14,6 +18,7 @@ dump_boxhostd_failure() {
         echo "----- journalctl -u ${unit} -----"
         journalctl -u "${unit}" -n 80 --no-pager
     done
+    exit "$status"
 }
 trap dump_boxhostd_failure ERR
 
