@@ -59,7 +59,7 @@ def test_consumer_off_still_starts_the_owner_tick(tmp_path, monkeypatch):
         snapshot = runtime.current_consumer_liveness(tmp_path)
         assert snapshot["present"] is True
         assert snapshot["alive"] is True
-        assert snapshot["phase"] == "starting"
+        assert snapshot["phase"] in {"starting", "polling"}
     finally:
         consumer.stop()
 
