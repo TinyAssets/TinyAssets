@@ -12,6 +12,11 @@ The example SHALL build a private native-agent workflow without installing an ac
 - **WHEN** execution stops after claiming but before saving the native result
 - **THEN** replay stops for owner review instead of issuing another generation
 
+#### Scenario: Oversized room excerpt
+- **WHEN** the complete claim response would exceed 32 KiB of ASCII JSON
+- **THEN** dispatch stops before saving a claim or consuming a turn allowance
+- **AND** a later bounded excerpt can still use that allowance
+
 #### Scenario: Interrupted commit
 - **WHEN** a native result was saved but posting or its acknowledgement was interrupted
 - **THEN** recovery reuses the saved result and stable message identifier without another generation

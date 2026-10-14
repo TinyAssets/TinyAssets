@@ -55,6 +55,10 @@ def wired(tmp_path):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             exec(compile(code, "<fixture-owner-shell>", "exec"), {})
+        from tinyassets.universe_tools import DEFAULT_LIMITS
+
+        if len(stdout.getvalue().encode()) > DEFAULT_LIMITS.output_bytes:
+            return {"text": f"[killed: output passed {DEFAULT_LIMITS.output_bytes} bytes]"}
         return {"text": stdout.getvalue() + "\n[exit code 0]"}
 
     branch = builder.build(**CONFIG)
@@ -102,6 +106,32 @@ def test_unicode_line_separators_preserve_claim_and_reply(wired, separator):
     assert json.loads(answer["result"])["status"] == "done"
     assert room.load()["messages"][-1]["text"] == reply
     assert functions["claim"]({"event": event})["route"] == "stop"
+
+
+def test_oversized_peer_context_stops_before_consuming_allowance(wired):
+    _, functions, room, dispatcher, _, output, event, _, _ = wired
+    room.post({"client_message_id": "fixture_large_peer", "text": "🌍" * 10000},
+              participant="fixture_peer")
+    receipt = room.post({
+        "client_message_id": "fixture_owner_oversize", "text": "Addressed question",
+        "requested_responders": ["village_elder"],
+    })
+    output["value"] = json.dumps(receipt)
+    assert json.loads(functions["claim"]({"event": event})["result"]) == {
+        "route": "stop", "reason": "context_too_large",
+    }
+    assert dispatcher._load()["records"] == {}
+    # A later bounded excerpt still has the default one-turn allowance.
+    for index in range(10):
+        receipt = room.post({
+            "client_message_id": f"fixture_small_{index}", "text": "Small question",
+            "requested_responders": ["village_elder"],
+        })
+    output["value"] = json.dumps(receipt)
+    state = functions["claim"]({"event": event})
+    assert state["route"] == "generate"
+    answer = functions["commit"]({**state, "native_reply": "Actual native reply"})
+    assert json.loads(answer["result"])["status"] == "done"
 
 
 @pytest.mark.parametrize(
