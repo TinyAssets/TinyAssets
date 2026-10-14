@@ -25,7 +25,7 @@ def event_home(tmp_path, monkeypatch):
 
 
 def test_real_terminal_outbox_survives_failed_fanout_then_deduplicates(home, monkeypatch):
-    from tinyassets import mcp_events
+    from tinyassets import mcp_events, runs
 
     sent = []
 
@@ -50,12 +50,21 @@ def test_real_terminal_outbox_survives_failed_fanout_then_deduplicates(home, mon
         )
     update_run_status(home, run_id, status="running")
     real_capture = store.capture
+    local_events = []
+    local_emit = runs._emit_run_completed
+
+    def observe_local(*args, **kwargs):
+        local_events.append(args[1])
+        return local_emit(*args, **kwargs)
+
+    monkeypatch.setattr(runs, "_emit_run_completed", observe_local)
 
     def failed(**kwargs):
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(store, "capture", failed)
     update_run_status(home, run_id, status="completed", output={"saved": True})
+    assert local_events == [run_id]
     with _connect(home) as conn:
         assert (
             conn.execute(
