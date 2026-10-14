@@ -71,7 +71,8 @@ def test_every_runsc_invocation_uses_memory_overlay_and_no_network(tmp_path, mon
 
 
 @pytest.mark.skipif(os.name == "posix" and os.geteuid() != 0,
-                    reason="quota ownership guard requires --as-root")
+                    reason="quota ownership guard requires --as-root; "
+                           "owner=c6-owner-box runs-in=linux_oracle.py")
 def test_owner_tree_must_match_permanent_uid_and_private_mode(tmp_path):
     runtime = _runtime(tmp_path)
     tree = tmp_path / "owners" / "300001"

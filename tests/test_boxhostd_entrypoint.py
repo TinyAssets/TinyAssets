@@ -24,7 +24,9 @@ def _marker(root: Path, *, box_layout: str | None = None, state: str = "stable")
 
 def test_live_service_requires_committed_marker(tmp_path):
     if os.geteuid() != 0:
-        pytest.skip("requires linux_oracle.py --as-root")
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     assert boxhostd.owner_box_committed(tmp_path) is False
     _marker(tmp_path)
     assert boxhostd.owner_box_committed(tmp_path) is False

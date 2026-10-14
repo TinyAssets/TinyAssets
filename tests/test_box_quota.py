@@ -15,7 +15,9 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="XFS project quotas a
 
 def test_quota_uses_permanent_owner_uid_and_real_findmnt_options(tmp_path, monkeypatch):
     if os.geteuid() != 0:
-        pytest.skip("requires linux_oracle.py --as-root")
+        pytest.skip(
+            "requires linux_oracle.py --as-root; owner=c6-owner-box runs-in=linux_oracle.py"
+        )
     store = tmp_path / "owners"
     store.mkdir()
     calls = []
