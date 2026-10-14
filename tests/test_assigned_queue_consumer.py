@@ -48,6 +48,7 @@ def test_universe_server_consumer_is_started_and_stopped(
             lifecycle.append("stopped")
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     in_process_broker.supervisor_for(tmp_path)
     monkeypatch.setattr(threading, "Thread", _NoopThread)
     monkeypatch.setattr(
