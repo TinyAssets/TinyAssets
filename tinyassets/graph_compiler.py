@@ -1873,6 +1873,18 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
 }
 
 
+def node_mcp_supported_actions() -> list[str]:
+    """Every action name ``invoke_mcp_action`` accepts.
+
+    Served tools plus the in-node aliases. The unsupported-action error lists
+    this set. A name that is absent is unknown; a known name the node was not
+    granted is a different refusal.
+    """
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+    return sorted(set(BACKEND_ENGINE_CAPABILITIES) | set(_NODE_MCP_ACTION_ALIASES))
+
+
 @dataclass(frozen=True)
 class NodeEnqueueContext:
     """Trusted, server-set execution context for the in-node enqueue verb.
@@ -2126,7 +2138,7 @@ def _build_node_mcp_invoker(
             raise CompilerError(
                 f"Node '{node.node_id}' requested unsupported MCP action "
                 f"'{requested}'. Supported actions: "
-                f"{sorted(_NODE_MCP_ACTION_ALIASES)}"
+                f"{node_mcp_supported_actions()}"
             )
         canonical = ".".join(resolved)
         if requested not in allowed and canonical not in allowed:
