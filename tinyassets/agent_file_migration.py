@@ -14,14 +14,12 @@ shared for its lifetime: stop it first), writes ``"migrating"`` to the marker,
 and in ONE catalogue transaction reads every addressable binding, writes each
 agent's files into its owner's command center, deletes the rows, hands the
 SQLite sidecars back to the daemon and prepares the ``"stable"`` marker beside
-the live one; then the commit, and after it only the rename that publishes
-``"stable"``. Everything that can fail runs before the commit, so a non-zero
-exit with a stable marker means nothing changed. Any error raises: the
-transaction rolls back, the files this run wrote are removed, and the marker
-stays ``"migrating"``, which every image refuses to serve (``storage_layout``)
-and the deploy refuses to roll back onto (``rollback_needs_restore``): restore
-the snapshot. Nothing is retried and nothing is recorded; a later run on the
-migrated volume finds no rows.
+the live one; then the commit and the marker publication. A pre-commit error
+rolls back the transaction and removes the files this run wrote. A post-commit
+marker or cleanup error is logged without changing the successful exit: SQL
+already records the cutover. After any failed apply, deploy checks SQL again
+before deciding whether the previous image can restart. Nothing is retried or
+recorded; a later run on the migrated volume finds no rows.
 
 What moves: main's ``addressed_agents.is_conversable`` rule (2026-10-12) minus
 its per-caller parts -- a configured binding that is neither the
@@ -349,6 +347,13 @@ def pending(base_path: str | Path) -> int:
     return sum(1 for row in rows if _is_agent(_binding_from_row(row)))
 
 
+def _post_commit_warning(step: str, error: Exception) -> None:
+    try:
+        print(f"agent-files migration committed; {step} failed: {error}", file=sys.stderr)
+    except OSError:
+        pass
+
+
 def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
     """Move every addressable binding, or nothing. ``{universe_id: [directories]}``."""
     from tinyassets.commons_catalog import _agent_connect
@@ -358,6 +363,7 @@ def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
     if not _catalogue_exists(base):
         return {}
     fd = layout._open_lock(base)
+    committed = False
     try:
         try:
             layout._lock(fd, exclusive=True, blocking=False)
@@ -384,8 +390,7 @@ def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
                     for agent in agents:
                         conn.execute("DELETE FROM agent_bindings WHERE agent_binding_id = ?",
                                      (agent.binding_id,))
-                    # Everything else that can fail, still inside the transaction:
-                    # after the commit only the rename below remains.
+                    # Prepare all file content and metadata before the SQL commit.
                     _keep_sidecars_readable(base)
                     stable = _prepare_marker(base, document, layout.STABLE)
             except BaseException:
@@ -394,11 +399,25 @@ def apply(base_path: str | Path, *, backup: str | Path) -> dict[str, list[str]]:
                 if writer is not None:
                     writer.undo()
                 raise
-            _publish_marker(base, stable)
+            committed = True
+            try:
+                _publish_marker(base, stable)
+            except Exception as exc:
+                _post_commit_warning("stable marker publication", exc)
         finally:
-            layout._unlock(fd)
+            try:
+                layout._unlock(fd)
+            except Exception as exc:
+                if not committed:
+                    raise
+                _post_commit_warning("layout unlock", exc)
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except Exception as exc:
+            if not committed:
+                raise
+            _post_commit_warning("layout lock close", exc)
     return result
 
 

@@ -7,6 +7,7 @@ import os
 import subprocess
 import time
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -509,6 +510,51 @@ def test_any_failure_leaves_sql_untouched_and_publishes_no_file(tmp_path, monkey
     if expected_marker == "migrating":
         with pytest.raises(layout.LayoutRefused, match="did not finish"):
             layout.check(tmp_path)
+
+
+@pytest.mark.parametrize("failure", ["replace", "directory_open", "directory_fsync"])
+def test_post_commit_marker_failure_still_reports_committed(tmp_path, monkeypatch, capsys,
+                                                            failure):
+    import stat
+
+    from tinyassets import agent_file_migration as m
+
+    _migration_fixture(tmp_path)
+    before = _bindings(tmp_path)
+    backup = _backup(tmp_path)
+    real_replace, real_open, real_fsync = os.replace, os.open, os.fsync
+
+    def replace(source, target):
+        if json.loads(Path(source).read_text(encoding="utf-8"))["state"] == "stable":
+            raise OSError("stable rename failed")
+        return real_replace(source, target)
+
+    def open_directory(path, flags, *args, **kwargs):
+        if flags & getattr(os, "O_DIRECTORY", 0) and _marker_state(tmp_path) == "stable":
+            raise OSError("directory open failed")
+        return real_open(path, flags, *args, **kwargs)
+
+    def fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and _marker_state(tmp_path) == "stable":
+            raise OSError("directory fsync failed")
+        return real_fsync(fd)
+
+    if failure == "replace":
+        monkeypatch.setattr(m.os, "replace", replace)
+    elif failure == "directory_open":
+        if not hasattr(os, "O_DIRECTORY"):
+            pytest.skip("directory sync is unavailable")
+        monkeypatch.setattr(m.os, "open", open_directory)
+    else:
+        if not hasattr(os, "O_DIRECTORY"):
+            pytest.skip("directory sync is unavailable")
+        monkeypatch.setattr(m.os, "fsync", fsync)
+
+    assert m.apply(tmp_path, backup=backup)
+    assert m.pending(tmp_path) == 0
+    assert _bindings(tmp_path) != before
+    assert _marker_state(tmp_path) == ("migrating" if failure == "replace" else "stable")
+    assert "migration committed; stable marker publication failed" in capsys.readouterr().err
 
 
 def test_a_fresh_installation_has_nothing_to_migrate(tmp_path):

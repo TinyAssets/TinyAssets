@@ -1644,20 +1644,19 @@ fi
 #                          verifies the snapshot, takes the layout lock
 #                          exclusively, writes "migrating" to the marker, moves
 #                          everything in ONE transaction and writes "stable".
-# The move runs everything that can fail before its commit, so a failed apply
-# that left the marker stable changed nothing: the daemon restarts on the
-# running image, a bundle this run installed is restored, `migration_refused`,
-# exit 1 (the stop, the snapshot and the move's preconditions refuse the same
-# way). A move that failed after writing "migrating" committed nothing and
-# removed its files, but the marker is the authority: MIGRATION_OK=0 falls
-# through to step 6, which restores the bundle and then refuses to start any
-# image on it (`rollback_needs_restore`). Once apply has COMMITTED
+# After a failed apply, check SQL again. Remaining addressable bindings mean
+# the move did not commit and the running image can restart (`migration_refused`).
+# No remaining bindings mean it committed, regardless of the marker: step 6
+# refuses to start the previous image and gives the snapshot restore command.
+# A failed second probe also leaves the service down for restore. Once apply has
+# COMMITTED
 # (MIGRATION_COMMITTED=1) the previous image never starts again in this run:
 # its rows are gone, so a candidate that then fails to converge or accept
 # leaves the service down with the exact restore command for the snapshot this
 # block took (`rollback_needs_restore`), never the image-only rollback.
 MIGRATION_OK=1
 MIGRATION_COMMITTED=0
+MIGRATION_COMMIT_UNVERIFIED=0
 MIGRATION_SNAPSHOT=""
 MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
@@ -1718,10 +1717,20 @@ case "$MIGRATION_RC" in
     if migration_container apply /data --backup "/backup/${MIGRATION_SNAPSHOT}"; then
       MIGRATION_COMMITTED=1
       log "migration: landed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
-    elif layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"; then
-      migration_refused "the move refused before its commit"
     else
-      err "migration: the move failed and the marker is not stable; $(migration_restore_command)"
+      migration_container check /data
+      MIGRATION_RECHECK_RC=$?
+      case "$MIGRATION_RECHECK_RC" in
+        10) migration_refused "the move refused before its commit" ;;
+        0)
+          MIGRATION_COMMITTED=1
+          err "migration: apply failed after its SQL commit; $(migration_restore_command)"
+          ;;
+        *)
+          MIGRATION_COMMIT_UNVERIFIED=1
+          err "migration: could not verify SQL after apply failed (rc=${MIGRATION_RECHECK_RC}); $(migration_restore_command)"
+          ;;
+      esac
       MIGRATION_OK=0
     fi
     ;;
@@ -1785,7 +1794,7 @@ fi
 if [ "${MIGRATION_OK:-1}" = "1" ]; then
   err "new image did not become acceptable; rolling back"
 else
-  err "the storage migration did not complete; rolling back (the marker decides below whether the previous image may start)"
+  err "the storage migration did not complete; restoring the bundle and checking whether the previous image may start"
 fi
 if [ -z "$PREV_IMAGE" ]; then
   err "no previous image recorded; cannot roll back automatically"
@@ -1812,10 +1821,10 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
 fi
-# This run's migration committed: the previous image would serve with its
-# bindings gone from SQL. The snapshot step 3c took is the only way back.
-if [ "$MIGRATION_COMMITTED" = "1" ]; then
-  refuse_on_layout "$PREV_IMAGE" "the agent-files migration committed in this run and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE} on migrated data. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
+# A committed or unverifiable move cannot safely start the previous image.
+# The snapshot step 3c took is the rollback point.
+if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
+  refuse_on_layout "$PREV_IMAGE" "the agent-files migration committed or its SQL state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
 fi
 # The failed candidate may have migrated (or begun migrating) the data while it
 # booted: re-check before the previous image starts on it.

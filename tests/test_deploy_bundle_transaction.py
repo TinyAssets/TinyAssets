@@ -341,15 +341,18 @@ def main(argv):
     if argv[:1] == ["run"]:
         if "tinyassets.agent_file_migration" in argv:
             # The C8 cutover container (deploy step 3c). `check` reports the
-            # rows still in SQL; `apply` moves them, or fails leaving the marker
-            # the state says, so both apply failure paths are reachable.
+            # rows still in SQL; a failed `apply` can be before or after commit,
+            # independently of the marker it left.
             marker = os.path.join(os.environ.get("FAKE_DOCKER_VOLUME_DIR", ""), ".layout.json")
             command = argv[argv.index("tinyassets.agent_file_migration") + 1]
             if command == "check":
+                if state.get("migration_recheck_error") and state.get("migration_apply_attempted"):
+                    return 1
                 pending = int(bool(state.get("migration_pending")))
                 print(json.dumps({"pending": pending}))
                 return 10 if pending else 0
             outcome = state.get("migration_apply", "commit")
+            state["migration_apply_attempted"] = True
             if outcome == "commit":
                 state["migration_pending"] = False
                 save_state(state)
@@ -357,6 +360,12 @@ def main(argv):
                     handle.write('{"layout": 1, "state": "stable"}')
                 print("{}")
                 return 0
+            if outcome.startswith("committed_"):
+                state["migration_pending"] = False
+                save_state(state)
+                outcome = outcome.removeprefix("committed_")
+            else:
+                save_state(state)
             with open(marker, "w", encoding="utf-8") as handle:
                 handle.write('{"layout": 1, "state": "%s"}' % outcome)
             sys.stderr.write("fake migration: apply failed\n")
@@ -2436,16 +2445,16 @@ def test_a_committed_migration_never_restarts_the_previous_image(box: Box, candi
     assert daemon["image_ref"] == (OLD_IMAGE if candidate == "converge_fails" else NEW_IMAGE)
 
 
-@pytest.mark.parametrize("marker_after,result,code", [
-    ("stable", "migration_refused", 1),        # refused before its commit
-    ("migrating", "rollback_needs_restore", 3),  # failed after writing "migrating"
+@pytest.mark.parametrize("outcome,result,code", [
+    ("stable", "migration_refused", 1),
+    ("migrating", "migration_refused", 1),
+    ("committed_stable", "rollback_needs_restore", 3),
+    ("committed_migrating", "rollback_needs_restore", 3),
 ])
-def test_a_failed_apply_is_judged_by_the_marker_it_left(box: Box, marker_after, result, code):
-    """Only a stable marker means nothing changed: that path restarts the
-    running image. A "migrating" marker leaves the service down for the
-    restore. Neither path is the image-only rollback."""
+def test_a_failed_apply_is_judged_by_sql(box: Box, outcome, result, code):
+    """SQL decides whether an apply committed, regardless of marker state."""
     volume, env = _cutover(box)
-    box.set_docker_state(migration_apply=marker_after)
+    box.set_docker_state(migration_apply=outcome)
     before = box.live()
     box.stage_bundle()
 
@@ -2455,12 +2464,24 @@ def test_a_failed_apply_is_judged_by_the_marker_it_left(box: Box, marker_after, 
     assert _result(completed) == result
     assert box.live() == before and box.env_image() == OLD_IMAGE
     calls = box.docker_calls_text()
+    assert calls.count("agent_file_migration check /data") == 2
     assert "compose" not in calls.split("agent_file_migration apply")[-1], (
         "no image is converged after a failed apply"
     )
     daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
-    if marker_after == "stable":
+    if result == "migration_refused":
         assert "start tinyassets-daemon" in calls and daemon["status"] == "running"
     else:
         assert "start " not in calls and daemon["status"] == "exited"
         assert "restore it with: BACKUP_FILE=" in completed.stderr
+
+
+def test_a_failed_sql_recheck_keeps_the_old_image_down(box: Box):
+    _, env = _cutover(box)
+    box.set_docker_state(migration_apply="stable", migration_recheck_error=True)
+    completed = box.run(NEW_IMAGE, **env)
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_needs_restore"
+    assert not _daemon_starts(box)
+    assert "could not verify SQL after apply failed" in completed.stderr
