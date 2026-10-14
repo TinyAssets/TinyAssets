@@ -23,6 +23,8 @@ def exchange(client, *, grant_id, connection_id, verb, request, upload, head, da
         sock.settimeout(client._timeout)
         sock.connect(os.fspath(client._path))
         try:
+            if client._verify_peer is not None:
+                client._verify_peer(sock)
             sock.sendall(rf.control(1, document))
             while True:
                 frame = rf.read_frame_blocking(sock)

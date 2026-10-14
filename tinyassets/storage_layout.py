@@ -49,6 +49,10 @@ from tinyassets.storage import platform_state_move as psm
 LAYOUT = 2
 #: Layouts this code understands. A newer one means "migrated past me".
 KNOWN_LAYOUTS = frozenset({1, 2})
+# The final P2b image changes ACTIVE to owner-box. Before its one-shot move it
+# may be a candidate on owner-split data, but it must never serve that data.
+SUPPORTED_BOX_LAYOUTS = frozenset({"owner-split"})
+ACTIVE_BOX_LAYOUT = "owner-split"
 STABLE = "stable"
 MARKER = ".layout.json"
 LOCK = ".layout.lock"
@@ -172,6 +176,12 @@ def _validated(base: Path, document: dict[str, Any]) -> dict[str, Any]:
             f"{marker_path(base)} says layout={layout!r}; this code understands "
             f"{sorted(KNOWN_LAYOUTS)}. Nothing was opened; run the image built for "
             "that layout."
+        )
+    box_layout = document.get("box_layout", "owner-split")
+    if box_layout != ACTIVE_BOX_LAYOUT:
+        raise LayoutRefused(
+            f"{marker_path(base)} says box_layout={box_layout!r}; this image serves "
+            f"only {ACTIVE_BOX_LAYOUT!r}. Nothing was opened; use the image for that box layout."
         )
     return document
 

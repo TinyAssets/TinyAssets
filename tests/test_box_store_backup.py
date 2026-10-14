@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import os
+import sqlite3
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -28,10 +29,11 @@ def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool
     volume.mkdir(parents=True)
     broker = volume / ".broker"
     broker.mkdir()
-    uid, gid = os.getuid(), os.getgid()
-    (broker / "box-registry.json").write_text(json.dumps({"boxes": [{
-        "uid": uid, "gid": gid, "project_id": 123456, "bhard_bytes": 8 * 1024 * 1024,
-    }]}))
+    uid = 300001
+    (broker / "state").mkdir()
+    with sqlite3.connect(broker / "state" / "owner-identities.db") as db:
+        db.execute("CREATE TABLE box_records (machine INT, project_id INT, bhard_bytes INT)")
+        db.execute("INSERT INTO box_records VALUES (?,?,?)", (uid, uid, 8 * 1024 * 1024))
     (volume / "record.txt").write_text("data")
     store = tmp_path / "owners"
     owner = store / str(uid)
@@ -49,7 +51,11 @@ def test_box_store_archive_and_temp_restore(tmp_path: Path, remote_restore: bool
         '"ps -q") :;; *) :;; esac\n',
     )
     _shim(bin_dir, "findmnt", '''
-if [[ "${@: -1}" == FSTYPE ]]; then echo xfs; else echo rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota; fi
+if [[ "${@: -1}" == FSTYPE ]]; then
+    echo xfs
+else
+    echo rw,noatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota
+fi
 ''')
     _shim(bin_dir, "xfs_freeze", 'echo "$1" >> "$TEST_COMMAND_LOG"\n')
     _shim(bin_dir, "xfs_quota", '''
@@ -80,6 +86,27 @@ case "$1" in
   *) exit 1 ;;
 esac
 ''')
+    # This existing archive/rollback test has always substituted host tools and
+    # used the runner's UID. Keep it running unprivileged: substitute only the
+    # permanent-UID chown, not tar, SQLite, quota validation or swap/rollback.
+    # Actual cross-UID ownership remains covered by the separate root proof.
+    python_shim = bin_dir / "python3"
+    python_shim.write_text("#!" + sys.executable + "\n" + r'''import os, runpy, sys
+from pathlib import Path
+if sys.argv[1].endswith("box-store-quotas.py"):
+    original = os.chown
+    def mapped_chown(path, uid, gid, **kwargs):
+        assert uid == gid == 300001
+        assert Path(path).resolve().is_relative_to(Path(os.environ["BOX_STORE_DIR"]))
+        return original(path, os.getuid(), os.getgid(), **kwargs)
+    if os.geteuid() != 0:
+        os.chown = mapped_chown
+    sys.argv = sys.argv[1:]
+    runpy.run_path(sys.argv[0], run_name="__main__")
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+''')
+    python_shim.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
            "TEST_VOLUME_DIR": str(volume), "TEST_COMMAND_LOG": str(log),
            "BOX_STORE_DIR": str(store), "BACKUP_VOLUME": "test-volume",
@@ -92,6 +119,19 @@ esac
     assert log.read_text().splitlines()[:2] == ["-f", "-u"]
     data_archive, = remote.glob("tinyassets-data-*.tar.gz")
     box_archive, = remote.glob("tinyassets-box-store-*.tar.gz")
+    (volume / "owner-link.txt").symlink_to("record.txt")
+    snapshot_dir = tmp_path / "snapshots"
+    env.update(BACKUP_MODE="snapshot", BACKUP_REQUIRE_BOX_STORE="1",
+               BACKUP_SNAPSHOT_DIR=str(snapshot_dir))
+    snapshot = subprocess.run(["bash", str(ROOT / "deploy/backup.sh")], env=env,
+                              capture_output=True, text=True)
+    assert snapshot.returncode == 0, snapshot.stdout + snapshot.stderr
+    snapshot_data, = snapshot_dir.glob("tinyassets-snapshot-*.tar.gz")
+    snapshot_box, = snapshot_dir.glob("tinyassets-box-store-*.tar.gz")
+    assert snapshot_box.with_name(snapshot_box.name + ".sha256").is_file()
+    (volume / "owner-link.txt").unlink()
+    env.pop("BACKUP_MODE")
+    env.pop("BACKUP_REQUIRE_BOX_STORE")
     os.mkfifo(owner / "unsupported.pipe")
     invalid = subprocess.run(["bash", str(ROOT / "deploy/backup.sh")], env=env,
                              capture_output=True, text=True)
@@ -116,7 +156,7 @@ esac
     assert (volume / "record.txt").read_text() == "data"
     assert (owner / "box.txt").read_text() == "box"
     assert (owner / "link.txt").read_text() == "box"
-    assert "bhard=8192k 123456" in log.read_text()
+    assert "bhard=8192k 300001" in log.read_text()
     assert "report -p -n" in log.read_text()
     assert "project -C -p" in log.read_text()
     commands = log.read_text().splitlines()
@@ -136,7 +176,7 @@ esac
     assert failed.returncode == 4, failed.stdout + failed.stderr
     assert (volume / "record.txt").read_text() == "current"
     assert (owner / "box.txt").read_text() == "current-box"
-    assert log.read_text().count("bhard=8192k 123456") >= 2
+    assert log.read_text().count("bhard=8192k 300001") >= 2
     env.pop("FAIL_RESTORED_QUOTA")
     env["FAIL_DATA_SWAP"] = "1"
     failed_data = subprocess.run(
@@ -164,6 +204,16 @@ esac
     assert "pre-store data archive" in legacy.stdout
     assert (volume / "record.txt").read_text() == "data"
     assert (owner / "box.txt").read_text() == "current-box"
+    env.update(BACKUP_FILE=str(snapshot_data), BOX_BACKUP_FILE=str(snapshot_box))
+    env.pop("ALLOW_PRE_STORE_BACKUP")
+    restored_snapshot = subprocess.run(
+        ["bash", str(ROOT / "deploy/backup-restore.sh")], env=env,
+        capture_output=True, text=True,
+    )
+    assert restored_snapshot.returncode == 0, restored_snapshot.stdout + restored_snapshot.stderr
+    assert (owner / "box.txt").read_text() == "box"
+    assert (volume / "owner-link.txt").is_symlink()
+    assert (volume / "owner-link.txt").read_text() == "data"
 
 
 def test_store_unit_contract_and_installer_guards() -> None:
@@ -171,9 +221,8 @@ def test_store_unit_contract_and_installer_guards() -> None:
     mount = (ROOT / "deploy/var-lib-boxhostd-owners.mount").read_text()
     prepare = (ROOT / "deploy/box-store-device.service").read_text()
     device = (ROOT / "deploy/box-store-device.sh").read_text()
-    # The idle service survives G4's controlled unmount; ExecStartPre still
-    # refuses to start unless the store is mounted and healthy.
-    assert "Wants=var-lib-boxhostd-owners.mount" in unit
+    # The box service requires the mounted store and checks its quota options.
+    assert "Requires=var-lib-boxhostd-owners.mount" in unit
     assert "ExecStartPre=/opt/tinyassets/boxhostd/box-store-check.sh" in unit
     assert "Options=pquota,noatime,nodiscard" in mount
     assert "DefaultDependencies=no" in prepare

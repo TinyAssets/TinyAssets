@@ -597,6 +597,10 @@ STORES: dict[str, Store] = {
 #: code creates at the data root must appear here -- the completeness test reads
 #: the source for them.
 ROOT_ENTRIES: dict[str, str] = {
+    ".boxhost": "platform: root-private owner generations and idempotency receipts",
+    ".platform": "platform: platform stores; legacy agent homes move to quota-charged owner boxes",
+    ".layout.json": "platform: committed storage layout admission marker",
+    ".layout.lock": "platform: shared service lifetime and exclusive migration lock",
     ".runs.db": "run_records, uploads, branches (rows attributed per table)",
     ".langgraph_runs.db": "checkpoints",
     ".run-file-custody": "uploads (blobs; sized from run_file_objects)",
@@ -718,6 +722,8 @@ ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
     # The box host's control-plane record (boxes/local.py), kept in the box
     # driver's own state_dir, never inside a universe or charged to a user.
     "boxhost.db",
+    # C6's quota-charged owner agent home is copied to the external XFS store.
+    ".agent-home",
 })
 
 

@@ -135,6 +135,8 @@ async def _run_catalogue_locked(agent, launch, custody):
                         raise RuntimeError("external-agent custody carry was lost")
                     if result is not None:
                         result = replace(result, custody=carried)
+                if hasattr(launch, "acknowledge"):
+                    await launch.acknowledge(proc)
                 if getattr(returned, "exit_code", 0) != 0:
                     raise RuntimeError("external-agent process failed")
             except BaseException as exc:
@@ -309,7 +311,7 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                 outcome = await turn.run(
                     definition=definition, model=model or None,
                     input_text=input_text, effort=config.reasoning_effort or None,
-                    workdir=workdir, resume=resume,
+                    workdir=getattr(proc, "workdir", workdir), resume=resume,
                 )
                 if outcome.auth_rejected:
                     raise ProviderAuthenticationError(
@@ -340,6 +342,8 @@ async def _run_job_locked(agent, launch, custody, *, prompt, system, config):
                            if name in original and data != original[name]}
                 if changed and not compare_and_swap(custody, package.row["auth"], changed):
                     raise PermissionError("external-agent custody changed before writeback")
+                if hasattr(launch, "acknowledge"):
+                    await launch.acknowledge(proc)
                 if getattr(returned, "exit_code", 0) != 0:
                     raise RuntimeError("external-agent process failed")
             except BaseException as exc:

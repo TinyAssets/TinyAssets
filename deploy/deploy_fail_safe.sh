@@ -396,7 +396,7 @@ layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
   # Query the pulled candidate's own declaration, never the host checkout or
   # the running image. No data mount: this probe must not run a migration.
   supported="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
-    --entrypoint python "$candidate" -c 'import json; from tinyassets.storage_layout import KNOWN_LAYOUTS; print(json.dumps(sorted(KNOWN_LAYOUTS)))')" || return 1
+    --entrypoint python "$candidate" -c 'import json; from tinyassets import storage_layout as l; print(json.dumps({"layouts": sorted(l.KNOWN_LAYOUTS), "boxes": sorted(getattr(l, "SUPPORTED_BOX_LAYOUTS", {"owner-split"}))}))')" || return 1
   dir="$(dirname "$marker")"
   [ -d "$dir" ] || return 1
   (
@@ -408,8 +408,12 @@ import sys
 
 try:
     supported = json.loads(sys.argv[2])
-    if (not isinstance(supported, list) or not supported
-            or any(type(n) is not int or n < 1 for n in supported)):
+    layouts = supported["layouts"]
+    boxes = supported["boxes"]
+    if (not isinstance(layouts, list) or not layouts
+            or any(type(n) is not int or n < 1 for n in layouts)
+            or not isinstance(boxes, list) or not boxes
+            or any(name not in ("owner-split", "owner-box") for name in boxes)):
         sys.exit(1)
     try:
         with open(sys.argv[1], encoding="utf-8") as handle:
@@ -419,7 +423,8 @@ try:
 except (OSError, ValueError):
     sys.exit(1)
 ok = (isinstance(doc, dict) and type(doc.get("layout")) is int
-      and doc["layout"] in supported and doc.get("state") == "stable")
+      and doc["layout"] in layouts and doc.get("state") == "stable"
+      and doc.get("box_layout", "owner-split") in boxes)
 sys.exit(0 if ok else 1)
 CANDIDATE_LAYOUT_PY
   )
@@ -1625,6 +1630,56 @@ else
 fi
 
 # --- 3c. the one-shot storage migration the candidate carries -------------
+# P2b's owner-box candidate accepts owner-split only long enough to perform
+# its deploy-owned move. Older candidates never enter that move.
+BOX_CANDIDATE_LAYOUT="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m \
+  --network=none --entrypoint python "$NEW_IMAGE" -c \
+  'from tinyassets import storage_layout as l; print(getattr(l, "ACTIVE_BOX_LAYOUT", "owner-split"))')" || {
+  err "cannot read candidate box layout; prod untouched"; exit 1;
+}
+case "$BOX_CANDIDATE_LAYOUT" in
+  owner-split|owner-box) ;;
+  *) err "candidate has invalid box layout; prod untouched"; exit 1 ;;
+esac
+install_box_harness() {  # $1 = immutable image; install static rootfs, no owner data
+  local image="$1" image_id root target stage container target_name
+  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
+  image_id="$(docker image inspect -f '{{.Id}}' "$image")" || return 1
+  [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  target_name="harness-${image_id#sha256:}"
+  target="${root}/${target_name}"
+  if [ ! -d "$target" ]; then
+    stage="$(mktemp -d "${root}/.harness-stage.XXXXXXXX")" || return 1
+    container="$(docker create --network none --entrypoint /bin/true "$image")" || {
+      rmdir "$stage"; return 1;
+    }
+    if ! docker export "$container" | tar -x -C "$stage"; then
+      docker rm "$container" >/dev/null 2>&1 || true
+      rm -rf -- "$stage"
+      return 1
+    fi
+    docker rm "$container" >/dev/null || return 1
+    # The box sees no platform volume roots. /home/owner and /tmp are mounted
+    # by runsc; root changes use its 256 MiB memory overlay, not the host disk.
+    rm -rf -- "$stage/data" "$stage/.broker" "$stage/.platform" "$stage/.runtime"
+    mkdir -p "$stage/home/owner" "$stage/tmp" "$stage/run/boxhostd"
+    printf '%s\n' "$image_id" > "$stage/.box-image-id"
+    find -P "$stage" -xdev \( -type d -o -type f \) -exec chmod a-w {} +
+    mv -- "$stage" "$target" || return 1
+  fi
+  [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
+  [ ! -e "$target/data" ] && [ ! -e "$target/.broker" ] && \
+    [ ! -e "$target/.platform" ] && [ ! -e "$target/.runtime" ] || return 1
+  ln -s "$target_name" "${root}/.harness-current.$$" || return 1
+  mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" || return 1
+}
+if [ "$RESTORE_BUNDLE" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+  if ! install_box_harness "$NEW_IMAGE"; then
+    err "candidate harness rootfs could not be installed; refusing before the box move"
+    echo "deploy_result=harness_invalid"
+    exit 1
+  fi
+fi
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
 # volume still holds rows to move. A migrated volume says no and the block ends
@@ -1660,6 +1715,7 @@ MIGRATION_COMMIT_UNVERIFIED=0
 MIGRATION_SNAPSHOT=""
 MIGRATION_BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/tinyassets}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/opt/tinyassets-host-uptime/current/deploy/backup.sh}"
+BOX_STORE_CHECK="${BOX_STORE_CHECK:-/opt/tinyassets/boxhostd/box-store-check.sh}"
 MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-1800}"   # seconds for one container run
 # The workflow echoes this script's stdout as the deploy log and leaves stderr
 # as annotations. A refusal reason has to be on stdout or the echoed log shows
@@ -1747,6 +1803,9 @@ case "$MIGRATION_RC" in
     log "migration: nothing to move"
     ;;
   10)
+    if [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+      migration_refused "check=agent_files_pending; complete C8 before the owner-box window"
+    fi
     log "migration: this deploy is the agent-files cutover; stopping ${DAEMON_CONTAINER} for the snapshot and the move"
     if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
       stop_out="$(docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" 2>&1)"
@@ -1796,6 +1855,61 @@ case "$MIGRATION_RC" in
 esac
 rm -f "$MIGRATION_DETAIL_FILE"
 
+# --- 3d. the P2b one-shot owner-box layout move ----------------------------
+# This branch is reached only by the final candidate. Its check is read-only;
+# after apply begins, even a failure before marker publication needs the paired
+# snapshot restore. No retry, startup migration, or old-image fallback exists.
+box_migration_container() {  # $1 = check|apply, then module arguments
+  local posture=()
+  [ "$1" = "apply" ] && posture=(--user 0 --cap-add CHOWN --cap-add FOWNER \
+    --cap-add DAC_OVERRIDE --cap-add SYS_ADMIN)
+  timeout "$MIGRATION_TIMEOUT" docker run --rm --cap-drop ALL ${posture[@]+"${posture[@]}"} \
+    --security-opt no-new-privileges=true --network none --memory=1g --memory-swap=1g \
+    -v tinyassets-data:/data -v "${MIGRATION_BACKUP_DIR}:/backup:ro" \
+    --mount type=bind,src=/var/lib/boxhostd/owners,dst=/box-store \
+    --entrypoint python "$NEW_IMAGE" -B -m tinyassets.box_layout_migration "$@"
+}
+if [ "$RESTORE_BUNDLE" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ] \
+    && [ "$MIGRATION_OK" = "1" ]; then
+  if ! "$BOX_STORE_CHECK"; then
+    migration_refused "check=box_store_mount; required mounted XFS project-quota store unavailable"
+  fi
+  box_probe="$(box_migration_container check /data 2>&1)"
+  box_probe_rc=$?
+  [ -z "$box_probe" ] || printf '%s\n' "$box_probe"
+  case "$box_probe_rc" in
+    0) log "box layout: already owner-box; no move" ;;
+    10)
+      log "box layout: stopping ${DAEMON_CONTAINER} for the one-shot move"
+      if [ -n "$(docker ps -q --filter "name=^${DAEMON_CONTAINER}\$")" ]; then
+        docker stop --time "$MAX_DAEMON_STOP_GRACE_S" "$DAEMON_CONTAINER" || \
+          migration_refused "check=box_daemon_stopped"
+      fi
+      MIGRATION_SNAPSHOT="$(BACKUP_REQUIRE_BOX_STORE=1 migration_snapshot)" || \
+        migration_refused "$(cat "$MIGRATION_DETAIL_FILE")"
+      box_backup="tinyassets-box-store-${MIGRATION_SNAPSHOT#tinyassets-snapshot-}"
+      box_apply="$(box_migration_container apply /data --store /box-store \
+        --backup "/backup/${MIGRATION_SNAPSHOT}" \
+        --box-backup "/backup/${box_backup}" 2>&1)"
+      box_apply_rc=$?
+      [ -z "$box_apply" ] || printf '%s\n' "$box_apply"
+      if [ "$box_apply_rc" -eq 0 ]; then
+        MIGRATION_COMMITTED=1
+        log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
+        if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+          MIGRATION_OK=0
+          err "boxhostd could not start on the committed layout; $(migration_restore_command)"
+        fi
+      else
+        MIGRATION_COMMIT_UNVERIFIED=1
+        MIGRATION_OK=0
+        err "box layout apply failed after entering the one-shot window (rc=${box_apply_rc}); $(migration_restore_command)"
+      fi
+      ;;
+    *) migration_refused "check=box_layout_probe rc=${box_probe_rc} output=$(printf '%s\n' "$box_probe" | one_line)" ;;
+  esac
+fi
+
 CONVERGED=0
 ACCEPTED=0
 if [ "$MIGRATION_OK" = "1" ]; then
@@ -1813,7 +1927,7 @@ if [ "$MIGRATION_OK" = "1" ]; then
       fi
     fi
     if [ "$MIGRATION_COMMITTED" = "1" ]; then
-      err "the agent-files migration committed and ${DAEMON_CONTAINER} is stopped: deploy ${NEW_IMAGE} again, or $(migration_restore_command); never start ${PREV_IMAGE} on this data"
+      err "a layout migration committed and ${DAEMON_CONTAINER} is stopped: deploy ${NEW_IMAGE} again, or $(migration_restore_command); never start ${PREV_IMAGE} on this data"
     fi
     echo "deploy_result=failed_env_write"
     exit 1
@@ -1881,7 +1995,7 @@ fi
 # A committed or unverifiable move cannot safely start the previous image.
 # The snapshot step 3c took is the rollback point.
 if [ "$MIGRATION_COMMITTED" = "1" ] || [ "$MIGRATION_COMMIT_UNVERIFIED" = "1" ]; then
-  refuse_on_layout "$PREV_IMAGE" "the agent-files migration committed or its SQL state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
+  refuse_on_layout "$PREV_IMAGE" "a layout migration committed or its state could not be verified, and ${NEW_IMAGE} did not become acceptable: NOT starting ${PREV_IMAGE}. Deploy a fixed candidate onto it, or $(migration_restore_command), then deploy the image built for the restored layout"
 fi
 # The failed candidate may have migrated (or begun migrating) the data while it
 # booted: re-check before the previous image starts on it.

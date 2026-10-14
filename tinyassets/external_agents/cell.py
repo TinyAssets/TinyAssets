@@ -83,7 +83,7 @@ def _read_file(path: str) -> bytes:
         os.close(fd)
 
 
-def _pump(proc, *, writeback: bool) -> int:
+def _pump(proc, *, writeback: bool, output=_write_all) -> int:
     selector = selectors.DefaultSelector()
     group_stopped = False
     os.set_blocking(0, False)
@@ -111,9 +111,9 @@ def _pump(proc, *, writeback: bool) -> int:
                         except BrokenPipeError:
                             proc.stdin.close()
                 elif key.data == 'output':
-                    _write_all(1, chunk)
+                    output(1, chunk)
                 elif not writeback:
-                    _write_all(2, chunk)
+                    output(2, chunk)
             if proc.poll() is not None:
                 if 0 in selector.get_map():
                     selector.unregister(0)
@@ -135,19 +135,23 @@ def _pump(proc, *, writeback: bool) -> int:
                 proc.wait()
 
 
-def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
+def cell_main(data_root: str, *, egress: bool, engine: bool, config=None,
+              box_center=None, output=_write_all, private_writeback=None) -> int:
     for limit, cap in ((resource.RLIMIT_CORE, 0), (resource.RLIMIT_CPU, 600),
                        (resource.RLIMIT_NOFILE, 256), (resource.RLIMIT_NPROC, 64),
                        (resource.RLIMIT_FSIZE, 64 * 1024 * 1024)):
         resource.setrlimit(limit, (cap, cap))
-    config = json.loads(read_config())
-    for name in ('system.posix_acl_default', 'system.posix_acl_access'):
-        try:
-            os.removexattr('/agent-home', name)
-        except OSError as exc:
-            if exc.errno != errno.ENODATA:
-                raise
-    os.chmod('/agent-home', 0o700)
+    config = json.loads(read_config()) if config is None else config
+    if box_center is None:
+        for name in ('system.posix_acl_default', 'system.posix_acl_access'):
+            try:
+                os.removexattr('/agent-home', name)
+            except OSError as exc:
+                if exc.errno != errno.ENODATA:
+                    raise
+        os.chmod('/agent-home', 0o700)
+    elif private_writeback is None or engine:
+        raise ValueError('owner-box CLI requires private writeback and no legacy engine socket')
     if type(config) is not dict or set(config) != {
         'argv', 'env', 'home_dir', 'workdir', 'auth_files', 'writeback', 'nonce',
         'engine_port', 'catalogue_rewrite', 'requested_model',
@@ -191,10 +195,17 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
              'USERPROFILE': '/agent-home', 'TMPDIR': '/tmp', 'TMP': '/tmp',
              'TEMP': '/tmp', 'LANG': 'C.UTF-8'}
     clean_env = {**safe_environment(env), **fixed}
-    _directory('/agent-home', 'jobs')
-    if os.stat('/agent-home/jobs').st_dev == os.stat('/agent-home').st_dev:
-        raise PermissionError('external-agent job home is not ephemeral')
-    job = _directory('/agent-home/jobs', workdir.rsplit('/', 1)[1])
+    if box_center is None:
+        _directory('/agent-home', 'jobs')
+        if os.stat('/agent-home/jobs').st_dev == os.stat('/agent-home').st_dev:
+            raise PermissionError('external-agent job home is not ephemeral')
+        job = _directory('/agent-home/jobs', workdir.rsplit('/', 1)[1])
+    else:
+        # /tmp is a bounded synthetic tmpfs in the immutable owner runtime.
+        # Refuse any accidental host configuration that makes it the owner bind.
+        if os.stat('/tmp').st_dev == os.stat('/home/owner').st_dev:
+            raise PermissionError('owner-box CLI home is not ephemeral')
+        job = _directory('/tmp', 'ta-agent-' + nonce)
     home = _directory(job, name)
     shared_home = '/agent-home/' + name
     clean_env = {key: home if value == shared_home else value
@@ -225,6 +236,9 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
 
             clean_env.update(PROXY_ENV)
             specs = ['3128=/provider-egress.sock']
+            if box_center is not None:
+                specs = ['3128=/run/boxhostd/relay.sock']
+                clean_env['TINYASSETS_BOX_CENTER'] = box_center
             if engine:
                 specs.append(f'{engine_port}=/provider-engine.sock')
             command = ['/opt/venv/bin/python', '-I', '-S', '-c', FORWARDER,
@@ -233,7 +247,7 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=clean_env, close_fds=True,
                                 start_new_session=True)
-        code = _pump(proc, writeback=writeback)
+        code = _pump(proc, writeback=writeback, output=output)
         if writeback:
             changed = {}
             for name in written:
@@ -244,8 +258,11 @@ def cell_main(data_root: str, *, egress: bool, engine: bool) -> int:
                         raise RuntimeError('external-agent auth writeback disappeared') from None
                 else:
                     changed[name] = base64.b64encode(data).decode('ascii')
-            _write_all(1, (json.dumps({'external_agent_writeback': changed,
-                                       'nonce': nonce, 'exit': code}) + '\n').encode())
+            result = {'external_agent_writeback': changed, 'nonce': nonce, 'exit': code}
+            if private_writeback is None:
+                _write_all(1, (json.dumps(result) + '\n').encode())
+            else:
+                private_writeback(result)
         return code
     finally:
         for filename in written:
