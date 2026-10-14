@@ -3246,11 +3246,18 @@ def converse(
 
             home_failure = founder_home_failure()
     except Exception:
+        # An unreadable store is not a classified birth failure. Labeling it
+        # "incomplete" returned home_unavailable, which tells the client the
+        # home is missing rather than that this read could not authorize the
+        # turn. The ACL check below already uses auth_scope_required for the
+        # same defect; this read is one call earlier.
         logger.warning(
             "converse: could not resolve the command center for %r", graph_id, exc_info=True
         )
-        uid = ""
-        home_failure = "incomplete"
+        return json.dumps({
+            "error": "Your home command center could not be created or loaded.",
+            "auth_scope_required": True,
+        })
     if not uid:
         # A missing create scope is an auth problem. Admission, a deleted
         # account, or a birth that did not finish is not: calling it

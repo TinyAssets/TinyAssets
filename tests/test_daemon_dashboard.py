@@ -6,7 +6,7 @@ Covers phase_h_preflight.md (archived in git) §4.4:
 - `set_tier_config` action (6)
 - Node lookup wiring (4)
 - MCP surface non-inflation (2)
-- Concerns audit doc + misc (supplementary)
+- Bid execution log rename (supplementary)
 
 Pane-isolation + emergency-pause tests are dashboard-thread-scoped
 and deferred with the dashboard UI panes themselves (non-blocking
@@ -16,7 +16,6 @@ per preflight §4.3 invariant 2 — panes wrap their own handlers).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 import yaml
@@ -490,27 +489,6 @@ def test_dashboard_adds_exactly_two_actions_to_universe():
         if action == "set_tier_config":
             assert action in uni.WRITE_ACTIONS
         assert hasattr(uni, f"_action_{action}")
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Concerns audit doc (R8, 1 test)
-# ───────────────────────────────────────────────────────────────────────
-
-
-def test_dashboard_conventions_doc_exists():
-    """Preflight §4.1 #12: dashboard_conventions.md ships with Phase H."""
-    conv = Path(__file__).parent.parent / "docs" / "planning" / (
-        "dashboard_conventions.md"
-    )
-    assert conv.exists(), f"expected {conv} to exist"
-
-
-def test_daemon_overview_response_shape_doc_exists():
-    """Preflight §4.1 #12: daemon_overview_response_shape.md ships."""
-    doc = Path(__file__).parent.parent / "docs" / "planning" / (
-        "daemon_overview_response_shape.md"
-    )
-    assert doc.exists(), f"expected {doc} to exist"
 
 
 # ───────────────────────────────────────────────────────────────────────

@@ -852,6 +852,12 @@ TUNNEL_CONTAINER=tinyassets-tunnel
 LOGS_CONTAINER=tinyassets-logs
 INSTALLED_THIS_RUN=0
 MARKER_STALE=0
+# The script assigns these just above the rollback marker. A migration that
+# did not commit leaves both at 0. Leaving them unset trips `set -u` (exit 1)
+# before accept/finish can report the rollback. A healthy rollback of the
+# previous image is exit 2 (`finish rolled_back`); an identity mismatch is 3.
+MIGRATION_COMMITTED=0
+MIGRATION_COMMIT_UNVERIFIED=0
 HEALTH_TIMEOUT=10
 HEALTH_INTERVAL=0
 INSPECT_ERR_TOLERANCE=1
