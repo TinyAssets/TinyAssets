@@ -315,6 +315,7 @@ def test_node_launcher_checks_path_instead_of_launching_a_probe_jail(
     assert "os.environ" not in Path(node_sandbox.__file__).read_text(encoding="utf-8")
 
 
+@pytest.mark.role_split
 def test_a_read_walks_the_center_once_and_a_write_walks_it_twice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

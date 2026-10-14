@@ -1550,7 +1550,7 @@ def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(
     assert "cancelled between nodes" not in str(record["error"])
 
 
-def test_stop_cancels_the_run_through_the_real_callback_timing(
+def test_stop_sees_the_live_run_and_leaves_it_running(
     tmp_path: Path,
     registered: Automation,
     monkeypatch,
@@ -1559,7 +1559,8 @@ def test_stop_cancels_the_run_through_the_real_callback_timing(
 
     `on_run_started` used to fire only after `_execute` had finished waiting, so
     `stop()` could never see a live run. This drives the REAL callback, from
-    inside the wait, the way the consumer does.
+    inside the wait, the way the consumer does. Shutdown leaves that run
+    running; the next boot marks it interrupted.
     """
     from tinyassets.runs import is_cancel_requested
 
@@ -1588,7 +1589,7 @@ def test_stop_cancels_the_run_through_the_real_callback_timing(
         )
 
     assert seen, "the run never reached the wait"
-    assert is_cancel_requested(tmp_path, seen[0]) is True
+    assert is_cancel_requested(tmp_path, seen[0]) is False
 
 
 def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
@@ -2161,7 +2162,7 @@ def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
 
 
 @pytest.mark.parametrize("status", ["running", "completed"])
-def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path, status: str) -> None:
+def test_stop_leaves_an_in_flight_automation_run(tmp_path: Path, status: str) -> None:
     from tinyassets.runs import create_run, is_cancel_requested, update_run_status
 
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
@@ -2174,7 +2175,7 @@ def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path, status: str) -
 
     consumer.stop()
 
-    assert is_cancel_requested(tmp_path, run_id) is (status == "running")
+    assert is_cancel_requested(tmp_path, run_id) is False
 
 
 # §6 -- no silent skips
