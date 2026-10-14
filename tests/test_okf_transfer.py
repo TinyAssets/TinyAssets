@@ -67,6 +67,31 @@ def test_private_preview_export_and_inert_ingestion_round_trip(box):
     assert imported.files["agents/main/AGENTS.md"] == content
 
 
+def test_large_compressible_export_round_trips_within_own_import_envelope(box):
+    content = b"ordinary project notes\n" * 250000
+    write(box, "workspace/notes.md", content)
+    view = preview(*box, ["workspace/notes.md"])
+    raw = export_zip(*box, view, selected=["workspace/notes.md"])
+    assert len(raw) < Limits().compressed
+    assert ingest_zip(raw).files["workspace/notes.md"] == content
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        assert all(info.compress_type == zipfile.ZIP_DEFLATED for info in archive.infolist())
+
+
+def test_incompressible_export_refuses_instead_of_returning_unimportable_zip(box):
+    import os
+
+    # Short alphabetic tokens cannot resemble credentials or contacts, but
+    # independently random letters still exceed the compressed resource cap.
+    alphabet = bytes(97 + value % 26 for value in range(256))
+    content = bytearray(os.urandom(24 * 1024 * 1024).translate(alphabet))
+    content[7::8] = b" " * (len(content) // 8)
+    write(box, "workspace/large.txt", bytes(content))
+    view = preview(*box, ["workspace/large.txt"])
+    with pytest.raises(InvalidBundle, match="import envelope"):
+        export_zip(*box, view, selected=["workspace/large.txt"])
+
+
 def test_actual_root_harness_settings_and_roster_round_trip(box):
     from tinyassets.okf.transfer import discover
 

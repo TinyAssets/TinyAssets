@@ -1,5 +1,19 @@
 ## ADDED Requirements
 
+### Requirement: Bounded provider transport interoperability
+Knowledge and export capture SHALL use bounded provider reads, preserving one
+generation across every page and refusing source changes. Overall capture
+limits SHALL still apply. An oversized canonical write SHALL fail before any
+staging. An exported archive SHALL fit its own import envelope or fail visibly.
+
+#### Scenario: A bundle exceeds one transport message
+- **WHEN** a snapshot spans several file-service messages
+- **THEN** each request stays below the transport bound and all returned bytes have one generation.
+
+#### Scenario: A source changes between pages
+- **WHEN** an owner write changes the generation during capture
+- **THEN** no mixed preview or canonical snapshot is returned.
+
 ### Requirement: Explicit local schedule execution
 The standalone runner SHALL start schedules only with a separate explicit
 enable flag. It SHALL validate bounded local schedule data before execution,

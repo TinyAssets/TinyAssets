@@ -15,14 +15,94 @@ from typing import Any
 
 import yaml
 
-from tinyassets.boxes.provider import BoxBusy, BoxHandle, BoxProvider, WriteMode
+from tinyassets.boxes.provider import (
+    BoxBusy,
+    BoxHandle,
+    BoxProvider,
+    Snapshot,
+    WriteConflict,
+    WriteMode,
+)
 
 ROOT = "/cc/brain/knowledge"
 INDEX = ROOT + "/current.json"
+# Stay below C6's 4-MiB data envelope, including framing overhead. This is
+# the OKF page/write bound; the full revision may span many such messages.
+PAGE_BYTES = 2 * 1024 * 1024
+PAGE_FILES = 1000
+# JSON escapes non-ASCII path names. Reserve a separate metadata budget so
+# paths plus base64 data and per-file framing fit C6's 8-MiB message envelope.
+PAGE_PATH_BYTES = 2 * 1024 * 1024
 
 
 class InvalidBundle(ValueError):
     pass
+
+
+def capture_files(provider, handle, paths, *, max_total):
+    """One generation across bounded messages; never an oversized RPC request."""
+    generation = provider.read_many(handle, [], max_total=0).generation
+    files, missing, pending = {}, [], []
+    pending_bytes = pending_path_bytes = used = 0
+
+    def check(actual):
+        if actual != generation:
+            raise WriteConflict("Source changed during paged capture; preview again")
+
+    def flush():
+        nonlocal used, pending_bytes, pending_path_bytes
+        if not pending:
+            return
+        view = provider.read_many(handle, pending, max_total=min(PAGE_BYTES, max_total - used))
+        check(view.generation)
+        if (set(view.files) & set(view.missing)
+                or set(view.files) | set(view.missing) != set(pending)):
+            raise InvalidBundle("Provider snapshot differs from requested paths")
+        size = sum(map(len, view.files.values()))
+        if size > min(PAGE_BYTES, max_total - used):
+            raise InvalidBundle("Provider snapshot exceeds the capture bound")
+        used += size
+        files.update(view.files)
+        missing.extend(view.missing)
+        pending.clear()
+        pending_bytes = 0
+        pending_path_bytes = 0
+
+    for path in paths:
+        path_bytes = len(json.dumps(path, ensure_ascii=True)) + 32
+        if path_bytes > PAGE_PATH_BYTES:
+            raise InvalidBundle("Source path exceeds the transport envelope")
+        info = provider.stat(handle, path)
+        size = info.size if info is not None else 0
+        if size + pending_bytes > max_total - used:
+            raise InvalidBundle("Source files exceed the capture bound")
+        if size > PAGE_BYTES:
+            flush()
+            if size > max_total - used:
+                raise InvalidBundle("Source files exceed the capture bound")
+            chunks, offset = [], 0
+            while offset < size:
+                bound = min(PAGE_BYTES, size - offset)
+                part = provider.read(handle, path, offset=offset, max_bytes=bound)
+                check(part.generation)
+                if part.size != size:
+                    raise WriteConflict("Source file size changed during paged capture")
+                if not part.data or len(part.data) > bound:
+                    raise InvalidBundle("Invalid bounded provider file page")
+                chunks.append(part.data)
+                offset += len(part.data)
+            files[path] = b"".join(chunks)
+            used += size
+        else:
+            if pending and (pending_bytes + size > PAGE_BYTES or len(pending) >= PAGE_FILES
+                            or pending_path_bytes + path_bytes > PAGE_PATH_BYTES):
+                flush()
+            pending.append(path)
+            pending_bytes += size
+            pending_path_bytes += path_bytes
+    flush()
+    check(provider.read_many(handle, [], max_total=0).generation)
+    return Snapshot(files, tuple(missing), generation)
 
 
 class _UniqueKeys(yaml.SafeLoader):
@@ -175,7 +255,7 @@ class KnowledgeBundle:
 
     def snapshot(self) -> BundleSnapshot:
         for _ in range(3):
-            first = self.provider.read_many(self.handle, [INDEX], max_total=self.read_bytes)
+            first = capture_files(self.provider, self.handle, [INDEX], max_total=self.read_bytes)
             if INDEX in first.missing:
                 return BundleSnapshot(
                     self.scope,
@@ -189,7 +269,8 @@ class KnowledgeBundle:
             paths = _paths(metadata)
             revision_root = ROOT + "/revisions/" + metadata["revision"]
             # One coherent view includes the commit point and all source files.
-            view = self.provider.read_many(
+            view = capture_files(
+                self.provider,
                 self.handle,
                 [
                     INDEX,
@@ -269,6 +350,8 @@ class KnowledgeBundle:
         data = json.dumps(manifest, ensure_ascii=False, allow_nan=False).encode("utf-8")
         if len(data) + sum(map(len, files.values())) > self.read_bytes:
             raise InvalidBundle("Knowledge revision exceeds the coherent read bound")
+        if any(len(raw) > PAGE_BYTES for raw in [data, *files.values()]):
+            raise InvalidBundle("A canonical knowledge file exceeds the bounded write envelope")
         generation = before.generation
         for path, content in files.items():
             name = hashlib.sha256(path.encode()).hexdigest()

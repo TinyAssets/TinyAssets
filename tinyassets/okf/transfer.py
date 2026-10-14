@@ -30,7 +30,7 @@ from tinyassets.okf.agent_export import (
     settings_document,
     settings_path,
 )
-from tinyassets.okf.bundle import InvalidBundle
+from tinyassets.okf.bundle import InvalidBundle, capture_files
 from tinyassets.okf.manifest import build_manifest
 
 MANIFEST = "command-center.json"
@@ -197,8 +197,8 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
                 raise InvalidBundle("Invalid canonical agent directory") from exc
             identity_paths[agent] = (directory + "/" if directory else "") + "settings.yaml"
     source_paths = set(paths) | set(identity_paths.values())
-    view = provider.read_many(handle, ["/cc/" + path for path in sorted(source_paths)],
-                              max_total=limits.expanded)
+    view = capture_files(provider, handle, ["/cc/" + path for path in sorted(source_paths)],
+                         max_total=limits.expanded)
     if set(view.missing) & {"/cc/" + path for path in paths}:
         raise InvalidBundle("Preview source file is missing")
     for agent, path in identity_paths.items():
@@ -390,13 +390,19 @@ def export_zip(
     files[MANIFEST] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
     if profile == "share" and sum(map(len, files.values())) > 256 * 1024:
         raise InvalidBundle("Share bundle exceeds the 256 KiB envelope")
+    if len(files) > Limits().files or sum(map(len, files.values())) > Limits().expanded:
+        raise InvalidBundle("Export exceeds the import envelope; select fewer files")
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path, data in files.items():
             info = zipfile.ZipInfo(path)
+            info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (stat.S_IFREG | (0o700 if path == "run/schedule" else 0o600)) << 16
             archive.writestr(info, data)
-    return result.getvalue()
+    raw = result.getvalue()
+    if len(raw) > Limits().compressed:
+        raise InvalidBundle("Export exceeds the import envelope; select fewer files")
+    return raw
 
 
 @dataclass(frozen=True)
