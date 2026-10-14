@@ -27,6 +27,29 @@ bearer, including a key, cannot mint or revoke keys.
 `key_id, owner, name, sha256(secret), created_at, last_used_at, revoked_at`.
 Resolution compares digests in constant time. At most 25 live keys per owner.
 
+## Owner request card (local follow-up)
+
+The agent raises the existing pending request with action `credential_request`,
+provider `tinyassets`, consumer `name`, and exact `scopes`. The platform captures
+the action in the existing protected request store and renders its own consent
+text in Needs You. A digest binds the create click to the reviewed action.
+Only the protected
+owner API-key route may create the key; ordinary request answers cannot do so.
+The first provider is TinyAssets; other providers keep their existing secure
+connection flow until a provider-supported issuance adapter exists.
+
+Request-bound minting derives one key id from owner, center and request id.
+The key transaction refuses to mint that id twice, including after revocation.
+The browser receives the secret once, keeps it only in the open card, and clears
+it on close, navigation, account change or page exit. Polling never closes an
+unfinished card. A later preview returns only metadata and offers revoke if
+the one-time response was lost. Done resolves the request with key id/status
+only; no secret reaches request history, answer delivery, telemetry or chat.
+REST capabilities are read_graph, converse and run_graph on main; full access
+means all currently supported REST operations, not MCP parity or event delivery.
+Existing create/list/revoke clients remain compatible. No live grants or
+publication are part of this local implementation.
+
 ## Transport
 
 Reads call `universe_server.read_graph`, the function the `read_graph` MCP handle

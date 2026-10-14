@@ -329,6 +329,15 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `status="settled"` with `decision`:     |
    |                                | `may_proceed=true` is a standing YES —  |
    |                                | act on it, do not ask a second time.    |
+   | Issue a TinyAssets key for an | `request_from_user` with no fields and |
+   | external agent (e.g. Muse)    | `action={"type":"credential_request", |
+   |                              | "provider":"tinyassets","name":"Muse",|
+   |                              | "scopes":[{"universe":"<center>",     |
+   |                              | "agent":"main","capability":"read_graph"}]}` |
+   |                              | Full REST access also includes scopes  |
+   |                              | for converse and run_graph. The owner  |
+   |                              | creates/copies in Needs You; NEVER     |
+   |                              | return or request its secret in chat. |
    | See what you asked and got     | `read_graph target="pending_requests"`  |
    |                                | — `pending` is still waiting,           |
    |                                | `recently_answered` carries their answer|

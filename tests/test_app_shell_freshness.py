@@ -33,7 +33,8 @@ def test_shell_never_reuses_a_stale_conditional_response(monkeypatch, method):
 
 
 def test_shell_version_changes_with_each_served_source(tmp_path, monkeypatch):
-    names = ("app.html", "app_ui.js", "app_recovery.js", "chat_render.js", "request_theme.json")
+    names = ("app.html", "app_ui.js", "app_recovery.js", "chat_render.js", "request_theme.json",
+             "credential_requests.js")
     for name in names:
         shutil.copyfile(onboarding._HTML_PATH.with_name(name), tmp_path / name)
     monkeypatch.setattr(onboarding, "_HTML_PATH", tmp_path / "app.html")

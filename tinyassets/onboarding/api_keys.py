@@ -11,6 +11,7 @@ import sqlite3
 from starlette.responses import JSONResponse
 
 from tinyassets.onboarding.owner_sessions import HEADERS, require
+from tinyassets.owner_control import ControlUnavailable
 
 
 async def handle(request):
@@ -27,7 +28,22 @@ async def handle(request):
             raise ValueError("invalid API key request")
         keys, authority = key_store(), outside_store()
         operation = data.get("operation")
-        if operation == "list" and set(data) == {"operation"}:
+        if operation in {"request_preview", "request_create", "request_revoke", "request_finish",
+                         "request_decline",
+                         "owner_list", "owner_revoke"}:
+            from tinyassets.api.credential_requests import owner_operation
+            from tinyassets.auth.middleware import current_identity
+
+            identity = current_identity()
+            if identity is None or identity.user_id != owner:
+                raise PermissionError("Owner session and app account must match")
+            if operation == "owner_list" and set(data) == {"operation"}:
+                result = keys.list(owner, authority=authority)
+            elif operation == "owner_revoke" and set(data) == {"operation", "key_id"}:
+                result = keys.revoke(owner, str(data["key_id"]), authority=authority)
+            else:
+                result = owner_operation(owner, data, keys, authority)
+        elif operation == "list" and set(data) == {"operation"}:
             result = keys.list(owner, authority=authority)
         elif operation == "revoke" and set(data) == {"operation", "key_id"}:
             result = keys.revoke(owner, str(data["key_id"]), authority=authority)
@@ -47,5 +63,7 @@ async def handle(request):
         else:
             raise ValueError("invalid API key operation")
         return JSONResponse(result, headers=HEADERS)
+    except ControlUnavailable:
+        return JSONResponse({"error": "api_key_busy"}, status_code=503, headers=HEADERS)
     except (ApiKeyRefused, PermissionError, ValueError, KeyError, TypeError, sqlite3.Error):
         return JSONResponse({"error": "api_key_refused"}, status_code=403, headers=HEADERS)

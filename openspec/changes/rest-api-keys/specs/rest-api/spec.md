@@ -1,5 +1,21 @@
 ## ADDED Requirements
 
+### Requirement: Agent-requested owner credential issuance
+An agent SHALL prepare an immutable credential_request in Needs You. The owner
+SHALL review the consumer, center, main agent and exact supported capabilities
+before creating a key through the protected owner route. Only TinyAssets
+issuance is supported initially; unsupported providers SHALL be refused.
+
+#### Scenario: One-time secret and interrupted creation
+- **WHEN** an owner confirms creation, double-clicks, loses the response, or reopens the request
+- **THEN** at most one key is minted for that request, and only its first successful create response contains the secret
+- **AND** later reads offer metadata and revocation, never secret recovery or automatic replacement
+
+#### Scenario: Owner-only result
+- **WHEN** the owner finishes or cancels a credential request
+- **THEN** its history and asking-agent continuation contain only non-secret metadata
+- **AND** a bearer alone, foreign owner, stale request or unapproved center cannot mint a key
+
 ### Requirement: REST transport over the canonical handles
 The platform SHALL serve `https://tinyassets.io/api` for programmatic clients. Each route SHALL run exactly one canonical handle's function (`read_graph`, `run_graph` or `converse`) for one named command center, under the key owner's identity, adding no gate and removing none. The first release SHALL cover: list command centers, read one, read its status, list its runs, read one run, list its connections, start a branch run, cancel a run, and send the agent a message.
 

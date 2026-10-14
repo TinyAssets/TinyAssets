@@ -94,8 +94,13 @@ class ApiKeyStore:
         finally:
             conn.close()
 
+    @staticmethod
+    def request_key_id(owner: str, request_ref: str) -> str:
+        return hashlib.sha256(("tinyassets-key-request\0" + owner + "\0" + request_ref)
+                              .encode()).hexdigest()[:16]
+
     def mint(self, owner: str, *, name: str, scopes: list[dict[str, str]],
-             authority: Any) -> dict[str, Any]:
+             authority: Any, request_ref: str = "") -> dict[str, Any]:
         """Create a key and its exact outside grant; return the secret once."""
         if not isinstance(owner, str) or not owner:
             raise ValueError("owner required")
@@ -106,10 +111,15 @@ class ApiKeyStore:
         for scope in scopes:
             if not isinstance(scope, dict) or scope.get("capability") not in CAPABILITIES:
                 raise ValueError("unknown API capability")
-        key_id, secret = secrets.token_hex(8), secrets.token_urlsafe(32)
+        key_id = self.request_key_id(owner, request_ref) if request_ref else secrets.token_hex(8)
+        secret = secrets.token_urlsafe(32)
         now = time.time()
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if request_ref and conn.execute("SELECT 1 FROM api_keys WHERE key_id=?",
+                                            (key_id,)).fetchone():
+                # Never replay a secret or replace a revoked request's key.
+                return {"key_id": key_id, "already_created": True}
             live = conn.execute("SELECT COUNT(*) FROM api_keys WHERE owner=? AND revoked_at "
                                 "IS NULL", (owner,)).fetchone()[0]
             if live >= MAX_KEYS_PER_OWNER:
