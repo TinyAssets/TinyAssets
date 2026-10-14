@@ -4,8 +4,9 @@
 - [ ] 1.3 C6 cutover deployed and verified; coordinate the existing stack, do not duplicate it.
 
 ## 2. Standalone export runner
-- [ ] 2.1 Dependency-free chat turn and read/write/edit/bash with explicit owner policy; exact-head tests.
+- [x] 2.1 Dependency-free chat turn and read/write/edit/bash with explicit owner policy; exact-head tests.
 - [ ] 2.2 Export manifest integration, full D1 rule mapping and separately enabled schedules.
+- [x] 2.2a Export the actual root harness, validated portable roster/settings and per-agent model references; support literal local .env with endpoint-bound credentials.
 - [ ] 2.3 Independent cross-family review and trusted receipt.
 
 ## 3. Knowledge cutover and export
