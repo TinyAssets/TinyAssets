@@ -65,6 +65,25 @@ logger = logging.getLogger("universe_server.runtime_ops")
 
 # ───────────────────────────────────────────────────────────────────────────
 
+def _project_source(kwargs):
+    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.memory.project import SOURCE
+    from tinyassets.okf.records import SourceRecords
+
+    owner = _current_actor()
+    center = kwargs.get("universe_id", "").strip()
+    if not center:
+        from tinyassets.storage import _connect
+        from tinyassets.storage.current_home import check_principal_not_deleted, current_home
+
+        with _connect(_base_path()) as conn:
+            conn.execute("BEGIN")
+            check_principal_not_deleted(conn, owner)
+            center = current_home(conn, owner)
+        if not center:
+            raise PermissionError("An admitted command center is required")
+    return SourceRecords.bind(owner=owner, center=center, source=SOURCE)
+
 def _action_project_memory_get(kwargs: dict[str, Any]) -> str:
     from tinyassets.memory.project import project_memory_get
 
@@ -72,7 +91,7 @@ def _action_project_memory_get(kwargs: dict[str, Any]) -> str:
     key = kwargs.get("key", "").strip()
     if not project_id or not key:
         return json.dumps({"error": "project_id and key are required."})
-    row = project_memory_get(_base_path(), project_id=project_id, key=key)
+    row = project_memory_get(_project_source(kwargs), project_id=project_id, key=key)
     if row is None:
         return json.dumps({"found": False, "project_id": project_id, "key": key})
     return json.dumps({"found": True, **row})
@@ -101,14 +120,18 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
     from tinyassets.storage_accounting import StorageRefused
 
     actor = _current_actor()
+    request_id = kwargs.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return json.dumps({"error": "project_memory_set requires a stable request_id."})
     try:
         result = project_memory_set(
-            _base_path(),
+            _project_source(kwargs),
             project_id=project_id,
             key=key,
             value=value,
             actor=actor,
             expected_version=expected_version,
+            operation_id=request_id,
         )
     except StorageRefused as refused:
         # The account is at its storage quota: the visible refusal, numbers and
@@ -129,7 +152,7 @@ def _action_project_memory_list(kwargs: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         limit = 100
     rows = project_memory_list(
-        _base_path(), project_id=project_id, key_prefix=key_prefix, limit=limit
+        _project_source(kwargs), project_id=project_id, key_prefix=key_prefix, limit=limit
     )
     return json.dumps({"project_id": project_id, "entries": rows, "count": len(rows)})
 

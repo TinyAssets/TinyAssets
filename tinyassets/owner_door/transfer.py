@@ -82,9 +82,13 @@ def _arguments(args):
             args["archive"], str
         ):
             raise InvalidBundle("Import needs a base64 archive")
-    elif operation in ("import-preview", "import-activate"):
-        key = "import_id" if operation == "import-preview" else "request"
+    elif operation in ("import-preview", "import-adopt-preview", "import-activate"):
+        key = "request" if operation == "import-activate" else "import_id"
         required = {"operation", "command_center", key}
+        if operation == "import-adopt-preview":
+            required.add("agent")
+            if not isinstance(args.get("agent"), str):
+                raise InvalidBundle("Agent adoption needs one agent name")
         if operation == "import-activate":
             required.add("named_binaries")
         if (set(args) != required or not isinstance(args[key], str)
@@ -145,12 +149,13 @@ def _transfer(provider, handle, args):
             _base_path(), owner=handle.account_id, command_center=handle.command_center_id,
             epoch=handle.epoch, bundle=bundle,
         )
-    if args["operation"] in ("import-preview", "import-activate"):
+    if args["operation"] in ("import-preview", "import-adopt-preview", "import-activate"):
         from tinyassets.api.helpers import _base_path
         from tinyassets.okf.import_activation import activate_import, preview_import
 
-        if args["operation"] == "import-preview":
-            return preview_import(_base_path(), provider, handle, args["import_id"])
+        if args["operation"] != "import-activate":
+            return preview_import(_base_path(), provider, handle, args["import_id"],
+                                  agent=args.get("agent"))
         return activate_import(_base_path(), provider, handle, args["request"],
                                named_binaries=args["named_binaries"])
     if args["operation"] == "preview":

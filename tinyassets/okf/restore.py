@@ -64,7 +64,12 @@ def restore_copy(snapshot, source, destination):
         source.path, source=source.source, scopes=source.scopes, excluded=source.excluded
     )
     original["backup_sha256"] = source.expected_sha256
-    if census != original:
+    original_census = {key: census[key] for key in original}
+    original_census["tables"] = {
+        table: {key: value for key, value in definition.items() if key != "reviewed_bindings"}
+        for table, definition in census["tables"].items()
+    }
+    if original_census != original:
         raise InvalidBundle("Restore needs the original verified migration scope and census")
     expected = {}
     for key, entry in snapshot.entries.items():

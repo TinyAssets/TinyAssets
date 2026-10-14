@@ -591,6 +591,8 @@ def _extensions_impl(
 
     # ── Project Memory ─────────────────────────────────────────────────────
     pm_kwargs: dict[str, Any] = {
+        "universe_id": universe_id,
+        "request_id": request_id,
         "project_id": project_id,
         "key": key,
         "key_prefix": key_prefix,

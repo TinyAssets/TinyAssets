@@ -87,7 +87,6 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/idempotency.py",
     "tinyassets/knowledge/knowledge_graph.py",
     "tinyassets/memory/episodic.py",
-    "tinyassets/memory/project.py",
     "tinyassets/memory/promises.py",
     "tinyassets/memory/temporal.py",
     "tinyassets/memory/versioning.py",

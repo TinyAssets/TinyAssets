@@ -214,3 +214,156 @@ def test_tombstone_blocks_unstarted_copy_and_repeated_preview_reuses_pin(transfe
     with pytest.raises(CurrentHomeChanged):
         activate_import(_base_path(), provider, handle, plan["request"])
     assert provider.stat(handle, "/cc/" + plan["destination"]) is None
+
+
+def adoption(client, imported):
+    response = request(
+        client,
+        {
+            "operation": "import-adopt-preview",
+            "command_center": HOME_A,
+            "import_id": imported,
+            "agent": "main",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def agent_files():
+    return {
+        "agents/main/AGENTS.md": b"Imported instructions",
+        "agents/main/settings.yaml": b"""schema_version: 1
+agent:
+  id: source-agent
+  owner: source-owner
+  name: Imported agent
+model:
+  id: ${AGENT_1_MODEL_NAME}
+  connection: connection-1
+""",
+        "agents/main/rules.json": b'{"workspace.shell":"do"}',
+        "agents/main/skills/notes.md": b"Skill instructions",
+        "workspace/unrelated.md": b"Not adopted",
+    }
+
+
+def test_native_adoption_uses_fresh_local_identity_and_activates_last(transfer_door, monkeypatch):  # noqa: F811
+    from tinyassets.okf.agent_export import settings_document
+
+    client, provider, handle = transfer_door
+    imported = retain(client, agent_files())
+    plan = adoption(client, imported)
+    assert plan["adopts_agent"] is True and not plan["runs_code"]
+    assert all(row["to"].startswith(plan["destination"] + "/") for row in plan["files"])
+    assert all(row["path"] != "rules.json" for row in plan["files"])
+    final = settings_document(
+        next(row["content"].encode() for row in plan["files"] if row["path"] == "settings.yaml")
+    )
+    assert final["agent"]["owner"] == A and final["agent"]["id"] != "source-agent"
+    assert final["agent"]["retired"] is False and "model" not in final
+    real = provider.write
+    observed = []
+
+    def inspect(handle, op, path, data, **kwargs):
+        if path.startswith("/cc/" + plan["destination"]):
+            observed.append((path, kwargs["mode"]))
+            if len(observed) == 1:
+                assert path.endswith("/settings.yaml")
+                assert settings_document(data)["agent"]["retired"] is True
+            elif not path.endswith("/settings.yaml"):
+                staged = provider.read(
+                    handle, "/cc/" + plan["destination"] + "/settings.yaml", max_bytes=10000
+                ).data
+                assert settings_document(staged)["agent"]["retired"] is True
+        return real(handle, op, path, data, **kwargs)
+
+    monkeypatch.setattr(provider, "write", inspect)
+    response = confirm(client, plan["request"])
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "adopted"
+    assert observed[-1][0].endswith("/settings.yaml") and observed[-1][1] == WriteMode.CAS
+    assert provider.stat(handle, "/cc/" + plan["destination"] + "/rules.json") is None
+    assert provider.stat(handle, "/cc/workspace/unrelated.md") is None
+    assert confirm(client, plan["request"]).json() == response.json()
+
+
+@pytest.mark.parametrize("lose_activation", [False, True])
+def test_native_adoption_interruption_stays_retired_or_recovers_final_commit(
+    transfer_door, monkeypatch, lose_activation  # noqa: F811
+):  # noqa: F811
+    from tinyassets.boxes.provider import BoxError
+    from tinyassets.okf.agent_export import settings_document
+
+    client, provider, handle = transfer_door
+    imported = retain(client, agent_files())
+    plan = adoption(client, imported)
+    real = provider.write
+
+    def interrupt(handle, op, path, data, **kwargs):
+        if lose_activation and op.endswith("-activate"):
+            real(handle, op, path, data, **kwargs)
+            raise BoxError("lost activation reply")
+        if not lose_activation and path.endswith("/AGENTS.md"):
+            raise BoxError("copy interrupted")
+        return real(handle, op, path, data, **kwargs)
+
+    monkeypatch.setattr(provider, "write", interrupt)
+    assert confirm(client, plan["request"]).status_code != 200
+    doc = settings_document(
+        provider.read(handle, "/cc/" + plan["destination"] + "/settings.yaml", max_bytes=10000).data
+    )
+    assert doc["agent"]["retired"] is not lose_activation
+    monkeypatch.setattr(provider, "write", real)
+    resumed = confirm(client, plan["request"])
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["state"] == "adopted"
+
+
+def test_native_adoption_cannot_overwrite_existing_agent_or_confirm_for_peer(transfer_door):  # noqa: F811
+    client, provider, handle = transfer_door
+    imported = retain(client, agent_files())
+    plan = adoption(client, imported)
+    peer = provider.bind(HOME_B, account_id=B)
+    with pytest.raises(ValueError):
+        activate_import(_base_path(), provider, peer, plan["request"])
+    provider.write(
+        handle,
+        "preempt",
+        "/cc/" + plan["destination"] + "/settings.yaml",
+        b"owner file",
+        max_bytes=100,
+    )
+    assert confirm(client, plan["request"]).status_code == 409
+    assert (
+        provider.read(handle, "/cc/" + plan["destination"] + "/settings.yaml", max_bytes=100).data
+        == b"owner file"
+    )
+
+
+@pytest.mark.parametrize("during_activation", [False, True])
+def test_native_adoption_unreviewed_file_keeps_agent_retired(
+    transfer_door, monkeypatch, during_activation  # noqa: F811
+):
+    from tinyassets.okf.agent_export import settings_document
+
+    client, provider, handle = transfer_door
+    plan = adoption(client, retain(client, agent_files()))
+    real = provider.write
+    root = "/cc/" + plan["destination"]
+
+    def inject(handle, op, path, data, **kwargs):
+        if during_activation and kwargs["mode"] == WriteMode.CAS:
+            real(handle, "unreviewed-file", root + "/skills/unreviewed.md", b"extra", max_bytes=100)
+        result = real(handle, op, path, data, **kwargs)
+        if not during_activation and path == root + "/settings.yaml":
+            real(handle, "unreviewed-file", root + "/skills/unreviewed.md", b"extra", max_bytes=100)
+        return result
+
+    monkeypatch.setattr(provider, "write", inject)
+    response = confirm(client, plan["request"])
+    assert response.status_code == 409, response.text
+    settings = provider.read(handle, root + "/settings.yaml", max_bytes=10000).data
+    assert settings_document(settings)["agent"]["retired"] is True
+    pin = packages.pin_for_request(_base_path(), universe_id=HOME_A, request_id=plan["request"])
+    assert pin["state"] == "activating"

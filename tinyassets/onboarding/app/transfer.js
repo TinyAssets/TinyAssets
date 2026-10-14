@@ -46,10 +46,14 @@ export function openTransfer({commandCenter, request, isCurrent}) {
   const importReview = element("div");
   const reviewImport = element("button", "Review imported files");
   const copyImport = element("button", "Copy reviewed files into this box");
+  const agentChoice = element("select");
+  agentChoice.setAttribute("aria-label", "Imported agent to adopt");
+  const reviewAdopt = element("button", "Review native agent adoption");
+  reviewAdopt.disabled = true;
   reviewImport.disabled = copyImport.disabled = true;
   let importId = null, importPlan = null, binaryChoices = [];
   const close = element("button", "Close");
-  for (const button of [refresh, previewButton, download, importButton, reviewImport, copyImport, close]) {
+  for (const button of [refresh, previewButton, download, importButton, reviewImport, copyImport, reviewAdopt, close]) {
     button.type = "button";
     button.className = "btn btn--link";
   }
@@ -181,6 +185,8 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     }
     importId = importPlan = null;
     importReview.replaceChildren();
+    agentChoice.replaceChildren();
+    reviewAdopt.disabled = true;
     reviewImport.disabled = copyImport.disabled = true;
     const result = await call({operation: "import", archive: btoa(chunks.join(""))});
     importId = result.import_id;
@@ -188,15 +194,27 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     status.textContent = "Imported into quarantine. No files or schedules were activated. Reference: " + result.import_id;
     importFile.value = "";
   });
-  reviewImport.onclick = () => work(async () => {
+  const reviewImported = async (adopt) => {
     importPlan = null;
     binaryChoices = [];
     importReview.replaceChildren();
     copyImport.disabled = true;
-    const result = await call({operation: "import-preview", import_id: importId});
+    const result = await call(adopt
+      ? {operation: "import-adopt-preview", import_id: importId, agent: agentChoice.value}
+      : {operation: "import-preview", import_id: importId});
     importPlan = result;
-    importReview.append(element("p", "Copy destination: " + result.destination +
-      ". This is a separate folder. Your active agent stays as it is; no imported code runs."));
+    if (!adopt) {
+      agentChoice.replaceChildren();
+      for (const agent of result.agents || []) {
+        const option = element("option", agent);
+        option.value = agent;
+        agentChoice.append(option);
+      }
+      reviewAdopt.disabled = !(result.agents || []).length;
+    }
+    copyImport.textContent = result.adopts_agent ? "Adopt reviewed agent" : "Copy reviewed files into this box";
+    importReview.append(element("p", "Destination: " + result.destination + ". " +
+      (result.notice || "Copies into an inactive folder. Nothing starts now.")));
     for (const file of result.files) {
       const details = element("details");
       details.append(element("summary", file.to + " (" + file.size + " bytes)"));
@@ -213,7 +231,9 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     }
     copyImport.disabled = false;
     status.textContent = "Review every file before copying. Existing files are never overwritten.";
-  });
+  };
+  reviewImport.onclick = () => work(() => reviewImported(false));
+  reviewAdopt.onclick = () => work(() => reviewImported(true));
   copyImport.onclick = () => work(async () => {
     if (!importPlan) throw new Error("Review the imported files first.");
     if (binaryChoices.some(item => !item.input.checked)) {
@@ -222,8 +242,8 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     const result = await call({operation: "import-activate", request: importPlan.request,
       named_binaries: binaryChoices.map(item => item.path)});
     copyImport.disabled = true;
-    status.textContent = "Files copied to " + result.destination +
-      ". No imported code or schedule was started.";
+    status.textContent = (result.state === "adopted" ? "Agent adopted at " : "Files copied to ") +
+      result.destination + ". No imported code or schedule was started.";
   });
   close.onclick = () => dialog.close();
   dialog.addEventListener("close", () => {
@@ -233,12 +253,15 @@ export function openTransfer({commandCenter, request, isCurrent}) {
     importId = importPlan = null;
     binaryChoices = [];
     importReview.replaceChildren();
+    agentChoice.replaceChildren();
+    reviewAdopt.disabled = true;
     list.replaceChildren();
     dialog.remove();
   });
   dialog.append(title, element("p", "Export stays private. Import keeps code inactive until a separate activation."),
     status, signIn, refresh, list, previewButton, review, download,
-    element("h3", "Import a command center"), importFile, importButton, reviewImport, importReview, copyImport, close);
+    element("h3", "Import a command center"), importFile, importButton, reviewImport,
+    agentChoice, reviewAdopt, importReview, copyImport, close);
   document.body.append(dialog);
   dialog.showModal();
   refresh.click();

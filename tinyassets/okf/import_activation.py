@@ -1,7 +1,9 @@
-"""Reviewed private imports copied through BoxProvider under a fresh inert folder.
+"""Reviewed private imports copied or adopted through the owner BoxProvider.
 
 The package pin is the durable owner approval and retry journal. Imported bytes
-never replace a live harness or install a hook. No process is started here.
+never replace an existing harness. Native adoption retires a fresh agent until
+all reviewed files arrive and a final settings CAS activates it. No process is
+started here, and no source model connection or broker policy is transferred.
 """
 
 from __future__ import annotations
@@ -69,11 +71,77 @@ def _bundle(base, handle, import_id):
     return sha, bundle.files
 
 
-def preview_import(base, provider, handle, import_id):
+def _adoption(files, handle, import_id, agent):
+    from tinyassets.okf.agent_export import settings_bytes, settings_document
+
+    if not isinstance(agent, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", agent):
+        raise InvalidBundle("Name one imported agent")
+    source = "agents/" + agent + "/"
+    if source + "AGENTS.md" not in files:
+        raise InvalidBundle("Imported agent instructions are missing")
+    name = "import-" + hashlib.sha256((import_id + "\0" + agent).encode()).hexdigest()[:32]
+    selected = {
+        path[len(source) :]: data
+        for path, data in files.items()
+        if path.startswith(source) and path != source + "rules.json"
+    }
+    settings = settings_document(selected.get("settings.yaml", b"schema_version: 1\n"))
+    settings.pop("model", None)  # recipient's default model; never a source connection
+    identity = settings.setdefault("agent", {})
+    identity.update(id=name, owner=handle.account_id, retired=False)
+    selected["settings.yaml"] = settings_bytes(settings)
+    identity["retired"] = True
+    staged = settings_bytes(settings)
+    return "agents/" + name, selected, staged
+
+
+def _verify_inventory(provider, handle, prefix, expected, generation):
+    """Verify the whole agent tree in the generation used by activation CAS."""
+    root = "/cc/" + prefix
+    allowed = {path: "file" for path in expected}
+    for path in expected:
+        parent = path.rsplit("/", 1)[0]
+        while parent != root:
+            allowed[parent] = "dir"
+            parent = parent.rsplit("/", 1)[0]
+    pending, seen = [root], set()
+    while pending:
+        directory = pending.pop()
+        cursor, cursors = None, set()
+        while True:
+            page = provider.list(handle, directory, cursor=cursor, limit=200)
+            for entry in page.entries:
+                path = directory + "/" + entry.name
+                if (
+                    not entry.name
+                    or entry.name in (".", "..")
+                    or "/" in entry.name
+                    or path in seen
+                    or allowed.get(path) != entry.kind
+                ):
+                    raise WriteConflict("Agent inventory differs from approval")
+                seen.add(path)
+                if entry.kind == "dir":
+                    pending.append(path)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+            if cursor in cursors or not page.entries:
+                raise WriteConflict("Agent inventory listing did not advance")
+            cursors.add(cursor)
+    if seen != set(allowed):
+        raise WriteConflict("Agent inventory differs from approval")
+    if provider.read_many(handle, [], max_total=0).generation != generation:
+        raise WriteConflict("Agent changed while verifying its inventory")
+
+
+def preview_import(base, provider, handle, import_id, *, agent=None):
     sha, files = _bundle(base, handle, import_id)
     # A single immutable bundle is copied below an inert namespace. Installing
     # its settings into the recipient's active roster is a separate operation.
     prefix = "imports/" + import_id
+    if agent is not None:
+        prefix, files, _ = _adoption(files, handle, import_id, agent)
     if provider.stat(handle, "/cc/" + prefix) is not None:
         raise InvalidBundle("This import destination already exists")
     if any(len(data) > PAGE_BYTES for data in files.values()):
@@ -89,7 +157,7 @@ def preview_import(base, provider, handle, import_id):
         for path, data in sorted(files.items())
     ]
     record = {
-        "type": "private-import",
+        "type": "private-import-agent" if agent is not None else "private-import",
         "scope": _scope(handle),
         "import_id": import_id,
         "sha256": sha,
@@ -97,6 +165,10 @@ def preview_import(base, provider, handle, import_id):
         "files": entries,
         "destination": prefix,
     }
+    if agent is not None:
+        record["agent"] = agent
+        # First write retires the destination before its instructions can appear.
+        entries.sort(key=lambda item: (item["path"] != "settings.yaml", item["path"]))
     digest = hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
     existing = packages.open_pins(
         base, universe_id=handle.command_center_id, kind="install", agent="", digest=digest
@@ -125,6 +197,16 @@ def preview_import(base, provider, handle, import_id):
         "files": display,
         "state": "awaiting_confirmation",
         "runs_code": False,
+        "adopts_agent": agent is not None,
+        "agents": sorted(
+            {path.split("/")[1] for path in files if re.fullmatch(r"agents/[^/]+/AGENTS\.md", path)}
+        ),
+        "notice": (
+            "Creates one native agent using your default model and broker policy; "
+            "source model bindings and rules are not installed. Nothing starts now."
+            if agent is not None
+            else "Copies into an inactive folder."
+        ),
     }
 
 
@@ -133,7 +215,7 @@ def activate_import(base, provider, handle, request, *, named_binaries=()):
     if (
         not pin
         or pin["kind"] != "install"
-        or pin["record"].get("type") != "private-import"
+        or pin["record"].get("type") not in ("private-import", "private-import-agent")
         or pin["record"]["scope"] != _scope(handle)
     ):
         raise InvalidBundle("Import confirmation does not belong to this owner and placement")
@@ -141,6 +223,14 @@ def activate_import(base, provider, handle, request, *, named_binaries=()):
     sha, files = _bundle(base, handle, record["import_id"])
     if sha != record["sha256"]:
         raise InvalidBundle("Import custody changed after preview")
+    adopting = record["type"] == "private-import-agent"
+    staged_settings = None
+    if adopting:
+        prefix, files, staged_settings = _adoption(
+            files, handle, record["import_id"], record["agent"]
+        )
+        if prefix != record["destination"]:
+            raise InvalidBundle("Agent adoption destination differs from approval")
     binaries = {path for path, data in files.items() if _text(data) is None}
     if len(set(named_binaries)) != len(named_binaries) or set(named_binaries) != binaries:
         raise InvalidBundle("Name every uninspectable binary before copying")
@@ -182,14 +272,15 @@ def activate_import(base, provider, handle, request, *, named_binaries=()):
                 handle,
                 operation,
                 "/cc/" + entry["to"],
-                files[path],
+                staged_settings if adopting and path == "settings.yaml" else files[path],
                 max_bytes=PAGE_BYTES,
                 mode=WriteMode.CREATE,
             )
             if (
                 not isinstance(result, FileWrite)
                 or result.path != "/cc/" + entry["to"]
-                or result.size != entry["size"]
+                or result.size
+                != len(staged_settings if adopting and path == "settings.yaml" else files[path])
             ):
                 raise InvalidBundle("Invalid provider import write receipt")
             completed = [*completed, path]
@@ -205,9 +296,34 @@ def activate_import(base, provider, handle, request, *, named_binaries=()):
         actual = capture_files(
             provider, handle, list(expected), max_total=sum(map(len, expected.values()))
         )
+        if adopting:
+            _verify_inventory(provider, handle, record["destination"], expected, actual.generation)
+        if adopting and dict(actual.files) != expected:
+            settings_path = "/cc/" + record["destination"] + "/settings.yaml"
+            staged = {**expected, settings_path: staged_settings}
+            if actual.missing or dict(actual.files) != staged:
+                raise WriteConflict("Staged agent changed; inspect before activation")
+            activated = provider.write(
+                handle,
+                "import-" + pin["pin_id"] + "-activate",
+                settings_path,
+                expected[settings_path],
+                max_bytes=PAGE_BYTES,
+                mode=WriteMode.CAS,
+                expect_generation=actual.generation,
+            )
+            if (
+                not isinstance(activated, FileWrite)
+                or activated.path != settings_path
+                or activated.size != len(expected[settings_path])
+            ):
+                raise InvalidBundle("Invalid provider agent activation receipt")
+            actual = capture_files(
+                provider, handle, list(expected), max_total=sum(map(len, expected.values()))
+            )
         if actual.missing or dict(actual.files) != expected:
             raise WriteConflict("Copied files changed; inspect before confirming again")
-        progress = {**progress, "state": "copied"}
+        progress = {**progress, "state": "adopted" if adopting else "copied"}
         packages.finish(
             base,
             universe_id=handle.command_center_id,

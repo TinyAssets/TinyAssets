@@ -298,12 +298,12 @@ def test_reserved_rowid_alias_is_case_insensitive_and_shadowed_rowid_is_preserve
 def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundle, tmp_path):
     import hashlib
 
+    from tests.support.project_snapshot import snapshot as project_snapshot
     from tinyassets.daemon_brain import capture_daemon_memory, daemon_brain_db_path
     from tinyassets.daemon_registry import create_daemon
     from tinyassets.knowledge.knowledge_graph import KnowledgeGraph
     from tinyassets.knowledge.models import FactWithContext, GraphEntity, SourceType
     from tinyassets.memory.episodic import EpisodicMemory
-    from tinyassets.memory.project import project_memory_set
     from tinyassets.memory.promises import SeriesPromiseTracker
     from tinyassets.memory.scoping import MemoryScope
     from tinyassets.memory.temporal import TemporalFact, TemporalFactStore
@@ -327,10 +327,10 @@ def test_actual_legacy_schemas_project_losslessly_without_wal_side_effects(bundl
         language_type="literal",
         metadata={"unknown": [1e20, "extra"]},
     )
-    project_memory_set(
-        legacy, project_id="project-a", key="note", value={"text": "Project content"}
-    )
-    project_memory_set(legacy, project_id="project-b", key="note", value="Other project")
+    project_snapshot(legacy / ".project_memory.db", [
+        ("project-a", "note", {"text": "Project content"}),
+        ("project-b", "note", "Other project"),
+    ])
     episodic_path = legacy / "episodic.db"
     for owner in ("owner-a", "owner-b"):
         episodic = EpisodicMemory(episodic_path, universe_id=owner)

@@ -111,9 +111,16 @@ const tick=()=>new Promise(r=>setImmediate(r));
   if(body.operation==='list') result={files:[]};
   else if(body.operation==='import') result={import_id:'import-one'};
   else if(body.operation==='import-preview') result={request:'pin-one',destination:'imports/one',
+   agents:['main'],
    files:[{path:'note.md',to:'imports/one/note.md',size:3,binary:false,content:'<script>bad()</script>'},
           {path:'image.bin',to:'imports/one/image.bin',size:2,binary:true,content:null}]};
-  else if(body.operation==='import-activate') result={destination:'imports/one',state:'copied'};
+  else if(body.operation==='import-adopt-preview') result={request:'pin-adopt',
+   destination:'agents/import-one',
+   adopts_agent:true, notice:'Uses your default model and policy',
+   files:[{path:'AGENTS.md',to:'agents/import-one/AGENTS.md',size:3,binary:false,
+    content:'Agent instructions'}]};
+  else if(body.operation==='import-activate') result={destination:'imports/one',
+   state:body.request==='pin-adopt'?'adopted':'copied'};
   else throw new Error('unexpected operation');
   return {ok:true,json:async()=>result};
  };
@@ -134,6 +141,15 @@ const tick=()=>new Promise(r=>setImmediate(r));
  assert.deepEqual(calls.at(-1).named_binaries,['image.bin']);
  assert.equal(calls.at(-1).request,'pin-one');
  assert(button('Copy reviewed files into this box').disabled);
+ all(document.body).find(n=>n.tag==='select').value='main';
+ await button('Review native agent adoption').click();
+ assert.equal(calls.at(-1).operation,'import-adopt-preview');
+ assert.equal(calls.at(-1).agent,'main');
+ assert(all(document.body).some(n=>n.tag==='pre'&&n.textContent==='Agent instructions'));
+ await button('Adopt reviewed agent').click();
+ assert.equal(calls.at(-1).operation,'import-activate');
+ assert.equal(calls.at(-1).request,'pin-adopt');
+ assert.deepEqual(calls.at(-1).named_binaries,[]);
  button('Close').click(); assert.equal(document.body.children.length,0);
  console.log(JSON.stringify({passed:true}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

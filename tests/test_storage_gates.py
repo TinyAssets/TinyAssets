@@ -46,83 +46,121 @@ def _account_with_bytes(base: Path, owner: str, uid: str, used: int) -> Path:
 
 
 class TestProjectMemory:
-    def _set(self, base, actor, value, **kw):
+    """Owner-box quota refusals preserve canonical values and append-only history.
+
+    Provider refusal is injected here; actual OS quota enforcement belongs to C6.
+    The former writer-account ledger path has been retired from this consumer.
+    """
+
+    @pytest.fixture
+    def project(self, tmp_path):
+        from tests.support.project_snapshot import records
+        from tinyassets.boxes.local import LocalBoxProvider
+        from tinyassets.okf.bundle import KnowledgeBundle
+
+        provider = LocalBoxProvider(
+            boxes_root=tmp_path / "boxes",
+            state_dir=tmp_path / "state",
+            owner_of={"a": A, "b": B}.get,
+            allow_unisolated=True,
+        )
+        bundle = KnowledgeBundle(provider, provider.bind("a", account_id=A))
+        yield records(bundle, tmp_path, namespaces=("p",))
+        provider.close()
+
+    def _set(self, project, value, **kw):
         from tinyassets.memory.project import project_memory_set
 
-        return project_memory_set(
-            base, project_id="p", key="k", value=value, actor=actor, **kw,
-        )
+        return project_memory_set(project, project_id="p", key="k", value=value, actor=A, **kw)
 
-    def test_under_the_quota_it_writes(self, base):
-        _account_with_bytes(base, A, "u-a", 10 * KIB)
-        assert self._set(base, A, "hello")["status"] == "ok"
+    def test_under_the_quota_it_writes(self, project):
+        assert self._set(project, "hello")["status"] == "ok"
 
-    def test_at_the_quota_it_is_refused_and_nothing_is_written(self, base):
+    def test_at_the_quota_it_is_refused_and_nothing_is_committed(self, project, monkeypatch):
+        from tinyassets.boxes.provider import BoxError
         from tinyassets.memory.project import project_memory_get
 
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        with pytest.raises(sa.StorageRefused) as refused:
-            self._set(base, A, "x" * (10 * KIB))
+        before = project.snapshot()
 
-        assert refused.value.record["failure_class"] == sa.FAILURE_QUOTA
-        assert project_memory_get(base, project_id="p", key="k") is None
+        def refuse(*args, **kwargs):
+            raise BoxError("owner storage quota exceeded")
 
-    def test_a_universe_writing_as_itself_is_charged_to_its_owner(self, base):
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        with pytest.raises(sa.StorageRefused):
-            self._set(base, "universe:u-a", "x" * (10 * KIB))
+        monkeypatch.setattr(project.bundle.provider, "write", refuse)
+        with pytest.raises(BoxError, match="quota"):
+            self._set(project, "too large")
+        assert project_memory_get(project, project_id="p", key="k") is None
+        assert project.snapshot().manifest == before.manifest
 
-    def test_another_account_is_unaffected(self, base):
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        _account_with_bytes(base, B, "u-b", 1 * KIB)
-        assert self._set(base, B, "x" * (10 * KIB))["status"] == "ok"
+    def test_writer_identity_cannot_grant_another_project(self, project):
+        from tinyassets.memory.project import project_memory_set
+        from tinyassets.okf.bundle import InvalidBundle
 
-    def test_a_writer_with_no_account_is_not_gated(self, base):
-        """The host / a subject that founded nothing has no pool."""
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
-        assert self._set(base, "host", "x" * (10 * KIB))["status"] == "ok"
+        with pytest.raises(InvalidBundle, match="binding"):
+            project_memory_set(project, project_id="foreign", key="k", value="x", actor=B)
 
-    def test_a_conflict_releases_its_reservation(self, base):
-        _account_with_bytes(base, A, "u-a", 1 * KIB)
-        assert self._set(base, A, "v1")["status"] == "ok"
-        conflict = self._set(base, A, "x" * (30 * KIB), expected_version=99)
-        assert conflict.get("conflict") is True
-        # Reserves 80 KiB. Had the conflict kept its 60 KiB, 140 KiB > 100 KiB.
-        assert self._set(base, A, "x" * (40 * KIB))["status"] == "ok"
+    def test_host_path_is_not_a_canonical_authority(self, tmp_path):
+        from tinyassets.memory.project import project_memory_set
+        from tinyassets.okf.bundle import InvalidBundle
 
-    def test_reads_are_never_refused(self, base):
+        with pytest.raises(InvalidBundle, match="admitted"):
+            project_memory_set(tmp_path, project_id="p", key="k", value="x", actor="host")
+        assert not (tmp_path / ".project_memory.db").exists()
+
+    def test_a_conflict_never_attempts_provider_writes(self, project, monkeypatch):
+        assert self._set(project, "v1")["status"] == "ok"
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("version conflict attempted write")
+
+        monkeypatch.setattr(project.bundle.provider, "write", unexpected)
+        assert self._set(project, "v2", expected_version=99)["conflict"] is True
+
+    def test_reads_remain_available_after_write_quota_refusal(self, project, monkeypatch):
+        from tinyassets.boxes.provider import BoxError
         from tinyassets.memory.project import project_memory_get, project_memory_list
 
-        _account_with_bytes(base, A, "u-a", 1 * KIB)
-        self._set(base, A, "kept")
-        (base / "u-a" / "more.bin").write_bytes(b"x" * (200 * KIB))  # now over
+        self._set(project, "kept")
 
-        assert project_memory_get(base, project_id="p", key="k")["value"] == "kept"
-        assert project_memory_list(base, project_id="p")
+        def refuse(*args, **kwargs):
+            raise BoxError("owner storage quota exceeded")
 
-    def test_the_bytes_are_measured_into_the_writers_account(self, base):
-        _account_with_bytes(base, A, "u-a", 1 * KIB)
-        self._set(base, A, "y" * (20 * KIB))
-        sa.measure(base, A, "project_memory")
+        monkeypatch.setattr(project.bundle.provider, "write", refuse)
+        with pytest.raises(BoxError):
+            self._set(project, "refused")
+        assert project_memory_get(project, project_id="p", key="k")["value"] == "kept"
+        assert len(project_memory_list(project, project_id="p")) == 1
 
-        usage = dict(((s, st), b) for s, st, b in sa.usage(base, A).breakdown)
-        assert usage[(A, "project_memory")] >= 2 * 20 * KIB
+    def test_current_and_history_bytes_live_in_the_owner_box(self, project, tmp_path):
+        self._set(project, "y" * (20 * KIB))
+        rows = project.rows(project.snapshot())
+        assert len(next(iter(rows["project_memory"].values()))["value"]) > 20 * KIB
+        assert len(next(iter(rows["project_memory_history"].values()))["value"]) > 20 * KIB
+        assert not (tmp_path / ".project_memory.db").exists()
 
-    def test_the_mcp_action_shows_the_refusal_with_the_link(
-        self, base, signed_in, monkeypatch,
-    ):
-        from tinyassets.api import runtime_ops
+    def test_committed_response_loss_reuses_one_history_version(self, project, monkeypatch):
+        from tinyassets.boxes.provider import BoxError
+        from tinyassets.okf.bundle import INDEX
 
-        signed_in(A)
-        monkeypatch.setattr(runtime_ops, "_base_path", lambda: base)
-        _account_with_bytes(base, A, "u-a", 95 * KIB)
+        real = project.bundle.provider.write
 
-        out = json.loads(runtime_ops._action_project_memory_set(
-            {"project_id": "p", "key": "k", "value": json.dumps("x" * (10 * KIB))}
-        ))
+        def lose(handle, op, path, data, **kwargs):
+            result = real(handle, op, path, data, **kwargs)
+            if path == INDEX:
+                raise BoxError("lost commit reply")
+            return result
 
-        assert out["failure_class"] == sa.FAILURE_QUOTA
-        assert "[Upgrade](https://tinyassets.io/app?upgrade=1)" in out["error"]
+        monkeypatch.setattr(project.bundle.provider, "write", lose)
+        with pytest.raises(BoxError):
+            self._set(project, "value", operation_id="stable-request")
+        assert self._set(project, "value", operation_id="stable-request")["version"] == 1
+        assert len(project.rows(project.snapshot())["project_memory_history"]) == 1
+
+    def test_request_id_reuse_cannot_change_committed_content(self, project):
+        from tinyassets.okf.bundle import InvalidBundle
+
+        self._set(project, "original", operation_id="stable")
+        with pytest.raises(InvalidBundle, match="different content"):
+            self._set(project, "changed", operation_id="stable")
 
 
 # --------------------------------------------------------------------------- #
@@ -135,8 +173,11 @@ class TestUiLibrary:
         from tinyassets.app_ui_store import save_app_ui
 
         return save_app_ui(
-            base, owner_user_id=owner, universe_id="u-a",
-            expected_revision=revision, changes={"ui_library": library},
+            base,
+            owner_user_id=owner,
+            universe_id="u-a",
+            expected_revision=revision,
+            changes={"ui_library": library},
         )
 
     def test_under_the_quota_it_saves(self, base):
@@ -178,7 +219,8 @@ class TestUiLibrary:
         monkeypatch.setattr(app_ui, "_base_path", lambda: base)
 
         out = app_ui.write_app_ui(
-            universe_id="u-a", payload={"ui_library": [{"ui_id": "ui", "html": "x" * (10 * KIB)}]},
+            universe_id="u-a",
+            payload={"ui_library": [{"ui_id": "ui", "html": "x" * (10 * KIB)}]},
         )
 
         assert out["failure_class"] == sa.FAILURE_QUOTA
@@ -194,7 +236,10 @@ def _daemon(base: Path, owner: str) -> str:
     from tinyassets.daemon_registry import create_daemon
 
     return create_daemon(
-        base, display_name="Test Ada", created_by=owner, soul_mode="soul",
+        base,
+        display_name="Test Ada",
+        created_by=owner,
+        soul_mode="soul",
         soul_text="Test Ada is a careful test daemon.",
     )["daemon_id"]
 
@@ -203,9 +248,15 @@ def _capture(base: Path, daemon_id: str, content: str):
     from tinyassets.daemon_brain import capture_daemon_memory
 
     return capture_daemon_memory(
-        base, daemon_id=daemon_id, content=content, memory_kind="failure_mode",
-        source_type="manual", source_id="pytest", reliability="host_observed",
-        temporal_bounds={"valid_from": "2026-09-30"}, language_type="policy",
+        base,
+        daemon_id=daemon_id,
+        content=content,
+        memory_kind="failure_mode",
+        source_type="manual",
+        source_id="pytest",
+        reliability="host_observed",
+        temporal_bounds={"valid_from": "2026-09-30"},
+        language_type="policy",
     )
 
 
@@ -237,7 +288,10 @@ class TestDaemonMemory:
 
         with pytest.raises(sa.StorageRefused):
             promote_daemon_memory_to_wiki(
-                base, daemon_id=daemon, entry_ids=[entry["entry_id"]], summary="s",
+                base,
+                daemon_id=daemon,
+                entry_ids=[entry["entry_id"]],
+                summary="s",
             )
 
     def test_every_persisted_field_is_reserved_not_just_content(self, base):
@@ -248,9 +302,15 @@ class TestDaemonMemory:
         daemon = _daemon(base, A)
         with pytest.raises(sa.StorageRefused):
             capture_daemon_memory(
-                base, daemon_id=daemon, content="tiny", memory_kind="failure_mode",
-                source_type="manual", source_id="pytest", reliability="host_observed",
-                source_path="p" * (20 * KIB), language_type="policy",
+                base,
+                daemon_id=daemon,
+                content="tiny",
+                memory_kind="failure_mode",
+                source_type="manual",
+                source_id="pytest",
+                reliability="host_observed",
+                source_path="p" * (20 * KIB),
+                language_type="policy",
             )
 
     def test_promotion_metadata_is_reserved_and_measured(self, base):
@@ -260,7 +320,10 @@ class TestDaemonMemory:
         daemon = _daemon(base, A)
         entry = _capture(base, daemon, "short")
         promote_daemon_memory_to_wiki(
-            base, daemon_id=daemon, entry_ids=[entry["entry_id"]], summary="s",
+            base,
+            daemon_id=daemon,
+            entry_ids=[entry["entry_id"]],
+            summary="s",
             metadata={"blob": "m" * (30 * KIB)},
         )
         sa.measure(base, A, "daemon_memory")
@@ -275,12 +338,18 @@ class TestDaemonMemory:
         monkeypatch.setattr(api_universe, "_base_path", lambda: base)
         monkeypatch.setattr(api_universe, "_request_universe", lambda uid: "u-a")
 
-        out = json.loads(api_universe._action_daemon_memory_capture(
-            universe_id="u-a", daemon_id=daemon,
-            inputs_json=json.dumps({
-                "content": "x" * (10 * KIB), "reliability": "host_observed",
-                "language_type": "policy",
-            }),
-        ))
+        out = json.loads(
+            api_universe._action_daemon_memory_capture(
+                universe_id="u-a",
+                daemon_id=daemon,
+                inputs_json=json.dumps(
+                    {
+                        "content": "x" * (10 * KIB),
+                        "reliability": "host_observed",
+                        "language_type": "policy",
+                    }
+                ),
+            )
+        )
 
         assert out["failure_class"] == sa.FAILURE_QUOTA, out

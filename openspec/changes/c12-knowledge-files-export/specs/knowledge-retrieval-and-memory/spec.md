@@ -73,6 +73,28 @@ be reported but SHALL NOT independently make `conformant` false.
 
 ## ADDED Requirements
 
+### Requirement: Reviewed namespace migration census
+Migration SHALL enumerate every declared knowledge namespace under a verified
+snapshot. Assignments SHALL name an owner and center with snapshot-bound review
+provenance and current authority verification. Unassigned rows SHALL remain in
+restricted operator custody outside owner retrieval and export. Any unresolved
+row SHALL block full cutover and source deletion; an empty census MAY clear
+that ownership blocker without inventing a binding.
+
+#### Scenario: Writer identity is mistaken for ownership
+- **WHEN** a project has rows but no reviewed namespace binding
+- **THEN** neither updated_by nor billing attribution assigns an owner
+- **AND** its rows remain in restricted custody and are absent from owner projections.
+
+#### Scenario: A reviewed binding is stale or contradictory
+- **WHEN** the backup hash differs, two bindings claim a namespace, or current center authority rejects its owner
+- **THEN** migration refuses before writing owner knowledge.
+
+#### Scenario: Restore follows a newer deletion
+- **WHEN** an offline knowledge restore is prepared after an owner deletion fence advanced
+- **THEN** it does not restore identity, admission or deletion authority
+- **AND** production activation must retain current C6 deletion fences and receipt journals.
+
 ### Requirement: Canonical source record adapter
 Source-record readers and writers SHALL bind the configured owner BoxProvider
 and use only committed OKF revisions. They SHALL fail on an absent provider or
@@ -87,6 +109,18 @@ commit related tables atomically with the original snapshot and operation ID.
 #### Scenario: A write crosses scope or loses a race
 - **WHEN** an update changes a scope column or uses a stale owner snapshot
 - **THEN** the write refuses without replacing committed knowledge.
+
+### Requirement: Canonical project memory consumer
+Project memory requests SHALL use an authenticated owner-box binding and a
+reviewed project namespace. Current values and append-only history SHALL commit
+together in canonical files. Stable request IDs SHALL recover committed writes
+without adding another version. Missing providers, migrations or bindings SHALL
+refuse; no request SHALL open the legacy global project database.
+
+#### Scenario: A project write loses its response
+- **WHEN** the same request ID is retried after its canonical commit
+- **THEN** the original version is returned without another history row
+- **AND** reuse for different content refuses.
 
 ### Requirement: Offline verified restore preparation
 Restore preparation SHALL use a verified backup and a committed owner snapshot,

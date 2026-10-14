@@ -310,7 +310,8 @@ source census and every complete typed row, and commits related table changes
 atomically. Migration and ongoing writes use one identity/body encoder. Unknown
 frontmatter survives updates; deleted Markdown records never reappear from a
 legacy database. There is no SQLite fallback in the adapter. Existing legacy
-consumer APIs still require explicit wiring and verified ownership context.
+consumer APIs other than project memory still require explicit wiring and
+verified ownership context.
 
 Restore creates a new exclusive destination from the original checksum-verified
 backup. Owner-editable frontmatter supplies values, never executable DDL. Only
@@ -334,3 +335,52 @@ Files and workflows follow the same handoff semantics. This maps every D1
 class/behavior to a terminal decision, but human classification is not a broker
 or OS sandbox guarantee. Explicit all-do policy plus the separate bash enable
 flag permits unattended shell execution.
+
+## Reviewed namespace custody and project memory
+
+The offline namespace census enumerates every configured table, including NULL
+and zero-row namespaces, against checksum-verified snapshots. A binding names
+the source, table, exact typed namespace, owner, center, snapshot digest,
+reviewer, evidence digest and review reference. The caller revalidates current
+authority before planning. Neither updated_by nor the account charged for a
+write establishes ownership. Unresolved rows require a durable 0600 receipt in
+an existing operator-owned 0700 custody directory outside owner boxes; they
+cannot enter an owner projection, retrieval or export. Projection compares exact
+typed records after SQL filtering, refusing collation/affinity expansion.
+Zero unresolved rows completes only the ownership census, never authorizes live
+activation or source deletion.
+
+Project-memory get/list/set now bind the authenticated owner's configured box
+provider and read only its canonical project records. An omitted center resolves
+from authoritative current-home metadata, without a host-directory probe.
+Both current and history tables require matching reviewed namespace bindings.
+One revision atomically commits value and history with optimistic version
+checks. Runtime writes require a stable request ID; a repeated committed request
+returns its original version, while reuse for different content refuses. The
+provider accounts storage and enforces its envelope/quota. The retired global
+SQLite writer and writer-account accounting tests are replaced by canonical
+storage, refusal, retry and owner-isolation coverage. Six other production
+consumers remain unwired; this does not make the full cutover deployable.
+
+## Native private-agent adoption
+
+A separate preview/confirmation can adopt one imported agent into a fresh
+deterministic roster directory. Source model connections and broker rules are
+removed; recipient defaults apply. The existing package pin binds the exact
+transformed files and immutable import custody. Settings arrive retired before
+instructions, and the agent becomes active only after the complete destination
+inventory and bytes match approval. Unexpected files, directories and links
+refuse. A coherent generation check and final settings CAS close concurrent
+insertion races. Existing per-file operation IDs and progress recover interrupted
+copies and lost final replies. Adoption starts no process or schedule. Native
+session loading still depends on the C6/C7 binding-before-file-load integration.
+
+## Restore coordination with C6
+
+Knowledge restore creates only a fresh offline data copy and never installs an
+old authority database. C6 #4920 at e0925bb6 retains responsibility for paired
+receipt journals, epoch advancement and the union of no-replay operation IDs.
+Activation must retain newer tombstones, destruction fences and permanent
+UID/admission reservations; differing authority frontiers currently refuse in
+C6. An OKF restore receipt cannot override that refusal. No production snapshot,
+authority merge, source deletion or activation was performed in this lane.

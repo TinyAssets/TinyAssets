@@ -249,3 +249,20 @@ refuse. Explicit all-do policy plus bash allow MAY enable unattended execution.
 - **WHEN** any applicable rule requires hand-off
 - **THEN** the command does not execute even if ordinary approval would succeed
 - **AND** the response labels any supplied result as owner-reported.
+
+### Requirement: Separate native agent adoption
+A separate protected owner review MAY adopt one imported agent into a fresh
+native roster directory. The plan SHALL show final files and removed source
+bindings. A retired settings file SHALL precede all other writes; only verified
+complete files may precede the final activation CAS. The recipient's model and
+broker policy SHALL govern. Adoption SHALL NOT start an agent or schedule.
+
+#### Scenario: Adoption stops before all files arrive
+- **WHEN** a provider write fails or has an unknown outcome
+- **THEN** the partially copied agent remains retired
+- **AND** retry uses the existing pin and stable provider operation IDs.
+
+#### Scenario: Final activation loses its reply
+- **WHEN** the settings CAS commits but its reply is lost
+- **THEN** retry verifies the final complete bytes before returning the original adoption result
+- **AND** no model, hook or automation is run by the import operation.
