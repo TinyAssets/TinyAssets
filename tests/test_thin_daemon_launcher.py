@@ -58,7 +58,7 @@ def test_a_spawn_child_of_the_pid1_launcher_imports_no_server():
     assert result.stdout.strip().splitlines()[-1] == "False"
 
 
-def test_the_image_runs_the_marker_selector():
+def test_the_image_runs_the_pid1_launcher():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     commands = re.findall(r"^CMD\s+(.+)$", dockerfile, flags=re.MULTILINE)
     assert commands == ['["/opt/venv/bin/python", "-I", "-B", '
