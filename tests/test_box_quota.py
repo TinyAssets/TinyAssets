@@ -82,7 +82,7 @@ def test_new_owner_provision_applies_project_and_limit_before_exposing_tree(tmp_
     import struct
 
     if os.geteuid() != 0:
-        pytest.skip("requires linux_oracle.py --as-root")
+        pytest.skip("requires root; owner=C6 runs-in=linux_oracle.py:--as-root")
     uid = 300001
     quota = OwnerQuota(tmp_path)
     monkeypatch.setattr(quota, "_mounted", lambda: None)
