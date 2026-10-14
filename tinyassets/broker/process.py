@@ -36,7 +36,7 @@ from typing import Any
 
 from tinyassets.broker.fence import Fence
 from tinyassets.broker.ops import OpStore
-from tinyassets.broker.server import OWNER, BrokerServer
+from tinyassets.broker.server import BOX_HOST, OWNER, BrokerServer
 
 
 def lease_verifier(proof_sha256: str):
@@ -116,6 +116,22 @@ async def serve(args: argparse.Namespace) -> None:
     identities = OwnerIdentities(identity_path) if identity_path.exists() else None
     policy_store = PolicyStore(Path(args.data_root), identities)
     policy_store.bootstrap()
+    registration = None
+    if getattr(args, "box_host", False):
+        import json
+        import secrets
+
+        from tinyassets.boxes.bootstrap import register_broker
+
+        marker = json.loads((Path(args.data_root) / ".layout.json").read_text())
+        if marker.get("state") != "stable" or marker.get("box_layout") != "owner-box":
+            raise RuntimeError("owner-box broker requires committed migration")
+        if args.proof_sha256 or getattr(args, "mapper_channel", None) is not None:
+            raise RuntimeError("owner-box broker cannot adopt legacy bootstrap")
+        proof = secrets.token_urlsafe(48)
+        registration = register_broker(proof)
+        args.proof_sha256 = hashlib.sha256(proof.encode()).hexdigest()
+        del proof
     if getattr(args, "mapper_channel", None) is not None:
         # DA2: only the bounded bootstrap passes this inherited descriptor.
         from tinyassets.broker import mapper_channel
@@ -129,7 +145,7 @@ async def serve(args: argparse.Namespace) -> None:
         fence=Fence(state / "fence.json",
                     verify_lease_proof=lease_verifier(args.proof_sha256),
                     lease_sha256=args.proof_sha256),
-        roles={int(args.owner_uid): OWNER},
+        roles={int(args.owner_uid): OWNER, **({0: BOX_HOST} if registration else {})},
         owner_identities=identities,
         policy_store=policy_store,
     )
@@ -145,7 +161,18 @@ async def serve(args: argparse.Namespace) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
     async with listener:
-        await stop.wait()
+        if registration:
+            from tinyassets.boxes.file_channel import receive, send
+
+            channel, identity = registration
+            send(channel, {"ready": True})
+            if receive(channel, identity) != {"ready": True}:
+                raise RuntimeError("host did not accept broker readiness")
+        try:
+            await stop.wait()
+        finally:
+            if registration:
+                registration[0].close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -154,12 +181,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", required=True)
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--owner-uid", required=True, type=int)
-    parser.add_argument("--proof-sha256", required=True)
+    parser.add_argument("--proof-sha256")
+    parser.add_argument("--box-host", action="store_true")
     parser.add_argument("--allow-test-fixtures", action="store_true")
     parser.add_argument("--mapper-channel", type=int)
     parser.add_argument("--mapper-pid", type=int)
     args = parser.parse_args(argv)
-    asyncio.run(serve(args))
+    if not args.box_host and not args.proof_sha256:
+        parser.error("legacy bootstrap requires --proof-sha256")
+    if args.box_host:
+        from tinyassets.boxes.layout import hold
+
+        with hold(Path(args.data_root)):
+            asyncio.run(serve(args))
+    else:
+        asyncio.run(serve(args))
     return 0
 
 

@@ -45,3 +45,31 @@ def test_quota_rejects_mount_without_project_quotas(tmp_path, monkeypatch):
     )
     with pytest.raises(BoxError, match="project quotas"):
         OwnerQuota(store).set_bound(300001, 300001, 1024 * 1024)
+
+
+@pytest.mark.parametrize("project_ok", [False, True])
+def test_existing_quota_admission_never_retags_tree(tmp_path, monkeypatch, project_ok):
+    import fcntl
+    import struct
+
+    # This unit test substitutes only the permanent range check and kernel
+    # ioctl result so it runs unprivileged. Real XFS proof is still required.
+    from tinyassets.boxes.gvisor_runtime import GvisorRuntime
+
+    uid = os.geteuid()
+    tree = tmp_path / str(uid)
+    tree.mkdir(mode=0o700)
+    monkeypatch.setattr(GvisorRuntime, "box_id", lambda value: "unit-test")
+    monkeypatch.setattr(OwnerQuota, "_mounted", lambda self: None)
+    monkeypatch.setattr(fcntl, "ioctl", lambda *args: struct.pack(
+        "=IIIII8s", 0x200, 0, 0, uid if project_ok else uid + 1, 0, b"\0" * 8))
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    if project_ok:
+        OwnerQuota(tmp_path).admit(uid, 1024**3)
+        assert calls == [["xfs_quota", "-x", "-c", f"limit -p bhard=1048576k {uid}",
+                          str(tmp_path)]]
+    else:
+        with pytest.raises(BoxError, match="quota project"):
+            OwnerQuota(tmp_path).admit(uid, 1024**3)
+        assert not calls
