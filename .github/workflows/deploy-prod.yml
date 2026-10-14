@@ -915,7 +915,7 @@ jobs:
               deploy/install-boxhostd-preflight.sh deploy/boxhostd_idle.py \
               deploy/boxhostd.service deploy/box-store-device.sh \
               deploy/box-store-device-stop.sh deploy/box-store-check.sh \
-              deploy/box-store-device.service \
+              deploy/box-store-device.service deploy/box-store-unit.sh \
               deploy/var-lib-boxhostd-owners.mount scripts/box_preflight.py \
               scripts/box_store_durability.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
