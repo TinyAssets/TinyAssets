@@ -23,7 +23,7 @@ Selected wiki/pages Markdown is converted into the OKF bundle rooted at wiki/.
 Its absolute links resolve within that wiki bundle; open it as the OKF root.
 Other selected files retain their original paths.
 
-With Python 3.11+ on POSIX and a local OpenAI-compatible model endpoint running:
+With Python 3.11+ on POSIX and a local chat-completions model endpoint running:
 
 ```sh
 export MODEL_BASE_URL=http://localhost:11434/v1

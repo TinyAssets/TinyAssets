@@ -246,11 +246,14 @@ def test_route_is_apex_app_get(monkeypatch):
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
         "/app/api/ui-asset",
         "/app/api/file",
+        # Protected owner preview, private export and inert import.
+        "/app/api/transfer",
     }
     assert by_path["/app/outside-clients"].methods == {"POST"}
     assert by_path["/app/wakes"].methods == {"GET", "HEAD", "POST"}
     assert by_path["/app/browser-login"].methods == {"POST"}
     assert by_path["/app/files"].methods == {"POST"}
+    assert by_path["/app/api/transfer"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
     assert by_path["/app/api/ui-asset"].methods == {"POST"}
     # The owner's clock is a WRITE from their client, never a readable setting.
