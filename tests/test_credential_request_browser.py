@@ -9,7 +9,6 @@ from tests.test_app_chat_cloud_browser import app_url as _app_url
 app_url = _app_url
 pytestmark = pytest.mark.real_browser
 
-playwright = pytest.importorskip("playwright.sync_api")
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = "test-only-not-a-valid-api-key"
 HARNESS = """
@@ -45,7 +44,9 @@ const fetch=async(url,init)=>{
 
 @pytest.fixture
 def page():
-    with playwright.sync_playwright() as p:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
         page.route("**/*", lambda route: route.fulfill(
@@ -182,11 +183,11 @@ def test_account_list_revoke_requires_confirmation(page):
 def test_card_is_reachable_in_real_needs_you_and_poll_preserves_secret(app_url, width):
     import json
 
-    from playwright.sync_api import expect
+    from playwright.sync_api import expect, sync_playwright
 
     from tests.test_credential_requests import action
 
-    with playwright.sync_playwright() as p:
+    with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": width, "height": 844})
         _enter_chat(page, app_url)
