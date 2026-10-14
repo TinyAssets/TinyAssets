@@ -1,8 +1,7 @@
 name: Desktop chat app (Windows, macOS, Linux)
 
 # Builds the Electron chat app in desktop-app/ - the Tier-1 client that wraps
-# https://tinyassets.io/app. Not the PyInstaller server tray, which
-# desktop-release.yml builds as TinyAssetsServerSetup-*. Before this workflow
+# https://tinyassets.io/app. Before this workflow
 # nothing built desktop-app/, so installed copies kept whatever URL they were
 # built with and broke when /mcp/app retired (docs/concerns, 2026-10-01).
 #

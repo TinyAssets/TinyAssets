@@ -1,3 +1,5 @@
+import { legal } from "./legal";
+
 /**
  * Canonical public addresses the site links to. One list, so a moved surface
  * is a one-line change and the copy never drifts from the real URLs.
@@ -36,8 +38,8 @@ export const SITE = {
     firstPr: "https://github.com/TinyAssets/TinyAssets/pull/2720",
     firstPrNumber: 2720,
   },
-  /** The one mailbox the maintainer reads. */
-  contact: "info@tinyassets.io",
+  /** The one mailbox the maintainer reads. Same record as the legal pages. */
+  contact: legal.contact,
 } as const;
 
 export const NAV = [

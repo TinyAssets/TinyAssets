@@ -35,9 +35,7 @@ script, which points at `tinyassets.universe_server:main`
 
 | Script | What it is |
 |---|---|
-| `tinyassets-mcp` | Local file-interface MCP server (`tinyassets/mcp_server.py`). It is not `https://tinyassets.io/mcp`. Its own instructions still describe an older daemon file interface. |
 | `tinyassets-cli` | `python -m tinyassets`. The module docstring still describes a domain-daemon bridge into `fantasy_daemon`. |
-| `tinyassets` | Desktop launcher. The public site describes the desktop app as a window over the hosted web app. |
 
 The Android and iOS shells load `https://tinyassets.io/app`
 (`mobile/README.md`). Installing the shell does not bring the server

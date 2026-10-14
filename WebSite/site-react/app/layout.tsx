@@ -8,6 +8,7 @@ import TopNav from "../components/TopNav";
 import Footer from "../components/Footer";
 import ClientTrail from "../components/ClientTrail";
 import { TINYASSETS_MARK_VERSION } from "../components/TinyAssetsMark";
+import { legal } from "../lib/legal";
 import { SITE } from "../lib/site";
 
 const TITLE = "TinyAssets — one app, your agents, your model";
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
     apple: markAsset("/apple-touch-icon.png"),
   },
   openGraph: {
-    siteName: "TinyAssets",
+    siteName: legal.brand,
     type: "website",
     title: TITLE,
     description: DESCRIPTION,
@@ -49,7 +50,7 @@ const jsonLd = {
     {
       "@type": "Organization",
       "@id": `${SITE.origin}/#org`,
-      name: "TinyAssets",
+      name: legal.brand,
       url: `${SITE.origin}/`,
       logo: `${SITE.origin}${markAsset("/logo-mark.png")}`,
       sameAs: [SITE.repo],
@@ -58,14 +59,14 @@ const jsonLd = {
       "@type": "WebSite",
       "@id": `${SITE.origin}/#site`,
       url: `${SITE.origin}/`,
-      name: "TinyAssets",
+      name: legal.brand,
       description: DESCRIPTION,
       publisher: { "@id": `${SITE.origin}/#org` },
     },
     {
       "@type": "SoftwareApplication",
       "@id": `${SITE.origin}/#app`,
-      name: "TinyAssets",
+      name: legal.brand,
       applicationCategory: "ProductivityApplication",
       operatingSystem: "Web, Android, Windows, macOS, Linux",
       url: SITE.app,

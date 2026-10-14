@@ -6,12 +6,7 @@ Task 4.1 of ``openspec/changes/archive/2026-08-26-complete-independent-full-plat
 Substrate choice: one SQLite database under the canonical data root, the same
 shape every shipped per-context store uses (see
 ``tinyassets/storage/effector_consents.py``) — WAL, a 30s busy timeout, and
-``CREATE TABLE IF NOT EXISTS`` DDL applied on open. The prototype Postgres
-mirror of these tables lives in
-``prototype/full-platform-v0/migrations/012_authoring_sessions.sql`` for the
-platform store; no decision has chosen a canonical store, so neither is treated as
-the single substrate (design.md: "Target guarantees are technology-neutral where
-PLAN has not chosen a substrate").
+``CREATE TABLE IF NOT EXISTS`` DDL applied on open.
 
 Invariants this module owns:
 

@@ -69,8 +69,7 @@ behavior the phone and web get.
 CI builds Windows on every main push that touches `desktop-app/**`
 (`.github/workflows/desktop-chat-app.yml`, artifact `desktop-chat-windows-x86_64`:
 `TinyAssetsChatSetup-<v>-x64.exe` + `TinyAssetsChat-<v>-x64-win.zip`). The
-server tray's installer is the separate `TinyAssetsServerSetup-*` from
-`desktop-release.yml`. Locally:
+desktop chat shell can also be built locally:
 
 ```bash
 npm run dist   # electron-builder → dist/ (NSIS on Windows, dmg on macOS, AppImage on Linux)
