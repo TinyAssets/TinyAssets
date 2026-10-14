@@ -624,7 +624,8 @@ def g4(store: Path, boxes: Boxes, work: Path) -> dict:
     result: dict = {
         "filesystem": fields[0] if fields else "",
         "project_quota_mount": "pquota" in options or "prjquota" in options,
-        "nodiscard_mount": "nodiscard" in options,
+        # XFS never lists nodiscard (the default); only an enabled discard shows.
+        "nodiscard_mount": "discard" not in options,
     }
     if (
         result["filesystem"] != "xfs"
