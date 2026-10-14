@@ -49,6 +49,8 @@ def test_oci_bundle_exposes_only_owner_tree_relay_and_bounded_tmp(tmp_path):
         "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/owner",
         "PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
     ]
+    assert config["process"]["noNewPrivileges"] is True
+    assert all(not grants for grants in config["process"]["capabilities"].values())
     assert config["linux"]["resources"]["pids"]["limit"] == 1024
     assert config["linux"]["cgroupsPath"].endswith("/boxhostd.service/owner-300001")
 

@@ -138,6 +138,8 @@ import json
 import os
 import re
 import sys
+import tarfile
+import io
 
 
 STATE_PATH = os.environ["FAKE_DOCKER_STATE"]
@@ -329,6 +331,22 @@ def compose_config(compose_file, env_values, interpolate_values=True):
 def main(argv):
     record(argv)
     state = load_state()
+
+    if argv[:1] == ["create"]:
+        print("fake-harness-container")
+        return 0
+    if argv[:1] == ["export"]:
+        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+            for name in ("app/tinyassets/boxd.py", "data/private.txt",
+                         ".broker/secret", ".platform/secret", ".runtime/secret"):
+                payload = b"image bytes"
+                entry = tarfile.TarInfo(name)
+                entry.size = len(payload)
+                entry.mode = 0o644
+                archive.addfile(entry, io.BytesIO(payload))
+        return 0
+    if argv[:1] == ["rm"]:
+        return 0
 
     if argv[:1] == ["pull"]:
         if not state.get("pull_ok", True):
@@ -2468,12 +2486,19 @@ def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outc
         box_migration_apply=outcome,
     )
     env["BOX_STORE_CHECK"] = "/bin/true"
+    harness_root = box.root / "boxhostd"
+    harness_root.mkdir()
+    env["BOX_HARNESS_ROOT"] = str(harness_root)
     box.stage_bundle()
     completed = box.run(NEW_IMAGE, **env)
     calls = box.docker_calls_text()
     assert "box_layout_migration apply /data --store /box-store" in calls
     assert "--box-backup /backup/tinyassets-box-store-" in calls
-    assert "BACKUP_REQUIRE_BOX_STORE" not in completed.stderr
+    harness = (harness_root / "harness-current").resolve()
+    assert (harness / "app" / "tinyassets" / "boxd.py").is_file()
+    assert not any((harness / name).exists() for name in (
+        "data", ".broker", ".platform", ".runtime"
+    ))
     marker = json.loads((volume / ".layout.json").read_text())
     if outcome == "commit":
         assert _result(completed) == "deployed", completed.stderr

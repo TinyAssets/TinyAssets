@@ -1641,6 +1641,45 @@ case "$BOX_CANDIDATE_LAYOUT" in
   owner-split|owner-box) ;;
   *) err "candidate has invalid box layout; prod untouched"; exit 1 ;;
 esac
+install_box_harness() {  # $1 = immutable image; install static rootfs, no owner data
+  local image="$1" image_id root target stage container target_name
+  root="${BOX_HARNESS_ROOT:-/opt/tinyassets/boxhostd}"
+  image_id="$(docker image inspect -f '{{.Id}}' "$image")" || return 1
+  [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  target_name="harness-${image_id#sha256:}"
+  target="${root}/${target_name}"
+  if [ ! -d "$target" ]; then
+    stage="$(mktemp -d "${root}/.harness-stage.XXXXXXXX")" || return 1
+    container="$(docker create --network none --entrypoint /bin/true "$image")" || {
+      rmdir "$stage"; return 1;
+    }
+    if ! docker export "$container" | tar -x -C "$stage"; then
+      docker rm "$container" >/dev/null 2>&1 || true
+      rm -rf -- "$stage"
+      return 1
+    fi
+    docker rm "$container" >/dev/null || return 1
+    # The box sees no platform volume roots. /home/owner and /tmp are mounted
+    # by runsc; root changes use its 256 MiB memory overlay, not the host disk.
+    rm -rf -- "$stage/data" "$stage/.broker" "$stage/.platform" "$stage/.runtime"
+    mkdir -p "$stage/home/owner" "$stage/tmp" "$stage/run/boxhostd"
+    printf '%s\n' "$image_id" > "$stage/.box-image-id"
+    find -P "$stage" -xdev \( -type d -o -type f \) -exec chmod a-w {} +
+    mv -- "$stage" "$target" || return 1
+  fi
+  [ "$(cat "${target}/.box-image-id")" = "$image_id" ] || return 1
+  [ ! -e "$target/data" ] && [ ! -e "$target/.broker" ] && \
+    [ ! -e "$target/.platform" ] && [ ! -e "$target/.runtime" ] || return 1
+  ln -s "$target_name" "${root}/.harness-current.$$" || return 1
+  mv -Tf "${root}/.harness-current.$$" "${root}/harness-current" || return 1
+}
+if [ "$RESTORE_BUNDLE" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ]; then
+  if ! install_box_harness "$NEW_IMAGE"; then
+    err "candidate harness rootfs could not be installed; refusing before the box move"
+    echo "deploy_result=harness_invalid"
+    exit 1
+  fi
+fi
 # C8 (tinyassets/agent_file_migration.py): agent bindings leave SQL for files.
 # A read-only probe from the candidate, as the service user, says whether this
 # volume still holds rows to move. A migrated volume says no and the block ends
@@ -1857,6 +1896,10 @@ if [ "$RESTORE_BUNDLE" != "1" ] && [ "$BOX_CANDIDATE_LAYOUT" = "owner-box" ] \
       if [ "$box_apply_rc" -eq 0 ]; then
         MIGRATION_COMMITTED=1
         log "box layout committed; rollback point ${MIGRATION_BACKUP_DIR}/${MIGRATION_SNAPSHOT}"
+        if ! systemctl restart boxhostd.service || ! systemctl is-active --quiet boxhostd.service; then
+          MIGRATION_OK=0
+          err "boxhostd could not start on the committed layout; $(migration_restore_command)"
+        fi
       else
         MIGRATION_COMMIT_UNVERIFIED=1
         MIGRATION_OK=0

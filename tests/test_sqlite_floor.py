@@ -38,9 +38,8 @@ def test_the_floor_is_the_wal_reset_fix():
 
 
 def test_the_entry_point_checks_before_the_server_loads():
-    """The container CMD is the PID1 launcher (deploy/role_launcher.py). Its
-    main() must assert the floor before universe_server is imported, so no
-    storage is opened by an older library."""
+    """The marker selector execs the old launcher on owner-split. Its main()
+    checks SQLite before universe_server imports and opens storage."""
     tree = ast.parse((REPO / "deploy" / "role_launcher.py").read_text(encoding="utf-8"))
     main = next(node for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
@@ -48,8 +47,10 @@ def test_the_entry_point_checks_before_the_server_loads():
     floor = next(i for i, c in enumerate(calls) if c == "require_sqlite_floor()")
     server = next(i for i, c in enumerate(calls) if "tinyassets.universe_server" in c)
     assert floor < server
-    command = '["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]'
+    command = '["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]'
     assert f"CMD {command}" in DOCKERFILE
+    selector = (REPO / "deploy" / "box_daemon_entry.py").read_text(encoding="utf-8")
+    assert '"/usr/local/libexec/ta-launch.py"' in selector
 
 
 def _arg(name: str) -> str:

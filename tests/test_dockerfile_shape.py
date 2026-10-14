@@ -528,9 +528,9 @@ def test_dockerfile_copies_entrypoint():
 def test_dockerfile_entrypoint_uses_entrypoint_script():
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert "COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh" in text
-    # The owner-split bootstrap must itself be PID 1: no tini in front of it.
+    # The marker selector execs the serving process as PID 1.
     assert 'ENTRYPOINT ["/usr/local/libexec/ta-entry.sh"]' in text
-    assert 'CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-launch.py"]' in text
+    assert 'CMD ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-box-entry.py"]' in text
 
 
 def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app():
