@@ -71,10 +71,22 @@ supported. Other action behaviors are shown to the model, but arbitrary host
 shell commands have no broker to classify their effects. Keep bash on ask and
 review each command; this runner is not an OS sandbox. Windows is not supported yet.
 
-Local schedules are a separate opt-in. The example is disabled, and platform
-workflow/schedule records are not yet converted into this local prompt format.
-Copy automations.example.json to automations.json, review each agent/message,
-set enabled to true for the entries you want, then run:
+Selected workflows are data in workflows/exported/. The runner supports linear
+prompt graphs with one text output per node, explicit str/overwrite state, and
+no hosted effects, code, tools, retries or source deadlines. It validates the
+whole graph before the first model call; other graph forms remain inspectable
+but refuse local execution. For a supported graph:
+
+```sh
+python3 run/agent.py --workflow workflows/exported/workflow-1.json --inputs '{"notes":"Hello"}'
+```
+
+Local schedules are a separate opt-in. Exported automations.json entries arrive
+disabled with their referenced workflows. Review each workflow, input and trigger,
+then set enabled to true only for the entries you want. Hosted event subscriptions
+remain disabled data; there is no local event listener. For a new prompt schedule,
+copy automations.example.json to automations.json. Start explicitly:
+
 
 ```sh
 sh run/schedule --enable

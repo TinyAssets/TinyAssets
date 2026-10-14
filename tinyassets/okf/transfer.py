@@ -169,12 +169,13 @@ class Preview:
 
 
 def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limits=Limits(),
-            policy=None):
+            policy=None, structured=None):
     """Capture arbitrary content for review; nothing is included automatically.
 
     Contacts are indexed within the captured bytes and redacted unless the
     owner selects that occurrence for a private export. Secrets stay blocked.
     """
+    structured = {} if structured is None else structured
     if len(paths) > limits.files or len(set(paths)) != len(paths):
         raise InvalidBundle("Too many or duplicate preview paths")
     normalized = set()
@@ -183,7 +184,8 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
         if key in normalized:
             raise InvalidBundle("Case or Unicode path collision")
         normalized.add(key)
-        if (path not in ROOT_HARNESS and path.split("/")[0] not in CONTENT_ROOTS) or _never(path):
+        if (path not in ROOT_HARNESS and path not in structured
+                and path.split("/")[0] not in CONTENT_ROOTS) or _never(path):
             raise InvalidBundle("This path cannot be exported")
     from tinyassets.agent_definition import SettingsError, agent_directory, parse_settings
     from tinyassets.okf.policy_export import preview_agents
@@ -196,10 +198,13 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
             except SettingsError as exc:
                 raise InvalidBundle("Invalid canonical agent directory") from exc
             identity_paths[agent] = (directory + "/" if directory else "") + "settings.yaml"
-    source_paths = set(paths) | set(identity_paths.values())
+    for path in set(paths) & structured.keys():
+        if provider.stat(handle, "/cc/" + path) is not None:
+            raise InvalidBundle("Owner file conflicts with a generated workflow path")
+    source_paths = (set(paths) - structured.keys()) | set(identity_paths.values())
     view = capture_files(provider, handle, ["/cc/" + path for path in sorted(source_paths)],
                          max_total=limits.expanded)
-    if set(view.missing) & {"/cc/" + path for path in paths}:
+    if set(view.missing) & {"/cc/" + path for path in paths if path not in structured}:
         raise InvalidBundle("Preview source file is missing")
     for agent, path in identity_paths.items():
         try:
@@ -212,7 +217,7 @@ def preview(provider: BoxProvider, handle: BoxHandle, paths: list[str], *, limit
         sorted(p for p in paths if settings_path(p)), 1
     )}
     for path in paths:
-        data = view.files["/cc/" + path]
+        data = structured[path] if path in structured else view.files["/cc/" + path]
         if path in settings_numbers:
             data = portable_settings(data, number=settings_numbers[path])
         files[path] = data
@@ -278,6 +283,10 @@ def _contacts(path, content, approved=None):
 
     if settings_path(path):
         content = settings_bytes(visit(settings_document(content.encode("utf-8")))).decode("utf-8")
+    elif path.startswith("workflows/exported/") or path == "automations.json":
+        from tinyassets.okf.workflow_export import encoded
+
+        content = encoded(visit(json.loads(content, object_pairs_hook=_unique_object))).decode()
     else:
         content = CONTACT.sub(replace, content)
     return tuple(matches), content
@@ -380,9 +389,12 @@ def export_zip(
         if set(files) & set(generated):
             raise InvalidBundle("Selected content conflicts with generated export files")
         files.update(generated)
+    from tinyassets.okf.workflow_export import descriptors
+
+    workflows, automations = descriptors(files)
     manifest = build_manifest(
         profile=profile, name="Command center", description="", files=files,
-        agents=agents, workflows=[], ui="", automations=[], model="", connections=[
+        agents=agents, workflows=workflows, ui="", automations=automations, model="", connections=[
             f"connection-{entry['model_env'][6:]}" for entry in agent_roster if entry["model_env"]
         ], roster=agent_roster,
     )
@@ -488,6 +500,11 @@ def ingest_zip(raw: bytes, *, limits=Limits()) -> ValidatedBundle:
             raise InvalidBundle("Manifest roster differs from included agent instructions")
         if "roster" in manifest and manifest["roster"] != roster(files, manifest["agents"]):
             raise InvalidBundle("Manifest roster differs from included settings")
+        from tinyassets.okf.workflow_export import descriptors
+
+        workflows, automations = descriptors(files)
+        if manifest["workflows"] != workflows or manifest["automations"] != automations:
+            raise InvalidBundle("Manifest workflow references differ from included data")
         for path, descriptor in expected.items():
             if descriptor != {
                 "path": path,

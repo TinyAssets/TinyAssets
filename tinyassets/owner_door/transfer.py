@@ -36,6 +36,7 @@ class Pending:
     view: Preview
     expires: float
     policy_version: tuple[int, str] | None = None
+    structured_digest: str | None = None
 
 
 _PENDING: dict[str, Pending] = {}
@@ -97,13 +98,29 @@ def _version(policy):
     return policy["generation"], policy["digest"]
 
 
+def _structured(handle):
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.okf.workflow_export import capture
+
+    return capture(_base_path(), owner=handle.account_id, center=handle.command_center_id)
+
+
 def _preview_bytes(view):
     return sum(map(len, view.files.values())) + sum(map(len, view.rules.values()))
 
 
 def _transfer(provider, handle, args):
     if args["operation"] == "list":
-        return discover(provider, handle)
+        result = discover(provider, handle)
+        captured = _structured(handle)
+        if {row["path"] for row in result["files"]} & captured.files.keys():
+            raise InvalidBundle("Owner files conflict with generated workflow paths")
+        result["files"].extend({"path": path, "size": len(data), "structured": True}
+                               for path, data in captured.files.items())
+        if len(result["files"]) > Limits().files:
+            raise InvalidBundle("Workflow discovery exceeds its bound")
+        result["files"].sort(key=lambda row: row["path"])
+        return result
     if args["operation"] == "import":
         from tinyassets.api.helpers import _base_path
         from tinyassets.command_center_packages import quarantine_import
@@ -120,10 +137,17 @@ def _transfer(provider, handle, args):
             epoch=handle.epoch, bundle=bundle,
         )
     if args["operation"] == "preview":
+        from tinyassets.okf.workflow_export import PREFIX, SCHEDULES
+
+        captured = _structured(handle) if any(
+            path.startswith(PREFIX) or path == SCHEDULES for path in args["paths"]
+        ) else None
         policy = _policy(handle) if preview_agents(args["paths"]) else None
-        view = preview(provider, handle, args["paths"], policy=policy)
+        view = preview(provider, handle, args["paths"], policy=policy,
+                       structured=captured.files if captured else None)
         pending = Pending(provider, view, time.monotonic() + _TTL,
-                          _version(policy) if policy is not None else None)
+                          _version(policy) if policy is not None else None,
+                          captured.digest if captured else None)
         token = secrets.token_urlsafe(32)
         with _LOCK:
             _prune()
@@ -176,6 +200,9 @@ def _transfer(provider, handle, args):
         portable_rules(policy, owner=handle.account_id, center=handle.command_center_id, agents={})
         if _version(policy) != pending.policy_version:
             raise WriteConflict("Policy changed after preview; preview again")
+    if pending.structured_digest is not None:
+        if _structured(handle).digest != pending.structured_digest:
+            raise WriteConflict("Workflows changed after preview; preview again")
     return export_zip(
         provider, handle, pending.view, selected=args["selected"],
         named_binaries=args["named_binaries"], included_contacts=args["included_contacts"],

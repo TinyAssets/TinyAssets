@@ -47,6 +47,7 @@ def _admission_and_deletion_double(request, monkeypatch):
 def install(monkeypatch):
     """Install the same admission double explicitly in spawned test children."""
     from tinyassets import (
+        account_deletion,
         role_center_admission,
         role_owner_delete,
         role_owner_tree_deletion,
@@ -63,6 +64,16 @@ def install(monkeypatch):
         removed = _remove(Path(root) / center)
         return {"center": center, "resumed": not removed, "double": True}
 
+    def destroy_owner_box(root, center, *, principal):
+        from tinyassets.api.first_contact import principal_is_deleted
+        from tinyassets.boxes.provider import DestroyReceipt
+        from tinyassets.daemon_server import get_founder_home
+
+        assert principal_is_deleted(root, principal)
+        assert get_founder_home(root, principal) == center
+        removed = _remove(Path(root) / center)
+        return DestroyReceipt(center, "test-destroy", removed, 2)
+
     def remove_subtree(path, *, principal):
         return {"removed": _remove(Path(path)), "double": True}
 
@@ -75,5 +86,6 @@ def install(monkeypatch):
     monkeypatch.setattr(role_center_admission, "ensure_center_dir", ensure_center_dir)
     monkeypatch.setattr(universe_files, "_refuse_unadmitted_root", lambda *_args: None)
     monkeypatch.setattr(role_owner_tree_deletion, "delete_center", delete_center)
+    monkeypatch.setattr(account_deletion, "_destroy_owner_box", destroy_owner_box)
     monkeypatch.setattr(role_owner_tree_deletion, "pending", lambda root: [])
     monkeypatch.setattr(role_owner_delete, "remove_subtree", remove_subtree)

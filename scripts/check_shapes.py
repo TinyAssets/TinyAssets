@@ -20,7 +20,7 @@ EXPORT_RUNTIME = "tinyassets/okf/assets/agent.py.txt"
 EXPORT_STDLIB = frozenset({
     "__future__", "argparse", "json", "os", "secrets", "selectors", "signal",
     "subprocess", "sys", "time", "urllib.parse", "urllib.request", "pathlib", "stat",
-    "datetime", "zoneinfo", "fcntl", "hashlib",
+    "datetime", "zoneinfo", "fcntl", "hashlib", "re",
 })
 
 

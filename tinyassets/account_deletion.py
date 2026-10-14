@@ -306,7 +306,7 @@ def _home_dir(root: Path, home: str) -> Path:
 
 
 def _stage_home(root: Path, home: str) -> Path | None:
-    """Stage separate home/sidecar children in a platform-owned container.
+    """Stage platform sidecars only, after authenticated owner-box destruction.
 
     The deterministic container survives a crash between renames; retry moves
     only the remaining sources. No destination lies inside user-owned content.
@@ -314,11 +314,11 @@ def _stage_home(root: Path, home: str) -> Path | None:
     """
     from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
 
-    target = _home_dir(root, home)
+    _home_dir(root, home)  # validate the binding without treating it as owner storage
     sidecar = root / UNIVERSE_SIDECARS_DIR / home
     staging = root / _STAGING_DIR
     staged = staging / home
-    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"))
+    sources = ((sidecar, staged / "sidecar"),)
     # Check every parent and source before the first rename. A symlink must
     # never redirect staging or removal into another account's directory.
     for path in (sidecar.parent, staging, staged, *(p for pair in sources for p in pair)):
@@ -1003,6 +1003,28 @@ def pending_deletions(base_path: str | Path) -> list[dict[str, Any]]:
     return out
 
 
+def _destroy_owner_box(root: Path, home: str, *, principal: str):
+    """C6 destruction-only admission, with no ordinary-bind or filesystem fallback."""
+    from tinyassets.agent_loop.served_chat import configured_box_provider
+    from tinyassets.boxes.provider import DestroyReceipt
+
+    provider, _ = configured_box_provider()
+    if provider is None or not callable(getattr(provider, "bind_for_destroy", None)):
+        raise AccountDeletionError("authenticated owner destruction is unavailable")
+    # Stable across request retries, process restart and placement fencing.
+    op_id = "account-delete-" + hashlib.sha256(
+        (principal + "\x00" + home).encode("utf-8")
+    ).hexdigest()
+    handle = provider.bind_for_destroy(home, account_id=principal)
+    result = provider.destroy(handle, op_id)
+    if (not isinstance(result, DestroyReceipt) or result.command_center_id != home
+            or result.op_id != op_id or type(result.files_removed) is not int
+            or result.files_removed < 0 or type(result.new_epoch) is not int
+            or result.new_epoch < 1):
+        raise AccountDeletionError("invalid durable owner destruction receipt")
+    return result
+
+
 def delete_account(
     base_path: str | Path,
     *,
@@ -1022,7 +1044,6 @@ def delete_account(
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
     from tinyassets.principals import named_principal
-    from tinyassets.role_owner_tree_deletion import delete_center
 
     principal = named_principal(founder_sub)
     if not principal:
@@ -1070,11 +1091,10 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
-    # The home holds owner-identity entries the daemon cannot remove: delete it
-    # in place with D10's two passes while its owner binding and identity still
-    # admit pass one.
-    two_pass = _phase(
-        "owner_tree", lambda: delete_center(root, home, principal=principal)
+    # Tombstoned principals may only obtain C6's destruction-only handle.
+    # Keep the binding until its journalled receipt is verified.
+    destroyed = _phase(
+        "owner_tree", lambda: _destroy_owner_box(root, home, principal=principal)
     ) if home else None
     owner_tree_failed = "owner_tree" in failures
 
@@ -1086,13 +1106,13 @@ def delete_account(
 
     _phase("broker_egress", _broker_rows)
 
-    # After the two-pass deletion only the sidecar remains to stage.
+    # Owner bytes are gone only after the durable receipt; stage platform sidecars.
     staged = _phase(
         "home_staging", lambda: _stage_home(root, home)
     ) if home and not owner_tree_failed else None
     staging_failed = "home_staging" in failures
     if owner_tree_failed:
-        # Keep the binding: a retry resumes pass one under the same intent.
+        # Keep the binding: a retry asks for the same durable destroy operation.
         failures.append("root_rows")
     elif staging_failed:
         # Keep the home binding so a retry can finish the deterministic staging
@@ -1121,7 +1141,7 @@ def delete_account(
         _phase("authoring_blobs", _blobs)
 
     home_removed = (staged is None and not staging_failed and not owner_tree_failed
-                    or two_pass is not None)
+                    or destroyed is not None)
     staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
     if staged is not None:
         def _remove() -> None:
@@ -1168,8 +1188,8 @@ def delete_account(
         billing = _phase(
             "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
         ) or "error"
-    # A failed two-pass deletion resumes only under this principal's own
-    # authenticated identity, so the sign-in identity outlives it.
+    # A failed box destruction resumes under this principal's authenticated
+    # identity, so the sign-in identity outlives it.
     identity = "deferred:owner_tree" if owner_tree_failed else _phase(
         "identity", lambda: (delete_identity or delete_workos_user)(principal)
     ) or "error"
@@ -1194,15 +1214,14 @@ def delete_account(
         "unfinished_phases": sorted(failures),
         "retained": list(RETAINED),
     }
+    if destroyed is not None:
+        receipt["box_destroy"] = {
+            "command_center_id": destroyed.command_center_id, "op_id": destroyed.op_id,
+            "files_removed": destroyed.files_removed, "new_epoch": destroyed.new_epoch,
+        }
     if owner_tree_failed:
-        from tinyassets.role_owner_tree_deletion import pending
-
-        # Pass one may already have removed part of the home; say so. None
-        # means the intent store itself could not be read (also unfinished).
-        try:
-            receipt["home_deletion_pending"] = home in pending(root)
-        except (OSError, RuntimeError):
-            receipt["home_deletion_pending"] = None
+        # A missing response cannot establish whether the host already removed bytes.
+        receipt["home_deletion_pending"] = True
     if failures:
         receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)
     logger.info(

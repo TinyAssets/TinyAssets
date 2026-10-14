@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import selectors
 import signal
@@ -390,6 +391,117 @@ def model_environment(root, agent):
             environment.get("MODEL_NAME", ""), environment.get("MODEL_API_KEY", ""))
 
 
+def workflow_plan(root, path, inputs):
+    """Validate the entire supported graph before the first model/effect call."""
+    if (not isinstance(path, str) or not path.startswith("workflows/exported/")
+            or not path.endswith(".json") or not isinstance(inputs, dict)):
+        raise ValueError("Workflow needs a portable path and object inputs")
+    raw = LocalTools(Path(root)).read(path)
+    document = _schedule_json(raw)
+    if (not isinstance(document, dict) or document.get("kind") != "tinyassets.workflow.v1"
+            or set(document) != {"kind", "id", "definition"}
+            or path != "workflows/exported/" + document["id"] + ".json"):
+        raise ValueError("Invalid portable workflow document")
+    definition = document["definition"]
+    if (not isinstance(definition, dict) or set(definition) - {
+        "name", "description", "domain_id", "tags", "skills", "node_defs", "state_schema",
+        "concurrency_budget", "graph", "entry_point", "model_reference",
+    }):
+        raise ValueError("Invalid portable workflow definition")
+    graph, nodes = definition.get("graph", {}), definition.get("node_defs", [])
+    if (not isinstance(graph, dict) or not isinstance(nodes, list) or not 1 <= len(nodes) <= 100
+            or set(graph) - {"nodes", "edges", "conditional_edges", "entry_point", "io_manifest"}
+            or graph.get("conditional_edges") or definition.get("skills")
+            or graph.get("io_manifest")):
+        raise ValueError("Local workflows require a linear prompt graph without hosted effects")
+    by_id, steps, links = {}, {}, {}
+    defaults = {}
+    for field in definition.get("state_schema", []):
+        if (not isinstance(field, dict) or not isinstance(field.get("name"), str)
+                or not field["name"].isidentifier() or field.get("reducer", "overwrite") != "overwrite"
+                or field.get("type", "any") != "str"):
+            raise ValueError("Local workflow state requires explicit str overwrite fields")
+        if "default_value" in field and field["default_value"] is not None:
+            defaults[field["name"]] = field["default_value"]
+    state = {**defaults, **inputs}
+    if len(json.dumps(state, allow_nan=False).encode()) > MAX_FILE_BYTES:
+        raise ValueError("Workflow inputs exceed the local bound")
+    if any(not isinstance(key, str) or not key.isidentifier() for key in state):
+        raise ValueError("Workflow input keys must be identifiers")
+    allowed = {"node_id", "display_name", "description", "phase", "input_keys", "output_keys",
+               "prompt_template", "model_hint", "strict_input_isolation",
+               "retry_policy"}
+    for node in nodes:
+        if (not isinstance(node, dict) or not isinstance(node.get("node_id"), str)
+                or node["node_id"] in by_id
+                or any(value not in (None, "", False, [], {})
+                       for key, value in node.items() if key not in allowed)
+                or not isinstance(node.get("prompt_template"), str)
+                or not node["prompt_template"]
+                or (node.get("retry_policy") or {}).get("max_retries", 0) != 0):
+            raise ValueError("Unsupported workflow node; no code, tools, child runs or effects execute")
+        for key in ("input_keys", "output_keys"):
+            values = node.get(key, [])
+            if (not isinstance(values, list) or len(set(values)) != len(values)
+                    or any(not isinstance(v, str) or not v.isidentifier() for v in values)):
+                raise ValueError("Workflow state keys must be unique identifiers")
+        if len(node.get("output_keys", [])) != 1:
+            raise ValueError("Local prompt nodes need exactly one explicit text output")
+        by_id[node["node_id"]] = node
+    for ref in graph.get("nodes", []):
+        if (not isinstance(ref, dict) or ref.get("node_def_id") not in by_id
+                or not isinstance(ref.get("id"), str) or ref["id"] in steps):
+            raise ValueError("Invalid workflow node reference")
+        steps[ref["id"]] = by_id[ref["node_def_id"]]
+    for edge in graph.get("edges", []):
+        if (not isinstance(edge, dict) or edge.get("from") not in steps
+                or edge["from"] in links or edge.get("to") not in {*steps, "__end__", "END"}):
+            raise ValueError("Local workflows require a linear graph without fan-out")
+        links[edge["from"]] = edge["to"]
+    current = definition.get("entry_point")
+    ordered, visited, available = [], set(), set(state)
+    while current not in (None, "__end__", "END"):
+        if current not in steps or current in visited:
+            raise ValueError("Invalid or cyclic workflow graph")
+        visited.add(current)
+        node = steps[current]
+        template = re.sub(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}", r"{\1}",
+                          node["prompt_template"])
+        wanted = set(re.findall(r"(?<!\\){([a-zA-Z_][a-zA-Z0-9_]*)}", template))
+        permitted = (set(node.get("input_keys", [])) | set(defaults)
+                     if node.get("strict_input_isolation", True) else available)
+        if not wanted <= available or not wanted <= permitted:
+            raise ValueError("Workflow prompt references missing or undeclared input")
+        ordered.append((node, template))
+        available.update(node["output_keys"])
+        current = links.get(current)
+    if visited != set(steps) or {node["node_id"] for node, _ in ordered} != set(by_id):
+        raise ValueError("Workflow has unreachable or unused nodes")
+    return ordered, state, hashlib.sha256(raw.encode()).hexdigest()
+
+
+def workflow(root, path, inputs, *, agent="main", model_call, approve=None, expected_digest=None):
+    ordered, state, digest = workflow_plan(root, path, inputs)
+    if expected_digest is not None and digest != expected_digest:
+        raise ValueError("Workflow configuration changed before execution")
+    tools = LocalTools(Path(root), agent=agent, approve=approve)
+    behavior = tools.behaviours.get("workspace.workflows", "do")
+    if behavior == "hand_off" or (behavior != "do" and not tools.approve("Run workflow " + path)):
+        raise PermissionError("Workflow lacks fresh local owner consent")
+    for node, template in ordered:
+        prompt = re.sub(r"(?<!\\){([a-zA-Z_][a-zA-Z0-9_]*)}",
+                        lambda match: str(state[match.group(1)]), template)
+        prompt = re.sub(r"\\{([a-zA-Z_][a-zA-Z0-9_]*)\\}", r"{\1}", prompt)
+        answer = model_call([{"role": "user", "content": prompt}])
+        if (not isinstance(answer, dict) or answer.get("role") != "assistant"
+                or answer.get("tool_calls") or not isinstance(answer.get("content"), str)):
+            raise ValueError("Workflow prompt nodes require a final text response without tools")
+        state[node["output_keys"][0]] = answer["content"]
+        if len(json.dumps(state).encode()) > MAX_FILE_BYTES:
+            raise ValueError("Workflow state exceeds the local bound")
+    return state
+
+
 def _instant(value):
     if not isinstance(value, str):
         raise ValueError("Schedule instants must be ISO timestamps with offsets")
@@ -440,9 +552,12 @@ def schedules(root):
             or len(document["automations"]) > 100):
         raise ValueError("Invalid local schedule document")
     seen = set()
+    workflow_digests = []
     for row in document["automations"]:
         if (not isinstance(row, dict)
-                or set(row) != {"id", "agent", "message", "enabled", "trigger"}
+                or set(row) not in ({"id", "agent", "message", "enabled", "trigger"},
+                                   {"id", "agent", "name", "workflow", "inputs", "enabled",
+                                    "trigger", "overlap"})
                 or type(row["enabled"]) is not bool):
             raise ValueError("Invalid local schedule entry")
         for field in ("id", "agent"):
@@ -454,7 +569,17 @@ def schedules(root):
         if row["id"] in seen:
             raise ValueError("Schedule identifiers must be unique")
         seen.add(row["id"])
-        if not isinstance(row["message"], str) or not 1 <= len(row["message"]) <= 64 * 1024:
+        if "workflow" in row:
+            if (not isinstance(row["name"], str) or not isinstance(row["inputs"], dict)
+                    or not isinstance(row["workflow"], str)
+                    or row["overlap"] not in ("queue", "skip", "parallel")):
+                raise ValueError("Invalid workflow schedule")
+            if row["enabled"]:
+                if row["overlap"] == "parallel":
+                    raise ValueError("Local schedules do not support parallel overlap")
+                row["_workflow_digest"] = workflow_plan(root, row["workflow"], row["inputs"])[2]
+                workflow_digests.append(row["_workflow_digest"])
+        elif not isinstance(row["message"], str) or not 1 <= len(row["message"]) <= 64 * 1024:
             raise ValueError("Schedule message must be bounded nonempty text")
         trigger = row["trigger"]
         if not isinstance(trigger, dict):
@@ -471,9 +596,15 @@ def schedules(root):
             if not isinstance(trigger["timezone"], str):
                 raise ValueError("Cron needs an IANA time zone")
             zoneinfo.ZoneInfo(trigger["timezone"])
+        elif (kind == "event" and set(trigger) == {"kind", "event_type", "event_filter"}
+              and "workflow" in row and not row["enabled"]):
+            if not isinstance(trigger["event_type"], str) or not isinstance(
+                    trigger["event_filter"], dict):
+                raise ValueError("Invalid disabled event schedule")
         else:
             raise ValueError("Unsupported local schedule trigger; no hosted fallback")
-    return document["automations"], hashlib.sha256(raw.encode()).hexdigest()
+    digest = raw + "".join(workflow_digests)
+    return document["automations"], hashlib.sha256(digest.encode()).hexdigest()
 
 
 def _schedule_json(raw):
@@ -621,8 +752,12 @@ def schedule(root, *, enabled=False, once=False, turn=None, clock=time.time, pau
                 endpoint, model, key = model_environment(root, row["agent"])
                 if not model:
                     raise ValueError("Set the scheduled agent's model before enabling schedules")
-                return run(root, row["message"], agent=row["agent"],
-                           model_call=lambda messages: complete(endpoint, model, messages, api_key=key))
+                def call(messages):
+                    return complete(endpoint, model, messages, api_key=key)
+                if "workflow" in row:
+                    return workflow(root, row["workflow"], row["inputs"], agent=row["agent"],
+                                    model_call=call, expected_digest=row["_workflow_digest"])
+                return run(root, row["message"], agent=row["agent"], model_call=call)
         while True:
             if schedules(root)[1] != digest:
                 raise ValueError("Schedule configuration changed; stop and review before restarting")
@@ -654,21 +789,29 @@ def main():
     parser.add_argument("--schedule", action="store_true")
     parser.add_argument("--enable", action="store_true")
     parser.add_argument("--once", action="store_true", help="Check the current schedule slot once")
+    parser.add_argument("--workflow", help="Run a reviewed portable linear prompt workflow")
+    parser.add_argument("--inputs", default="{}", help="Workflow inputs as a JSON object")
     args = parser.parse_args()
     if args.schedule:
-        if args.message or not args.enable:
+        if args.message or args.workflow or args.inputs != "{}" or not args.enable:
             parser.error("Use --schedule --enable without a chat message")
         schedule(args.root, enabled=True, once=args.once)
         return
-    if args.enable or args.once or not args.message:
+    if args.enable or args.once or (not args.message and not args.workflow):
         parser.error("Chat needs a message; schedule flags require --schedule")
+    if args.workflow and args.message or args.inputs != "{}" and not args.workflow:
+        parser.error("Use --workflow with --inputs and without a chat message")
     endpoint, model, api_key = model_environment(args.root, args.agent)
     if not model:
         parser.error("Set MODEL_NAME and MODEL_BASE_URL for your own endpoint")
     def model_call(messages):
         return complete(endpoint, model, messages, api_key=api_key)
-    print(run(args.root, args.message, agent=args.agent, model_call=model_call,
-              max_calls=args.max_calls))
+    if args.workflow:
+        print(json.dumps(workflow(args.root, args.workflow, _schedule_json(args.inputs),
+                                  agent=args.agent, model_call=model_call)))
+    else:
+        print(run(args.root, args.message, agent=args.agent, model_call=model_call,
+                  max_calls=args.max_calls))
 
 
 if __name__ == "__main__":

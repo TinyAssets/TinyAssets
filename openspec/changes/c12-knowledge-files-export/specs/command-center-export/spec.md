@@ -152,6 +152,29 @@ execute imported files or create an activation record.
 - **THEN** only validated regular file bytes are retained in package custody
 - **AND** no runner, hook, filter, installer or schedule executes.
 
+### Requirement: Portable workflow and schedule capture
+The protected transfer door SHALL offer account-owned workflow definitions and
+the selected command center's owner-owned schedules as previewable data. Source
+authority and connection identifiers SHALL become recipient-local references.
+Credential fields SHALL contain empty local binding references, never source
+values. Other arbitrary text SHALL retain the existing credential and contact
+screen. A download SHALL refuse when captured definitions or schedules change.
+
+#### Scenario: A schedule needs its workflow
+- **WHEN** an owner selects a captured schedule for export
+- **THEN** every workflow it references must also be selected
+- **AND** the schedule arrives disabled, retaining its trigger and input data
+- **AND** hosted event subscriptions never start a local listener automatically.
+
+#### Scenario: Local workflow execution has unsupported effects
+- **WHEN** a copied workflow contains effects the standalone runner cannot execute
+- **THEN** execution refuses before any node or model call
+- **AND** export retains its data for inspection without pretending a prompt is equivalent.
+
+#### Scenario: Source ownership or content changes
+- **WHEN** a captured workflow changes, disappears or no longer belongs to the owner
+- **THEN** the old preview cannot authorize its download.
+
 ### Requirement: Protected owner transfer door
 The app SHALL expose preview, private download and import through one owner
 transfer route. Every operation SHALL require the current named identity and
@@ -173,3 +196,21 @@ ownership before any content operation; an absent provider SHALL fail explicitly
 - **THEN** the existing account package pool accounts for its inert canonical bytes
 - **AND** an owner/center/epoch-bound quarantine record is retained outside every box
 - **AND** neither an executable install action nor an activation receipt is created.
+
+### Requirement: Authenticated account box destruction
+Account deletion SHALL tombstone before obtaining a destruction-only provider
+binding. It SHALL retain the home binding and sign-in identity until a durable
+receipt matches that center and the stable deletion operation ID. It SHALL
+never fall back to host-path owner-tree deletion. Independent broker erasure
+and billing cancellation SHALL continue. Private imported bytes SHALL be
+erased before their custody inventory rows are removed.
+
+#### Scenario: Destruction cannot establish success
+- **WHEN** the driver is absent, lacks destruction admission, or returns a malformed receipt
+- **THEN** the owner-tree phase fails and retains the binding and identity.
+
+#### Scenario: Destruction loses its response
+- **WHEN** the authenticated destroy request has an uncertain outcome
+- **THEN** the receipt reports pending destruction and retains the home binding
+- **AND** an explicit retry uses the same operation ID and verifies the durable outcome
+- **AND** another owner's box and binding remain untouched.

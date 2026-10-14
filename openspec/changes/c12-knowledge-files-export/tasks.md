@@ -9,6 +9,8 @@
 - [x] 2.2a Export the actual root harness, validated portable roster/settings and per-agent model references; support literal local .env with endpoint-bound credentials.
 - [x] 2.2b Capture broker-owned behavior rules with canonical identities and policy fencing; enforce local file/shell rules without transferable grants.
 - [x] 2.2c Implement explicitly enabled local prompt schedules with durable claims, no uncertain replay and IANA-aware cron; platform graph/schedule conversion remains in 2.2.
+- [x] 2.2d Capture owned structured workflows and disabled schedules, fence source changes, and execute the supported linear prompt subset with whole-graph refusal for unsupported semantics.
+- [x] 2.2e Integrate C6 destruction-only provider admission and durable receipts into account deletion; verify unknown-outcome retries and concurrent requests without production mutation.
 - [ ] 2.3 Independent cross-family review and trusted receipt.
 
 ## 3. Knowledge cutover and export
