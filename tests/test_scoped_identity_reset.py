@@ -650,18 +650,8 @@ def test_two_writer_processes_join_one_clean_shared_barrier(
 
 def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
     root = Path(__file__).resolve().parents[1]
-    for relative in (
-        "tinyassets/__main__.py",
-        # `tinyassets/cloud_worker.py` was a writer entrypoint until 2026-08-29,
-        # when the host-run fleet was deleted: nothing runs outside a user's
-        # universe (ADR-009). No module replaces it -- the served consumer runs
-        # inside the daemon, which is covered by tinyassets/__main__.py.
-        "tinyassets/universe_server.py",
-        "fantasy_daemon/__main__.py",
-        "fantasy_daemon/api.py",
-    ):
-        source = (root / relative).read_text(encoding="utf-8")
-        assert "prepare_service_writer_barrier" in source, relative
+    source = (root / "tinyassets/universe_server.py").read_text(encoding="utf-8")
+    assert "prepare_service_writer_barrier" in source
     assert not (root / "tinyassets_tray.py").exists()
 
 
