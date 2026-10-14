@@ -247,27 +247,6 @@ def test_pinned_device_unit_and_missing_device_failure(tmp_path: Path) -> None:
     bin_dir.mkdir()
     unit = r"dev-disk-by\x2did-scsi\x2d0DO_Volume_tinyassets\x2dbox\x2dstore.device"
     _shim(bin_dir, "systemd-escape", 'printf "%s\\n" "$TEST_DEVICE_UNIT"\n')
-    # This existing archive/rollback test has always substituted host tools and
-    # used the runner's UID. Keep it running unprivileged: substitute only the
-    # permanent-UID chown, not tar, SQLite, quota validation or swap/rollback.
-    # Actual cross-UID ownership remains covered by the separate root proof.
-    python_shim = bin_dir / "python3"
-    python_shim.write_text("#!" + sys.executable + "\n" + r'''import os, runpy, sys
-from pathlib import Path
-if sys.argv[1].endswith("box-store-quotas.py"):
-    original = os.chown
-    def mapped_chown(path, uid, gid, **kwargs):
-        assert uid == gid == 300001
-        assert Path(path).resolve().is_relative_to(Path(os.environ["BOX_STORE_DIR"]))
-        return original(path, os.getuid(), os.getgid(), **kwargs)
-    if os.geteuid() != 0:
-        os.chown = mapped_chown
-    sys.argv = sys.argv[1:]
-    runpy.run_path(sys.argv[0], run_name="__main__")
-else:
-    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
-''')
-    python_shim.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
            "TEST_DEVICE_UNIT": unit}
     rendered = subprocess.run(["bash", str(renderer), volume, str(template)],
@@ -303,27 +282,6 @@ def test_store_check_requires_all_mount_properties(
     _shim(bin_dir, "findmnt", '''
 if [[ "${@: -1}" == FSTYPE ]]; then echo "$TEST_FS"; else echo "$TEST_OPTIONS"; fi
 ''')
-    # This existing archive/rollback test has always substituted host tools and
-    # used the runner's UID. Keep it running unprivileged: substitute only the
-    # permanent-UID chown, not tar, SQLite, quota validation or swap/rollback.
-    # Actual cross-UID ownership remains covered by the separate root proof.
-    python_shim = bin_dir / "python3"
-    python_shim.write_text("#!" + sys.executable + "\n" + r'''import os, runpy, sys
-from pathlib import Path
-if sys.argv[1].endswith("box-store-quotas.py"):
-    original = os.chown
-    def mapped_chown(path, uid, gid, **kwargs):
-        assert uid == gid == 300001
-        assert Path(path).resolve().is_relative_to(Path(os.environ["BOX_STORE_DIR"]))
-        return original(path, os.getuid(), os.getgid(), **kwargs)
-    if os.geteuid() != 0:
-        os.chown = mapped_chown
-    sys.argv = sys.argv[1:]
-    runpy.run_path(sys.argv[0], run_name="__main__")
-else:
-    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
-''')
-    python_shim.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
            "TEST_FS": filesystem, "TEST_OPTIONS": options}
     result = subprocess.run(
