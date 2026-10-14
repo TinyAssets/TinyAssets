@@ -339,6 +339,27 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if "ACTIVE_BOX_LAYOUT" in argv[-1]:
+            target = argv[argv.index("--entrypoint") + 2]
+            print(state.get("active_box_layout", {}).get(target, "owner-split"))
+            return 0
+        if "tinyassets.box_layout_migration" in argv:
+            marker = os.path.join(os.environ["FAKE_DOCKER_VOLUME_DIR"], ".layout.json")
+            command = argv[argv.index("tinyassets.box_layout_migration") + 1]
+            with open(marker, encoding="utf-8") as handle:
+                document = json.load(handle)
+            if command == "check":
+                return 0 if document.get("box_layout") == "owner-box" else 10
+            state["box_migration_apply_attempted"] = True
+            outcome = state.get("box_migration_apply", "commit")
+            if outcome == "commit":
+                document.update(box_layout="owner-box", state="stable")
+            else:
+                document.update(state="migrating")
+            with open(marker, "w", encoding="utf-8") as handle:
+                json.dump(document, handle)
+            save_state(state)
+            return 0 if outcome == "commit" else 3
         if "tinyassets.agent_file_migration" in argv:
             # The C8 cutover container (deploy step 3c). `check` reports the
             # rows still in SQL; a failed `apply` can be before or after commit,
@@ -382,6 +403,8 @@ def main(argv):
             # Declarations belong to the requested image, not the running one.
             target = argv[argv.index("--entrypoint") + 2]
             declaration = state.get("known_layouts", {}).get(target, [1])
+            if isinstance(declaration, list):
+                declaration = {"layouts": declaration, "boxes": ["owner-split"]}
             print(state.get("layout_probe_output", json.dumps(declaration)))
         return 0 if state.get("preflight_ok", True) else 1
 
@@ -612,6 +635,11 @@ set -euo pipefail
 name="tinyassets-snapshot-2026-10-13T00-00-00Z.tar.gz"
 printf 'tar' > "${BACKUP_SNAPSHOT_DIR}/${name}"
 printf '%064d  %s\n' 0 "$name" > "${BACKUP_SNAPSHOT_DIR}/${name}.sha256"
+if [ "${BACKUP_REQUIRE_BOX_STORE:-0}" = 1 ]; then
+  box="tinyassets-box-store-2026-10-13T00-00-00Z.tar.gz"
+  printf 'box' > "${BACKUP_SNAPSHOT_DIR}/${box}"
+  printf '%064d  %s\n' 0 "$box" > "${BACKUP_SNAPSHOT_DIR}/${box}.sha256"
+fi
 echo "SNAPSHOT id=${name} sha256=0 bytes=3 names=1"
 '''
 
@@ -2427,6 +2455,34 @@ def _daemon_starts(box: Box) -> list[str]:
         if line.startswith("start ")
         or ("compose" in line and " up " in line and " daemon " in line + " ")
     ]
+
+
+@pytest.mark.parametrize("outcome", ["commit", "fail"])
+def test_owner_box_move_commits_once_or_requires_snapshot_restore(box: Box, outcome):
+    volume, env = _cutover(box)
+    box.set_docker_state(
+        migration_pending=False,
+        active_box_layout={NEW_IMAGE: "owner-box"},
+        known_layouts={NEW_IMAGE: {"layouts": [1, 2],
+                                   "boxes": ["owner-split", "owner-box"]}},
+        box_migration_apply=outcome,
+    )
+    env["BOX_STORE_CHECK"] = "/bin/true"
+    box.stage_bundle()
+    completed = box.run(NEW_IMAGE, **env)
+    calls = box.docker_calls_text()
+    assert "box_layout_migration apply /data --store /box-store" in calls
+    assert "--box-backup /backup/tinyassets-box-store-" in calls
+    assert "BACKUP_REQUIRE_BOX_STORE" not in completed.stderr
+    marker = json.loads((volume / ".layout.json").read_text())
+    if outcome == "commit":
+        assert _result(completed) == "deployed", completed.stderr
+        assert marker["box_layout"] == "owner-box"
+    else:
+        assert _result(completed) == "rollback_needs_restore", completed.stderr
+        assert "BACKUP_FILE=" in completed.stderr
+        assert marker["state"] == "migrating"
+        assert not _daemon_starts(box)
 
 
 @pytest.mark.parametrize("candidate", ["healthy", "unhealthy", "converge_fails"])
