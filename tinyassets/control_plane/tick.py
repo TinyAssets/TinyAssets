@@ -174,7 +174,19 @@ def current_consumer_liveness(base_path: Path) -> dict[str, Any]:
     This is liveness of the poll loop, not proof that a particular user's work
     succeeded. Per-universe heartbeat/queue descriptor readers keep their own
     scope and authority. No identity, path, tenant count or task data escapes.
+
+    A started owner tick is reported even when the assigned-queue consumer flag
+    is off: that flag no longer stops the tick. ``disabled`` means the flag is
+    off and this process has not started a tick.
     """
+    root = Path(base_path).resolve()
+    with _CONSUMER_REGISTRY_LOCK:
+        consumers = [consumer for consumer in _STARTED_CONSUMERS
+                     if consumer.base_path.resolve() == root]
+    if consumers:
+        snapshots = [consumer._liveness_snapshot() for consumer in consumers]
+        return max(snapshots, key=lambda item: (
+            item["alive"] is False, float(item["beat_age_s"] or 0.0)))
     if not assigned_queue_consumer_enabled():
         return {"present": False, "phase": "disabled"}
     if os.environ.get("TINYASSETS_ENGINE_GRAPH_ID", "").strip():
@@ -182,17 +194,8 @@ def current_consumer_liveness(base_path: Path) -> dict[str, Any]:
         # coordinator. Their process-local registry cannot attest its liveness.
         return {"present": True, "alive": None, "beat_age_s": None,
                 "phase": "external_coordinator", "consec_crashes": 0}
-    root = Path(base_path).resolve()
-    with _CONSUMER_REGISTRY_LOCK:
-        consumers = [consumer for consumer in _STARTED_CONSUMERS
-                     if consumer.base_path.resolve() == root]
-    if not consumers:
-        return {"present": True, "alive": False, "beat_age_s": None,
-                "phase": "not_started", "consec_crashes": 0}
-    snapshots = [consumer._liveness_snapshot() for consumer in consumers]
-    # A fresh peer cannot conceal a stopped or stalled expected coordinator.
-    return max(snapshots, key=lambda item: (
-        item["alive"] is False, float(item["beat_age_s"] or 0.0)))
+    return {"present": True, "alive": False, "beat_age_s": None,
+            "phase": "not_started", "consec_crashes": 0}
 
 
 class AssignedQueueConsumer:
@@ -251,12 +254,10 @@ class AssignedQueueConsumer:
         self._control_plane = ControlPlaneScheduler(self.base_path)
 
     def start(self) -> None:
-        # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
-        # start()ing a consumer must spin up NO coordinator thread — the dark guarantee
-        # is "no side effect when off", not merely "no DB writes".
-        if not assigned_queue_consumer_enabled():
-            return
-        require_process_cloud_admission(surface="assigned queue consumer")
+        # The assigned-queue consumer flag does not gate this thread. An
+        # automation stored while that consumer is off is still fired here:
+        # this loop is the owner tick, and the control plane is always on.
+        require_process_cloud_admission(surface="owner tick")
         if self._thread is not None:
             return
         self._scavenge_orphaned_credentials()

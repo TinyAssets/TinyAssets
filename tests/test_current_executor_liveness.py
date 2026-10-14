@@ -49,16 +49,25 @@ def test_missing_enabled_executor_is_unhealthy_even_with_recent_files(tmp_path, 
     }
 
 
-def test_disabled_is_explicit_and_does_not_start(tmp_path, monkeypatch):
+def test_consumer_off_still_starts_the_owner_tick(tmp_path, monkeypatch):
     monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
-    consumer = runtime.AssignedQueueConsumer(tmp_path)
+    consumer = runtime.AssignedQueueConsumer(tmp_path, poll_seconds=0.01)
+    monkeypatch.setattr(consumer, "poll_once", lambda: 0)
     consumer.start()
     try:
-        assert consumer._thread is None
-        assert runtime.current_consumer_liveness(tmp_path) == {
-            "present": False, "phase": "disabled"}
+        assert consumer._thread is not None and consumer._thread.is_alive()
+        snapshot = runtime.current_consumer_liveness(tmp_path)
+        assert snapshot["present"] is True
+        assert snapshot["alive"] is True
+        assert snapshot["phase"] == "starting"
     finally:
         consumer.stop()
+
+
+def test_disabled_without_a_tick_stays_explicit(tmp_path, monkeypatch):
+    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
+    assert runtime.current_consumer_liveness(tmp_path) == {
+        "present": False, "phase": "disabled"}
 
 
 def test_engine_child_reports_observation_boundary_not_missing_executor(tmp_path, monkeypatch):

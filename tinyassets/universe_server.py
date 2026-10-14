@@ -4676,16 +4676,14 @@ def main(
         assigned_consumer = None
         # The lifespan has not run yet. Storage initialization precedes the tick.
         from tinyassets.consumer_runtime import initialize as initialize_consumer
-        from tinyassets.control_plane.tick import (
-            AssignedQueueConsumer,
-            assigned_queue_consumer_enabled,
-        )
+        from tinyassets.control_plane.tick import AssignedQueueConsumer
         from tinyassets.storage import data_dir as assigned_data_dir
 
-        if assigned_queue_consumer_enabled():
-            initialize_consumer(assigned_data_dir())
-            assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
-            assigned_consumer.start()
+        # The owner tick starts whether or not the assigned-queue consumer
+        # flag is set. That flag does not refuse a stored automation.
+        initialize_consumer(assigned_data_dir())
+        assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
+        assigned_consumer.start()
         try:
             socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
             if socket_path:
@@ -4710,19 +4708,16 @@ def main(
 
     writer_barrier = prepare_service_writer_barrier(data_dir())
     assigned_consumer = None
-    from tinyassets.control_plane.tick import (
-        AssignedQueueConsumer,
-        assigned_queue_consumer_enabled,
-    )
+    from tinyassets.control_plane.tick import AssignedQueueConsumer
 
     try:
         from tinyassets.consumer_runtime import initialize as initialize_consumer
 
         # Storage must be ready before the owner tick opens its database.
-        if assigned_queue_consumer_enabled():
-            initialize_consumer(data_dir())
-            assigned_consumer = AssignedQueueConsumer(data_dir())
-            assigned_consumer.start()
+        # The tick starts whether or not the assigned-queue consumer flag is set.
+        initialize_consumer(data_dir())
+        assigned_consumer = AssignedQueueConsumer(data_dir())
+        assigned_consumer.start()
         run_visibility_startup_gate()
         start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):

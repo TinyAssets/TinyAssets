@@ -994,6 +994,46 @@ def _consumer_with_inline_executor(tmp_path: Path, *, max_concurrency: int = 2):
     return consumer, inline
 
 
+def test_consumer_off_stores_and_the_owner_tick_fires(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Registration while the assigned-queue consumer is off is stored, then fired."""
+    monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+    stored = register_automation(
+        tmp_path,
+        universe_id=UNIVERSE,
+        owner_principal_id=OWNER,
+        name="Wake while the consumer is off",
+        branch_def_id=BRANCH,
+        interval_seconds=600,
+        inputs={"topic": "spec drift"},
+        now=NOW,
+    )
+    assert stored.desired_state == "active"
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE],
+    )
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda base, automation, due_at, **kwargs: ran.append(automation.automation_id)
+        or "ok:ran:run_1",
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    try:
+        submitted = consumer.poll_once()
+    finally:
+        consumer.stop()
+    assert submitted == 1
+    assert ran == [stored.automation_id]
+
+
 def test_poll_once_submits_a_universes_due_automations(
     tmp_path: Path,
     registered: Automation,
