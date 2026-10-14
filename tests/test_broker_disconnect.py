@@ -215,7 +215,9 @@ def test_lifecycle_status_uses_broker_and_outage_is_not_disconnected(removal, mo
     assert not (removal.root / "outbound.db").exists()
 
 
-def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monkeypatch):
+def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(
+    removal, monkeypatch, in_process_broker,
+):
     from tinyassets.api.http_connection import preview_rotate_http, rotate_http
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
@@ -230,14 +232,17 @@ def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monke
             "destination": "fixture", "incarnation": removal.incarnation,
             "secret": "synthetic-new"})
         assert result["status"] == "rotated", result
-        vault = (removal.root / "cc-alice/.credential-vault.json").read_bytes()
-        assert vault
+        from tinyassets.credential_vault import credential_vault_path, load_credential_vault
+
+        sealed = load_credential_vault(removal.root / "cc-alice")
+        assert sealed and not credential_vault_path(removal.root / "cc-alice").exists()
         assert removal.ledger._get_connection_resource(removal.connection) == before
         monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
         with pytest.raises(ProxyRequestError):
             rotate_http(universe_id="cc-alice", payload={
                 "destination": "fixture", "secret": "must-not-replace"})
-        assert (removal.root / "cc-alice/.credential-vault.json").read_bytes() == vault
+        monkeypatch.setattr(supervisor, "get_supervisor", in_process_broker.supervisor_for)
+        assert load_credential_vault(removal.root / "cc-alice") == sealed
     assert not (removal.root / "outbound.db").exists()
 
 
