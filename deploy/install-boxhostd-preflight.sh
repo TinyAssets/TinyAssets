@@ -2,6 +2,26 @@
 # P2a only: install a pinned gVisor and an idle service. Never touches Docker.
 set -euo pipefail
 
+# systemctl prints only "control process exited" on the deploy log. The
+# unit's own stderr stays in the journal, so every failure copies it out.
+dump_boxhostd_failure() {
+    # set +e lets status/journal run when the unit is already failed, but it
+    # also stays off after the trap returns. Exit with the original status so
+    # a later command cannot turn this deploy green.
+    local status=$?
+    set +e
+    echo 'boxhostd install failed; unit diagnostics follow'
+    local unit
+    for unit in boxhostd.service box-store-device.service var-lib-boxhostd-owners.mount; do
+        echo "----- systemctl status ${unit} -----"
+        systemctl status "${unit}" --no-pager -l
+        echo "----- journalctl -u ${unit} -----"
+        journalctl -u "${unit}" -n 80 --no-pager
+    done
+    exit "$status"
+}
+trap dump_boxhostd_failure ERR
+
 [[ "$(id -u)" -eq 0 ]] || { echo 'root required' >&2; exit 1; }
 [[ "$(uname -m)" == x86_64 ]] || { echo 'unsupported host architecture' >&2; exit 1; }
 release=release-20260928.0
