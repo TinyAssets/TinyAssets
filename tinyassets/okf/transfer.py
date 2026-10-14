@@ -47,7 +47,12 @@ NEVER = frozenset(
         "browser-profile",
     }
 )
-CONTACT = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:\+?\d[\s().-]*){10,15}")
+# Token boundaries prevent restarting an unbounded email search at every byte
+# of a long prose token. Each candidate has finite email/phone component bounds.
+CONTACT = re.compile(
+    r"(?<![\w.+-])[\w.+-]{1,64}@[\w.-]{1,253}\.[A-Za-z]{2,63}(?![\w.-])"
+    r"|(?<![\w+])\+?(?:\d[\s().-]{0,8}){9,14}\d(?!\w)"
+)
 
 
 @dataclass(frozen=True)

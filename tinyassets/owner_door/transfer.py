@@ -7,6 +7,8 @@ session may turn a preview into a download; no route publishes or runs code.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import secrets
 import threading
@@ -18,7 +20,7 @@ from starlette.responses import JSONResponse, Response
 
 from tinyassets.boxes.provider import BoxAuthError, BoxError, StaleHandle, WriteConflict
 from tinyassets.okf.bundle import InvalidBundle
-from tinyassets.okf.transfer import Preview, export_zip, preview
+from tinyassets.okf.transfer import Limits, Preview, export_zip, ingest_zip, preview
 from tinyassets.owner_door.routes import _BYTE_HEADERS, _HEADERS
 
 _TTL = 600
@@ -69,12 +71,32 @@ def _arguments(args):
             or args["profile"] not in ("share", "export")
         ):
             raise InvalidBundle("Export needs the preview and exact content selections")
+    elif operation == "import":
+        if set(args) != {"operation", "command_center", "archive"} or not isinstance(
+            args["archive"], str
+        ):
+            raise InvalidBundle("Import needs a base64 archive")
     else:
         raise InvalidBundle("Unknown transfer operation")
     return args
 
 
 def _transfer(provider, handle, args):
+    if args["operation"] == "import":
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.command_center_packages import quarantine_import
+
+        try:
+            raw = base64.b64decode(args["archive"], validate=True)
+        except (ValueError, binascii.Error):
+            raise InvalidBundle("Invalid base64 archive") from None
+        bundle = ingest_zip(raw)
+        # Detect stale placement before retaining an import for this center.
+        provider.read_many(handle, [], max_total=0)
+        return quarantine_import(
+            _base_path(), owner=handle.account_id, command_center=handle.command_center_id,
+            epoch=handle.epoch, bundle=bundle,
+        )
     if args["operation"] == "preview":
         view = preview(provider, handle, args["paths"])
         pending = Pending(provider, view, time.monotonic() + _TTL)
@@ -132,6 +154,7 @@ async def handle_transfer(request):
     from tinyassets.agent_loop.served_chat import configured_box_provider
     from tinyassets.auth.middleware import current_identity, identity_context
     from tinyassets.onboarding.owner_sessions import require
+    from tinyassets.storage_accounting import StorageRefused, visible_record
 
     if not onboarding.onboarding_enabled():
         return Response(status_code=404, headers=_HEADERS)
@@ -141,18 +164,23 @@ async def handle_transfer(request):
         return denied
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
         return JSONResponse({"error": "json_required"}, 415, headers=_HEADERS)
-    raw = await onboarding._read_bounded_body(request, 256 * 1024)
-    if raw is None:
-        return JSONResponse({"error": "arguments_too_large"}, 413, headers=_HEADERS)
-    try:
-        args = _arguments(json.loads(raw))
-    except (ValueError, UnicodeError):
-        return JSONResponse({"error": "invalid_arguments"}, 400, headers=_HEADERS)
     identity = current_identity()
     try:
         await run_in_threadpool(require, request, owner=identity.user_id)
     except PermissionError:
         return JSONResponse({"error": "protected_owner_session_required"}, 403, headers=_HEADERS)
+    if not _SLOTS.acquire(blocking=False):
+        return JSONResponse({"error": "transfer_busy"}, 503, headers=_HEADERS)
+    try:
+        raw = await onboarding._read_bounded_body(request, 4 * Limits().compressed // 3 + 4096)
+    finally:
+        _SLOTS.release()
+    if raw is None:
+        return JSONResponse({"error": "arguments_too_large"}, 413, headers=_HEADERS)
+    try:
+        args = _arguments(json.loads(raw))
+    except (ValueError, UnicodeError, RecursionError):
+        return JSONResponse({"error": "invalid_arguments"}, 400, headers=_HEADERS)
     provider, _ = configured_box_provider()
     if provider is None:
         return JSONResponse({"error": "box_provider_unavailable"}, 503, headers=_HEADERS)
@@ -170,6 +198,8 @@ async def handle_transfer(request):
         return JSONResponse({"error": "transfer_not_authorized"}, 403, headers=_HEADERS)
     except WriteConflict:
         return JSONResponse({"error": "source_changed_preview_again"}, 409, headers=_HEADERS)
+    except StorageRefused as refused:
+        return JSONResponse(visible_record(refused), 413, headers=_HEADERS)
     except InvalidBundle as exc:
         return JSONResponse(
             {"error": "invalid_transfer", "detail": str(exc)}, 400, headers=_HEADERS

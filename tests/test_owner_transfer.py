@@ -153,3 +153,94 @@ def test_preview_capacity_is_explicit_and_retains_previous_preview(transfer_door
     monkeypatch.setattr(transfer, "_CAPACITY", 1)
     assert preview(client).status_code == 503
     assert download(client, token).status_code == 200
+
+
+def test_import_uses_owned_package_custody_and_never_runs_code(transfer_door, tmp_path):
+    import base64
+
+    from tests.test_okf_transfer import archive
+    from tinyassets import command_center_packages as packages
+    from tinyassets.api.helpers import _base_path
+
+    client, provider, handle = transfer_door
+    before = provider.read_many(handle, [], max_total=0).generation
+    code = f"from pathlib import Path; Path({str(tmp_path / 'executed')!r}).touch()"
+    raw = archive({"run/agent.py": code.encode()})
+    response = request(client, {
+        "operation": "import", "command_center": HOME_A,
+        "archive": base64.b64encode(raw).decode(),
+    })
+    assert response.status_code == 200, response.text
+    receipt = response.json()
+    assert receipt["state"] == "quarantined" and receipt["import_id"].startswith("import_")
+    assert not (tmp_path / "executed").exists()
+    assert provider.read_many(handle, [], max_total=0).generation == before
+    with packages._db(_base_path()) as conn:
+        row = dict(conn.execute("SELECT * FROM bundle_imports").fetchone())
+        assert (row["owner_id"], row["command_center_id"], row["epoch"]) == (
+            A, HOME_A, handle.epoch,
+        )
+        assert conn.execute("SELECT COUNT(*) FROM pins").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blobs WHERE author_id=?", (A,)).fetchone()[0] == 1
+    blob = json.loads(packages.read_blob(_base_path(), receipt["sha256"]))
+    assert base64.b64decode(blob["files"]["run/agent.py"]).decode() == code
+
+
+def test_import_auth_and_archive_rejection_precede_custody(transfer_door):
+    import base64
+
+    from tinyassets import command_center_packages as packages
+    from tinyassets.api.helpers import _base_path
+
+    client, _, _ = transfer_door
+    document = {
+        "operation": "import", "command_center": HOME_A,
+        "archive": base64.b64encode(b"not a zip").decode(),
+    }
+    assert request(client, document).status_code == 400
+    document["archive"] = "not base64"
+    assert request(client, document).status_code == 400
+    client.cookies.clear()
+    assert request(client, document).status_code == 403
+    assert not packages.database_path(_base_path()).exists()
+
+
+def test_import_quota_refusal_retains_no_blob_or_custody_record(transfer_door, monkeypatch):
+    import base64
+    from contextlib import contextmanager
+
+    from tests.test_okf_transfer import archive
+    from tinyassets import command_center_packages as packages
+    from tinyassets import storage_accounting
+    from tinyassets.api.helpers import _base_path
+
+    @contextmanager
+    def refused(*args, **kwargs):
+        raise storage_accounting.StorageRefused({"error": "quota test"}, account_id=A)
+        yield
+
+    client, _, _ = transfer_door
+    monkeypatch.setattr(storage_accounting, "charged", refused)
+    result = request(client, {
+        "operation": "import", "command_center": HOME_A,
+        "archive": base64.b64encode(archive({"workspace/note": b"hello"})).decode(),
+    })
+    assert result.status_code == 413
+    with packages._db(_base_path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM bundle_imports").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blobs").fetchone()[0] == 0
+
+
+def test_import_erasure_uses_owner_even_when_centers_change(transfer_door):
+    from tinyassets import command_center_packages as packages
+    from tinyassets.account_deletion import _delete_satellite_rows
+    from tinyassets.api.helpers import _base_path
+
+    with packages._db(_base_path()) as conn:
+        for import_id, owner, center in (("mine", A, HOME_B), ("theirs", B, HOME_A)):
+            conn.execute("INSERT INTO bundle_imports VALUES (?,?,?,?,?,'quarantined',?)",
+                         (import_id, owner, center, 1, "0" * 64, time.time()))
+    _delete_satellite_rows(packages.database_path(_base_path()), principal=A, home=HOME_A,
+                           counts={}, label="packages")
+    with packages._db(_base_path()) as conn:
+        assert [r[0] for r in conn.execute("SELECT import_id FROM bundle_imports")] == ["theirs"]

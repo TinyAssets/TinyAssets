@@ -1148,6 +1148,15 @@ CREATE TABLE IF NOT EXISTS pins (
     PRIMARY KEY (universe_id, pin_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pins_request ON pins(universe_id, request_id);
+CREATE TABLE IF NOT EXISTS bundle_imports (
+    import_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    command_center_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    blob_sha256 TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state = 'quarantined'),
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -1253,6 +1262,36 @@ def read_blob(base_path: str | Path, sha256: str) -> bytes:
     if hashlib.sha256(data).hexdigest() != sha256:
         raise PackageError("this package's content does not match its id")
     return data
+
+
+def quarantine_import(base_path, *, owner, command_center, epoch, bundle):
+    """Retain validated import bytes in existing package custody, without activation."""
+    import secrets
+
+    from tinyassets import storage_accounting
+    from tinyassets.okf.transfer import MANIFEST
+    from tinyassets.storage import _connect as author_connection
+    from tinyassets.storage.current_home import check_principal_not_deleted
+
+    manifest = json.loads(bundle.files[MANIFEST])
+    blob = build_blob(manifest, {p: b for p, b in bundle.files.items() if p != MANIFEST})
+    sha = hashlib.sha256(blob).hexdigest()
+    # Schema work finishes before acquiring deletion's canonical writer fence.
+    with _db(base_path) as conn:
+        with storage_accounting.charged(
+            base_path, account_id=owner, store="packages",
+            nbytes=0 if blob_owned(base_path, owner, sha) else len(blob),
+        ):
+            with author_connection(base_path) as author:
+                author.execute("BEGIN IMMEDIATE")
+                check_principal_not_deleted(author, owner)
+                store_blob(base_path, author_id=owner, blob=blob)
+                import_id = "import_" + secrets.token_urlsafe(24)
+                conn.execute(
+                    "INSERT INTO bundle_imports VALUES (?,?,?,?,?,'quarantined',?)",
+                    (import_id, owner, command_center, epoch, sha, time.time()),
+                )
+    return {"import_id": import_id, "state": "quarantined", "sha256": sha}
 
 
 def record_version(base_path: str | Path, *, author_id: str, name: str, version: int,

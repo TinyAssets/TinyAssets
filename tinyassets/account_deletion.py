@@ -126,6 +126,7 @@ OWNER_ONLY_TABLES = MappingProxyType({
     "api_keys": "owner",
     "api_key_request_counts": "owner",
     "pins": "owner_id",
+    "bundle_imports": "owner_id",
     "universe_app_ui": "owner_user_id",
     "owner_view_receipts": "owner_user_id",
     "command_center_adoptions": "owner_id",

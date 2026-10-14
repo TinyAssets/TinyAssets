@@ -147,3 +147,18 @@ The zip adds the `share`/`export` profiles to that same serializer. Existing
 published definitions are not rewritten. Current private metadata describes the
 included instruction folders; structured workflow/schedule/model-reference
 capture and the command-center responsibility still need production integration.
+
+## Import custody
+
+Protected JSON/base64 import uses the same origin/session gate as preview and
+export, with a request-byte bound before JSON parsing and an archive bound after
+decoding. The complete archive is validated before custody changes. Validated
+files are stored as the existing package store's inert, content-addressed JSON
+blob, outside every box, rather than extracted into an agent-visible directory.
+A platform `bundle_imports` record binds an opaque import id to authenticated
+owner, command center, placement epoch and digest. Its state is quarantined;
+there is no pending executable install action or activation receipt. Storage
+uses the existing account packages pool and the account-deletion writer fence.
+Account erasure removes import metadata by owner. A future explicit activation
+must recheck that record and epoch, construct a reviewed installation plan and
+use BoxProvider; importing alone never writes an owner box or starts code.

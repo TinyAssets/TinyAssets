@@ -61,3 +61,25 @@ execute imported files or create an activation record.
 - **WHEN** a valid archive contains executable runner code or hooks
 - **THEN** only regular file bytes are copied to quarantine
 - **AND** no runner, hook, filter, installer or schedule executes.
+
+### Requirement: Protected owner transfer door
+The app SHALL expose preview, private download and import through one owner
+transfer route. Every operation SHALL require the current named identity and
+its exact-origin protected owner session. A bearer token alone SHALL not expose
+preview content or approve a transfer. The configured BoxProvider SHALL bind
+ownership before any content operation; an absent provider SHALL fail explicitly.
+
+#### Scenario: Source or owner changes after preview
+- **WHEN** the source generation, placement epoch, authenticated owner or provider changes
+- **THEN** the old preview cannot authorize a download.
+
+#### Scenario: Private contacts are selected individually
+- **WHEN** the owner selects one captured contact occurrence in the private export profile
+- **THEN** only that occurrence remains and all unselected occurrences are removed
+- **AND** the share profile rejects private contact selections.
+
+#### Scenario: Import reaches existing package custody
+- **WHEN** an authenticated owner imports a validated archive
+- **THEN** the existing account package pool accounts for its inert canonical bytes
+- **AND** an owner/center/epoch-bound quarantine record is retained outside every box
+- **AND** neither an executable install action nor an activation receipt is created.

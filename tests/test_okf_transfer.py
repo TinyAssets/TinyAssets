@@ -253,3 +253,18 @@ def test_share_contacts_always_redacted_and_private_selections_refused(box):
     assert b"example.com" not in ingest_zip(raw).files[path]
     with pytest.raises(InvalidBundle, match="private contacts"):
         export_zip(*box, view, selected=[path], profile="share", included_contacts={path: [0]})
+
+
+def test_contact_scan_is_bounded_on_large_plain_text_and_preserves_items():
+    import subprocess
+    import sys
+
+    # A subprocess deadline keeps a regressed quadratic regex from wedging CI.
+    subprocess.run([
+        sys.executable, "-c",
+        "from tinyassets.okf.transfer import CONTACT; "
+        "assert CONTACT.search('a' * (8 * 1024 * 1024)) is None; "
+        "assert [m.group() for m in CONTACT.finditer("
+        "'Call +1 (212) 555-0123 or a@example.com')] == "
+        "['+1 (212) 555-0123', 'a@example.com']",
+    ], check=True, timeout=10)
