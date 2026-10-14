@@ -4,9 +4,9 @@ Use this procedure for whole-volume recovery, rollback after a bad migration,
 or a fresh-host recovery drill. Nightly full archives are gzip files named
 `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`.
 
-`deploy/backup-restore.sh` owns data restore only. It validates and stages the
-archive before stopping containers, swaps the staged directory into place, and
-retains the prior volume for rollback. It never starts a service.
+`deploy/backup-restore.sh` validates and stages the data and paired box-store
+archives before stopping consumers. It swaps the staged data into place and
+retains the prior volume and owner trees for rollback. It never starts a service.
 
 ## Preconditions
 
@@ -149,3 +149,55 @@ The automated fresh-host proof is `.github/workflows/dr-drill.yml`. It
 transfers a selected full archive, invokes this restore script, starts only the
 daemon, probes through an SSH port forward, destroys a green drill host, and
 keeps a red host by default.
+# Box-store pair
+
+The production box store uses the 20 GiB DigitalOcean volume
+`tinyassets-box-store` at
+`/dev/disk/by-id/scsi-0DO_Volume_tinyassets-box-store`. Dispatch
+`box-store-volume.yml` on main before the deploy that installs the store.
+The device script formats an unformatted volume as XFS once and mounts it
+through `var-lib-boxhostd-owners.mount` with `pquota,noatime,nodiscard`.
+It never reformats a volume with a filesystem. An absent volume requires an
+explicit config choice of the 8 GiB loop image; a missing configured volume
+later fails rather than switching stores. An installed loop store with
+owner data is never automatically switched to the volume; restore the
+matched backup pair onto the mounted volume during a maintenance window.
+Do not delete or detach the volume during restore or rollback.
+
+An installed box store adds `tinyassets-box-store-<timestamp>.tar.gz` beside
+each full data archive in the rclone destination. `backup.sh` freezes XFS
+while archiving only numeric owner trees to local staging, thaws it, validates
+the archive, then uploads it. The box member is not shipped to GitHub releases. Restore requires
+the exact timestamp pair and
+extracts the box member to a temporary directory on the XFS store. Numeric
+owners, ACLs, xattrs and safe in-tree links are preserved. The broker's
+`.broker/box-registry.json` export in the data archive must contain `boxes`
+rows with `uid`, `gid`, `project_id` and `bhard_bytes` for every owner tree;
+restore clears project IDs from retained old trees, re-applies each XFS project
+and `bhard` to installed trees, then runs `xfs_quota report`.
+An empty P2a box store needs no registry rows. A local restore can provide the
+matching archive through `BOX_BACKUP_FILE` and a registry export through
+`BOX_REGISTRY_FILE`. `BOX_STORE_DIR` permits a restore drill on a mounted
+temporary XFS store.
+For a data backup from before box-store pairing, set
+`ALLOW_PRE_STORE_BACKUP=1` when the box member is absent. The restore logs this
+allowance and retains the current box trees.
+
+The restore script stops boxhostd and retains old owner trees in
+`.tinyassets-box-restore-old.*` on the store. After checking both restored
+data and boxes, start `boxhostd.service`; remove the retained old trees only
+after the post-restore verification. To roll back before removing them, stop
+boxhostd, move the restored numeric owner trees aside, move the retained old
+trees back, restore the retained old data volume, and re-apply the old project
+IDs and `bhard` limits from the retained data volume's
+`.broker/box-registry.json` with `box-store-quotas.py`:
+
+```bash
+sudo python3 deploy/box-store-quotas.py \
+  /var/lib/boxhostd/owners /var/lib/boxhostd/owners \
+  /var/lib/docker/volumes/tinyassets-data/_data/.broker/box-registry.json
+```
+
+Then start services and
+verify the public canary. Keep both archive members and the old directories
+until verification completes.
